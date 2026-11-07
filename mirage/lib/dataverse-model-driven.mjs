@@ -6,8 +6,78 @@ import { organizationPrincipalContext } from './dataverse-principal-context.mjs'
 import { parseDataverseRoute, parsePrefer } from './dataverse-odata.mjs';
 import { createDataverseHandler } from './dataverse-api.mjs';
 import { isSecuredField } from './dataverse-fls.mjs';
+import { plainDataObject } from './state-clone.mjs';
+import { immutableFieldRights } from './field-rights.mjs';
 import { Readable } from 'node:stream';
 import { gunzipSync } from 'node:zlib';
+
+function recordCapabilityRights(permits, storage, id) {
+  const canRead = permits('read'),
+    canCreate = permits('create') && storage.create !== false;
+  const canUpdate = permits('update') && (!id || canRead) && storage.update !== false;
+  const canDelete = permits('delete') && (!id || canRead) && storage.delete !== false;
+  return { canRead, canCreate, canUpdate, canDelete };
+}
+
+function fieldCapabilityRights({
+  name,
+  field,
+  entity,
+  id,
+  user,
+  canRead,
+  canCreate,
+  canUpdate,
+  fieldRights,
+  fls,
+  metadata,
+  store,
+}) {
+  const secured = isSecuredField(store.fieldDefinition?.(entity, name, metadata) ?? field);
+  const read = canRead && (fieldRights ? fieldRights[name].read : fls?.canRead(user, entity, name, id) !== false);
+  const create =
+    canCreate &&
+    !field.isPrimaryId &&
+    (field.validForCreate ?? field.columnMetadata?.validForCreate) !== false &&
+    (fieldRights ? fieldRights[name].create : fls?.canWrite(user, entity, name, 'create') !== false);
+  const update =
+    canUpdate &&
+    !field.isPrimaryId &&
+    (field.validForUpdate ?? field.columnMetadata?.validForUpdate) !== false &&
+    (fieldRights ? fieldRights[name].update : fls?.canWrite(user, entity, name, 'update', id) !== false);
+  return [secured, read, create, update];
+}
+
+function lookupWriteValue({ entity, id, name, value, field, mapping, store, storedRow }) {
+  let targetEntity = value?.logical_name ?? value?.logicalName ?? value?.entity;
+  const targetId = value?.id ?? value?.value ?? value;
+  const targets = field.targets ?? [];
+  targetEntity ??= targets.length === 1 ? targets[0] : undefined;
+  if (!targetEntity && id && targetId) {
+    const existing = storedRow(entity, mapping, id)?.[name];
+    const same =
+      String(existing?.id ?? '')
+        .replace(/[{}]/g, '')
+        .toLowerCase() === String(targetId).replace(/[{}]/g, '').toLowerCase();
+    if (same) targetEntity = existing?.logical_name ?? existing?.logicalName ?? existing?.entity;
+  }
+  const target = targetEntity && store.resolveMapping(targetEntity);
+  const navigation =
+    Object.entries(mapping.relationships ?? {}).find(
+      ([, relationship]) =>
+        relationship.many === false &&
+        relationship.from === name &&
+        (!targetEntity || relationship.entity === targetEntity),
+    )?.[0] ?? name;
+  if (value == null || value === '') return { navigation, value: null };
+  if (!target || !/^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(String(targetId)))
+    throw new DataError(
+      `Choose a record${targets.length > 1 ? ' and its table' : ''} for ${name}.`,
+      400,
+      'InvalidLookup',
+    );
+  return { navigation, value: `/${target.entitySet}(${targetId})` };
+}
 
 /** The in-process Web API behind Xrm.WebApi.execute/executeMultiple in the model-driven host: the organization's own
  * router (custom APIs, actions, functions, CRUD, $batch change sets) answers as the selected staff principal. The
@@ -18,7 +88,10 @@ export function createModelDrivenWebApi({ organization }) {
   const handlers = new WeakMap();
   const handlerFor = (runtime, hostname) => {
     let byHost = handlers.get(runtime);
-    if (!byHost) handlers.set(runtime, (byHost = new Map()));
+    if (!byHost) {
+      byHost = new Map();
+      handlers.set(runtime, byHost);
+    }
     if (!byHost.has(hostname)) {
       // The staff session already authenticated the caller: the bearer check accepts only this request's marker.
       const authority = {
@@ -101,9 +174,16 @@ export function createModelDrivenWebApi({ organization }) {
       });
       const out = { status: 200, headers: {}, chunks: [] };
       await new Promise((resolve, reject) => {
-        const listeners = [];
+        // finish and close listeners, as a Node response emits them: end fires finish then close; destroy fires close
+        // alone, so the handler's http span ends (499) on that path too.
+        const listeners = { finish: [], close: [] };
+        const emit = (event) => {
+          for (const listener of listeners[event].splice(0)) listener();
+        };
         const res = {
           headersSent: false,
+          writableFinished: false,
+          destroyed: false,
           setHeader: (name, value) => {
             out.headers[name.toLowerCase()] = value;
           },
@@ -114,16 +194,21 @@ export function createModelDrivenWebApi({ organization }) {
             return out.status;
           },
           on: (event, listener) => {
-            if (event === 'finish') listeners.push(listener);
+            listeners[event]?.push(listener);
             return res;
           },
           end: (payload) => {
             if (payload !== undefined) out.chunks.push(Buffer.from(payload));
-            res.headersSent = true;
-            for (const listener of listeners) listener();
+            res.headersSent = res.writableFinished = true;
+            emit('finish');
+            emit('close');
             resolve();
           },
-          destroy: () => reject(new DataError('The Web API request failed.', 500, 'WebApiExecuteFailed')),
+          destroy: () => {
+            res.destroyed = true;
+            emit('close');
+            reject(new DataError('The Web API request failed.', 500, 'WebApiExecuteFailed'));
+          },
         };
         handlerFor(runtime, hostname)(req, res).catch(reject);
       });
@@ -147,7 +232,7 @@ export function createModelDrivenRecordService({
   store = organization?.store,
   records = organization?.records,
   principal = () => organization.principals.byId(uuidV5(organization.organizationId, 'systemuser:SYSTEM')),
-  origin = () => 'http://organization.local',
+  origin = () => 'http://organization.local', // NOSONAR: reserved or loopback placeholder host, not a real transport
   run = (fn) => organization.runOwned(() => organization.runAtomic(fn)),
 }) {
   const read = (fn) =>
@@ -177,7 +262,7 @@ export function createModelDrivenRecordService({
     );
   const request = (method, entity, id, options = {}, body) => {
     const mapping = store.resolveMapping(entity),
-      url = new URL(`/api/data/v9.2/${mapping.entitySet}${id ? `(${id})` : ''}`, origin());
+      url = new URL(`/api/data/v9.2/${mapping.entitySet}${id ? `(${id})` : ''}`, origin()); // NOSONAR: template coercion is intentional
     if (options.fetchXml) url.searchParams.set('fetchXml', options.fetchXml);
     if (options.query) url.search = options.query;
     return records.handle({
@@ -210,6 +295,9 @@ export function createModelDrivenRecordService({
       return {
         rows: (response.body?.value ?? []).map(rowOf),
         total: response.body?.['@odata.count'] ?? -1,
+        ...(response.body?.['@Microsoft.Dynamics.CRM.totalrecordcountlimitexceeded'] === true
+          ? { totalLimitExceeded: true }
+          : {}),
         more:
           response.body?.['@Microsoft.Dynamics.CRM.morerecords'] === true ||
           Boolean(response.body?.['@odata.nextLink']),
@@ -242,7 +330,7 @@ export function createModelDrivenRecordService({
         : null;
     return subset ? subset.find(same) : rows.find(same);
   };
-  const capabilities = (entity, options = {}, { id, fields = {} } = {}) => {
+  const capabilities = (entity, options = {}, { id, fields = {}, compact = false } = {}) => {
     const { user } = context(options),
       mapping = store.resolveMapping(entity);
     // Values remain internal to authorization. Only rights for the requested
@@ -264,41 +352,49 @@ export function createModelDrivenRecordService({
       }
     };
     const storage = store.storageAdapter?.recordCapabilities?.(entity) ?? {};
-    const canRead = permits('read'),
-      canCreate = permits('create') && storage.create !== false;
-    const canUpdate = permits('update') && (!id || canRead) && storage.update !== false;
-    const canDelete = permits('delete') && (!id || canRead) && storage.delete !== false;
+    const { canRead, canCreate, canUpdate, canDelete } = recordCapabilityRights(permits, storage, id);
     const fls = organization.api.fieldSecurity;
     const names = Object.keys(fields);
-    const fieldRights = names.length ? fls?.capabilities?.(user, entity, names, id) : {};
+    const fieldRights = names.length ? fls?.capabilities?.(user, entity, names, id, { compact: true }) : {};
+    // Field security and the secured marker share a synchronous table read.
+    // Resolving the whole imported definition again for every marker made a
+    // wide catalogue allocate O(fields²) metadata. Never cache across calls.
+    const metadataFields = typeof store.fieldDefinition === 'function' ? organization.api.metadataFields : undefined;
+    const definitions =
+      names.length && typeof metadataFields === 'function' ? metadataFields(mapping.logicalName ?? entity) : undefined;
+    const metadata = typeof metadataFields === 'function' ? () => definitions : undefined;
+    const projected = plainDataObject(),
+      property = { value: undefined, writable: true, enumerable: true, configurable: true };
+    for (const [name, field] of Object.entries(fields)) {
+      const rights = fieldCapabilityRights({
+        name,
+        field,
+        entity,
+        id,
+        user,
+        canRead,
+        canCreate,
+        canUpdate,
+        fieldRights,
+        fls,
+        metadata,
+        store,
+      });
+      property.value = compact
+        ? immutableFieldRights(...rights)
+        : { secured: rights[0], read: rights[1], create: rights[2], update: rights[3] };
+      Object.defineProperty(projected, name, property);
+    }
     return {
       read: canRead,
       create: canCreate,
       update: canUpdate,
       delete: canDelete,
       ...(storage.reason ? { reason: storage.reason } : {}),
-      fields: Object.fromEntries(
-        Object.entries(fields).map(([name, field]) => [
-          name,
-          {
-            // A column under field-level security says so (PCF context.parameters.<p>.security.secured).
-            secured: isSecuredField(store.fieldDefinition?.(entity, name, organization?.api.metadataFields) ?? field),
-            read: canRead && (fieldRights ? fieldRights[name].read : fls?.canRead(user, entity, name, id) !== false),
-            create:
-              canCreate &&
-              !field.isPrimaryId &&
-              (field.validForCreate ?? field.columnMetadata?.validForCreate) !== false &&
-              (fieldRights ? fieldRights[name].create : fls?.canWrite(user, entity, name, 'create') !== false),
-            update:
-              canUpdate &&
-              !field.isPrimaryId &&
-              (field.validForUpdate ?? field.columnMetadata?.validForUpdate) !== false &&
-              (fieldRights ? fieldRights[name].update : fls?.canWrite(user, entity, name, 'update', id) !== false),
-          },
-        ]),
-      ),
+      fields: projected,
     };
   };
+
   const write = async ({ entity, id, values = {}, remove = false, etag, principalId, kind }) => {
     const mapping = store.resolveMapping(entity);
     const body = {};
@@ -308,40 +404,13 @@ export function createModelDrivenRecordService({
         body[name] = value;
         continue;
       }
-      let targetEntity = value?.logical_name ?? value?.logicalName ?? value?.entity;
-      const targetId = value?.id ?? value?.value ?? value;
-      const targets = field.targets ?? [];
-      targetEntity ??= targets.length === 1 ? targets[0] : undefined;
-      if (!targetEntity && id && targetId) {
-        // A legacy editor may resubmit an unchanged id without its type. The
-        // stored reference is authoritative only for that exact existing id.
-        const existing = storedRow(entity, mapping, id)?.[name];
-        const same =
-          String(existing?.id ?? '')
-            .replace(/[{}]/g, '')
-            .toLowerCase() === String(targetId).replace(/[{}]/g, '').toLowerCase();
-        if (same) targetEntity = existing?.logical_name ?? existing?.logicalName ?? existing?.entity;
-      }
-      const target = targetEntity && store.resolveMapping(targetEntity);
-      const navigation =
-        Object.entries(mapping.relationships ?? {}).find(
-          ([, relationship]) =>
-            relationship.many === false &&
-            relationship.from === name &&
-            (!targetEntity || relationship.entity === targetEntity),
-        )?.[0] ?? name;
-      if (value == null || value === '') body[`${navigation}@odata.bind`] = null;
-      else {
-        if (!target || !/^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(String(targetId)))
-          throw new DataError(
-            `Choose a record${targets.length > 1 ? ' and its table' : ''} for ${name}.`,
-            400,
-            'InvalidLookup',
-          );
-        body[`${navigation}@odata.bind`] = `/${target.entitySet}(${targetId})`;
-      }
+      const lookup = lookupWriteValue({ entity, id, name, value, field, mapping, store, storedRow });
+      body[`${lookup.navigation}@odata.bind`] = lookup.value;
     }
-    const method = remove ? 'DELETE' : id ? 'PATCH' : 'POST';
+    let method;
+    if (remove) method = 'DELETE';
+    else if (id) method = 'PATCH';
+    else method = 'POST';
     const response = await run(() =>
       request(method, entity, id, { etag, ...(principalId === undefined ? {} : { principalId, kind }) }, body),
     );
@@ -353,6 +422,7 @@ export function createModelDrivenRecordService({
           etag: response.body?.['@odata.etag'],
         };
   };
+
   // The service itself is callable as write().
   return Object.assign(write, { write, get, retrieve, query, list, capabilities });
 }

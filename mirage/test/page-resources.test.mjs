@@ -1,3 +1,4 @@
+// @test-kind contract: source dependency inspection reports resolvable resources and unresolved dynamic references.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -6,6 +7,7 @@ import path from 'node:path';
 import { importPortal } from '../lib/importer.mjs';
 import { importSolutionMetadata } from '../lib/solution-metadata.mjs';
 import { resolvePageResources } from '../lib/page-resources.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const portal = () => ({
   sourceDir: 'C:/portal',
@@ -251,6 +253,38 @@ test("resolves a page's static Liquid, component, settings, snippet and data dep
   assert.deepEqual(result.unresolved, []);
 });
 
+// @test-kind security: malformed Liquid with a long whitespace run must not cause quadratic backtracking.
+test('reports dynamic references and handles unterminated whitespace runs', () => {
+  const input = portal();
+  input.pages[0].html = `{% render${'\t'.repeat(5000)}%x`;
+  assert.ok(
+    !resolvePageResources(input, '/workspace/').unresolved.some((item) => item.expression === input.pages[0].html),
+  );
+  input.pages[0].html = `{% render${'\t'.repeat(5000)}choice %}`;
+  assert.ok(
+    resolvePageResources(input, '/workspace/').unresolved.some(
+      (item) => item.kind === 'web-template' && item.expression === input.pages[0].html,
+    ),
+  );
+});
+
+// @test-kind security: repeated incomplete snippet lookups cannot repeatedly scan the remaining source.
+test('handles a long suffix of unterminated snippet lookups', () => {
+  const input = portal();
+  input.pages[0].html = `{{ snippets[request.params.key] }}${'snippets['.repeat(5000)}`;
+  const result = resolvePageResources(input, '/workspace/');
+  assert.equal(result.unresolved.filter((item) => item.kind === 'content-snippet').length, 1);
+});
+
+// @test-kind security: repeated incomplete literal lookups must not rescan the remaining source.
+test('handles incomplete literal snippet and setting lookups while retaining quoted references', () => {
+  const input = portal();
+  input.pages[0].html = `{{ snippets['one' inside'] }} {{ settings['Search/Enabled'] }}${'snippets["a'.repeat(5000)}${'settings["a'.repeat(5000)}`;
+  const result = resolvePageResources(input, '/workspace/');
+  assert.ok(result.usages.some((item) => item.kind === 'snippet' && item.reference === "one' inside"));
+  assert.ok(result.siteSettings.some((item) => item.name === 'Search/Enabled'));
+});
+
 test('reports dynamic or absent references instead of claiming complete page coverage', () => {
   const input = portal();
   input.pages[0].html =
@@ -374,7 +408,7 @@ test('an exported override of entity_list is inspected as a template without ass
 });
 
 test('real PAC and unpacked solution imports return openable source-relative page dependencies', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'page-resources-import-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'page-resources-import-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const portalPath = path.join(root, 'portal'),
     solutionPath = path.join(root, 'solution');

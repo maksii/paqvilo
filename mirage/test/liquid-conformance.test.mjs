@@ -6,6 +6,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { DEFAULT_RULES, classify, conformance, markdown, runCase } from '../liquid-conformance.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const SUITE = {
   description: 'synthetic',
@@ -50,7 +51,7 @@ test('cases render with hash data and an expected error passes when one is raise
 });
 
 test('conformance classifies differing cases, reports unexplained ones as engine gaps and lists stale rules', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'liquid-conformance-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'liquid-conformance-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   await fs.writeFile(path.join(dir, 'suite.json'), JSON.stringify(SUITE));
   await fs.writeFile(path.join(dir, 'rules.json'), JSON.stringify(RULES));

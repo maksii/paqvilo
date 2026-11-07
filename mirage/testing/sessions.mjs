@@ -5,6 +5,47 @@ const failure = (message, code, status) => Object.assign(new Error(message), { c
 const methods = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']);
 const publicSession = (value) =>
   Object.fromEntries(Object.entries(value ?? {}).filter(([key]) => !['cookie', 'csrf'].includes(key)));
+function cookieOptions(attributes) {
+  return new Map(
+    attributes.map((attribute) => {
+      const index = attribute.indexOf('=');
+      return index < 0
+        ? [attribute.trim().toLowerCase(), '']
+        : [attribute.slice(0, index).trim().toLowerCase(), attribute.slice(index + 1).trim()];
+    }),
+  );
+}
+
+function acceptCookie(entry, target, cookies) {
+  const [pair, ...attributes] = entry.split(';'),
+    at = pair.indexOf('=');
+  if (at < 1 || pair.length > 16384) return;
+  const name = pair.slice(0, at).trim(),
+    value = pair.slice(at + 1).trim();
+  if (!/^[!#$%&'*+.^_`|~\da-z-]+$/i.test(name)) return;
+  const options = cookieOptions(attributes);
+  if (
+    options.has('secure') ||
+    (options.has('domain') && options.get('domain').replace(/^\./, '').toLowerCase() !== target.hostname.toLowerCase())
+  )
+    return;
+  const defaultPath = target.pathname.slice(0, target.pathname.lastIndexOf('/')) || '/',
+    path = options.get('path')?.startsWith('/') ? options.get('path') : defaultPath,
+    key = name + '|' + path;
+  const maxAge =
+    options.has('max-age') && /^-?\d+$/.test(options.get('max-age')) ? Number(options.get('max-age')) : null;
+  let expires;
+  if (maxAge !== null) expires = Date.now() + maxAge * 1000;
+  else if (options.has('expires')) expires = Date.parse(options.get('expires'));
+  else expires = null;
+  if (expires !== null && expires <= Date.now()) {
+    cookies.delete(key);
+    return;
+  }
+  if (cookies.size >= 64 && !cookies.has(key))
+    throw failure('Portal visitor exceeded its cookie bound.', 'PortalCookieLimit');
+  cookies.set(key, { name, value, path, expires: Number.isFinite(expires) ? expires : null });
+}
 function portalRoute(origin, route) {
   if (
     typeof route !== 'string' ||
@@ -77,46 +118,7 @@ export async function createPortalSession({
   const acceptCookies = (response, url) => {
     const returned = response.headers.getSetCookie?.() ?? [response.headers.get('set-cookie')].filter(Boolean),
       target = new URL(url);
-    for (const entry of returned) {
-      const [pair, ...attributes] = entry.split(';'),
-        at = pair.indexOf('=');
-      if (at < 1 || pair.length > 16384) continue;
-      const name = pair.slice(0, at).trim(),
-        value = pair.slice(at + 1).trim();
-      if (!/^[!#$%&'*+.^_`|~\da-z-]+$/i.test(name)) continue;
-      const options = new Map(
-        attributes.map((attribute) => {
-          const index = attribute.indexOf('=');
-          return index < 0
-            ? [attribute.trim().toLowerCase(), '']
-            : [attribute.slice(0, index).trim().toLowerCase(), attribute.slice(index + 1).trim()];
-        }),
-      );
-      if (
-        options.has('secure') ||
-        (options.has('domain') &&
-          options.get('domain').replace(/^\./, '').toLowerCase() !== target.hostname.toLowerCase())
-      )
-        continue;
-      const defaultPath = target.pathname.slice(0, target.pathname.lastIndexOf('/')) || '/',
-        path = options.get('path')?.startsWith('/') ? options.get('path') : defaultPath,
-        key = name + '|' + path;
-      const maxAge =
-          options.has('max-age') && /^-?\d+$/.test(options.get('max-age')) ? Number(options.get('max-age')) : null,
-        expires =
-          maxAge !== null
-            ? Date.now() + maxAge * 1000
-            : options.has('expires')
-              ? Date.parse(options.get('expires'))
-              : null;
-      if (expires !== null && expires <= Date.now()) {
-        cookies.delete(key);
-        continue;
-      }
-      if (cookies.size >= 64 && !cookies.has(key))
-        throw failure('Portal visitor exceeded its cookie bound.', 'PortalCookieLimit');
-      cookies.set(key, { name, value, path, expires: Number.isFinite(expires) ? expires : null });
-    }
+    for (const entry of returned) acceptCookie(entry, target, cookies);
   };
   const check = () => {
     if (closed) throw failure('Portal session is closed.', 'PortalSessionClosed');

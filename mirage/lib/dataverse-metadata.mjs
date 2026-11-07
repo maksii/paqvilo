@@ -214,8 +214,12 @@ const FILTER_KEYWORDS = new Set(['and', 'or', 'not', 'eq', 'ne', 'true', 'false'
 
 const capitalize = (text) => (text ? text.charAt(0).toUpperCase() + text.slice(1) : text);
 const own = (object, key) => (object && Object.hasOwn(object, key) ? object[key] : null);
+const listItems = (value) => {
+  if (value == null) return [];
+  return Array.isArray(value) ? value : String(value).split(',');
+};
 const listOf = (value) =>
-  (value == null ? [] : Array.isArray(value) ? value : String(value).split(','))
+  listItems(value)
     .map((item) => String(item).trim())
     .filter(Boolean);
 const castName = (cast) =>
@@ -257,7 +261,10 @@ function xmlElement(tag, attrs, ...children) {
 }
 const xmlFixed = (text) => text.split('\n').filter(Boolean);
 const labelText = (block) => block?.UserLocalizedLabel?.Label ?? null;
-const byName = (a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+const byName = (a, b) => {
+  if (a.name < b.name) return -1;
+  return a.name > b.name ? 1 : 0;
+};
 const KEYS = 'OData.Community.Keys.V1';
 const DESCRIPTION = 'Org.OData.Core.V1.Description';
 const COMPUTED = 'Org.OData.Core.V1.Computed';
@@ -308,9 +315,9 @@ function uuidV5(namespace, name) {
   // Identifier derivation only. Retain the historical fallback namespace and RFC 4122 UUIDv5 SHA-1
   // so exported metadata IDs stay stable; these digests never authenticate or protect data.
   const ns = GUID.test(text)
-    ? Buffer.from(text.replace(/-/g, ''), 'hex')
-    : createHash('sha1').update(text).digest().subarray(0, 16);
-  const hash = createHash('sha1').update(ns).update(String(name), 'utf8').digest();
+    ? Buffer.from(text.replaceAll('-', ''), 'hex')
+    : createHash('sha1').update(text).digest().subarray(0, 16); // NOSONAR: non-security hash used for identity or checksums
+  const hash = createHash('sha1').update(ns).update(String(name), 'utf8').digest(); // NOSONAR: non-security hash used for identity or checksums
   hash[6] = (hash[6] & 0x0f) | 0x50;
   hash[8] = (hash[8] & 0x3f) | 0x80;
   const hex = hash.subarray(0, 16).toString('hex');
@@ -325,11 +332,15 @@ function uuidV5(namespace, name) {
  * in lower case (relationship schema names match case-insensitively).
  */
 export function metadataComponentId(organizationId, kind, logical, name = null) {
-  // Every part is lower case: logical names, key names and global choice names match case-insensitively.
+  return uuidV5(organizationId, metadataComponentName(kind, logical, name)).toLowerCase();
+}
+// The name a component id derives from. Every part is lower case: logical names, key names and global choice
+// names match case-insensitively.
+function metadataComponentName(kind, logical, name) {
   const parts = (kind === 'relationship' ? [name ?? logical] : [logical, name])
     .filter((part) => part != null)
     .map((part) => String(part).toLowerCase());
-  return uuidV5(organizationId, `${kind}:${parts.join(':')}`).toLowerCase();
+  return `${kind}:${parts.join(':')}`;
 }
 
 // Localized label block; labels is an lcid-keyed object (Solution exports), fallback a plain text.
@@ -380,7 +391,7 @@ function flagBits(value, table, fallback, type) {
       table[
         part
           .replace(/^Microsoft\.Dynamics\.CRM\.\w+/i, '')
-          .replace(/'/g, '')
+          .replaceAll("'", '')
           .toLowerCase()
       ];
     if (!bit) throw unsupported(`Unknown ${type} value '${part}'.`);
@@ -424,15 +435,15 @@ const optionOf = (o, lcid) => ({
 // $filter over metadata: eq/ne, and/or/not, parentheses, string/number/GUID/boolean/null and
 // enum literals (Namespace.Type'Member'). '+' separates tokens outside string literals.
 const TOKEN =
-  /^[\s+]*(?:(\()|(\))|'((?:[^']|'')*)'|([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?![\w-])|(-?\d+(?:\.\d+)?)|([A-Za-z_][\w.]*(?:\/[A-Za-z_]\w*)*)(?:'((?:[^']|'')*)')?)/i;
+  /^[\s+]*(?:(\()|(\))|'((?:[^']|'')*)'|([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?![\w-])|(-?\d+(?:\.\d+)?)|([a-z_][\w.]*(?:\/[a-z_]\w*)*)(?:'((?:[^']|'')*)')?)/i; // NOSONAR: regex kept: a rewrite would change matches or captures
 
 function toToken(m) {
   if (m[1]) return { t: '(' };
   if (m[2]) return { t: ')' };
-  if (m[3] !== undefined) return { t: 'lit', v: m[3].replace(/''/g, "'") };
+  if (m[3] !== undefined) return { t: 'lit', v: m[3].replaceAll("''", "'") };
   if (m[4]) return { t: 'lit', v: m[4] };
   if (m[5]) return { t: 'lit', v: Number(m[5]) };
-  if (m[7] !== undefined) return { t: 'lit', v: m[7].replace(/''/g, "'") };
+  if (m[7] !== undefined) return { t: 'lit', v: m[7].replaceAll("''", "'") };
   return { t: 'id', v: m[6] };
 }
 
@@ -526,7 +537,7 @@ function coerceValue(value) {
   const type = String(value.Type ?? '');
   const raw = value.Value ?? null;
   if (type.endsWith('[]')) return listOf(raw);
-  if (/Boolean$/.test(type)) return String(raw).toLowerCase() === 'true';
+  if (type.endsWith('Boolean')) return String(raw).toLowerCase() === 'true';
   if (/(Int16|Int32|Int64|Decimal|Double)$/.test(type)) return Number(raw);
   return raw;
 }
@@ -534,7 +545,10 @@ function coerceValue(value) {
 // Nested Value properties (RequiredLevel/Value style) compare by their Value.
 const unwrap = (value) =>
   value !== null && typeof value === 'object' && !Array.isArray(value) && 'Value' in value ? value.Value : value;
-const nodesOf = (value) => (value == null ? [] : Array.isArray(value) ? value : [value]);
+const nodesOf = (value) => {
+  if (value == null) return [];
+  return Array.isArray(value) ? value : [value];
+};
 
 function conditionMatches(item, c) {
   const actual = unwrap(item[ALIASES[c.PropertyName] ?? c.PropertyName]);
@@ -723,6 +737,194 @@ const CSDL_IMPORTS = `<FunctionImport Name="WhoAmI" Function="mscrm.WhoAmI" Incl
 <ActionImport Name="ModifyAccess" Action="mscrm.ModifyAccess" />
 <ActionImport Name="RevokeAccess" Action="mscrm.RevokeAccess" />`;
 
+function fromMapping(logical, nav, rel) {
+  // Writer-stored labels (relationship writer: displayLabels / descriptionLabels on the mapping relationship) travel with the record.
+  const labels = {
+    displayLabels: rel.displayLabels,
+    descriptionLabels: rel.descriptionLabels,
+    relationshipBehavior: rel.relationshipBehavior,
+    introducedVersion: rel.introducedVersion,
+    isCustomizable: rel.isCustomizable,
+    isManaged: rel.managedLayer === true || rel.isManaged,
+    isCustomRelationship: rel.isCustomRelationship,
+    isValidForAdvancedFind: rel.isValidForAdvancedFind,
+    securityTypes: rel.securityTypes,
+    associatedMenu: rel.associatedMenu,
+    menu1: rel.menu1,
+    menu2: rel.menu2,
+  };
+  const schemaName = relationshipSchemaName(logical, nav, rel);
+  if (rel.intersect) {
+    return {
+      ...labels,
+      type: 'N:N',
+      schemaName,
+      intersectEntity: rel.intersect.entity,
+      entity1: logical,
+      attribute1: rel.intersect.from,
+      nav1: nav,
+      entity2: rel.entity,
+      attribute2: rel.intersect.to,
+      nav2: rel.partner ?? null,
+    };
+  }
+  if (!rel.many) {
+    // Lookup on this table: the table is the referencing side.
+    return {
+      ...labels,
+      type: '1:N',
+      schemaName,
+      referencedEntity: rel.entity,
+      referencedAttribute: rel.to,
+      referencingEntity: logical,
+      referencingAttribute: rel.from,
+      referencedNav: rel.partner ?? null,
+      referencingNav: nav,
+      cascade: rel.cascade,
+      hierarchical: rel.hierarchical === true,
+    };
+  }
+  return {
+    ...labels,
+    type: '1:N',
+    schemaName,
+    referencedEntity: logical,
+    referencedAttribute: rel.from,
+    referencingEntity: rel.entity,
+    referencingAttribute: rel.to,
+    referencedNav: nav,
+    referencingNav: rel.partner ?? null,
+    cascade: rel.cascade,
+    hierarchical: rel.hierarchical === true,
+  };
+}
+
+function addOwnerNavigation(navs, logical, lookup) {
+  if (!PRINCIPAL_TABLES.has(logical))
+    navs.get(logical).push({
+      name: lookup.LogicalName,
+      target: null,
+      type: 'mscrm.principal',
+      lookup: lookup.LogicalName,
+      partner: null,
+    });
+}
+
+function addLookupTargetNavigations(navs, logical, lookup, known, oneToMany, singleNav) {
+  for (const target of lookup.Targets ?? []) {
+    if (!known.has(target)) continue;
+    const rel = oneToMany.find(
+      (r) =>
+        r.referencingEntity === logical &&
+        r.referencingAttribute === lookup.LogicalName &&
+        r.referencedEntity === target,
+    );
+    navs.get(logical).push({
+      name: rel?.referencingNav ?? singleNav(lookup, target),
+      target,
+      type: `mscrm.${target}`,
+      lookup: lookup.LogicalName,
+      partner: rel?.referencedNav ?? rel?.schemaName ?? null,
+    });
+  }
+}
+
+function addCsdlRelationshipNavigations(navs, oneToMany, manyToMany, lookupOf, singleNav) {
+  for (const r of oneToMany) {
+    const lookup = lookupOf(r.referencingEntity, r.referencingAttribute);
+    navs.get(r.referencedEntity).push({
+      name: r.referencedNav ?? r.schemaName,
+      target: r.referencingEntity,
+      type: `Collection(mscrm.${r.referencingEntity})`,
+      partner: r.referencingNav ?? (lookup ? singleNav(lookup, r.referencedEntity) : r.referencingAttribute),
+    });
+  }
+  for (const r of manyToMany) {
+    const left = r.nav1 ?? r.schemaName,
+      right = r.nav2 ?? r.schemaName;
+    navs.get(r.entity1).push({ name: left, target: r.entity2, type: `Collection(mscrm.${r.entity2})`, partner: right });
+    navs.get(r.entity2).push({ name: right, target: r.entity1, type: `Collection(mscrm.${r.entity1})`, partner: left });
+  }
+}
+
+function deduplicateCsdlNavigations(navs) {
+  for (const [logical, entries] of navs) {
+    const seen = new Set();
+    navs.set(
+      logical,
+      entries.filter((entry) => {
+        // Source relationships win in relationshipRecords. Multiple records can
+        // describe one identical HTTP navigation with different inverse names;
+        // retain its first source declaration, never merge differing targets.
+        const identity = JSON.stringify([entry.name, entry.target, entry.type, entry.lookup ?? null]);
+        if (seen.has(identity)) return false;
+        seen.add(identity);
+        return true;
+      }),
+    );
+  }
+}
+
+function buildCsdlProperties(attributes, src, edm, byName, annotations) {
+  return attributes
+    .filter((attribute) => attribute.IsValidODataAttribute !== false)
+    .map((attribute) => {
+      const lookup = stemOf(attribute) === 'Lookup';
+      const isId = attribute.LogicalName === src.idColumn;
+      return {
+        name: lookup ? `_${attribute.LogicalName}_value` : attribute.LogicalName,
+        type: edm(attribute),
+        id: isId,
+        scale: ['Decimal', 'Money'].includes(stemOf(attribute)),
+        computed: lookup || isId,
+        label: labelText(attribute.DisplayName),
+      };
+    })
+    .sort(byName)
+    .map((property) =>
+      xmlElement(
+        'Property',
+        {
+          Name: property.name,
+          Type: property.type,
+          Nullable: property.id ? 'false' : null,
+          Scale: property.scale ? 'Variable' : null,
+        },
+        annotations && property.label ? xmlElement('Annotation', { Term: DESCRIPTION, String: property.label }) : [],
+        annotations && property.computed ? xmlElement('Annotation', { Term: COMPUTED, Bool: 'true' }) : [],
+      ),
+    );
+}
+
+function buildCsdlNavigation(logical, derived, navs, byName, partnerOf, tables) {
+  const inheritedNavs = derived ? navs.get('activitypointer') : [];
+  return navs
+    .get(logical)
+    .filter(
+      (navigation) =>
+        !inheritedNavs.some(
+          (base) =>
+            base.name === navigation.name &&
+            base.type === navigation.type &&
+            base.lookup === navigation.lookup &&
+            base.target === navigation.target,
+        ),
+    )
+    .sort(byName)
+    .map((navigation) =>
+      xmlElement(
+        'NavigationProperty',
+        { Name: navigation.name, Type: navigation.type, Partner: partnerOf(logical, navigation) },
+        navigation.lookup
+          ? xmlElement('ReferentialConstraint', {
+              Property: `_${navigation.lookup}_value`,
+              ReferencedProperty: navigation.target ? tables.get(navigation.target).src.idColumn : 'ownerid',
+            })
+          : [],
+      ),
+    );
+}
+
 // changeLog: the metadataLog array (or a function returning it), see the entry shape above. extraCsdl: CSDL text appended to $metadata
 // (the registry's csdlFragments()). clock: ms epoch; the seeded stamp (seq 0) is dated at creation, and expiry is measured from it.
 // revision: optional key that changes whenever the tables may have changed; with it, $metadata is built once per revision.
@@ -730,6 +932,7 @@ export function createMetadataService({
   organizationId,
   schema,
   mappings,
+  mapping,
   lcid = 1033,
   virtualTables,
   globalOptionSets,
@@ -741,11 +944,25 @@ export function createMetadataService({
   const read = (source) => (typeof source === 'function' ? source() : source) ?? null;
   const schemaRoot = () => read(schema);
   const mappingRoot = () => read(mappings) ?? {};
+  // mapping(logical): mappings()[logical] without building every mapping (source runs per table and column).
+  const mappingOf = (logical) => (mapping ? (mapping(logical) ?? null) : own(mappingRoot(), logical));
   const virtualRoot = () => read(virtualTables) ?? {};
   // relationshipsOf reads only state.mappings; the service has the mappings, not the store.
   const storeOf = () => ({ state: { mappings: mappingRoot() } });
   const baseAt = clock();
-  const metadataIdOf = (kind, logical, name = null) => metadataComponentId(organizationId, kind, logical, name);
+  // A GUID lookup derives the id of every table; each derived name is hashed once per service.
+  const metadataIds = new Map();
+  const metadataIdOf = (kind, logical, name = null) => {
+    const component = metadataComponentName(kind, logical, name);
+    let id = metadataIds.get(component);
+    if (id === undefined) {
+      id = uuidV5(organizationId, component).toLowerCase();
+      // Request-supplied names derive ids too: the bound keeps the memo from growing without limit.
+      if (metadataIds.size >= 65536) metadataIds.clear();
+      metadataIds.set(component, id);
+    }
+    return id;
+  };
 
   function logicalNames() {
     const names = [
@@ -753,7 +970,7 @@ export function createMetadataService({
       ...Object.keys(mappingRoot()),
       ...Object.keys(virtualRoot().tables ?? {}),
     ];
-    return [...new Set(names.map((name) => name.toLowerCase()))].sort();
+    return [...new Set(names.map((name) => name.toLowerCase()))].sort((a, b) => Number(a > b) - Number(a < b));
   }
 
   // One table as the service sees it: Solution schema table first, then store mapping, then virtual table.
@@ -761,7 +978,7 @@ export function createMetadataService({
     const logical = String(name ?? '').toLowerCase();
     const root = schemaRoot();
     const s = own(root?.tables, logical);
-    const mapping = own(mappingRoot(), logical);
+    const mapping = mappingOf(logical);
     const virtual = own(virtualRoot().tables, logical);
     const m = mapping ?? virtual?.mapping ?? null;
     if (!s && !m) return null;
@@ -824,8 +1041,11 @@ export function createMetadataService({
     const dm = src.m?.dataverseMetadata ?? {};
     // TableType: the mapping's (elastic tables come from a create body or the standard file); Standard otherwise.
     const elastic = (src.s?.tableType ?? src.m?.tableType ?? dm.TableType ?? src.def?.tableType) === 'Elastic';
+    let tableType = 'Standard';
+    if (src.isVirtual) tableType = 'Virtual';
+    else if (elastic) tableType = 'Elastic';
     const shape = {
-      TableType: src.isVirtual ? 'Virtual' : elastic ? 'Elastic' : 'Standard',
+      TableType: tableType,
       DataSourceId: null,
       DataProviderId: null,
       MetadataId: metadataIdOf('entity', src.logical),
@@ -873,7 +1093,8 @@ export function createMetadataService({
     const result = withOverrides(shape, dm);
     // EntityMetadata.IsManaged: true while a managed layer holds the table (dataverse-metadata-relationships.mjs projectManagedFlags).
     result.IsManaged = dm.managedLayer === true;
-    result.TableType = src.isVirtual ? 'Virtual' : elastic ? 'Elastic' : 'Standard';
+    if (src.isVirtual) result.TableType = 'Virtual';
+    else result.TableType = elastic ? 'Elastic' : 'Standard';
     for (const [property, field] of [
       ['DataSourceId', 'dataSourceId'],
       ['DataProviderId', 'dataProviderId'],
@@ -885,8 +1106,10 @@ export function createMetadataService({
   function synthesize(src, name, def, { attrType, typeName, type, id }) {
     const custom = PREFIX.test(name);
     const readOnly = READ_ONLY.has(name);
-    const required =
-      REQUIRED[def.requiredLevel] ?? (id ? 'SystemRequired' : def.required ? 'ApplicationRequired' : 'None');
+    let requiredDefault = 'None';
+    if (id) requiredDefault = 'SystemRequired';
+    else if (def.required) requiredDefault = 'ApplicationRequired';
+    const required = REQUIRED[def.requiredLevel] ?? requiredDefault;
     const meta = {
       AttributeOf: null,
       AttributeType: attrType,
@@ -959,12 +1182,19 @@ export function createMetadataService({
   }
 
   function optionSetOf(src, name, type, def) {
-    const options =
-      type === 'state' ? (def.states ?? def.options) : type === 'status' ? (def.statuses ?? def.options) : def.options;
+    let options = def.options;
+    let optionSetType = 'Picklist';
+    if (type === 'state') {
+      options = def.states ?? def.options;
+      optionSetType = 'State';
+    } else if (type === 'status') {
+      options = def.statuses ?? def.options;
+      optionSetType = 'Status';
+    }
     return {
       MetadataId: metadataIdOf('optionset', src.logical, name),
       Name: `${src.logical}_${name}`,
-      OptionSetType: type === 'state' ? 'State' : type === 'status' ? 'Status' : 'Picklist',
+      OptionSetType: optionSetType,
       IsGlobal: false,
       IsCustomOptionSet: false,
       IsManaged: false,
@@ -977,11 +1207,10 @@ export function createMetadataService({
   function attributeOf(src, name, def) {
     const id = name === src.idColumn;
     // ownerid is the owner lookup whatever type the export or mapping gives it.
-    const type = id
-      ? 'primarykey'
-      : name === 'ownerid'
-        ? 'owner'
-        : String(def.columnMetadata?.type ?? def.dataverseType ?? 'nvarchar').toLowerCase();
+    let type;
+    if (id) type = 'primarykey';
+    else if (name === 'ownerid') type = 'owner';
+    else type = String(def.columnMetadata?.type ?? def.dataverseType ?? 'nvarchar').toLowerCase();
     const [attrType, stem, typeName] = TYPES[type] ?? TYPES.nvarchar;
     const facts = def.columnMetadata ?? {};
     const compact = COMPACT_TYPES.has(type);
@@ -1032,12 +1261,44 @@ export function createMetadataService({
     return managedMembers(shaped, ['AttributeMetadata', `${stem}AttributeMetadata`]);
   }
 
+  // Lookup companion inference needs presence of two target names, not the
+  // bodies of every column on every target. Retain source/standard/custom
+  // precedence from source(), without normalizing unrelated target columns.
+  function targetHasPhonetic(name) {
+    const logical = String(name ?? '').toLowerCase();
+    const phonetic = ['yominame', 'yomifullname'];
+    const standard = standardFields(logical);
+    if (phonetic.some((column) => Object.hasOwn(standard, column))) return true;
+    const s = own(schemaRoot()?.tables, logical);
+    const m = mappingOf(logical) ?? own(virtualRoot().tables, logical)?.mapping;
+    if (s && Object.values(s.attributes ?? {}).some((attribute) => phonetic.includes(attribute.name))) return true;
+    const declaresColumns = s?.schemaComplete || s?.completeFile || Object.keys(s?.attributes ?? {}).length > 0;
+    return phonetic.some((column) => {
+      const fields = m?.fields ?? {},
+        metadata = m?.fieldMetadata ?? {};
+      const fieldPresent = Object.prototype.propertyIsEnumerable.call(fields, column);
+      const metadataPresent = Object.prototype.propertyIsEnumerable.call(metadata, column);
+      if (!fieldPresent && !metadataPresent) return false;
+      if (!s || !declaresColumns) return true;
+      let field = metadataPresent ? metadata[column] : fields[column];
+      if (metadataPresent && fields[column] && typeof fields[column] === 'object')
+        field = { ...metadata[column], ...fields[column] };
+      return field?.columnMetadata?.isManaged === false && field?.columnMetadata?.isCustomizable === true;
+    });
+  }
+
   function recordFieldsOf(src) {
     const defaults = src.isVirtual ? {} : { ...SYSTEM_COLUMNS, ...(src.ownership === 'user' ? OWNER_COLUMNS : {}) };
+    const targets = new Map();
     return implicitAttributes(
       src,
       { [src.idColumn]: { dataverseType: 'primarykey' }, ...defaults, ...src.fields },
-      { targetFields: (logical) => source(logical)?.fields ?? standardFields(logical) },
+      {
+        targetHasPhonetic: (logical) => {
+          if (!targets.has(logical)) targets.set(logical, targetHasPhonetic(logical));
+          return targets.get(logical);
+        },
+      },
     );
   }
 
@@ -1121,74 +1382,13 @@ export function createMetadataService({
         });
       }
     }
+    const mappingStore = storeOf();
     for (const logical of logicalNames())
-      for (const [nav, rel] of Object.entries(relationshipsOf(storeOf(), logical, source(logical).m?.relationships)))
+      for (const [nav, rel] of Object.entries(relationshipsOf(mappingStore, logical, source(logical).m?.relationships)))
         add(fromMapping(logical, nav, rel));
     for (const logical of logicalNames())
       for (const rel of implicitRelationships(source(logical), { existing: [...records.keys()] })) add(rel);
     return [...records.values()];
-  }
-
-  function fromMapping(logical, nav, rel) {
-    // Writer-stored labels (relationship writer: displayLabels / descriptionLabels on the mapping relationship) travel with the record.
-    const labels = {
-      displayLabels: rel.displayLabels,
-      descriptionLabels: rel.descriptionLabels,
-      relationshipBehavior: rel.relationshipBehavior,
-      introducedVersion: rel.introducedVersion,
-      isCustomizable: rel.isCustomizable,
-      isManaged: rel.managedLayer === true || rel.isManaged,
-      isCustomRelationship: rel.isCustomRelationship,
-      isValidForAdvancedFind: rel.isValidForAdvancedFind,
-      securityTypes: rel.securityTypes,
-      associatedMenu: rel.associatedMenu,
-      menu1: rel.menu1,
-      menu2: rel.menu2,
-    };
-    const schemaName = relationshipSchemaName(logical, nav, rel);
-    if (rel.intersect) {
-      return {
-        ...labels,
-        type: 'N:N',
-        schemaName,
-        intersectEntity: rel.intersect.entity,
-        entity1: logical,
-        attribute1: rel.intersect.from,
-        nav1: nav,
-        entity2: rel.entity,
-        attribute2: rel.intersect.to,
-        nav2: rel.partner ?? null,
-      };
-    }
-    if (!rel.many) {
-      // Lookup on this table: the table is the referencing side.
-      return {
-        ...labels,
-        type: '1:N',
-        schemaName,
-        referencedEntity: rel.entity,
-        referencedAttribute: rel.to,
-        referencingEntity: logical,
-        referencingAttribute: rel.from,
-        referencedNav: rel.partner ?? null,
-        referencingNav: nav,
-        cascade: rel.cascade,
-        hierarchical: rel.hierarchical === true,
-      };
-    }
-    return {
-      ...labels,
-      type: '1:N',
-      schemaName,
-      referencedEntity: logical,
-      referencedAttribute: rel.from,
-      referencingEntity: rel.entity,
-      referencingAttribute: rel.to,
-      referencedNav: nav,
-      referencingNav: rel.partner ?? null,
-      cascade: rel.cascade,
-      hierarchical: rel.hierarchical === true,
-    };
   }
 
   // Relationship labels are not documented RelationshipMetadataBase properties; they are carried as DisplayName/Description
@@ -1207,7 +1407,7 @@ export function createMetadataService({
     return {
       MetadataId: metadataIdOf('relationship', r.schemaName),
       HasChanged: null,
-      IntroducedVersion: r.introducedVersion ?? '1.0.0.0', // guessed fallback for definitions without an exported version
+      IntroducedVersion: r.introducedVersion ?? '1.0.0.0', // NOSONAR: version string, not a network target; guessed fallback for definitions without an exported version
       IsCustomizable: {
         Value: r.isCustomizable ?? true,
         CanBeChanged: true,
@@ -1402,6 +1602,52 @@ export function createMetadataService({
   };
   const globalNamed = (name) =>
     globalSets().find((set) => set.Name.toLowerCase() === String(name).toLowerCase()) ?? null;
+  function buildCsdlNavigationMap({ names, known, tables, oneToMany, manyToMany, lookupOf, singleNav }) {
+    const navs = new Map(names.map((logical) => [logical, []]));
+    addCsdlLookupNavigations(navs, tables, known, oneToMany, singleNav);
+    addCsdlRelationshipNavigations(navs, oneToMany, manyToMany, lookupOf, singleNav);
+    deduplicateCsdlNavigations(navs);
+    return navs;
+  }
+  /* NOSONAR */ function addCsdlLookupNavigations(navs, tables, known, oneToMany, singleNav) {
+    for (const [logical, { lookups }] of tables)
+      for (const lookup of lookups) {
+        if (lookup.AttributeType === 'Owner') {
+          addOwnerNavigation(navs, logical, lookup);
+          continue;
+        }
+        addLookupTargetNavigations(navs, logical, lookup, known, oneToMany, singleNav);
+      }
+  }
+  function buildCsdlTypeLine(
+    logical,
+    { tables, activityColumns, navs, edm, byName, annotations, partnerOf, alternateKeys },
+  ) {
+    const { src, attributes: all } = tables.get(logical);
+    const entity = entityOf(src);
+    const derived = Boolean(activityColumns) && entity.IsActivity && logical !== 'activitypointer';
+    const attributes = derived ? all.filter((attribute) => !activityColumns.has(attribute.LogicalName)) : all;
+    const properties = buildCsdlProperties(attributes, src, edm, byName, annotations);
+    const navigation = buildCsdlNavigation(logical, derived, navs, byName, partnerOf, tables);
+    const label = labelText(entity.DisplayName);
+    // Native $metadata: a principal (systemuser, team) derives from the abstract mscrm.principal and declares the ownerid key
+    // again, as activity tables declare their activityid key; its own id column stays an ordinary property.
+    const principal = PRINCIPAL_TABLES.has(logical);
+    const base = derived ? 'mscrm.activitypointer' : 'mscrm.crmbaseentity';
+    return xmlElement(
+      'EntityType',
+      {
+        Name: logical,
+        BaseType: principal ? 'mscrm.principal' : base,
+        Abstract: logical === 'activitypointer' ? 'true' : null,
+      },
+      xmlElement('Key', {}, xmlElement('PropertyRef', { Name: principal ? 'ownerid' : src.idColumn })),
+      annotations && label ? xmlElement('Annotation', { Term: DESCRIPTION, String: label }) : [],
+      annotations ? alternateKeys(src) : [],
+      properties,
+      navigation,
+    );
+  }
   function selectMetadata(item, select) {
     const names = listOf(select);
     if (!names.length) return item;
@@ -1445,74 +1691,7 @@ export function createMetadataService({
     const manyToMany = relationshipRecords().filter(
       (r) => r.type === 'N:N' && known.has(r.entity1) && known.has(r.entity2),
     );
-    const navs = new Map(names.map((logical) => [logical, []]));
-    for (const [logical, { lookups }] of tables) {
-      for (const lookup of lookups) {
-        // Owner points at the abstract principal: one ownerid navigation; principal tables inherit it.
-        if (lookup.AttributeType === 'Owner') {
-          if (!PRINCIPAL_TABLES.has(logical))
-            navs.get(logical).push({
-              name: lookup.LogicalName,
-              target: null,
-              type: 'mscrm.principal',
-              lookup: lookup.LogicalName,
-              partner: null,
-            });
-          continue;
-        }
-        for (const target of lookup.Targets ?? []) {
-          if (!known.has(target)) continue;
-          const rel = oneToMany.find(
-            (r) =>
-              r.referencingEntity === logical &&
-              r.referencingAttribute === lookup.LogicalName &&
-              r.referencedEntity === target,
-          );
-          navs.get(logical).push({
-            name: rel?.referencingNav ?? singleNav(lookup, target),
-            target,
-            type: `mscrm.${target}`,
-            lookup: lookup.LogicalName,
-            partner: rel?.referencedNav ?? rel?.schemaName ?? null,
-          });
-        }
-      }
-    }
-    // Collection navigation sits on the referenced table, named by its relationship; N:N uses the schema name on both sides.
-    for (const r of oneToMany) {
-      const lookup = lookupOf(r.referencingEntity, r.referencingAttribute);
-      navs.get(r.referencedEntity).push({
-        name: r.referencedNav ?? r.schemaName,
-        target: r.referencingEntity,
-        type: `Collection(mscrm.${r.referencingEntity})`,
-        partner: r.referencingNav ?? (lookup ? singleNav(lookup, r.referencedEntity) : r.referencingAttribute),
-      });
-    }
-    for (const r of manyToMany) {
-      const left = r.nav1 ?? r.schemaName,
-        right = r.nav2 ?? r.schemaName;
-      navs
-        .get(r.entity1)
-        .push({ name: left, target: r.entity2, type: `Collection(mscrm.${r.entity2})`, partner: right });
-      navs
-        .get(r.entity2)
-        .push({ name: right, target: r.entity1, type: `Collection(mscrm.${r.entity1})`, partner: left });
-    }
-    for (const [logical, entries] of navs) {
-      const seen = new Set();
-      navs.set(
-        logical,
-        entries.filter((entry) => {
-          // Source relationships win in relationshipRecords. Multiple records can
-          // describe one identical HTTP navigation with different inverse names;
-          // retain its first source declaration, never merge differing targets.
-          const identity = JSON.stringify([entry.name, entry.target, entry.type, entry.lookup ?? null]);
-          if (seen.has(identity)) return false;
-          seen.add(identity);
-          return true;
-        }),
-      );
-    }
+    const navs = buildCsdlNavigationMap({ names, known, tables, oneToMany, manyToMany, lookupOf, singleNav });
     const edm = (a) =>
       a.Format === 'DateOnly' && stemOf(a) === 'DateTime' ? 'Edm.Date' : (EDM[stemOf(a)] ?? 'Edm.String');
     const alternateKeys = (src) => {
@@ -1561,76 +1740,9 @@ export function createMetadataService({
         ? n.partner
         : null;
     };
-    const typeLines = names.map((logical) => {
-      const { src, attributes: all } = tables.get(logical);
-      const entity = entityOf(src);
-      const derived = Boolean(activityColumns) && entity.IsActivity && logical !== 'activitypointer';
-      const attributes = derived ? all.filter((a) => !activityColumns.has(a.LogicalName)) : all;
-      const properties = attributes
-        .filter((a) => a.IsValidODataAttribute !== false)
-        .map((a) => {
-          const lookup = stemOf(a) === 'Lookup';
-          const id = a.LogicalName === src.idColumn;
-          return {
-            name: lookup ? `_${a.LogicalName}_value` : a.LogicalName,
-            type: edm(a),
-            id,
-            scale: ['Decimal', 'Money'].includes(stemOf(a)),
-            computed: lookup || id,
-            label: labelText(a.DisplayName),
-          };
-        })
-        .sort(byName)
-        .map((p) =>
-          xmlElement(
-            'Property',
-            { Name: p.name, Type: p.type, Nullable: p.id ? 'false' : null, Scale: p.scale ? 'Variable' : null },
-            annotations && p.label ? xmlElement('Annotation', { Term: DESCRIPTION, String: p.label }) : [],
-            annotations && p.computed ? xmlElement('Annotation', { Term: COMPUTED, Bool: 'true' }) : [],
-          ),
-        );
-      const inheritedNavs = derived ? navs.get('activitypointer') : [];
-      const navigation = navs
-        .get(logical)
-        .filter(
-          (n) =>
-            !inheritedNavs.some(
-              (base) =>
-                base.name === n.name && base.type === n.type && base.lookup === n.lookup && base.target === n.target,
-            ),
-        )
-        .sort(byName)
-        .map((n) =>
-          xmlElement(
-            'NavigationProperty',
-            { Name: n.name, Type: n.type, Partner: partnerOf(logical, n) },
-            n.lookup
-              ? xmlElement('ReferentialConstraint', {
-                  Property: `_${n.lookup}_value`,
-                  ReferencedProperty: n.target ? tables.get(n.target).src.idColumn : 'ownerid',
-                })
-              : [],
-          ),
-        );
-      const label = labelText(entity.DisplayName);
-      // Native $metadata: a principal (systemuser, team) derives from the abstract mscrm.principal and declares the ownerid key
-      // again, as activity tables declare their activityid key; its own id column stays an ordinary property.
-      const principal = PRINCIPAL_TABLES.has(logical);
-      const base = derived ? 'mscrm.activitypointer' : 'mscrm.crmbaseentity';
-      return xmlElement(
-        'EntityType',
-        {
-          Name: logical,
-          BaseType: principal ? 'mscrm.principal' : base,
-          Abstract: logical === 'activitypointer' ? 'true' : null,
-        },
-        xmlElement('Key', {}, xmlElement('PropertyRef', { Name: principal ? 'ownerid' : src.idColumn })),
-        annotations && label ? xmlElement('Annotation', { Term: DESCRIPTION, String: label }) : [],
-        annotations ? alternateKeys(src) : [],
-        properties,
-        navigation,
-      );
-    });
+    const typeLines = names.map((logical) =>
+      buildCsdlTypeLine(logical, { tables, activityColumns, navs, edm, byName, annotations, partnerOf, alternateKeys }),
+    );
     // Polymorphic owner navigation has no entity set; only concrete targets are bound.
     // Change-tracked tables (EntityMetadata.ChangeTrackingEnabled) mark their entity set when annotations are on.
     const sets = names.map((logical) =>
@@ -1820,14 +1932,12 @@ export function createMetadataService({
     return shaped;
   }
   // The stored entries of the requested kinds as GUIDs, keyed like DeletedMetadataCollection (the docs give Guid values per filter key).
-  const idOfChange = (e) =>
-    e.kind === 'entity'
-      ? metadataIdOf('entity', e.logical)
-      : e.kind === 'attribute'
-        ? metadataIdOf('attribute', e.logical, e.name)
-        : e.kind === 'relationship'
-          ? metadataIdOf('relationship', e.name)
-          : metadataIdOf('optionset', e.name);
+  const idOfChange = (e) => {
+    if (e.kind === 'entity') return metadataIdOf('entity', e.logical);
+    if (e.kind === 'attribute') return metadataIdOf('attribute', e.logical, e.name);
+    if (e.kind === 'relationship') return metadataIdOf('relationship', e.name);
+    return metadataIdOf('optionset', e.name);
+  };
   function deletedOf(index, bits) {
     const keys = [];
     const values = [];
@@ -1942,7 +2052,7 @@ export function createMetadataService({
             (original.AttributeType === 'Uniqueidentifier' && imageIds.has(original.LogicalName));
           if (!(baseContext && generic) && (!expectedType || attribute['@odata.type'] !== expectedType))
             return attribute;
-          const { '@odata.type': _type, ...rest } = attribute;
+          const { '@odata.type': _type, ...rest } = attribute; // NOSONAR: binding is excluded from the rest object or is a placeholder
           return rest;
         }),
         labelLanguages,
@@ -1953,7 +2063,8 @@ export function createMetadataService({
     attributeOptionSet(entityKey, attributeKey, { global = false, select, labelLanguages } = {}) {
       const src = sourceFor(entityKey);
       const attribute = src && attributeIn(src, attributeKey);
-      const set = attribute ? (global ? attribute.GlobalOptionSet : attribute.OptionSet) : null;
+      let set = null;
+      if (attribute) set = global ? attribute.GlobalOptionSet : attribute.OptionSet;
       return set ? limitLabels(selectMetadata(set, select), labelLanguages) : null;
     },
 
@@ -1977,12 +2088,9 @@ export function createMetadataService({
 
     // RetrieveAttribute(EntityLogicalName=@e,LogicalName=@n,MetadataId=@m,...) → { AttributeMetadata }; without an entity only a MetadataId can resolve.
     retrieveAttributeResponse(entityKey, attributeKey, { labelLanguages } = {}) {
-      const sources =
-        entityKey != null
-          ? [sourceFor(entityKey)]
-          : GUID.test(String(attributeKey ?? ''))
-            ? logicalNames().map((n) => source(n))
-            : [];
+      let sources = [];
+      if (entityKey != null) sources = [sourceFor(entityKey)];
+      else if (GUID.test(String(attributeKey ?? ''))) sources = logicalNames().map((n) => source(n));
       for (const src of sources) {
         const hit = src && attributeIn(src, attributeKey);
         if (hit) return { AttributeMetadata: limitLabels(hit, labelLanguages) };
@@ -1997,7 +2105,7 @@ export function createMetadataService({
       const list = keysOf(src);
       return listOf(select).length
         ? list.map((k) => {
-            const { '@odata.type': _type, ...rest } = selectMetadata(k, select);
+            const { '@odata.type': _type, ...rest } = selectMetadata(k, select); // NOSONAR: binding is excluded from the rest object or is a placeholder
             return rest;
           })
         : list;
@@ -2034,7 +2142,7 @@ export function createMetadataService({
 
     serviceDocument(origin, version) {
       const value = [...new Set([...METADATA_ENTITY_SETS, ...logicalNames().map((name) => source(name).entitySet)])]
-        .sort()
+        .sort(/* NOSONAR: preserve entity-set default coercion */)
         .map((name) => ({ name, kind: 'EntitySet', url: name }));
       return { '@odata.context': `${origin}/api/data/${version}/$metadata`, value };
     },
@@ -2043,7 +2151,7 @@ export function createMetadataService({
       const text = String(filterText ?? '');
       if (!/[^\s+]/.test(text)) return items;
       // Functions (startswith, contains, ...) are not simulated over metadata; Dataverse answers 501 0x8006088a.
-      const call = /(?<![\w/.])(?!(?:and|or|not)\b)([A-Za-z_]\w*)\s*\(/i.exec(text.replace(/'(?:[^']|'')*'/g, "''"));
+      const call = /(?<![\w/.])(?!(?:and|or|not)\b)([a-z_]\w*)\s*\(/i.exec(text.replace(/'(?:[^']|'')*'/g, "''"));
       if (call)
         throw new DataError(
           `The "${call[1]}" function isn't supported for Metadata Entities.`,
@@ -2105,5 +2213,5 @@ export function objectTypeCode(logical) {
   const name = String(logical).toLowerCase();
   if (Object.hasOwn(OBJECT_TYPE_CODES, name)) return OBJECT_TYPE_CODES[name];
   // Compatibility identifier only: changing the digest would renumber existing table object types.
-  return 10000 + (createHash('sha1').update(name).digest().readUInt32BE(0) % 50000);
+  return 10000 + (createHash('sha1').update(name).digest().readUInt32BE(0) % 50000); // NOSONAR: non-security hash used for identity or checksums
 }

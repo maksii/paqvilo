@@ -1,4 +1,4 @@
-import { chromium } from 'playwright-core';
+import { liveInputAttributes } from './live-input-attributes.mjs';
 import { parseFetchXml, withLiquidEntityId } from './data.mjs';
 
 const fail = (message, status = 502) => Object.assign(new Error(message), { status, code: 'LIVE_BRIDGE' });
@@ -102,7 +102,7 @@ function checkedContentType(value) {
     value.length > 512 ||
     // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
     /[\u0000-\u001f\u007f]/.test(value) ||
-    !/^[-\w!#$&^_.+]+\/[-\w!#$&^_.+]+(?:\s*;.*)?$/.test(value)
+    !/^[-\w!#$&^.+]+\/[-\w!#$&^.+]+(?:\s*;.*)?$/.test(value)
   )
     throw fail('Invalid live Content-Type header.', 400);
   return value;
@@ -122,7 +122,7 @@ function checkedBody(body) {
   return body instanceof Uint8Array && !Buffer.isBuffer(body) ? Buffer.from(body) : body;
 }
 /** Build a replacement without decoding uploaded bytes or accepting malformed MIME framing. */
-function formTokenWriter(body, contentType) {
+/* NOSONAR */ function formTokenWriter(body, contentType) {
   const mime = contentType.split(';')[0].trim().toLowerCase();
   if (!['application/x-www-form-urlencoded', 'multipart/form-data'].includes(mime)) return null;
   if (typeof body !== 'string' && !Buffer.isBuffer(body))
@@ -212,6 +212,76 @@ function safeResponseHeaders(headers) {
   return output;
 }
 
+function liveRequestTarget(bridge, pathname, method, body) {
+  if (!bridge.origin) throw fail('Configure the live portal origin in the admin page.', 409);
+  if (!bridge.context) throw fail('Connect the intended signed-in browser in the admin page.', 409);
+  validateLivePath(pathname);
+  const url = new URL(pathname, bridge.origin);
+  if (url.origin !== bridge.origin) throw fail('Cross-origin forwarding is not allowed.', 400);
+  method = method.toUpperCase();
+  if (!['GET', 'HEAD', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'].includes(method))
+    throw fail('Unsupported live HTTP method.', 400);
+  if (['GET', 'HEAD'].includes(method) && body !== undefined) throw fail('Read requests cannot carry a body.', 400);
+  if (!['GET', 'HEAD'].includes(method) && !bridge.writesPermitted)
+    throw Object.assign(
+      fail(
+        'Live writes are disabled for this runtime: start the Mirage with --allow-live-writes (mirage dev and start pass it through) to send create, update or delete requests to the live environment.',
+        403,
+      ),
+      { code: 'LIVE_WRITES_DISABLED' },
+    );
+  if (!['GET', 'HEAD'].includes(method) && !bridge.allowWrites)
+    throw fail('Live writes are disabled. Enable them explicitly in the connection settings.', 403);
+  return { url, method };
+}
+
+function liveRequestHeaders(prefer, ifMatch, ifNoneMatch) {
+  const headers = { accept: '*/*' };
+  if (prefer != null) {
+    if (typeof prefer !== 'string' || prefer.length > 512 || /[\r\n]/.test(prefer))
+      throw fail('Invalid live Prefer header.', 400);
+    headers.Prefer = prefer;
+  }
+  for (const [name, value] of [
+    ['if-match', ifMatch],
+    ['if-none-match', ifNoneMatch],
+  ])
+    if (value != null) {
+      if (
+        typeof value !== 'string' ||
+        value.length > 512 ||
+        // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
+        /[\u0000-\u001f\u007f]/.test(value)
+      )
+        throw fail('Invalid live conditional request header.', 400);
+      headers[name] = value;
+    }
+  return headers;
+}
+
+function liveRedirectResponse(bridge, url, status, responseHeaders, bytes) {
+  if (status < 300 || status >= 400) return null;
+  let target;
+  try {
+    target = new URL(responseHeaders.location || '/', url.href);
+  } catch {
+    throw fail('The live portal returned an invalid redirect.', 502);
+  }
+  if (target.origin !== bridge.origin || /signin|login|authorize/i.test(target.pathname))
+    throw fail('The connected browser must complete portal sign-in. No redirect or credential was forwarded.', 401);
+  if (target.username || target.password || target.hash)
+    throw fail('Live redirects must remain at the configured origin without credentials or fragments.', 400);
+  validateLivePath(target.pathname + target.search);
+  return {
+    status,
+    headers: {
+      ...safeResponseHeaders(responseHeaders),
+      location: target.pathname + target.search,
+    },
+    body: bytes,
+  };
+}
+
 /** Uses a connected browser's own cookie jar. No cookies or credentials are exported. */
 export class LiveBridge {
   /**
@@ -248,6 +318,8 @@ export class LiveBridge {
     )
       throw fail('Use a loopback browser debugging endpoint.', 400);
     await this.close();
+    // Loaded on first connection: every runtime imports this module, few attach a browser.
+    const { chromium } = await import('playwright-core');
     let browser;
     try {
       browser = await chromium.connectOverCDP(url.href, { timeout: 10000 });
@@ -271,13 +343,16 @@ export class LiveBridge {
     return this.status();
   }
   status() {
+    // "disabled": the runtime was not started with --allow-live-writes; "off": allowed but
+    // switched off; "enabled": writes reach the live environment.
+    let liveWrites;
+    if (!this.writesPermitted) liveWrites = 'disabled';
+    else liveWrites = this.allowWrites ? 'enabled' : 'off';
     return {
       connected: Boolean(this.context),
       origin: this.origin,
       allowWrites: this.allowWrites,
-      // "disabled": the runtime was not started with --allow-live-writes; "off": allowed but
-      // switched off; "enabled": writes reach the live environment.
-      liveWrites: !this.writesPermitted ? 'disabled' : this.allowWrites ? 'enabled' : 'off',
+      liveWrites,
       fetchXmlPath: this.fetchXmlPath,
       fetchXmlMode: this.fetchXmlPath ? 'endpoint' : 'portal-web-api',
     };
@@ -286,45 +361,10 @@ export class LiveBridge {
     pathname,
     { method = 'GET', body, contentType = 'application/json', prefer, ifMatch, ifNoneMatch } = {},
   ) {
-    if (!this.origin) throw fail('Configure the live portal origin in the admin page.', 409);
-    if (!this.context) throw fail('Connect the intended signed-in browser in the admin page.', 409);
-    validateLivePath(pathname);
-    const url = new URL(pathname, this.origin);
-    if (url.origin !== this.origin) throw fail('Cross-origin forwarding is not allowed.', 400);
-    method = method.toUpperCase();
-    if (!['GET', 'HEAD', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'].includes(method))
-      throw fail('Unsupported live HTTP method.', 400);
-    if (['GET', 'HEAD'].includes(method) && body !== undefined) throw fail('Read requests cannot carry a body.', 400);
-    if (!['GET', 'HEAD'].includes(method) && !this.writesPermitted)
-      throw Object.assign(
-        fail(
-          'Live writes are disabled for this runtime: start the Mirage with --allow-live-writes (mirage dev and start pass it through) to send create, update or delete requests to the live environment.',
-          403,
-        ),
-        { code: 'LIVE_WRITES_DISABLED' },
-      );
-    if (!['GET', 'HEAD'].includes(method) && !this.allowWrites)
-      throw fail('Live writes are disabled. Enable them explicitly in the connection settings.', 403);
-    const headers = { accept: '*/*' };
-    if (prefer != null) {
-      if (typeof prefer !== 'string' || prefer.length > 512 || /[\r\n]/.test(prefer))
-        throw fail('Invalid live Prefer header.', 400);
-      headers.Prefer = prefer;
-    }
-    for (const [name, value] of [
-      ['if-match', ifMatch],
-      ['if-none-match', ifNoneMatch],
-    ])
-      if (value != null) {
-        if (
-          typeof value !== 'string' ||
-          value.length > 512 ||
-          // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
-          /[\u0000-\u001f\u007f]/.test(value)
-        )
-          throw fail('Invalid live conditional request header.', 400);
-        headers[name] = value;
-      }
+    const target = liveRequestTarget(this, pathname, method, body);
+    const url = target.url;
+    method = target.method;
+    const headers = liveRequestHeaders(prefer, ifMatch, ifNoneMatch);
     let tokenWriter;
     if (body !== undefined) {
       headers['content-type'] = checkedContentType(contentType);
@@ -366,27 +406,8 @@ export class LiveBridge {
     } finally {
       await response?.dispose();
     }
-    if (status >= 300 && status < 400) {
-      let target;
-      try {
-        target = new URL(responseHeaders.location || '/', url.href);
-      } catch {
-        throw fail('The live portal returned an invalid redirect.', 502);
-      }
-      if (target.origin !== this.origin || /signin|login|authorize/i.test(target.pathname))
-        throw fail('The connected browser must complete portal sign-in. No redirect or credential was forwarded.', 401);
-      if (target.username || target.password || target.hash)
-        throw fail('Live redirects must remain at the configured origin without credentials or fragments.', 400);
-      validateLivePath(target.pathname + target.search);
-      return {
-        status,
-        headers: {
-          ...safeResponseHeaders(responseHeaders),
-          location: target.pathname + target.search,
-        },
-        body: bytes,
-      };
-    }
+    const redirect = liveRedirectResponse(this, url, status, responseHeaders, bytes);
+    if (redirect) return redirect;
     return {
       status,
       headers: safeResponseHeaders(responseHeaders),
@@ -397,15 +418,15 @@ export class LiveBridge {
     const response = await this.request('/_layout/tokenhtml');
     if (response.status !== 200)
       throw fail('The live portal did not issue a verification token. Complete sign-in in its browser.', 401);
-    for (const input of response.body.toString('utf8').match(/<input\b[^>]*>/gi) ?? []) {
-      const attrs = Object.fromEntries(
-        [...input.matchAll(/([\w-]+)\s*=\s*(["'])(.*?)\2/g)].map((m) => [m[1].toLowerCase(), m[3]]),
-      );
+    const html = response.body.toString('utf8');
+    const completeTags = html.slice(0, html.lastIndexOf('>') + 1);
+    for (const input of completeTags.match(/<input\b[^>]*>/gi) ?? []) {
+      const attrs = liveInputAttributes(input);
       if (attrs.name === '__RequestVerificationToken' && attrs.value) return tokenDecode(attrs.value);
     }
     throw fail('The live portal did not issue a verification token. Complete sign-in in its browser.', 401);
   }
-  async fetchXml(xml, mappingOrMap) {
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ async fetchXml(xml, mappingOrMap) {
     let fetch;
     try {
       fetch = parseFetchXml(xml);

@@ -12,7 +12,11 @@ import {
   DATAVERSE_CONNECTOR,
   CHILD_FLOW_CONNECTOR,
 } from './connector-runtime.mjs';
-import { FLOW_ACTIONS, CONTROL_ACTIONS } from './flow-actions.mjs';
+import { FLOW_ACTIONS, CONTROL_ACTIONS, flowValueText } from './flow-actions.mjs';
+import { FLOW_EXPRESSION_ARITY } from './flow-expression-functions.mjs';
+import { flowTicks } from './flow-ticks.mjs';
+import { validateFlowInput } from './flow-input-schema.mjs';
+export { validateFlowInput } from './flow-input-schema.mjs';
 import { WINDOWS_TIME_ZONES } from './windows-time-zones.mjs';
 import { effectiveEnvironmentVariables } from './secret-resolver.mjs';
 import {
@@ -63,18 +67,18 @@ const UNIT_MS = { Second: 1000, Minute: 60000, Hour: 3600000, Day: 86400000, Wee
 // Without an explicit connector runtime only the built-in Dataverse provider is routed, synchronously.
 const legacyRuntime = createConnectorRuntime();
 // The connector call an action or trigger makes, or null for built-in actions.
-const connectorCall = (action) =>
-  action?.type === 'Http'
-    ? { connectorId: 'http', operationId: 'Http', connectionName: null }
-    : action?.type === 'Workflow'
-      ? { connectorId: CHILD_FLOW_CONNECTOR, operationId: 'RunChildFlow', connectionName: null }
-      : ['OpenApiConnection', 'OpenApiConnectionWebhook'].includes(action?.type) && action.inputs?.host?.apiId
-        ? {
-            connectorId: connectorOf(action.inputs.host.apiId),
-            operationId: action.inputs.host.operationId ?? null,
-            connectionName: action.inputs.host.connectionName ?? null,
-          }
-        : null;
+const connectorCall = (action) => {
+  if (action?.type === 'Http') return { connectorId: 'http', operationId: 'Http', connectionName: null };
+  if (action?.type === 'Workflow')
+    return { connectorId: CHILD_FLOW_CONNECTOR, operationId: 'RunChildFlow', connectionName: null };
+  if (['OpenApiConnection', 'OpenApiConnectionWebhook'].includes(action?.type) && action.inputs?.host?.apiId)
+    return {
+      connectorId: connectorOf(action.inputs.host.apiId),
+      operationId: action.inputs.host.operationId ?? null,
+      connectionName: action.inputs.host.connectionName ?? null,
+    };
+  return null;
+};
 const paginationOk = (value) =>
   value &&
   typeof value === 'object' &&
@@ -140,7 +144,6 @@ function bindingOf(runtime, call, { connectionReferences, principal } = {}) {
 const unsupportedTriggerSettings = [
   'runtimeConfiguration',
   'runTimeConfiguration',
-  'conditions',
   'splitOn',
   'recurrence',
   'operationOptions',
@@ -163,20 +166,19 @@ const zoneFormats = new Map();
 /** The wall-clock parts of an instant in an IANA time zone (month 0-based). */
 export function zoneParts(ms, zone) {
   let format = zoneFormats.get(zone);
-  if (!format)
-    zoneFormats.set(
-      zone,
-      (format = new Intl.DateTimeFormat('en-US', {
-        timeZone: zone,
-        hourCycle: 'h23',
-        year: 'numeric',
-        month: 'numeric',
-        day: 'numeric',
-        hour: 'numeric',
-        minute: 'numeric',
-        second: 'numeric',
-      })),
-    );
+  if (!format) {
+    format = new Intl.DateTimeFormat('en-US', {
+      timeZone: zone,
+      hourCycle: 'h23',
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: 'numeric',
+      second: 'numeric',
+    });
+    zoneFormats.set(zone, format);
+  }
   const p = Object.fromEntries(format.formatToParts(ms).map((x) => [x.type, Number(x.value)]));
   return { year: p.year, month: p.month - 1, day: p.day, hour: p.hour, minute: p.minute, second: p.second };
 }
@@ -202,7 +204,54 @@ const knownZone = (zone) => {
     return false;
   }
 };
-function parseRecurrence(value) {
+function recurrenceIntegers(v, min, max, name, errors) {
+  const list = [v].flat();
+  if (
+    !list.length ||
+    list.some((n) => !Number.isInteger(n) || ((n < min || n > max) && !(name === 'monthDays' && n === -1)))
+  )
+    errors.push(
+      'Recurrence schedule ' +
+        name +
+        ' must be integers from ' +
+        (name === 'monthDays' ? '1 to 31 or -1' : min + ' to ' + max) +
+        '.',
+    );
+  return [...new Set(list)].sort((a, b) => a - b);
+}
+function parseRecurrenceScheduleDays(s, frequency, schedule, errors) {
+  if (s.weekDays !== undefined) {
+    const days = [s.weekDays].flat();
+    if (frequency !== 'Week') errors.push('Recurrence schedule weekDays needs the Week frequency.');
+    if (!days.length || days.some((d) => !WEEK_DAYS.includes(d)))
+      errors.push('Recurrence schedule weekDays must name Monday to Sunday.');
+    schedule.weekDays = [...new Set(days.map((d) => WEEK_DAYS.indexOf(d)))];
+  }
+  if (s.monthDays !== undefined) {
+    if (frequency !== 'Month') errors.push('Recurrence schedule monthDays needs the Month frequency.');
+    schedule.monthDays = recurrenceIntegers(s.monthDays, 1, 31, 'monthDays', errors);
+  }
+}
+function parseRecurrenceSchedule(value, errors) {
+  const s = value.schedule;
+  let schedule = null;
+  if (!s || typeof s !== 'object' || Array.isArray(s)) errors.push('Recurrence schedule must be an object.');
+  else {
+    schedule = {};
+    for (const key of Object.keys(s))
+      if (!['hours', 'minutes', 'weekDays', 'monthDays'].includes(key))
+        errors.push(
+          'Unsupported recurrence schedule setting: ' + key + '; configure an explicit flow mock or disable it.',
+        );
+    if (!['Day', 'Week', 'Month'].includes(value.frequency))
+      errors.push('A recurrence schedule needs the Day, Week or Month frequency.');
+    if (s.hours !== undefined) schedule.hours = recurrenceIntegers(s.hours, 0, 23, 'hours', errors);
+    if (s.minutes !== undefined) schedule.minutes = recurrenceIntegers(s.minutes, 0, 59, 'minutes', errors);
+    parseRecurrenceScheduleDays(s, value.frequency, schedule, errors);
+  }
+  return schedule;
+}
+/* NOSONAR: single-pass routine, splitting it would change shared state */ function parseRecurrence(value) {
   const errors = [];
   if (!value || typeof value !== 'object' || Array.isArray(value))
     return { errors: ['A recurrence needs { frequency, interval }.'] };
@@ -225,70 +274,27 @@ function parseRecurrence(value) {
         ' is neither a Windows time-zone id in the CLDR table nor an IANA time zone the local Intl database knows.',
     );
   const text = String(value.startTime ?? ''),
-    local = value.startTime !== undefined && !/[zZ]|[+-]\d\d:?\d\d$/.test(text),
+    local = value.startTime !== undefined && !/(?:[zZ])|(?:[+-]\d\d:?\d\d$)/.test(text),
     wall = /^(\d{4})-(\d\d)-(\d\d)T(\d{1,2}):(\d\d)(?::(\d\d))?(?:\.\d+)?$/.exec(text);
-  const start =
-    value.startTime === undefined
-      ? null
-      : local && zone !== 'UTC' && errors.length === 0
-        ? wall
-          ? zonedInstant(
-              {
-                year: +wall[1],
-                month: +wall[2] - 1,
-                day: +wall[3],
-                hour: +wall[4],
-                minute: +wall[5],
-                second: +(wall[6] ?? 0),
-              },
-              zone,
-            )
-          : NaN
-        : Date.parse(local ? text + 'Z' : text);
+  let start;
+  if (value.startTime === undefined) start = null;
+  else if (local && zone !== 'UTC' && errors.length === 0) {
+    if (wall)
+      start = zonedInstant(
+        {
+          year: +wall[1],
+          month: +wall[2] - 1,
+          day: +wall[3],
+          hour: +wall[4],
+          minute: +wall[5],
+          second: +(wall[6] ?? 0),
+        },
+        zone,
+      );
+    else start = Number.NaN;
+  } else start = Date.parse(local ? text + 'Z' : text);
   if (value.startTime !== undefined && !Number.isFinite(start)) errors.push('Recurrence startTime must be a date.');
-  let schedule = null;
-  if (value.schedule !== undefined) {
-    const s = value.schedule,
-      ints = (v, min, max, name) => {
-        const list = [v].flat();
-        if (
-          !list.length ||
-          list.some((n) => !Number.isInteger(n) || ((n < min || n > max) && !(name === 'monthDays' && n === -1)))
-        )
-          errors.push(
-            'Recurrence schedule ' +
-              name +
-              ' must be integers from ' +
-              (name === 'monthDays' ? '1 to 31 or -1' : min + ' to ' + max) +
-              '.',
-          );
-        return [...new Set(list)].sort((a, b) => a - b);
-      };
-    if (!s || typeof s !== 'object' || Array.isArray(s)) errors.push('Recurrence schedule must be an object.');
-    else {
-      schedule = {};
-      for (const key of Object.keys(s))
-        if (!['hours', 'minutes', 'weekDays', 'monthDays'].includes(key))
-          errors.push(
-            'Unsupported recurrence schedule setting: ' + key + '; configure an explicit flow mock or disable it.',
-          );
-      if (!['Day', 'Week', 'Month'].includes(value.frequency))
-        errors.push('A recurrence schedule needs the Day, Week or Month frequency.');
-      if (s.hours !== undefined) schedule.hours = ints(s.hours, 0, 23, 'hours');
-      if (s.minutes !== undefined) schedule.minutes = ints(s.minutes, 0, 59, 'minutes');
-      if (s.weekDays !== undefined) {
-        const days = [s.weekDays].flat();
-        if (value.frequency !== 'Week') errors.push('Recurrence schedule weekDays needs the Week frequency.');
-        if (!days.length || days.some((d) => !WEEK_DAYS.includes(d)))
-          errors.push('Recurrence schedule weekDays must name Monday to Sunday.');
-        schedule.weekDays = [...new Set(days.map((d) => WEEK_DAYS.indexOf(d)))];
-      }
-      if (s.monthDays !== undefined) {
-        if (value.frequency !== 'Month') errors.push('Recurrence schedule monthDays needs the Month frequency.');
-        schedule.monthDays = ints(s.monthDays, 1, 31, 'monthDays');
-      }
-    }
-  }
+  const schedule = value.schedule !== undefined ? parseRecurrenceSchedule(value, errors) : null;
   return { errors, frequency: value.frequency, interval, start, zone, schedule };
 }
 const unsupportedTrigger = (trigger, detail = '') => ({
@@ -303,39 +309,20 @@ const unsupportedTrigger = (trigger, detail = '') => ({
       '; configure an explicit flow mock or disable it.',
   ],
 });
-/** The trigger kind a definition runs locally: manual (Button), powerpages, http (Request kind Http, started on demand),
- * recurrence, dataverse (row trigger) or connector (a pack flowTriggers entry; pass the connector runtime as connectors). */
-export function inspectFlowTrigger(definition, { connectors } = {}) {
-  const triggers = Object.values(definition?.triggers ?? {});
-  if (triggers.length !== 1) return { supported: false, kind: 'unknown', errors: ['One source trigger is required.'] };
-  const trigger = triggers[0],
-    apiId = String(trigger.inputs?.host?.apiId ?? ''),
-    operationId = trigger.inputs?.host?.operationId ?? null,
-    dataverse = apiId.endsWith('/shared_commondataserviceforapps') && operationId === 'SubscribeWebhookTrigger';
-  const performed = apiId.endsWith('/shared_commondataserviceforapps') && operationId === 'BusinessEventsTrigger';
-  // A Recurrence trigger and a polling connector trigger carry their own recurrence; on any other trigger it is unsupported.
-  const ownRecurrence =
-    trigger.type === 'Recurrence' ||
-    (['OpenApiConnectionWebhook', 'OpenApiConnection'].includes(trigger.type) && !dataverse && !performed);
-  const settingErrors = unsupportedTriggerSettings
-    .filter((key) => own(trigger, key) && !(key === 'recurrence' && ownRecurrence))
-    .map((key) => 'Unsupported source trigger setting: ' + key);
+function inspectRequestTrigger(trigger, settingErrors) {
   const requestInputs = (allowed) => {
     for (const key of Object.keys(trigger.inputs ?? {}))
       if (!allowed.includes(key)) settingErrors.push('Unsupported Request trigger input: ' + key);
   };
-  // The child flow's manual trigger kind (Button) is a guess; the child needs a Response to answer its parent.
-  if (trigger.type === 'Request' && trigger.kind === 'Button') {
+  if (trigger.kind === 'Button' || trigger.kind === 'powerpages') {
     requestInputs(['schema']);
-    return { supported: !settingErrors.length, kind: 'manual', errors: settingErrors };
+    return {
+      supported: !settingErrors.length,
+      kind: trigger.kind === 'Button' ? 'manual' : 'powerpages',
+      errors: settingErrors,
+    };
   }
-  if (trigger.type === 'Request' && trigger.kind === 'powerpages') {
-    requestInputs(['schema']);
-    return { supported: !settingErrors.length, kind: 'powerpages', errors: settingErrors };
-  }
-  // A plain HTTP Request trigger runs on demand (/_sim/api/flow-triggers/<flowId>) and from its signed callback URL
-  // (flow-triggers.mjs flowCallbackUrl; method and schema checked by sim-flow-routes.mjs).
-  if (trigger.type === 'Request' && trigger.kind === 'Http') {
+  if (trigger.kind === 'Http') {
     requestInputs(['schema', 'method']);
     if (trigger.inputs?.method !== undefined && !/^[A-Za-z]+$/.test(String(trigger.inputs.method)))
       settingErrors.push('Request trigger method must be an HTTP method.');
@@ -346,85 +333,81 @@ export function inspectFlowTrigger(definition, { connectors } = {}) {
       errors: settingErrors,
     };
   }
-  if (trigger.type === 'Recurrence') {
-    const recurrence = parseRecurrence(trigger.recurrence);
-    settingErrors.push(...recurrence.errors);
-    return {
-      supported: !settingErrors.length,
-      kind: 'recurrence',
-      recurrence: recurrence.errors.length
-        ? null
-        : {
-            frequency: recurrence.frequency,
-            interval: recurrence.interval,
-            start: recurrence.start,
-            zone: recurrence.zone,
-            schedule: recurrence.schedule,
-          },
-      errors: settingErrors,
-    };
+  return unsupportedTrigger(trigger);
+}
+function inspectRecurrenceTrigger(trigger, settingErrors) {
+  const recurrence = parseRecurrence(trigger.recurrence);
+  settingErrors.push(...recurrence.errors);
+  return {
+    supported: !settingErrors.length,
+    kind: 'recurrence',
+    recurrence: recurrence.errors.length
+      ? null
+      : {
+          frequency: recurrence.frequency,
+          interval: recurrence.interval,
+          start: recurrence.start,
+          zone: recurrence.zone,
+          schedule: recurrence.schedule,
+        },
+    errors: settingErrors,
+  };
+}
+function inspectPerformedTrigger(trigger, settingErrors) {
+  const p = {};
+  for (const [key, value] of Object.entries(trigger.inputs?.parameters ?? {})) {
+    const field = key.replace(/^subscriptionRequest\//, '');
+    if (!['catalog', 'category', 'entityname', 'sdkmessagename'].includes(field) || own(p, field))
+      settingErrors.push('Unsupported Dataverse action trigger parameter: ' + key);
+    else p[field] = value;
   }
-  // "When an action is performed" (https://learn.microsoft.com/connectors/commondataserviceforapps/#when-an-action-is-performed,
-  // https://learn.microsoft.com/power-automate/dataverse/action-trigger): catalog, category, entityname, sdkmessagename; it fires
-  // each time the action completes. The exported parameter keys (the connector reference keys, optionally with the
-  // subscriptionRequest/ prefix of the row trigger) and 'none' for an unbound action's table are guesses.
-  if (performed && trigger.type === 'OpenApiConnectionWebhook') {
-    const p = {};
-    for (const [key, value] of Object.entries(trigger.inputs?.parameters ?? {})) {
-      const field = key.replace(/^subscriptionRequest\//, '');
-      if (!['catalog', 'category', 'entityname', 'sdkmessagename'].includes(field) || own(p, field))
-        settingErrors.push('Unsupported Dataverse action trigger parameter: ' + key);
-      else p[field] = value;
-    }
-    if (typeof p.sdkmessagename !== 'string' || !/^[A-Za-z_][\w.]*$/.test(p.sdkmessagename))
-      settingErrors.push('The Dataverse action trigger needs an action name (sdkmessagename).');
-    const table =
-      p.entityname == null || ['', 'none', '(none)'].includes(String(p.entityname).toLowerCase())
-        ? null
-        : String(p.entityname);
-    if (table !== null && !/^[a-z][\w]*$/i.test(table))
-      settingErrors.push('Dataverse action trigger table must be a logical name or none.');
-    return {
-      supported: !settingErrors.length,
-      kind: 'dataverse-action',
-      message: p.sdkmessagename ?? null,
-      table,
-      catalog: p.catalog ?? null,
-      category: p.category ?? null,
-      errors: settingErrors,
-    };
+  if (typeof p.sdkmessagename !== 'string' || !/^[A-Za-z_][\w.]*$/.test(p.sdkmessagename))
+    settingErrors.push('The Dataverse action trigger needs an action name (sdkmessagename).');
+  const table =
+    p.entityname == null || ['', 'none', '(none)'].includes(String(p.entityname).toLowerCase())
+      ? null
+      : String(p.entityname);
+  if (table !== null && !/^[a-z]\w*$/i.test(table))
+    settingErrors.push('Dataverse action trigger table must be a logical name or none.');
+  return {
+    supported: !settingErrors.length,
+    kind: 'dataverse-action',
+    message: p.sdkmessagename ?? null,
+    table,
+    catalog: p.catalog ?? null,
+    category: p.category ?? null,
+    errors: settingErrors,
+  };
+}
+function inspectConnectorTrigger(trigger, apiId, operationId, connectors, settingErrors) {
+  const connectorId = connectorOf(apiId),
+    hosted = connectors?.flowTriggers?.(connectorId, operationId);
+  if (!hosted) return unsupportedTrigger(trigger, ' (' + connectorId + '; no pack flowTriggers entry hosts it)');
+  let recurrence = null;
+  if (own(trigger, 'recurrence')) {
+    const parsed = parseRecurrence(trigger.recurrence);
+    settingErrors.push(...parsed.errors);
+    recurrence = { frequency: parsed.frequency, interval: parsed.interval, start: parsed.start };
+    if (typeof hosted.poll !== 'function')
+      settingErrors.push(
+        'The pack flowTriggers entry for ' +
+          connectorId +
+          '/' +
+          operationId +
+          ' has no poll function for a recurrence.',
+      );
   }
-  if (['OpenApiConnectionWebhook', 'OpenApiConnection'].includes(trigger.type) && !dataverse) {
-    const connectorId = connectorOf(apiId),
-      hosted = connectors?.flowTriggers?.(connectorId, operationId);
-    if (!hosted) return unsupportedTrigger(trigger, ' (' + connectorId + '; no pack flowTriggers entry hosts it)');
-    // A managed polling trigger computes its next run from frequency and interval only; schedule options do not apply and the
-    // time zone sets only the start (https://learn.microsoft.com/azure/logic-apps/concepts-schedule-automated-recurring-tasks-workflows#recurrence-for-managed-triggers).
-    let recurrence = null;
-    if (own(trigger, 'recurrence')) {
-      const parsed = parseRecurrence(trigger.recurrence);
-      settingErrors.push(...parsed.errors);
-      recurrence = { frequency: parsed.frequency, interval: parsed.interval, start: parsed.start };
-      if (typeof hosted.poll !== 'function')
-        settingErrors.push(
-          'The pack flowTriggers entry for ' +
-            connectorId +
-            '/' +
-            operationId +
-            ' has no poll function for a recurrence.',
-        );
-    }
-    return {
-      supported: !settingErrors.length,
-      kind: 'connector',
-      connectorId,
-      operationId,
-      polling: own(trigger, 'recurrence'),
-      ...(recurrence && !settingErrors.length ? { recurrence } : {}),
-      errors: settingErrors,
-    };
-  }
-  if (!['OpenApiConnectionWebhook', 'OpenApiConnection'].includes(trigger.type)) return unsupportedTrigger(trigger);
+  return {
+    supported: !settingErrors.length,
+    kind: 'connector',
+    connectorId,
+    operationId,
+    polling: own(trigger, 'recurrence'),
+    ...(recurrence && !settingErrors.length ? { recurrence } : {}),
+    errors: settingErrors,
+  };
+}
+function inspectDataverseTrigger(trigger, settingErrors) {
   const raw = trigger.inputs.parameters ?? {},
     p = {};
   const errors = [];
@@ -437,7 +420,7 @@ export function inspectFlowTrigger(definition, { connectors } = {}) {
       errors.push('Unsupported Dataverse trigger parameter: ' + key);
     else p[field] = value;
   }
-  if (!/^[a-z][\w]*$/i.test(p.entityname ?? '')) errors.push('Dataverse trigger table is missing.');
+  if (!/^[a-z]\w*$/i.test(p.entityname ?? '')) errors.push('Dataverse trigger table is missing.');
   if (![1, 2, 3, 4, 5, 6, 7].includes(p.message))
     errors.push('Dataverse trigger change type must be an exported callback-registration message1-7.');
   if (p.scope !== 4)
@@ -449,7 +432,7 @@ export function inspectFlowTrigger(definition, { connectors } = {}) {
     p.filteringattributes !== undefined &&
     (typeof p.filteringattributes !== 'string' ||
       (p.filteringattributes.trim() !== '' &&
-        p.filteringattributes.split(',').some((v) => !/^\s*[a-z][\w]*\s*$/i.test(v))))
+        p.filteringattributes.split(',').some((v) => !/^\s*[a-z]\w*\s*$/i.test(v))))
   )
     errors.push('Trigger select columns require scalar logical names.');
   if (p.filterexpression !== undefined && typeof p.filterexpression !== 'string')
@@ -468,32 +451,246 @@ export function inspectFlowTrigger(definition, { connectors } = {}) {
     errors,
   };
 }
+/** The trigger kind a definition runs locally: manual (Button), powerpages, http (Request kind Http, started on demand),
+ * recurrence, dataverse (row trigger) or connector (a pack flowTriggers entry; pass the connector runtime as connectors). */
+export function inspectFlowTrigger(definition, { connectors } = {}) {
+  const triggers = Object.values(definition?.triggers ?? {});
+  if (triggers.length !== 1) return { supported: false, kind: 'unknown', errors: ['One source trigger is required.'] };
+  const trigger = triggers[0],
+    apiId = String(trigger.inputs?.host?.apiId ?? ''),
+    operationId = trigger.inputs?.host?.operationId ?? null,
+    dataverse = apiId.endsWith('/shared_commondataserviceforapps') && operationId === 'SubscribeWebhookTrigger';
+  const performed = apiId.endsWith('/shared_commondataserviceforapps') && operationId === 'BusinessEventsTrigger';
+  // A Recurrence trigger and a polling connector trigger carry their own recurrence; on any other trigger it is unsupported.
+  const ownRecurrence =
+    trigger.type === 'Recurrence' ||
+    (['OpenApiConnectionWebhook', 'OpenApiConnection'].includes(trigger.type) && !dataverse && !performed);
+  const settingErrors = unsupportedTriggerSettings
+    .filter((key) => own(trigger, key) && !(key === 'recurrence' && ownRecurrence))
+    .map((key) => 'Unsupported source trigger setting: ' + key);
+  settingErrors.push(...inspectTriggerConditions(trigger));
+  if (trigger.type === 'Request') return inspectRequestTrigger(trigger, settingErrors);
+  if (trigger.type === 'Recurrence') return inspectRecurrenceTrigger(trigger, settingErrors);
+  if (performed && trigger.type === 'OpenApiConnectionWebhook') return inspectPerformedTrigger(trigger, settingErrors);
+  if (['OpenApiConnectionWebhook', 'OpenApiConnection'].includes(trigger.type) && !dataverse)
+    return inspectConnectorTrigger(trigger, apiId, operationId, connectors, settingErrors);
+  if (!['OpenApiConnectionWebhook', 'OpenApiConnection'].includes(trigger.type)) return unsupportedTrigger(trigger);
+  return inspectDataverseTrigger(trigger, settingErrors);
+}
 function equivalent(a, b) {
   if (isExactNumeric(a) || isExactNumeric(b)) return compareNumeric(a, b) === 0;
   if ((typeof a === 'boolean' && typeof b === 'number') || (typeof b === 'boolean' && typeof a === 'number'))
     return Number(a) === Number(b);
   if (a === b) return true;
   if (!a || !b || typeof a !== 'object' || typeof b !== 'object' || Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a) && a.length !== b.length) return false;
   const ak = Object.keys(a),
     bk = Object.keys(b);
   return ak.length === bk.length && ak.every((k) => own(b, k) && equivalent(a[k], b[k]));
 }
+function numericCallKind(node, state) {
+  const name = node.name.toLowerCase();
+  if (name === 'float') return 'float';
+  if (name === 'int' || name === 'ticks') return 'integer';
+  if (name === 'variables') return state.variables[evaluate(node.args[0], state)]?.type ?? 'unknown';
+  if (['add', 'sub', 'mul', 'div', 'mod'].includes(name))
+    return node.args.every((n) => numericKind(n, state) === 'integer') ? 'integer' : 'float';
+  return null;
+}
+function numericPropertyKind(node, state) {
+  const value = evaluate(node, state);
+  if (isExactNumeric(value)) return decimalParts(value).scale === 0 ? 'integer' : 'decimal';
+  return null;
+}
 function numericKind(node, state) {
   if (node.kind === 'literal') return node.numericType ?? (Number.isInteger(node.value) ? 'integer' : 'float');
-  if (node.kind === 'call') {
-    const name = node.name.toLowerCase();
-    if (name === 'float') return 'float';
-    if (name === 'int') return 'integer';
-    if (name === 'variables') return state.variables[evaluate(node.args[0], state)]?.type ?? 'unknown';
-    if (['add', 'sub', 'mul', 'div', 'mod'].includes(name))
-      return node.args.every((n) => numericKind(n, state) === 'integer') ? 'integer' : 'float';
-  }
-  if (node.kind === 'property') {
-    const value = evaluate(node, state);
-    if (isExactNumeric(value)) return decimalParts(value).scale === 0 ? 'integer' : 'decimal';
-  }
+  if (node.kind === 'call') return numericCallKind(node, state) ?? 'unknown';
+  if (node.kind === 'property') return numericPropertyKind(node, state) ?? 'unknown';
   // JSON does not retain whether a numeric source token was 5 or 5.0.
   return 'unknown';
+}
+// Inspect only expression syntax, never evaluate values or access a runtime identity.
+// A dynamic variable name or malformed expression makes its read set unknown.
+function visitFlowVariableReadNode(node, effects) {
+  if (node.kind === 'call') {
+    if (node.name.toLowerCase() === 'variables') {
+      if (node.args.length === 1 && node.args[0].kind === 'literal' && typeof node.args[0].value === 'string')
+        effects.reads.add(node.args[0].value);
+      else effects.unknownReads = true;
+    }
+    for (const arg of node.args) visitFlowVariableReadNode(arg, effects);
+  } else if (node.kind === 'property') {
+    visitFlowVariableReadNode(node.object, effects);
+    visitFlowVariableReadNode(node.key, effects);
+  }
+}
+function inspectVariableReadExpression(value, effects) {
+  try {
+    if (value.startsWith('@') && !value.startsWith('@{')) {
+      visitFlowVariableReadNode(parseFlowExpression(value.slice(1)), effects);
+      return;
+    }
+    let cursor = 0;
+    while (cursor < value.length) {
+      const start = value.indexOf('@{', cursor);
+      if (start < 0) break;
+      const end = flowInterpolationEnd(value, start);
+      if (!(start > cursor && value[start - 1] === '@')) {
+        if (end === value.length) fail('Unterminated interpolated flow expression.');
+        visitFlowVariableReadNode(parseFlowExpression(value.slice(start + 2, end)), effects);
+      }
+      cursor = end + 1;
+    }
+  } catch {
+    // An action still reports its ordinary expression failure when executed alone.
+    // With a concurrent writer, an unprovable read set cannot establish determinism.
+    effects.unknownReads = true;
+  }
+}
+function flowVariableReads(value, effects, depth = 0) {
+  if (depth > 64) {
+    effects.unknownReads = true;
+    return;
+  }
+  if (value && typeof value === 'object') {
+    for (const child of Object.values(value)) flowVariableReads(child, effects, depth + 1);
+    return;
+  }
+  if (typeof value !== 'string' || value.startsWith('@@') || (!value.startsWith('@') && !value.includes('@{'))) return;
+  inspectVariableReadExpression(value, effects);
+}
+// Project structured built-in inputs to the fields their runtime actually resolves.
+// Schema descriptions, table headers/formats and variable declarations are literal metadata.
+function flowReadInputs(action) {
+  const inputs = action.inputs;
+  if (WRITES.has(action.type)) return inputs?.value;
+  switch (action.type) {
+    case 'InitializeVariable':
+      return (inputs?.variables ?? []).map((variable) => variable.value);
+    case 'ParseJson':
+      return inputs?.content;
+    case 'Table':
+      return [inputs?.from, ...(Array.isArray(inputs?.columns) ? inputs.columns.map((column) => column?.value) : [])];
+    case 'Select':
+      return [inputs?.from, inputs?.select];
+    case 'Query':
+      return [inputs?.from, inputs?.where];
+    case 'Join':
+      return [inputs?.from, inputs?.joinWith];
+    default:
+      return inputs;
+  }
+}
+function inspectRunAfterCycles(map, prefix, errors) {
+  const visiting = new Set(),
+    visited = new Set();
+  const check = (name) => {
+    if (visiting.has(name)) {
+      errors.push('Flow runAfter dependency cycle: ' + prefix + name);
+      return;
+    }
+    if (visited.has(name)) return;
+    visiting.add(name);
+    for (const dep of Object.keys(map[name]?.runAfter ?? {})) if (own(map, dep)) check(dep);
+    visiting.delete(name);
+    visited.add(name);
+  };
+  for (const name of Object.keys(map)) check(name);
+}
+function flowActionAncestor(map, name, target, seen = new Set()) {
+  if (seen.has(name)) return false;
+  seen.add(name);
+  return Object.keys(map[name]?.runAfter ?? {}).some(
+    (dep) => dep === target || (own(map, dep) && flowActionAncestor(map, dep, target, seen)),
+  );
+}
+function flowActionLineage(map, name) {
+  const all = new Set([name]);
+  const walk = (current) => {
+    for (const dep of Object.keys(map[current]?.runAfter ?? {}))
+      if (own(map, dep) && !all.has(dep)) {
+        all.add(dep);
+        walk(dep);
+      }
+  };
+  walk(name);
+  return [...all];
+}
+function hasExclusiveRunAfterEdge(map, x, y) {
+  for (const [dependency, statuses] of Object.entries(map[x]?.runAfter ?? {})) {
+    if (!Array.isArray(statuses) || !Array.isArray(map[y]?.runAfter?.[dependency])) continue;
+    if (!statuses.some((value) => map[y].runAfter[dependency].includes(value))) return true;
+  }
+  return false;
+}
+function flowActionBranchesExclusive(map, a, b) {
+  for (const x of flowActionLineage(map, a))
+    for (const y of flowActionLineage(map, b)) if (x !== y && hasExclusiveRunAfterEdge(map, x, y)) return true;
+  return false;
+}
+function flowActionEffects(action, key, steps, acc) {
+  if (acc === undefined) acc = { vars: new Set(), reads: new Set(), unknownReads: false, response: false };
+  if (!action || typeof action !== 'object' || ['mock', 'disabled'].includes(steps[key]?.mode)) return acc;
+  if (WRITES.has(action.type) && typeof action.inputs?.name === 'string') acc.vars.add(action.inputs.name);
+  if (action.type === 'Response') acc.response = true;
+  flowVariableReads([flowReadInputs(action), action.expression, action.foreach], acc);
+  const nested = [
+    [action.actions, key + '/'],
+    [action.else?.actions, key + '/else/'],
+    [action.default?.actions, key + '/default/'],
+    ...Object.entries(action.cases ?? {}).map(([c, v]) => [v?.actions, key + '/case:' + c + '/']),
+  ];
+  for (const [child, at] of nested)
+    for (const [name, childAction] of Object.entries(child ?? {}))
+      flowActionEffects(childAction, at + name, steps, acc);
+  return acc;
+}
+function reportConcurrentActionEffects(prefix, a, b, ea, eb, errors) {
+  const shared = [...ea.vars].filter((value) => eb.vars.has(value)),
+    read = [...ea.vars]
+      .filter((value) => eb.unknownReads || eb.reads.has(value))
+      .concat([...eb.vars].filter((value) => ea.unknownReads || ea.reads.has(value)));
+  if (!shared.length && !read.length && !(ea.response && eb.response)) return;
+  let branchEffect;
+  if (shared.length) branchEffect = 'write the variable ' + shared.join(', ');
+  else if (read.length) branchEffect = 'write and read the variable ' + [...new Set(read)].join(', ');
+  else branchEffect = 'both answer a Response';
+  errors.push(
+    'Concurrent action branches ' +
+      branchEffect +
+      ' and depend on the interleaving' +
+      ((ea.vars.size && eb.unknownReads) || (eb.vars.size && ea.unknownReads)
+        ? ' (a dynamic or malformed expression has an unknown variable read set)'
+        : '') +
+      '; configure an explicit workflow mock: ' +
+      prefix +
+      a +
+      ' / ' +
+      prefix +
+      b,
+  );
+}
+function inspectActionMapConcurrency(map, prefix, inheritedSkip, steps, errors) {
+  inspectRunAfterCycles(map, prefix, errors);
+  const names = Object.keys(map),
+    effectCache = new Map();
+  const effectOf = (name) => {
+    if (!effectCache.has(name)) effectCache.set(name, flowActionEffects(map[name], prefix + name, steps));
+    return effectCache.get(name);
+  };
+  let parallel = 0;
+  for (let a = 0; a < names.length; a++)
+    for (let b = a + 1; b < names.length; b++)
+      if (
+        !inheritedSkip &&
+        !flowActionAncestor(map, names[a], names[b]) &&
+        !flowActionAncestor(map, names[b], names[a]) &&
+        !flowActionBranchesExclusive(map, names[a], names[b])
+      ) {
+        parallel++;
+        reportConcurrentActionEffects(prefix, names[a], names[b], effectOf(names[a]), effectOf(names[b]), errors);
+      }
+  return parallel;
 }
 export function inspectFlowDefinition(
   definition,
@@ -524,6 +721,226 @@ export function inspectFlowDefinition(
     connections.set(id, entry);
     return binding;
   };
+  const inspectActionRoute = (name, action, key, mode) => {
+    const call = ['OpenApiConnection', 'OpenApiConnectionWebhook', 'Http', 'Workflow'].includes(action.type)
+        ? connectorCall(action)
+        : null,
+      dataverse = call?.connectorId === DATAVERSE_CONNECTOR && action.type === 'OpenApiConnection';
+    const routed = Boolean(call) && (Boolean(connectors) || dataverse || call.connectorId === CHILD_FLOW_CONNECTOR),
+      connection = routed ? bind(call, key) : null;
+    const connector =
+      routed &&
+      runtime.supports(call.connectorId, call.operationId, connection.provider ?? undefined) &&
+      (connection.bound || !call.connectionName);
+    const packAction = !call && own(packActions, action.type),
+      supported = builtins.has(action.type) || packAction || connector;
+    actions.push({
+      key,
+      name,
+      type: action.type,
+      operationId: action.inputs?.host?.operationId ?? null,
+      supported,
+      mode,
+      external:
+        (action.type === 'OpenApiConnection' && !(dataverse && connector)) ||
+        ['Http', 'ApiConnection', 'ApiConnectionWebhook', 'OpenApiConnectionWebhook'].includes(action.type),
+      ...(connection
+        ? {
+            connection: {
+              referenceLogicalName: connection.referenceLogicalName,
+              bound: connection.bound,
+              provider: connection.provider,
+            },
+          }
+        : {}),
+    });
+    return { call, dataverse, routed, connection, connector, supported };
+  };
+  const inspectActionSupport = ({
+    action,
+    key,
+    mode,
+    inheritedSkip,
+    inLoop,
+    supported,
+    connection,
+    call,
+    routed,
+    override,
+  }) => {
+    if (!inheritedSkip && !supported && !['mock', 'disabled'].includes(mode)) {
+      let message;
+      if (connection && call.connectionName && !connection.bound)
+        message =
+          'Unbound connection reference ' +
+          (connection.referenceLogicalName ?? call.connectionName) +
+          ' for action ' +
+          key +
+          '; bind a local connection or configure an explicit action mock or disable it.';
+      else {
+        let reason = '';
+        if (routed && runtime.unsupportedReason?.(call.connectorId, call.operationId))
+          reason = ': ' + runtime.unsupportedReason(call.connectorId, call.operationId);
+        message =
+          'Unsupported action ' +
+          key +
+          ' (' +
+          action.type +
+          ')' +
+          reason +
+          '; configure an explicit action mock or disable it.';
+      }
+      errors.push(message);
+    }
+    if (override && !['exported', 'mock', 'disabled'].includes(mode)) errors.push('Invalid action mode ' + key);
+    if (action.type === 'Response' && inLoop) errors.push('Response is not allowed within a loop: ' + key);
+  };
+  const inspectActionSettings = (action, key, connector, dataverse) => {
+    for (const setting of ['runtimeConfiguration', 'retryPolicy', 'operationOptions', 'limit', 'staticResults'])
+      if (
+        own(action, setting) &&
+        !(
+          setting === 'runtimeConfiguration' &&
+          ((connector && runtimeConfigurationOk(action.runtimeConfiguration, dataverse)) ||
+            (action.type === 'Foreach' && foreachConcurrencyOk(action.runtimeConfiguration)))
+        ) &&
+        !(setting === 'operationOptions' && operationOptionsOk(action, connector)) &&
+        !(setting === 'limit' && action.type === 'Until')
+      )
+        errors.push(
+          'Unsupported action setting ' + key + '/' + setting + '; configure an explicit mock or disable it.',
+        );
+  };
+  const inspectConcurrentForeach = (action, key, inLoop) => {
+    if (
+      action.type !== 'Foreach' ||
+      inLoop ||
+      /* NOSONAR */ !((action.runtimeConfiguration?.concurrency?.repetitions ?? 1) > 1) ||
+      String(action.operationOptions ?? '').includes('Sequential')
+    )
+      return;
+    const written = [];
+    const walk = (map) => {
+      for (const [name, child] of Object.entries(map ?? {})) {
+        if (!child || typeof child !== 'object' || ['mock', 'disabled'].includes(steps[key + '/' + name]?.mode))
+          continue;
+        if (WRITES.has(child.type) && typeof child.inputs?.name === 'string') written.push(child.inputs.name);
+        walk(child.actions);
+        walk(child.else?.actions);
+        walk(child.default?.actions);
+        for (const branch of Object.values(child.cases ?? {})) walk(branch?.actions);
+      }
+    };
+    walk(action.actions);
+    if (written.length)
+      errors.push(
+        'Foreach ' +
+          key +
+          ' runs its iterations concurrently and writes the variable ' +
+          [...new Set(written)].join(', ') +
+          '; Mirage refuses concurrent variable writes because their result depends on the interleaving: set concurrency to 1 or configure an explicit workflow mock.',
+      );
+  };
+  const inspectRetryPolicy = (action, key, connector) => {
+    if (!(action.inputs && typeof action.inputs === 'object' && own(action.inputs, 'retryPolicy'))) return;
+    if (builtins.has(action.type)) {
+      badRequest = true;
+      errors.push('A retry policy is not allowed on built-in action ' + key);
+    } else if (!connector) errors.push('Unsupported action retry policy ' + key);
+    else
+      try {
+        parseRetryPolicy(action.inputs.retryPolicy);
+      } catch (error) {
+        badRequest = true;
+        errors.push('Invalid retry policy ' + key + ': ' + error.message);
+      }
+  };
+  const inspectUntilAction = (action, key) => {
+    const limit = action.limit ?? {};
+    if (typeof action.expression !== 'string' && !(action.expression && typeof action.expression === 'object'))
+      errors.push('Until requires an expression: ' + key);
+    if (
+      !limit ||
+      typeof limit !== 'object' ||
+      Array.isArray(limit) ||
+      Object.keys(limit).some((k) => !['count', 'timeout'].includes(k)) ||
+      (limit.count !== undefined && !(Number.isInteger(limit.count) && limit.count >= 1 && limit.count <= 5000)) ||
+      (limit.timeout !== undefined && durationMs(limit.timeout) === null)
+    )
+      errors.push('Until limit takes count (1-5000) and an ISO 8601 timeout: ' + key);
+    else if ((limit.count ?? 60) > maxIterations)
+      errors.push(
+        'Until ' +
+          key +
+          ' limit.count ' +
+          (limit.count ?? 60) +
+          ' exceeds the local iteration limit (' +
+          maxIterations +
+          ').',
+      );
+  };
+  const inspectDataverseParameters = (action, key, connector, dataverse) => {
+    if (!(connector && dataverse)) return;
+    const spec = dataverseParameters(action.inputs.host.operationId);
+    for (const parameter of Object.keys(action.inputs.parameters ?? {}))
+      if (!spec?.allowed(parameter)) errors.push('Unsupported Dataverse parameter ' + key + '/' + parameter);
+  };
+  const inspectChangeSet = (action, key) => {
+    const inner = Object.entries(action.actions ?? {}),
+      names = new Set(inner.map(([, child]) => child?.inputs?.host?.connectionName ?? null));
+    if (!inner.length) errors.push('A changeset needs at least one action: ' + key);
+    if (names.size > 1) errors.push('Changeset actions must share one Dataverse connection: ' + key);
+    for (const [name, child] of inner) {
+      const call = connectorCall(child);
+      if (
+        child?.type !== 'OpenApiConnection' ||
+        call?.connectorId !== DATAVERSE_CONNECTOR ||
+        !CHANGESET_OPERATIONS.includes(call.operationId)
+      )
+        errors.push('A changeset holds only Dataverse Add, Update, Upsert and Delete row actions: ' + key + '/' + name);
+      if (Object.keys(child?.runAfter ?? {}).length)
+        errors.push('Changeset actions cannot depend on each other: ' + key + '/' + name);
+      if (steps[key + '/' + name])
+        errors.push('Changeset actions run together; configure the changeset, not ' + key + '/' + name);
+    }
+  };
+  const inspectActionRunAfter = (action, key, map) => {
+    if (
+      action.runAfter != null &&
+      (!action.runAfter || typeof action.runAfter !== 'object' || Array.isArray(action.runAfter))
+    )
+      errors.push('Invalid runAfter ' + key);
+    for (const [dependency, statuses] of Object.entries(action.runAfter ?? {}))
+      if (
+        !own(map, dependency) ||
+        !Array.isArray(statuses) ||
+        statuses.length === 0 ||
+        statuses.some((x) => !['Succeeded', 'Failed', 'Skipped', 'TimedOut'].includes(x))
+      )
+        errors.push('Invalid runAfter dependency ' + key + '/' + dependency);
+  };
+  const inspectExecutableAction = (action, key, depth, connector, dataverse, inLoop) => {
+    if (action.type === 'InitializeVariable' && depth > 0)
+      errors.push('InitializeVariable requires the workflow global level: ' + key);
+    if (action.type === 'Response') {
+      const raw = action.inputs?.statusCode ?? 200;
+      if ((typeof raw !== 'string' || !raw.startsWith('@')) && !responseStatus(Number(raw)))
+        errors.push('Response requires a 2xx, 4xx or 5xx status code: ' + key);
+    }
+    inspectActionSettings(action, key, connector, dataverse);
+    inspectConcurrentForeach(action, key, inLoop);
+    inspectRetryPolicy(action, key, connector);
+    if (action.type === 'Until') inspectUntilAction(action, key);
+    inspectDataverseParameters(action, key, connector, dataverse);
+    if (action.type === 'ChangeSet') inspectChangeSet(action, key);
+  };
+  const visitBranches = (action, key, depth, skipped, loop) => {
+    if (action.actions) visit(action.actions, key + '/', depth + 1, skipped, loop);
+    if (action.else?.actions) visit(action.else.actions, key + '/else/', depth + 1, skipped, loop);
+    for (const [caseName, branch] of Object.entries(action.cases ?? {}))
+      visit(branch.actions ?? {}, key + '/case:' + caseName + '/', depth + 1, skipped, loop);
+    if (action.default?.actions) visit(action.default.actions, key + '/default/', depth + 1, skipped, loop);
+  };
   const visit = (map, prefix = '', depth = 0, inheritedSkip = false, inLoop = false) => {
     if (depth > 16 || !map || typeof map !== 'object' || Array.isArray(map)) {
       errors.push('Invalid or excessive action nesting.');
@@ -537,303 +954,29 @@ export function inspectFlowDefinition(
         continue;
       }
       const override = steps[key],
-        mode = override?.mode ?? 'exported';
-      const call = ['OpenApiConnection', 'OpenApiConnectionWebhook', 'Http', 'Workflow'].includes(action.type)
-          ? connectorCall(action)
-          : null,
-        dataverse = call?.connectorId === DATAVERSE_CONNECTOR && action.type === 'OpenApiConnection';
-      const routed = Boolean(call) && (Boolean(connectors) || dataverse || call.connectorId === CHILD_FLOW_CONNECTOR),
-        connection = routed ? bind(call, key) : null;
-      const connector =
-        routed &&
-        runtime.supports(call.connectorId, call.operationId, connection.provider ?? undefined) &&
-        (connection.bound || !call.connectionName);
-      const packAction = !call && own(packActions, action.type),
-        supported = builtins.has(action.type) || packAction || connector;
-      actions.push({
+        mode = override?.mode ?? 'exported',
+        routedAction = inspectActionRoute(name, action, key, mode);
+      const { call, dataverse, routed, connection, connector, supported } = routedAction;
+      inspectActionSupport({
+        action,
         key,
-        name,
-        type: action.type,
-        operationId: action.inputs?.host?.operationId ?? null,
-        supported,
         mode,
-        external:
-          (action.type === 'OpenApiConnection' && !(dataverse && connector)) ||
-          ['Http', 'ApiConnection', 'ApiConnectionWebhook', 'OpenApiConnectionWebhook'].includes(action.type),
-        ...(connection
-          ? {
-              connection: {
-                referenceLogicalName: connection.referenceLogicalName,
-                bound: connection.bound,
-                provider: connection.provider,
-              },
-            }
-          : {}),
+        inheritedSkip,
+        inLoop,
+        supported,
+        connection,
+        call,
+        routed,
+        override,
       });
-      if (!inheritedSkip && !supported && !['mock', 'disabled'].includes(mode))
-        errors.push(
-          connection && call.connectionName && !connection.bound
-            ? 'Unbound connection reference ' +
-                (connection.referenceLogicalName ?? call.connectionName) +
-                ' for action ' +
-                key +
-                '; bind a local connection or configure an explicit action mock or disable it.'
-            : 'Unsupported action ' +
-                key +
-                ' (' +
-                action.type +
-                ')' +
-                (routed && runtime.unsupportedReason?.(call.connectorId, call.operationId)
-                  ? ': ' + runtime.unsupportedReason(call.connectorId, call.operationId)
-                  : '') +
-                '; configure an explicit action mock or disable it.',
-        );
-      if (override && !['exported', 'mock', 'disabled'].includes(mode)) errors.push('Invalid action mode ' + key);
-      if (action.type === 'Response' && inLoop) errors.push('Response is not allowed within a loop: ' + key);
-      if (!inheritedSkip && !['mock', 'disabled'].includes(mode)) {
-        if (action.type === 'InitializeVariable' && depth > 0)
-          errors.push('InitializeVariable requires the workflow global level: ' + key);
-        if (action.type === 'Response') {
-          const raw = action.inputs?.statusCode ?? 200;
-          if ((typeof raw !== 'string' || !raw.startsWith('@')) && !responseStatus(Number(raw)))
-            errors.push('Response requires a 2xx, 4xx or 5xx status code: ' + key);
-        }
-        for (const setting of ['runtimeConfiguration', 'retryPolicy', 'operationOptions', 'limit', 'staticResults'])
-          if (
-            own(action, setting) &&
-            !(
-              setting === 'runtimeConfiguration' &&
-              ((connector && runtimeConfigurationOk(action.runtimeConfiguration, dataverse)) ||
-                (action.type === 'Foreach' && foreachConcurrencyOk(action.runtimeConfiguration)))
-            ) &&
-            !(setting === 'operationOptions' && operationOptionsOk(action, connector)) &&
-            !(setting === 'limit' && action.type === 'Until')
-          )
-            errors.push(
-              'Unsupported action setting ' + key + '/' + setting + '; configure an explicit mock or disable it.',
-            );
-        // Determinism policy (natively such writes "might return unpredictable results"): a Foreach outside any loop runs its
-        // repetitions concurrently (frame.loops empty, also inside a Scope, If or Switch), so iterations that write a variable are
-        // refused, as concurrent branches that do are.
-        if (
-          action.type === 'Foreach' &&
-          !inLoop &&
-          (action.runtimeConfiguration?.concurrency?.repetitions ?? 1) > 1 &&
-          !String(action.operationOptions ?? '').includes('Sequential')
-        ) {
-          const written = [];
-          const walk = (m) => {
-            for (const [n, a] of Object.entries(m ?? {})) {
-              if (!a || typeof a !== 'object' || ['mock', 'disabled'].includes(steps[key + '/' + n]?.mode)) continue;
-              if (WRITES.has(a.type) && typeof a.inputs?.name === 'string') written.push(a.inputs.name);
-              walk(a.actions);
-              walk(a.else?.actions);
-              walk(a.default?.actions);
-              for (const c of Object.values(a.cases ?? {})) walk(c?.actions);
-            }
-          };
-          walk(action.actions);
-          if (written.length)
-            errors.push(
-              'Foreach ' +
-                key +
-                ' runs its iterations concurrently and writes the variable ' +
-                [...new Set(written)].join(', ') +
-                '; Mirage refuses concurrent variable writes because their result depends on the interleaving: set concurrency to 1 or configure an explicit workflow mock.',
-            );
-        }
-        // A retry policy applies to provider calls only; on a built-in action or with invalid values it is a bad request.
-        if (action.inputs && typeof action.inputs === 'object' && own(action.inputs, 'retryPolicy')) {
-          if (builtins.has(action.type)) {
-            badRequest = true;
-            errors.push('A retry policy is not allowed on built-in action ' + key);
-          } else if (!connector) errors.push('Unsupported action retry policy ' + key);
-          else
-            try {
-              parseRetryPolicy(action.inputs.retryPolicy);
-            } catch (error) {
-              badRequest = true;
-              errors.push('Invalid retry policy ' + key + ': ' + error.message);
-            }
-        }
-        if (action.type === 'Until') {
-          const limit = action.limit ?? {};
-          if (typeof action.expression !== 'string' && !(action.expression && typeof action.expression === 'object'))
-            errors.push('Until requires an expression: ' + key);
-          if (
-            !limit ||
-            typeof limit !== 'object' ||
-            Array.isArray(limit) ||
-            Object.keys(limit).some((k) => !['count', 'timeout'].includes(k)) ||
-            (limit.count !== undefined &&
-              !(Number.isInteger(limit.count) && limit.count >= 1 && limit.count <= 5000)) ||
-            (limit.timeout !== undefined && durationMs(limit.timeout) === null)
-          )
-            errors.push('Until limit takes count (1-5000) and an ISO 8601 timeout: ' + key);
-          // A count above the local iteration limit would stop early and report Succeeded: refuse it (native maximum 5000).
-          else if ((limit.count ?? 60) > maxIterations)
-            errors.push(
-              'Until ' +
-                key +
-                ' limit.count ' +
-                (limit.count ?? 60) +
-                ' exceeds the local iteration limit (' +
-                maxIterations +
-                ').',
-            );
-        }
-        // One parameter table (connector-runtime.mjs DATAVERSE_OPERATION_SPEC) for this allowlist and the provider.
-        if (connector && dataverse) {
-          const op = action.inputs.host.operationId,
-            spec = dataverseParameters(op);
-          for (const parameter of Object.keys(action.inputs.parameters ?? {}))
-            if (!spec?.allowed(parameter)) errors.push('Unsupported Dataverse parameter ' + key + '/' + parameter);
-        }
-        // Perform a changeset request (https://learn.microsoft.com/power-automate/dataverse/change-set): a scope of Add, Update and
-        // Delete row actions on one Dataverse connection, without dependencies between them, run as one transaction.
-        // The exported definition shape (type ChangeSet with nested actions) is a guess.
-        if (action.type === 'ChangeSet') {
-          const inner = Object.entries(action.actions ?? {}),
-            names = new Set(inner.map(([, a]) => a?.inputs?.host?.connectionName ?? null));
-          if (!inner.length) errors.push('A changeset needs at least one action: ' + key);
-          if (names.size > 1) errors.push('Changeset actions must share one Dataverse connection: ' + key);
-          for (const [n, a] of inner) {
-            const call = connectorCall(a);
-            if (
-              a?.type !== 'OpenApiConnection' ||
-              call?.connectorId !== DATAVERSE_CONNECTOR ||
-              !CHANGESET_OPERATIONS.includes(call.operationId)
-            )
-              errors.push(
-                'A changeset holds only Dataverse Add, Update, Upsert and Delete row actions: ' + key + '/' + n,
-              );
-            if (Object.keys(a?.runAfter ?? {}).length)
-              errors.push('Changeset actions cannot depend on each other: ' + key + '/' + n);
-            if (steps[key + '/' + n])
-              errors.push('Changeset actions run together; configure the changeset, not ' + key + '/' + n);
-          }
-        }
-      }
-      if (
-        action.runAfter != null &&
-        (!action.runAfter || typeof action.runAfter !== 'object' || Array.isArray(action.runAfter))
-      )
-        errors.push('Invalid runAfter ' + key);
-      for (const [dependency, statuses] of Object.entries(action.runAfter ?? {}))
-        if (
-          !own(map, dependency) ||
-          !Array.isArray(statuses) ||
-          statuses.length === 0 ||
-          statuses.some((x) => !['Succeeded', 'Failed', 'Skipped', 'TimedOut'].includes(x))
-        )
-          errors.push('Invalid runAfter dependency ' + key + '/' + dependency);
+      if (!inheritedSkip && !['mock', 'disabled'].includes(mode))
+        inspectExecutableAction(action, key, depth, connector, dataverse, inLoop);
+      inspectActionRunAfter(action, key, map);
       const skipped = inheritedSkip || ['disabled', 'mock'].includes(mode),
         loop = inLoop || ['Foreach', 'Until'].includes(action.type);
-      if (action.actions) visit(action.actions, key + '/', depth + 1, skipped, loop);
-      if (action.else?.actions) visit(action.else.actions, key + '/else/', depth + 1, skipped, loop);
-      for (const [caseName, branch] of Object.entries(action.cases ?? {}))
-        visit(branch.actions ?? {}, key + '/case:' + caseName + '/', depth + 1, skipped, loop);
-      if (action.default?.actions) visit(action.default.actions, key + '/default/', depth + 1, skipped, loop);
+      visitBranches(action, key, depth, skipped, loop);
     }
-    const visiting = new Set(),
-      visited = new Set();
-    const check = (name) => {
-      if (visiting.has(name)) {
-        errors.push('Flow runAfter dependency cycle: ' + prefix + name);
-        return;
-      }
-      if (visited.has(name)) return;
-      visiting.add(name);
-      for (const dep of Object.keys(map[name]?.runAfter ?? {})) if (own(map, dep)) check(dep);
-      visiting.delete(name);
-      visited.add(name);
-    };
-    for (const name of Object.keys(map)) check(name);
-    const ancestor = (name, target, seen = new Set()) => {
-        if (seen.has(name)) return false;
-        seen.add(name);
-        return Object.keys(map[name]?.runAfter ?? {}).some(
-          (dep) => dep === target || (own(map, dep) && ancestor(dep, target, seen)),
-        );
-      },
-      names = Object.keys(map);
-    // Concurrent branches start together (executeFlowDefinition's scheduler); two branches that cannot both run (runAfter
-    // statuses of one predecessor that exclude each other) are not concurrent. An outcome that depends on the interleaving
-    // needs a mock: two concurrent branches writing the same variable or both answering a Response.
-    const lineage = (name) => {
-      const all = new Set([name]),
-        walk = (n) => {
-          for (const dep of Object.keys(map[n]?.runAfter ?? {}))
-            if (own(map, dep) && !all.has(dep)) {
-              all.add(dep);
-              walk(dep);
-            }
-        };
-      walk(name);
-      return [...all];
-    };
-    const exclusive = (a, b) =>
-      lineage(a).some((x) =>
-        lineage(b).some(
-          (y) =>
-            x !== y &&
-            Object.entries(map[x]?.runAfter ?? {}).some(
-              ([dep, s]) =>
-                Array.isArray(s) &&
-                Array.isArray(map[y]?.runAfter?.[dep]) &&
-                !s.some((v) => map[y].runAfter[dep].includes(v)),
-            ),
-        ),
-      );
-    // A branch that reads a variable another concurrent branch writes depends on the interleaving as much as two writers.
-    const effects = (action, key, acc = { vars: new Set(), reads: new Set(), response: false }) => {
-      if (!action || typeof action !== 'object' || ['mock', 'disabled'].includes(steps[key]?.mode)) return acc;
-      if (WRITES.has(action.type) && typeof action.inputs?.name === 'string') acc.vars.add(action.inputs.name);
-      if (action.type === 'Response') acc.response = true;
-      for (const [, name] of JSON.stringify([
-        action.inputs ?? null,
-        action.expression ?? null,
-        action.foreach ?? null,
-      ]).matchAll(/variables\('([^']+)'\)/g))
-        acc.reads.add(name);
-      const nested = [
-        [action.actions, key + '/'],
-        [action.else?.actions, key + '/else/'],
-        [action.default?.actions, key + '/default/'],
-        ...Object.entries(action.cases ?? {}).map(([c, v]) => [v?.actions, key + '/case:' + c + '/']),
-      ];
-      for (const [child, at] of nested) for (const [n, a] of Object.entries(child ?? {})) effects(a, at + n, acc);
-      return acc;
-    };
-    for (let a = 0; a < names.length; a++)
-      for (let b = a + 1; b < names.length; b++)
-        if (
-          !inheritedSkip &&
-          !ancestor(names[a], names[b]) &&
-          !ancestor(names[b], names[a]) &&
-          !exclusive(names[a], names[b])
-        ) {
-          parallel++;
-          const ea = effects(map[names[a]], prefix + names[a]),
-            eb = effects(map[names[b]], prefix + names[b]),
-            shared = [...ea.vars].filter((v) => eb.vars.has(v)),
-            read = [...ea.vars].filter((v) => eb.reads.has(v)).concat([...eb.vars].filter((v) => ea.reads.has(v)));
-          if (shared.length || read.length || (ea.response && eb.response))
-            errors.push(
-              'Concurrent action branches ' +
-                (shared.length
-                  ? 'write the variable ' + shared.join(', ')
-                  : read.length
-                    ? 'write and read the variable ' + [...new Set(read)].join(', ')
-                    : 'both answer a Response') +
-                ' and depend on the interleaving; configure an explicit workflow mock: ' +
-                prefix +
-                names[a] +
-                ' / ' +
-                prefix +
-                names[b],
-            );
-        }
+    parallel += inspectActionMapConcurrency(map, prefix, inheritedSkip, steps, errors);
   };
   visit(definition?.actions ?? {});
   if (count > 250) errors.push('Local flow limit is 250 source actions.');
@@ -857,59 +1000,73 @@ export function inspectFlowDefinition(
 export function parseFlowExpression(source) {
   let i = 0,
     depth = 0;
+  const nodeDepths = new WeakMap();
+  const checkedNode = (node) => {
+    let height = 1;
+    let children = [];
+    if (node.kind === 'call') children = node.args;
+    else if (node.kind === 'property') children = [node.object, node.key];
+    for (const child of children) height = Math.max(height, 1 + (nodeDepths.get(child) ?? 1));
+    if (height > 64) fail('Flow expression nesting exceeds 64.');
+    nodeDepths.set(node, height);
+    return node;
+  };
   const ws = () => {
     while (/\s/.test(source[i] ?? '') && i < source.length) i++;
   };
-  const parse = () => {
-    if (++depth > 64) fail('Flow expression nesting exceeds 64.');
-    ws();
-    let node;
-    if (source[i] === "'") {
-      i++;
-      let value = '';
-      for (;;) {
-        if (i >= source.length) fail('Unterminated flow expression string.');
+  const parseString = () => {
+    i++;
+    let value = '';
+    for (;;) {
+      if (i >= source.length) fail('Unterminated flow expression string.');
+      if (source[i] === "'") {
+        i++;
         if (source[i] === "'") {
+          value += "'";
           i++;
-          if (source[i] === "'") {
-            value += "'";
-            i++;
-            continue;
-          }
-          break;
+          continue;
         }
-        value += source[i++];
+        break;
       }
-      node = { kind: 'literal', value };
-    } else {
-      const token = /^(?:-?\d+(?:\.\d+)?|[a-zA-Z_][\w]*)/.exec(source.slice(i));
-      if (!token) fail('Unsupported flow expression syntax.');
-      i += token[0].length;
-      ws();
-      if (source[i] === '(') {
-        i++;
-        const args = [];
-        ws();
-        while (source[i] !== ')') {
-          args.push(parse());
-          ws();
-          if (source[i] === ',') {
-            i++;
-            continue;
-          }
-          if (source[i] !== ')') fail('Flow expression argument separator is missing.');
-        }
-        i++;
-        node = { kind: 'call', name: token[0], args };
-      } else if (/^-?\d/.test(token[0]))
-        node = {
-          kind: 'literal',
-          value: token[0].includes('.') ? Number(token[0]) : exactNumeric(token[0], 'Int64'),
-          numericType: token[0].includes('.') ? 'float' : 'integer',
-        };
-      else if (['true', 'false', 'null'].includes(token[0])) node = { kind: 'literal', value: JSON.parse(token[0]) };
-      else fail('Unsupported bare flow expression identifier.');
+      value += source[i++];
     }
+    return { kind: 'literal', value };
+  };
+  const parseArguments = () => {
+    i++;
+    const args = [];
+    ws();
+    while (source[i] !== ')') {
+      args.push(parse());
+      ws();
+      if (source[i] === ',') {
+        i++;
+        ws();
+        if (source[i] === ')') fail('Flow expression argument is missing.');
+        continue;
+      }
+      if (source[i] !== ')') fail('Flow expression argument separator is missing.');
+    }
+    i++;
+    return args;
+  };
+  const parsePrimary = () => {
+    if (source[i] === "'") return parseString();
+    const token = /^(?:-?\d+(?:\.\d+)?|[a-zA-Z_]\w*)/.exec(source.slice(i));
+    if (!token) fail('Unsupported flow expression syntax.');
+    i += token[0].length;
+    ws();
+    if (source[i] === '(') return { kind: 'call', name: token[0], args: parseArguments() };
+    if (/^-?\d/.test(token[0]))
+      return {
+        kind: 'literal',
+        value: token[0].includes('.') ? Number(token[0]) : exactNumeric(token[0], 'Int64'),
+        numericType: token[0].includes('.') ? 'float' : 'integer',
+      };
+    if (['true', 'false', 'null'].includes(token[0])) return { kind: 'literal', value: JSON.parse(token[0]) };
+    return fail('Unsupported bare flow expression identifier.');
+  };
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ const parseProperties = (node) => {
     for (;;) {
       ws();
       let optional = false;
@@ -922,18 +1079,25 @@ export function parseFlowExpression(source) {
         const key = parse();
         ws();
         if (source[i++] !== ']') fail('Flow property bracket is missing.');
-        node = { kind: 'property', object: node, key, optional };
+        node = checkedNode({ kind: 'property', object: node, key, optional });
       } else if (source[i] === '.') {
         i++;
-        const key = /^[\w]+/.exec(source.slice(i));
+        const key = /^\w+/.exec(source.slice(i));
         if (!key) fail('Flow property name is missing.');
         i += key[0].length;
-        node = { kind: 'property', object: node, key: { kind: 'literal', value: key[0] }, optional };
+        node = checkedNode({ kind: 'property', object: node, key: { kind: 'literal', value: key[0] }, optional });
       } else {
         if (optional) fail('Optional property operator needs a property.');
         break;
       }
     }
+    return node;
+  };
+  const parse = () => {
+    if (++depth > 64) fail('Flow expression nesting exceeds 64.');
+    ws();
+    let node = checkedNode(parsePrimary());
+    node = parseProperties(node);
     depth--;
     return node;
   };
@@ -942,216 +1106,411 @@ export function parseFlowExpression(source) {
   if (i !== source.length) fail('Unsupported trailing flow expression syntax.');
   return result;
 }
-function evaluate(node, state) {
-  if (node.kind === 'literal') return node.value;
-  if (node.kind === 'property') {
-    let object = evaluate(node.object, state);
-    const key = evaluate(node.key, state),
-      parts = typeof key === 'string' && !own(object, key) ? key.split('/') : [key];
-    for (const part of parts) {
-      if (unsafe(String(part))) fail('Unsafe flow property.');
-      if (object == null || !own(object, part)) {
-        if (node.optional) return null;
-        fail('Flow expression property is absent.', 400, 'LocalFlowExpression');
-      }
-      object = object[part];
+
+/** Pure syntax/function diagnostics. Dynamic properties and argument types require an explicit runtime input. */
+export function inspectFlowExpression(source) {
+  try {
+    if (typeof source !== 'string') fail('A flow expression must be a string.');
+    const root = parseFlowExpression(source.startsWith('@') ? source.slice(1) : source),
+      pending = [root];
+    while (pending.length) {
+      const node = pending.pop();
+      if (node.kind === 'call') {
+        const signature =
+          Object.hasOwn(FLOW_EXPRESSION_ARITY, node.name.toLowerCase()) &&
+          FLOW_EXPRESSION_ARITY[node.name.toLowerCase()];
+        if (!signature) fail('Unsupported local flow function: ' + node.name);
+        if (node.args.length < signature[0] || node.args.length > signature[1])
+          fail('Invalid argument count for ' + node.name);
+        pending.push(...node.args);
+      } else if (node.kind === 'property') pending.push(node.object, node.key);
     }
-    return object;
+    return { supported: true, diagnostics: [] };
+  } catch (error) {
+    return { supported: false, diagnostics: [{ code: error.code ?? 'LocalFlowUnsupported', message: error.message }] };
   }
-  const n = node.name.toLowerCase(),
-    a = node.args.map((arg) => evaluate(arg, state));
-  const arity = (min, max = min) => {
-    if (a.length < min || a.length > max) fail('Invalid argument count for ' + node.name);
-  };
-  const numeric = () => {
-    if (a.some((v) => !isExactNumeric(v) && (typeof v !== 'number' || !Number.isFinite(v))))
-      fail('Numeric arguments required for ' + node.name, 400, 'LocalFlowExpression');
-  };
+}
+
+function inspectTriggerConditions(trigger) {
+  if (!own(trigger, 'conditions')) return [];
+  if (!Array.isArray(trigger.conditions) || trigger.conditions.length > 100)
+    return ['Trigger conditions must be an array of at most 100 expression objects.'];
+  const errors = [];
+  for (let index = 0; index < trigger.conditions.length; index++) {
+    const condition = trigger.conditions[index];
+    if (
+      !condition ||
+      typeof condition !== 'object' ||
+      Array.isArray(condition) ||
+      Object.keys(condition).some((key) => key !== 'expression') ||
+      typeof condition.expression !== 'string' ||
+      !condition.expression.startsWith('@') ||
+      condition.expression.startsWith('@{') ||
+      condition.expression.startsWith('@@')
+    ) {
+      errors.push('Trigger condition ' + index + ' requires an @expression.');
+      continue;
+    }
+    for (const diagnostic of inspectFlowExpression(condition.expression).diagnostics)
+      errors.push('Trigger condition ' + index + ': ' + diagnostic.message);
+  }
+  return errors;
+}
+
+export function evaluateFlowTriggerConditions(definition, { input, parameters = {} } = {}) {
+  const trigger = Object.values(definition?.triggers ?? {})[0],
+    errors = inspectTriggerConditions(trigger);
+  if (errors.length) fail(errors.join(' '));
+  if (!trigger?.conditions) return true;
+  const state = { input, parameters, variables: {}, results: Object.create(null), items: [] };
+  const results = (trigger.conditions ?? []).map((condition) => {
+    const result = evaluate(parseFlowExpression(condition.expression.slice(1)), state);
+    if (typeof result !== 'boolean') fail('Trigger conditions require boolean results.', 400, 'LocalFlowExpression');
+    return result;
+  });
+  return results.every(Boolean);
+}
+function evaluateProperty(node, state) {
+  let object = evaluate(node.object, state);
+  const key = evaluate(node.key, state),
+    parts = typeof key === 'string' && !own(object, key) ? key.split('/') : [key];
+  for (const part of parts) {
+    if (unsafe(String(part))) fail('Unsafe flow property.');
+    if (object == null || !own(object, part)) {
+      if (node.optional) return null;
+      fail('Flow expression property is absent.', 400, 'LocalFlowExpression');
+    }
+    object = object[part];
+  }
+  return object;
+}
+function evaluateVariableFunction(n, a, state) {
   switch (n) {
-    case 'triggerbody':
-      arity(0);
-      return state.input;
-    case 'triggeroutputs':
-      arity(0);
-      return { body: state.input };
     case 'variables':
-      arity(1);
       if (!own(state.variables, a[0])) fail('Unknown flow variable.', 400, 'LocalFlowExpression');
       return state.variables[a[0]].value;
     case 'parameters':
-      arity(1);
+      if (!own(state.parameters, a[0])) fail('Unknown flow parameter.', 400, 'LocalFlowExpression');
+      return state.parameters[a[0]];
+    case 'body':
+      if (!hasResult(state.results, a[0])) fail('Action output is unavailable.', 400, 'LocalFlowExpression');
+      return state.results[a[0]].outputs?.body ?? null;
+    case 'outputs':
+      if (!hasResult(state.results, a[0])) fail('Action output is unavailable.', 400, 'LocalFlowExpression');
+      return state.results[a[0]].outputs;
+    case 'actions':
+      if (!hasResult(state.results, a[0])) fail('Action output is unavailable.', 400, 'LocalFlowExpression');
+      return state.results[a[0]];
+    case 'item':
+      if (!state.items.length) fail('item() requires a foreach context.');
+      return state.items.at(-1).value;
+    case 'items': {
+      const item = state.items.findLast((x) => x.name === a[0]);
+      if (!item) fail('Unknown foreach context.');
+      return item.value;
+    }
+    default:
+      return undefined;
+  }
+}
+function requireNumericArguments(a, name) {
+  if (a.some((v) => !isExactNumeric(v) && (typeof v !== 'number' || !Number.isFinite(v))))
+    fail('Numeric arguments required for ' + name, 400, 'LocalFlowExpression');
+}
+function evaluateExactArithmetic(n, a, node, state) {
+  const integer = node.args.every((arg) => numericKind(arg, state) === 'integer'),
+    type = integer ? 'Int64' : 'Decimal';
+  if (n === 'add') return sumNumeric(a, type);
+  if (n === 'sub') return sumNumeric([a[0], multiplyNumeric([a[1], -1])], type);
+  if (n === 'mul') return multiplyNumeric(a, type);
+  return divideNumeric(a[0], a[1], { integer, modulo: n === 'mod' });
+}
+function evaluatePlainArithmetic(n, a, node, state) {
+  if (n === 'add') return a[0] + a[1];
+  if (n === 'sub') return a[0] - a[1];
+  if (n === 'mul') return a[0] * a[1];
+  if (n === 'div' && node.args.every((arg) => numericKind(arg, state) === 'integer')) return Math.trunc(a[0] / a[1]);
+  if (n === 'div') return a[0] / a[1];
+  return a[0] % a[1];
+}
+function evaluateArithmetic(n, a, node, state) {
+  requireNumericArguments(a, node.name);
+  if (['div', 'mod'].includes(n) && compareNumeric(a[1], 0) === 0)
+    fail('Division by zero.', 400, 'LocalFlowExpression');
+  if (a.some(isExactNumeric)) return evaluateExactArithmetic(n, a, node, state);
+  return evaluatePlainArithmetic(n, a, node, state);
+}
+/* NOSONAR: mixed return values are part of the contract */ function evaluateNumericConversion(n, a) {
+  const raw = isExactNumeric(a[0]) ? a[0].value : a[0];
+  if (
+    (typeof raw !== 'string' && typeof raw !== 'number') ||
+    (typeof raw === 'string' && (!raw.trim() || (n === 'int' && !/^[-+]?\d+$/.test(raw))))
+  )
+    fail('Invalid numeric conversion.', 400, 'LocalFlowExpression');
+  if (n === 'int') {
+    const exact = exactNumeric(typeof raw === 'string' ? raw.trim() : raw, 'Int64');
+    if (
+      decimalParts(exact).scale ||
+      compareNumeric(exact, '-9223372036854775808') < 0 ||
+      compareNumeric(exact, '9223372036854775807') > 0
+    )
+      fail('Integer conversion exceeds Int64.', 400, 'LocalFlowExpression');
+    return exact;
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value)) fail('Invalid numeric conversion.', 400, 'LocalFlowExpression');
+  return value;
+}
+function evaluateBooleanFunction(n, a) {
+  if (n === 'and' || n === 'or') {
+    if (a.some((value) => typeof value !== 'boolean')) fail('Boolean arguments required.');
+    return n === 'and' ? a.every(Boolean) : a.some(Boolean);
+  }
+  if (n === 'not') {
+    if (typeof a[0] !== 'boolean') fail('not() requires a boolean.');
+    return !a[0];
+  }
+  if (n === 'coalesce') return a.find((value) => value !== null && value !== undefined) ?? null;
+  if (typeof a[0] !== 'boolean') fail('if() requires a boolean.');
+  return a[0] ? a[1] : a[2];
+}
+function evaluateNumericComparison(n, a, name) {
+  requireNumericArguments(a, name);
+  const compared = compareNumeric(a[0], a[1]);
+  if (n === 'greater') return compared > 0;
+  if (n === 'greaterorequals') return compared >= 0;
+  if (n === 'less') return compared < 0;
+  return compared <= 0;
+}
+function concatFlowValues(values) {
+  return values
+    .map((value) => {
+      if (isExactNumeric(value)) return value.value;
+      if (typeof value === 'string') return value;
+      return stringifyExactJson(value);
+    })
+    .join('');
+}
+function evaluateFlowCollection(n, a) {
+  if (n === 'length') {
+    if (typeof a[0] !== 'string' && !Array.isArray(a[0])) fail('length() requires a string or array.');
+    return a[0].length;
+  }
+  if (n === 'empty')
+    return (
+      a[0] == null ||
+      a[0] === '' ||
+      (Array.isArray(a[0]) && a[0].length === 0) ||
+      (typeof a[0] === 'object' && Object.keys(a[0]).length === 0)
+    );
+  if (typeof a[0] === 'string') return a[0].includes(a[1]);
+  if (Array.isArray(a[0])) return a[0].some((value) => equivalent(value, a[1]));
+  if (a[0] && typeof a[0] === 'object' && !isExactNumeric(a[0])) return own(a[0], a[1]);
+  return fail('contains() requires a collection.');
+}
+function evaluateStringMatch(n, a, name) {
+  if (a.some((value) => typeof value !== 'string')) fail(name + '() requires strings.', 400, 'LocalFlowExpression');
+  if (n === 'startswith') return a[0].toLowerCase().startsWith(a[1].toLowerCase());
+  return a[0].toLowerCase().endsWith(a[1].toLowerCase());
+}
+function evaluateJoin(a) {
+  if (!Array.isArray(a[0]) || typeof a[1] !== 'string')
+    fail('join() requires an array and a string delimiter.', 400, 'LocalFlowExpression');
+  const parts = a[0].map(flowValueText),
+    length = parts.reduce((sum, part) => sum + part.length, 0) + Math.max(0, parts.length - 1) * a[1].length;
+  if (length > 104857600) fail('join() output exceeds 104857600 characters.', 400, 'LocalFlowExpression');
+  return parts.join(a[1]);
+}
+function evaluateSubstring(a) {
+  if (
+    typeof a[0] !== 'string' ||
+    a.slice(1).some((value) => typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0)
+  )
+    fail('substring() requires text and nonnegative safe integer indexes.', 400, 'LocalFlowExpression');
+  const length = a.length === 3 ? a[2] : a[0].length - a[1];
+  if (a[1] > a[0].length || length > a[0].length - a[1])
+    fail('substring() indexes exceed the string bounds.', 400, 'LocalFlowExpression');
+  return a[0].slice(a[1], a[1] + length);
+}
+function evaluateRangeCollection(n, a, name) {
+  if ((!Array.isArray(a[0]) && !(n === 'take' && typeof a[0] === 'string')) || !Number.isSafeInteger(a[1]) || a[1] < 0)
+    fail(name + '() requires a supported collection and a nonnegative safe integer count.', 400, 'LocalFlowExpression');
+  return n === 'skip' ? a[0].slice(a[1]) : a[0].slice(0, a[1]);
+}
+function evaluateFirstLast(n, a, name) {
+  if (typeof a[0] !== 'string' && !Array.isArray(a[0]))
+    fail(name + '() requires a string or array.', 400, 'LocalFlowExpression');
+  return n === 'first' ? (a[0][0] ?? null) : (a[0].at(-1) ?? null);
+}
+function evaluateTextFunction(n, a) {
+  if (n === 'split') {
+    if (a.some((value) => typeof value !== 'string')) fail('split() requires two strings.', 400, 'LocalFlowExpression');
+    if (!a[1]) fail('split() with an empty delimiter requires native evidence.');
+    return a[0].split(a[1]);
+  }
+  if (n === 'tolower' || n === 'toupper' || n === 'trim') {
+    if (typeof a[0] !== 'string') fail('String argument required.');
+    if (n === 'tolower') return a[0].toLowerCase();
+    if (n === 'toupper') return a[0].toUpperCase();
+    return a[0].trim();
+  }
+  if (a.some((value) => typeof value !== 'string')) fail('replace() requires strings.');
+  return a[0].replaceAll(a[1], a[2]);
+}
+function evaluateCollectionFunction(n, a, node) {
+  switch (n) {
+    case 'length':
+    case 'empty':
+    case 'contains':
+      return evaluateFlowCollection(n, a);
+    case 'startswith':
+    case 'endswith':
+      return evaluateStringMatch(n, a, node.name);
+    case 'join':
+      return evaluateJoin(a);
+    case 'substring':
+      return evaluateSubstring(a);
+    case 'skip':
+    case 'take':
+      return evaluateRangeCollection(n, a, node.name);
+    case 'first':
+    case 'last':
+      return evaluateFirstLast(n, a, node.name);
+    case 'split':
+    case 'tolower':
+    case 'toupper':
+    case 'trim':
+    case 'replace':
+      return evaluateTextFunction(n, a);
+    default:
+      return undefined;
+  }
+}
+function evaluate(node, state) {
+  if (node.kind === 'literal') return node.value;
+  if (node.kind === 'property') return evaluateProperty(node, state);
+  const n = node.name.toLowerCase(),
+    signature = Object.hasOwn(FLOW_EXPRESSION_ARITY, n) && FLOW_EXPRESSION_ARITY[n];
+  if (!signature) fail('Unsupported local flow function: ' + node.name);
+  if (node.args.length < signature[0] || node.args.length > signature[1])
+    fail('Invalid argument count for ' + node.name);
+  const a = node.args.map((arg) => evaluate(arg, state));
+  switch (n) {
+    case 'ticks':
+      return flowTicks(a[0]);
+    case 'triggerbody':
+      return state.input;
+    case 'triggeroutputs':
+      return { body: state.input };
+    case 'variables':
+      if (!own(state.variables, a[0])) fail('Unknown flow variable.', 400, 'LocalFlowExpression');
+      return state.variables[a[0]].value;
+    case 'parameters':
       if (!own(state.parameters, a[0])) fail('Unknown flow parameter.', 400, 'LocalFlowExpression');
       return state.parameters[a[0]];
     case 'body':
     case 'outputs':
     case 'actions':
-      arity(1);
-      if (!hasResult(state.results, a[0])) fail('Action output is unavailable.', 400, 'LocalFlowExpression');
-      return n === 'body'
-        ? (state.results[a[0]].outputs?.body ?? null)
-        : n === 'outputs'
-          ? state.results[a[0]].outputs
-          : state.results[a[0]];
+      return evaluateVariableFunction(n, a, state);
     case 'item':
-      arity(0);
-      if (!state.items.length) fail('item() requires a foreach context.');
-      return state.items.at(-1).value;
-    case 'items':
-      arity(1);
-      {
-        const item = state.items.findLast((x) => x.name === a[0]);
-        if (!item) fail('Unknown foreach context.');
-        return item.value;
-      }
+      return evaluateVariableFunction(n, a, state);
+    case 'items': {
+      return evaluateVariableFunction(n, a, state);
+    }
     case 'concat':
-      arity(2, 1000);
-      return a.map((v) => (isExactNumeric(v) ? v.value : typeof v === 'string' ? v : stringifyExactJson(v))).join('');
+      return concatFlowValues(a);
     case 'equals':
-      arity(2);
       return equivalent(a[0], a[1]);
     case 'and':
     case 'or':
-      arity(2, 1000);
-      if (a.some((v) => typeof v !== 'boolean')) fail('Boolean arguments required.');
-      return n === 'and' ? a.every((v) => v) : a.some((v) => v);
     case 'not':
-      arity(1);
-      if (typeof a[0] !== 'boolean') fail('not() requires a boolean.');
-      return !a[0];
     case 'coalesce':
-      return a.find((v) => v !== null && v !== undefined) ?? null;
     case 'if':
-      arity(3);
-      if (typeof a[0] !== 'boolean') fail('if() requires a boolean.');
-      return a[0] ? a[1] : a[2];
+      return evaluateBooleanFunction(n, a);
     case 'add':
     case 'sub':
     case 'mul':
     case 'div':
     case 'mod':
-      arity(2);
-      numeric();
-      if (['div', 'mod'].includes(n) && compareNumeric(a[1], 0) === 0)
-        fail('Division by zero.', 400, 'LocalFlowExpression');
-      if (a.some(isExactNumeric)) {
-        const integer = node.args.every((arg) => numericKind(arg, state) === 'integer'),
-          type = integer ? 'Int64' : 'Decimal';
-        return n === 'add'
-          ? sumNumeric(a, type)
-          : n === 'sub'
-            ? sumNumeric([a[0], multiplyNumeric([a[1], -1])], type)
-            : n === 'mul'
-              ? multiplyNumeric(a, type)
-              : divideNumeric(a[0], a[1], { integer, modulo: n === 'mod' });
-      }
-      return n === 'add'
-        ? a[0] + a[1]
-        : n === 'sub'
-          ? a[0] - a[1]
-          : n === 'mul'
-            ? a[0] * a[1]
-            : n === 'div'
-              ? node.args.every((arg) => numericKind(arg, state) === 'integer')
-                ? Math.trunc(a[0] / a[1])
-                : a[0] / a[1]
-              : a[0] % a[1];
+      return evaluateArithmetic(n, a, node, state);
     case 'greater':
     case 'greaterorequals':
     case 'less':
     case 'lessorequals':
-      arity(2);
-      numeric();
-      {
-        const compared = compareNumeric(a[0], a[1]);
-        return n === 'greater'
-          ? compared > 0
-          : n === 'greaterorequals'
-            ? compared >= 0
-            : n === 'less'
-              ? compared < 0
-              : compared <= 0;
-      }
+      return evaluateNumericComparison(n, a, node.name);
     case 'string':
-      arity(1);
-      return a[0] == null
-        ? ''
-        : isExactNumeric(a[0])
-          ? a[0].value
-          : typeof a[0] === 'string'
-            ? a[0]
-            : stringifyExactJson(a[0]);
+      return flowValueText(a[0]);
     case 'int':
     case 'float':
-      arity(1);
-      {
-        const raw = isExactNumeric(a[0]) ? a[0].value : a[0];
-        if (
-          (typeof raw !== 'string' && typeof raw !== 'number') ||
-          (typeof raw === 'string' && (!raw.trim() || (n === 'int' && !/^[-+]?\d+$/.test(raw))))
-        )
-          fail('Invalid numeric conversion.', 400, 'LocalFlowExpression');
-        if (n === 'int') {
-          const exact = exactNumeric(typeof raw === 'string' ? raw.trim() : raw, 'Int64');
-          if (
-            decimalParts(exact).scale ||
-            compareNumeric(exact, '-9223372036854775808') < 0 ||
-            compareNumeric(exact, '9223372036854775807') > 0
-          )
-            fail('Integer conversion exceeds Int64.', 400, 'LocalFlowExpression');
-          return exact;
-        }
-        const value = Number(raw);
-        if (!Number.isFinite(value)) fail('Invalid numeric conversion.', 400, 'LocalFlowExpression');
-        return value;
-      }
+      return evaluateNumericConversion(n, a);
     case 'json':
-      arity(1);
       try {
         return parseExactJson(a[0]);
       } catch {
         return fail('Invalid JSON expression value.', 400, 'LocalFlowExpression');
       }
     case 'length':
-      arity(1);
-      if (typeof a[0] !== 'string' && !Array.isArray(a[0])) fail('length() requires a string or array.');
-      return a[0].length;
     case 'empty':
-      arity(1);
-      return (
-        a[0] == null ||
-        a[0] === '' ||
-        (Array.isArray(a[0]) && a[0].length === 0) ||
-        (typeof a[0] === 'object' && Object.keys(a[0]).length === 0)
-      );
-    // An array contains a value equal to it (exact numerics by value, objects member-wise), a string a substring, an object a key.
     case 'contains':
-      arity(2);
-      return typeof a[0] === 'string'
-        ? a[0].includes(a[1])
-        : Array.isArray(a[0])
-          ? a[0].some((v) => equivalent(v, a[1]))
-          : a[0] && typeof a[0] === 'object' && !isExactNumeric(a[0])
-            ? own(a[0], a[1])
-            : fail('contains() requires a collection.');
-    case 'createarray':
-      return a;
+    case 'startswith':
+    case 'endswith':
+    case 'join':
+    case 'substring':
+    case 'skip':
+    case 'take':
     case 'first':
     case 'last':
-      arity(1);
-      return n === 'first' ? (a[0]?.[0] ?? null) : (a[0]?.at(-1) ?? null);
+    case 'split':
     case 'tolower':
     case 'toupper':
     case 'trim':
-      arity(1);
-      if (typeof a[0] !== 'string') fail('String argument required.');
-      return n === 'tolower' ? a[0].toLowerCase() : n === 'toupper' ? a[0].toUpperCase() : a[0].trim();
     case 'replace':
-      arity(3);
-      if (a.some((v) => typeof v !== 'string')) fail('replace() requires strings.');
-      return a[0].replaceAll(a[1], a[2]);
+      return evaluateCollectionFunction(n, a, node);
+    case 'createarray':
+      return a;
     default:
       fail('Unsupported local flow function: ' + node.name);
   }
+}
+function flowInterpolationEnd(value, start) {
+  let end = start + 2,
+    quoted = false;
+  for (; end < value.length; end++) {
+    if (value[end] === "'") {
+      if (quoted && value[end + 1] === "'") {
+        end++;
+        continue;
+      }
+      quoted = !quoted;
+    }
+    if (value[end] === '}' && !quoted) break;
+  }
+  return end;
+}
+function resolveFlowInterpolation(value, state) {
+  let result = '',
+    cursor = 0;
+  while (cursor < value.length) {
+    const start = value.indexOf('@{', cursor);
+    if (start < 0) {
+      result += value.slice(cursor);
+      break;
+    }
+    const escaped = start > cursor && value[start - 1] === '@';
+    const end = flowInterpolationEnd(value, start);
+    if (escaped) {
+      result += value.slice(cursor, start - 1) + value.slice(start, end + 1);
+      cursor = end + 1;
+      continue;
+    }
+    if (end === value.length) fail('Unterminated interpolated flow expression.');
+    result += value.slice(cursor, start);
+    const answer = evaluate(parseFlowExpression(value.slice(start + 2, end)), state);
+    if (typeof answer === 'string') result += answer;
+    else if (answer != null) result += stringifyExactJson(answer);
+    cursor = end + 1;
+  }
+  return result;
 }
 export function resolveFlowValue(value, state) {
   if (Array.isArray(value)) return value.map((v) => resolveFlowValue(v, state));
@@ -1165,66 +1524,7 @@ export function resolveFlowValue(value, state) {
   if (typeof value !== 'string' || (!value.startsWith('@') && !value.includes('@{'))) return value;
   if (value.startsWith('@@')) return value.slice(1);
   if (value.startsWith('@') && !value.startsWith('@{')) return evaluate(parseFlowExpression(value.slice(1)), state);
-  let result = '',
-    cursor = 0;
-  while (cursor < value.length) {
-    const start = value.indexOf('@{', cursor);
-    if (start < 0) {
-      result += value.slice(cursor);
-      break;
-    }
-    const escaped = start > cursor && value[start - 1] === '@';
-    let end = start + 2,
-      quoted = false;
-    for (; end < value.length; end++) {
-      if (value[end] === "'") {
-        if (quoted && value[end + 1] === "'") {
-          end++;
-          continue;
-        }
-        quoted = !quoted;
-      }
-      if (value[end] === '}' && !quoted) break;
-    }
-    if (escaped) {
-      result += value.slice(cursor, start - 1) + value.slice(start, end + 1);
-      cursor = end + 1;
-      continue;
-    }
-    if (end === value.length) fail('Unterminated interpolated flow expression.');
-    result += value.slice(cursor, start);
-    const answer = evaluate(parseFlowExpression(value.slice(start + 2, end)), state);
-    result += typeof answer === 'string' ? answer : answer == null ? '' : stringifyExactJson(answer);
-    cursor = end + 1;
-  }
-  return result;
-}
-export function validateFlowInput(value, schema = {}, name = 'body', depth = 0) {
-  if (depth > 32) fail('The cloud-flow input schema exceeds the local nesting limit.');
-  const invalid = (message) => fail(`Cloud-flow input ${name} ${message}.`, 400, 'InvalidRequest');
-  const matches = (t) =>
-    t === 'null'
-      ? value === null
-      : t === 'array'
-        ? Array.isArray(value)
-        : t === 'object'
-          ? Boolean(value && typeof value === 'object' && !Array.isArray(value) && !isExactNumeric(value))
-          : t === 'integer'
-            ? Number.isInteger(value) || (isExactNumeric(value) && decimalParts(value).scale === 0)
-            : t === 'number'
-              ? (typeof value === 'number' && Number.isFinite(value)) || isExactNumeric(value)
-              : typeof value === t;
-  if (schema.type && ![schema.type].flat().some(matches)) invalid('has an invalid type');
-  if (schema.enum && !schema.enum.some((v) => equivalent(v, value))) invalid('is not an allowed value');
-  if (value && typeof value === 'object' && !Array.isArray(value)) {
-    for (const key of schema.required ?? []) if (!own(value, key)) invalid('is missing required property ' + key);
-    for (const [k, v] of Object.entries(value)) {
-      if (schema.properties?.[k]) validateFlowInput(v, schema.properties[k], name + '.' + k, depth + 1);
-      else if (schema.additionalProperties === false) invalid('contains undeclared property ' + k);
-    }
-  }
-  if (Array.isArray(value) && schema.items)
-    value.forEach((v, i) => validateFlowInput(v, schema.items, name + '[' + i + ']', depth + 1));
+  return resolveFlowInterpolation(value, state);
 }
 // A skipped leaf inherits its predecessor's completion status. A successful
 // error handler therefore resolves the failed branch without rewriting history.
@@ -1274,7 +1574,11 @@ function typedParameter(text, type) {
     const value = Number(text);
     return text.trim() !== '' && Number.isFinite(value) ? value : text;
   }
-  if (['bool', 'boolean'].includes(kind)) return /^true$/i.test(text) ? true : /^false$/i.test(text) ? false : text;
+  if (['bool', 'boolean'].includes(kind)) {
+    if (/^true$/i.test(text)) return true;
+    if (/^false$/i.test(text)) return false;
+    return text;
+  }
   if (['object', 'array'].includes(kind)) {
     try {
       return parseExactJson(text);
@@ -1303,6 +1607,136 @@ function flowParameters(definition, store) {
   }
   return { values, secrets };
 }
+// The run failure naming the action that failed it (D-R3-4): error.action and error.failedAction { action, iteration?, type,
+// status, code, message }, read by the flow-run span (error.action, output.failedAction).
+function named(error, failed) {
+  if (failed && error && typeof error === 'object')
+    Object.assign(error, { action: failed.action, failedAction: failed });
+  return error;
+}
+function flowFailure(failed, text = 'Local triggered flow actions failed') {
+  return named(
+    new DataError(
+      failed ? `${text} at ${failed.action}: ${failed.message ?? failed.status}` : text + '.',
+      400,
+      'LocalFlowFailed',
+    ),
+    failed,
+  );
+}
+/** A sealed run (tracing): a Secret flow parameter or any secureData action, so no span of the run captures a payload. */
+const flowSealed = (definition, parameters) =>
+  parameters.secrets.length > 0 || JSON.stringify(definition?.actions ?? {}).includes('"secureData"');
+function settleFlowIteration(state, result) {
+  if (result === false) state.ok = false;
+}
+function failFlowIteration(state, cause) {
+  if (cause instanceof FlowSuspended) state.first ??= cause;
+  else throw cause;
+}
+function fillFlowIterations(count, degree, body, state, call, stopped) {
+  while (state.next < count && state.inflight.size < degree && !state.first && !stopped()) {
+    const i = state.next++;
+    let result;
+    try {
+      result = drive(body(i), call);
+    } catch (cause) {
+      if (cause instanceof FlowSuspended) {
+        state.first ??= cause;
+        continue;
+      }
+      throw cause;
+    }
+    if (typeof result?.then === 'function') {
+      const promise = result
+        .then(
+          (value) => settleFlowIteration(state, value),
+          (cause) => failFlowIteration(state, cause),
+        )
+        .finally(() => state.inflight.delete(promise));
+      promise.catch(() => {});
+      state.inflight.add(promise);
+    } else settleFlowIteration(state, result);
+  }
+}
+function startFlowActions(start, { stopped, pending, step, map, prefix, frame, ctl, call, drive, inflight }) {
+  for (const name of start) {
+    if (stopped()) break;
+    pending.delete(name);
+    const done = drive(step(name, map, prefix, frame, ctl), call);
+    if (typeof done?.then === 'function') {
+      const promise = done.then(
+        () => {
+          inflight.delete(name);
+        },
+        (cause) => {
+          inflight.delete(name);
+          throw cause;
+        },
+      );
+      promise.catch(() => {});
+      inflight.set(name, promise);
+    }
+  }
+}
+function* executeForeachAction({
+  action,
+  frame,
+  span,
+  resolve,
+  key,
+  maxIterations,
+  capture,
+  each,
+  run,
+  iteration,
+  markFailed,
+}) {
+  const values = resolve(action.foreach);
+  if (!Array.isArray(values) || values.length > maxIterations)
+    fail('Foreach requires an array within the iteration limit.');
+  const degree =
+    frame.loops.length || String(action.operationOptions ?? '').includes('Sequential')
+      ? 1
+      : (action.runtimeConfiguration?.concurrency?.repetitions ?? 1);
+  if (span && capture()) span.setInput(() => ({ items: values.length }));
+  let started = 0;
+  try {
+    if (
+      !(yield* each(values.length, degree, (i) => {
+        started++;
+        return run(action.actions, key + '/', iteration(i, values[i]), span);
+      }))
+    )
+      markFailed();
+  } finally {
+    span?.set({ iterations: started });
+  }
+}
+function* executeUntilAction({ action, span, key, iteration, run, stopped, condition, scope, status }) {
+  const limit = action.limit ?? {},
+    count = limit.count ?? 60,
+    timeout = durationMs(limit.timeout ?? 'PT1H'),
+    started = Date.now();
+  let met = false;
+  for (let i = 0; i < count && !stopped(); i++) {
+    span?.set({ iterations: i + 1 });
+    const f = iteration(i);
+    if (!(yield* run(action.actions, key + '/', f, span))) status = 'Failed';
+    if (stopped()) break;
+    const test = condition(action.expression, scope(f));
+    if (typeof test !== 'boolean') fail('Until expression must be boolean.');
+    if (test) {
+      met = true;
+      break;
+    }
+    if (Date.now() - started >= timeout) {
+      status = 'TimedOut';
+      break;
+    }
+  }
+  return { status, outputs: { conditionMet: met } };
+}
 /** Executes imported definitions only. External actions never become successful implicit no-ops.
  * Connector actions go through `connectors` (createConnectorRuntime); without it only built-in Dataverse actions run.
  * Returns the result synchronously while every provider answers synchronously, otherwise a Promise: always await it.
@@ -1328,6 +1762,7 @@ export function executeFlowDefinition({
   journal = null,
   parameters: frozen = null,
   onOutcome = null,
+  sealed = false,
 }) {
   const contract = inspectFlowDefinition(definition, steps, {
       connectors,
@@ -1344,7 +1779,7 @@ export function executeFlowDefinition({
     );
   if (!trigger.supported) fail(trigger.errors.join(' '));
   const triggers = Object.values(definition?.triggers ?? {});
-  if (!input || typeof input !== 'object' || Array.isArray(input))
+  if (!input || typeof input !== 'object' || Array.isArray(input) || isExactNumeric(input))
     fail('The cloud-flow input must be an object.', 400, 'InvalidRequest');
   validateFlowInput(input, triggers[0].inputs?.schema);
   // A tracked run passes the non-secret parameter values frozen at its start (runTrackedFlow), so a resume replays them.
@@ -1356,6 +1791,8 @@ export function executeFlowDefinition({
       results: Object.create(null),
       items: [],
     };
+  if (!evaluateFlowTriggerConditions(definition, { input, parameters: state.parameters }))
+    return { status: 'Skipped', reason: 'TriggerConditionFalse' };
   if (serviceProfile) validateServiceProfile(serviceProfile);
   const runtime = connectors ?? createConnectorRuntime({ store }),
     correlationId = context.correlationId ?? randomUUID();
@@ -1364,18 +1801,40 @@ export function executeFlowDefinition({
     terminated = false,
     terminatedFailure = null,
     terminatedCancelled = false,
-    cancelled = false;
+    cancelled = false,
+    // The action that failed the run (D-R3-4): the latest Failed or TimedOut action, an enclosing action (Scope, If, loop)
+    // keeping the inner action that failed it.
+    failedAction = null;
   // Journalled action paths a resume replays as mocks; a live provider call while one is unconsumed means the replay diverged.
   // context.journal: the journalled outcomes a resume replays, keyed by action path plus the loop iteration ('path', 'path#2' for a
   // loop body's second iteration, 'path#1.3' inside nested loops), so an action inside a loop replays each iteration's answer.
   const unconsumed = new Set(context.replay ?? []),
     replayed = context.journal ?? {};
-  let suspension = null;
+  let suspension = null,
+    sealedMemo;
+  // Tracing (docs/design/tracing.md): one flow-action span per executed action, parented explicitly by its enclosing action
+  // (If, Scope, Foreach, Switch, Until) or the flow-run span current at the start, since generator steps cross awaits. A
+  // sealed run (a Secret parameter, any secureData action, or a sealed parent or origin run: `sealed`) captures no payloads at
+  // all, since a sealed value can reach any later action; the seal is known at every level and the level is read per capture.
+  const traces = store?.traces?.enabled ? store.traces : null,
+    flowSpan = traces?.current() ?? null,
+    actionSpans = new Map(),
+    sealedRun = () => (sealedMemo ??= sealed || flowSealed(definition, parameters)),
+    capture = () => traces?.settings().level === 'full' && !sealedRun();
+  // A no-op span (level off, or the trace at spansPerTrace) is no parent: its children keep the ambient one.
+  const childOf = (span) => (span?.spanId ? { parentSpanId: span.spanId, traceId: span.traceId } : {});
   const maxActions = Math.min(limits.maxActions ?? 2000, 10000),
     maxIterations = Math.min(limits.maxIterations ?? 100, 1000),
     deadline = Date.now() + Math.min(limits.timeoutMs ?? 2000, 5000);
-  const signal = context.signal ?? null,
-    stopped = () => terminated || cancelled || (signal?.aborted ? (cancelled = true) : false);
+  const signal = context.signal ?? null;
+  const stopped = () => {
+    if (terminated || cancelled) return true;
+    if (signal?.aborted) {
+      cancelled = true;
+      return true;
+    }
+    return false;
+  };
   // Every frame (the run, a Scope or condition branch, a loop iteration) has its foreach items and loop indexes; an iteration
   // has its own action results layered over its parent's. A waiting action suspends anywhere in a tracked run: its journal key
   // names the iteration, so the resume replays the earlier iterations and continues at the waiting one.
@@ -1397,12 +1856,10 @@ export function executeFlowDefinition({
       until = inputs?.until?.timestamp,
       count = inputs?.interval?.count,
       unit = UNIT_MS[inputs?.interval?.unit];
-    const due =
-      until != null
-        ? Date.parse(until)
-        : Number.isFinite(Number(count)) && Number(count) >= 0 && unit
-          ? at + Number(count) * unit
-          : NaN;
+    let due;
+    if (until != null) due = Date.parse(until);
+    else if (Number.isFinite(Number(count)) && Number(count) >= 0 && unit) due = at + Number(count) * unit;
+    else due = Number.NaN;
     if (!Number.isFinite(due))
       fail(
         'A Wait action needs interval { count, unit: Second|Minute|Hour|Day|Week } or until.timestamp.',
@@ -1429,15 +1886,33 @@ export function executeFlowDefinition({
         }),
     };
   };
-  const trace = (key, action, status, error) =>
+  // The FLOW_ACTION diagnostic, and a trace event on the action span (a skipped action has none: the flow-run span).
+  const trace = (key, action, status, error, span = flowSpan) => {
+    const flowName = () => (flowSpan?.name ? ' in ' + flowSpan.name : '');
+    const errorMessage = () => (error?.message ? ': ' + error.message : '');
     diagnostic({
       code: 'FLOW_ACTION',
+      // Human facts (D-M-2 Findings): the action name, its flow and trigger table (from the flow-run span, when traced).
+      name: key,
+      flow: flowSpan?.name ?? null,
+      entity: flowSpan?.entity ?? null,
+      message: `${key} (${action.type}) ${status}${flowName()}${errorMessage()}.`,
       action: key,
       type: action.type,
       mode: steps[key]?.mode ?? 'exported',
       status,
       ...(error ? { error: { code: error.code ?? 'LocalFlowError', message: error.message } } : {}),
     });
+    span?.event('trace', {
+      message: `${key} ${status}`,
+      attributes: {
+        action: key,
+        type: action.type,
+        status,
+        ...(error ? { code: error.code ?? 'LocalFlowError' } : {}),
+      },
+    });
+  };
   const variable = (name, value) => {
     const v = state.variables[name];
     if (!v) fail('Unknown flow variable.', 400, 'LocalFlowExpression');
@@ -1493,47 +1968,85 @@ export function executeFlowDefinition({
   // Runs a set of generators (loop iterations) with at most `degree` in flight; answers false when one failed. After a
   // suspension no further iteration starts (the resume continues there); errors other than a suspension stop the run.
   const each = function* (count, degree, body) {
-    let ok = true,
-      next = 0,
-      first = null;
-    const inflight = new Set(),
-      settle = (r) => {
-        if (r === false) ok = false;
-      };
-    while ((next < count || inflight.size) && !stopped()) {
-      while (next < count && inflight.size < degree && !first && !stopped()) {
-        const i = next++;
-        let r;
-        try {
-          r = drive(body(i), call);
-        } catch (cause) {
-          if (cause instanceof FlowSuspended) {
-            first ??= cause;
-            continue;
-          }
-          throw cause;
-        }
-        if (typeof r?.then === 'function') {
-          const p = r
-            .then(settle, (cause) => {
-              if (cause instanceof FlowSuspended) first ??= cause;
-              else throw cause;
-            })
-            .finally(() => inflight.delete(p));
-          p.catch(() => {});
-          inflight.add(p);
-        } else settle(r);
-      }
-      if (inflight.size) yield { wait: Promise.race(inflight) };
-      else if (first) break;
+    const state = { ok: true, next: 0, first: null, inflight: new Set() };
+    while ((state.next < count || state.inflight.size) && !stopped()) {
+      fillFlowIterations(count, degree, body, state, call, stopped);
+      if (state.inflight.size) yield { wait: Promise.race(state.inflight) };
+      else if (state.first) break;
     }
-    if (inflight.size) yield { wait: Promise.all(inflight) };
-    if (first) throw first;
-    return ok;
+    if (state.inflight.size) yield { wait: Promise.all(state.inflight) };
+    if (state.first) throw state.first;
+    return state.ok;
+  };
+  const actionError = (called, error) => {
+    if (error?.code === 'ActionFailed') return { error: { code: error.code, message: error.message } };
+    if (called && error)
+      return {
+        error: {
+          code: 'ActionFailed',
+          message: error.message,
+          cause: { code: error.code ?? 'LocalFlowError' },
+        },
+      };
+    return {};
+  };
+  const actionSpanStatus = (status) => {
+    if (['Failed', 'TimedOut'].includes(status)) return 'error';
+    if (status === 'Cancelled') return 'cancelled';
+    return 'ok';
+  };
+  const recordChangeSetResults = (action, key, frame, span, status, outputs) => {
+    for (const [name, child] of Object.entries(action.actions ?? {})) {
+      const answer = status === 'Succeeded' ? (outputs?.body?.responses ?? []).find((r) => r.name === name) : null;
+      record(
+        frame,
+        name,
+        answer
+          ? { status: 'Succeeded', outputs: { statusCode: answer.statusCode, body: answer.body } }
+          : {
+              status: status === 'Skipped' ? 'Skipped' : 'Failed',
+              outputs: { error: { code: 'ChangeSetRolledBack', message: 'The changeset did not commit.' } },
+            },
+      );
+      trace(key + '/' + name, child, frame.results[name].status, undefined, span);
+    }
+  };
+  /* NOSONAR */ const finishStep = ({ name, key, at, action, frame, ctl, span, outputs, status, error, called }) => {
+    record(frame, name, { status, outputs, ...actionError(called, error) }, ctl.local);
+    trace(key, action, status, error, span);
+    if (['Failed', 'TimedOut'].includes(status) && !failedAction?.action.startsWith(key + '/'))
+      failedAction = {
+        action: key,
+        ...(at === key ? {} : { iteration: at }),
+        type: action.type ?? null,
+        status,
+        code: error?.code ?? null,
+        message: error?.message ?? null,
+      };
+    if (action.type === 'ChangeSet') recordChangeSetResults(action, key, frame, span, status, outputs);
+    if (called && journal && status !== 'Cancelled')
+      journal(at, {
+        status,
+        outputs: clone(outputs),
+        secure: secure(action),
+        ...(attempts.has(at) ? { attempts: attempts.get(at) } : {}),
+      });
+    actionSpans.delete(at);
+    if (span) {
+      if (capture()) span.output(() => outputs);
+      span.end({
+        status: actionSpanStatus(status),
+        ...(error ? { error } : {}),
+        attributes: { status, ...(attempts.has(at) ? { attempts: attempts.get(at).length } : {}) },
+      });
+    }
+    attempts.delete(at);
+    if (Buffer.byteLength(JSON.stringify(state)) > 4 * 1024 * 1024)
+      fail('Local flow state exceeds 4 MiB.', 413, 'LocalFlowLimit');
   };
   // One action of a frame (one place for both scheduler rules below): runAfter statuses, deferral after a suspension, the
   // action itself and its recorded result and journal entry.
-  const step = function* (name, map, prefix, frame, ctl) {
+  /* NOSONAR */ const step = function* (name, map, prefix, frame, ctl) {
     const action = map[name],
       key = prefix + name,
       sc = scope(frame),
@@ -1559,6 +2072,32 @@ export function executeFlowDefinition({
     const override = own(replayed, at)
       ? { mode: 'mock', status: replayed[at].status, outputs: replayed[at].outputs }
       : steps[key];
+    // The action's resolved inputs, once: the span's full-level input and the Compose/provider cases share them.
+    let resolvedInputs;
+    const inputsOf = () => {
+      resolvedInputs ??= [resolve(action.inputs)];
+      return resolvedInputs[0];
+    };
+    const span =
+      traces?.start({
+        kind: 'flow-action',
+        name: at,
+        module: 'flows',
+        operation: String(action.type ?? 'action').toLowerCase(),
+        attributes: {
+          type: action.type ?? null,
+          path: key,
+          // Each loop iteration's actions are executions of their own (D-R3-30, as in the run history): the 0-based index of
+          // the innermost Apply to each / Do until iteration (the span name, at, keeps every enclosing index).
+          ...(frame.loops.length ? { iteration: frame.loops.at(-1) } : {}),
+          ...(override?.mode ? { mode: override.mode } : {}),
+          ...(own(replayed, at) ? { replayed: true } : {}),
+          ...(sealedRun() ? { secure: true } : {}),
+        },
+        ...childOf(ctl.parent ?? flowSpan),
+        ...(capture() ? { input: inputsOf } : {}),
+      }) ?? null;
+    if (span) actionSpans.set(at, span);
     let outputs = {},
       status = 'Succeeded',
       error,
@@ -1589,7 +2128,7 @@ export function executeFlowDefinition({
       } else
         switch (action.type) {
           case 'Compose':
-            outputs = resolve(action.inputs);
+            outputs = inputsOf();
             break;
           case 'InitializeVariable':
             for (const v of action.inputs?.variables ?? []) {
@@ -1613,15 +2152,13 @@ export function executeFlowDefinition({
               (!isExactNumeric(delta) && typeof delta !== 'number')
             )
               fail('Numeric variable required.');
-            variable(
-              name,
-              isExactNumeric(prior) || isExactNumeric(delta)
-                ? sumNumeric(
-                    [prior, action.type === 'IncrementVariable' ? delta : multiplyNumeric([delta, -1])],
-                    state.variables[name].type === 'integer' ? 'Int64' : 'Decimal',
-                  )
-                : prior + (action.type === 'IncrementVariable' ? delta : -delta),
-            );
+            let next;
+            if (isExactNumeric(prior) || isExactNumeric(delta)) {
+              const adjusted = action.type === 'IncrementVariable' ? delta : multiplyNumeric([delta, -1]);
+              const type = state.variables[name].type === 'integer' ? 'Int64' : 'Decimal';
+              next = sumNumeric([prior, adjusted], type);
+            } else next = prior + (action.type === 'IncrementVariable' ? delta : -delta);
+            variable(name, next);
             break;
           }
           case 'AppendToArrayVariable': {
@@ -1643,29 +2180,30 @@ export function executeFlowDefinition({
             const test = condition(action.expression, sc);
             if (typeof test !== 'boolean') fail('Flow condition must be boolean.');
             skip(test ? action.else?.actions : action.actions, key + (test ? '/else/' : '/'), frame);
-            if (!(yield* run(test ? action.actions : action.else?.actions, key + (test ? '/' : '/else/'), frame)))
+            if (!(yield* run(test ? action.actions : action.else?.actions, key + (test ? '/' : '/else/'), frame, span)))
               status = 'Failed';
             break;
           }
           case 'Scope':
-            if (!(yield* run(action.actions, key + '/', frame))) status = 'Failed';
+            if (!(yield* run(action.actions, key + '/', frame, span))) status = 'Failed';
             break;
-          // Iterations run in order by default (Power Automate: "Apply to each loops execute sequentially by default"); a Foreach
-          // outside any loop (also inside a Scope, If or Switch) with concurrency.repetitions runs that many at once, one nested in a
-          // loop always in sequence
-          // (https://learn.microsoft.com/power-automate/guidance/coding-guidelines/implement-parallel-execution#control-concurrency).
-          case 'Foreach': {
-            const values = resolve(action.foreach);
-            if (!Array.isArray(values) || values.length > maxIterations)
-              fail('Foreach requires an array within the iteration limit.');
-            const degree =
-              frame.loops.length || String(action.operationOptions ?? '').includes('Sequential')
-                ? 1
-                : (action.runtimeConfiguration?.concurrency?.repetitions ?? 1);
-            if (!(yield* each(values.length, degree, (i) => run(action.actions, key + '/', iteration(i, values[i])))))
-              status = 'Failed';
+          case 'Foreach':
+            yield* executeForeachAction({
+              action,
+              frame,
+              span,
+              resolve,
+              key,
+              maxIterations,
+              capture,
+              each,
+              run,
+              iteration,
+              markFailed: () => {
+                status = 'Failed';
+              },
+            });
             break;
-          }
           case 'Switch': {
             const value = resolve(action.expression),
               entry = Object.entries(action.cases ?? {}).find(([, c]) => equivalent(c.case, value));
@@ -1677,6 +2215,7 @@ export function executeFlowDefinition({
                 entry ? entry[1].actions : action.default?.actions,
                 key + (entry ? '/case:' + entry[0] + '/' : '/default/'),
                 frame,
+                span,
               ))
             )
               status = 'Failed';
@@ -1694,7 +2233,7 @@ export function executeFlowDefinition({
                 typeof headers !== 'object' ||
                 Array.isArray(headers) ||
                 Object.entries(headers).some(
-                  ([k, v]) => !/^[!#$%&'*+.^_`|~\w-]+$/.test(k) || typeof v !== 'string' || /[\r\n]/.test(v),
+                  ([k, v]) => !/^[!#$%&'*+.^`|~\w-]+$/.test(k) || typeof v !== 'string' || /[\r\n]/.test(v),
                 ))
             )
               fail('Invalid flow Response headers.');
@@ -1724,7 +2263,7 @@ export function executeFlowDefinition({
           case 'OpenApiConnectionWebhook':
           case 'Http':
           case 'Workflow': {
-            const inputs = resolve(action.inputs);
+            const inputs = inputsOf();
             called = true;
             const answer = yield { action, key, at, inputs };
             if (answer?.suspended)
@@ -1750,31 +2289,19 @@ export function executeFlowDefinition({
             failedAnswer();
             break;
           }
-          case 'Until': {
-            const limit = action.limit ?? {},
-              count = limit.count ?? 60,
-              timeout = durationMs(limit.timeout ?? 'PT1H'),
-              started = Date.now();
-            let met = false;
-            // Assumed native default: reaching limit.count without the expression ends the loop Succeeded; the timeout ends it TimedOut.
-            for (let i = 0; i < count && !stopped(); i++) {
-              const f = iteration(i);
-              if (!(yield* run(action.actions, key + '/', f))) status = 'Failed';
-              if (stopped()) break;
-              const test = condition(action.expression, scope(f));
-              if (typeof test !== 'boolean') fail('Until expression must be boolean.');
-              if (test) {
-                met = true;
-                break;
-              }
-              if (Date.now() - started >= timeout) {
-                status = 'TimedOut';
-                break;
-              }
-            }
-            outputs = { conditionMet: met };
+          case 'Until':
+            ({ status, outputs } = yield* executeUntilAction({
+              action,
+              span,
+              key,
+              iteration,
+              run,
+              stopped,
+              condition,
+              scope,
+              status,
+            }));
             break;
-          }
           case 'Wait': {
             const wait = delay(resolve(action.inputs));
             if (!canSuspend())
@@ -1793,7 +2320,7 @@ export function executeFlowDefinition({
             if (own(packActions, action.type)) {
               const inputs = resolve(action.inputs ?? {});
               called = true;
-              outputs = yield { packAction: packActions[action.type], request: { type: action.type, inputs }, key };
+              outputs = yield { packAction: packActions[action.type], request: { type: action.type, inputs }, key, at };
               if (!outputs || typeof outputs !== 'object' || Array.isArray(outputs))
                 fail('The pack flow action returned no outputs object.', 502, 'ProviderFailed');
               failedAnswer();
@@ -1805,62 +2332,25 @@ export function executeFlowDefinition({
       if (cause instanceof FlowSuspended) {
         suspension ??= cause;
         ctl.held.add(name);
+        actionSpans.delete(at);
+        span
+          ?.event('suspended', { attributes: { wait: cause.wait?.kind ?? null } })
+          .end({ attributes: { status: 'Waiting', waiting: true } });
         return;
       }
-      if (cause?.code === 'NotResumable') throw cause;
+      if (cause?.code === 'NotResumable') {
+        actionSpans.delete(at);
+        span?.fail(cause);
+        throw cause;
+      }
       // An action whose provider call the run's cancellation aborted is Cancelled, not Failed.
       error = cause;
-      status = signal?.aborted && called ? 'Cancelled' : cause.status === 504 ? 'TimedOut' : 'Failed';
+      if (signal?.aborted && called) status = 'Cancelled';
+      else if (cause.status === 504) status = 'TimedOut';
+      else status = 'Failed';
       outputs = { error: { code: cause.code ?? 'LocalFlowError', message: cause.message } };
     }
-    record(
-      frame,
-      name,
-      {
-        status,
-        outputs,
-        ...(error?.code === 'ActionFailed'
-          ? { error: { code: error.code, message: error.message } }
-          : called && error
-            ? {
-                error: {
-                  code: 'ActionFailed',
-                  message: error.message,
-                  cause: { code: error.code ?? 'LocalFlowError' },
-                },
-              }
-            : {}),
-      },
-      ctl.local,
-    );
-    trace(key, action, status, error);
-    // A changeset's actions share its outcome: each answers its own response, or all fail when it rolled back.
-    // The native status and error of the actions of a rolled-back changeset are a guess.
-    if (action.type === 'ChangeSet')
-      for (const [n, a] of Object.entries(action.actions ?? {})) {
-        const answer = status === 'Succeeded' ? (outputs?.body?.responses ?? []).find((r) => r.name === n) : null;
-        record(
-          frame,
-          n,
-          answer
-            ? { status: 'Succeeded', outputs: { statusCode: answer.statusCode, body: answer.body } }
-            : {
-                status: status === 'Skipped' ? 'Skipped' : 'Failed',
-                outputs: { error: { code: 'ChangeSetRolledBack', message: 'The changeset did not commit.' } },
-              },
-        );
-        trace(key + '/' + n, a, frame.results[n].status);
-      }
-    if (called && journal && status !== 'Cancelled')
-      journal(at, {
-        status,
-        outputs: clone(outputs),
-        secure: secure(action),
-        ...(attempts.has(at) ? { attempts: attempts.get(at) } : {}),
-      });
-    attempts.delete(at);
-    if (Buffer.byteLength(JSON.stringify(state)) > 4 * 1024 * 1024)
-      fail('Local flow state exceeds 4 MiB.', 413, 'LocalFlowLimit');
+    finishStep({ name, key, at, action, frame, ctl, span, outputs, status, error, called });
   };
   // The branch scheduler. Every action whose runAfter dependencies have all settled starts at once (concurrent branches run
   // together; a provider call that answers asynchronously leaves its sibling branches running) and a join waits for every
@@ -1872,12 +2362,12 @@ export function executeFlowDefinition({
   // when no branch can progress, so a concurrent Response answers first, as a Wait never blocks a sibling branch natively
   // (https://learn.microsoft.com/power-automate/guidance/coding-guidelines/implement-parallel-execution).
   // While a resume still has journalled outcomes to replay, a live provider call waits for the replayed ones to run first.
-  const run = function* (map, prefix = '', frame = root) {
+  /* NOSONAR */ const run = function* (map, prefix = '', frame = root, parent = null) {
     const pending = new Set(Object.keys(map ?? {})),
       held = new Set(),
       local = {},
       inflight = new Map(),
-      ctl = { held, local };
+      ctl = { held, local, parent };
     const settled = (dep) => !pending.has(dep) && !held.has(dep) && !inflight.has(dep);
     while ((pending.size || inflight.size) && !stopped()) {
       const ready = [...pending].filter((name) => Object.keys(map[name].runAfter ?? {}).every(settled));
@@ -1885,24 +2375,7 @@ export function executeFlowDefinition({
         ? ready.filter((name) => !mayWait(map[name]) || own(replayed, atOf(prefix + name, frame)))
         : ready;
       if (!start.length && !inflight.size) start = ready;
-      for (const name of start) {
-        if (stopped()) break;
-        pending.delete(name);
-        const done = drive(step(name, map, prefix, frame, ctl), call);
-        if (typeof done?.then === 'function') {
-          const p = done.then(
-            () => {
-              inflight.delete(name);
-            },
-            (cause) => {
-              inflight.delete(name);
-              throw cause;
-            },
-          );
-          p.catch(() => {});
-          inflight.set(name, p);
-        }
-      }
+      startFlowActions(start, { stopped, pending, step, map, prefix, frame, ctl, call, drive, inflight });
       if (start.length) continue;
       if (inflight.size) {
         yield { wait: Promise.race(inflight.values()) };
@@ -1934,33 +2407,18 @@ export function executeFlowDefinition({
       'NotResumable',
     );
   };
-  const call = (request) => {
-    if (own(request, 'wait')) return request.wait;
-    if (own(request, 'secret')) return resolveSecret(request);
-    if (unconsumed.size) diverged(request.key);
-    if (own(request, 'packAction'))
-      return request.packAction(structuredClone(request.request), {
-        caller: 'flow',
-        initiatingUserId: context.initiatingUserId ?? null,
-        correlationId,
-        runId: context.runId ?? null,
-        actionPath: request.key,
-        principal: serviceProfile ?? null,
-        timeoutMs: Math.max(1, deadline - Date.now()),
-        ...(signal ? { signal } : {}),
-      });
+  const invokeConnector = (request) => {
     const { action, at, inputs } = request;
     const target = { ...connectorCall(action), ...(request.operationId ? { operationId: request.operationId } : {}) },
       connection = runtime.resolve({ ...target, connectionReferences, principal: serviceProfile }),
       minimum = action.runtimeConfiguration?.paginationPolicy?.minimumItemCount;
     const { retryPolicy, ...rest } = inputs ?? {},
       retry = retryPolicy === undefined ? null : parseRetryPolicy(retryPolicy);
-    const parameters =
-      action.type === 'Http'
-        ? rest
-        : action.type === 'Workflow'
-          ? { workflowReferenceName: rest.host?.workflowReferenceName ?? null, body: rest.body ?? {} }
-          : (rest.parameters ?? {});
+    let parameters;
+    if (action.type === 'Http') parameters = rest;
+    else if (action.type === 'Workflow')
+      parameters = { workflowReferenceName: rest.host?.workflowReferenceName ?? null, body: rest.body ?? {} };
+    else parameters = rest.parameters ?? {};
     return runtime.invoke({
       connectorId: target.connectorId,
       operationId: target.operationId,
@@ -1978,9 +2436,14 @@ export function executeFlowDefinition({
         ...(signal ? { signal } : {}),
         ...(String(action.operationOptions ?? '').includes('DisableAsyncPattern') ? { asyncPattern: false } : {}),
         canSuspend: canSuspend(),
+        // secure: the connector span (and a child flow's run span) captures no payload of this sealed run.
+        ...(store?.traces?.enabled && sealedRun() ? { secure: true } : {}),
         ...(context.waitTimeoutMs ? { waitTimeoutMs: context.waitTimeoutMs } : {}),
         ...(context.runChildFlow
-          ? { runChildFlow: (target, body) => context.runChildFlow(target, body, { canSuspend: canSuspend() }) }
+          ? {
+              runChildFlow: (target, body) =>
+                context.runChildFlow(target, body, { canSuspend: canSuspend(), sealed: sealedRun() }),
+            }
           : {}),
         ...(retry
           ? {
@@ -1994,23 +2457,83 @@ export function executeFlowDefinition({
       },
     });
   };
+  // A provider call runs inside its action span, so connector spans and the writes they make nest under it.
+  const call = (request) => {
+    const span = request.at === undefined ? null : actionSpans.get(request.at);
+    return span ? traces.run(span, () => callProvider(request)) : callProvider(request);
+  };
+  const callProvider = (request) => {
+    if (own(request, 'wait')) return request.wait;
+    if (own(request, 'secret')) return resolveSecret(request);
+    if (unconsumed.size) diverged(request.key);
+    if (own(request, 'packAction'))
+      return request.packAction(structuredClone(request.request), {
+        caller: 'flow',
+        initiatingUserId: context.initiatingUserId ?? null,
+        correlationId,
+        runId: context.runId ?? null,
+        actionPath: request.key,
+        principal: serviceProfile ?? null,
+        timeoutMs: Math.max(1, deadline - Date.now()),
+        ...(signal ? { signal } : {}),
+      });
+    return invokeConnector(request);
+  };
   // A row, recurrence, connector or on-demand (context.background) run completes without a Response; any other run must answer one.
   const rowLike = ['dataverse', 'dataverse-action', 'recurrence', 'connector'].includes(trigger.kind),
     answersWithout = rowLike || context.background || trigger.kind === 'http';
+  const resolveSecretParameters = function* () {
+    for (const [name, secret] of parameters.secrets) {
+      const answer = yield { secret, name };
+      if (answer?.status === 'resolved') state.parameters[name] = answer.value;
+      else {
+        state.parameters[name] = null;
+        diagnostic({
+          code: 'FLOW_PARAMETER_SECRET_UNRESOLVED',
+          parameter: name,
+          status: answer?.status ?? 'unbound',
+        });
+      }
+    }
+  };
+  const reportResponseOutcome = (outcome, failure) => {
+    if (!(response && !rowLike)) return null;
+    const cause = terminatedFailure ?? failure;
+    onOutcome?.({
+      status: outcome,
+      ...(outcome === 'Failed'
+        ? {
+            error: {
+              code: cause?.code ?? 'LocalFlowFailed',
+              message:
+                cause?.message ?? flowFailure(failedAction, 'Local flow actions failed after the Response').message,
+              ...(failedAction ? { action: failedAction.action } : {}),
+            },
+            ...(failedAction ? { failedAction: clone(failedAction) } : {}),
+          }
+        : {}),
+    });
+    return response;
+  };
+  const settleRunOutcome = (outcome, succeeded, failure) => {
+    const responseAnswer = reportResponseOutcome(outcome, failure);
+    if (responseAnswer) return responseAnswer;
+    if (outcome === 'Cancelled') {
+      if (!answersWithout)
+        throw new DataError('The flow run was cancelled before it answered with a Response.', 409, 'FlowRunCancelled');
+      return { status: 'Cancelled', actions: clone(state.results) };
+    }
+    if (terminatedFailure) throw named(terminatedFailure, failedAction);
+    if (unconsumed.size) diverged('(end of run)');
+    if (answersWithout) {
+      if (!succeeded) throw flowFailure(failedAction);
+      return { status: 'Succeeded', actions: clone(state.results) };
+    }
+    fail('Local flow completed without a Response.', 400, 'LocalFlowFailed');
+  };
   return drive(
     (function* () {
-      for (const [name, secret] of parameters.secrets) {
-        const answer = yield { secret, name };
-        if (answer?.status === 'resolved') state.parameters[name] = answer.value;
-        else {
-          state.parameters[name] = null;
-          diagnostic({
-            code: 'FLOW_PARAMETER_SECRET_UNRESOLVED',
-            parameter: name,
-            status: answer?.status ?? 'unbound',
-          });
-        }
-      }
+      yield* resolveSecretParameters();
       let succeeded,
         failure = null;
       try {
@@ -2028,43 +2551,11 @@ export function executeFlowDefinition({
         failure = cause;
         succeeded = false;
       }
-      const outcome =
-        (stopped() && !terminated) || terminatedCancelled
-          ? 'Cancelled'
-          : terminatedFailure || failure || !succeeded
-            ? 'Failed'
-            : 'Succeeded';
-      if (response && !rowLike) {
-        const cause = terminatedFailure ?? failure;
-        onOutcome?.({
-          status: outcome,
-          ...(outcome === 'Failed'
-            ? {
-                error: {
-                  code: cause?.code ?? 'LocalFlowFailed',
-                  message: cause?.message ?? 'Local flow actions failed after the Response.',
-                },
-              }
-            : {}),
-        });
-        return response;
-      }
-      if (outcome === 'Cancelled') {
-        if (!answersWithout)
-          throw new DataError(
-            'The flow run was cancelled before it answered with a Response.',
-            409,
-            'FlowRunCancelled',
-          );
-        return { status: 'Cancelled', actions: clone(state.results) };
-      }
-      if (terminatedFailure) throw terminatedFailure;
-      if (unconsumed.size) diverged('(end of run)');
-      if (answersWithout) {
-        if (!succeeded) fail('Local triggered flow actions failed.', 400, 'LocalFlowFailed');
-        return { status: 'Succeeded', actions: clone(state.results) };
-      }
-      fail('Local flow completed without a Response.', 400, 'LocalFlowFailed');
+      let outcome;
+      if ((stopped() && !terminated) || terminatedCancelled) outcome = 'Cancelled';
+      else if (terminatedFailure || failure || !succeeded) outcome = 'Failed';
+      else outcome = 'Succeeded';
+      return settleRunOutcome(outcome, succeeded, failure);
     })(),
     call,
   );
@@ -2101,19 +2592,269 @@ export function triggerPrincipal(connectors, definition, connectionReferences) {
  * flowOf(processId) answers a child flow's { definition, mode, steps, serviceProfile, connectors, connectionReferences, secrets }
  * (organization-host.mjs cloudFlow). Without runs this is executeFlowDefinition inside wrap.
  * A Waiting answer carries runId; onRun(runId) is called once the run is started or resumed.
+ * name: the flow's display name (the flow-run span name); sealed: a sealed parent run's child (tracing captures no payload);
+ * target: the trigger row { entity, recordId } of a row-triggered run (the flow-run span's entity and record id).
+ * Tracing: one flow-run span per run (or resume), ended with the run's status; a resume is an async segment parented by the
+ * run's first span, which the trace store remembers as 'flow-run:<runId>' (never the run entry; after a restart a resume is a
+ * new root). A run's seal (its own, or its parent's) is kept in the run entry, so its resume and children stay sealed.
  */
-export async function runTrackedFlow({
-  runs = null,
-  processId,
-  trigger = null,
-  wrap = (fn) => fn(),
-  flowOf = runs?.flowOf ?? null,
-  depth = 0,
-  resume = null,
-  onRun = null,
-  ...args
+export async function runTrackedFlow(options) {
+  const trace = { span: null, status: null, failure: null, sealed: false };
+  try {
+    return endFlowRun(trace, await trackedFlow(options, trace));
+  } catch (error) {
+    failFlowRun(trace, error);
+    throw error;
+  }
+}
+/** The flow-run span of an untracked run (exported-operations.mjs): fn's answer, synchronous when fn answers synchronously. */
+export function traceFlowRun(store, meta, fn) {
+  const trace = { span: flowRunSpan(store, meta), status: null, failure: null, sealed: Boolean(meta?.sealed) };
+  if (!trace.span) return fn();
+  const failed = (error) => {
+    failFlowRun(trace, error);
+    throw error;
+  };
+  let answer;
+  try {
+    answer = store.traces.run(trace.span, fn);
+  } catch (error) {
+    failed(error);
+  }
+  return typeof answer?.then === 'function'
+    ? answer.then((value) => endFlowRun(trace, value), failed)
+    : endFlowRun(trace, answer);
+}
+// The flow-run span (docs/design/tracing.md): actor kind flow; the trigger input only at level full. A resume (parent: the
+// run's first span, null when it is no longer remembered: a new root) is an async segment of that run's trace, whatever
+// context resumed it.
+function flowRunSpan(
+  store,
+  {
+    processId = null,
+    name = null,
+    trigger = null,
+    depth = 0,
+    input,
+    resume = false,
+    parent = null,
+    sealed = false,
+    target = null,
+  },
+) {
+  const traces = store?.traces;
+  if (!traces?.enabled) return null;
+  const id = canonicalId(processId) || null;
+  return traces.start({
+    kind: 'flow-run',
+    name: name || id || 'flow',
+    module: 'flows',
+    operation: 'run',
+    actor: { kind: 'flow', id, name: name || null },
+    // target: the trigger row { entity, recordId } of a row-triggered run (D-R3-1), so record filters find the run.
+    entity: target?.entity ?? null,
+    recordId: target?.recordId ?? null,
+    // secure: a sealed run (no payload captured), so a reader sees why its input and output are absent.
+    attributes: {
+      processId: id,
+      trigger,
+      depth,
+      ...(resume ? { resume: true } : {}),
+      ...(sealed ? { secure: true } : {}),
+    },
+    ...(sealed ? {} : { input: () => input }),
+    ...(resume ? { traceId: parent?.traceId ?? null, parentSpanId: parent?.spanId ?? null, async: true } : {}),
+  });
+}
+// The failing action of a failed run on its flow-run span (D-R3-4): attribute failedAction (its path) and, unless the run is
+// sealed, output.failedAction { action, iteration?, type, status, code, message }; error.action comes with the error.
+function nameFailedAction({ span, sealed }, failed) {
+  if (!failed) return;
+  span.set({ failedAction: failed.action });
+  if (!sealed) span.output(() => ({ status: 'Failed', failedAction: failed }));
+}
+// A run that threw (LocalFlowFailed, a Terminate failure, a provider error): the span fails with that error; a run cancelled
+// before it answered its Response (FlowRunCancelled) ends cancelled.
+function failFlowRun(trace, error) {
+  if (!trace.span) return;
+  if (error?.code === 'FlowRunCancelled') {
+    trace.span.end({ status: 'cancelled', error, attributes: { status: 'Cancelled' } });
+    return;
+  }
+  nameFailedAction(trace, error?.failedAction ?? null);
+  trace.span.fail(error);
+}
+// Ends the flow-run span with the run's status (trace.status, else the answer's): Failed and TimedOut are errors (with the
+// run's own error and failing action when a Response answered first: trace.failure), Cancelled is cancelled, a waiting run
+// ends ok with waiting: true and a suspended event (its resume opens a new span).
+function endFlowRun(trace, answer) {
+  const { span, status } = trace;
+  if (!span) return answer;
+  const outcome = status ?? (typeof answer?.status === 'string' ? answer.status : 'Succeeded');
+  if (outcome === 'Waiting')
+    span.event('suspended', {
+      attributes: { actionPath: answer.suspended?.actionPath ?? null, wait: answer.suspended?.wait?.kind ?? null },
+    });
+  const failed = ['Failed', 'TimedOut'].includes(outcome),
+    failure = failed ? trace.failure : null,
+    failedAction = failure?.failedAction ?? null;
+  // At level full (never for a sealed run) the run's output: its outcome, the Response it answered and the failing action.
+  if (failedAction) span.set({ failedAction: failedAction.action });
+  if (!trace.sealed)
+    span.output(() => ({
+      status: outcome,
+      ...(Number.isInteger(answer?.status) ? { response: { status: answer.status, body: answer.body ?? null } } : {}),
+      ...(failedAction ? { failedAction } : {}),
+    }));
+  const spanStatus = () => {
+    if (failed) return 'error';
+    if (outcome === 'Cancelled') return 'cancelled';
+    return 'ok';
+  };
+  span.end({
+    status: spanStatus(),
+    ...(failure?.error ? { error: failure.error } : {}),
+    attributes: {
+      status: outcome,
+      ...(outcome === 'Waiting' ? { waiting: true } : {}),
+      ...(Number.isInteger(answer?.status) ? { responseStatus: answer.status } : {}),
+    },
+  });
+  return answer;
+}
+const within = (store, span, fn) => (span ? store.traces.run(span, fn) : fn());
+async function runTrackedChildFlow({
+  target,
+  body,
+  canSuspend,
+  sealedParent,
+  runs,
+  flowOf,
+  depth,
+  args,
+  correlationId,
 }) {
-  if (!runs) return wrap(() => executeFlowDefinition(args));
+  if (depth + 1 > FLOW_MAX_DEPTH)
+    throw new DataError('Child flows nest deeper than ' + FLOW_MAX_DEPTH + ' levels.', 400, 'ChildFlowDepthExceeded');
+  const flow = typeof flowOf === 'function' ? flowOf(canonicalId(target)) : null;
+  if (!flow?.definition)
+    throw new DataError('The child flow has no exported definition in the selected sources.', 404, 'ChildFlowNotFound');
+  if (['mock', 'disabled', 'handler'].includes(flow.mode))
+    throw new DataError(
+      'The child flow is locally ' + flow.mode + '; only its exported definition can run as a child.',
+      501,
+      'ChildFlowNotExecutable',
+    );
+  if (inspectFlowTrigger(flow.definition).kind !== 'manual')
+    throw new DataError('A child flow needs a manual (Button) Request trigger.', 400, 'ChildFlowTriggerUnsupported');
+  const answer = await runTrackedFlow({
+    runs,
+    processId: target,
+    name: flow.name ?? null,
+    sealed: sealedParent,
+    trigger: 'ChildFlow',
+    flowOf,
+    depth: depth + 1,
+    definition: flow.definition,
+    input: body,
+    store: args.store,
+    serviceProfile: flow.serviceProfile,
+    steps: flow.steps,
+    connectors: flow.connectors ?? args.connectors,
+    connectionReferences: flow.connectionReferences,
+    secrets: flow.secrets ?? args.secrets,
+    diagnostic: args.diagnostic,
+    limits: args.limits,
+    context: { correlationId, initiatingUserId: args.context?.initiatingUserId ?? null },
+  });
+  if (answer?.status === 'Skipped')
+    throw new DataError(
+      'The child flow did not start because its trigger conditions were false.',
+      409,
+      'ChildFlowNotStarted',
+    );
+  // The parent action ends with the child's Response (https://learn.microsoft.com/power-automate/create-child-flows): a child
+  // that answered before it waits answers the parent now and keeps running. A child that waits before answering suspends the
+  // parent on a wait of kind child: flow-runs.mjs records the ownership (parent run, child run) and the child's completion
+  // resumes the parent; the child is never cancelled for it (a parent inside a loop suspends on its iteration's journal key). A parent that cannot
+  // suspend (an untracked run) still cancels it.
+  if (answer?.status === 'Waiting' && answer.response)
+    return {
+      statusCode: answer.response.status,
+      headers: answer.response.headers ?? {},
+      body: answer.response.body ?? null,
+    };
+  if (answer?.status === 'Waiting') {
+    if (canSuspend) return { statusCode: 202, headers: {}, body: null, suspended: { kind: 'child', id: answer.runId } };
+    await runs.cancel(answer.runId);
+    throw new DataError(
+      'A child flow that waits cannot resume a parent action that has no run id to suspend on (an untracked run); the child was cancelled.',
+      501,
+      'ChildFlowSuspendUnsupported',
+    );
+  }
+  return { statusCode: answer.status, headers: answer.headers ?? {}, body: answer.body ?? null };
+}
+function restoreTrackedFlowRun(resumed, { resume, sealed, args, processId, name, target, trigger, depth, trace }) {
+  const {
+    steps: resumedSteps,
+    configured,
+    input,
+    correlationId,
+    parameters,
+    replay = [],
+    journal: replayJournal = {},
+    background = false,
+    sealed: origin = false,
+  } = resumed;
+  const steps = configured ?? resumedSteps;
+  const runId = resume.runId;
+  sealed ||= origin;
+  const traces = args.store?.traces,
+    first = traces?.enabled ? (traces.recall?.('flow-run:' + runId) ?? null) : null;
+  // A resume keeps the name and trigger row of the run's first span (its target is not passed again).
+  const firstSpan = first?.spanId ? traces.span(first.spanId) : null;
+  trace.span = flowRunSpan(args.store, {
+    processId,
+    name: name ?? firstSpan?.name ?? null,
+    target: target ?? (firstSpan?.entity ? { entity: firstSpan.entity, recordId: firstSpan.recordId } : null),
+    sealed,
+    trigger,
+    depth,
+    input,
+    resume: true,
+    parent: first,
+  });
+  // A resume the registry knows nothing about (after a restart) is the run's span from now on (D-M-4).
+  if (!first?.traceId && trace.span?.traceId)
+    traces.remember?.('flow-run:' + runId, { traceId: trace.span.traceId, spanId: trace.span.spanId ?? null });
+  trace.sealed = sealed;
+  return { steps, input, correlationId, parameters, replay, replayJournal, background, sealed, runId };
+}
+/* NOSONAR: single-pass routine, splitting it would change shared state */ async function trackedFlow(
+  {
+    runs = null,
+    processId,
+    name = null,
+    sealed = false,
+    trigger = null,
+    wrap = (fn) => fn(),
+    flowOf = runs?.flowOf ?? null,
+    depth = 0,
+    resume = null,
+    onRun = null,
+    target = null,
+    ...args
+  },
+  trace,
+) {
+  if (!runs) {
+    if (args.store?.traces?.enabled)
+      sealed ||= flowSealed(args.definition, flowParameters(args.definition, args.store));
+    trace.span = flowRunSpan(args.store, { processId, name, trigger, depth, input: args.input, sealed, target });
+    trace.sealed = sealed;
+    return wrap(() => within(args.store, trace.span, () => executeFlowDefinition({ ...args, sealed })));
+  }
   const definitionHash = flowDefinitionHash(args.definition);
   let runId,
     steps = args.steps ?? {},
@@ -2128,21 +2869,41 @@ export async function runTrackedFlow({
     background = Boolean(args.context?.background);
   // A resume replays the journal by iteration key (context.journal); the steps are the ones configured at start, so a first-iteration mock never stands in for a later iteration.
   if (resume) {
-    let configured;
-    ({
-      steps,
-      configured,
-      input,
-      correlationId,
-      parameters,
-      replay = [],
-      journal: replayJournal = {},
-      background = false,
-    } = await runs.resume(resume.runId, resume.outcome, { definitionHash }));
-    steps = configured ?? steps;
-    runId = resume.runId;
+    const restored = restoreTrackedFlowRun(await runs.resume(resume.runId, resume.outcome, { definitionHash }), {
+      resume,
+      sealed,
+      args,
+      processId,
+      name,
+      target,
+      trigger,
+      depth,
+      trace,
+    });
+    steps = restored.steps;
+    input = restored.input;
+    correlationId = restored.correlationId;
+    parameters = restored.parameters;
+    replay = restored.replay;
+    replayJournal = restored.replayJournal;
+    background = restored.background;
+    runId = restored.runId;
+    sealed = restored.sealed;
   } else {
-    parameters = flowParameters(args.definition, args.store).values;
+    const declared = flowParameters(args.definition, args.store);
+    parameters = declared.values;
+    // The seal is computed at every level (it is kept in the run entry, which must not depend on the trace level).
+    sealed ||= flowSealed(args.definition, declared);
+    if (!evaluateFlowTriggerConditions(args.definition, { input, parameters })) {
+      args.diagnostic?.({
+        code: 'FLOW_TRIGGER_SKIPPED',
+        processId: canonicalId(processId),
+        reason: 'TriggerConditionFalse',
+      });
+      return { status: 'Skipped', reason: 'TriggerConditionFalse' };
+    }
+    trace.span = flowRunSpan(args.store, { processId, name, trigger, depth, input, sealed, target });
+    trace.sealed = sealed;
     runId = (
       await runs.start({
         processId: canonicalId(processId),
@@ -2153,70 +2914,20 @@ export async function runTrackedFlow({
         steps,
         parameters,
         background,
+        sealed,
       })
     ).id;
+    if (trace.span?.traceId)
+      args.store.traces.remember?.('flow-run:' + runId, {
+        traceId: trace.span.traceId,
+        spanId: trace.span.spanId ?? null,
+      });
   }
+  trace.span?.set({ runId });
   onRun?.(runId);
   // A child flow (action type Workflow) is its own tracked run, one level deeper, inside the parent's transaction.
-  const runChildFlow = async (target, body, { canSuspend = false } = {}) => {
-    if (depth + 1 > FLOW_MAX_DEPTH)
-      throw new DataError('Child flows nest deeper than ' + FLOW_MAX_DEPTH + ' levels.', 400, 'ChildFlowDepthExceeded');
-    const flow = typeof flowOf === 'function' ? flowOf(canonicalId(target)) : null;
-    if (!flow?.definition)
-      throw new DataError(
-        'The child flow has no exported definition in the selected sources.',
-        404,
-        'ChildFlowNotFound',
-      );
-    if (['mock', 'disabled', 'handler'].includes(flow.mode))
-      throw new DataError(
-        'The child flow is locally ' + flow.mode + '; only its exported definition can run as a child.',
-        501,
-        'ChildFlowNotExecutable',
-      );
-    if (inspectFlowTrigger(flow.definition).kind !== 'manual')
-      throw new DataError('A child flow needs a manual (Button) Request trigger.', 400, 'ChildFlowTriggerUnsupported');
-    const answer = await runTrackedFlow({
-      runs,
-      processId: target,
-      trigger: 'ChildFlow',
-      flowOf,
-      depth: depth + 1,
-      definition: flow.definition,
-      input: body,
-      store: args.store,
-      serviceProfile: flow.serviceProfile,
-      steps: flow.steps,
-      connectors: flow.connectors ?? args.connectors,
-      connectionReferences: flow.connectionReferences,
-      secrets: flow.secrets ?? args.secrets,
-      diagnostic: args.diagnostic,
-      limits: args.limits,
-      context: { correlationId, initiatingUserId: args.context?.initiatingUserId ?? null },
-    });
-    // The parent action ends with the child's Response (https://learn.microsoft.com/power-automate/create-child-flows): a child
-    // that answered before it waits answers the parent now and keeps running. A child that waits before answering suspends the
-    // parent on a wait of kind child: flow-runs.mjs records the ownership (parent run, child run) and the child's completion
-    // resumes the parent; the child is never cancelled for it (a parent inside a loop suspends on its iteration's journal key). A parent that cannot
-    // suspend (an untracked run) still cancels it.
-    if (answer?.status === 'Waiting' && answer.response)
-      return {
-        statusCode: answer.response.status,
-        headers: answer.response.headers ?? {},
-        body: answer.response.body ?? null,
-      };
-    if (answer?.status === 'Waiting') {
-      if (canSuspend)
-        return { statusCode: 202, headers: {}, body: null, suspended: { kind: 'child', id: answer.runId } };
-      await runs.cancel(answer.runId);
-      throw new DataError(
-        'A child flow that waits cannot resume a parent action that has no run id to suspend on (an untracked run); the child was cancelled.',
-        501,
-        'ChildFlowSuspendUnsupported',
-      );
-    }
-    return { statusCode: answer.status, headers: answer.headers ?? {}, body: answer.body ?? null };
-  };
+  const runChildFlow = (target, body, { canSuspend = false, sealed: sealedParent = false } = {}) =>
+    runTrackedChildFlow({ target, body, canSuspend, sealedParent, runs, flowOf, depth, args, correlationId });
   // The run's cancellation signal (runs.cancel aborts it) joins the caller's; outcome: the run's own end after a Response answered.
   const journal = [],
     cancel = runs.signalOf?.(runId) ?? null,
@@ -2229,31 +2940,35 @@ export async function runTrackedFlow({
     outcome = null;
   try {
     result = await wrap(() =>
-      executeFlowDefinition({
-        ...args,
-        input,
-        steps,
-        ...(parameters ? { parameters } : {}),
-        journal: (path, entry) => journal.push([path, entry]),
-        onOutcome: (value) => {
-          outcome = value;
-        },
-        context: {
-          ...args.context,
-          ...(background ? { background } : {}),
-          correlationId,
-          runId,
-          runChildFlow,
-          replay,
-          journal: replayJournal,
-          ...(signal ? { signal } : {}),
-        },
-      }),
+      within(args.store, trace.span, () =>
+        executeFlowDefinition({
+          ...args,
+          sealed,
+          input,
+          steps,
+          ...(parameters ? { parameters } : {}),
+          journal: (path, entry) => journal.push([path, entry]),
+          onOutcome: (value) => {
+            outcome = value;
+          },
+          context: {
+            ...args.context,
+            ...(background ? { background } : {}),
+            correlationId,
+            runId,
+            runChildFlow,
+            replay,
+            journal: replayJournal,
+            ...(signal ? { signal } : {}),
+          },
+        }),
+      ),
     );
   } catch (error) {
     failure = error;
   }
   if (runs.get(runId)?.status !== 'Running') {
+    trace.status = runs.get(runId)?.status ?? null;
     if (failure) throw failure;
     return result;
   } // cancelled meanwhile: its status stays
@@ -2277,6 +2992,8 @@ export async function runTrackedFlow({
     return result;
   }
   // The run's outcome is its own: the Response answered the caller, a later failure still fails the run.
+  trace.status = outcome?.status ?? 'Succeeded';
+  trace.failure = outcome;
   await runs.complete(runId, {
     status: outcome?.status ?? 'Succeeded',
     ...(outcome?.error ? { error: outcome.error } : {}),

@@ -7,7 +7,7 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const page = (id, name, partial, parent = 'home') =>
   [
@@ -50,7 +50,7 @@ test(
   'anonymous visitors sign in through the local sign-in page, sign out and switch personas',
   { timeout: 60000 },
   async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-auth-browser-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-auth-browser-'));
     ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
     for (const [name, body] of Object.entries(files)) {
       await fs.mkdir(path.dirname(path.join(directory, name)), { recursive: true });

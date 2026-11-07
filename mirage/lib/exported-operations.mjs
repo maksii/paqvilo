@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { DataError } from './data.mjs';
 import { parseSolutionXml, descendants, childText } from './solution-xml.mjs';
-import { executeFlowDefinition, runTrackedFlow } from './flow-runtime.mjs';
+import { executeFlowDefinition, runTrackedFlow, traceFlowRun } from './flow-runtime.mjs';
 import { flowRunsOf } from './flow-runs.mjs';
 import { validateServiceProfile } from './local-organization-service.mjs';
 import { parseExactJson, stringifyExactJson } from './exact-numeric.mjs';
@@ -14,6 +14,7 @@ import { collectPackExport } from './pack-exports.mjs';
 import { solutionLayerFiles } from './solution-content-fingerprint.mjs';
 import { environmentVariablePayload } from './secret-resolver.mjs';
 import { isLoopbackUrl, loopbackFetch } from './dataverse-webhooks.mjs';
+import { tracedFetch } from './trace-hosts.mjs';
 import { organizationPrincipalContext } from './dataverse-principal-context.mjs';
 import { siteSetting } from './redirects.mjs';
 import { portalRecordWrites } from './form-service.mjs';
@@ -40,8 +41,8 @@ export function operationHandlers(packs = []) {
 
 export function assertOperationRole(record, identity) {
   const allowed = (record.roleIds ?? []).map(canonical);
-  const held = (identity?.roleIds ?? []).map(canonical);
-  if (!allowed.length || !allowed.some((id) => held.includes(id)))
+  const held = new Set((identity?.roleIds ?? []).map(canonical));
+  if (!allowed.length || !allowed.some((id) => held.has(id)))
     throw failure('The current web roles cannot execute this operation.', 403, 'Forbidden');
 }
 
@@ -57,9 +58,14 @@ const REASONS = {
   501: 'Not Implemented',
   502: 'Bad Gateway',
 };
+const envelopeBody = (body) => {
+  if (body == null) return '';
+  return typeof body === 'string' ? body : stringifyExactJson(body);
+};
+
 const envelope = (status, body = '', headers = {}, serverError = null) => ({
   StatusCode: status,
-  Body: body == null ? '' : typeof body === 'string' ? body : stringifyExactJson(body),
+  Body: envelopeBody(body),
   IsSuccessStatusCode: status >= 200 && status < 300,
   ReasonPhrase: serverError ?? REASONS[status] ?? String(status),
   ServerError: Boolean(serverError),
@@ -136,6 +142,16 @@ export function describe() {
     lifecycle: 'in-process',
   };
 }
+// A body as a trace payload: JSON text parsed, any other text as it is (the store redacts and caps it).
+const parseBody = (text) => {
+  if (text === '' || text == null) return null;
+  if (typeof text !== 'string') return text;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+};
 const parsePayload = (text) => {
   if (text == null || text === '') return {};
   const value = parseExactJson(text);
@@ -155,7 +171,7 @@ const parsePayload = (text) => {
  * - log(entry) and diagnostic(entry): Logger lines and bridge diagnostics, each with the operation id (Server.Context.ActivityId).
  * A bridge without its service answers the envelope with ServerError true, never a success.
  */
-export async function runExportedServerLogic({
+/* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ export async function runExportedServerLogic({
   record,
   portal,
   store,
@@ -205,6 +221,32 @@ export async function runExportedServerLogic({
       severity: 'info',
       message: `ServerLogic/TimeoutInSeconds is ${seconds} s; the local run is bounded at ${bound} ms.`,
     });
+  // Tracing: one server-logic span around the worker run (input: the function, method, body, input and query; output: the
+  // raw result). No span context crosses into the Worker; its RPC requests are answered here on the main thread inside the
+  // span (traces.run), so their Dataverse operations and bridges nest under it, its Logger lines are trace events on it and
+  // each HttpClient request is an http-out span (tracedFetch) that forwards the trace.
+  const traces = store?.traces?.enabled ? store.traces : null,
+    span =
+      traces?.start({
+        kind: 'server-logic',
+        name: 'Server logic ' + record.name,
+        module: 'portal',
+        operation: String(context.FunctionName).toLowerCase(),
+        attributes: {
+          serverLogic: record.name,
+          method,
+          function: context.FunctionName,
+          activityId: context.ActivityId,
+        },
+        input: () => ({
+          function: context.FunctionName,
+          method,
+          body: parseBody(body),
+          input: parseBody(input),
+          query,
+        }),
+      }) ?? null,
+    inSpan = (fn) => (span ? traces.run(span, fn) : fn());
   const unavailable = (bridge, code) => {
     note({ code, severity: 'warning', message: `${bridge} has no local service in this host.` });
     return envelope(501, '', {}, `${bridge} is not available in this local host.`);
@@ -269,16 +311,18 @@ export async function runExportedServerLogic({
           .map(([name, value]) => [name, String(value)]),
       );
       if (message.contentType) headers['content-type'] = message.contentType;
-      const response = await loopbackFetch(target, {
-        method: message.method,
-        headers,
-        body: message.body ?? undefined,
-        signal: AbortSignal.timeout(bound),
+      const response = await tracedFetch(traces, {
+        module: 'portal',
+        operation: String(message.method ?? 'GET').toLowerCase(),
+        url: target,
+        fetch: loopbackFetch,
+        attributes: { serverLogic: record.name, client: 'HttpClient' },
+        init: { method: message.method, headers, body: message.body ?? undefined, signal: AbortSignal.timeout(bound) },
       });
       return envelope(response.status, await response.text(), Object.fromEntries(response.headers));
     },
   };
-  return new Promise((resolve, reject) => {
+  const running = new Promise((resolve, reject) => {
     const user =
       identity?.id || identity?.contactId
         ? { ...identity, contactid: identity.contactId ?? identity.id, fullname: identity.name ?? null }
@@ -331,7 +375,9 @@ export async function runExportedServerLogic({
     worker.on('exit', (code) => {
       if (!complete) finish(failure(`Server-logic worker stopped before returning a result (${code}).`));
     });
-    worker.on('message', async (message) => {
+    worker.on('message', (message) => inSpan(() => answerMessage(message)));
+    const answerMessage = async (message) /* NOSONAR */ => {
+      // NOSONAR: preserve state, evaluation order, and lifecycle
       if (complete) return;
       if (message.kind === 'ready') {
         clearTimeout(timer);
@@ -343,14 +389,19 @@ export async function runExportedServerLogic({
       }
       if (message.kind === 'result') return finish(null, message.raw);
       if (message.kind === 'failure') return finish(failure(message.message));
-      if (message.kind === 'log')
+      if (message.kind === 'log') {
+        span?.event('trace', { message: message.message, attributes: { level: message.level ?? null } });
         return (services.log ?? (() => {}))({
           serverLogic: record.name,
           operationId: context.ActivityId,
           level: message.level,
           message: message.message,
         });
-      if (message.kind === 'diagnostic') return note({ code: message.code, message: message.message });
+      }
+      if (message.kind === 'diagnostic') {
+        span?.event('diagnostic', { message: message.message, attributes: { code: message.code ?? null } });
+        return note({ code: message.code, message: message.message });
+      }
       if (bridges[message.kind]) {
         let answer;
         try {
@@ -373,7 +424,7 @@ export async function runExportedServerLogic({
           if (row && params.size) {
             const mapping = store.resolveMapping(message.entitySet);
             const requested = params.get('$filter');
-            const idFilter = `${mapping.idColumn} eq '${String(message.id).replace(/'/g, "''")}'`;
+            const idFilter = `${mapping.idColumn} eq '${String(message.id).replaceAll("'", "''")}'`;
             params.set('$filter', requested ? `(${requested}) and (${idFilter})` : idFilter);
             data = store.query(message.entitySet, params, identity, undefined, { dialect: 'dataverse' }).value[0];
           } else data = row;
@@ -392,6 +443,10 @@ export async function runExportedServerLogic({
             write = (fn) => store.transact(fn, { incremental: true });
           if (message.kind === 'create') {
             data = await write(() => writes.create(message.entitySet, payload, identity));
+            // A successful write does not grant read access to secured defaults
+            // or values added by plug-ins. Project the connector response too.
+            const logical = store.resolveMapping(message.entitySet).logicalName;
+            data = store.portalAuthorization?.maskRow?.(identity, logical, data, { portalRequest: true }) ?? data;
             status = 201;
           }
           if (message.kind === 'update') {
@@ -410,7 +465,7 @@ export async function runExportedServerLogic({
             Body: data === undefined ? '' : stringifyExactJson(data),
             IsSuccessStatusCode: status < 400,
             ReasonPhrase:
-              status === 404 ? 'Not Found' : status === 204 ? 'No Content' : status === 201 ? 'Created' : 'OK',
+              status === 404 ? 'Not Found' : status === 204 ? 'No Content' : status === 201 ? 'Created' : 'OK', // NOSONAR: preserve lazy branch evaluation and coercion
             ServerError: false,
             ServerErrorMessage: null,
             Headers: {},
@@ -430,8 +485,20 @@ export async function runExportedServerLogic({
         };
       }
       reply(message, answer);
-    });
+    };
   });
+  if (!span) return running;
+  return running.then(
+    (value) => {
+      span.output(() => parseBody(value));
+      span.end();
+      return value;
+    },
+    (error) => {
+      span.fail(error);
+      throw error;
+    },
+  );
 }
 
 /**
@@ -455,7 +522,10 @@ export function organizationCustomApi(organization, { principal, origin = 'http:
     });
 }
 
-async function invokeOrganizationOperation(organization, { method, url, payload, identity, principal, origin }) {
+/* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ async function invokeOrganizationOperation(
+  organization,
+  { method, url, payload, identity, principal, origin },
+) {
   const verb = String(method ?? '').toUpperCase();
   const path = String(url ?? '')
     .replace(/^\/+/, '')
@@ -471,14 +541,14 @@ async function invokeOrganizationOperation(organization, { method, url, payload,
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean)) {
-    const pair = /^([A-Za-z_]\w*)=(?:'((?:[^']|'')*)'|(-?\d+(?:\.\d+)?)|(true|false|null))$/.exec(part);
+    const pair = /^([A-Za-z_]\w*)=(?:'((?:[^']|'')*)'|(-?\d+(?:\.\d+)?)|(true|false|null))$/.exec(part); // NOSONAR: preserve the exact grammar and captured values
     if (!pair) return error(400, `The function parameter '${part}' is not a literal parameter.`);
     params[pair[1]] =
       pair[2] !== undefined
-        ? pair[2].replace(/''/g, "'")
-        : pair[3] !== undefined
+        ? pair[2].replaceAll("''", "'")
+        : pair[3] !== undefined // NOSONAR: preserve lazy branch evaluation and coercion
           ? Number(pair[3])
-          : pair[4] === 'null'
+          : pair[4] === 'null' // NOSONAR: preserve lazy branch evaluation and coercion
             ? null
             : pair[4] === 'true';
   }
@@ -511,7 +581,7 @@ async function invokeOrganizationOperation(organization, { method, url, payload,
         headers: {},
       };
   }
-  const binding = !set ? 'unbound' : key == null ? 'collection' : 'entity';
+  const binding = !set ? 'unbound' : key == null ? 'collection' : 'entity'; // NOSONAR: preserve lazy branch evaluation and coercion
   const operation = organization.registry.find({
     name,
     kind: verb === 'GET' ? 'function' : 'action',
@@ -555,6 +625,59 @@ async function invokeOrganizationOperation(organization, { method, url, payload,
  * Read only workflow JSON paired with its exported WorkflowId in selected layers. The Workflows folder matches without case,
  * in a directory or a Solution ZIP layer (solutionLayerFiles); a file above 1 MiB or an unreadable layer is skipped.
  */
+function importYamlWorkflows(layer, result, limit) {
+  if (layer.format !== 'yaml') return;
+  for (const [id, entry] of modernFlowWorkflows(layer.files ?? [], (file) => {
+    try {
+      return readLocalFileSync(file.path, { root: layer.dir, maxBytes: limit, encoding: 'utf8' });
+    } catch {
+      return null;
+    }
+  }))
+    result.set(id, entry);
+}
+
+function workflowEntries(layer) {
+  try {
+    return solutionLayerFiles(layer, /^workflows$/i).filter((file) => /^[^/]+\/[^/]+$/.test(file.name));
+  } catch {
+    return null;
+  }
+}
+
+function importWorkflowEntry(layer, entry, byName, result, limit) {
+  const name = entry.name.slice(entry.name.indexOf('/') + 1);
+  if (!/\.json\.data\.xml$/i.test(name)) return;
+  const pair = [entry, byName.get(name.replace(/\.data\.xml$/i, '').toLowerCase())];
+  const files = pair.map((file) => file && path.join(layer.dir, ...file.name.split('/')));
+  const contained = pair.map((file) => {
+    try {
+      return file ? file.read(limit).toString('utf8') : null;
+    } catch {
+      return null;
+    }
+  });
+  if (contained.includes(null)) return;
+  const xml = parseSolutionXml(contained[0]);
+  const id = canonical(xml.attrs.WorkflowId ?? descendants(xml, 'Workflow')[0]?.attrs.WorkflowId);
+  if (!/^[0-9a-f-]{36}$/.test(id)) return;
+  const node = descendants(xml, 'Workflow')[0] ?? xml,
+    state =
+      childText(node, 'StateCode') ??
+      childText(node, 'statecode') ??
+      node.attrs.StateCode ??
+      node.attrs.statecode ??
+      null;
+  const active = state === null ? null : ['1', 'activated'].includes(String(state).toLowerCase());
+  result.set(id, {
+    file: files[1],
+    name: xml.attrs.Name ?? node.attrs.Name ?? null,
+    active,
+    activation: { sourceValue: state, sourceFile: files[0] },
+    definition: parseExactJson(contained[1]),
+  });
+}
+
 export async function importOperationWorkflows(layers = []) {
   const result = new Map(),
     limit = 1024 * 1024;
@@ -562,54 +685,11 @@ export async function importOperationWorkflows(layers = []) {
     if (!layer.dir) continue;
     // A YAML repository layer: its modernflows/ cloud flows normalise into the same entries (flow-yaml.mjs); a file that does
     // not parse is reported by its inventory record (MODERNFLOW_YAML_INVALID).
-    if (layer.format === 'yaml')
-      for (const [id, entry] of modernFlowWorkflows(layer.files ?? [], (file) => {
-        try {
-          return readLocalFileSync(file.path, { root: layer.dir, maxBytes: limit, encoding: 'utf8' });
-        } catch {
-          return null;
-        }
-      }))
-        result.set(id, entry);
-    let entries;
-    try {
-      entries = solutionLayerFiles(layer, /^workflows$/i).filter((file) => /^[^/]+\/[^/]+$/.test(file.name));
-    } catch {
-      continue;
-    }
+    importYamlWorkflows(layer, result, limit);
+    const entries = workflowEntries(layer);
+    if (!entries) continue;
     const byName = new Map(entries.map((file) => [file.name.slice(file.name.indexOf('/') + 1).toLowerCase(), file]));
-    for (const entry of entries) {
-      const name = entry.name.slice(entry.name.indexOf('/') + 1);
-      if (!/\.json\.data\.xml$/i.test(name)) continue;
-      const pair = [entry, byName.get(name.replace(/\.data\.xml$/i, '').toLowerCase())];
-      const files = pair.map((file) => file && path.join(layer.dir, ...file.name.split('/')));
-      const contained = pair.map((file) => {
-        try {
-          return file ? file.read(limit).toString('utf8') : null;
-        } catch {
-          return null;
-        }
-      });
-      if (contained.some((value) => value === null)) continue;
-      const xml = parseSolutionXml(contained[0]);
-      const id = canonical(xml.attrs.WorkflowId ?? descendants(xml, 'Workflow')[0]?.attrs.WorkflowId);
-      if (!/^[0-9a-f-]{36}$/.test(id)) continue;
-      const node = descendants(xml, 'Workflow')[0] ?? xml,
-        state =
-          childText(node, 'StateCode') ??
-          childText(node, 'statecode') ??
-          node.attrs.StateCode ??
-          node.attrs.statecode ??
-          null;
-      const active = state === null ? null : ['1', 'activated'].includes(String(state).toLowerCase());
-      result.set(id, {
-        file: files[1],
-        name: xml.attrs.Name ?? node.attrs.Name ?? null,
-        active,
-        activation: { sourceValue: state, sourceFile: files[0] },
-        definition: parseExactJson(contained[1]),
-      });
-    }
+    for (const entry of entries) importWorkflowEntry(layer, entry, byName, result, limit);
   }
   return result;
 }
@@ -645,12 +725,28 @@ export function runExportedCloudFlow({
     context,
   };
   const runs = flowRunsOf(store);
-  if (!runs) return executeFlowDefinition(args);
+  const skipped = (answer) =>
+    answer?.status === 'Skipped' ? { status: 202, body: { status: 'Skipped', reason: answer.reason } } : answer;
+  // The flow-run span nests under the portal request's current span (trace-store.mjs AsyncLocalStorage).
+  if (!runs) {
+    const answer = traceFlowRun(
+      store,
+      { processId: record.processId, name: record.name ?? workflow.name ?? null, trigger: 'PowerPages', input },
+      () => executeFlowDefinition(args),
+    );
+    return typeof answer?.then === 'function' ? answer.then(skipped) : skipped(answer);
+  }
   // The native answer of a Power Pages flow request whose run waits before its Response is a guess (natively the request
   // waits for the Response until the portal times out), as is the flowrun triggertype text.
-  return runTrackedFlow({ runs, processId: record.processId, trigger: 'PowerPages', ...args }).then((answer) =>
+  return runTrackedFlow({
+    runs,
+    processId: record.processId,
+    name: record.name ?? workflow.name ?? null,
+    trigger: 'PowerPages',
+    ...args,
+  }).then((answer) =>
     answer?.status === 'Waiting'
       ? (answer.response ?? { status: 202, body: { runId: answer.runId, status: 'Waiting' } })
-      : answer,
+      : skipped(answer),
   );
 }

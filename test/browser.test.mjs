@@ -1,7 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { chromium } from 'playwright-core';
@@ -14,6 +13,7 @@ import {
 } from '../lense/browser.mjs';
 import { refreshUrl } from '../lense/navigation.mjs';
 import { defaultEdgeDataDirs, validateBrowserProfile } from '../lense/browser-profile.mjs';
+import { tempDirSync } from './fixture.mjs';
 
 const origin = 'https://portal.example.com';
 
@@ -91,7 +91,7 @@ test('Edge normal storage fails early with actionable attachment options without
 });
 
 test('external browser storage stays in the selected child without exporting session credentials', async (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-external-browser-'));
+  const root = tempDirSync('pp-external-browser-');
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.mkdirSync(path.join(root, 'Profile 2'));
   let closed = false;
@@ -120,7 +120,7 @@ test('external browser storage stays in the selected child without exporting ses
 });
 
 test('owned headed windows normalize old maximization once and retain subsequent user placement', async (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-window-'));
+  const root = tempDirSync('pp-window-');
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const sends = [];
   const launches = [];
@@ -321,7 +321,7 @@ test('failed document GETs are left pending and online mode does not change page
 });
 
 test('session cookies restore and save atomically without retaining persistent cookies', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-cookies-'));
+  const dir = tempDirSync('paqvilo-cookies-');
   const file = path.join(dir, 'profile.session.json');
   const old = [{ name: 'old', value: 'value', domain: 'portal.example.com', path: '/', expires: -1 }];
   fs.writeFileSync(file, JSON.stringify(old));
@@ -351,7 +351,7 @@ test('session cookies restore and save atomically without retaining persistent c
 });
 
 test('owned profiles discard obsolete loopback Mirage port cookies while preserving selected runtimes and remote cookies', async (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-cookie-ports-'));
+  const dir = tempDirSync('paqvilo-cookie-ports-');
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'sessions.json'),
     cookie = (name, domain = '127.0.0.1') => ({ name, domain, path: '/', expires: -1, value: 'invented' });
@@ -397,7 +397,7 @@ test('download names cannot escape Downloads or name a Windows device', () => {
 });
 
 test('unchanged session cookies do not rewrite credentials and stopping is idempotent', async (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-cookie-cache-'));
+  const dir = tempDirSync('paqvilo-cookie-cache-');
   const file = path.join(dir, 'profile.session.json');
   const cookies = [{ name: 'session', value: 'secret', domain: 'portal.example.com', path: '/', expires: -1 }];
   fs.writeFileSync(file, JSON.stringify(cookies));

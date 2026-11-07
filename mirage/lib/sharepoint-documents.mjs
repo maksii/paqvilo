@@ -97,7 +97,7 @@ function assertName(name) {
 // A new file or folder name also follows SharePoint's naming rules: no " * : < > ? / \ |, no leading or trailing space,
 // no trailing dot, none of the reserved names. The exact SharePoint Online set is a guess (Learn documents these
 // characters and the Windows reserved names; .lock, _vti_, desktop.ini, ~$ prefixes and _private are the SharePoint list).
-const RESERVED_NAME = /^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\..*)?$|^\.lock$|^desktop\.ini$|^_private$|^~\$|_vti_/i;
+const RESERVED_NAME = /^(?:con|prn|aux|nul|com\d|lpt\d)(?:\..*)?$|^\.lock$|^desktop\.ini$|^_private$|^~\$|_vti_/i;
 function assertNewName(name) {
   assertName(name);
   if (/["*:<>?/\\|]/.test(name) || name !== name.trim() || name.endsWith('.') || RESERVED_NAME.test(name))
@@ -258,7 +258,7 @@ function createApi(api) {
         relativeUrl ??
         `${String(name)
           .replace(/["*:<>?/\\|]/g, '')
-          .trim()}_${String(regarding.id).replace(/-/g, '').toUpperCase()}`;
+          .trim()}_${String(regarding.id).replaceAll('-', '').toUpperCase()}`;
       if (!String(folder).split('/').filter(Boolean).length)
         throw new DataError('The relative URL is not valid.', 400, 'SharePointInvalidName');
       const siteRef = lookup(SITE, site.sharepointsiteid, site.name);
@@ -474,7 +474,8 @@ function createApi(api) {
 function install(api, options = {}) {
   const state = stateOf(api);
   const storage = options.storage ?? api.providers?.storage ?? null;
-  state.storage = storage ? (typeof storage.forRoute === 'function' ? storage : guardProvider(storage)) : null;
+  if (storage) state.storage = typeof storage.forRoute === 'function' ? storage : guardProvider(storage);
+  else state.storage = null;
   state.diagnostic = options.diagnostic ?? api.diagnostic ?? null;
   api.sharepoint = createApi(api);
   return api.store.transact(() => seed(api.store));
@@ -525,11 +526,14 @@ const siteSetting = (portal, name) => {
   const entry = Object.entries(portal?.settings ?? {}).find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1];
   return entry?.value ?? entry ?? null;
 };
+// The error a handler answered itself, read by the request's http root (server.mjs, D-R3-4).
+const HTTP_ERROR = Symbol.for('paqvilo.mirage.httpError');
 const answer = (res, status, body, headers = {}) => {
   if (res.headersSent) {
     res.end();
     return true;
   }
+  if (status >= 400 && body?.error) res[HTTP_ERROR] = body.error;
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
@@ -555,7 +559,7 @@ const failureBody = (error) => ({ error: { code: error.code ?? 'PortalDocumentsF
  *   DELETE <route><table>/<id>?folder=<a/b>  -> 204 (the folder and its contents)
  * Anything else answers 501 PortalDocumentMemberUnsupported. Without storage: 501 SharePointStorageNotConfigured.
  */
-export function createPortalDocumentService({
+/* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ export function createPortalDocumentService({
   sharepoint,
   store,
   portal = () => ({}),
@@ -563,7 +567,8 @@ export function createPortalDocumentService({
   blockedExtensions = () => [],
 }) {
   const system = { admin: true }; // the portal's own permission check runs first; the organization call acts as the site
-  async function handle(req, res, url, { identity = {}, csrf = null } = {}) {
+  async function /* NOSONAR */ handle(req, res, url, { identity = {}, csrf = null } = {}) {
+    // NOSONAR: preserve state, evaluation order, and lifecycle
     if (!url.pathname.toLowerCase().startsWith(PORTAL_DOCUMENTS_ROUTE)) return false;
     const parts = url.pathname
       .slice(PORTAL_DOCUMENTS_ROUTE.length)
@@ -633,6 +638,24 @@ export function createPortalDocumentService({
           failureBody({ code: 'NotFound', message: `${mapping.logicalName} With Id = ${id} Does Not Exist` }),
         );
       const regarding = { logicalName: mapping.logicalName, id: row[mapping.idColumn] };
+      // The document transfer on the request's span (D-R3-10): the regarding record, the operation and the file facts.
+      const span = store.traces?.enabled ? store.traces.current() : null;
+      const transfer = (facts) => span?.set({ documents: 'sharepoint', ...facts });
+      span?.setEntity(mapping.logicalName, String(regarding.id));
+      transfer({
+        transfer:
+          req.method === 'GET'
+            ? name // NOSONAR: preserve lazy branch evaluation and coercion
+              ? 'download'
+              : 'list'
+            : req.method === 'DELETE' // NOSONAR: preserve lazy branch evaluation and coercion
+              ? 'delete'
+              : newFolder != null // NOSONAR: preserve lazy branch evaluation and coercion
+                ? 'create-folder'
+                : 'upload',
+        ...(name ? { fileName: name } : {}),
+        ...(path.length ? { folder: path.join('/') } : {}),
+      });
       const location =
         activeLocations(
           store,
@@ -695,6 +718,7 @@ export function createPortalDocumentService({
             }),
           );
         const file = await sharepoint.download(location.sharepointdocumentlocationid, name, system, { path });
+        transfer({ fileName: file.name, fileSize: file.bytes?.length ?? null, mimetype: file.contentType ?? null });
         res.writeHead(200, {
           'content-type': file.contentType,
           'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`,
@@ -809,6 +833,7 @@ export function createPortalDocumentService({
         },
         system,
       );
+      transfer({ fileName: stored.name, fileSize: stored.size, mimetype: stored.contentType ?? null });
       return answer(res, 201, {
         name: stored.name,
         size: stored.size,

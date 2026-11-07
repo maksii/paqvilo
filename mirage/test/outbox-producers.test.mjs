@@ -111,7 +111,7 @@ test('SendEmail with IssueSend true queues the entry and BackgroundSendEmail mar
   assert.equal(response.status, 200, response.text);
   const [entry] = outbox.list();
   assert.equal(entry.state, 'delivered');
-  assert.ok(entry.deliveredOn);
+  assert.match(entry.deliveredOn, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
   assert.equal(emailRow(store, id).statuscode, 6, 'the email row itself is unchanged');
 });
 

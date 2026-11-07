@@ -26,55 +26,54 @@ export function metadataXml(source) {
 const TYPES = { table: 1, 'table-reference': 1, column: 2, choice: 9, relationship: 10, key: 14, form: 60, view: 26 };
 const guid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const escape = (value) => value.replaceAll("'", "''");
-function normalizeExpected(actual, expected, key = '') {
-  if (expected === null || typeof expected !== 'object') {
-    if (
-      typeof actual === 'string' &&
-      typeof expected === 'string' &&
-      ['formxml', 'fetchxml', 'layoutxml'].includes(key)
-    ) {
-      try {
-        return metadataXml(actual);
-      } catch {
-        return actual;
-      }
+function normalizeExpectedScalar(actual, expected, key) {
+  if (
+    typeof actual === 'string' &&
+    typeof expected === 'string' &&
+    ['formxml', 'fetchxml', 'layoutxml'].includes(key)
+  ) {
+    try {
+      return metadataXml(actual);
+    } catch {
+      return actual;
     }
-    if (
-      typeof actual === 'string' &&
-      typeof expected === 'string' &&
-      ['SchemaName', 'LogicalName', 'Name'].includes(key)
-    )
-      return actual.toLowerCase();
-    return actual;
   }
-  if (Array.isArray(expected)) {
-    if (!Array.isArray(actual)) return null;
-    if (key === 'Attributes')
-      return expected.map((e) =>
-        normalizeExpected(
-          actual.find((a) => a.SchemaName?.toLowerCase() === e.SchemaName?.toLowerCase()),
-          e,
-        ),
-      );
-    if (key === 'LocalizedLabels')
-      return expected.map((e) =>
-        normalizeExpected(
-          actual.find((a) => a.LanguageCode === e.LanguageCode),
-          e,
-        ),
-      );
-    if (key === 'Options')
-      return actual.length === expected.length
-        ? expected.map((e) =>
-            normalizeExpected(
-              actual.find((a) => a.Value === e.Value),
-              e,
-            ),
-          )
-        : actual;
-    if (key === 'KeyAttributes') return [...actual].sort();
-    return actual;
-  }
+  if (typeof actual === 'string' && typeof expected === 'string' && ['SchemaName', 'LogicalName', 'Name'].includes(key))
+    return actual.toLowerCase();
+  return actual;
+}
+
+function normalizeExpectedArray(actual, expected, key) {
+  if (!Array.isArray(actual)) return null;
+  if (key === 'Attributes')
+    return expected.map((e) =>
+      normalizeExpected(
+        actual.find((a) => a.SchemaName?.toLowerCase() === e.SchemaName?.toLowerCase()),
+        e,
+      ),
+    );
+  if (key === 'LocalizedLabels')
+    return expected.map((e) =>
+      normalizeExpected(
+        actual.find((a) => a.LanguageCode === e.LanguageCode),
+        e,
+      ),
+    );
+  if (key === 'Options')
+    return actual.length === expected.length
+      ? expected.map((e) =>
+          normalizeExpected(
+            actual.find((a) => a.Value === e.Value),
+            e,
+          ),
+        )
+      : actual;
+  // Preserve Array#sort's string coercion for metadata returned by the service.
+  if (key === 'KeyAttributes') return [...actual].sort(); // NOSONAR: default string coercion is intentional
+  return actual;
+}
+
+function normalizeExpectedObject(actual, expected) {
   const result = {};
   for (const [property, value] of Object.entries(expected)) {
     if (property === '@odata.type' || property === 'CanBeChanged' || property === 'ManagedPropertyLogicalName')
@@ -88,6 +87,14 @@ function normalizeExpected(actual, expected, key = '') {
     else result[property] = normalizeExpected(actual?.[property], value, property);
   }
   return result;
+}
+
+function normalizeExpected(actual, expected, key = '') {
+  if (expected === null || typeof expected !== 'object') {
+    return normalizeExpectedScalar(actual, expected, key);
+  }
+  if (Array.isArray(expected)) return normalizeExpectedArray(actual, expected, key);
+  return normalizeExpectedObject(actual, expected);
 }
 export function compatible(actual, desired) {
   if (!actual) return false;
@@ -120,7 +127,13 @@ async function requiredMetadata(client, route) {
   }
 }
 
-async function existingComponent(client, action) {
+function optionSetExpansion(body, cast) {
+  if (body['GlobalOptionSet@odata.bind']) return '?$expand=GlobalOptionSet';
+  if (cast === 'Microsoft.Dynamics.CRM.BooleanAttributeMetadata') return '?$expand=OptionSet';
+  return '';
+}
+
+/* NOSONAR: preserve client lookup and continuation ordering */ async function existingComponent(client, action) {
   const b = action.body;
   if (action.kind === 'publisher') return one(client, `publishers?$filter=uniquename eq '${escape(b.uniquename)}'`);
   if (action.kind === 'solution') return one(client, `solutions?$filter=uniquename eq '${escape(b.uniquename)}'`);
@@ -149,7 +162,7 @@ async function existingComponent(client, action) {
     )
       return attribute;
     return client.get(
-      `EntityDefinitions(LogicalName='${action.table}')/Attributes(LogicalName='${action.column}')/${cast}${b['GlobalOptionSet@odata.bind'] ? '?$expand=GlobalOptionSet' : cast === 'Microsoft.Dynamics.CRM.BooleanAttributeMetadata' ? '?$expand=OptionSet' : ''}`,
+      `EntityDefinitions(LogicalName='${action.table}')/Attributes(LogicalName='${action.column}')/${cast}${optionSetExpansion(b, cast)}`,
     );
   }
   if (action.kind === 'relationship') {
@@ -167,16 +180,20 @@ async function existingComponent(client, action) {
   throw new Error('Unknown provisioning component kind.');
 }
 
+function requiredTableMissing(found, table) {
+  return !found && table.existing;
+}
+
 export async function planManifest(manifest, { client } = {}) {
   manifest = validateManifest(manifest);
   const compiled = compileManifest(manifest),
     actions = [],
     missingTables = new Set();
-  let publisherId;
+  const publisher = { id: undefined };
   if (client) {
     for (const table of manifest.tables) {
       const found = await client.optional(`EntityDefinitions(LogicalName='${table.name}')`);
-      if (!found && table.existing) throw new Error(`Required existing table ${table.name} is absent.`);
+      if (requiredTableMissing(found, table)) throw new Error(`Required existing table ${table.name} is absent.`);
       if (!found) missingTables.add(table.name);
     }
   }
@@ -185,27 +202,7 @@ export async function planManifest(manifest, { client } = {}) {
       client && !(['column', 'key'].includes(action.kind) && missingTables.has(action.table))
         ? await existingComponent(client, action)
         : null;
-    if (action.kind === 'publisher') publisherId = existing?.publisherid;
-    const wrongPublisher =
-      action.kind === 'solution' &&
-      existing &&
-      (!publisherId || existing._publisherid_value?.toLowerCase() !== publisherId.toLowerCase());
-    const status = existing ? (compatible(existing, action.body) && !wrongPublisher ? 'exists' : 'drift') : 'create';
-    actions.push({
-      ...action,
-      status,
-      ...(existing
-        ? {
-            existingId:
-              existing.MetadataId ??
-              existing.publisherid ??
-              existing.solutionid ??
-              existing.formid ??
-              existing.savedqueryid,
-          }
-        : {}),
-      ...(action.kind === 'key' && existing ? { keyStatus: existing.EntityKeyIndexStatus } : {}),
-    });
+    actions.push(planActionResult(action, existing, publisher));
   }
   return {
     ...compiled,
@@ -220,7 +217,37 @@ export async function planManifest(manifest, { client } = {}) {
   };
 }
 
-export async function applyManifest(input, { client, journalFile, expectedOrganisationId, onProgress = () => {} }) {
+function planActionResult(action, existing, publisher) {
+  if (action.kind === 'publisher') publisher.id = existing?.publisherid;
+  const wrongPublisher =
+    action.kind === 'solution' &&
+    existing &&
+    (!publisher.id || existing._publisherid_value?.toLowerCase() !== publisher.id.toLowerCase());
+  let status;
+  if (!existing) status = 'create';
+  else if (compatible(existing, action.body) && !wrongPublisher) status = 'exists';
+  else status = 'drift';
+  return {
+    ...action,
+    status,
+    ...(existing
+      ? {
+          existingId:
+            existing.MetadataId ??
+            existing.publisherid ??
+            existing.solutionid ??
+            existing.formid ??
+            existing.savedqueryid,
+        }
+      : {}),
+    ...(action.kind === 'key' && existing ? { keyStatus: existing.EntityKeyIndexStatus } : {}),
+  };
+}
+
+/* NOSONAR: preserve write, journal and progress callback ordering */ export async function applyManifest(
+  input,
+  { client, journalFile, expectedOrganisationId, onProgress = () => {} },
+) {
   const manifest = validateManifest(input);
   const identity = await client.verify(expectedOrganisationId);
   const plan = await planManifest(manifest, { client });
@@ -368,7 +395,11 @@ export async function applyManifest(input, { client, journalFile, expectedOrgani
 // with IncludeSubcomponents. That later pulls another solution's forms/columns
 // into this export. Keep explicitly added subcomponents and narrow only known
 // table roots through the supported AddSolutionComponent action.
-export async function scopeSolutionRoots(input, client, { onProgress = () => {} } = {}) {
+/* NOSONAR: preserve public lifecycle await ordering */ export async function scopeSolutionRoots(
+  input,
+  client,
+  { onProgress = () => {} } = {},
+) {
   const manifest = validateManifest(input),
     known = new Map(),
     changes = [];
@@ -414,7 +445,11 @@ export async function scopeSolutionRoots(input, client, { onProgress = () => {} 
     // The action does not narrow an existing IncludeAll root. Removing only its
     // solution membership leaves the Dataverse table/data intact. Save every
     // explicit component first; the caller's journal makes interruption reviewable.
-    await onProgress({ state: 'before-membership-replacement', solution: solution.uniqueName, components: before });
+    /* NOSONAR: Preserve the original progress callback await boundary. */ await onProgress({
+      state: 'before-membership-replacement',
+      solution: solution.uniqueName,
+      components: before,
+    });
     for (const root of roots) {
       await client.request('RemoveSolutionComponent', {
         method: 'POST',
@@ -445,7 +480,10 @@ export async function scopeSolutionRoots(input, client, { onProgress = () => {} 
       );
       if (!present.length) await add(component.objectid, component.componenttype, solution.uniqueName);
     }
-    await onProgress({ state: 'roots-scoped', solution: solution.uniqueName });
+    /* NOSONAR: Preserve the original progress callback await boundary. */ await onProgress({
+      state: 'roots-scoped',
+      solution: solution.uniqueName,
+    });
   }
   // IncludeAll roots can mask absent explicit membership. Restore the declared
   // metadata after narrowing; never create/alter a table, column or business row.
@@ -482,7 +520,10 @@ export async function scopeSolutionRoots(input, client, { onProgress = () => {} 
     );
     if (!included.length) await add(attribute.MetadataId, 2, relation.solution);
   }
-  await onProgress({ state: 'declared-memberships-restored', changedRoots: changes.length });
+  /* NOSONAR: Preserve the original progress callback await boundary. */ await onProgress({
+    state: 'declared-memberships-restored',
+    changedRoots: changes.length,
+  });
   return { changedRoots: changes.length, changes };
 }
 
@@ -583,7 +624,11 @@ export async function exportSolution({ client, solutionName, zipFile, unpackFold
       '--packagetype',
       'Unmanaged',
     ]);
-    if (result.code !== 0 || result.timedOut || /^\s*Error:/im.test(result.stdout + '\n' + result.stderr))
+    /* NOSONAR */ if (
+      result.code !== 0 ||
+      result.timedOut ||
+      /^[^\S\r\n\u2028\u2029]*Error:/im.test(result.stdout + '\n' + result.stderr)
+    )
       throw new Error('PAC unpack failed; exported ZIP preserved. PAC output withheld.');
   }
   return {

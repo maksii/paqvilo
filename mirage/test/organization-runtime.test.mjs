@@ -15,6 +15,7 @@ import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import { organizationPrincipalContext } from '../lib/dataverse-principal-context.mjs';
 import { parseDataverseRoute, parsePrefer } from '../lib/dataverse-odata.mjs';
 import { createSimulator } from '../server.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const ids = [
   '31111111-1111-4111-8111-111111111111',
@@ -475,7 +476,7 @@ test('failed transport startup releases opened listeners and honors organization
 });
 
 test('portal listener admission failure closes the API and every earlier listener', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-listener-cleanup-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-listener-cleanup-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(
     path.join(directory, 'website.yml'),

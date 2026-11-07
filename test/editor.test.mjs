@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { openInEditor, resolveEditorCommand } from '../lense/panel.mjs';
 import { DEV_PROBLEM_MATCHER, DEV_READY } from '../lense/dev-messages.mjs';
+import { tempDirSync } from './fixture.mjs';
 
 test('tracked toolkit and demo debugger launches wait for CLI readiness and attach to their task port', () => {
   const debugPorts = [];
@@ -35,7 +35,7 @@ test('tracked toolkit and demo debugger launches wait for CLI readiness and atta
 });
 
 test('Windows editor discovery preserves PATH and explicit editor choices, then locates regular vendor CLIs', (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-editor-'));
+  const dir = tempDirSync('paqvilo-editor-');
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const local = path.join(dir, 'Local App Data');
   const machine = path.join(dir, 'Program Files');
@@ -68,33 +68,48 @@ test('Windows editor discovery preserves PATH and explicit editor choices, then 
   );
 });
 
-test(
-  'Windows source-open invokes the discovered CLI with the exact quoted file location when PATH is empty',
-  { skip: process.platform !== 'win32' },
-  async (t) => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-editor-launch-'));
-    const command = path.join(dir, 'Programs', 'Microsoft VS Code', 'bin', 'code.cmd');
-    const capture = path.join(dir, 'captured.txt');
-    const source = path.join(dir, 'Source & form (draft).js');
-    fs.mkdirSync(path.dirname(command), { recursive: true });
-    fs.writeFileSync(source, 'invented source');
-    fs.writeFileSync(command, `@echo off\r\n> "${capture}" echo "%~2"\r\nexit /b 0\r\n`);
-    const names = ['PATH', 'LOCALAPPDATA', 'ProgramFiles', 'ProgramFiles(x86)'];
-    const original = Object.fromEntries(names.map((name) => [name, process.env[name]]));
-    const keepAlive = setInterval(() => {}, 1000);
-    t.after(() => {
-      clearInterval(keepAlive);
-      for (const name of names) {
-        if (original[name] === undefined) delete process.env[name];
-        else process.env[name] = original[name];
-      }
-      fs.rmSync(dir, { recursive: true, force: true });
-    });
+// Windows runs the editor's .cmd through cmd.exe and discovers it when PATH is empty; POSIX spawns the named
+// executable with its arguments unchanged. Each platform runs its own launch path for real.
+test('source-open invokes the editor CLI with the exact file location and reports a failing CLI', async (t) => {
+  const windows = process.platform === 'win32';
+  const dir = tempDirSync('paqvilo-editor-launch-');
+  const capture = path.join(dir, 'captured.txt');
+  const source = path.join(dir, 'Source & form (draft).js');
+  const cli = (file, exitCode) => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(
+      file,
+      windows
+        ? `@echo off\r\n> "${capture}" echo "%~2"\r\nexit /b ${exitCode}\r\n`
+        : `#!/bin/sh\nprintf '"%s"\\n' "$2" > '${capture}'\nexit ${exitCode}\n`,
+      { mode: 0o755 },
+    );
+    return file;
+  };
+  fs.writeFileSync(source, 'invented source');
+  const names = ['PATH', 'LOCALAPPDATA', 'ProgramFiles', 'ProgramFiles(x86)'];
+  const original = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  // The editor child and openInEditor's foreground timer are unref'd: keep the loop alive until the child exits.
+  const keepAlive = setInterval(() => {}, 1000);
+  t.after(() => {
+    clearInterval(keepAlive);
+    for (const name of names) {
+      if (original[name] === undefined) delete process.env[name];
+      else process.env[name] = original[name];
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  let editor = 'code';
+  if (windows) {
+    cli(path.join(dir, 'Programs', 'Microsoft VS Code', 'bin', 'code.cmd'), 0);
     process.env.PATH = '';
     process.env.LOCALAPPDATA = dir;
     process.env.ProgramFiles = dir;
     process.env['ProgramFiles(x86)'] = dir;
-    assert.equal(await openInEditor('code', source, 12, 3), null);
-    assert.equal(fs.readFileSync(capture, 'utf8').trim(), `"${source}:12:3"`);
-  },
-);
+  } else editor = cli(path.join(dir, 'bin', 'code'), 0);
+  assert.equal(await openInEditor(editor, source, 12, 3), null);
+  assert.equal(fs.readFileSync(capture, 'utf8').trim(), `"${source}:12:3"`);
+  const failing = cli(path.join(dir, 'failing', windows ? 'editor.cmd' : 'editor'), 3);
+  assert.equal(await openInEditor(failing, source), `"${failing}" ended with code 3`);
+  assert.equal(fs.readFileSync(capture, 'utf8').trim(), `"${source}:1:1"`, 'the failing CLI still got the location');
+});

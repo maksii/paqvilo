@@ -28,6 +28,10 @@
       "presetLibrary",
       "resolveSolutionRoots"
     ],
+    "paqvilo/mirage/code-apps": ["createCodeAppSdkExecutor"],
+    "paqvilo/mirage/code-apps/vite": ["codeApps"],
+    "paqvilo/mirage/code-apps/client": ["configure", "getStatus", "getContext", "getToken", "dataClient"],
+    "paqvilo/mirage/lib/code-apps-client.js": ["configure", "getStatus", "getContext", "getToken", "dataClient"],
     "paqvilo/mirage/acceptance": [
       "browserChannel",
       "browserLaunchOptions",
@@ -66,6 +70,7 @@
       "runSessionMatrix",
       "runStorageContract", "STORAGE_CONTRACT_CASES",
       "fixedClock", "sequentialIds", "createScheduler",
+      "createFixtureRecipes",
       "signInContext",
       "signInHeaders"
     ],
@@ -101,6 +106,9 @@
     "paqvilo/mirage/fixtures": [
       "formatMockRecord",
       "mergeDataset",
+      "generateDataset", "summarizeDataset", "generateSchemaDeclarations", "remapDatasetIdentities",
+      "buildPermissionModel", "comparePermissionModels", "comparePluginRegistrations",
+      "parsePluginDocument", "importSolutionPlugins", "inspectFlowExpression", "evaluateFlowTriggerConditions",
       "findDanglingLookups",
       "schemaViolations",
       "fieldIndexFromMappings",

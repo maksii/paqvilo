@@ -7,8 +7,9 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { runMirageReplayShards } from '../portal-harness/mirage-replay-shards.mjs';
 import { replayCellShard } from '../portal-harness/mirage-campaign-replay.mjs';
+import { makeTemporaryDirectory } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 test('actual process workers own separate cell/cache/receipt namespaces and unqualified evidence stays unqualified', async () => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-sharded-replay-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-sharded-replay-'));
   try {
     const module = new URL('../portal-harness/mirage-campaign-replay.mjs', import.meta.url).href,
       script = path.join(directory, 'fixture.mjs');

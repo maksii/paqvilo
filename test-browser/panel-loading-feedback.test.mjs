@@ -30,6 +30,7 @@ test(
       panel,
       detach,
       releaseOpen,
+      openArrived = () => {},
       openCalls = 0;
     const server = http.createServer((req, res) =>
       res
@@ -67,7 +68,6 @@ test(
       serviceWorkers: 'block',
       reducedMotion: 'no-preference',
     });
-    context.setDefaultTimeout(10_000);
     const session = new OverlaySession({
       sourceDir: fx.portal,
       origin,
@@ -87,6 +87,7 @@ test(
     panel = enablePanel(context, session, {
       open: async () => {
         openCalls++;
+        openArrived();
         await new Promise((resolve) => {
           releaseOpen = resolve;
         });
@@ -94,17 +95,31 @@ test(
       },
     });
     await context.addInitScript(() => {
+      // While a deadline is held, the panel's 120 s request timeout fires only when the test expires it.
       const schedule = window.setTimeout.bind(window);
-      window.setTimeout = (fn, delay, ...args) =>
-        schedule(fn, window.__fastDeadline && delay === 120000 ? 50 : delay, ...args);
+      window.setTimeout = (fn, delay, ...args) => {
+        if (!window.__holdDeadline || delay !== 120000) return schedule(fn, delay, ...args);
+        window.__expireDeadline = () => fn(...args);
+        return schedule(() => {}, 0);
+      };
       const original = window.fetch.bind(window);
       window.__inspectionMode = 'delay';
       window.__inspectionRequests = 0;
+      window.__inspectionStartGate = new Promise((resolve) => {
+        window.__releaseInspectionStart = resolve;
+      });
+      window.__inspectionStarted = new Promise((resolve) => {
+        window.__inspectionArrived = resolve;
+      });
       window.__catalogMode = 'failure';
       window.__catalogRequests = 0;
+      window.__openRequests = 0;
       window.fetch = async (...args) => {
+        if (String(args[0]).includes('/__paqvilo/api/open')) window.__openRequests++;
         if (String(args[0]).includes('/__paqvilo/api/inspect')) {
+          await window.__inspectionStartGate;
           window.__inspectionRequests++;
+          window.__inspectionArrived();
           const mode = window.__inspectionMode;
           if (mode === 'delay')
             await new Promise((resolve) => {
@@ -147,14 +162,22 @@ test(
     await xray.locator('.scan-orbit').waitFor();
     assert.match(await xray.locator('.scan-state').textContent(), /origins|Reading local/);
     assert.equal(await xray.locator('.ui').getAttribute('aria-busy'), 'true');
-    const before = await xray.locator('.scan-orbit').evaluate((node) => getComputedStyle(node).transform);
-    await page.waitForTimeout(90);
-    const after = await xray.locator('.scan-orbit').evaluate((node) => getComputedStyle(node).transform);
-    assert.notEqual(before, after, 'scan animates while the actual API is held');
+    assert.equal(
+      await xray
+        .locator('.scan-orbit')
+        .evaluate((node) => node.getAnimations().some((animation) => animation.playState === 'running')),
+      true,
+      'scan animates while the actual API is held',
+    );
     await evidence('portal-xray-reading-sources');
     await page.emulateMedia({ reducedMotion: 'reduce' });
     assert.equal(await xray.locator('.scan-orbit').evaluate((node) => getComputedStyle(node).animationName), 'none');
     await page.emulateMedia({ reducedMotion: 'no-preference' });
+    // The scan can paint before fetch starts. Exercise exit while the actual request is held.
+    await page.evaluate(() => {
+      window.__releaseInspectionStart();
+      return window.__inspectionStarted;
+    });
     await xray.getByRole('button', { name: 'Turn off X-ray' }).click();
     assert.equal(await page.evaluate(() => document.getElementById('paqvilo-xray').__px.enabled), false);
     assert.equal(await page.evaluate(() => window.__inspectionRequests), 1);
@@ -187,7 +210,7 @@ test(
         .getElementById('paqvilo-xray')
         .dispatchEvent(new CustomEvent('paqvilo-xray', { bubbles: true, detail: { action: 'refresh' } })),
     );
-    await page.waitForTimeout(50);
+    // A refresh requests inspection synchronously from the event, so a second request would already be counted.
     assert.equal(
       await page.evaluate(() => window.__inspectionRequests),
       count,
@@ -223,8 +246,8 @@ test(
       const node = document.getElementById('paqvilo-panel').shadowRoot.querySelector('[data-act="open"]');
       node.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
-    await page.waitForTimeout(30);
-    assert.equal(openCalls, 1, 'duplicate source opening is coalesced');
+    // Opening requests the dev loop synchronously from the click, so a duplicate would already be counted.
+    assert.equal(await page.evaluate(() => window.__openRequests), 1, 'duplicate source opening is coalesced');
     await scope.getByRole('tab', { name: 'Activity' }).click();
     await scope.locator('.working').waitFor();
     releaseOpen();
@@ -233,9 +256,14 @@ test(
       .locator('.toast')
       .getByText(/Opened .+ in the editor/)
       .waitFor();
+    assert.equal(openCalls, 1, 'the coalesced opening reached the dev loop once');
     await scope.getByRole('tab', { name: 'Explore' }).click();
-    await page.evaluate(() => (window.__fastDeadline = true));
+    await page.evaluate(() => (window.__holdDeadline = true));
+    const arrived = new Promise((resolve) => (openArrived = resolve));
     await scope.locator('[data-act="open"]').first().click();
+    // The request reaches the dev loop before its deadline expires.
+    await arrived;
+    await page.evaluate(() => window.__expireDeadline());
     await scope
       .locator('.toast')
       .getByText('The request timed out. Check the dev loop and retry.', { exact: true })
@@ -248,91 +276,87 @@ test(
     );
     assert.equal(openCalls, 2, 'timeouts never automatically retry the operation');
     releaseOpen();
-    await page.evaluate(() => (window.__fastDeadline = false));
+    await page.evaluate(() => (window.__holdDeadline = false));
     assert.deepEqual(errors, []);
   },
 );
 
-test(
-  'background X-ray refresh shows progress while retaining source details, and retires accepted progress',
-  { timeout: 30_000 },
-  async (t) => {
-    const context = await browser.newContext();
-    t.after(() => context.close());
-    const page = await context.newPage();
-    await page.setContent('<form data-entityname="fx_widget"><input id="fx_title" name="fx_title"></form>');
-    await page.evaluate(xrayUi, { origin: 'null', token: 'invented-progress' });
-    await page.evaluate(() => {
-      window.fixtureReport = {
-        columns: [{ name: 'fx_title', entity: 'fx_widget', type: 'string', label: 'Title' }],
-        tables: [{ logicalName: 'fx_widget' }],
-      };
-      const ui = document.getElementById('paqvilo-xray').__px;
-      ui.update(
-        {
-          origin: 'null',
-          token: 'invented-progress',
-          inspection: { active: true, version: 1 },
-          inspectionLoading: false,
-        },
-        window.fixtureReport,
-      );
-      ui.toggle(true);
-      ui.select(document.getElementById('fx_title'));
-    });
-    const xray = page.locator('#paqvilo-xray');
-    await xray.locator('[data-evidence-role="alternatives"]').evaluate((node) => {
-      node.open = true;
-    });
-    await xray.locator('[data-evidence-role="alternatives"]').getByText('fx_title', { exact: true }).waitFor();
-    await page.evaluate(() =>
-      document.getElementById('paqvilo-xray').__px.update(
-        {
-          origin: 'null',
-          token: 'invented-progress',
-          inspection: { active: true, version: 1, loading: true, loadingId: 2, phase: 'Reading updated metadata' },
-          inspectionLoading: true,
-        },
-        window.fixtureReport,
-      ),
+test('background X-ray refresh shows progress while retaining source details, and retires accepted progress', async (t) => {
+  const context = await browser.newContext();
+  t.after(() => context.close());
+  const page = await context.newPage();
+  await page.setContent('<form data-entityname="fx_widget"><input id="fx_title" name="fx_title"></form>');
+  await page.evaluate(xrayUi, { origin: 'null', token: 'invented-progress' });
+  await page.evaluate(() => {
+    window.fixtureReport = {
+      columns: [{ name: 'fx_title', entity: 'fx_widget', type: 'string', label: 'Title' }],
+      tables: [{ logicalName: 'fx_widget' }],
+    };
+    const ui = document.getElementById('paqvilo-xray').__px;
+    ui.update(
+      {
+        origin: 'null',
+        token: 'invented-progress',
+        inspection: { active: true, version: 1 },
+        inspectionLoading: false,
+      },
+      window.fixtureReport,
     );
-    await xray.getByText('Updating source inspection', { exact: true }).waitFor();
-    assert.equal(await xray.locator('.ui').getAttribute('aria-busy'), 'true');
-    assert.equal(await xray.locator('.scan-wash').isVisible(), false, 'cached report refresh uses compact feedback');
-    assert.equal(
-      await xray.locator('[data-evidence-role="alternatives"]').getByText('fx_title', { exact: true }).isVisible(),
-      true,
-      'existing details remain readable',
-    );
-    await page.evaluate(() =>
-      document.getElementById('paqvilo-xray').__px.update(
-        {
-          origin: 'null',
-          token: 'invented-progress',
-          inspection: { active: true, version: 1, loading: true, loadingId: 2 },
-          inspectionLoading: false,
-        },
-        window.fixtureReport,
-      ),
-    );
-    assert.equal(await xray.locator('.ui').getAttribute('aria-busy'), 'false');
-    assert.equal(
-      await xray.locator('.scan-state').isVisible(),
-      false,
-      'accepted response suppresses its delayed server progress push',
-    );
-    await page.evaluate(() =>
-      document.getElementById('paqvilo-xray').__px.update(
-        {
-          origin: 'null',
-          token: 'invented-progress',
-          inspection: { active: true, version: 1, loading: true, loadingId: 3 },
-          inspectionLoading: true,
-        },
-        window.fixtureReport,
-      ),
-    );
-    await xray.getByText('Updating source inspection', { exact: true }).waitFor();
-    assert.equal(await xray.locator('.ui').getAttribute('aria-busy'), 'true');
-  },
-);
+    ui.toggle(true);
+    ui.select(document.getElementById('fx_title'));
+  });
+  const xray = page.locator('#paqvilo-xray');
+  await xray.locator('[data-evidence-role="alternatives"]').evaluate((node) => {
+    node.open = true;
+  });
+  await xray.locator('[data-evidence-role="alternatives"]').getByText('fx_title', { exact: true }).waitFor();
+  await page.evaluate(() =>
+    document.getElementById('paqvilo-xray').__px.update(
+      {
+        origin: 'null',
+        token: 'invented-progress',
+        inspection: { active: true, version: 1, loading: true, loadingId: 2, phase: 'Reading updated metadata' },
+        inspectionLoading: true,
+      },
+      window.fixtureReport,
+    ),
+  );
+  await xray.getByText('Updating source inspection', { exact: true }).waitFor();
+  assert.equal(await xray.locator('.ui').getAttribute('aria-busy'), 'true');
+  assert.equal(await xray.locator('.scan-wash').isVisible(), false, 'cached report refresh uses compact feedback');
+  assert.equal(
+    await xray.locator('[data-evidence-role="alternatives"]').getByText('fx_title', { exact: true }).isVisible(),
+    true,
+    'existing details remain readable',
+  );
+  await page.evaluate(() =>
+    document.getElementById('paqvilo-xray').__px.update(
+      {
+        origin: 'null',
+        token: 'invented-progress',
+        inspection: { active: true, version: 1, loading: true, loadingId: 2 },
+        inspectionLoading: false,
+      },
+      window.fixtureReport,
+    ),
+  );
+  assert.equal(await xray.locator('.ui').getAttribute('aria-busy'), 'false');
+  assert.equal(
+    await xray.locator('.scan-state').isVisible(),
+    false,
+    'accepted response suppresses its delayed server progress push',
+  );
+  await page.evaluate(() =>
+    document.getElementById('paqvilo-xray').__px.update(
+      {
+        origin: 'null',
+        token: 'invented-progress',
+        inspection: { active: true, version: 1, loading: true, loadingId: 3 },
+        inspectionLoading: true,
+      },
+      window.fixtureReport,
+    ),
+  );
+  await xray.getByText('Updating source inspection', { exact: true }).waitFor();
+  assert.equal(await xray.locator('.ui').getAttribute('aria-busy'), 'true');
+});

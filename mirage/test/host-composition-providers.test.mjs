@@ -342,7 +342,10 @@ test('an azurite entry whose loopback endpoint answers 200 but is no Blob endpoi
   const http = await import('node:http');
   const server = http.createServer((req, res) => res.end('')).listen(0, '127.0.0.1');
   await new Promise((resolve) => server.once('listening', resolve));
-  t.after(() => server.close());
+  t.after(() => {
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
   const key = Buffer.from('fx-invented-composition-key').toString('base64');
   const env = {
     FX_AZURITE: `DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=${key};BlobEndpoint=http://127.0.0.1:${server.address().port}/devstoreaccount1;`,

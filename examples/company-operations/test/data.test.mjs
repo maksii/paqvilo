@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { readManifest, readCatalogue } from 'paqvilo/dataverse';
+import { makeTemporaryDirectory } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 const schema = await readManifest(new URL('../dataverse/manifest.json', import.meta.url)),
   data = await readCatalogue(new URL('../data/catalogue.json', import.meta.url));
 const rows = (table) => data.records.filter((r) => r.table === table),
@@ -218,7 +219,7 @@ test('five complete deep paths, all paired read IDs, explicit collision expectat
 });
 
 test('regenerated invented fixtures retain their committed deterministic record identities', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-public-fixture-ids-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-public-fixture-ids-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const output = path.join(directory, 'catalogue.json');
   const result = spawnSync(

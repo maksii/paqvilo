@@ -1,9 +1,11 @@
+// @test-kind contract: one transactional store shared by Paqvilo's organization API, model-driven shell and source overlays
 // The organization API and the model-driven shell must use one transactional store.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { modelDrivenFixture } from './model-driven-fixture.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 const APP_ID = '99999999-9999-4999-8999-999999999991';
 const WEBSITE = '11111111-1111-4111-8111-111111111111';
@@ -213,7 +215,7 @@ test(
     assert.deepEqual(await sourceSnapshot(fixture.sourceDir), before);
     await fixture.sim.close();
     const restarted = await fixture.start();
-    t.after(() => restarted.close());
+    ownedFixture(t).add(() => restarted.close());
     const again = await connect(restarted, t, client.secret);
     assert.equal(
       (await json(await again.org('GET', again.entityPath('adx_contentsnippet', SNIPPET)))).adx_value,
@@ -304,6 +306,7 @@ test(
     const withoutRequestTrace = (markup) =>
       markup
         .replace(/const parentTrace="[^"]*";/g, 'const parentTrace="[request]";')
+        .replace(/const rootTrace="[^"]*";/g, 'const rootTrace="[request]";')
         .replace(/"correlationId":"[^"]*"/g, '"correlationId":"[request]"');
     assert.equal(withoutRequestTrace(await portal()), withoutRequestTrace(html));
     await sim.store.flushCommittedEvents();
@@ -447,7 +450,7 @@ test(
       `adx_sitesettingid: ${SETTING}\nadx_name: Example/ChangedInSource\nadx_value: New export value`,
     );
     const restarted = await fixture.start();
-    t.after(() => restarted.close());
+    ownedFixture(t).add(() => restarted.close());
     const again = await connect(restarted, t, client.secret);
     const current = await json(await again.ui('GET', 'adx_sitesetting', SETTING));
     assert.equal(current.row.adx_name, 'Example/ChangedInSource');

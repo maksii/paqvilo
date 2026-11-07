@@ -1,3 +1,4 @@
+// @test-kind contract: HTML rewriting preserves non-code and externally loaded script elements
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { PortalModel } from '../lense/portal-model.mjs';
@@ -22,6 +23,8 @@ const PAGE_JS = 'web-pages/home/content-pages/Home.en-US.webpage.custom_javascri
 const FORM_JS = 'basic-forms/contact/Contact.basicform.custom_javascript.js';
 const HEADER = 'web-templates/header/Header.webtemplate.source.html';
 const FOOTER = 'content-snippets/footer-text/Footer-Text.en-US.contentsnippet.value.html';
+// A linear match reads the page a small, fixed number of times; restarting per candidate line reads it thousands of times.
+const LINEAR_SCANS = 20;
 
 test('a page identical to the local sources is returned untouched', () => {
   const result = rewriter().rewrite(ONLINE_HOME, '/');
@@ -139,8 +142,10 @@ test('short scripts that only share boilerplate are not mistaken for each other'
 
 test('non-code script elements and external scripts are never touched', () => {
   fx.write(FORM_JS, '{"keep":"me"}\n');
-  const result = rewriter().rewrite(ONLINE_HOME, '/');
+  const external = `<script src="/scripts/app.js">${fx.read(FORM_JS).trim()}</script>`;
+  const result = rewriter().rewrite(ONLINE_HOME.replace('</body>', `${external}</body>`), '/');
   assert.ok(result.html.includes('<script type="application/json">{"keep":"me"}</script>'));
+  assert.ok(result.html.includes(external));
 });
 
 test('new page custom JS that is not online yet is injected into its page only', () => {
@@ -289,7 +294,7 @@ test('a template change and a change to the snippet printed on that line both ap
   assert.equal(result.html, '<main>\n<footer class="dark">Copyright 2026.</footer>\n</main>\n');
 });
 
-test('a line with several {{ values }} is matched in linear time on a large page', () => {
+test('a line with several {{ values }} is matched in linear time on a large page', (t) => {
   const tpl = 'web-templates/menu/Menu.webtemplate.source.html';
   fx.write(tpl, '<ul>\n<li><a href="{{ link.url }}">{{ link.title }}</a></li>\n</ul>\n');
   fx.commit();
@@ -297,9 +302,19 @@ test('a line with several {{ values }} is matched in linear time on a large page
   // thousands of lines that start like the changed one but never complete it
   const noise = '<li><a href="/x">x</a> <span>y</span>\n'.repeat(12_000);
   const page = `${noise}<ul>\n<li><a href="/about">About</a></li>\n</ul>\n${noise}`;
-  const started = Date.now();
-  const result = rewriter().rewrite(page, '/');
-  assert.ok(Date.now() - started < 3000, `took ${Date.now() - started} ms`);
+  const r = rewriter();
+  // Count the characters searched in the page instead of timing the match: a search that restarts from every
+  // candidate line scans the page once per line (quadratic), whatever the machine's speed.
+  const indexOf = String.prototype.indexOf;
+  let scanned = 0;
+  const search = t.mock.method(String.prototype, 'indexOf', function (value, position = 0) {
+    const at = indexOf.call(this, value, position);
+    if (this.length >= noise.length) scanned += (at < 0 ? this.length : at + value.length) - Math.max(0, position);
+    return at;
+  });
+  const result = r.rewrite(page, '/');
+  search.mock.restore();
+  assert.ok(scanned <= LINEAR_SCANS * page.length, `searched ${scanned} characters of a ${page.length}-character page`);
   assert.ok(result.html.includes('<li class="item"><a href="/about">About</a></li>'));
 });
 

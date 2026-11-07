@@ -29,6 +29,9 @@ updates:
     ignore:
       - dependency-name: jquery
       - dependency-name: moment
+      # typescript-eslint pins a TypeScript peer range; a major TypeScript update alone cannot install.
+      - dependency-name: typescript
+        update-types: ['version-update:semver-major']
     groups:
       tooling:
         patterns: ['*']

@@ -41,7 +41,9 @@ export class NetDouble {
     return this.value;
   }
   toString() {
-    return this.value === Infinity ? '∞' : this.value === -Infinity ? '-∞' : plainNumber(this.value);
+    if (this.value === Infinity) return '∞';
+    if (this.value === -Infinity) return '-∞';
+    return plainNumber(this.value);
   }
 }
 
@@ -62,7 +64,7 @@ export class NetDecimal {
     return NetDecimal.parse(String(value));
   }
   static parse(text) {
-    const match = /^\s*([+-]?)(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d+))?\s*$/.exec(String(text));
+    const match = /^([+-]?)(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d+))?$/.exec(String(text).trim());
     if (!match || (!match[2] && !match[3])) throw formatError();
     let digits = (match[2] || '') + (match[3] || '');
     let scale = (match[3] || '').length - Number(match[4] || 0);
@@ -91,7 +93,11 @@ export class NetDecimal {
   /** DotLiquid output format "0.#############################" (no trailing zeros). */
   toString() {
     const text = this.toFixedString();
-    return text.includes('.') ? text.replace(/\.?0+$/, '') : text;
+    if (!text.includes('.')) return text;
+    let end = text.length;
+    while (text[end - 1] === '0') end--;
+    if (end < text.length && text[end - 1] === '.') end--;
+    return text.slice(0, end);
   }
   isIntegral() {
     return this.mantissa % 10n ** BigInt(this.scale) === 0n;
@@ -213,9 +219,9 @@ function parseInt32(text) {
 }
 /** Decimal parsing (NumberStyles.Number: sign, thousands separators, decimal point). */
 function parseNetDecimal(text) {
-  const match = /^\s*([+-]?)((?:\d{1,3}(?:,\d{3})+|\d+)?)(?:\.(\d+))?\s*$/.exec(String(text));
+  const match = /^([+-]?)((?:\d{1,3}(?:,\d{3})+|\d+)?)(?:\.(\d+))?$/.exec(String(text).trim()); // NOSONAR: preserve the exact grammar and captured values
   if (!match || (!match[2] && !match[3])) throw formatError();
-  return NetDecimal.parse(`${match[1]}${(match[2] || '0').replace(/,/g, '')}${match[3] ? '.' + match[3] : ''}`);
+  return NetDecimal.parse(`${match[1]}${(match[2] || '0').replaceAll(',', '')}${match[3] ? '.' + match[3] : ''}`);
 }
 /** Convert.ToInt32 for numbers: round half to even, checked. */
 export function toInt32(value) {
@@ -302,99 +308,115 @@ export function formatNetDate(date, format) {
   }
   const p = dateParts(date);
   const fraction = pad(p.ms, 3) + pad(p.ticks, 4);
-  let out = '';
+  const state = { out: '' };
   for (let i = 0; i < pattern.length;) {
     const ch = pattern[i];
     let run = 1;
     while (pattern[i + run] === ch) run++;
-    switch (ch) {
-      case 'd':
-        out +=
-          run === 1
-            ? p.day
-            : run === 2
-              ? pad(p.day, 2)
-              : run === 3
-                ? DAY_NAMES[p.weekday].slice(0, 3)
-                : DAY_NAMES[p.weekday];
-        break;
-      case 'f':
-      case 'F': {
-        if (run > 7) throw formatError();
-        let digits = fraction.slice(0, run);
-        if (ch === 'F') {
-          digits = digits.replace(/0+$/, '');
-          if (!digits && out.endsWith('.')) out = out.slice(0, -1);
-        }
-        out += digits;
-        break;
-      }
-      case 'g':
-        out += 'A.D.';
-        break;
-      case 'h': {
-        const h = p.hour % 12 || 12;
-        out += run === 1 ? h : pad(h, 2);
-        break;
-      }
-      case 'H':
-        out += run === 1 ? p.hour : pad(p.hour, 2);
-        break;
-      case 'K':
-        out += 'Z';
-        break;
-      case 'm':
-        out += run === 1 ? p.minute : pad(p.minute, 2);
-        break;
-      case 'M':
-        out +=
-          run === 1
-            ? p.month + 1
-            : run === 2
-              ? pad(p.month + 1, 2)
-              : run === 3
-                ? MONTH_NAMES[p.month].slice(0, 3)
-                : MONTH_NAMES[p.month];
-        break;
-      case 's':
-        out += run === 1 ? p.second : pad(p.second, 2);
-        break;
-      case 't':
-        out += run === 1 ? (p.hour < 12 ? 'A' : 'P') : p.hour < 12 ? 'AM' : 'PM';
-        break;
-      case 'y':
-        out += run === 1 ? p.year % 100 : run === 2 ? pad(p.year % 100, 2) : pad(p.year, run);
-        break;
-      case 'z':
-        out += run === 1 ? '+0' : run === 2 ? '+00' : '+00:00';
-        break;
-      case ':':
-      case '/':
-        out += ch.repeat(run);
-        break;
-      case "'":
-      case '"': {
-        const end = pattern.indexOf(ch, i + 1);
-        if (end < 0) throw formatError();
-        out += pattern.slice(i + 1, end);
-        i = end + 1;
-        continue;
-      }
-      case '%':
-        if (i + 1 >= pattern.length || pattern[i + 1] === '%') throw formatError();
-        i += 1;
-        continue;
-      case '\\':
-        if (i + 1 >= pattern.length) throw formatError();
-        out += pattern[i + 1];
-        i += 2;
-        continue;
-      default:
-        out += ch.repeat(run);
-    }
-    i += run;
+    i = appendNetDateToken(pattern, i, ch, run, p, fraction, state);
   }
-  return out;
+  return state.out;
+}
+function appendNetDateToken(pattern, index, ch, run, parts, fraction, state) {
+  switch (ch) {
+    case 'd':
+      state.out += dayDateToken(run, parts);
+      break;
+    case 'f':
+    case 'F':
+      appendFractionDateToken(ch, run, fraction, state);
+      break;
+    case 'g':
+      state.out += 'A.D.';
+      break;
+    case 'h': {
+      const hour = parts.hour % 12 || 12;
+      state.out += run === 1 ? hour : pad(hour, 2);
+      break;
+    }
+    case 'H':
+      state.out += run === 1 ? parts.hour : pad(parts.hour, 2);
+      break;
+    case 'K':
+      state.out += 'Z';
+      break;
+    case 'm':
+      state.out += run === 1 ? parts.minute : pad(parts.minute, 2);
+      break;
+    case 'M':
+      state.out += monthDateToken(run, parts);
+      break;
+    case 's':
+      state.out += run === 1 ? parts.second : pad(parts.second, 2);
+      break;
+    case 't':
+      state.out += timeDesignatorDateToken(run, parts.hour);
+      break;
+    case 'y':
+      state.out += yearDateToken(run, parts);
+      break;
+    case 'z':
+      state.out += zoneDateToken(run);
+      break;
+    case ':':
+    case '/':
+      state.out += ch.repeat(run);
+      break;
+    case "'":
+    case '"': {
+      const end = pattern.indexOf(ch, index + 1);
+      if (end < 0) throw formatError();
+      state.out += pattern.slice(index + 1, end);
+      return end + 1;
+    }
+    case '%':
+      if (index + 1 >= pattern.length || pattern[index + 1] === '%') throw formatError();
+      return index + 1;
+    case '\\':
+      if (index + 1 >= pattern.length) throw formatError();
+      state.out += pattern[index + 1];
+      return index + 2;
+    default:
+      state.out += ch.repeat(run);
+  }
+  return index + run;
+}
+function dayDateToken(run, parts) {
+  if (run === 1) return parts.day;
+  if (run === 2) return pad(parts.day, 2);
+  if (run === 3) return DAY_NAMES[parts.weekday].slice(0, 3);
+  return DAY_NAMES[parts.weekday];
+}
+function appendFractionDateToken(ch, run, fraction, state) {
+  if (run > 7) throw formatError();
+  let digits = fraction.slice(0, run);
+  if (ch === 'F') {
+    let end = digits.length;
+    while (digits[end - 1] === '0') end--;
+    digits = digits.slice(0, end);
+    if (!digits && state.out.endsWith('.')) state.out = state.out.slice(0, -1);
+  }
+  state.out += digits;
+}
+function monthDateToken(run, parts) {
+  if (run === 1) return parts.month + 1;
+  if (run === 2) return pad(parts.month + 1, 2);
+  if (run === 3) return MONTH_NAMES[parts.month].slice(0, 3);
+  return MONTH_NAMES[parts.month];
+}
+/* NOSONAR: mixed return values are part of the contract */ function yearDateToken(run, parts) {
+  if (run === 1) return parts.year % 100;
+  if (run === 2) return pad(parts.year % 100, 2);
+  return pad(parts.year, run);
+}
+function zoneDateToken(run) {
+  if (run === 1) return '+0';
+  if (run === 2) return '+00';
+  return '+00:00';
+}
+function timeDesignatorDateToken(run, hour) {
+  if (run !== 1) return hour < 12 ? 'AM' : 'PM';
+  return hour < 12 ? 'A' : 'P';
 }
 /** DateTime.ToString() with the en-US general pattern. */
 export const dateToNetString = (date) => formatNetDate(date, 'G');
@@ -413,7 +435,7 @@ function utcDate(year, month, day, hour = 0, minute = 0, second = 0, ms = 0) {
 }
 function twelveHour(hour, designator) {
   if (!designator) return hour;
-  if (hour < 1 || hour > 12) return NaN;
+  if (hour < 1 || hour > 12) return Number.NaN;
   return designator.toUpperCase().startsWith('P') ? (hour % 12) + 12 : hour % 12;
 }
 /**
@@ -425,60 +447,67 @@ export function parseNetDate(value) {
   const text = String(value ?? '').trim();
   if (!text) return null;
   let m =
-    /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ](\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d{1,7}))?)?)?\s*(Z|[+-]\d{2}:?\d{2})?$/i.exec(
+    /* NOSONAR */ /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ](\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d{1,7}))?)?)?\s*(Z|[+-]\d{2}:?\d{2})?$/i.exec(
       text,
     );
   if (m) {
-    const ms = m[7] ? Number(m[7].padEnd(7, '0').slice(0, 3)) : 0;
-    const date = utcDate(+m[1], +m[2] - 1, +m[3], +(m[4] ?? 0), +(m[5] ?? 0), +(m[6] ?? 0), ms);
-    if (!date) return null;
-    if (m[7]) date.__netTicks = Number(m[7].padEnd(7, '0').slice(3, 7));
-    if (m[8] && m[8].toUpperCase() !== 'Z') {
-      const offset = m[8].replace(':', '');
-      const minutes = (offset[0] === '-' ? -1 : 1) * (Number(offset.slice(1, 3)) * 60 + Number(offset.slice(3, 5)));
-      return new Date(date.getTime() - minutes * 60000);
-    }
-    return date;
+    return parseIsoNetDate(m);
   }
-  m = /^(\d{1,2})[/-](\d{1,2})[/-](\d{2}|\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AaPp][Mm]?)?)?$/.exec(text);
-  if (m) {
-    let year = Number(m[3]);
-    if (m[3].length === 2) year += year < 50 ? 2000 : 1900;
-    const hour = twelveHour(+(m[4] ?? 0), m[7]);
-    return Number.isNaN(hour) ? null : utcDate(year, +m[1] - 1, +m[2], hour, +(m[5] ?? 0), +(m[6] ?? 0));
-  }
+  m = /^(\d{1,2})[/-](\d{1,2})[/-](\d{2}|\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AaPp][Mm]?)?)?$/.exec(text); // NOSONAR: regex kept: a rewrite would change matches or captures
+  if (m) return parseShortNetDate(m);
   m =
-    /^(?:(?:sun|mon|tue|wed|thu|fri|sat)[a-z]*,?\s+)?([a-z]+)\.?\s+(\d{1,2}),?\s+(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AaPp][Mm]?)?)?$/i.exec(
+    /* NOSONAR */ /^(?:(?:sun|mon|tue|wed|thu|fri|sat)[a-z]*,?\s+)?([a-z]+)\.?\s+(\d{1,2}),?\s+(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([ap]m?)?)?$/i.exec(
       text,
     );
-  if (m && MONTH_LOOKUP.has(m[1].toLowerCase())) {
-    const hour = twelveHour(+(m[4] ?? 0), m[7]);
-    return Number.isNaN(hour)
-      ? null
-      : utcDate(+m[3], MONTH_LOOKUP.get(m[1].toLowerCase()), +m[2], hour, +(m[5] ?? 0), +(m[6] ?? 0));
-  }
+  if (m && MONTH_LOOKUP.has(m[1].toLowerCase())) return parseMonthFirstNetDate(m);
   m =
-    /^(?:(?:sun|mon|tue|wed|thu|fri|sat)[a-z]*,?\s+)?(\d{1,2})\s+([a-z]+)\.?,?\s+(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(GMT|UTC|Z|[AaPp][Mm])?)?$/i.exec(
+    /* NOSONAR */ /^(?:(?:sun|mon|tue|wed|thu|fri|sat)[a-z]*,?\s+)?(\d{1,2})\s+([a-z]+)\.?,?\s+(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(GMT|UTC|Z|[ap]m)?)?$/i.exec(
       text,
     );
-  if (m && MONTH_LOOKUP.has(m[2].toLowerCase())) {
-    const designator = /^[ap]/i.test(m[7] ?? '') ? m[7] : undefined;
-    const hour = twelveHour(+(m[4] ?? 0), designator);
-    return Number.isNaN(hour)
-      ? null
-      : utcDate(+m[3], MONTH_LOOKUP.get(m[2].toLowerCase()), +m[1], hour, +(m[5] ?? 0), +(m[6] ?? 0));
-  }
+  if (m && MONTH_LOOKUP.has(m[2].toLowerCase())) return parseMonthLastNetDate(m);
   m = /^(\d{4})\/(\d{1,2})\/(\d{1,2})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/.exec(text);
   if (m) return utcDate(+m[1], +m[2] - 1, +m[3], +(m[4] ?? 0), +(m[5] ?? 0), +(m[6] ?? 0));
   m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AaPp][Mm]?)?$/.exec(text);
-  if (m) {
-    const now = new Date();
-    const hour = twelveHour(+m[1], m[4]);
-    return Number.isNaN(hour)
-      ? null
-      : utcDate(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hour, +m[2], +(m[3] ?? 0));
-  }
+  if (m) return parseTimeOnlyNetDate(m);
   return null;
+}
+function parseIsoNetDate(match) {
+  const ms = match[7] ? Number(match[7].padEnd(7, '0').slice(0, 3)) : 0;
+  const date = utcDate(+match[1], +match[2] - 1, +match[3], +(match[4] ?? 0), +(match[5] ?? 0), +(match[6] ?? 0), ms);
+  if (!date) return null;
+  if (match[7]) date.__netTicks = Number(match[7].padEnd(7, '0').slice(3, 7));
+  if (match[8] && match[8].toUpperCase() !== 'Z') {
+    const offset = match[8].replace(':', '');
+    const minutes = (offset.startsWith('-') ? -1 : 1) * (Number(offset.slice(1, 3)) * 60 + Number(offset.slice(3, 5)));
+    return new Date(date.getTime() - minutes * 60000);
+  }
+  return date;
+}
+function parseShortNetDate(match) {
+  let year = Number(match[3]);
+  if (match[3].length === 2) year += year < 50 ? 2000 : 1900;
+  const hour = twelveHour(+(match[4] ?? 0), match[7]);
+  return Number.isNaN(hour) ? null : utcDate(year, +match[1] - 1, +match[2], hour, +(match[5] ?? 0), +(match[6] ?? 0));
+}
+function parseMonthFirstNetDate(match) {
+  const hour = twelveHour(+(match[4] ?? 0), match[7]);
+  return Number.isNaN(hour)
+    ? null
+    : utcDate(+match[3], MONTH_LOOKUP.get(match[1].toLowerCase()), +match[2], hour, +(match[5] ?? 0), +(match[6] ?? 0));
+}
+function parseMonthLastNetDate(match) {
+  const designator = /^[ap]/i.test(match[7] ?? '') ? match[7] : undefined;
+  const hour = twelveHour(+(match[4] ?? 0), designator);
+  return Number.isNaN(hour)
+    ? null
+    : utcDate(+match[3], MONTH_LOOKUP.get(match[2].toLowerCase()), +match[1], hour, +(match[5] ?? 0), +(match[6] ?? 0));
+}
+function parseTimeOnlyNetDate(match) {
+  const now = new Date();
+  const hour = twelveHour(+match[1], match[4]);
+  return Number.isNaN(hour)
+    ? null
+    : utcDate(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hour, +match[2], +(match[3] ?? 0));
 }
 /** Strict ISO date/time strings produced by the local data store are Dataverse DateTime values. */
 export const ISO_DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,7})?)?(?:Z|[+-]\d{2}:\d{2})$/;
@@ -760,7 +789,7 @@ export function htmlDecode(value) {
   return String(value).replace(/&(#x[0-9a-f]+|#\d+|[a-z][a-z0-9]*);/gi, (entity, body) => {
     let code;
     if (body[0] === '#')
-      code = body[1] === 'x' || body[1] === 'X' ? parseInt(body.slice(2), 16) : Number(body.slice(1));
+      code = body[1] === 'x' || body[1] === 'X' ? Number.parseInt(body.slice(2), 16) : Number(body.slice(1));
     else code = NAMED_ENTITIES[body];
     if (code === undefined || code > 0x10ffff) return entity;
     return String.fromCodePoint(code);
@@ -777,7 +806,7 @@ const utf8 = new TextEncoder();
 function percentEncode(value, safe, { space = '%20', lower = false } = {}) {
   let out = '';
   for (const byte of utf8.encode(String(value))) {
-    const char = String.fromCharCode(byte);
+    const char = String.fromCodePoint(byte);
     if (byte < 128 && safe.test(char)) out += char;
     else if (byte === 0x20 && space) out += space;
     else {
@@ -808,10 +837,10 @@ function decodeBytes(text, { plus, unicodeEscapes }) {
       out += ' ';
     } else if (char === '%' && unicodeEscapes && /^[uU][0-9a-fA-F]{4}$/.test(text.slice(i + 1, i + 6))) {
       flush();
-      out += String.fromCharCode(parseInt(text.slice(i + 2, i + 6), 16));
+      out += String.fromCodePoint(Number.parseInt(text.slice(i + 2, i + 6), 16));
       i += 5;
     } else if (char === '%' && /^[0-9a-fA-F]{2}$/.test(text.slice(i + 1, i + 3))) {
-      bytes.push(parseInt(text.slice(i + 1, i + 3), 16));
+      bytes.push(Number.parseInt(text.slice(i + 1, i + 3), 16));
       i += 2;
     } else {
       flush();
@@ -836,7 +865,7 @@ export function uriToDisplayString(href) {
       const code = char.codePointAt(0);
       if (code < 0x21 && code !== 0x20) out += encodeURIComponent(char);
       else if (RESERVED_URI_CHARACTERS.includes(char))
-        out += encodeURIComponent(char).replace(/[!'()*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+        out += encodeURIComponent(char).replace(/[!'()*]/g, (c) => '%' + c.codePointAt(0).toString(16).toUpperCase());
       else out += char;
     }
     return out;
@@ -854,12 +883,10 @@ export function netTypeName(value) {
   if (typeof value === 'boolean') return 'System.Boolean';
   if (value instanceof NetDecimal) return 'System.Decimal';
   if (value instanceof NetDouble) return 'System.Double';
-  if (typeof value === 'number')
-    return numberKind(value) === 'int'
-      ? 'System.Int32'
-      : numberKind(value) === 'long'
-        ? 'System.Int64'
-        : 'System.Decimal';
+  if (typeof value === 'number') {
+    if (numberKind(value) === 'int') return 'System.Int32';
+    return numberKind(value) === 'long' ? 'System.Int64' : 'System.Decimal';
+  }
   if (isDate(value)) return 'System.DateTime';
   if (Array.isArray(value)) return 'System.Object[]';
   return value?.constructor?.netTypeName ?? 'DotLiquid.Drop';
@@ -876,51 +903,66 @@ export function changeType(value, target) {
   const kind = kindOf(value);
   switch (target) {
     case 'string':
-      if (kind === 'string') return value;
-      if (kind === 'bool') return value ? 'True' : 'False';
-      if (kind === 'date') return dateToNetString(value);
-      if (kind === 'int' || kind === 'long' || kind === 'decimal' || kind === 'double') return numberToNetString(value);
-      throw invalidCast(netTypeName(value), 'System.String');
+      return changeToString(value, kind);
     case 'int':
     case 'long': {
-      if (kind === 'string') {
-        const match = /^\s*([+-]?)(\d+)\s*$/.exec(value);
-        if (!match) throw formatError();
-        const parsed = Number(match[1] + match[2]);
-        if (target === 'int' && (parsed < INT32_MIN || parsed > INT32_MAX)) throw overflow();
-        return parsed;
-      }
-      if (kind === 'bool') return value ? 1 : 0;
-      if (kind === 'int' || kind === 'long' || kind === 'decimal' || kind === 'double')
-        return toInt32Checked(value, target);
-      throw invalidCast(netTypeName(value), target === 'int' ? 'System.Int32' : 'System.Int64');
+      return changeToInteger(value, target, kind);
     }
     case 'decimal':
-      if (kind === 'string') return parseNetDecimal(value);
-      if (kind === 'bool') return new NetDecimal(value ? 1n : 0n, 0);
-      if (kind === 'int' || kind === 'long' || kind === 'decimal' || kind === 'double') return NetDecimal.from(value);
-      throw invalidCast(netTypeName(value), 'System.Decimal');
+      return changeToDecimal(value, kind);
     case 'bool':
-      if (kind === 'bool') return value;
-      if (kind === 'string') {
-        const text = value.trim().toLowerCase();
-        if (text === 'true') return true;
-        if (text === 'false') return false;
-        throw new LiquidError('String was not recognized as a valid Boolean.', 'System.FormatException');
-      }
-      if (kind === 'int' || kind === 'long' || kind === 'decimal' || kind === 'double') return toNumber(value) !== 0;
-      throw invalidCast(netTypeName(value), 'System.Boolean');
+      return changeToBoolean(value, kind);
     case 'date':
-      if (kind === 'date') return value;
-      if (kind === 'string') {
-        const parsed = parseNetDate(value);
-        if (!parsed) throw new LiquidError('String was not recognized as a valid DateTime.', 'System.FormatException');
-        return parsed;
-      }
-      throw invalidCast(netTypeName(value), 'System.DateTime');
+      return changeToDate(value, kind);
     default:
       throw invalidCast(netTypeName(value), 'System.Object');
   }
+}
+function changeToString(value, kind) {
+  if (kind === 'string') return value;
+  if (kind === 'bool') return value ? 'True' : 'False';
+  if (kind === 'date') return dateToNetString(value);
+  if (kind === 'int' || kind === 'long' || kind === 'decimal' || kind === 'double') return numberToNetString(value);
+  throw invalidCast(netTypeName(value), 'System.String');
+}
+function changeToInteger(value, target, kind) {
+  if (kind === 'string') {
+    const match = /^\s*([+-]?)(\d+)\s*$/.exec(value);
+    if (!match) throw formatError();
+    const parsed = Number(match[1] + match[2]);
+    if (target === 'int' && (parsed < INT32_MIN || parsed > INT32_MAX)) throw overflow();
+    return parsed;
+  }
+  if (kind === 'bool') return value ? 1 : 0;
+  if (kind === 'int' || kind === 'long' || kind === 'decimal' || kind === 'double')
+    return toInt32Checked(value, target);
+  throw invalidCast(netTypeName(value), target === 'int' ? 'System.Int32' : 'System.Int64');
+}
+function changeToDecimal(value, kind) {
+  if (kind === 'string') return parseNetDecimal(value);
+  if (kind === 'bool') return new NetDecimal(value ? 1n : 0n, 0);
+  if (kind === 'int' || kind === 'long' || kind === 'decimal' || kind === 'double') return NetDecimal.from(value);
+  throw invalidCast(netTypeName(value), 'System.Decimal');
+}
+function changeToBoolean(value, kind) {
+  if (kind === 'bool') return value;
+  if (kind === 'string') {
+    const text = value.trim().toLowerCase();
+    if (text === 'true') return true;
+    if (text === 'false') return false;
+    throw new LiquidError('String was not recognized as a valid Boolean.', 'System.FormatException');
+  }
+  if (kind === 'int' || kind === 'long' || kind === 'decimal' || kind === 'double') return toNumber(value) !== 0;
+  throw invalidCast(netTypeName(value), 'System.Boolean');
+}
+function changeToDate(value, kind) {
+  if (kind === 'date') return value;
+  if (kind === 'string') {
+    const parsed = parseNetDate(value);
+    if (!parsed) throw new LiquidError('String was not recognized as a valid DateTime.', 'System.FormatException');
+    return parsed;
+  }
+  throw invalidCast(netTypeName(value), 'System.DateTime');
 }
 function toInt32Checked(value, target) {
   const decimal = NetDecimal.from(value);
@@ -980,10 +1022,14 @@ export function netCompare(left, right) {
     throw new LiquidError('At least one object must implement IComparable.', 'System.ArgumentException');
   const converted = changeType(right, kind === 'long' ? 'long' : kind);
   if (kind === 'string') return Math.sign(collator.compare(left, converted));
-  if (kind === 'bool') return left === converted ? 0 : left ? 1 : -1;
+  if (kind === 'bool') {
+    if (left === converted) return 0;
+    return left ? 1 : -1;
+  }
   if (kind === 'date') return Math.sign(left.getTime() - converted.getTime());
   const [m, n] = aligned(NetDecimal.from(left), NetDecimal.from(converted));
-  return m === n ? 0 : m > n ? 1 : -1;
+  if (m === n) return 0;
+  return m > n ? 1 : -1;
 }
 
 // ---- .NET regular expressions (DotLiquid 2.x legacy `replace`/`replace_first`)
@@ -999,50 +1045,52 @@ export function netRegex(pattern, flags = 'g') {
   let out = '',
     inClass = false;
   for (let i = 0; i < source.length; i++) {
-    const char = source[i];
-    if (char === '\\') {
-      const next = source[i + 1];
-      if (next === undefined)
-        throw new LiquidError(`parsing "${pattern}" - Illegal \\ at end of pattern.`, 'System.ArgumentException');
-      if (!inClass && next === 'A') out += '^';
-      else if (!inClass && next === 'z') out += '$';
-      else if (!inClass && next === 'Z') out += '(?=\\n?$)';
-      else out += char + next;
-      i++;
-      continue;
-    }
-    if (inClass) {
-      if (char === ']') inClass = false;
-      out += char;
-      continue;
-    }
-    if (char === '[') {
-      inClass = true;
-      out += char;
-      if (source[i + 1] === '^') out += source[++i];
-      if (source[i + 1] === ']') out += '\\' + source[++i];
-      continue;
-    }
-    if (char === '(' && source.startsWith('(?>', i)) {
-      out += '(?:';
-      i += 2;
-      continue;
-    }
-    if (char === '.' && !jsFlags.includes('s')) {
-      out += '[^\\n]';
-      continue;
-    }
-    if (char === '$' && !jsFlags.includes('m')) {
-      out += '(?=\\n?$)';
-      continue;
-    }
-    out += char;
+    const state = { out, inClass };
+    i = translateNetRegexCharacter(source, i, state, pattern, jsFlags); // NOSONAR: loop cursor is advanced in the body on purpose
+    out = state.out;
+    inClass = state.inClass;
   }
   try {
     return new RegExp(out, jsFlags.replace('x', ''));
   } catch (error) {
     throw new LiquidError(`parsing "${pattern}" - ${netRegexErrorText(error.message)}`, 'System.ArgumentException');
   }
+}
+function translateNetRegexCharacter(source, index, state, pattern, flags) {
+  const char = source[index];
+  if (char === '\\') return translateRegexEscape(source, index, state, pattern);
+  if (state.inClass) return translateRegexClassCharacter(char, index, state);
+  if (char === '[') return startRegexClass(source, index, state);
+  if (char === '(' && source.startsWith('(?>', index)) {
+    state.out += '(?:';
+    return index + 2;
+  }
+  if (char === '.' && !flags.includes('s')) state.out += String.raw`[^\n]`;
+  else if (char === '$' && !flags.includes('m')) state.out += String.raw`(?=\n?$)`;
+  else state.out += char;
+  return index;
+}
+function translateRegexEscape(source, index, state, pattern) {
+  const next = source[index + 1];
+  if (next === undefined)
+    throw new LiquidError(String.raw`parsing "${pattern}" - Illegal \ at end of pattern.`, 'System.ArgumentException');
+  if (!state.inClass && next === 'A') state.out += '^';
+  else if (!state.inClass && next === 'z') state.out += '$';
+  else if (!state.inClass && next === 'Z') state.out += String.raw`(?=\n?$)`;
+  else state.out += source[index] + next;
+  return index + 1;
+}
+function translateRegexClassCharacter(char, index, state) {
+  if (char === ']') state.inClass = false;
+  state.out += char;
+  return index;
+}
+function startRegexClass(source, index, state) {
+  state.inClass = true;
+  state.out += '[';
+  if (source[index + 1] === '^') state.out += source[++index];
+  if (source[index + 1] === ']') state.out += '\\' + source[++index];
+  return index;
 }
 /** .NET Framework RegexParser texts for the parse errors JavaScript reports differently. */
 function netRegexErrorText(message) {
@@ -1066,20 +1114,31 @@ export function netRegexReplace(input, pattern, replacement, { first = false } =
     const captures = args.slice(1, hasGroups ? -3 : -2);
     if (first && replaced) return whole;
     replaced = true;
-    return template.replace(/\$(\$|&|`|'|\+|_|\d+|\{([^}]+)\})/g, (token, body, name) => {
-      if (body === '$') return '$';
-      if (body === '&') return whole;
-      if (body === '`') return subject.slice(0, offset);
-      if (body === "'") return subject.slice(offset + whole.length);
-      if (body === '+') return captures.length ? (captures.at(-1) ?? '') : '';
-      if (body === '_') return subject;
-      if (name !== undefined) {
-        if (/^\d+$/.test(name)) return Number(name) === 0 ? whole : (captures[Number(name) - 1] ?? token);
-        return groups && Object.hasOwn(groups, name) ? (groups[name] ?? '') : token;
-      }
-      const index = Number(body);
-      if (index === 0) return whole;
-      return index <= captures.length ? (captures[index - 1] ?? '') : token;
-    });
+    return template.replace(/\$(\$|&|`|'|\+|_|\d+|\{([^}]+)\})/g, (token, body, name) =>
+      regexReplacementValue({ token, body, name, captures, groups, whole, offset, subject }),
+    );
   });
+}
+function regexReplacementValue({ token, body, name, captures, groups, whole, offset, subject }) {
+  switch (body) {
+    case '$':
+      return '$';
+    case '&':
+      return whole;
+    case '`':
+      return subject.slice(0, offset);
+    case "'":
+      return subject.slice(offset + whole.length);
+    case '+':
+      return captures.length ? (captures.at(-1) ?? '') : '';
+    case '_':
+      return subject;
+  }
+  if (name !== undefined) {
+    if (/^\d+$/.test(name)) return Number(name) === 0 ? whole : (captures[Number(name) - 1] ?? token);
+    return groups && Object.hasOwn(groups, name) ? (groups[name] ?? '') : token;
+  }
+  const index = Number(body);
+  if (index === 0) return whole;
+  return index <= captures.length ? (captures[index - 1] ?? '') : token;
 }

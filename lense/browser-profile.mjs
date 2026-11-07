@@ -44,7 +44,9 @@ export function browserProfileInfo(cfg, overrideDir) {
   }
   // Several local Mirages (mirage dev with portals=all) keep their own browser profile,
   // so they can run beside a catalogue dev session.
-  const name = cfg.portals === 'all' ? (cfg.mirage ? 'mirage' : 'catalogue') : `${cfg.siteName}-${cfg.envName}`;
+  let name;
+  if (cfg.portals === 'all') name = cfg.mirage ? 'mirage' : 'catalogue';
+  else name = `${cfg.siteName}-${cfg.envName}`;
   // Keep migrated Edge identities at their historical paths. Other channels must never open
   // that same browser database: switching Edge/Chrome otherwise mutates a shared profile.
   const userDataDir =

@@ -2,19 +2,22 @@ import test from 'node:test';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveCatalogue } from 'paqvilo/lense';
-import { createMirageContext } from 'paqvilo/mirage';
-import { connectRuntime } from 'paqvilo/mirage/testing';
 
 const catalogue = new URL('../paqvilo.config.yml', import.meta.url);
 
 // Unlike support/mirage.mjs, selecting a site imports its sources and applies its
 // configured runtime defaults. Hermetic tests must pass a synthetic fixture catalogue.
-export const siteMirage = (site, { config = catalogue } = {}) => createMirageContext({ config, site });
+export const siteMirage = async (site, { config = catalogue } = {}) => {
+  const { createMirageContext } = await import('paqvilo/mirage');
+  return createMirageContext({ config, site });
+};
 
 // Attachment never owns/stops the runtime. Discovery resolves dynamic ports;
 // supply origin explicitly if several runtimes match this site.
 export async function attachSite(site, { config = catalogue, origin } = {}) {
+  const [{ resolveCatalogue }, { connectRuntime }] = await Promise.all([
+    import('paqvilo/lense'), import('paqvilo/mirage/testing'),
+  ]);
   config = config instanceof URL ? fileURLToPath(config) : config;
   const selected = (await resolveCatalogue({ config, site })).sites.find(item => item.name === site);
   if (!selected) throw new Error('Attachment requires a configured site');

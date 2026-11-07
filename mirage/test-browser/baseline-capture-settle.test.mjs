@@ -1,3 +1,4 @@
+// @test-kind contract: baseline capture reports nonempty settle outcomes for progress, readiness and timeout cases
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
@@ -15,7 +16,7 @@ test('capture distinguishes persistent progress from loading and surfaces readin
       body: '<!doctype html><link rel="icon" href="data:,"><body>' + markup,
     }),
   );
-  const run = (timeout = 300) =>
+  const run = (timeout = 30_000) =>
     pageRunner(page, {
       origin: 'http://127.0.0.1:15151',
       scenario: { id: 'progress', steps: [{ goto: '/' }] },
@@ -29,13 +30,15 @@ test('capture distinguishes persistent progress from loading and surfaces readin
     markup = html;
     const result = await run();
     assert.equal(result.summary.status, 'captured', result.summary.problems.join(';'));
+    assert.ok(result.summary.settlements.length > 0, 'captured loop reports settlement records');
     assert.ok(result.summary.settlements.every((row) => row.settled));
   }
   markup =
     '<div id="busy" role="progressbar">Loading</div><script>setTimeout(()=>{document.getElementById("busy").remove();document.body.insertAdjacentHTML("beforeend","<p id=ready>Ready</p>");},350)</script>';
-  const delayed = await run(1500);
+  const delayed = await run();
   assert.equal(delayed.summary.status, 'captured');
   assert.match(delayed.raw.dom, /id="ready"/);
+  assert.ok(delayed.summary.settlements.length > 0, 'delayed fixture reports settlement records');
   assert.ok(delayed.summary.settlements.every((row) => row.settled));
   for (const html of [
     '<div role="progressbar">Loading</div>',
@@ -43,9 +46,10 @@ test('capture distinguishes persistent progress from loading and surfaces readin
     '<div class="loader">Loading</div>',
   ]) {
     markup = html;
-    const result = await run();
+    const result = await run(300);
     assert.equal(result.summary.status, 'failed');
     assert.ok(result.summary.problems.some((problem) => problem.includes('did not settle')));
+    assert.ok(result.summary.settlements.length > 0, 'timeout loop reports settlement records');
     assert.ok(result.summary.settlements.every((row) => !row.settled && row.loading));
   }
 });

@@ -2667,7 +2667,8 @@ td .primary-grid-link {
   border-left: 1px solid #edebe9;
   background: #fff;
 }
-.shell .side-panes.collapsed {
+.shell .side-panes.collapsed,
+.shell .side-panes[hidden] {
   display: none;
 }
 .side-pane {
@@ -2676,7 +2677,9 @@ td .primary-grid-link {
   flex: 1;
   min-height: 0;
 }
-.side-pane:not(.selected) {
+.side-pane:not(.selected),
+.side-pane[hidden],
+.side-pane .page-dialog-heading[hidden] {
   display: none;
 }
 .dashboard-content {

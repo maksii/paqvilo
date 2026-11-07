@@ -71,6 +71,8 @@ the printed command. Replay checks the payload size and digest and rejects nonre
 or changed payloads fail. If a copied hint is no longer usable, use `status` and `stop` with the same project/catalogue
 selectors to identify and stop the intended runtime.
 
+Keep the ownership directory and its parents under trusted control during publication and cleanup. Concurrent Paqvilo publishers coordinate their own files; arbitrary replacement by another actor is outside this trust boundary. Portable pathname cleanup is not an atomic compare-and-unlink operation.
+
 If an older session has ambiguous catalogue ownership, use `mirage status` with the same project/catalogue selectors to find its state file and listening port. Supply that `--state` file and actual `--port` when stopping it; port `0` cannot distinguish an older session.
 
 ## Build scenarios you can repeat

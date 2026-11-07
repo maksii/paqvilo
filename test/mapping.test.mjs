@@ -2,13 +2,12 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import fs from 'node:fs';
-import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { PortalModel, sourceText } from '../lense/portal-model.mjs';
 import { Resolver, globToRegExp } from '../lense/resolver.mjs';
 import { GitBaseline } from '../lense/git.mjs';
 import { diffLines } from '../lense/line-diff.mjs';
-import { createFixture, SITE, HOME_ID, ABOUT_ID } from './fixture.mjs';
+import { createFixture, SITE, HOME_ID, ABOUT_ID, tempDirSync } from './fixture.mjs';
 
 const fx = createFixture();
 after(() => fx.cleanup());
@@ -260,7 +259,7 @@ test('directory routes preserve wildcard suffixes and cannot escape through junc
 
 test('replacing indexed source folders with junctions cannot expose files outside the extract', (t) => {
   const local = createFixture();
-  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-outside-'));
+  const outside = tempDirSync('paqvilo-outside-');
   t.after(() => {
     local.cleanup();
     fs.rmSync(outside, { recursive: true, force: true });

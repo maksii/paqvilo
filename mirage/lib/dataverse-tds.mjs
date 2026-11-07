@@ -3,14 +3,15 @@
 // handlers as the caller, so table permissions, field security, business units, sharing and service protection apply.
 //
 // startDataverseTds({ store, authority, principals, records, limits, metadataFields, clock, origin, tlsOrigin, tenantId,
-//                     version, tls, host, port, enabled }) -> { port, close() }
+//                     version, tls, host, port, enabled, traces }) -> { port, close() }
+//   traces the trace store (default store.traces): one root span per statement (host tds).
 //   tls   { key, cert } shared with the HTTPS listener, or null: an in-memory certificate is then generated.
 //   enabled false (tds.enabled): the listener still runs, as Dataverse keeps the endpoint reachable, and every login is refused.
 //   The caller starts this after the HTTP listeners, so origin and tlsOrigin are known.
 import { randomUUID } from 'node:crypto';
 import { createSecureContext } from 'node:tls';
 import { DataError } from './data-error.mjs';
-import { ensureCertificate } from './dataverse-tls.mjs';
+import { createSelfSignedCertificate } from './dataverse-tls.mjs';
 import { createTdsServer } from './dataverse-tds-protocol.mjs';
 import { buildCatalog, projectRow } from './dataverse-tds-catalog.mjs';
 import { executeBatch } from './dataverse-tds-sql-eval.mjs';
@@ -34,6 +35,8 @@ const TIMEOUT = {
     'Timeout expired. The timeout period elapsed prior to completion of the operation or the server is not responding.',
 };
 const sqlError = (number, message, cls = 16) => ({ number, message, state: 1, class: cls });
+// A failed statement's error on its span: the SQL error number as the code, or the record handlers' own error.
+const sqlFailure = (error) => (error?.number != null ? { code: String(error.number), message: error.message } : error);
 const refOf = (value) => (value !== null && typeof value === 'object' ? value.id : value) ?? undefined;
 // The Web API attribute behind a catalog column: lookup columns read `_name_value`, so the select names the lookup.
 const attributeOf = (column) => column.source.attribute.replace(/^_(.+)_value$/, '$1');
@@ -60,7 +63,7 @@ function applyPushdown(url, table, pushdown) {
       case 'not-null':
         return `${source.attribute} ne null`;
       case 'in':
-        return `(${f.values.map((v) => `${source.attribute} eq ${literal(v)}`).join(' or ')})`;
+        return `(${f.values.map((v) => source.attribute + ' eq ' + literal(v)).join(' or ')})`;
       case 'prefix':
         return `startswith(${source.attribute},${literal(f.value)})`;
       default:
@@ -97,6 +100,82 @@ export function queryLimitMs(sql) {
   return hasLongRunShape(statements) ? TWO_MINUTES_MS : FIVE_MINUTES_MS;
 }
 
+async function readTdsRoute(url, { records, origin, user, identity }) {
+  const route = parseDataverseRoute(url.pathname);
+  if (!route || route.kind === 'unknown' || route.kind === 'invalid')
+    throw new DataError(`Invalid object name '${url.pathname}'.`, 400, 'InvalidRoute');
+  const result = await records.handle({
+    method: 'GET',
+    route,
+    url,
+    origin,
+    version: route.version,
+    prefer: parsePrefer(ANNOTATIONS),
+    headers: { prefer: ANNOTATIONS },
+    body: undefined,
+    user,
+    caller: user,
+    identity,
+    requestId: randomUUID(),
+    bypassCustomPlugins: true, // Retrieve and RetrieveMultiple plug-ins do not run on the TDS endpoint.
+  });
+  return result ?? { status: 204, headers: {} };
+}
+
+async function scanTdsTable(catalog, logical, { columns, pushdown } = {}, context) {
+  const table = catalog.tables.get(logical);
+  const url = new URL(`/api/data/${context.apiVersion}/${table.entitySet}`, context.origin);
+  const wanted = columns ? table.columns.filter((c) => columns.includes(c.name)) : table.columns;
+  url.searchParams.set('$select', [...new Set(wanted.map(attributeOf))].join(','));
+  if (pushdown) applyPushdown(url, table, pushdown);
+  const rows = [];
+  for (let next = url; next;) {
+    if (context.controller.signal.aborted) throw sqlError(3617, 'Query was cancelled by the user.');
+    const body = (await readTdsRoute(next, context)).body ?? {};
+    rows.push(...(body.value ?? []));
+    next = body['@odata.nextLink'] ? new URL(body['@odata.nextLink'], context.origin) : null;
+  }
+  return rows.map((formatted) => projectRow(table, null, formatted));
+}
+
+function createTdsStatementRunner(tracing, state, root, traces, params, timedOut) {
+  if (!tracing) return null;
+  return async (node, run) => {
+    state.statements += 1;
+    const source = node.source;
+    const span = root(source.redacted, { sql: source.redacted, statementType: node.type, line: node.line }, () => ({
+      sql: source.text,
+      params,
+    }));
+    try {
+      const outcome = await traces.run(span, run);
+      span.set({ rowCount: outcome.rowCount, resultSets: outcome.resultSets.length });
+      span.output(() => ({
+        rowCount: outcome.rowCount,
+        resultSets: outcome.resultSets.map((set) => ({
+          columns: (set.columns ?? []).map((column) => column.name),
+          rows: set.rows?.length ?? 0,
+        })),
+      }));
+      span.end();
+      return outcome;
+    } catch (error) {
+      span.fail(sqlFailure(timedOut() ? TIMEOUT : error));
+      throw error;
+    }
+  };
+}
+
+function rethrowTdsQueryError(error, tracing, state, root, timedOut) {
+  if (tracing && state.statements === 0)
+    root('SQL batch', { statementType: null }, () => ({ sql: state.sql, params: state.params })).fail(
+      sqlFailure(error),
+    );
+  if (timedOut()) throw TIMEOUT;
+  if (error instanceof DataError) throw sqlError(50000, error.message);
+  throw error;
+}
+
 export async function startDataverseTds({
   store,
   authority,
@@ -113,11 +192,22 @@ export async function startDataverseTds({
   host,
   port,
   enabled = true,
+  traces = store.traces,
 }) {
-  const certificate = tls ?? (await ensureCertificate(null));
   // Wrapped (TDS 7.x) TLS is capped at 1.2; strict (TDS 8) TLS takes the defaults.
-  const secureContext = createSecureContext({ key: certificate.key, cert: certificate.cert, maxVersion: 'TLSv1.2' });
-  const strictSecureContext = createSecureContext({ key: certificate.key, cert: certificate.cert });
+  const contextsOf = (certificate) => ({
+    wrapped: createSecureContext({ key: certificate.key, cert: certificate.cert, maxVersion: 'TLSv1.2' }),
+    strict: createSecureContext({ key: certificate.key, cert: certificate.cert }),
+  });
+  // A shared certificate is checked at start. The in-memory one is generated at the first handshake: its
+  // 2048-bit key pair would otherwise block every start, and most runtimes never receive a TDS connection.
+  let contexts = tls ? contextsOf(tls) : null;
+  const getContexts = () => {
+    if (contexts == null) contexts = contextsOf(createSelfSignedCertificate());
+    return contexts;
+  };
+  const secureContext = () => getContexts().wrapped;
+  const strictSecureContext = () => getContexts().strict;
   const stsUrl = `${tlsOrigin ?? origin}/${tenantId}`;
   const apiVersion = `v${version.split('.').slice(0, 2).join('.')}`;
 
@@ -173,60 +263,45 @@ export async function startDataverseTds({
     const identity = identityOf(user, appId);
 
     // One GET of an entity set as the caller; the record handlers apply every security rule.
-    async function read(url) {
-      const route = parseDataverseRoute(url.pathname);
-      if (!route || route.kind === 'unknown' || route.kind === 'invalid')
-        throw new DataError(`Invalid object name '${url.pathname}'.`, 400, 'InvalidRoute');
-      const result = await records.handle({
-        method: 'GET',
-        route,
-        url,
-        origin,
-        version: route.version,
-        prefer: parsePrefer(ANNOTATIONS),
-        headers: { prefer: ANNOTATIONS },
-        body: undefined,
-        user,
-        caller: user,
-        identity,
-        requestId: randomUUID(),
-        bypassCustomPlugins: true, // Retrieve and RetrieveMultiple plug-ins do not run on the TDS endpoint.
-      });
-      return result ?? { status: 204, headers: {} };
-    }
+    const readContext = { records, origin, user, identity, apiVersion, controller };
 
-    // Every page of a table, projected onto its catalog columns. Formatted values carry the lookup and choice names.
-    async function scan(catalog, logical, { columns, pushdown } = {}) {
-      const table = catalog.tables.get(logical);
-      const url = new URL(`/api/data/${apiVersion}/${table.entitySet}`, origin);
-      const wanted = columns ? table.columns.filter((c) => columns.includes(c.name)) : table.columns;
-      url.searchParams.set('$select', [...new Set(wanted.map(attributeOf))].join(','));
-      if (pushdown) applyPushdown(url, table, pushdown);
-      const rows = [];
-      for (let next = url; next;) {
-        if (controller.signal.aborted) throw sqlError(3617, 'Query was cancelled by the user.');
-        const body = (await read(next)).body ?? {};
-        rows.push(...(body.value ?? []));
-        next = body['@odata.nextLink'] ? new URL(body['@odata.nextLink'], origin) : null;
-      }
-      return rows.map((formatted) => projectRow(table, null, formatted));
-    }
+    // Tracing (D-R3-8): each statement is a root `http` span on host `tds`, named by its text with literals redacted; the
+    // entity reads it makes are its children. At full the span keeps the text, the parameters and the result shape.
+    const tracing = traces?.enabled === true;
+    const actor = tracing
+      ? { kind: appId ? 'app' : 'staff', id: user.systemuserid, name: user.fullname ?? null }
+      : null;
+    const statementState = { statements: 0, sql, params };
+    const root = (name, attributes, input) =>
+      traces.start({
+        kind: 'http',
+        name,
+        module: 'dataverse',
+        operation: 'query',
+        traceId: null,
+        actor,
+        session: { visitorId: null, sessionKey: null },
+        origin: { host: 'tds', portal: null, preset: null },
+        attributes: { actorKind: actor.kind, actorId: actor.id, appId: appId ?? undefined, ...attributes },
+        input,
+      });
+    const statement = createTdsStatementRunner(tracing, statementState, root, traces, params, () => timedOut);
 
     try {
       const catalog = buildCatalog({ store, metadataFields });
       return await executeBatch(sql, {
         catalog,
-        scan: (logical, request) => scan(catalog, logical, request),
+        scan: (logical, request) => scanTdsTable(catalog, logical, request, { ...readContext, catalog }),
         params,
         principal,
         signal: controller.signal,
         now: () => new Date(clock()),
         collation: store.querySettings().collation,
+        statement,
       });
     } catch (error) {
-      if (timedOut) throw TIMEOUT;
-      if (error instanceof DataError) throw sqlError(50000, error.message);
-      throw error;
+      // A batch that failed before any statement ran (a syntax error) is one root with the batch text at full only.
+      rethrowTdsQueryError(error, tracing, statementState, root, () => timedOut);
     } finally {
       clearTimeout(timer);
       signal.removeEventListener('abort', cancel);

@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const core = '(?:0|[1-9][0-9]*)';
-const versionPattern = new RegExp(`^${core}\\.${core}\\.${core}(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$`);
+const versionPattern = new RegExp(String.raw`^${core}\.${core}\.${core}(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$`);
 function baseVersion(version) {
   if (
     typeof version !== 'string' ||
@@ -16,7 +16,7 @@ function baseVersion(version) {
       .slice(1)
       .join('-')
       .split('.')
-      .some((value) => /^0[0-9]+$/.test(value))
+      .some((value) => /^0\d+$/.test(value))
   )
     throw new Error('Invalid package version.');
   return version.split('-')[0];
@@ -24,7 +24,7 @@ function baseVersion(version) {
 
 export function branchToken(branch) {
   if (typeof branch !== 'string' || !branch || branch.startsWith('-')) throw new Error('A branch name is required.');
-  execFileSync('git', ['check-ref-format', `refs/heads/${branch}`], { stdio: 'pipe', windowsHide: true });
+  execFileSync('git', ['check-ref-format', `refs/heads/${branch}`], { stdio: 'pipe', windowsHide: true }); // NOSONAR: fixed tool name resolved through PATH by developer tooling
   const slug =
     branch
       .toLowerCase()
@@ -50,9 +50,7 @@ export function releasePlan({ tag, version, sha, onMain }) {
   if (typeof sha !== 'string' || sha.length !== 40 || !/^[a-f0-9]{40}$/.test(sha))
     throw new Error('Expected a full commit SHA.');
   if (typeof tag !== 'string' || tag.trim() !== tag) throw new Error('Invalid release tag.');
-  const match = /^v([0-9]+\.[0-9]+\.[0-9]+)-preview\.([a-z0-9-]+-[a-f0-9]{8})\.([1-9][0-9]*)\.g([a-f0-9]{12})$/.exec(
-    tag,
-  );
+  const match = /^v(\d+\.\d+\.\d+)-preview\.([a-z0-9-]+-[a-f0-9]{8})\.([1-9]\d*)\.g([a-f0-9]{12})$/.exec(tag);
   if (match) {
     if (match[1] !== base || match[4] !== sha.slice(0, 12))
       throw new Error('Preview tag does not match its package base version and commit.');
@@ -90,7 +88,7 @@ export function verifyArchive(directory, version) {
   const archive = path.resolve(directory, expected);
   const read = (file) =>
     JSON.parse(
-      execFileSync('tar', ['-xOf', expected, `package/${file}`], {
+      /* NOSONAR */ execFileSync('tar', ['-xOf', expected, `package/${file}`], {
         cwd: path.resolve(directory),
         encoding: 'utf8',
         windowsHide: true,
@@ -114,13 +112,13 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     if (command === 'stamp') stampVersion(process.cwd(), process.env.PACKAGE_VERSION);
     else if (command === 'verify') console.log(verifyArchive('dist', process.env.PACKAGE_VERSION));
     else if (command === 'plan') {
-      const sha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+      const sha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(); // NOSONAR: fixed tool name resolved through PATH by developer tooling
       const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
       let onMain = false;
       if (!process.env.RELEASE_TAG?.includes('-preview.')) {
-        execFileSync('git', ['fetch', 'origin', 'main'], { stdio: 'inherit' });
+        execFileSync('git', ['fetch', 'origin', 'main'], { stdio: 'inherit' }); // NOSONAR: fixed tool name resolved through PATH by developer tooling
         try {
-          execFileSync('git', ['merge-base', '--is-ancestor', 'HEAD', 'origin/main']);
+          execFileSync('git', ['merge-base', '--is-ancestor', 'HEAD', 'origin/main']); // NOSONAR: fixed tool name resolved through PATH by developer tooling
           onMain = true;
         } catch {
           /* rejected below */

@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 // Conventional Commits permits types beyond feat/fix. Keep the type open to contributors.
 export function validateCommitMessage(message) {
-  const lines = message.replace(/\r\n/g, '\n').split('\n');
+  const lines = message.replaceAll('\r\n', '\n').split('\n');
   if (!/^[a-z][a-z0-9-]*(?:\([^()\r\n]+\))?!?: \S.*$/.test(lines[0] ?? ''))
     throw new Error('Use <type>[optional scope][!]: <description>, e.g. fix(lense): preserve source identity');
   if (lines.length > 1 && lines[1].trim())

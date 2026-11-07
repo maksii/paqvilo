@@ -14,9 +14,16 @@ How Mirage starts, what it reuses between restarts, how to measure startup and c
 
 An embedding caller can pass `onStartup({ phase, elapsedMs })` to observe phase starts and `listener-ready`. The observer is not awaited, and its errors do not fail startup. Startup has no built-in cancellation deadline; run the process under your own supervisor when you need one.
 
+JavaScript module loading/linking occurs before an exported function can call `onStartup`. Measure a cold dynamic
+`import('paqvilo/mirage')` separately if command-to-first-event time matters. `createMirageContext({ onStartup })`
+then reports `context-configuration`, Solution import and portal preparation before the bound runtime's configuration
+event. Supply the observer at context construction when measuring the full embedding path; bound runtimes inherit it unless overridden.
+
 ## Model-driven catalogue
 
-The model-driven shell requests `/_apps/api/index` for apps, navigation and table identities, then `/_apps/api/metadata/<logical-name>` for the selected table. Forms, views, fields and relationships travel only for that table and for requested lookup or subgrid targets. The complete catalogue is still available at `/_apps/api`. API-only runtimes do not build a model-driven catalogue.
+The model-driven shell requests `/_apps/api/index` for apps, navigation and table identities, then `/_apps/api/metadata/<logical-name>` for the selected table. Forms, views, fields and relationships travel only for that table and for requested lookup or subgrid targets. The complete catalogue is still available at `/_apps/api` with every table, form, view and field; it streams one table at a time, and a large catalogue is gzip-compressed when the request accepts gzip (`gzip;q=0` keeps it uncompressed). Read it incrementally rather than as one string when a Solution has thousands of tables. API-only runtimes do not build a model-driven catalogue.
+
+Grids and subgrids keep the native 5,000-record count limit for saved views and FetchXML: a larger result shows its total as `5000+`, and next-page navigation continues past the limit. Smaller filtered results show their exact count.
 
 Every response evaluates the current staff principal and field security; staff grants and field-security results are never cached across requests. Within one read, imported metadata is resolved once per table and reused for grid and record reads until a read plug-in that may write captures its rollback snapshot. Catalogue construction yields between tables after about 8 ms of work, so status requests stay responsive while a large catalogue builds. Disconnecting the client stops the remaining work.
 
@@ -43,7 +50,7 @@ The ordinary test suite uses smaller fixtures and checks invariants instead of e
 
 - Large Solutions are memory-heavy. On the `--large` fixture, process RSS reaches roughly 1–2.5 GB, and startup takes several seconds.
 - Full checkpoints serialize the runtime state. Journaled row transactions append row changes and changed sections; broad transactions can still require whole-state comparison and serialization. Unchanged startup composition writes neither a checkpoint nor a journal entry.
-- Runtime CreateMultiple and UpsertMultiple cost a few milliseconds per row, mostly in the rollup module's write hooks, which read every table's field definitions on each write.
+- Rollup write hooks resolve one current metadata snapshot per synchronous catalogue scan, then inspect table fields from that snapshot. They do not rescan every form/view for every unrelated table. The next scan still checks structured metadata changes; this reuse never caches staff authorization or field security and does not bypass write observers or transactions.
 - Single-record Web API GET reads the table's rows once in the response formatter (for the ETag and lookup names): O(rows), without copying them.
 
 ## Write-volume seams
@@ -58,9 +65,12 @@ each falls back to a scan when it cannot prove its answer.
   cached position still carries the key, and rebuilds once if it does not, so an edit made outside
   the row operations cannot return a wrong row. Duplicate primary-key checks, alternate-key
   uniqueness and alternate-key lookups (`findByKey`) use indexes that live for one transaction, so a
-  direct edit between transactions is never missed. Alternate-key lookups keep `valuesEqual`
-  semantics: only plain non-date strings are bucketed, and other values stay in a list that every
-  lookup scans. CreateMultiple, UpsertMultiple by key and imports cost O(1) per row within one request.
+  direct edit between transactions is never missed. Alternate-key lookups use the configured
+  collation and known field type with `valuesEqual`: date-shaped text stays text, while datetime
+  fields and unknown date-shaped values retain date comparison. Exact numeric key literals retain
+  their digits. Text/GUID buckets and cache identities use unambiguous tuples, including collation
+  and field kinds. Values that cannot share a safe equality bucket stay in an always-scanned list.
+  Text-key bulk creates, upserts and imports use bounded index checks per row within one request.
 - **Reads by id.** Single-record and id-list reads find their rows through the primary-key index
   before the row-security filter, instead of filtering the whole table. Row filters receive the
   stored row without a copy; the security read filter only reads it, and a backend profile
@@ -110,7 +120,7 @@ each falls back to a scan when it cannot prove its answer.
 
 ### Write-volume gate
 
-`mirage/test-volume/write-volume.test.mjs` is not part of the ordinary suite. Run it explicitly:
+`mirage/test-volume/write-volume.test.mjs` runs after the ordinary suite in every Mirage unit lane. Run it alone:
 
 ```sh
 node --test mirage/test-volume/write-volume.test.mjs

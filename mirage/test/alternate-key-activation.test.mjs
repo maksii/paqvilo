@@ -90,15 +90,14 @@ async function table(host, codes, headers = {}) {
     assert.equal((await host.request('POST', '/fx_dupes', { fx_name: `row ${index}`, fx_code: code })).status, 204);
 }
 const keyRow = (host) => host.store.state.mappings.fx_dupe.alternateKeys.find((key) => key.name === 'fx_codekey');
+// The index job runs on the store's scheduler: drain() returns once every started and next-turn task has settled.
 async function settled(host) {
-  for (let i = 0; i < 200; i++) {
-    const key = keyRow(host);
-    const job =
-      key?.asyncJob && host.store.state.tables.asyncoperation.find((row) => row.asyncoperationid === key.asyncJob);
-    if (job?.statecode === 3) return { key, job };
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error('The index job did not complete.');
+  await host.store.scheduler.drain();
+  const key = keyRow(host);
+  const job =
+    key?.asyncJob && host.store.state.tables.asyncoperation.find((row) => row.asyncoperationid === key.asyncJob);
+  assert.equal(job?.statecode, 3, 'the index job completed');
+  return { key, job };
 }
 const createKey = (host, headers = {}) =>
   host.request(
@@ -207,9 +206,8 @@ test('ReactivateEntityKey after the duplicate is fixed makes a Failed key Active
     ).status,
     204,
   );
-  for (let i = 0; i < 200 && keyRow(host).asyncJob === failedJob; i++)
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  await settled(host);
+  const { key } = await settled(host);
+  assert.notEqual(key.asyncJob, failedJob, 'reactivation runs a new index job');
   assert.equal(await status(host), 'Active');
 });
 

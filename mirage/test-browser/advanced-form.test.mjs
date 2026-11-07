@@ -6,10 +6,10 @@ import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('advanced form validates, saves a record, and advances to a persisted edit step', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'advanced-form-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'advanced-form-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_websiteid: website\nadx_name: Test',

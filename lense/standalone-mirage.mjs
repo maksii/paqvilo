@@ -72,7 +72,8 @@ export function standaloneCatalogueConfiguration(catalogue, name, args = {}) {
 }
 
 /** Open the local application directly. No portal overlay or source model is created. */
-export async function developStandalone(cfg, args, session, { open = openBrowser } = {}) {
+export async function developStandalone(cfg, args, session, { open = openBrowser, signal } = {}) {
+  if (signal?.aborted) throw signal.reason;
   const progress = args.startup ?? startupProgress();
   progress.phase('browser setup');
   const { context, close, attached } = await open(
@@ -89,6 +90,8 @@ export async function developStandalone(cfg, args, session, { open = openBrowser
   browser?.once('disconnected', stop);
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
+  signal?.addEventListener('abort', stop, { once: true });
+  if (signal?.aborted) stop();
   try {
     page = attached ? await context.newPage() : (context.pages()[0] ?? (await context.newPage()));
     // Observe this owned tab before navigation/readiness can yield. In an
@@ -104,10 +107,12 @@ export async function developStandalone(cfg, args, session, { open = openBrowser
       modelDriven: cfg.runtime.kind === 'model-driven',
     });
     await stopped;
+    if (signal?.aborted) throw signal.reason;
   } finally {
     progress.close();
     process.off('SIGINT', stop);
     process.off('SIGTERM', stop);
+    signal?.removeEventListener('abort', stop);
     context.off('close', stop);
     browser?.off('disconnected', stop);
     page?.off('close', stop);

@@ -1,8 +1,7 @@
 // The enhanced data model layout (unpacked solution): powerpagecomponents/<id>/powerpagecomponent.xml
-import { test, beforeEach, afterEach } from 'node:test';
+import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import {
@@ -15,7 +14,8 @@ import {
 } from '../lense/portal-model.mjs';
 import { GitBaseline } from '../lense/git.mjs';
 import { HtmlRewriter } from '../lense/html-rewriter.mjs';
-import { SITE } from './fixture.mjs';
+import { SITE, tempDirSync } from './fixture.mjs';
+import { settleFileTimes } from '../mirage/test/support/file-times.mjs';
 import { OverlaySession } from '../lense/session.mjs';
 import { editSource } from '../lense/source-edit.mjs';
 import { auditResources } from '../lense/resource-audit.mjs';
@@ -57,8 +57,10 @@ const git = (...args) =>
     windowsHide: true,
   });
 
-beforeEach(() => {
-  dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-enh-')));
+// The committed export is built once (three Git processes); every test edits its own copy, .git included.
+let template;
+before(() => {
+  dir = template = tempDirSync('paqvilo-enh-template-');
   put(HOME, component(HOME, 2, 'Home', { isroot: true, partialurl: '/' }));
   put(HOME_EN, component(HOME_EN, 2, 'Home', { isroot: false, rootwebpageid: HOME, partialurl: '/' }));
   put(NEWS, component(NEWS, 2, 'Newsfeed', { isroot: true, partialurl: 'Newsfeed', parentpageid: HOME }));
@@ -116,6 +118,11 @@ beforeEach(() => {
   git('init', '-q');
   git('add', '-A');
   git('-c', 'user.name=t', '-c', 'user.email=t@localhost', 'commit', '-q', '-m', 'baseline');
+});
+after(() => fs.rmSync(template, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
+beforeEach(() => {
+  dir = tempDirSync('paqvilo-enh-');
+  fs.cpSync(template, dir, { recursive: true });
 });
 afterEach(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
 
@@ -582,6 +589,8 @@ test('enhanced deployment diagnostics distinguish previewable source fields from
 });
 
 test('async enhanced indexing matches sync sources and cached XML refreshes only changed components', async (t) => {
+  // The reuse assertions below concern files written moments ago.
+  settleFileTimes(t);
   const synchronous = new PortalModel(dir);
   const model = await PortalModel.create(dir);
   assert.deepEqual(model.webFiles, synchronous.webFiles);

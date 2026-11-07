@@ -13,11 +13,12 @@ import {
   publicApiOrigins,
 } from '../scripts/code-review.mjs';
 import { browserSources, knipConfig } from '../scripts/code-review.config.mjs';
+import { tempDir } from './fixture.mjs';
 
 const copiedLogic = `export function calculate(items) {\n${Array.from({ length: 20 }, (_, i) => ` const value${i} = items[${i}] * ${i + 1} + ${i + 5};`).join('\n')}\n return [${Array.from({ length: 20 }, (_, i) => `value${i}`).join(',')}];\n}\n`;
 
 test('review tools detect an orphan module, unused export and copied logic without editing sources', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-review-'));
+  const root = await tempDir('paqvilo-review-');
   try {
     const config = path.join(root, 'knip.json');
     await fs.writeFile(path.join(root, 'package.json'), '{"private":true,"type":"module"}');
@@ -65,7 +66,7 @@ test('review tools detect an orphan module, unused export and copied logic witho
 });
 
 test('analysis accepts explicitly aliased roots and rebases clone paths from a canonical temporary root', async (t) => {
-  const fixture = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-root-alias-review-'));
+  const fixture = await tempDir('paqvilo-root-alias-review-');
   t.after(() => fs.rm(fixture, { recursive: true, force: true }));
   const physical = path.join(fixture, 'physical-source'),
     alias = path.join(fixture, 'source-alias');
@@ -108,9 +109,9 @@ test('analysis accepts explicitly aliased roots and rebases clone paths from a c
 });
 
 test('native Git-root identity retains indexed-link refusals when legacy realpath preserves an alias spelling', async (t) => {
-  const fixture = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-git-root-alias-'));
+  const fixture = await tempDir('paqvilo-git-root-alias-');
   t.after(() => fs.rm(fixture, { recursive: true, force: true }));
-  const root = path.join(fixture, 'repository-with-a-long-directory-name'),
+  const root = path.join(fixture, 'repository-%COMSPEC%-!invented!-with-a-long-directory-name'),
     alias = path.join(fixture, 'repo-alias');
   const linked = path.join(root, 'mirage/lib/linked'),
     privateSource = path.join(root, '.paqvilo/private');
@@ -131,11 +132,16 @@ test('native Git-root identity retains indexed-link refusals when legacy realpat
   const requested = [alias];
   if (process.platform === 'win32') {
     // Read-only conversion uses the actual volume's 8.3 alias when available.
-    const short = spawnSync('cmd.exe', ['/d', '/s', '/c', `"for %I in ("${root}") do @echo %~sI"`], {
-      encoding: 'utf8',
-      windowsHide: true,
-      windowsVerbatimArguments: true,
-    });
+    const short = spawnSync(
+      'cmd.exe',
+      ['/d', '/v:off', '/s', '/c', '"for %I in ("%PAQ_TEST_SHORT_ROOT%") do @echo %~sI"'],
+      {
+        encoding: 'utf8',
+        windowsHide: true,
+        windowsVerbatimArguments: true,
+        env: { ...process.env, PAQ_TEST_SHORT_ROOT: root },
+      },
+    );
     assert.equal(short.status, 0);
     assert.equal(syncFs.realpathSync.native(short.stdout.trim()), syncFs.realpathSync.native(root));
     requested.push(short.stdout.trim());
@@ -176,13 +182,17 @@ test('review models browser URL aliases and explicit API roots without wildcard 
 });
 
 test('public API origins follow named aliases and wildcard reexports without executing implementations', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-public-review-'));
+  const root = await tempDir('paqvilo-public-review-');
   try {
     await fs.writeFile(
       path.join(root, 'package.json'),
       JSON.stringify({
         type: 'module',
-        exports: { './api': './api.mjs', './internal/*': './*' },
+        exports: {
+          './api': './api.mjs',
+          './typed': { types: './typed.d.ts', import: { default: './typed.mjs' } },
+          './internal/*': './*',
+        },
       }),
     );
     await fs.writeFile(
@@ -194,10 +204,14 @@ test('public API origins follow named aliases and wildcard reexports without exe
       "throw new Error('analysis must not execute'); export function original() {} export const privateName = 1;",
     );
     await fs.writeFile(path.join(root, 'more.mjs'), 'export const otherPublicName = 2;');
+    await fs.writeFile(path.join(root, 'typed.d.ts'), 'export declare function typed(): void;');
+    await fs.writeFile(path.join(root, 'typed.mjs'), "throw new Error('must not execute'); export function typed() {}");
     const origins = publicApiOrigins(root);
     assert.ok(origins.has('api.mjs:publicName'));
     assert.ok(origins.has('logic.mjs:original'));
     assert.ok(origins.has('more.mjs:otherPublicName'));
+    assert.ok(origins.has('typed.d.ts:typed'));
+    assert.ok(origins.has('typed.mjs:typed'));
     assert.ok(!origins.has('logic.mjs:privateName'));
   } finally {
     await fs.rm(root, { recursive: true, force: true });
@@ -205,7 +219,7 @@ test('public API origins follow named aliases and wildcard reexports without exe
 });
 
 test('actual runtime and full configuration detect body-only orphans despite package wildcard exports', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-wildcard-review-'));
+  const root = await tempDir('paqvilo-wildcard-review-');
   const config = new URL('../scripts/code-review.config.mjs', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
   try {
     await fs.mkdir(path.join(root, 'bin'), { recursive: true });
@@ -249,7 +263,7 @@ test('actual runtime and full configuration detect body-only orphans despite pac
 });
 
 test('Git-indexed linked ancestors cannot expose outside or ignored private sources to review', async (t) => {
-  const fixture = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-linked-review-'));
+  const fixture = await tempDir('paqvilo-linked-review-');
   t.after(() => fs.rm(fixture, { recursive: true, force: true }));
   const root = path.join(fixture, 'repo'),
     linked = path.join(root, 'mirage/lib/linked');
@@ -304,7 +318,7 @@ test('Git-indexed linked ancestors cannot expose outside or ignored private sour
 });
 
 test('oversized modeled modules fail explicitly while large unmodeled JSON does not expand read bounds', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-large-review-'));
+  const root = await tempDir('paqvilo-large-review-');
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await fs.mkdir(path.join(root, 'mirage/lib'), { recursive: true });
   await fs.writeFile(path.join(root, 'package.json'), '{"private":true,"type":"module"}');
@@ -325,7 +339,7 @@ test('oversized modeled modules fail explicitly while large unmodeled JSON does 
 });
 
 test('a nested staging snapshot uses its own files rather than an ancestor Git index', async (t) => {
-  const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-staged-review-'));
+  const parent = await tempDir('paqvilo-staged-review-');
   t.after(() => fs.rm(parent, { recursive: true, force: true }));
   await fs.writeFile(path.join(parent, '.gitignore'), '.paqvilo/\n');
   await fs.writeFile(path.join(parent, 'parent-only.mjs'), 'console.log("parent");');

@@ -71,7 +71,7 @@ try {
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_/i.test(key)));
     const git = (...args) =>
       execFileSync(
-        'git',
+        'git', // NOSONAR: fixed tool name resolved through PATH by developer tooling
         ['-c', 'core.autocrlf=false', '-c', 'core.hooksPath=', '-c', 'commit.gpgsign=false', ...args],
         { cwd: source, env, stdio: 'pipe', windowsHide: true, timeout: 30_000 },
       );

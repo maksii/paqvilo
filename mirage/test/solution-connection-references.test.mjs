@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { importSolutionData, applySolutionData, solutionSeedRows } from '../lib/solution-data.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const CUSTOMIZATIONS = `<ImportExportXml><Entities/><connectionreferences>
 <connectionreference connectionreferencelogicalname="x_boundref"><connectionreferencedisplayname>Bound reference</connectionreferencedisplayname><connectorid>/providers/Microsoft.PowerApps/apis/shared_fxsolution</connectorid></connectionreference>
@@ -11,7 +12,7 @@ const CUSTOMIZATIONS = `<ImportExportXml><Entities/><connectionreferences>
 </connectionreferences></ImportExportXml>`;
 
 async function solution(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'solution-connrefs-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'solution-connrefs-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   for (const [relative, content] of Object.entries({
     'Other/Solution.xml':

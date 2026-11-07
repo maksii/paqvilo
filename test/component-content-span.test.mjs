@@ -53,6 +53,7 @@ test('large incomplete content tags finish in a bounded worker with semantic ref
     `
     const { parentPort, workerData } = require('node:worker_threads');
     import(workerData.module).then(({ componentContentSpan, componentIdentity }) => {
+      parentPort.postMessage('imported');
       const incomplete = '<content '.repeat(500000);
       const whitespace = '<powerpagecomponent' + ' '.repeat(1000000) + 'invalid/>';
       parentPort.postMessage([componentContentSpan(incomplete), componentIdentity(whitespace)]);
@@ -63,8 +64,11 @@ test('large incomplete content tags finish in a bounded worker with semantic ref
   let timer;
   try {
     const result = await new Promise((resolve, reject) => {
-      timer = setTimeout(() => reject(new Error('XML cursor exceeded its worker deadline.')), 20000);
-      worker.once('message', resolve);
+      worker.on('message', (message) => {
+        if (message !== 'imported') return resolve(message);
+        // The scans take milliseconds; a nonlinear scan of these megabyte inputs would take hours.
+        timer = setTimeout(() => reject(new Error('XML cursor exceeded its worker deadline.')), 20000);
+      });
       worker.once('error', reject);
       worker.once('exit', (code) => {
         if (code) reject(new Error('XML cursor worker exited early.'));

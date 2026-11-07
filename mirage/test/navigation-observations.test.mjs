@@ -17,7 +17,7 @@ test('an aborted loopback frame lifecycle request is not an unexpected failure',
   report.failedRequests[0].url = origin + '/__sim/frame-ready/not-a-nonce';
   assert.equal(classifyNavigationObservations(report).unexpectedFailedRequests.length, 1);
 });
-const url = 'http://127.0.0.1:8787/fetchchangerequestactivities?id=change&type=getProducts';
+const url = 'http://127.0.0.1:8787/fetchitemactivities?id=item&type=getParts';
 const fixture = () => ({
   origin: 'http://127.0.0.1:8787',
   failedRequests: [
@@ -36,7 +36,7 @@ const fixture = () => ({
       url,
       at: 1500,
       stack:
-        'at De (http://127.0.0.1:8787/scripts/datatables.min.js:30:400)\nat reloadCRActivityTable (http://127.0.0.1:8787/productUI_ChangeRequestDetail.js:1471:48)',
+        'at De (http://127.0.0.1:8787/scripts/datatables.min.js:30:400)\nat reloadItemActivityTable (http://127.0.0.1:8787/itemDetail.js:1471:48)',
     },
   ],
   failedResponses: [],
@@ -52,26 +52,41 @@ test('authored cancellation classification needs an observed matching source sta
     (r) => (r.sourceAborts[0].stack = 'at unrelatedAction'),
     (r) => (r.failedRequests[0].method = 'POST'),
     // The only successful later read is for another record.
-    (r) => (r.calls[0].url = url.replace('getProducts', 'other')),
+    (r) => (r.calls[0].url = url.replace('getParts', 'other')),
     // A cross-origin read is never reconciled.
     (r) => {
       r.failedRequests[0].url =
         r.sourceAborts[0].url =
         r.calls[0].url =
-          'http://elsewhere.invalid/fetchchangerequestactivities?type=getProducts';
+          'http://elsewhere.invalid/fetchitemactivities?type=getParts';
     },
+    // An abort observed more than a second after the harness saw the request end is another read's.
+    (r) => {
+      r.sourceAborts[0].at = r.failedRequests[0].at + 1001;
+      r.calls[0].at = r.sourceAborts[0].at + 100;
+    },
+    // A replacement read more than ten seconds after the abort does not supersede it.
+    (r) => (r.calls[0].at = r.sourceAborts[0].at + 10001),
   ]) {
     const report = fixture();
     modify(report);
     assert.equal(classifyNavigationObservations(report).unexpectedFailedRequests.length, 1);
   }
+  const edge = fixture();
+  edge.sourceAborts[0].at = edge.failedRequests[0].at + 1000;
+  edge.calls[0].at = edge.sourceAborts[0].at + 10000;
+  assert.equal(
+    classifyNavigationObservations(edge).sourceSupersededReads.length,
+    1,
+    'both windows include their bound',
+  );
   const duplicate = fixture();
   duplicate.failedRequests.push({ ...duplicate.failedRequests[0] });
   assert.equal(classifyNavigationObservations(duplicate).unexpectedFailedRequests.length, 1);
 });
 test('authored DataTables polling of any fetch page is superseded by its redirected replacement read', () => {
   const report = fixture();
-  const other = 'http://127.0.0.1:8787/fetchapplicationactivities?id=app';
+  const other = 'http://127.0.0.1:8787/fetchorderactivities?id=order';
   // The page observes the abort slightly before the harness records the request start.
   report.failedRequests = [{ method: 'GET', url: other, error: 'net::ERR_ABORTED', startedAt: 1502, at: 1600 }];
   report.sourceAborts = [
@@ -86,7 +101,7 @@ test('authored DataTables polling of any fetch page is superseded by its redirec
   // The slash-less fetch page answers with a redirect; the replacement completes on the trailing-slash URL.
   report.calls = [
     { method: 'GET', url: other, status: 301, at: 1650 },
-    { method: 'GET', url: 'http://127.0.0.1:8787/fetchapplicationactivities/?id=app', status: 200, at: 1700 },
+    { method: 'GET', url: 'http://127.0.0.1:8787/fetchorderactivities/?id=order', status: 200, at: 1700 },
   ];
   const classified = classifyNavigationObservations(report);
   assert.equal(classified.sourceSupersededReads.length, 1);
@@ -95,7 +110,7 @@ test('authored DataTables polling of any fetch page is superseded by its redirec
 });
 test('only resolved exported page-role denials can classify matching document403 and exact console resource URL', () => {
   const report = fixture(),
-    url = report.origin + '/epi-list/';
+    url = report.origin + '/restricted-list/';
   report.failedResponses = [{ method: 'GET', url, status: 403 }];
   report.consoleErrors = [
     {
@@ -109,7 +124,7 @@ test('only resolved exported page-role denials can classify matching document403
   ];
   const pages = [
     {
-      url: '/epi-list/',
+      url: '/restricted-list/',
       access: {
         allowed: false,
         code: 'PAGE_ACCESS_DENIED',

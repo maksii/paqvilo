@@ -10,6 +10,7 @@ import { sourceOrganizationExtensions } from '../lib/source-organization-extensi
 import { readSolutionWorkflows } from '../lib/dataverse-workflows.mjs';
 import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
 import { importSolutionData } from '../lib/solution-data.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const CLASSIC = '77777777-7777-4777-8777-777777777771';
 const FLOW = '77777777-7777-4777-8777-777777777772';
@@ -57,7 +58,7 @@ async function inventory(t, layers) {
 }
 
 test('a Solution ZIP layer yields the same custom APIs, duplicate rules and workflows as its unpacked directory', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'solution-zip-extensions-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'solution-zip-extensions-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const dir = path.join(root, 'InventedZipExtensions');
   await writeTree(dir, files);
@@ -92,7 +93,7 @@ test('a Solution ZIP layer yields the same custom APIs, duplicate rules and work
 });
 
 test('a lower-case workflows folder is read', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'solution-zip-extensions-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'solution-zip-extensions-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await writeTree(
     root,
@@ -108,7 +109,7 @@ test('a lower-case workflows folder is read', async (t) => {
 });
 
 test('an unreadable Solution ZIP layer reports a diagnostic instead of contributing nothing silently', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'solution-zip-extensions-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'solution-zip-extensions-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const zip = path.join(root, 'InventedBroken.zip');
   await fs.writeFile(zip, 'not a zip archive');

@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { parseDateValue } from '../lib/dataverse-values.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const BASE_ID = '00000000-0000-0000-0000-000000000001';
 const COLLECTION = '/_api/probeentries';
@@ -36,7 +36,7 @@ const probeState = (app) => ({
 const literal = (value) => `'${value.replace(/'/g, "''")}'`;
 
 async function start(t) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-input-roundtrip-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-input-roundtrip-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(path.join(directory, 'website.yml'), 'adx_websiteid: probe-site\nadx_name: Input probe\n');
   await fs.writeFile(

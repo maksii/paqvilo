@@ -40,7 +40,7 @@ export async function verifyStateStorage() {
     const savedDigest = store.persistedDigest,
       savedMs = performance.now() - started;
     store = null;
-    global.gc?.();
+    globalThis.gc?.();
     const loading = performance.now();
     store = await new DataStore({ file }).init();
     assert.equal(store.persistedDigest, savedDigest);
@@ -58,7 +58,7 @@ export async function verifyStateStorage() {
     assert.ok(patchMs < 5000, `20 PATCHes took ${patchMs.toFixed(0)}ms`);
     const digest = store.persistedDigest;
     store = null;
-    global.gc?.();
+    globalThis.gc?.();
     store = await new DataStore({ file }).init();
     assert.equal(store.persistedDigest, digest);
     for (let i = 0; i < 20; i++) assert.equal(store.state.tables.item[rows - 1 - i].name, `patch-${i}`);
@@ -68,7 +68,7 @@ export async function verifyStateStorage() {
     await assert.rejects(store.update('items', 'row-0', { name: 'conflict' }), { code: 'StateConflict' });
     assert.equal(store.state.tables.item[0].name, undefined);
     store = null;
-    global.gc?.();
+    globalThis.gc?.();
     const { createSimulator } = await import('../server.mjs');
     const sourceDir = join(root, 'portal');
     await fs.mkdir(sourceDir);
@@ -146,7 +146,7 @@ export async function verifyStateStorage() {
     } finally {
       await app.close();
       app = null;
-      global.gc?.();
+      globalThis.gc?.();
     }
     const persisted = await new DataStore({ file: join(root, 'http-state.json') }).init();
     for (let n = 0; n < 20; n++) assert.equal(persisted.state.tables.item[299999 - n].name, `http-${299999 - n}`);

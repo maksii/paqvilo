@@ -1,3 +1,4 @@
+// @test-kind contract: Power Fx provider seam: disabled engine answers 501 PowerFxEvaluatorMissing, pack adapters evaluate, capability record
 // Power Fx-backed custom APIs (Dataverse Functions) and automated low-code plug-ins route through api.providers.powerFx:
 // with the engine explicitly disabled a Function and a write an automated plug-in covers answer 501
 // PowerFxEvaluatorMissing (never default outputs, never an unchanged row; POWERFX_AUTOMATED_NOT_EVALUATED once); with a
@@ -12,11 +13,150 @@ import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import { createPowerFxEvaluator } from '../lib/canvas-power-fx.mjs';
 import { describeCustomApis, powerFxRequirements } from '../lib/dataverse-customapi.mjs';
 import { localOrganizationService } from '../lib/local-organization-service.mjs';
+import { dispatchSdkCall } from '../lib/plugin-clr.mjs';
 
 const APP = '77777777-7777-4777-8777-777777777777';
 const FX = '77777777-7777-4777-8777-777777777710';
 const AUTO = '77777777-7777-4777-8777-777777777711';
 const ids = { add: '77777777-7777-4777-8777-777777777712', plain: '77777777-7777-4777-8777-777777777713' };
+
+// @test-kind security: independent reads never borrow an awaiting transaction or SDK write capability
+test('independent HTTP reads cannot borrow an awaiting main operation transaction or SDK write capability', async (t) => {
+  let entered, release;
+  const waiting = new Promise((resolve) => {
+    entered = resolve;
+  });
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  t.after(() => release());
+  let provisionalId;
+  const f = await organization(t, {
+    withAdapter: {
+      evaluate: async (_expression, { host }) => {
+        host.dataSource('accounts').adapter.create({ name: 'Provisional awaiting main' });
+        f.store.pluginSdkTag = 'Private originating tag';
+        f.store.pluginParentContext = { $type: 'ExecutionContext', values: { Depth: 1 } };
+        f.store.flowChain = { id: APP, depth: 4 };
+        const provisional = f.store.tableRows('account').find((row) => row.name === 'Provisional awaiting main');
+        provisionalId = provisional.accountid;
+        f.store.get('account', provisional.accountid, { admin: true });
+        entered();
+        await gate;
+        throw new Error('Controlled main rollback');
+      },
+    },
+  });
+  const seeded = await f.call('POST', 'accounts', { name: 'Committed baseline' });
+  assert.equal(seeded.status, 201);
+  const baseline = seeded.body.accountid;
+  const userId = f.store.tableRows('systemuser')[0].systemuserid;
+  const profile = {
+    userId,
+    evidence: 'Invented HTTP operation isolation',
+    grants: [{ entity: 'account', operations: ['create', 'update'] }],
+  };
+  let during = false,
+    nestedReadWrite = false;
+  const refused = [],
+    independentWrites = [];
+  f.store.setPluginPipeline(
+    (context) => {
+      if (
+        context.stage === 20 &&
+        context.operation === 'retrieve' &&
+        context.record.accountid === provisionalId &&
+        f.store.inTransaction()
+      ) {
+        assert.equal(f.store.pluginReadOnly, false);
+        assert.equal(f.store.pluginInTransaction, true);
+        localOrganizationService(f.store, profile).update('account', context.record.accountid, {
+          description: 'Authorized nested read update',
+        });
+        nestedReadWrite = true;
+      }
+      if (context.stage === 10 && during && !f.store.inTransaction()) {
+        assert.equal(f.store.pluginInTransaction === true, false);
+        assert.equal(f.store.pluginReadOnly, true);
+        for (const name of [
+          'pluginRollbackBoundary',
+          'pluginParentContext',
+          'pluginExecutionUserId',
+          'pluginSdkTag',
+          'flowChain',
+          'committedEventCandidates',
+        ])
+          assert.equal(f.store[name] == null, true, name);
+        const deniedProfile = { ...profile, grants: [{ entity: 'account', operations: ['read'] }] };
+        assert.throws(
+          () =>
+            localOrganizationService(f.store, deniedProfile).create('account', {
+              name: 'Independent direct SDK write',
+            }),
+          { code: 'LocalBackendPermissionDenied' },
+        );
+        refused.push(true);
+        // @parity-evidence: native and native-r2 readNested: a read step's SDK write commits in its own transaction
+        // The authorized CLR write commits in a transaction of its own (data.mjs openReadLane), queued behind the
+        // awaiting main operation: it neither joins that transaction nor sees its provisional row.
+        dispatchSdkCall({
+          store: f.store,
+          profile,
+          message: {
+            method: 'Create',
+            userId,
+            arguments: [
+              {
+                $type: 'Entity',
+                logicalName: 'account',
+                id: '00000000-0000-0000-0000-000000000000',
+                attributes: { name: 'Independent CLR SDK write' },
+              },
+            ],
+          },
+        });
+        assert.equal(f.store.pluginInTransaction === true, false);
+        assert.equal(
+          f.store.tableRows('account').some((row) => row.name === 'Provisional awaiting main'),
+          false,
+        );
+        independentWrites.push(true);
+      }
+      return {};
+    },
+    ({ operation }) => ['retrieve', 'retrievemultiple'].includes(operation),
+  );
+  const main = f.call('POST', 'x_Add', { X: 2, Y: 3 });
+  await Promise.race([
+    waiting,
+    main.then((answer) => {
+      throw new Error('Main exited before the controlled gate: ' + JSON.stringify(answer));
+    }),
+  ]);
+  during = true;
+  try {
+    const collection = await f.call('GET', "accounts?$filter=name eq 'Provisional awaiting main'");
+    assert.equal(collection.status, 200);
+    assert.equal(collection.body.value.length, 0);
+    const single = await f.call('GET', `accounts(${baseline})`);
+    assert.equal(single.status, 200);
+    assert.equal(single.body.name, 'Committed baseline');
+  } finally {
+    release();
+  }
+  const answer = await main;
+  assert.ok(answer.status >= 400);
+  during = false;
+  assert.equal(nestedReadWrite, true);
+  assert.equal(refused.length, 2);
+  assert.equal(independentWrites.length, 2);
+  await f.store.settleReadLanes();
+  // The main operation rolled back; each read's own write committed after it.
+  assert.deepEqual(
+    f.store.tableRows('account').map((row) => row.name),
+    ['Committed baseline', 'Independent CLR SDK write', 'Independent CLR SDK write'],
+  );
+});
 
 // An adapter: '{ Z: X + Y }' adds, 'Upper' upper-cases ThisRecord.x_name. Synchronous, as a pack may export it.
 const adapter = {
@@ -129,13 +269,14 @@ async function organization(t, { withAdapter }) {
       })
     ).json()
   ).access_token;
-  const call = async (method, route, value) => {
+  const call = async (method, route, value, headers = {}) => {
     const response = await fetch(transport.origin + '/api/data/v9.2/' + route, {
       method,
       headers: {
         authorization: `Bearer ${token}`,
         prefer: 'return=representation',
         ...(value ? { 'content-type': 'application/json' } : {}),
+        ...headers,
       },
       ...(value ? { body: JSON.stringify(value) } : {}),
     });
@@ -166,6 +307,45 @@ test('with a pack adapter a Function returns the evaluated record', async (t) =>
   assert.equal(fx.body.Z, 5);
 });
 
+test('synchronous SDK custom API execution evaluates a synchronous Power Fx function', async (t) => {
+  const { store } = await organization(t, { withAdapter: true });
+  const userId = store.tableRows('systemuser')[0].systemuserid;
+  const sdk = localOrganizationService(store, {
+    userId,
+    evidence: 'Invented SDK Power Fx execution',
+    grants: [{ message: 'x_Add', operations: ['execute'] }],
+  });
+  const answer = await store.transact(() =>
+    sdk.executeMessageSync('x_Add', null, { $type: 'ParameterCollection', values: { X: 2, Y: 4 } }),
+  );
+  assert.equal(answer.outputs.values.Z, 6);
+});
+
+test('synchronous SDK custom API execution refuses an async-only Power Fx provider before calling it', async (t) => {
+  let calls = 0;
+  const { store } = await organization(t, {
+    withAdapter: {
+      evaluate: async () => {
+        calls++;
+        return { value: { Z: 99 } };
+      },
+    },
+  });
+  const userId = store.tableRows('systemuser')[0].systemuserid;
+  const sdk = localOrganizationService(store, {
+    userId,
+    evidence: 'Invented SDK Power Fx refusal',
+    grants: [{ message: 'x_Add', operations: ['execute'] }],
+  });
+  await assert.rejects(
+    store.transact(() =>
+      sdk.executeMessageSync('x_Add', null, { $type: 'ParameterCollection', values: { X: 2, Y: 4 } }),
+    ),
+    (error) => error.code === 'SdkAsyncPreOperationUnsupported',
+  );
+  assert.equal(calls, 0);
+});
+
 test('an automated low-code plug-in changes the target pre-operation with an adapter; with the engine disabled the write answers 501', async (t) => {
   const evaluated = await organization(t, { withAdapter: true });
   const created = await evaluated.call('POST', 'x_items', { x_name: 'invented' });
@@ -191,6 +371,43 @@ const sdkOf = (store) =>
     grants: [{ entity: 'x_item', operations: ['read', 'create'] }],
   });
 
+test('automated Power Fx bypass keeps known protected logic and reports unqualified ownership', async (t) => {
+  const f = await organization(t, { withAdapter: true });
+  const row = f.store.tableRows('fxexpression').find((item) => item.fxexpressionid === AUTO);
+  for (const kind of ['custom', 'microsoft', 'system', 'unknown']) {
+    delete row.customizationlevel;
+    delete row.bypassOwnership;
+    if (kind === 'system') row.customizationlevel = 0;
+    if (kind !== 'unknown') row.bypassOwnership = { kind, evidence: 'Invented low-code source ownership witness' };
+    else row.customizationlevel = 0; // Internal metadata alone does not establish ownership.
+    const answer = await f.call(
+      'POST',
+      'x_items',
+      { x_name: 'source ownership' },
+      { 'MSCRM.BypassBusinessLogicExecution': 'CustomSync' },
+    );
+    assert.equal(answer.status, 201, JSON.stringify(answer.body));
+    assert.equal(answer.body.x_name, ['system', 'microsoft'].includes(kind) ? 'SOURCE OWNERSHIP' : 'source ownership');
+    assert.equal(
+      describeCustomApis(f.runtime.api).operations.find((operation) => operation.name === 'automated:x_Upper')
+        .bypassOwnership.kind,
+      kind,
+    );
+  }
+  assert.ok(f.diagnostics.some((entry) => entry.code === 'PLUGIN_BYPASS_OWNERSHIP_UNKNOWN'));
+  f.store.observed = {
+    ...f.store.observed,
+    businessLogicOwnership: { [AUTO]: { kind: 'microsoft', evidence: 'Invented project ownership observation' } },
+  };
+  const protectedByObservation = await f.call(
+    'POST',
+    'x_items',
+    { x_name: 'observed ownership' },
+    { 'MSCRM.BypassBusinessLogicExecution': 'CustomSync' },
+  );
+  assert.equal(protectedByObservation.body.x_name, 'OBSERVED OWNERSHIP');
+});
+
 test('a synchronous SDK create runs the automated plug-in inline with a synchronous adapter', async (t) => {
   const { store } = await organization(t, { withAdapter: true });
   const row = sdkOf(store).create('x_item', { x_name: 'sdk' });
@@ -210,6 +427,53 @@ test('a synchronous SDK create refuses an async-only adapter before storing (Sdk
   assert.equal(store.tableRows('x_item').length, 0);
 });
 
+// @test-kind security: refused asynchronous continuations cannot use retained data sources or caller rows
+test('a refused asynchronous automated Power Fx continuation cannot use retained data sources or caller rows', async (t) => {
+  let release, finished, cached, caller;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const completed = new Promise((resolve) => {
+    finished = resolve;
+  });
+  const errors = [];
+  const f = await organization(t, {
+    withAdapter: {
+      evaluate: async (_expression, { host }) => {
+        cached = host.dataSource('accounts').adapter;
+        caller = host.caller.user;
+        await gate;
+        for (const action of [
+          () => cached.create({ name: 'Late account' }),
+          () => {
+            caller.fullname = 'Late caller';
+          },
+        ]) {
+          try {
+            action();
+          } catch (error) {
+            errors.push(error.code);
+          }
+        }
+        finished();
+        return { value: { x_name: 'LATE' } };
+      },
+    },
+  });
+  const accounts = f.store.tableRows('account').length;
+  assert.throws(() => sdkOf(f.store).create('x_item', { x_name: 'refused' }), {
+    code: 'SdkAsyncPreOperationUnsupported',
+  });
+  release();
+  await completed;
+  assert.deepEqual(errors, ['LocalPluginExecutionExpired', 'LocalPluginExecutionExpired']);
+  assert.throws(() => cached.create({ name: 'Fresh-context late account' }), { code: 'LocalPluginExecutionExpired' });
+  assert.equal(f.store.tableRows('account').length, accounts);
+  assert.equal(f.store.tableRows('x_item').length, 0);
+  assert.ok(f.store.tableRows('systemuser').every((row) => row.fullname !== 'Late caller'));
+});
+
+// @test-kind unproven: assumed platform error code for a non-navigation bind; no native capture cited
 test('a bind on a name that is not a navigation (FxExpressionId) answers 400 0x80048d19 and creates nothing', async (t) => {
   const { call, store } = await organization(t, { withAdapter: true });
   const before = store.tableRows('customapi').length;

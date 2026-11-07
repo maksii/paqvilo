@@ -143,7 +143,7 @@ for (const mode of MODES) {
     const mint = await h.call('GET', `GetFileSasUrl(Target=@t,FileAttributeName='')?@t=${args}`);
     assert.equal(mint.status, 200, JSON.stringify(mint.json));
     assert.equal(mint.json.Result.FileSizeInBytes, 11);
-    const download = await fetch(mint.json.Result.SasUrl, { signal: AbortSignal.timeout(5000) });
+    const download = await fetch(mint.json.Result.SasUrl);
     assert.equal(await download.text(), 'hello notes');
 
     assert.equal((await h.call('DELETE', `activitymimeattachments(${attachmentId})`)).status, 204);

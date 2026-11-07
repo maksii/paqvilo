@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { importPortal } from '../lib/importer.mjs';
 import { assertPortalSource, detectSourceDialect, portalSourceDir, PortalSourceError } from '../lib/source-dialect.mjs';
 import { createSimulator } from '../server.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { bootstrapReport, resolveReportInputs } from '../bootstrap-report.mjs';
 import { bootstrapProject } from '../lib/project-config.mjs';
 
@@ -20,8 +21,8 @@ const execFileAsync = promisify(execFile);
 const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'cli.mjs');
 
 async function tree(t, files) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-source-dialect-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-source-dialect-'));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(files)) {
     const file = path.join(root, name);
     await fs.mkdir(path.dirname(file), { recursive: true });
@@ -153,7 +154,8 @@ test('an mspp_ YAML source is refused by import, serve, inspect, bootstrap-repor
   );
   assert.ok(inspected, 'inspect fails');
   assert.notEqual(inspected.code, 0);
-  assert.match(inspected.stderr, MSPP_MESSAGE);
+  assert.match(JSON.parse(inspected.stdout).error.message, MSPP_MESSAGE);
+  assert.equal(inspected.stderr, '');
   // bootstrap-report and project bootstrap
   await assert.rejects(
     bootstrapReport(await resolveReportInputs({ source: site, 'solution-root': [] }), { noCache: true }),
@@ -213,6 +215,6 @@ test('an adx_ export without web pages and an unknown folder fail with their own
     watch: false,
     requirePortalSource: true,
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   assert.equal((await fetch(app.url + '/')).status, 200);
 });

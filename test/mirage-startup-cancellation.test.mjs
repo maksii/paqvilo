@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import mirage, {
@@ -10,14 +9,22 @@ import mirage, {
   updateOwnedSessions,
   processIdentityAsync,
 } from '../lense/commands/mirage.mjs';
+import { tempDir } from './fixture.mjs';
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 
+// A released operation settles within event-loop latency. The bound stays below the 2.5 s status probe timeout and the
+// 30 s ownership lock deadline, so an operation that ignores its signal fails here instead of settling later on its own.
+const RELEASE_BOUND_MS = 1000;
 const bounded = async (promise) => {
   let timer;
   try {
     return await Promise.race([
       promise,
       new Promise((_, reject) => {
-        timer = setTimeout(() => reject(Error('Cancellation did not release the operation promptly.')), 1000);
+        timer = setTimeout(
+          () => reject(Error('Cancellation did not release the operation promptly.')),
+          RELEASE_BOUND_MS,
+        );
       }),
     ]);
   } finally {
@@ -25,8 +32,8 @@ const bounded = async (promise) => {
   }
 };
 async function fixture(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-startup-cancel-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const root = await tempDir('paq-startup-cancel-');
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const paths = miragePaths({ stateDir: root });
   await fs.mkdir(paths.discoveryRoot, { recursive: true });
   return { root, paths };
@@ -63,7 +70,7 @@ for (const streaming of [false, true])
       requested();
     });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-    t.after(
+    ownedFixture(t).add(
       () =>
         new Promise((resolve) => {
           server.closeAllConnections();
@@ -96,6 +103,16 @@ test('ownership cancellation releases queued and externally locked updates witho
   await fs.writeFile(paths.ownershipFile, initial);
   const lock = `${paths.ownershipFile}.lock`;
   await fs.writeFile(lock, 'foreign-lock');
+  // The lock holder's age is checked only after an exclusive create found the lock taken: the external-lock retry path.
+  let retrying;
+  const retried = new Promise((resolve) => {
+    retrying = resolve;
+  });
+  const stat = fs.stat;
+  t.mock.method(fs, 'stat', (file, ...rest) => {
+    if (path.resolve(String(file)) === path.resolve(lock)) retrying();
+    return stat(file, ...rest);
+  });
   const first = new AbortController(),
     second = new AbortController();
   let changes = 0;
@@ -117,8 +134,7 @@ test('ownership cancellation releases queued and externally locked updates witho
   );
   second.abort();
   await bounded(assert.rejects(queued, (error) => error.name === 'AbortError'));
-  // Let the predecessor enter the external-lock retry path before aborting it.
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  await retried;
   first.abort();
   await bounded(assert.rejects(waiting, (error) => error.name === 'AbortError'));
   assert.equal(changes, 0);
@@ -141,7 +157,7 @@ test('Ctrl+C during existing-runtime discovery exits before launching a child', 
   });
   const server = http.createServer(() => requested());
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(
+  ownedFixture(t).add(
     () =>
       new Promise((resolve) => {
         server.closeAllConnections();
@@ -172,7 +188,7 @@ for (const ownedMismatch of [false, true])
       requests++;
     });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-    t.after(
+    ownedFixture(t).add(
       () =>
         new Promise((resolve) => {
           server.closeAllConnections();
@@ -225,7 +241,7 @@ test('startup probes and reuses a runtime whose ownership, launch settings and p
     res.end(JSON.stringify({ runtime: { kind: 'model-driven' } }));
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(
+  ownedFixture(t).add(
     () =>
       new Promise((resolve) => {
         server.closeAllConnections();

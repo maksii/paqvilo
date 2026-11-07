@@ -4,7 +4,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-{{binding}}
 
 // TODO(paqvilo-init): add exported loopback fixtures and meaningful page assertions
 for (const site of {{sites}}) {
@@ -17,6 +16,7 @@ for (const site of {{sites}}) {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-smoke-'));
     let simulator;
     try {
+      {{binding}}
       simulator = await {{factory}}({ sourceDir, stateFile: path.join(directory, 'state.json'), port: 0, watch: false });
       const response = await fetch(simulator.url, { redirect: 'manual', headers: { 'x-paqvilo-local-only': 'true' } });
       assert.equal(response.status, 200);

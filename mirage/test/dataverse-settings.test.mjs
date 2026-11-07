@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo simulator Dataverse settings: defaults, normalization and refusals
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { GRANT_TYPES, dataverseSettings, dataverseStatus, grantAllowed } from '../lib/dataverse-settings.mjs';
@@ -127,6 +128,8 @@ test('absent and false disable the simulator; true enables defaults', () => {
     auditing: false,
     duplicateDetection: true,
     pluginTimeoutSeconds: 120,
+    // The native floor of the asynchronous start latency (dataverse-settings.mjs ASYNC_START_DELAY_MS).
+    asyncStartDelayMs: 1000,
     currencyCode: 'USD',
     currencySymbol: '$',
     localeId: 1033,

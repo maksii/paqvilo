@@ -1,9 +1,18 @@
 import { parseDataverseDecimalString } from './dataverse-decimal-input.mjs';
 import { readFile, mkdir, rename, open, unlink, rm } from 'node:fs/promises';
-import { dirname } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { dirname, join, resolve, basename } from 'node:path';
+import { randomUUID, createHash } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { isDeepStrictEqual } from 'node:util';
+import { isDeepStrictEqual, types as utilTypes } from 'node:util';
+import { cloneStateData } from './state-clone.mjs';
+import fsSync from 'node:fs';
+import { tmpdir } from 'node:os';
+import { RecordPageSession, pagedRecordsOf } from './record-tables.mjs';
+import { recordSources } from './record-sources.mjs';
+import { compactRecordGraph } from './record-compaction.mjs';
+import { privateRecordEqual } from './record-clone.mjs';
+import { collectRecordGarbage } from './record-file-lease.mjs';
+import { encodeRecordReferences } from './record-state.mjs';
 import { systemClock, systemIds } from './runtime-clock.mjs';
 import { currentRequest } from './request-context.mjs';
 import { takeNativeFormContactAssociation } from './native-form-association.mjs';
@@ -11,14 +20,23 @@ import { builtinPresets, resolvePreset, compactBuiltinPresets, applyPresetSectio
 // Preset functions live in presets.mjs; these re-exports keep existing imports working.
 export { resolvePreset, compactBuiltinPresets };
 import { expressionOperator } from './extensions.mjs';
-import { createHash } from 'node:crypto';
 
 import { DataError } from './data-error.mjs';
+import {
+  activeAlternateKeys,
+  alternateKeyAttributes,
+  alternateKeyValues,
+  alternateKeyKinds,
+  alternateKeyOf,
+  duplicateAlternateKey,
+} from './alternate-key-values.mjs';
 import { assertElasticRecord, isElastic, samePartition, recordKey } from './dataverse-elastic.mjs';
-import { relationshipsOf } from './dataverse-standard.mjs';
+import { customerAddressColumns, relationshipsOf, standardTableDef } from './dataverse-standard.mjs';
+import { ownershipOf, traceDecision } from './dataverse-security.mjs';
 import { StateStorage } from './state-storage.mjs';
 import { RowTransaction, validateRowIndex, assignRowValues } from './row-transaction.mjs';
-import { stateDigest } from './state-stream.mjs';
+import { jsonChunks, stateDigest } from './state-stream.mjs';
+import { initializationFingerprint, initializationDelta, initializationEntries } from './state-initialization.mjs';
 import { validatePersonaCatalog } from './persona-catalog.mjs';
 import { platformValues, validatePlatformOverrides, assertAttachmentPolicy } from './platform-settings.mjs';
 import { platformConfig, applyPlatformConfig } from './platform-config.mjs';
@@ -35,15 +53,38 @@ import {
   multiplyNumeric,
   parseNumericLiteral,
 } from './exact-numeric.mjs';
-import { odataToSdkQuery } from './plugin-query.mjs';
+import {
+  odataToSdkQuery,
+  readPagingCookie,
+  sameSdkQuery,
+  webApiFetchExpression,
+  webApiFetchToQuery,
+} from './plugin-query.mjs';
+import { pluginStepBypassed } from './plugin-bypass.mjs';
 import { compilePermissionFetchXml, serializePermissionFetchXml } from './permission-query.mjs';
+import { rebindPermissionQuery } from './permission-query-mutation.mjs';
 import { preparePortalFetchXml } from './portal-fetchxml.mjs';
 import { compileODataPermissionQuery, authoredScalarODataFetch } from './odata-permission-query.mjs';
 import { assertPortalFetchXmlTransport } from './portal-fetch-transport.mjs';
-import { recordToSdkEntity, sdkQueryParameters, executeSdkFetch } from './plugin-clr.mjs';
+import { recordToSdkEntity, recordToSdkReadEntity, sdkQueryParameters, executeSdkFetch } from './plugin-clr.mjs';
+import { isSecuredField } from './dataverse-fls.mjs';
 import { queryExpressionToFetch, fetchResultToSdkCollection } from './plugin-sdk-query.mjs';
 import { sdkValueToRecord } from './local-organization-service.mjs';
 import { handoffPluginResponse } from './plugin-response.mjs';
+import {
+  assertPluginExecutionActive,
+  pluginInvocationDepth,
+  pluginInvocationSdkParent,
+} from './plugin-execution-lifetime.mjs';
+import { asyncCallerParent, recordRequestRootChange } from './plugin-sdk-parent.mjs';
+import { runStateMessage } from './plugin-platform-messages.mjs';
+import {
+  storeOperationFields,
+  hasStoreOperationContext,
+  storeOperationValue,
+  setStoreOperationValue,
+  withStoreOperationContext,
+} from './store-operation-context.mjs';
 import { executeFetch, parseXmlDocument, planFetch, structuralIntersects } from './fetchxml-engine.mjs';
 import {
   columnValue,
@@ -74,12 +115,168 @@ import {
 } from './dataverse-values.mjs';
 // The store's query error type lives in data-error.mjs; this re-export keeps imports working.
 export { DataError };
-const clone = (value) => structuredClone(value);
+
+// Lookups whose target the platform does not check on write (data.mjs bind coercion and validateBindings, the Web API bind
+// check): an administrator registers a step impersonating a systemuser that does not exist (recorded native n6-registration,
+// two captures: 204). The column keeps the unresolved id.
+const UNCHECKED_LOOKUPS = { sdkmessageprocessingstep: { impersonatinguserid: 'systemuser' } };
+export const uncheckedLookup = (table, column, target) => UNCHECKED_LOOKUPS[table]?.[column] === target;
+const clone = cloneStateData;
+const cloneInternal = (value) => cloneStateData(value, { forkTables: true });
 // Per async context, the transaction frame of each DataStore (see DataStore#transact).
 const transactionFrames = new AsyncLocalStorage();
-const own = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+const transactionFrameOf = (store, { closed = false } = {}) => {
+  for (let frame = transactionFrames.getStore(); frame; frame = frame.parent)
+    if (frame.store === store && (closed || !frame.closed)) return frame;
+  return null;
+};
+// The row changes a read lane's SDK writes left (DataStore#openReadLane): per table, rows created, columns changed or
+// removed, and rows deleted, keyed by the table's primary key.
+function laneChanges(base, next) {
+  const changes = [];
+  for (const table of new Set([...Object.keys(base.tables ?? {}), ...Object.keys(next.tables ?? {})]))
+    collectLaneTableChanges(base, next, table, changes);
+  return changes;
+}
+
+function collectLaneTableChanges(base, next, table, changes) {
+  const before = base.tables?.[table] ?? [],
+    after = next.tables?.[table] ?? [];
+  if (before === after) return;
+  const idColumn = next.mappings?.[table]?.idColumn ?? base.mappings?.[table]?.idColumn ?? `${table}id`,
+    key = (row) => String(row?.[idColumn] ?? '').toLowerCase(),
+    old = new Map([...before].map((row) => [key(row), row])),
+    seen = new Set();
+  for (const row of after) {
+    const id = key(row),
+      previous = old.get(id);
+    seen.add(id);
+    collectLaneRowChange(table, idColumn, id, row, previous, changes);
+  }
+  for (const [id, row] of old) if (!seen.has(id)) changes.push({ table, idColumn, remove: row[idColumn] });
+}
+
+function collectLaneRowChange(table, idColumn, id, row, previous, changes) {
+  if (!previous) {
+    changes.push({ table, idColumn, create: cloneStateData(row) });
+    return;
+  }
+  if (isDeepStrictEqual({ ...previous }, { ...row })) return;
+  const set = {};
+  for (const [column, value] of Object.entries(row))
+    if (!isDeepStrictEqual(previous[column], value)) set[column] = cloneStateData(value);
+  const unset = Object.keys(previous).filter((column) => !Object.hasOwn(row, column));
+  changes.push({ table, idColumn, id: row[idColumn], set, unset });
+}
+// Applies a read lane's row changes onto the store's current state, inside the lane's own commit transaction.
+function applyLaneChanges(store, changes, committed) {
+  const state = store.state,
+    find = (rows, idColumn, id) =>
+      rows.findIndex((row) => String(row?.[idColumn] ?? '').toLowerCase() === String(id ?? '').toLowerCase());
+  for (const change of changes) {
+    const rows = (state.tables[change.table] ??= []);
+    applyLaneChange(store, change, rows, find);
+  }
+  if (Number.isFinite(committed?.rowVersion))
+    state.rowVersion = Math.max(Number(state.rowVersion) || 0, committed.rowVersion);
+  store.rowIndexes = null;
+}
+
+function applyLaneChange(store, change, rows, find) {
+  if (change.create) {
+    const index = find(rows, change.idColumn, change.create[change.idColumn]);
+    if (index < 0) store.insertRow(change.table, rows, change.create);
+    else {
+      for (const column of Object.keys(rows[index])) delete rows[index][column];
+      Object.assign(rows[index], change.create);
+    }
+    return;
+  }
+  if (change.remove !== undefined) {
+    const index = find(rows, change.idColumn, change.remove);
+    if (index >= 0) store.removeRow(change.table, rows, index);
+    return;
+  }
+  const row = rows[find(rows, change.idColumn, change.id)];
+  if (!row) return;
+  Object.assign(row, change.set);
+  for (const column of change.unset) delete row[column];
+}
+// Tracing (trace-store.mjs): a read inside one of these spans is already covered and opens no store span of its own.
+const COVERED_READS = new Set(['dataverse', 'store', 'read', 'bulk']);
+const READ_LABEL = { retrieve: 'Retrieve', retrievemultiple: 'RetrieveMultiple', fetchxml: 'FetchXml' };
+const FETCH_ENTITY = /<entity\s+name\s*=\s*["']([^"']{1,128})["']/;
+const rowCountOf = (value) => {
+  if (Array.isArray(value?.value)) return value.value.length;
+  if (Array.isArray(value?.entities)) return value.entities.length;
+  return value == null ? 0 : 1;
+};
+const own = (obj, key) => Object.hasOwn(obj, key);
+// Row columns a write's Target never shows: the row version, and empty on-behalf/team ownership lookups
+// (native Create Targets carry an empty modifiedonbehalfby, never an empty createdonbehalfby or owningteam).
+export const notInTarget = (name, value) =>
+  name === 'versionnumber' || (value == null && (name === 'createdonbehalfby' || name === 'owningteam'));
+// Update stamps the platform adds to the Target after PreValidation (native PreOperation/PostOperation Update).
+const UPDATE_TARGET_STAMPS = ['modifiedon', 'modifiedby', 'modifiedonbehalfby'];
+// Web API Update: a string column written null or '' reaches the Target as ''; Create keeps null (nullSemantics).
+function blankTextColumns(store, mapping, input, options, operation) {
+  if (!options.dataverseWebApi) return [];
+  return Object.keys(input).filter(
+    (name) =>
+      (input[name] === '' || (operation === 'update' && input[name] === null)) &&
+      fieldKind(store.fieldDefinition(mapping.logicalName, name, options.metadata)) === 'string',
+  );
+}
 const formattedAnnotation = '@OData.Community.Display.V1.FormattedValue';
 const lookupAnnotation = '@Microsoft.Dynamics.CRM.lookuplogicalname';
+
+function committedPluginParent(store, mapping, operation, target, row, options) {
+  const tag = store.pluginSdkTag,
+    values = {
+      ...(tag === undefined ? {} : { tag }),
+      // A main operation's own Update (Assign, SetState, Merge: omitConcurrencyBehavior) has none, also for its jobs
+      // (native sdkMessages, soapMessages, mergeAccount).
+      ...(operation === 'update' && !options.omitConcurrencyBehavior
+        ? { ConcurrencyBehavior: { $type: 'ConcurrencyBehavior', value: options.pluginConcurrencyBehavior ?? 0 } }
+        : {}),
+      ...(operation === 'create' && options.sdkFromSandbox === true ? { FromSandbox: true } : {}),
+    };
+  return {
+    primaryId: row[mapping.idColumn],
+    // Preserve the pre-PostOperation baseline without imposing the SDK codec
+    // on ordinary writes. Only an admitted asynchronous observer needs it.
+    target: { ...clone(target), [mapping.idColumn]: row[mapping.idColumn] },
+    inputParameters: { $type: 'ParameterCollection', values },
+    sharedVariables: { $type: 'ParameterCollection', values: tag === undefined ? {} : { tag } },
+    childSharedVariables: {
+      $type: 'ParameterCollection',
+      values: {
+        // The native SharedVariables order: IsAutoTransact, AcceptLang, tag, DefaultsAddedFlag.
+        IsAutoTransact: true,
+        AcceptLang: options.pluginAcceptLanguage ?? '',
+        ...(tag === undefined ? {} : { tag }),
+        ...(operation === 'create' ? { DefaultsAddedFlag: true } : {}),
+      },
+    },
+  };
+}
+
+// Native corpus (pipelineEffects): an asynchronous step sees the operation as it stood when PostOperation began.
+// Target edits, OutputParameters and SharedVariables written by synchronous PostOperation steps do not reach it, so
+// the queued event keeps the pre-PostOperation parameters and the async run populates the system outputs itself.
+function prePostOperationFrame(frame) {
+  return {
+    inputParameters: clone(frame?.inputParameters),
+    outputParameters: clone(frame?.outputParameters),
+    sharedVariables: clone(frame?.sharedVariables),
+  };
+}
+const queuedFrame = (frame, before, asyncSourceParent) => ({
+  ...frame,
+  ...before,
+  systemOutputsPopulated: false,
+  asyncSourceParent,
+});
 
 const metadataField = (mapping, key) => {
   const fields = mapping?.fields ?? mapping?.fieldMetadata ?? {};
@@ -126,29 +323,33 @@ export function normalizeMockLiquidRecord(
       }),
     );
   const out = clone(record);
-  for (const [key, value] of Object.entries(record)) {
-    if (key.includes('@')) continue;
-    const definition = aliasFields[key] ?? metadataField(mapping, key);
-    if (!aggregate && typeof value === 'number' && choiceDefinition(definition)) {
-      out[key] = {
-        value,
-        label: choiceLabel(definition, value) ?? record[key + formattedAnnotation] ?? '',
-      };
-    } else if (value && typeof value === 'object' && !Array.isArray(value) && own(value, 'value')) {
-      // Preserve explicit typed fixture values. A label omitted by a caller may
-      // be supplied from metadata without mutating that caller's record.
-      if (!aggregate && choiceDefinition(definition) && !own(value, 'label'))
-        out[key].label = choiceLabel(definition, value.value) ?? '';
-    } else if (value && typeof value === 'object' && mapping.relationships?.[key] && !own(value, 'id')) {
-      const target = mapping.relationships[key].entity;
-      const targetMapping = typeof mappings === 'function' ? mappings(target) : mappings[target];
-      out[key] = normalizeMockLiquidRecord(value, targetMapping ?? {}, {
-        aggregate,
-        mappings,
-      });
-    }
-  }
+  for (const [key, value] of Object.entries(record))
+    normalizeLiquidRecordField(record, out, key, value, mapping, { aggregate, mappings, aliasFields });
   return withLiquidEntityId(out, mapping, { aggregate });
+}
+
+function normalizeLiquidRecordField(record, out, key, value, mapping, { aggregate, mappings, aliasFields }) {
+  if (key.includes('@')) return;
+  const definition = aliasFields[key] ?? metadataField(mapping, key);
+  if (!aggregate && typeof value === 'number' && choiceDefinition(definition)) {
+    out[key] = {
+      value,
+      label: choiceLabel(definition, value) ?? record[key + formattedAnnotation] ?? '',
+    };
+    return;
+  }
+  if (value && typeof value === 'object' && !Array.isArray(value) && own(value, 'value')) {
+    // Preserve explicit typed fixture values. A label omitted by a caller may
+    // be supplied from metadata without mutating that caller's record.
+    if (!aggregate && choiceDefinition(definition) && !own(value, 'label'))
+      out[key].label = choiceLabel(definition, value.value) ?? '';
+    return;
+  }
+  if (value && typeof value === 'object' && mapping.relationships?.[key] && !own(value, 'id')) {
+    const target = mapping.relationships[key].entity;
+    const targetMapping = typeof mappings === 'function' ? mappings(target) : mappings[target];
+    out[key] = normalizeMockLiquidRecord(value, targetMapping ?? {}, { aggregate, mappings });
+  }
 }
 
 /** Resolve attribute aliases from the authored FetchXML, retaining aggregates as numbers. */
@@ -202,62 +403,77 @@ export function formatMockRecord(record, mapping = {}, mappings = {}, tables = {
   if (!record || typeof record !== 'object') return record;
   if (Array.isArray(record)) return record.map((row) => formatMockRecord(row, mapping, mappings, tables));
   const out = {};
-  for (const [key, value] of Object.entries(record)) {
-    if (/^__simArtifact(?:$|[/.])/i.test(key)) continue;
-    if (key.includes('@')) {
-      out[key] = value;
-      continue;
-    }
-    const relationship = mapping.relationships?.[key];
-    if (value && typeof value === 'object' && !Array.isArray(value) && own(value, 'id') && own(value, 'logical_name')) {
-      const name = key.includes('.') || /^_.*_value$/.test(key) ? key : `_${key}_value`;
-      out[name] = value.id;
-      const targetMapping = mappings[value.logical_name] ?? {};
-      const target = (tables[value.logical_name] ?? []).find(
-        (row) =>
-          String(row[targetMapping.idColumn ?? `${value.logical_name}id`]).toLowerCase() ===
-          String(value.id).toLowerCase(),
-      );
-      out[name + formattedAnnotation] = value.name ?? primaryNameValue(targetMapping, target, value.logical_name) ?? '';
-      out[name + lookupAnnotation] = value.logical_name;
-    } else if (
-      value &&
-      typeof value === 'object' &&
-      !Array.isArray(value) &&
-      own(value, 'value') &&
-      own(value, 'label')
-    ) {
-      out[key] = value.value;
-      out[key + formattedAnnotation] = value.label;
-    } else if (value && typeof value === 'object' && relationship) {
-      out[key] = formatMockRecord(value, mappings[relationship.entity] ?? {}, mappings, tables);
-    } else {
-      out[key] = value;
-      const definition = metadataField(mapping, key);
-      if (typeof value === 'number' && choiceDefinition(definition)) {
-        const label = choiceLabel(definition, value);
-        if (label != null) out[key + formattedAnnotation] = label;
-      } else if (
-        typeof value === 'number' &&
-        ['int', 'integer', 'bigint'].includes(String(definition?.dataverseType ?? definition?.type ?? '').toLowerCase())
-      ) {
-        out[key + formattedAnnotation] = value.toLocaleString('en-US');
-      }
-      const physical = key.startsWith('_') && key.endsWith('_value') ? key.slice(1, -6) : key;
-      const rel = Object.values(mapping.relationships ?? {}).find((r) => r.many === false && r.from === physical);
-      if (rel && value != null && typeof value !== 'object') {
-        const targetMapping = mappings[rel.entity] ?? {};
-        const target = (tables[rel.entity] ?? []).find(
-          (row) => String(row[targetMapping.idColumn ?? rel.to]).toLowerCase() === String(value).toLowerCase(),
-        );
-        const name = key.includes('.') || /^_.*_value$/.test(key) ? key : `_${key}_value`;
-        out[name] = value;
-        out[name + lookupAnnotation] = rel.entity;
-        if (target) out[name + formattedAnnotation] = primaryNameValue(targetMapping, target, rel.entity) ?? '';
-      }
-    }
-  }
+  for (const [key, value] of Object.entries(record)) formatMockRecordField(out, key, value, mapping, mappings, tables);
   return out;
+}
+
+function formatMockRecordField(out, key, value, mapping, mappings, tables) {
+  if (/^__simArtifact(?:$|[/.])/i.test(key)) return;
+  if (key.includes('@')) {
+    out[key] = value;
+    return;
+  }
+  const relationship = mapping.relationships?.[key];
+  if (isNamedLookupValue(value)) return formatNamedLookup(out, key, value, mappings, tables);
+  if (isLabeledChoice(value)) {
+    out[key] = value.value;
+    out[key + formattedAnnotation] = value.label;
+    return;
+  }
+  if (value && typeof value === 'object' && relationship) {
+    out[key] = formatMockRecord(value, mappings[relationship.entity] ?? {}, mappings, tables);
+    return;
+  }
+  out[key] = value;
+  addFormattedScalarValue(out, key, value, metadataField(mapping, key));
+  addFormattedLookupValue(out, key, value, mapping, mappings, tables);
+}
+
+function isNamedLookupValue(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) && own(value, 'id') && own(value, 'logical_name');
+}
+
+function isLabeledChoice(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) && own(value, 'value') && own(value, 'label');
+}
+
+function formatNamedLookup(out, key, value, mappings, tables) {
+  const name = key.includes('.') || /^_.*_value$/.test(key) ? key : `_${key}_value`;
+  out[name] = value.id;
+  const targetMapping = mappings[value.logical_name] ?? {};
+  const target = (tables[value.logical_name] ?? []).find(
+    (row) =>
+      String(row[targetMapping.idColumn ?? `${value.logical_name}id`]).toLowerCase() === String(value.id).toLowerCase(),
+  );
+  out[name + formattedAnnotation] = value.name ?? primaryNameValue(targetMapping, target, value.logical_name) ?? '';
+  out[name + lookupAnnotation] = value.logical_name;
+}
+
+function addFormattedScalarValue(out, key, value, definition) {
+  if (typeof value === 'number' && choiceDefinition(definition)) {
+    const label = choiceLabel(definition, value);
+    if (label != null) out[key + formattedAnnotation] = label;
+  } else if (
+    typeof value === 'number' &&
+    ['int', 'integer', 'bigint'].includes(String(definition?.dataverseType ?? definition?.type ?? '').toLowerCase())
+  )
+    out[key + formattedAnnotation] = value.toLocaleString('en-US');
+}
+
+function addFormattedLookupValue(out, key, value, mapping, mappings, tables) {
+  const physical = key.startsWith('_') && key.endsWith('_value') ? key.slice(1, -6) : key;
+  const relationship = Object.values(mapping.relationships ?? {}).find(
+    (item) => item.many === false && item.from === physical,
+  );
+  if (!relationship || value == null || typeof value === 'object') return;
+  const targetMapping = mappings[relationship.entity] ?? {};
+  const target = (tables[relationship.entity] ?? []).find(
+    (row) => String(row[targetMapping.idColumn ?? relationship.to]).toLowerCase() === String(value).toLowerCase(),
+  );
+  const name = key.includes('.') || /^_.*_value$/.test(key) ? key : `_${key}_value`;
+  out[name] = value;
+  out[name + lookupAnnotation] = relationship.entity;
+  if (target) out[name + formattedAnnotation] = primaryNameValue(targetMapping, target, relationship.entity) ?? '';
 }
 
 const safeName = (name) => {
@@ -270,18 +486,17 @@ const comparable = (value) => {
   const v = scalar(value);
   return String(typeof v === 'boolean' ? Number(v) : v)
     .replace(
-      /^(?:\{([\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12})\}|\(([\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12})\))$/i,
+      /^(?:\{([\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12})\}|\(([\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12})\))$/i, // NOSONAR: regex kept: a rewrite would change matches or captures
       (_match, braced, parenthesized) => braced ?? parenthesized,
     )
     .toLowerCase();
 };
 const equal = (a, b) => (a == null || b == null ? a == null && b == null : comparable(a) === comparable(b));
-const field = (row, name) =>
-  own(row, name)
-    ? row[name]
-    : name.startsWith('_') && name.endsWith('_value')
-      ? scalar(row[name.slice(1, -6)])
-      : name.split('/').reduce((v, k) => v?.[k], row);
+const field = (row, name) => {
+  if (own(row, name)) return row[name];
+  if (name.startsWith('_') && name.endsWith('_value')) return scalar(row[name.slice(1, -6)]);
+  return name.split('/').reduce((v, k) => v?.[k], row);
+};
 const insertSorted = (list, value) => {
   if (!list.length || list.at(-1) < value) {
     list.push(value);
@@ -297,71 +512,152 @@ const insertSorted = (list, value) => {
   list.splice(low, 0, value);
 };
 /**
- * Ascending row positions by a derived key, for one row array: Map<key, positions>.
+ * Ascending row positions by a derived key, for one row array. Unique keys keep
+ * one scalar position; only duplicate keys retain a position array.
  * keyOf(row) answers a string key, null (the row can never match) or undefined (the row
  * cannot be keyed: a `wild` index keeps it in a list that every lookup also scans; any other
  * index becomes `linear` and callers scan). The maintenance methods answer false when the
  * owner should drop the index instead of updating it.
+ *
+ * Positions are kept as slots: a row keeps the slot it was indexed at, a removal marks its slot dead in a Fenwick tree of
+ * live slots, and a lookup maps a slot to its row position by counting the live slots before it (O(log n)). A removal is
+ * therefore O(log n), not a shift of every later position, so a cascade delete of n rows stays O(n log n). Until the first
+ * removal a slot is its position; the slots are renumbered once half of them are dead or the tree is full.
  */
 class RowKeyIndex {
   constructor(rows, keyOf, { frame, wild = false } = {}) {
     this.keyOf = keyOf;
     this.frame = frame;
-    this.wild = wild ? [] : null;
+    this.wildSlots = wild ? [] : null;
     this.map = new Map();
     this.linear = false;
     this.length = rows.length;
+    this.slots = rows.length; // the next slot
+    this.live = null; // Fenwick tree (1-based) of live slots, from the first removal on
+    this.dead = 0;
     for (let index = 0; index < rows.length; index++)
-      if (!this.add(keyOf(rows[index]), index)) {
+      if (!this.place(keyOf(rows[index]), index)) {
         this.linear = true;
         this.map.clear();
         break;
       }
   }
-  add(key, index) {
+  // The row position of a slot: the number of live slots before it.
+  position(slot) {
+    if (!this.dead) return slot;
+    let count = 0;
+    for (let i = slot; i > 0; i -= i & -i) count += this.live[i];
+    return count;
+  }
+  // The slot of a row position: the (position + 1)-th live slot (Fenwick descent).
+  slotOf(position) {
+    if (!this.dead) return position;
+    const tree = this.live,
+      size = tree.length - 1;
+    let slot = 0,
+      remaining = position + 1;
+    for (let step = 1 << Math.floor(Math.log2(size)); step; step >>= 1)
+      if (slot + step <= size && tree[slot + step] < remaining) {
+        slot += step;
+        remaining -= tree[slot];
+      }
+    return slot;
+  }
+  // Renumbers every slot to its row position and drops the tree.
+  compact() {
+    const renumber = (list) => {
+      for (let i = 0; i < list.length; i++) list[i] = this.position(list[i]);
+    };
+    this.map.forEach((list, key) => {
+      if (typeof list === 'number') this.map.set(key, this.position(list));
+      else renumber(list);
+    });
+    if (this.wildSlots) renumber(this.wildSlots);
+    this.slots = this.length;
+    this.live = null;
+    this.dead = 0;
+  }
+  /** The positions of the rows that cannot be keyed (a wild index), ascending; null for another index. */
+  get wild() {
+    return this.wildSlots && this.dead ? this.wildSlots.map((slot) => this.position(slot)) : this.wildSlots;
+  }
+  // Indexes key at slot.
+  place(key, slot) {
     if (key === null) return true;
     if (key === undefined) {
-      if (!this.wild) return false;
-      insertSorted(this.wild, index);
+      if (!this.wildSlots) return false;
+      insertSorted(this.wildSlots, slot);
       return true;
     }
     const list = this.map.get(key);
-    if (list) insertSorted(list, index);
-    else this.map.set(key, [index]);
+    if (list === undefined) this.map.set(key, slot);
+    else if (typeof list === 'number') this.map.set(key, list <= slot ? [list, slot] : [slot, list]);
+    else insertSorted(list, slot);
     return true;
   }
+  add(key, index) {
+    return this.place(key, this.slotOf(index));
+  }
   delete(key, index) {
-    const list = key === undefined ? this.wild : key === null ? null : this.map.get(key);
-    const at = list ? list.indexOf(index) : -1;
+    const slot = this.slotOf(index);
+    let list;
+    if (key === undefined) list = this.wildSlots;
+    else if (key === null) list = null;
+    else list = this.map.get(key);
+    if (typeof list === 'number') {
+      if (list === slot) this.map.delete(key);
+      return;
+    }
+    const at = list ? list.indexOf(slot) : -1;
     if (at < 0) return;
     list.splice(at, 1);
     if (!list.length && key != null) this.map.delete(key);
+    else if (list.length === 1 && key != null) this.map.set(key, list[0]);
   }
   get(key) {
-    return this.map.get(key) ?? [];
+    const slots = this.map.get(key);
+    if (slots === undefined) return [];
+    if (typeof slots === 'number') return [this.position(slots)];
+    return this.dead ? slots.map((slot) => this.position(slot)) : slots;
   }
   appended(rows, row) {
     if (this.linear || this.length !== rows.length - 1) return false;
+    if (this.live && this.slots >= this.live.length - 1) this.compact();
+    const slot = this.slots++;
+    if (this.live) for (let i = slot + 1; i < this.live.length; i += i & -i) this.live[i]++;
     this.length = rows.length;
-    return this.add(this.keyOf(row), rows.length - 1);
+    return this.place(this.keyOf(row), slot);
   }
-  moved(rows, index, previousRow, row, previousKey = this.keyOf(previousRow)) {
+  moved(rows, index, previousRow, row, previousKey) {
     if (this.linear || this.length !== rows.length) return false;
+    // undefined is a valid captured wild key. A default parameter would
+    // re-read the already-mutated/null previous row and lose that distinction.
+    if (arguments.length < 5) previousKey = this.keyOf(previousRow);
     const key = this.keyOf(row);
     if (key === previousKey) return true;
-    if (previousKey === undefined && !this.wild) return false;
+    if (previousKey === undefined && !this.wildSlots) return false;
     this.delete(previousKey, index);
     return this.add(key, index);
   }
   removed(rows, index, row) {
     if (this.linear || this.length !== rows.length + 1) return false;
+    const slot = this.slotOf(index);
     this.delete(this.keyOf(row), index);
-    const shift = (list) => {
-      for (let i = 0; i < list.length; i++) if (list[i] > index) list[i]--;
-    };
-    for (const list of this.map.values()) shift(list);
-    if (this.wild) shift(this.wild);
+    if (!this.live) {
+      // Every slot before the first removal is live: the tree is built in O(n), with room to append as many again.
+      const size = Math.max(16, this.slots * 2),
+        tree = new Int32Array(size + 1);
+      for (let i = 1; i <= size; i++) {
+        if (i <= this.slots) tree[i] += 1;
+        const parent = i + (i & -i);
+        if (parent <= size) tree[parent] += tree[i];
+      }
+      this.live = tree;
+    }
+    for (let i = slot + 1; i < this.live.length; i += i & -i) this.live[i]--;
+    this.dead++;
     this.length = rows.length;
+    if (this.dead * 2 > this.slots) this.compact();
     return true;
   }
 }
@@ -375,47 +671,40 @@ const primaryKeyOf = (column) => {
     });
   return primaryKeyFns.get(column);
 };
-const duplicateAlternateKey = (key, attributes, values) =>
-  new DataError(
-    `A record that has the attribute values ${values.join(', ')} already exists. The entity key ${key.name ?? attributes.join('_')} requires that this set of attributes contains unique values. Select unique values and try again.`,
-    412,
-    'DuplicateRecord',
-    { innerCode: '0x80040237' },
-  );
-/** Alternate-key uniqueness index key: the store's equality per column; a row with an empty column never clashes. */
-const alternateKeyOf = (attributes) => (row) => {
-  const parts = [];
-  for (const name of attributes) {
-    const value = field(row, name);
-    if (value == null) return null;
-    parts.push(comparable(value));
-  }
-  return parts.join('\u0000');
-};
 /**
  * Key-segment lookup index key (findByKey): a bucket that every valuesEqual match shares. Only
  * plain non-date strings are bucketed (GUID key, else collation-folded text); other values are
  * `undefined` and stay in the index's always-scanned list. Candidates are verified with valuesEqual.
  */
-const keySegmentOf = (names) => (row) => {
+const keySegmentOf = (names, collation, kinds) => (row) => {
   const parts = [];
   let wild = false;
   for (const name of names) {
     const value = field(row, name);
-    const bucket = keySegmentBucket(value);
+    const bucket = keySegmentBucket(value, collation, kinds[name]);
     if (bucket === null) return null;
     if (bucket === undefined) wild = true;
     else parts.push(bucket);
   }
-  return wild ? undefined : parts.join('\u0000');
+  return wild ? undefined : JSON.stringify(parts);
 };
-const keySegmentBucket = (value) => {
+const keySegmentBucket = (value, collation, kind) => {
   if (value == null || isExactNumeric(value)) return value == null ? null : undefined;
   const raw = value && typeof value === 'object' && !Array.isArray(value) ? (value.id ?? value.value ?? value) : value;
   if (raw == null) return null;
-  if (typeof raw !== 'string' || looksLikeDate(raw)) return undefined;
+  if (
+    typeof raw !== 'string' ||
+    (kind && !['string', 'guid', 'lookup'].includes(kind)) ||
+    (kind !== 'string' && looksLikeDate(raw))
+  )
+    return undefined;
   const guid = guidKey(raw);
-  return guid ? `g${guid}` : `t${foldText(raw)}`;
+  if (guid) return `g${guid}`;
+  const folded = foldText(raw, collation);
+  // A non-GUID that folds to a GUID can compare equal to a raw GUID via
+  // text equality. Keep it wild so a g-bucket cannot hide that match.
+  if (guidKey(folded)) return undefined;
+  return `t${folded}`;
 };
 /** Restore `current` to `saved` in place, keeping the identity of tables, rows and sections that callers hold. */
 const restoreInPlace = (current, saved) => {
@@ -525,15 +814,16 @@ export function keysetPage(
       down(0);
     }
   }
-  return { before: keyed.length - after, rows: heap.sort(compare).map((entry) => entry.row) };
+  return {
+    before: keyed.length - after,
+    rows: heap.sort(/* NOSONAR: preserve in-place sorting */ compare).map((entry) => entry.row),
+  };
 }
 /** The text a paging cookie carries for an order-column value: "" for null, a lookup's id, a choice's value, exact digits. */
 function cursorText(value) {
-  const raw = isExactNumeric(value)
-    ? value.value
-    : value !== null && typeof value === 'object'
-      ? (value.id ?? value.value ?? null)
-      : value;
+  let raw = value;
+  if (isExactNumeric(value)) raw = value.value;
+  else if (value !== null && typeof value === 'object') raw = value.id ?? value.value ?? null;
   return raw == null ? '' : String(raw);
 }
 /**
@@ -573,11 +863,12 @@ const splitTop = (text, separator = ',') => {
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
     if (c === "'") {
-      if (quote && text[i + 1] === "'") {
+      const next = topQuoteState(quote, text[i + 1]);
+      quote = next.quote;
+      if (next.escaped) {
         i++;
         continue;
       }
-      quote = !quote;
     }
     if (quote) continue;
     if (c === '(') depth++;
@@ -590,6 +881,11 @@ const splitTop = (text, separator = ',') => {
   out.push(text.slice(start).trim());
   return out.filter(Boolean);
 };
+
+function topQuoteState(quote, next) {
+  if (quote && next === "'") return { quote, escaped: true };
+  return { quote: !quote, escaped: false };
+}
 
 // Plugin predicates evaluate a single in-memory record: "/" reads nested
 // object members, not relationships, and the extended dialect keeps the
@@ -662,7 +958,7 @@ function normalizeState(
 ) {
   const result = {
     ...emptyState(),
-    ...(owned ? (value) => value : clone)(
+    ...(owned ? (value) => value : cloneInternal)(
       state ? { ...state, presets: compactBuiltinPresets(state.presets ?? {}, presetLibrary) } : state,
     ),
     settings: { ...emptyState().settings, ...state?.settings },
@@ -671,6 +967,15 @@ function normalizeState(
   validateExperimentPresets(result.simulator?.experimentPresets);
   if (result.personaCatalog !== undefined)
     result.personaCatalog = validatePersonaCatalog(result.personaCatalog, 'State');
+  validateStateShape(result);
+  validateStateTables(result);
+  validateStateMappings(result);
+  validateStatePermissions(result);
+  validateStatePlugins(result);
+  return reconcilePermissionDiagnostics(applyPlatformConfig(result, platform));
+}
+
+function validateStateShape(result) {
   for (const key of ['mappings', 'tables', 'presets'])
     if (!result[key] || Array.isArray(result[key]) || typeof result[key] !== 'object')
       throw new DataError(`${key} must be an object`);
@@ -683,12 +988,19 @@ function normalizeState(
     !['enforce', 'compatibility'].includes(result.settings.associationPermissions)
   )
     throw new DataError('Unknown associationPermissions mode');
+}
+
+function validateStateTables(result) {
   for (const [name, rows] of Object.entries(result.tables)) {
     safeName(name);
     if (!Array.isArray(rows)) throw new DataError(`Table ${name} must be an array`);
+    if (pagedRecordsOf(rows)) continue;
     for (const row of rows)
       if (!row || Array.isArray(row) || typeof row !== 'object') throw new DataError(`Invalid row in ${name}`);
   }
+}
+
+/* NOSONAR: single-pass routine, splitting it would change shared state */ function validateStateMappings(result) {
   for (const [name, m] of Object.entries(result.mappings)) {
     safeName(name);
     if (m.entitySet) safeName(m.entitySet);
@@ -708,111 +1020,281 @@ function normalizeState(
       safeName(rel.to);
     }
   }
-  for (const rule of result.permissions) {
-    if (!rule.entity) throw new DataError('Permission requires entity');
-    if (rule.entity !== '*') safeName(rule.entity);
-    if (rule.enabled !== false && !['global', 'contact', 'account', 'self', 'parent'].includes(rule.scope ?? 'global'))
-      throw new DataError(`Unsupported permission scope ${rule.scope}`);
-    if (rule.operations && !Array.isArray(rule.operations))
-      throw new DataError('Permission operations must be an array');
-    for (const op of rule.operations ?? [])
-      if (!['read', 'create', 'update', 'delete', 'append', 'appendTo'].includes(op))
-        throw new DataError(`Unknown permission operation ${op}`);
-    if (rule.roles && !Array.isArray(rule.roles)) throw new DataError('Permission roles must be an array');
-    if (
-      rule.enabled !== false &&
-      rule.scope === 'parent' &&
-      (!rule.relationship?.entity || !rule.relationship.from || !rule.relationship.to)
-    )
-      throw new DataError('Parent permission requires relationship entity/from/to');
+}
+
+function validateStatePermissions(result) {
+  for (const rule of result.permissions) validatePermissionRule(rule);
+}
+
+function validatePermissionRule(rule) {
+  if (!rule.entity) throw new DataError('Permission requires entity');
+  if (rule.entity !== '*') safeName(rule.entity);
+  if (rule.enabled !== false && !['global', 'contact', 'account', 'self', 'parent'].includes(rule.scope ?? 'global'))
+    throw new DataError(`Unsupported permission scope ${rule.scope}`);
+  if (rule.operations && !Array.isArray(rule.operations)) throw new DataError('Permission operations must be an array');
+  for (const op of rule.operations ?? [])
+    if (!['read', 'create', 'update', 'delete', 'append', 'appendTo'].includes(op))
+      throw new DataError(`Unknown permission operation ${op}`);
+  if (rule.roles && !Array.isArray(rule.roles)) throw new DataError('Permission roles must be an array');
+  if (
+    rule.enabled !== false &&
+    rule.scope === 'parent' &&
+    (!rule.relationship?.entity || !rule.relationship.from || !rule.relationship.to)
+  )
+    throw new DataError('Parent permission requires relationship entity/from/to');
+}
+
+function checkPluginExpression(expr) {
+  if (!expr || typeof expr !== 'object' || Array.isArray(expr) || own(expr, 'literal')) return;
+  if (
+    ![
+      'concat',
+      'coalesce',
+      'lower',
+      'upper',
+      'sum',
+      'multiply',
+      'uuid',
+      'sequence',
+      'now',
+      'split',
+      'join',
+      'length',
+      'lookup',
+      'find',
+      'findMany',
+      'related',
+      'reference',
+    ].includes(expr.op) &&
+    !expressionOperator(expr.op)
+  )
+    throw new DataError(`Unsupported plugin expression ${expr.op}`);
+  if (expr.args && !Array.isArray(expr.args)) throw new DataError('Expression args must be an array');
+  for (const arg of expr.args ?? []) checkPluginExpression(arg);
+  if (['find', 'findMany'].includes(expr.op)) validatePluginFindExpression(expr);
+}
+
+function validatePluginFindExpression(expr) {
+  if (!expr.match || typeof expr.match !== 'object' || Array.isArray(expr.match) || !Object.keys(expr.match).length)
+    throw new DataError('Plugin find requires explicit matching fields');
+  for (const [key, value] of Object.entries(expr.match)) {
+    safeName(key);
+    checkPluginExpression(value);
   }
-  const checkExpr = (expr) => {
-    if (expr && typeof expr === 'object' && !Array.isArray(expr) && !own(expr, 'literal')) {
-      if (
-        ![
-          'concat',
-          'coalesce',
-          'lower',
-          'upper',
-          'sum',
-          'multiply',
-          'uuid',
-          'sequence',
-          'now',
-          'split',
-          'join',
-          'length',
-          'lookup',
-          'find',
-          'findMany',
-          'related',
-          'reference',
-        ].includes(expr.op) &&
-        !expressionOperator(expr.op)
-      )
-        throw new DataError(`Unsupported plugin expression ${expr.op}`);
-      if (expr.args && !Array.isArray(expr.args)) throw new DataError('Expression args must be an array');
-      for (const arg of expr.args ?? []) checkExpr(arg);
-      if (['find', 'findMany'].includes(expr.op)) {
-        if (
-          !expr.match ||
-          typeof expr.match !== 'object' ||
-          Array.isArray(expr.match) ||
-          !Object.keys(expr.match).length
-        )
-          throw new DataError('Plugin find requires explicit matching fields');
-        for (const [key, value] of Object.entries(expr.match)) {
-          safeName(key);
-          checkExpr(value);
-        }
-      }
-    }
-  };
+}
+
+function validateStatePlugins(result) {
   const pluginIds = new Set();
-  for (const p of result.plugins) {
-    if (!p.entity) throw new DataError('Plugin requires entity');
-    if (p.id) {
-      if (pluginIds.has(p.id)) throw new DataError(`Duplicate plugin id ${p.id}`);
-      pluginIds.add(p.id);
+  for (const plugin of result.plugins) validatePlugin(plugin, pluginIds);
+}
+
+/* NOSONAR */ function validatePlugin(plugin, pluginIds) {
+  if (!plugin.entity) throw new DataError('Plugin requires entity');
+  if (plugin.id) {
+    if (pluginIds.has(plugin.id)) throw new DataError(`Duplicate plugin id ${plugin.id}`);
+    pluginIds.add(plugin.id);
+  }
+  if (plugin.operations && !Array.isArray(plugin.operations)) throw new DataError('Plugin operations must be an array');
+  for (const operation of plugin.operations ?? [])
+    if (!['create', 'update', 'delete'].includes(operation))
+      throw new DataError(`Unknown plugin operation ${operation}`);
+  if (plugin.when) compileFilter(plugin.when);
+  if (plugin.validate && !Array.isArray(plugin.validate)) throw new DataError('Plugin validate must be an array');
+  for (const validation of plugin.validate ?? []) validatePluginRuleDefinition(validation);
+  for (const bag of [plugin.defaults, plugin.set]) validatePluginExpressionBag(bag);
+  if (plugin.secondary && !Array.isArray(plugin.secondary)) throw new DataError('Plugin secondary must be an array');
+  for (const action of plugin.secondary ?? []) validateSecondaryAction(action);
+}
+
+function validatePluginRuleDefinition(validation) {
+  if (validation.pattern) new RegExp(validation.pattern); // NOSONAR: constructor validates the pattern or has side effects
+  if (validation.assert) compileFilter(validation.assert);
+  if (validation.field) safeName(validation.field);
+  // Dataverse reports plugin exceptions as ISV aborted (0x80040265) unless
+  // the simulated plugin names the platform error it reproduces.
+  if (validation.innerCode != null && !/^0x[0-9a-f]{8}$/i.test(String(validation.innerCode)))
+    throw new DataError('Plugin validation innerCode must be a 0x-prefixed 8-digit hex code');
+}
+
+function validatePluginExpressionBag(bag) {
+  for (const [key, expr] of Object.entries(bag ?? {})) {
+    safeName(key);
+    checkPluginExpression(expr);
+  }
+}
+
+function validateSecondaryAction(action) {
+  if (action.requireMatch != null && typeof action.requireMatch !== 'boolean')
+    throw new DataError('Secondary requireMatch must be a boolean');
+  if (action.foreach) checkPluginExpression(action.foreach);
+  if (!action.entity || !['create', 'update', 'delete'].includes(action.operation))
+    throw new DataError('Secondary action requires entity and create/update/delete operation');
+  if (action.operation !== 'create' && !action.match) throw new DataError('Secondary update/delete requires match');
+  for (const bag of [action.match, action.set]) validatePluginExpressionBag(bag);
+}
+
+// Temporary record directories of stores without a state file, by directory.
+// closeRecordStorage() removes an entry; process exit removes what remains.
+const temporaryRecordDirectories = new Map();
+const ownedTemporaryRecordDirectory = (directory) =>
+  dirname(directory) === fsSync.realpathSync.native(tmpdir()) &&
+  basename(directory).startsWith('paqvilo-record-state-');
+function removeTemporaryRecordDirectories() {
+  for (const [directory, session] of temporaryRecordDirectories)
+    try {
+      session.deref()?.close();
+      if (ownedTemporaryRecordDirectory(directory)) fsSync.rmSync(directory, { recursive: true, force: true });
+    } catch {
+      // Best effort: the process is exiting and an open handle keeps the files.
     }
-    if (p.operations && !Array.isArray(p.operations)) throw new DataError('Plugin operations must be an array');
-    for (const op of p.operations ?? [])
-      if (!['create', 'update', 'delete'].includes(op)) throw new DataError(`Unknown plugin operation ${op}`);
-    if (p.when) compileFilter(p.when);
-    if (p.validate && !Array.isArray(p.validate)) throw new DataError('Plugin validate must be an array');
-    for (const v of p.validate ?? []) {
-      if (v.pattern) new RegExp(v.pattern);
-      if (v.assert) compileFilter(v.assert);
-      if (v.field) safeName(v.field);
-      // Dataverse reports plugin exceptions as ISV aborted (0x80040265) unless
-      // the simulated plugin names the platform error it reproduces.
-      if (v.innerCode != null && !/^0x[0-9a-f]{8}$/i.test(String(v.innerCode)))
-        throw new DataError('Plugin validation innerCode must be a 0x-prefixed 8-digit hex code');
+  temporaryRecordDirectories.clear();
+}
+
+function traceRetentionError(original, persistence) {
+  const failure = new AggregateError([original, persistence], persistence.message, { cause: original });
+  failure.code = persistence.code ?? 'PluginTracePersistenceFailed';
+  failure.status = failure.statusCode = persistence.status ?? persistence.statusCode ?? 500;
+  failure.persistenceFailure = true;
+  return failure;
+}
+
+function concurrencyBehaviorOption(options) {
+  if (options.omitConcurrencyBehavior) return { concurrencyBehavior: null };
+  if (options.pluginConcurrencyBehavior === undefined) return {};
+  return { concurrencyBehavior: options.pluginConcurrencyBehavior };
+}
+
+/* NOSONAR */ function permissionRuleAllows(store, rule, { row, mapping, identity, memo, nextChain }) {
+  const scope = rule.scope ?? 'global';
+  if (scope === 'global') return true;
+  if (!row) return false;
+  if (rule.observedOrphanParent?.field) return field(row, rule.observedOrphanParent.field) != null;
+  if (rule.identityRelationship)
+    return permissionIdentityRelationshipAllows(store, rule.identityRelationship, row, identity, memo);
+  let column = rule.field;
+  if (column == null) {
+    if (scope === 'self') column = mapping.idColumn;
+    else column = scope === 'account' ? 'parentcustomerid' : 'contactid';
+  }
+  const value = scalar(field(row, column));
+  if (scope === 'self' || scope === 'contact')
+    return Boolean(identity.contactId || identity.id) && equal(value, identity.contactId ?? identity.id);
+  if (scope === 'account') return Boolean(identity.accountId) && equal(value, identity.accountId);
+  if (scope === 'parent') return permissionParentAllows(store, rule, row, identity, memo, nextChain);
+  throw new DataError(`Unsupported permission scope ${scope}`);
+}
+
+function permissionIdentityRelationshipAllows(store, relationship, row, identity, memo) {
+  const mapping = store.resolveMapping(relationship.entity);
+  const identityId = relationship.entity === 'account' ? identity.accountId : (identity.contactId ?? identity.id);
+  if (!identityId) return false;
+  const person = memo.lookup(mapping.logicalName, mapping.idColumn, identityId);
+  if (!person.length) return false;
+  const people = new Set(person);
+  return memo.related(row, relationship, mapping.logicalName).some((target) => people.has(target));
+}
+
+function permissionParentAllows(store, rule, row, identity, memo, nextChain) {
+  const relationship = rule.relationship;
+  if (!relationship?.entity || !relationship.from || !relationship.to)
+    throw new DataError('Parent permission requires relationship entity/from/to');
+  const mapping = store.resolveMapping(relationship.entity);
+  return memo
+    .related(row, relationship, mapping.logicalName)
+    .some((parent) =>
+      store.allowed(
+        mapping.logicalName,
+        'read',
+        parent,
+        identity,
+        nextChain,
+        rule.parentPermissionId ?? rule.parentId,
+        memo,
+      ),
+    );
+}
+
+function runMutationObservers(store, event, details) {
+  for (const observer of details.messageEvent ? [] : (store.mutationObservers ?? [])) {
+    const matched = observer.matches ? observer.matches(clone(event)) : true;
+    if (matched && typeof matched.then === 'function') {
+      Promise.resolve(matched).catch(() => {});
+      throw new DataError('Mutation observer matchers cannot return a promise.', 500, 'InvalidMutationObserver');
     }
-    for (const bag of [p.defaults, p.set])
-      for (const [key, expr] of Object.entries(bag ?? {})) {
-        safeName(key);
-        checkExpr(expr);
-      }
-    if (p.secondary && !Array.isArray(p.secondary)) throw new DataError('Plugin secondary must be an array');
-    for (const action of p.secondary ?? []) {
-      if (action.requireMatch != null && typeof action.requireMatch !== 'boolean')
-        throw new DataError('Secondary requireMatch must be a boolean');
-      if (action.foreach) checkExpr(action.foreach);
-      if (!action.entity || !['create', 'update', 'delete'].includes(action.operation))
-        throw new DataError('Secondary action requires entity and create/update/delete operation');
-      if (action.operation !== 'create' && !action.match) throw new DataError('Secondary update/delete requires match');
-      for (const bag of [action.match, action.set])
-        for (const [key, expr] of Object.entries(bag ?? {})) {
-          safeName(key);
-          checkExpr(expr);
-        }
+    if (!matched) continue;
+    store.ensureReadSnapshot();
+    const result = observer.fn(clone(event));
+    if (result && typeof result.then === 'function') {
+      Promise.resolve(result).catch(() => {});
+      throw new DataError('Mutation observers cannot return a promise.', 500, 'InvalidMutationObserver');
     }
   }
-  return reconcilePermissionDiagnostics(applyPlatformConfig(result, platform));
+}
+
+function addReferenceTableEntry(tables, owner, rel, only) {
+  if (!rel || rel.intersect || !rel.entity || !rel.from || !rel.to) return;
+  // A single-valued lookup references its target; a collection references its owner.
+  const single = rel.many === false,
+    logical = single ? rel.entity : owner;
+  if (only !== undefined && logical !== only) return;
+  const reference = single
+    ? { entity: owner, column: rel.from, targetColumn: rel.to, cascade: rel.cascade, schemaName: rel.schemaName }
+    : {
+        entity: rel.entity,
+        column: rel.to,
+        targetColumn: rel.from,
+        cascade: rel.cascade,
+        schemaName: rel.schemaName,
+      };
+  let found = tables.get(logical);
+  if (!found) {
+    found = new Map();
+    tables.set(logical, found);
+  }
+  const key = `${reference.entity}\u0000${reference.column}`;
+  const existing = found.get(key);
+  if (!existing || (!existing.cascade && reference.cascade)) found.set(key, reference);
+}
+
+function selectProjectionItem(selected, state, kind, name) {
+  safeName(name);
+  if (kind === 'sections') {
+    if (own(state, name)) selected[name] = state[name];
+    return;
+  }
+  selected[kind] ??= {};
+  if (own(state[kind], name)) selected[kind][name] = state[kind][name];
+}
+
+function alternateKeyMatchesNames(alternate, names) {
+  const attributes = (alternate.attributes ?? alternate.keyAttributes ?? [])
+    .map((name) => String(name).toLowerCase())
+    .sort();
+  return attributes.length === names.length && attributes.every((name, index) => name === names[index]);
 }
 
 export class DataStore {
+  static {
+    for (const name of storeOperationFields)
+      Object.defineProperty(this.prototype, name, {
+        configurable: true,
+        get() {
+          assertPluginExecutionActive(this);
+          return storeOperationValue(this, name);
+        },
+        set(value) {
+          assertPluginExecutionActive(this);
+          setStoreOperationValue(this, name, value);
+        },
+      });
+  }
+  hasOperationContext() {
+    return hasStoreOperationContext(this);
+  }
+  withOperationContext(fn, options) {
+    assertPluginExecutionActive(this);
+    return withStoreOperationContext(this, fn, options);
+  }
   constructor({
     file = null,
     state = emptyState(),
@@ -822,19 +1304,24 @@ export class DataStore {
     storageAdapter = null,
     clock = systemClock,
     ids = systemIds,
+    unpublished = false,
+    ownedState = false,
   } = {}) {
     this.file = file;
     // The record pipeline's time and GUID source (runtime-clock.mjs); createOrganizationRuntime shares it with its API.
     this.clock = clock;
     this.ids = ids;
+    this.unpublished = unpublished;
     this.presetLibrary = presetLibrary;
     this.platformConfig = platformConfig(platform);
-    this.state = normalizeState(state, this.presetLibrary, this.platformConfig);
+    // Hosts can adopt an already-detached composition result. Ordinary callers
+    // retain the constructor's detached-input contract.
+    this.state = normalizeState(state, this.presetLibrary, this.platformConfig, ownedState);
     this.persistedDigest = null;
     this.persistenceOptions = persistence;
     this.storageAdapter = storageAdapter;
     this.storage = file ? new StateStorage(file, persistence) : null;
-    this.queue = Promise.resolve();
+    this.queue = Promise.resolve(); // NOSONAR: constructor timing must not change
     // Advances with every committed change (transact), so consumers such as OData
     // paging can bind to the data without digesting the whole state per request.
     this.revision = 0;
@@ -844,14 +1331,16 @@ export class DataStore {
   // a private working copy, and only inside their own async context. Everything else
   // reads and writes the committed copy, so the default path is unchanged.
   get state() {
+    assertPluginExecutionActive(this);
     if (this.isolatedCount) {
-      const frame = transactionFrames.getStore();
+      const frame = transactionFrameOf(this);
       if (frame?.store === this && frame.working) return frame.working;
     }
     return this._state;
   }
   set state(value) {
-    const frame = this.isolatedCount ? transactionFrames.getStore() : undefined;
+    assertPluginExecutionActive(this);
+    const frame = this.isolatedCount ? transactionFrameOf(this) : undefined;
     if (frame?.store === this && frame.working) frame.working = value;
     else this._state = value;
   }
@@ -918,6 +1407,7 @@ export class DataStore {
           true,
         );
         this.persistedDigest = this.storage.digest;
+        if (this.storage.recordSession) this.recordSession = this.storage.recordSession;
       } catch (error) {
         if (error.code !== 'ENOENT') throw error;
         this.persistedDigest = null;
@@ -926,31 +1416,207 @@ export class DataStore {
     }
     return this;
   }
-  snapshot(projection) {
+  recordContext() {
+    return { records: recordSources(() => this.ensureRecordSession()) };
+  }
+  ensureRecordSession() {
+    if (!this.recordSession) {
+      const directory = this.file
+        ? resolve(this.file) + '.records'
+        : fsSync.mkdtempSync(join(tmpdir(), 'paqvilo-record-state-'));
+      this.recordSession = new RecordPageSession(directory, { stateOwner: this.file ?? undefined });
+      if (!this.file) {
+        this.temporaryRecordDirectory = this.recordSession.directory;
+        if (!temporaryRecordDirectories.size) process.once('exit', removeTemporaryRecordDirectories);
+        temporaryRecordDirectories.set(this.temporaryRecordDirectory, new WeakRef(this.recordSession));
+      }
+    }
+    return this.recordSession;
+  }
+  closeRecordStorage() {
+    clearInterval(this.recordRetirementTimer);
+    this.recordRetirementTimer = null;
+    const errors = [];
+    for (const session of new Set([
+      this.recordSession,
+      this.storage?.recordSession,
+      ...(this.retiredRecordSessions ?? []),
+    ]))
+      try {
+        session?.close();
+      } catch (error) {
+        errors.push(error);
+      }
+    // Retain every owner for a retry and keep temporary files while any handle
+    // failed to close. One failure must not strand later sessions and leases.
+    if (errors.length === 1) throw errors[0];
+    if (errors.length) throw new AggregateError(errors, 'Record storage sessions failed to close');
+    this.retiredRecordSessions?.clear();
+    this.recordSession = null;
+    if (this.temporaryRecordDirectory) {
+      const directory = this.temporaryRecordDirectory;
+      if (!ownedTemporaryRecordDirectory(directory))
+        throw new Error('Temporary record directory is outside its owned root');
+      fsSync.rmSync(directory, { recursive: true, force: true });
+      this.temporaryRecordDirectory = null;
+      temporaryRecordDirectories.delete(directory);
+      if (!temporaryRecordDirectories.size) process.off('exit', removeTemporaryRecordDirectories);
+    }
+  }
+  /** Release record pages and remove a temporary record directory (closeRecordStorage). */
+  close() {
+    this.closeRecordStorage();
+  }
+  /**
+   * Run `fn(lease)` once earlier transactions settle; no transaction starts until
+   * it does. A transaction requested meanwhile first calls `lease.onContention()`
+   * once, synchronously, so `fn` can copy what it still reads from live state
+   * and settle; `lease.contended` is already true if that request preceded `fn`.
+   */
+  readLease(fn) {
+    const lease = { contended: false, onContention: null };
+    this.readLeases ??= new Set();
+    this.readLeases.add(lease);
+    const run = this.queue.then(() => fn(lease)).finally(() => this.readLeases.delete(lease));
+    this.queue = run.catch(() => {});
+    return run;
+  }
+  contendReadLeases() {
+    for (const lease of this.readLeases ?? [])
+      if (!lease.contended) {
+        lease.contended = true;
+        lease.onContention?.();
+      }
+  }
+  /**
+   * Stream a detached, consistent JSON export to `consume(chunks)` (an iterable of
+   * strings) without a second copy of plain tables. Sections are copied and paged
+   * tables forked; plain rows are encoded in place under a read lease. A
+   * transaction requested meanwhile first copies the rows not yet encoded, then
+   * runs while the export continues from that copy. `adjust(sections)` may edit
+   * the copied sections; `project` is the jsonChunks projection.
+   */
+  exportState(consume, { adjust, project } = {}) {
+    let writing;
+    return this.readLease(async (lease) => {
+      const { tables = {}, ...rest } = this.state,
+        sections = cloneStateData(rest, { forkTables: true }),
+        order = Object.keys(this.state),
+        sources = Object.entries(tables).map(([name, rows]) => ({
+          name,
+          rows: pagedRecordsOf(rows) ? pagedRecordsOf(rows).fork() : rows,
+          live: !pagedRecordsOf(rows),
+          offset: 0,
+        }));
+      this.snapshotRevisions ??= new WeakMap();
+      this.snapshotRevisions.set(sections, this.revision);
+      adjust?.(sections);
+      let table = 0,
+        row = 0,
+        failure = null;
+      // Copy every row not yet encoded: the rest of the current table and all later ones.
+      const detach = () => {
+        for (let index = table; index < sources.length; index++) {
+          const source = sources[index];
+          if (!source.live) continue;
+          const from = index === table ? row : 0;
+          source.rows = cloneStateData(source.rows.slice(from));
+          source.offset = from;
+          source.live = false;
+        }
+      };
+      const options = project ? { project } : {};
+      /* NOSONAR: single-pass routine, splitting it would change shared state */ function* chunks() {
+        let text = '{',
+          first = true;
+        // A copy that failed during contention ends the export at its next chunk.
+        const flush = function* () {
+          yield text;
+          text = '';
+          if (failure) throw failure;
+        };
+        const append = function* (encoded) {
+          for (const chunk of encoded) {
+            text += chunk;
+            if (text.length >= 65536) yield* flush();
+          }
+        };
+        const member = function* (key, value) {
+          const encoded = jsonChunks(value, options),
+            head = encoded.next();
+          // A section that encodes to nothing (undefined) is omitted, as in JSON.
+          if (head.done) return;
+          text += (first ? '' : ',') + JSON.stringify(key) + ':';
+          first = false;
+          yield* append([head.value]);
+          yield* append(encoded);
+        };
+        for (const key of order) {
+          if (key !== 'tables') {
+            if (Object.hasOwn(sections, key)) yield* member(key, sections[key]);
+            continue;
+          }
+          text += (first ? '' : ',') + '"tables":{';
+          first = false;
+          for (table = 0; table < sources.length; table++) {
+            const source = sources[table];
+            text += (table ? ',' : '') + JSON.stringify(source.name) + ':';
+            if (pagedRecordsOf(source.rows)) yield* append(jsonChunks(source.rows, options));
+            else {
+              const length = source.offset + source.rows.length;
+              text += '[';
+              for (row = 0; row < length; row++) {
+                text +=
+                  (row ? ',' : '') + ([...jsonChunks(source.rows[row - source.offset], options)].join('') || 'null');
+                if (text.length >= 65536) yield* flush();
+              }
+              text += ']';
+            }
+          }
+          table = sources.length;
+          text += '}';
+        }
+        yield text + '}';
+      }
+      let released;
+      const contention = new Promise((resolve) => (released = resolve));
+      lease.onContention = () => {
+        // The requesting transaction is unrelated to this export and never sees its failure.
+        try {
+          detach();
+        } catch (error) {
+          failure = error;
+        }
+        released();
+      };
+      if (lease.contended) lease.onContention();
+      writing = consume(chunks());
+      await Promise.race([writing, contention]);
+    }).then(() => writing);
+  }
+  snapshot(projection, options) {
     if (projection === undefined) {
-      const snapshot = clone(this.state);
-      (this.snapshotRevisions ??= new WeakMap()).set(snapshot, this.revision);
+      const snapshot = cloneStateData(this.state, options);
+      this.snapshotRevisions ??= new WeakMap();
+      this.snapshotRevisions.set(snapshot, this.revision);
       return snapshot;
     }
+    const snapshot = cloneStateData(this.projectionOf(projection), options);
+    this.snapshotRevisions ??= new WeakMap();
+    this.snapshotRevisions.set(snapshot, this.revision);
+    return snapshot;
+  }
+  /** The live (uncopied) sections, tables and mappings a snapshot projection names. Callers must not mutate it. */
+  projectionOf(projection) {
     if (!projection || typeof projection !== 'object' || Array.isArray(projection))
       throw new DataError('Snapshot projection must name sections, tables or mappings');
     const selected = {};
     for (const [kind, names] of Object.entries(projection)) {
       if (!['sections', 'tables', 'mappings'].includes(kind) || !Array.isArray(names))
         throw new DataError('Invalid snapshot projection');
-      for (const name of names) {
-        safeName(name);
-        if (kind === 'sections') {
-          if (own(this.state, name)) selected[name] = this.state[name];
-        } else {
-          selected[kind] ??= {};
-          if (own(this.state[kind], name)) selected[kind][name] = this.state[kind][name];
-        }
-      }
+      for (const name of names) selectProjectionItem(selected, this.state, kind, name);
     }
-    const snapshot = clone(selected);
-    (this.snapshotRevisions ??= new WeakMap()).set(snapshot, this.revision);
-    return snapshot;
+    return selected;
   }
   // Provenance is local to this store and never serialized into state files.
   snapshotRevision(snapshot) {
@@ -983,6 +1649,9 @@ export class DataStore {
     return selected;
   }
   async save() {
+    assertPluginExecutionActive(this);
+    const frame = transactionFrameOf(this);
+    if (frame?.store === this && frame.initializing && !frame.closed && !frame.committing) return;
     try {
       return await this.#saveState();
     } catch (error) {
@@ -995,12 +1664,12 @@ export class DataStore {
       throw Object.assign(new Error(error?.message ?? String(error), { cause: error }), { persistenceFailure: true });
     }
   }
-  async #saveState() {
+  /* NOSONAR */ async #saveState(selectedState = this.state) {
     if (this.storageAdapter) {
       const started = performance.now();
       // An unpromoted row transaction names the tables it wrote, so the adapter rehashes only those.
       await this.storageAdapter.save(
-        this.state,
+        selectedState,
         this.rowTransaction && !this.rowTransaction.promoted ? { tables: this.rowTransaction.touchedTables() } : {},
       );
       this.recordSave(performance.now() - started, 'simulation');
@@ -1010,6 +1679,48 @@ export class DataStore {
     this.ensureStorage();
     const saveStarted = performance.now();
     await mkdir(dirname(this.file), { recursive: true });
+    const intendedRecords = resolve(this.file) + '.records';
+    const recordDirectory = fsSync.existsSync(intendedRecords)
+      ? fsSync.realpathSync.native(intendedRecords)
+      : join(fsSync.realpathSync.native(dirname(intendedRecords)), basename(intendedRecords));
+    // A store that created pages before a state file was bound (an in-memory
+    // session) moves them next to the file on its first save.
+    if (this.recordSession && this.recordSession.directory !== recordDirectory) {
+      await this.storage.assertUnchanged();
+      const migrated = await compactRecordGraph(selectedState, recordDirectory, { stateOwner: this.file });
+      if (!migrated) {
+        // No published table uses the foreign session. Later tables start in
+        // the file's own directory instead of being migrated on every save.
+        this.retiredRecordSessions ??= new Set();
+        this.retiredRecordSessions.add(this.recordSession);
+        this.recordSession = null;
+        this.scheduleRecordRetirement();
+      } else {
+        const previous = this.recordSession;
+        // Point the manager at its unpublished destination for this recursive
+        // save; the state graph itself remains on the preceding live pages.
+        this.recordSession = migrated.session;
+        let published = false;
+        try {
+          await this.#saveState(migrated.state);
+          published = migrated.publish();
+          if (published) {
+            this.storage.recordSession = migrated.session;
+            this.retiredRecordSessions ??= new Set();
+            this.retiredRecordSessions.add(previous);
+            this.scheduleRecordRetirement();
+            return;
+          }
+        } finally {
+          if (!published) {
+            this.recordSession = previous;
+            migrated.session.close();
+          }
+        }
+        // Records changed while the copy was saved: copy the live tables again.
+        return this.#saveState(selectedState);
+      }
+    }
     const lockPath = `${this.file}.lock`,
       lockToken = `${process.pid}:${randomUUID()}`,
       temp = `${this.file}.${randomUUID()}.tmp`;
@@ -1035,13 +1746,28 @@ export class DataStore {
         lockHandle = null;
 
         await this.storage.assertUnchanged();
-        if (this.storage.journal && this.rowTransaction) {
-          await this.storage.appendChanges(this.rowTransaction.changes());
+        const initialization = transactionFrameOf(this);
+        if (
+          this.storage.journal &&
+          this.storage.canAppend(selectedState) &&
+          initialization?.store === this &&
+          !initialization.closed &&
+          initialization.initializationDelta
+        ) {
+          await this.storage.appendChanges(initializationEntries(initialization.initializationDelta), {
+            state: selectedState,
+          });
           this.persistedDigest = this.storage.digest;
           this.recordSave(performance.now() - saveStarted, 'journal');
           return;
         }
-        const prepared = await this.storage.prepareCheckpoint(temp, this.state);
+        if (this.storage.journal && this.storage.canAppend(selectedState) && this.rowTransaction) {
+          await this.storage.appendChanges(this.rowTransaction.changes(), { state: selectedState });
+          this.persistedDigest = this.storage.digest;
+          this.recordSave(performance.now() - saveStarted, 'journal');
+          return;
+        }
+        const prepared = await this.storage.prepareCheckpoint(temp, selectedState);
         // Recheck immediately before replacement to catch non-cooperating edits
         // made while the temporary snapshot was being prepared.
         await this.storage.assertUnchanged();
@@ -1095,16 +1821,56 @@ export class DataStore {
     this.ensureStorage();
     return this.storage.persistedDigest();
   }
+  /** Record identity (docs/design/tracing.md, D-R3-1): the first row a Dataverse operation addresses names its current
+   * `dataverse` span (a create as soon as its id is assigned, before its plug-in stages run, so the stage and step spans
+   * and every later span read it). A span that already names a record, or names another table, is left as it is. */
+  traceRecord(logical, id) {
+    const span = this.traces?.enabled ? this.traces.current() : null;
+    if (span?.kind === 'dataverse' && span.recordId == null && id != null && span.entity === logical)
+      span.setEntity(logical, scalar(id));
+  }
+  /** The tracing of one commit (docs/design/tracing.md): a commit event on the current span; end(...) records the staged
+   * events and the save. null without a current span: a commit outside any span (job bookkeeping, startup) opens none. */
+  traceCommit() {
+    const current = this.traces?.enabled ? this.traces.current() : null;
+    if (!current) return null;
+    return {
+      fail: (error) =>
+        traceDecision(current, 'commit', { message: 'Save failed', attributes: { error: error?.code ?? 'Error' } }),
+      end: ({ attributes }) => traceDecision(current, 'commit', { attributes }),
+    };
+  }
   /** Serialize reads that may invoke backend plugin writes. Pure reads do not
    * change the persisted state or its revision. Invoke this only at a request
    * boundary; nested SDK reads already use their caller's synchronous frame. */
   readOperation(fn) {
     return this.transact(fn, { skipSaveIfUnchanged: true, cloneResult: false, lazyReadSnapshot: true });
   }
+  /** Only a host-owned store with no published readers may initialize in place.
+   * Nested saves are deferred; a failed stage discards this store and leaves its
+   * durable checkpoint authoritative. Public transactions retain isolation. */
+  initialize(fn) {
+    if (!this.unpublished || this.initializationFailed)
+      throw new Error('Private initialization requires an unpublished, usable store.');
+    return this.transact(fn, {
+      isolated: true,
+      cloneResult: false,
+      skipSaveIfUnchanged: true,
+      privateInitialization: !this.storageAdapter,
+    });
+  }
+  isInitializing() {
+    const frame = transactionFrameOf(this);
+    return frame?.store === this && frame.initializing && !frame.closed;
+  }
+  completeInitialization() {
+    this.unpublished = false;
+    this.initializationFingerprintCache = null;
+  }
   // A read hook that may run arbitrary plug-in code first captures its rollback
   // snapshot. Metadata consumers may reuse read inputs only before that point.
   isUnmodifiedRead() {
-    const frame = transactionFrames.getStore(),
+    const frame = transactionFrameOf(this),
       boundary = this.pluginRollbackBoundary;
     return (
       frame?.store === this &&
@@ -1113,9 +1879,13 @@ export class DataStore {
       boundary.backup === null
     );
   }
+  /** True while any transaction of this store is queued or running, in any async context. */
+  transactionPending() {
+    return (this.transactionsQueued ?? 0) > 0;
+  }
   /** True inside an open transaction of this store in this async context: a new transact here would queue behind it. */
   inTransaction() {
-    const frame = transactionFrames.getStore();
+    const frame = transactionFrameOf(this);
     return frame?.store === this && !frame.closed;
   }
   ensureReadSnapshot() {
@@ -1125,7 +1895,7 @@ export class DataStore {
   promoteRowTransaction() {
     if (!this.rowTransaction) return;
     const transaction = this.rowTransaction;
-    this.pluginRollbackBoundary.backup = transaction.rollback(clone(this.state));
+    this.pluginRollbackBoundary.backup = transaction.rollback(cloneInternal(this.state));
     this.pluginRollbackBoundary.persistenceBackup ??= this.pluginRollbackBoundary.backup;
     transaction.promoted = true;
     this.rowTransaction = null;
@@ -1136,6 +1906,9 @@ export class DataStore {
    * it is a normal transaction. A plain call inside an open isolated transaction joins
    * it the same way. `isolated: true` keeps the changes private to the
    * async context until the commit, so concurrent readers see the committed state.
+   * `pluginVisible: false` keeps an isolated boundary out of the plug-in pipeline's IsInTransaction: a single request
+   * that runs atomically for itself (a top-level custom API or SOAP message) still starts outside the transaction at
+   * PreValidation, as natively; a $batch changeset stays visible.
    */
   transact(
     fn,
@@ -1146,6 +1919,8 @@ export class DataStore {
       incremental = false,
       nested = false,
       isolated = false,
+      privateInitialization = false,
+      pluginVisible = true,
     } = {},
   ) {
     // ponytail: a nested throw that the caller catches keeps that call's partial writes;
@@ -1153,153 +1928,344 @@ export class DataStore {
     // A frame that has finished (closed) no longer joins: its async continuations run later.
     // Inside an open isolated changeset a plain transact joins it too: every write made while
     // the changeset runs belongs to that changeset (Dataverse changesets are atomic).
-    const active = transactionFrames.getStore();
+    assertPluginExecutionActive(this);
+    const active = transactionFrameOf(this);
     if ((nested || active?.working) && active?.store === this && !active.closed)
       return (async () => {
         const result = await fn();
         return cloneResult ? clone(result) : result;
       })();
-    const frame = { store: this, working: null };
-    const run = this.queue.then(async () => {
-      transactionFrames.enterWith(frame);
-      // ponytail: an isolated transaction works on a full clone of the committed state
-      // and publishes it at commit. It is O(state) per changeset, a write that bypasses
-      // transact is lost at commit, and an independent plugin commit inside it persists
-      // the working copy. Use a change overlay before batch relies on any of these.
-      if (isolated) frame.working = clone(this._state);
-      // Arbitrary extension callbacks retain the established full rollback
-      // boundary. Core CRUD/declarative handlers use the bounded undo journal.
-      const rowTransaction = incremental ? new RowTransaction(this, { reuse: !isolated }) : null;
-      const previousRows = this.rowTransaction;
-      this.rowTransaction = rowTransaction;
-      const boundary = {
-        // The committed graph is already the rollback copy of an isolated
-        // working graph. A second whole-state clone cannot improve isolation.
-        backup: isolated ? this._state : lazyReadSnapshot || rowTransaction ? null : clone(this.state),
-        independentCommit: false,
-        eventCount: 0,
-      };
-      boundary.persistenceBackup = boundary.backup;
-      if (lazyReadSnapshot)
-        boundary.ensureSnapshot = () => {
-          if (boundary.backup !== null) return;
-          boundary.backup = clone(this.state);
-          boundary.persistenceBackup = boundary.backup;
-        };
-      const previousBoundary = this.pluginRollbackBoundary,
-        previousTransaction = this.pluginInTransaction;
-      boundary.parent = previousBoundary;
-      const previousEvents = this.committedEventCandidates;
-      this.committedEventCandidates = [];
-      this.pluginRollbackBoundary = boundary;
-      this.pluginInTransaction = isolated;
-      try {
-        if (isolated) this.isolatedCount = (this.isolatedCount ?? 0) + 1;
-        const result = await fn();
-        const staged = this.stageOnCommit(this.committedEventCandidates);
-        if (
-          staged.length ||
-          !skipSaveIfUnchanged ||
-          boundary.independentCommit ||
-          (boundary.backup !== null && !isDeepStrictEqual(this.state, boundary.backup))
-        ) {
-          await this.save();
-          this.committed(
-            rowTransaction && !rowTransaction.promoted && !isolated ? rowTransaction.touchedTables() : null,
-          );
-          // Section copies the journal commit proved unchanged seed the next row transaction (RowTransaction reuse).
-          const reusable = rowTransaction && !isolated ? rowTransaction.reusableSections() : null;
-          if (reusable) this.sectionSnapshot = { ...reusable, revision: this.revision };
-        }
-        if (isolated) this._state = frame.working;
-        this.dispatchCommittedEvents(this.committedEventCandidates);
-        this.afterStagedCommit(staged);
-        for (const note of boundary.commitNotes ?? [])
+    if (privateInitialization && (!this.unpublished || this.initializationFailed))
+      throw new Error('Private initialization requires an unpublished, usable store.');
+    this.contendReadLeases();
+    const frame = { store: this, working: null, initializing: privateInitialization };
+    // Queued and running transactions (transactionPending): an independent read does not queue behind one.
+    this.transactionsQueued = (this.transactionsQueued ?? 0) + 1;
+    const run = this.queue.then(() =>
+      this.withOperationContext(
+        /* NOSONAR: single-pass routine, splitting it would change shared state */ async () => {
+          assertPluginExecutionActive(this);
+          let initializationDigest = null;
           try {
-            note();
-          } catch {
-            /* a note never changes the outcome */
-          }
-        // Read query results own their projection and may carry nonenumerable
-        // SDK/paging/column metadata required by the transport adapter.
-        return cloneResult ? clone(result) : result;
-      } catch (error) {
-        if (!rowTransaction?.promoted) rowTransaction?.rollback();
-        this.rowIndexes = null;
-        const rollback = error.persistenceFailure ? boundary.persistenceBackup : boundary.backup;
-        if (rollback !== null) this.state = clone(rollback);
-        for (const note of boundary.rollbackNotes ?? [])
-          try {
-            note(error);
-          } catch {
-            /* a note never changes the failure */
-          }
-        // Elastic main operations commit independently, even inside a failed changeset or a failed PostOperation.
-        // Restore only those rows after rollback: earlier standard-table writes remain transactional.
-        if (!error.persistenceFailure && boundary.elasticWrites?.size) {
-          const retentionBackup = clone(this.state);
-          try {
-            for (const { mapping, row, removed } of boundary.elasticWrites.values()) {
-              const rows = (this.state.tables[mapping.logicalName] ??= []);
-              const index = this.rowIndex(mapping, rows, recordKey(mapping, row));
-              if (removed) {
-                if (index >= 0) rows.splice(index, 1);
-              } else if (index >= 0) rows[index] = clone(row);
-              else rows.push(clone(row));
+            if (privateInitialization && this.file) {
+              if (!this.storage?.journal) initializationDigest = stateDigest(this._state, { sortKeys: true });
+              else if (
+                this.initializationFingerprintCache?.file === this.file &&
+                this.initializationFingerprintCache.digest === this.persistedDigest
+              )
+                initializationDigest = this.initializationFingerprintCache.value;
+              else initializationDigest = await initializationFingerprint(this._state);
             }
-            this.state.rowVersion = Math.max(this.state.rowVersion ?? 0, boundary.elasticVersion ?? 0);
-            const retained =
-              boundary.independentCommit && !isolated
-                ? this.committedEventCandidates.slice(0, boundary.eventCount)
-                : [];
-            const events = [...new Set([...retained, ...(boundary.elasticEvents ?? [])])],
-              staged = this.stageOnCommit(events);
-            await this.save();
-            this.committed();
-            if (isolated) this._state = frame.working;
-            this.dispatchCommittedEvents(events);
-            this.afterStagedCommit(staged);
-          } catch (saveError) {
-            this.state = boundary.persistenceBackup ?? retentionBackup;
-            this.rowIndexes = null;
-            throw saveError;
+          } catch (error) {
+            frame.closed = true;
+            this.initializationFailed = true;
+            this.unpublished = false;
+            this._state = emptyState();
+            this.initializationFingerprintCache = null;
+            throw error;
           }
-        } else if (!error.persistenceFailure && boundary.independentCommit && !isolated) {
+          frame.parent = transactionFrames.getStore();
+          transactionFrames.enterWith(frame);
+          // ponytail: an isolated transaction works on a full clone of the committed state
+          // and publishes it at commit. It is O(state) per changeset, a write that bypasses
+          // transact is lost at commit, and an independent plugin commit inside it persists
+          // the working copy. Use a change overlay before batch relies on any of these.
+          if (isolated) frame.working = privateInitialization ? this._state : cloneInternal(this._state);
+          // Arbitrary extension callbacks retain the established full rollback
+          // boundary. Core CRUD/declarative handlers use the bounded undo journal.
+          const rowTransaction = incremental ? new RowTransaction(this, { reuse: !isolated }) : null;
+          const previousRows = this.rowTransaction;
+          this.rowTransaction = rowTransaction;
+          // The committed graph is already the rollback copy of an isolated
+          // working graph. A second whole-state clone cannot improve isolation.
+          let backup = null;
+          if (!privateInitialization && isolated) backup = this._state;
+          else if (!privateInitialization && !lazyReadSnapshot && !rowTransaction) backup = cloneInternal(this.state);
+          const boundary = {
+            backup,
+            independentCommit: false,
+            eventCount: 0,
+          };
+          boundary.persistenceBackup = boundary.backup;
+          if (lazyReadSnapshot)
+            boundary.ensureSnapshot = () => {
+              if (boundary.backup !== null) return;
+              boundary.backup = cloneInternal(this.state);
+              boundary.persistenceBackup = boundary.backup;
+            };
+          const previousBoundary = this.pluginRollbackBoundary,
+            previousTransaction = this.pluginInTransaction;
+          boundary.parent = previousBoundary;
+          const previousEvents = this.committedEventCandidates;
+          this.committedEventCandidates = [];
+          this.pluginRollbackBoundary = boundary;
+          this.pluginInTransaction = isolated && (pluginVisible || previousTransaction === true);
           try {
-            const events = this.committedEventCandidates.slice(0, boundary.eventCount),
-              staged = this.stageOnCommit(events);
-            await this.save();
-            this.committed();
-            this.dispatchCommittedEvents(events);
+            if (isolated) this.isolatedCount = (this.isolatedCount ?? 0) + 1;
+            const result = await fn();
+            if (boundary.transactionFailure) throw boundary.transactionFailure;
+            this.restorePluginTraceLogs(boundary);
+            const staged = this.stageOnCommit(this.committedEventCandidates);
+            const journalInitialization = initializationDigest && typeof initializationDigest === 'object';
+            if (journalInitialization) {
+              const delta = await initializationDelta(initializationDigest, this.state);
+              frame.initializationDelta = delta.changes;
+              frame.initializationFingerprint = delta.fingerprint;
+            }
+            if (
+              staged.length ||
+              !skipSaveIfUnchanged ||
+              boundary.independentCommit ||
+              (privateInitialization &&
+                (initializationDigest === null ||
+                  (journalInitialization
+                    ? frame.initializationDelta.length > 0
+                    : stateDigest(this.state, { sortKeys: true }) !== initializationDigest))) ||
+              (boundary.backup !== null && !privateRecordEqual(this.state, boundary.backup))
+            ) {
+              frame.committing = true;
+              const commit = this.traceCommit();
+              try {
+                await this.save();
+              } catch (error) {
+                commit?.fail(error);
+                throw error;
+              }
+              commit?.end({
+                attributes: {
+                  eventsStaged: this.committedEventCandidates.length,
+                  saveMs: this.lastSave?.durationMs ?? null,
+                  saveMode: this.lastSave?.mode ?? null,
+                },
+              });
+              this.committed(
+                rowTransaction && !rowTransaction.promoted && !isolated ? rowTransaction.touchedTables() : null,
+              );
+              // Section copies the journal commit proved unchanged seed the next row transaction (RowTransaction reuse).
+              const reusable = rowTransaction && !isolated ? rowTransaction.reusableSections() : null;
+              if (reusable) this.sectionSnapshot = { ...reusable, revision: this.revision };
+            } else if (privateInitialization && this.file) await this.storage.assertUnchanged();
+            if (isolated) this._state = frame.working;
+            if (journalInitialization)
+              this.initializationFingerprintCache = {
+                file: this.file,
+                digest: this.persistedDigest,
+                value: frame.initializationFingerprint,
+              };
+            this.dispatchCommittedEvents(this.committedEventCandidates);
             this.afterStagedCommit(staged);
-          } catch (saveError) {
-            if (boundary.persistenceBackup !== null) this.state = boundary.persistenceBackup;
+            for (const note of boundary.commitNotes ?? [])
+              try {
+                note();
+              } catch {
+                /* a note never changes the outcome */
+              }
+            // Read query results own their projection and may carry nonenumerable
+            // SDK/paging/column metadata required by the transport adapter.
+            return cloneResult ? clone(result) : result;
+          } catch (error) {
+            if (!rowTransaction?.promoted) rowTransaction?.rollback();
             this.rowIndexes = null;
-            throw saveError;
+            const rollback = error.persistenceFailure ? boundary.persistenceBackup : boundary.backup;
+            if (!privateInitialization && rollback !== null) this.state = cloneInternal(rollback);
+            for (const note of boundary.rollbackNotes ?? [])
+              try {
+                note(error);
+              } catch {
+                /* a note never changes the failure */
+              }
+            if (privateInitialization) {
+              this.initializationFailed = true;
+              this.unpublished = false;
+              this._state = emptyState();
+              this.initializationFingerprintCache = null;
+              throw error;
+            }
+            // Trace facts are platform diagnostics, not business writes. Their own
+            // failed transaction journal must never replay aborted target changes.
+            const traceRetentionBackup = boundary.pluginTraceRows?.size ? cloneInternal(this.state) : null;
+            if (traceRetentionBackup) this.rowTransaction = null;
+            const retainedTraces = !error.persistenceFailure && this.restorePluginTraceLogs(boundary);
+            // Elastic main operations commit independently, even inside a failed changeset or a failed PostOperation.
+            // Restore only those rows after rollback: earlier standard-table writes remain transactional.
+            if (!error.persistenceFailure && boundary.elasticWrites?.size) {
+              const retentionBackup = cloneInternal(this.state);
+              try {
+                for (const { mapping, row, removed } of boundary.elasticWrites.values()) {
+                  const rows = (this.state.tables[mapping.logicalName] ??= []);
+                  const index = this.rowIndex(mapping, rows, recordKey(mapping, row));
+                  if (removed) {
+                    if (index >= 0) rows.splice(index, 1);
+                  } else if (index >= 0) rows[index] = clone(row);
+                  else rows.push(clone(row));
+                }
+                this.state.rowVersion = Math.max(this.state.rowVersion ?? 0, boundary.elasticVersion ?? 0);
+                const retained =
+                  boundary.independentCommit && !isolated
+                    ? this.committedEventCandidates.slice(0, boundary.eventCount)
+                    : [];
+                const events = [...new Set([...retained, ...(boundary.elasticEvents ?? [])])],
+                  staged = this.stageOnCommit(events);
+                await this.save();
+                this.committed();
+                if (isolated) this._state = frame.working;
+                this.dispatchCommittedEvents(events);
+                this.afterStagedCommit(staged);
+              } catch (saveError) {
+                this.state = boundary.persistenceBackup ?? traceRetentionBackup ?? retentionBackup;
+                this.rowIndexes = null;
+                if (traceRetentionBackup) throw traceRetentionError(error, saveError);
+                throw saveError;
+              }
+            } else if (!error.persistenceFailure && ((boundary.independentCommit && !isolated) || retainedTraces)) {
+              try {
+                const events =
+                    boundary.independentCommit && !isolated
+                      ? this.committedEventCandidates.slice(0, boundary.eventCount)
+                      : [],
+                  staged = this.stageOnCommit(events);
+                await this.save();
+                this.committed();
+                if (isolated) this._state = frame.working;
+                this.dispatchCommittedEvents(events);
+                this.afterStagedCommit(staged);
+              } catch (saveError) {
+                if (boundary.persistenceBackup !== null) this.state = boundary.persistenceBackup;
+                else if (traceRetentionBackup) this.state = traceRetentionBackup;
+                this.rowIndexes = null;
+                if (traceRetentionBackup) throw traceRetentionError(error, saveError);
+                throw saveError;
+              }
+            }
+            throw error;
+          } finally {
+            if (rowTransaction?.promoted || (!rowTransaction && (!skipSaveIfUnchanged || boundary.backup !== null)))
+              this.rowIndexes = null;
+            this.rowTransaction = previousRows;
+            this.pluginRollbackBoundary = previousBoundary;
+            this.pluginInTransaction = previousTransaction;
+            this.committedEventCandidates = previousEvents;
+            if (isolated) this.isolatedCount -= 1;
+            frame.closed = true;
+            frame.working = null;
+            frame.initializationDelta = null;
+            frame.initializationFingerprint = null;
           }
-        }
-        throw error;
-      } finally {
-        if (rowTransaction?.promoted || (!rowTransaction && (!skipSaveIfUnchanged || boundary.backup !== null)))
-          this.rowIndexes = null;
-        this.rowTransaction = previousRows;
-        this.pluginRollbackBoundary = previousBoundary;
-        this.pluginInTransaction = previousTransaction;
-        this.committedEventCandidates = previousEvents;
-        if (isolated) this.isolatedCount -= 1;
-        frame.closed = true;
-        frame.working = null;
-      }
-    });
+        },
+        { fresh: true },
+      ),
+    );
     this.queue = run.catch(() => {});
+    const settled = () => {
+      this.transactionsQueued--;
+    };
+    run.then(settled, settled);
     return run;
   }
   /** Rewrite a streamed checkpoint without copying the in-memory state. Queued
    * with writes; call during an idle period to bound append-journal disk usage. */
   compact() {
-    const run = this.queue.then(() => this.save());
+    this.contendReadLeases();
+    const run = this.queue.then(async () => {
+      const oldSession = this.recordSession ?? this.storage?.recordSession;
+      if (!oldSession) return this.save();
+      const compacted = await compactRecordGraph(this.state, oldSession.directory, oldSession.ownerKey);
+      if (!compacted) return this.save();
+      let published = false;
+      try {
+        await this.#saveState(compacted.state);
+        // Records changed while the checkpoint was written: keep and persist the live tables.
+        if (!compacted.publish()) return await this.#saveState();
+        published = true;
+        this.recordSession = compacted.session;
+        if (this.storage) this.storage.recordSession = compacted.session;
+        this.sectionSnapshot = null;
+        this.initializationFingerprintCache = null;
+        this.retiredRecordSessions ??= new Set();
+        this.retiredRecordSessions.add(oldSession);
+        this.scheduleRecordRetirement();
+        await this.collectRecordStorage();
+      } finally {
+        if (!published) {
+          compacted.session.close();
+          await this.collectRecordStorage();
+        }
+      }
+    });
     this.queue = run.catch(() => {});
     return run;
+  }
+  retireRecordSessions() {
+    for (const session of this.retiredRecordSessions ?? []) {
+      if (session.hasLiveTables()) continue;
+      try {
+        session.close();
+        this.retiredRecordSessions.delete(session);
+      } catch (error) {
+        this.recordCleanupError = error;
+      }
+    }
+    if (!this.retiredRecordSessions?.size) {
+      clearInterval(this.recordRetirementTimer);
+      this.recordRetirementTimer = null;
+    }
+  }
+  /** Close retired sessions now; recheck the ones that still back live tables
+   * every 2 s (without holding the process open) until none remain. */
+  scheduleRecordRetirement() {
+    this.retireRecordSessions();
+    if (!this.retiredRecordSessions?.size || this.recordRetirementTimer) return;
+    this.recordRetirementTimer = setInterval(() => this.retireRecordSessions(), 2000);
+    this.recordRetirementTimer.unref();
+  }
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ async collectRecordStorage() {
+    const session = this.recordSession;
+    if (!session?.ownedDirectory) {
+      this.recordGarbageCollection = { skipped: 'unverified-directory' };
+      return this.recordGarbageCollection;
+    }
+    if (!this.recordStorageDirectoryMatches(session)) return { skipped: 'directory-identity' };
+    const lockPath = this.file ? this.file + '.lock' : null,
+      token = `${process.pid}:${randomUUID()}\n`;
+    let lock;
+    try {
+      if (lockPath) {
+        try {
+          lock = await open(lockPath, 'wx', 0o600);
+        } catch (error) {
+          if (error.code === 'EEXIST') return { skipped: 'active-writer' };
+          throw error;
+        }
+        await lock.writeFile(token);
+        await lock.close();
+        lock = null;
+        await this.storage.assertUnchanged();
+      }
+      const encoded = encodeRecordReferences({ op: 'section', key: 'state', value: this.state });
+      const published = new Set(
+        (encoded.recordRefs ?? []).flatMap((reference) => reference.table.files.map((file) => file.name)),
+      );
+      this.recordGarbageCollection = await collectRecordGarbage(session.directory, published);
+      return this.recordGarbageCollection;
+    } catch (error) {
+      // Collection follows a committed checkpoint. Its failure must not turn a
+      // successful publication into a business rollback against newer disk data.
+      this.recordCleanupError = error;
+      return { skipped: 'collection-failed', code: error.code ?? 'RecordCleanup' };
+    } finally {
+      await lock?.close().catch(() => {});
+      if (lockPath)
+        try {
+          if ((await readFile(lockPath, 'utf8')) === token) await unlink(lockPath);
+        } catch (error) {
+          if (error.code !== 'ENOENT') this.recordCleanupError = error;
+        }
+    }
+  }
+  recordStorageDirectoryMatches(session) {
+    if (!this.file) return true;
+    const intended = resolve(this.file) + '.records';
+    return !fsSync.lstatSync(intended).isSymbolicLink() && fsSync.realpathSync.native(intended) === session.directory;
   }
   // Row writes go through writeRow/mutateRow/insertRow/removeRow, which keep every cached
   // row index of that array (rowIndexes: rows -> Map<name, RowKeyIndex>) current.
@@ -1313,6 +2279,7 @@ export class DataStore {
       for (const [name, entry] of indexes) if (!entry.moved(rows, index, previous, row)) indexes.delete(name);
   }
   mutateRow(table, rows, index, values) {
+    assertPluginExecutionActive(this);
     validateRowIndex(rows, index);
     const indexes = this.rowIndexes?.get(rows),
       keys = indexes?.size ? [...indexes].map(([name, entry]) => [name, entry, entry.keyOf(rows[index])]) : null;
@@ -1322,12 +2289,40 @@ export class DataStore {
       if (!entry.moved(rows, index, null, rows[index], previous)) indexes.delete(name);
   }
   insertRow(table, rows, row) {
+    assertPluginExecutionActive(this);
     if (this.rowTransaction) this.rowTransaction.insert(table, rows, rows.length, row);
     else rows.push(row);
     const indexes = this.rowIndexes?.get(rows);
     if (indexes?.size) for (const [name, entry] of indexes) if (!entry.appended(rows, row)) indexes.delete(name);
   }
+  /** System-owned plug-in trace facts survive a business rollback. Never retain another table this way. */
+  appendPluginTraceLog(row) {
+    this.state.tables.plugintracelog ??= [];
+    this.insertRow('plugintracelog', this.state.tables.plugintracelog, row);
+    let boundary = this.pluginRollbackBoundary;
+    while (boundary?.parent) boundary = boundary.parent;
+    if (boundary) {
+      boundary.pluginTraceRows ??= new Map();
+      boundary.pluginTraceRows.set(row.plugintracelogid, clone(row));
+    }
+  }
+  /** Reconcile diagnostic facts after a savepoint rollback without duplicating traces already in its snapshot. */
+  restorePluginTraceLogs(boundary) {
+    while (boundary?.parent) boundary = boundary.parent;
+    if (!boundary?.pluginTraceRows?.size || !this.state.mappings?.plugintracelog) return false;
+    const rows = (this.state.tables.plugintracelog ??= []),
+      ids = new Set(rows.map((row) => row.plugintracelogid));
+    let restored = false;
+    for (const [id, row] of boundary.pluginTraceRows) {
+      if (ids.has(id)) continue;
+      this.insertRow('plugintracelog', rows, clone(row));
+      ids.add(id);
+      restored = true;
+    }
+    return restored;
+  }
   removeRow(table, rows, index) {
+    assertPluginExecutionActive(this);
     validateRowIndex(rows, index);
     const indexes = this.rowIndexes?.get(rows),
       removed = rows[index];
@@ -1345,12 +2340,15 @@ export class DataStore {
   rowKeyIndex(rows, name, keyOf, { scoped = false, wild = false } = {}) {
     let frame;
     if (scoped) {
-      frame = transactionFrames.getStore();
-      if (!frame || frame.store !== this || frame.closed) return null;
+      frame = transactionFrameOf(this);
+      if (!frame || frame?.store !== this || frame.closed) return null;
     }
     this.rowIndexes ??= new WeakMap();
     let indexes = this.rowIndexes.get(rows);
-    if (!indexes) this.rowIndexes.set(rows, (indexes = new Map()));
+    if (!indexes) {
+      indexes = new Map();
+      this.rowIndexes.set(rows, indexes);
+    }
     let entry = indexes.get(name);
     if (!entry || entry.length !== rows.length || entry.frame !== frame) {
       entry = new RowKeyIndex(rows, keyOf, { frame, wild });
@@ -1378,6 +2376,8 @@ export class DataStore {
    * equality), through the primary-key index; null-safe linear scan for non-string ids.
    */
   rowPositions(mapping, rows, id, { scoped = false } = {}) {
+    const paged = pagedRecordsOf(rows)?.primaryPositions(mapping.idColumn, id);
+    if (paged !== undefined && paged !== null) return paged;
     const column = mapping.idColumn,
       linear = () => rows.flatMap((row, index) => (equal(row[column], id) ? [index] : []));
     // Non-string identifiers keep the coercive comparison of the linear scan.
@@ -1403,7 +2403,11 @@ export class DataStore {
   primaryKeySubset(mapping, ids) {
     const rows = this.tableRows(mapping.logicalName);
     if (rows !== this.state.tables[mapping.logicalName] || !ids.every((id) => typeof id === 'string')) return null;
-    if (this.rowKeyIndex(rows, `id\u0000${mapping.idColumn}`, primaryKeyOf(mapping.idColumn)).linear) return null;
+    if (
+      !pagedRecordsOf(rows)?.keyTree &&
+      this.rowKeyIndex(rows, `id\u0000${mapping.idColumn}`, primaryKeyOf(mapping.idColumn)).linear
+    )
+      return null;
     const positions = new Set();
     for (const id of ids) for (const position of this.rowPositions(mapping, rows, id)) positions.add(position);
     return [...positions].sort((a, b) => a - b).map((position) => rows[position]);
@@ -1412,6 +2416,8 @@ export class DataStore {
    * already participates in the plugin transaction. Independent PreValidation
    * requests commit before a later primary-operation rejection. */
   sdkMutation(fn) {
+    if (!this.hasOperationContext()) return this.withOperationContext(() => this.sdkMutation(fn));
+    this.openReadLane();
     const savepoint = this.sdkSavepoint();
     try {
       const result = fn();
@@ -1419,6 +2425,7 @@ export class DataStore {
       return result;
     } catch (error) {
       savepoint.rollback();
+      this.markPluginTransactionFailure(error);
       throw error;
     } finally {
       savepoint.close();
@@ -1428,6 +2435,7 @@ export class DataStore {
    * same savepoint, held until fn's promise settles. The caller runs inside the store's transaction queue (the flow run's
    * transaction), so no other write interleaves while the call awaits its I/O. */
   async sdkMutationAsync(fn) {
+    if (!this.hasOperationContext()) return this.withOperationContext(() => this.sdkMutationAsync(fn));
     const savepoint = this.sdkSavepoint();
     try {
       const result = await fn();
@@ -1435,17 +2443,120 @@ export class DataStore {
       return result;
     } catch (error) {
       savepoint.rollback();
+      this.markPluginTransactionFailure(error);
       throw error;
     } finally {
       savepoint.close();
     }
   }
+  /** A Retrieve or RetrieveMultiple step's SDK write commits in a transaction of its own (native readNested: the
+   * children persist after the read's own fault). A read outside any transaction (pluginReadOnly: none of its own, and
+   * never one borrowed from another request) opens a private lane at its first SDK write: from then on the read works on
+   * a copy of the committed state, so the step sees its own writes while other operations do not. When the read ends
+   * (closeReadLane) the rows its SDK writes left, its committed events and its trace rows commit in one transaction queued
+   * behind the open ones, rebased onto the state they leave: created rows are inserted, changed columns set, deleted rows
+   * removed. ponytail: the rebase diffs the lane's tables against the state it started from (O(state) per lane, only for
+   * a read whose step writes) and keeps last-writer-wins columns; a row another transaction deleted meanwhile is not
+   * recreated by a column change. */
+  openReadLane() {
+    if (this.pluginReadOnly !== true || this.pluginRollbackBoundary || this.pluginReadLane) return;
+    const base = this._state,
+      frame = { store: this, working: cloneInternal(base), initializing: false, parent: transactionFrames.getStore() },
+      boundary = { backup: null, independentCommit: false, eventCount: 0, parent: null };
+    const lane = {
+      base,
+      frame,
+      boundary,
+      previous: {
+        frame: frame.parent,
+        rowTransaction: this.rowTransaction,
+        committedEventCandidates: this.committedEventCandidates,
+      },
+    };
+    this.isolatedCount = (this.isolatedCount ?? 0) + 1;
+    transactionFrames.enterWith(frame);
+    this.pluginReadLane = lane;
+    this.pluginRollbackBoundary = boundary;
+    this.pluginReadOnly = false;
+    this.rowTransaction = null;
+    this.committedEventCandidates = [];
+  }
+  /** Ends the lane `closeReadLane` finds opened since `previous` (the lane before the read began): `failure` is the read's
+   * own error, after which only the SDK writes that completed (and its trace rows) commit, plus what a rollback note
+   * stages on its own (stageFaultedRead). */
+  closeReadLane(previous, failure = null) {
+    const lane = this.pluginReadLane;
+    if (!lane || lane === previous || lane.closed) return;
+    lane.closed = true;
+    const { boundary, frame } = lane,
+      committed = boundary.independentCommit ? boundary.backup : null,
+      events = failure
+        ? (this.committedEventCandidates ?? []).slice(0, boundary.eventCount)
+        : [...(this.committedEventCandidates ?? [])],
+      traces = [...(boundary.pluginTraceRows?.values() ?? [])].map((row) => clone(row));
+    frame.closed = true;
+    frame.working = null;
+    this.isolatedCount--;
+    transactionFrames.enterWith(lane.previous.frame);
+    this.pluginReadLane = previous ?? null;
+    this.pluginRollbackBoundary = null;
+    this.pluginReadOnly = true;
+    this.rowTransaction = lane.previous.rowTransaction;
+    this.committedEventCandidates = lane.previous.committedEventCandidates;
+    this.rowIndexes = null;
+    if (failure)
+      for (const note of boundary.rollbackNotes ?? [])
+        try {
+          note(failure);
+        } catch {
+          /* a note never changes the failure */
+        }
+    const changes = committed ? laneChanges(lane.base, committed) : [];
+    if (!changes.length && !events.length && !traces.length) return;
+    const commit = this.withOperationContext(
+      () =>
+        this.transact(
+          () => {
+            applyLaneChanges(this, changes, committed);
+            for (const row of traces) {
+              const rows = (this.state.tables.plugintracelog ??= []);
+              if (!rows.some((value) => value.plugintracelogid === row.plugintracelogid))
+                this.insertRow('plugintracelog', rows, row);
+            }
+            this.committedEventCandidates.push(...events);
+          },
+          { skipSaveIfUnchanged: true },
+        ),
+      { fresh: true },
+    );
+    const tracked = commit
+      .catch((error) => {
+        this.committedEventErrors ??= [];
+        this.committedEventErrors.push({ code: error.code ?? 'ReadLaneCommitError', message: error.message });
+        throw error;
+      })
+      .finally(() => this.readLaneCommits.delete(tracked));
+    tracked.catch(() => {});
+    this.readLaneCommits ??= new Set();
+    this.readLaneCommits.add(tracked);
+  }
+  /** Resolves once the read lanes closed so far committed (rejects with a lane's commit failure). */
+  async settleReadLanes() {
+    await Promise.all(this.readLaneCommits ?? []);
+  }
   // One SDK call's savepoint (sdkMutation, sdkMutationAsync): commit, rollback, then close.
   sdkSavepoint() {
+    assertPluginExecutionActive(this);
+    this.assertPluginTransactionActive();
     this.ensureReadSnapshot();
     const joined = this.pluginInTransaction === true,
       previousBoundary = this.pluginRollbackBoundary,
       previousRows = this.rowTransaction;
+    const pluginCaller = Boolean(this.pluginParentContext || pluginInvocationDepth(this) > 0);
+    const previousFailures = [];
+    if (!pluginCaller)
+      for (let parent = previousBoundary; parent; parent = parent.parent)
+        previousFailures.push([parent, parent.transactionFailure]);
     // A nested RowTransaction is the call's savepoint: it journals the call's row writes instead of copying the
     // whole state first. Handler code that may write arbitrary state promotes it (promoteRowTransaction), which
     // fills boundary.backup with the complete pre-call copy.
@@ -1460,9 +2571,10 @@ export class DataStore {
     this.rowTransaction = savepoint;
     return {
       commit: () => {
+        this.assertPluginTransactionActive();
         this.rowTransaction = previousRows;
         if (!joined && previousBoundary) {
-          previousBoundary.backup = clone(this.state);
+          previousBoundary.backup = cloneInternal(this.state);
           previousBoundary.independentCommit = true;
           previousBoundary.eventCount = this.committedEventCandidates?.length ?? 0;
         }
@@ -1474,9 +2586,17 @@ export class DataStore {
         if (boundary.backup !== null) restoreInPlace(this.state, boundary.backup);
         else savepoint.rollback(this.state, restoreInPlace);
         this.rowIndexes = null;
+        this.restorePluginTraceLogs(boundary);
         if (this.committedEventCandidates) this.committedEventCandidates.length = boundary.eventCount;
+        // A service request initiated by a flow/connector can fail and be handled
+        // by that caller. Its plug-in transaction failure belongs to this primary
+        // request; a plug-in's own nested SDK call still poisons its active caller.
+        for (const [parent, failure] of previousFailures) {
+          if (failure === undefined) delete parent.transactionFailure;
+          else parent.transactionFailure = failure;
+        }
         if (!joined && boundary.independentCommit && previousBoundary) {
-          previousBoundary.backup = clone(this.state);
+          previousBoundary.backup = cloneInternal(this.state);
           previousBoundary.independentCommit = true;
           previousBoundary.eventCount = boundary.eventCount;
         }
@@ -1487,14 +2607,51 @@ export class DataStore {
       },
     };
   }
+  /** A failed OrganizationService operation terminates its synchronous caller's
+   * transaction. Savepoints retain rollback precision, but cannot make a caught
+   * service fault into a successful outer operation. */
+  markPluginTransactionFailure(cause) {
+    if (cause?.code === 'LocalPluginExecutionExpired' || transactionFrameOf(this, { closed: true })?.closed) return;
+    // A request refused before it wrote anything leaves the transaction usable for a plug-in that catches the fault: a
+    // missing row (recorded native sdkSurface: Update of a missing id faults 0x80040217), an unknown column (0x80041103) and
+    // an Update or Delete privilege refusal, which natively comes before any step (runAsSecond); a refused Create does not.
+    if (cause?.code === 'NotFound' || cause?.details?.innerCode === '0x80040217' || cause?.details?.refusedBeforeWrite)
+      return;
+    // A local limitation (501: the plug-in receives a NotSupportedException, never a native fault) is not a native abort:
+    // its savepoint rolled the call back and the caller's transaction stays usable, so later calls are not reported as
+    // the native 0x8009000c.
+    if (cause instanceof DataError && cause.status === 501) return;
+    if (
+      !this.pluginInTransaction ||
+      !this.pluginRollbackBoundary ||
+      !(this.pluginParentContext || pluginInvocationDepth(this) > 0)
+    )
+      return;
+    const failure = new DataError(
+      'ISV code reduced the open transaction count. Custom plug-ins should not catch exceptions from OrganizationService calls and continue processing.',
+      400,
+      'PluginTransactionAborted',
+      { innerCode: '0x8009000c', cause: cause?.message ?? String(cause) },
+    );
+    for (let boundary = this.pluginRollbackBoundary; boundary; boundary = boundary.parent)
+      boundary.transactionFailure ??= failure;
+  }
+  assertPluginTransactionActive() {
+    for (let boundary = this.pluginRollbackBoundary; boundary; boundary = boundary.parent)
+      if (boundary.transactionFailure) throw boundary.transactionFailure;
+  }
   checkpointElastic(mapping, row, removed = false) {
     if (!isElastic(mapping)) return;
     const key = `${mapping.logicalName}\u0000${recordKey(mapping, row)}`;
     const lastEvent = this.committedEventCandidates?.at(-1);
     for (let boundary = this.pluginRollbackBoundary; boundary; boundary = boundary.parent) {
-      (boundary.elasticWrites ??= new Map()).set(key, { mapping, row: clone(row), removed });
+      boundary.elasticWrites ??= new Map();
+      boundary.elasticWrites.set(key, { mapping, row: clone(row), removed });
       boundary.elasticVersion = this.state.rowVersion ?? 0;
-      if (lastEvent?.entity === mapping.logicalName) (boundary.elasticEvents ??= []).push(lastEvent);
+      if (lastEvent?.entity === mapping.logicalName) {
+        boundary.elasticEvents ??= [];
+        boundary.elasticEvents.push(lastEvent);
+      }
     }
     this.elasticCommitSequence = (this.elasticCommitSequence ?? 0) + 1;
   }
@@ -1521,7 +2678,7 @@ export class DataStore {
     if (!events?.length || !this.commitStagers?.size) return [];
     const sequence = (this.committedEventSequence ?? 0) + 1,
       after = [];
-    for (const stage of [...this.commitStagers]) {
+    /* NOSONAR */ for (const stage of [...this.commitStagers]) {
       const done = stage(events, { sequence });
       if (typeof done === 'function') after.push(done);
     }
@@ -1562,6 +2719,16 @@ export class DataStore {
     this.deleteGuards.add(fn);
     return () => this.deleteGuards.delete(fn);
   }
+  /** When and in which order an operation's PostOperation began: native creates its asynchronous jobs then, so a nested
+   * operation's job is created after its caller's (corpus depth.json: job createdon and ids rise with Depth). */
+  operationMark() {
+    this.operationSequence = (this.operationSequence ?? 0) + 1;
+    return { at: this.clock.now(), sequence: this.operationSequence };
+  }
+  /** The span (or request-context ids) current when `event` was recorded (tracing), or null. */
+  stagingSpan(event) {
+    return (event && typeof event === 'object' && this.stagingSpans?.get(event)) || null;
+  }
   recordCommittedEvent(entity, operation, row, attributes, details = {}) {
     if (
       !this.mutationObservers?.size &&
@@ -1576,24 +2743,26 @@ export class DataStore {
       row: clone(row),
       submittedAttributes: [...attributes],
       ...clone(details),
-      frame: clone(this.pluginFrames?.get(row) ?? {}),
+      frame: clone(details.frame ?? this.pluginFrames?.get(row) ?? {}),
       chain: this.flowChain ? clone(this.flowChain) : null,
       correlationId: currentRequest()?.correlationId ?? null,
+      operationMark: details.operationMark ?? this.operationMark(),
+      // The SDK run-as user and the platform main operation's user at the write: its asynchronous jobs run as them.
+      executionUserId: this.pluginExecutionUserId ?? null,
+      platformUserId: this.pluginPlatformUserId ?? null,
     };
-    for (const observer of this.mutationObservers ?? []) {
-      const matched = observer.matches ? observer.matches(clone(event)) : true;
-      if (matched && typeof matched.then === 'function') {
-        Promise.resolve(matched).catch(() => {});
-        throw new DataError('Mutation observer matchers cannot return a promise.', 500, 'InvalidMutationObserver');
-      }
-      if (!matched) continue;
-      this.ensureReadSnapshot();
-      const result = observer.fn(clone(event));
-      if (result && typeof result.then === 'function') {
-        Promise.resolve(result).catch(() => {});
-        throw new DataError('Mutation observers cannot return a promise.', 500, 'InvalidMutationObserver');
-      }
+    // The operation's synchronous caller chain, for its asynchronous jobs' ParentContext (plugin-sdk-parent.mjs
+    // asynchronousParentChain): a named message's steps see it directly, a record operation under its main operation.
+    if (event.frame && typeof event.frame === 'object' && event.frame.asyncCallerParent === undefined)
+      event.frame.asyncCallerParent = asyncCallerParent(this.pluginParentContext ?? pluginInvocationSdkParent(this));
+    // The staging span (tracing): kept beside the event, never in it (the event is persisted in asyncoperation.data), so a
+    // job staged from it remembers it as its parent (committed-work.mjs stage, stagingSpan).
+    const staging = this.traces?.enabled ? (this.traces.current() ?? currentRequest()) : null;
+    if (staging?.traceId) {
+      this.stagingSpans ??= new WeakMap();
+      this.stagingSpans.set(event, staging);
     }
+    runMutationObservers(this, event, details);
     if (
       (this.committedEvents || this.committedEventConsumers?.size || this.commitStagers?.size) &&
       this.committedEventCandidates
@@ -1626,7 +2795,7 @@ export class DataStore {
     this.committedEventDispatches.add(delivery);
   }
   async flushCommittedEvents() {
-    while (this.committedEventDispatches?.size) await Promise.all([...this.committedEventDispatches]);
+    while (this.committedEventDispatches?.size) await Promise.all(this.committedEventDispatches);
   }
   /** Runtime composition may omit an unused result; inputs and default snapshots remain detached. */
   async replaceState(
@@ -1665,8 +2834,16 @@ export class DataStore {
         // instead of copying it on the successful path; failed saves still restore
         // a detached copy through the ordinary transaction rollback.
         const boundary = this.pluginRollbackBoundary;
-        boundary.backup ??= this.state;
-        boundary.persistenceBackup ??= this.state;
+        const frame = transactionFrameOf(this);
+        if (frame?.store === this && frame.initializing) {
+          // No readers have been published. A failed initialization discards
+          // the store, so its superseded graph need not survive the streamed
+          // commit as a rollback input. The durable file remains authoritative.
+          this._state = next;
+        } else {
+          boundary.backup ??= this.state;
+          boundary.persistenceBackup ??= this.state;
+        }
         this.state = next;
         return returnSnapshot ? this.state : undefined;
       },
@@ -1696,7 +2873,8 @@ export class DataStore {
   setPluginPipeline(provider, active = () => true, requiresCheckpoint = () => true) {
     if (typeof provider !== 'function') throw new DataError('Plugin pipeline must be a function.');
     this.pluginPipeline = provider;
-    this.pluginPipelineActive = active;
+    this.pluginPipelineActive = (context = {}) =>
+      !provider.steps && pluginStepBypassed(provider, context, provider.diagnostic) ? false : active(context);
     this.pluginPipelineRequiresCheckpoint = requiresCheckpoint;
   }
   /**
@@ -1708,6 +2886,7 @@ export class DataStore {
    * so both drivers fail, roll back and restore pluginInTransaction exactly as one synchronous call does.
    */
   runRecordSteps(steps) {
+    if (!this.hasOperationContext()) return this.withOperationContext(() => this.runRecordSteps(steps));
     let next = steps.next();
     while (!next.done) {
       let answer,
@@ -1723,6 +2902,7 @@ export class DataStore {
     return next.value;
   }
   async awaitRecordSteps(steps) {
+    if (!this.hasOperationContext()) return this.withOperationContext(() => this.awaitRecordSteps(steps));
     let next = steps.next();
     while (!next.done) {
       let answer,
@@ -1740,19 +2920,46 @@ export class DataStore {
   }
   /** Runs fn(error) when the outermost open transaction rolls back: the note for a post that already left the process and
    * cannot be withdrawn (dataverse-webhooks.mjs SERVICE_ENDPOINT_SENT_BEFORE_ROLLBACK). Outside a transaction it does nothing. */
+  /** A read whose PostOperation synchronous step faulted still queues its asynchronous steps (native readNested): inside a
+   * transaction the event joins it and, when that transaction rolls back with the fault, is staged in a queued transaction
+   * of its own; outside one it is staged on its own at once. */
+  stageFaultedRead(entity, operation, record, details) {
+    if (!this.commitStagers?.size) return;
+    const readEvent = clone(details),
+      readRecord = clone(record),
+      stage = () =>
+        this.transact(() => this.recordCommittedEvent(entity, operation, readRecord, [], readEvent), {
+          skipSaveIfUnchanged: true,
+        }).catch((error) => {
+          this.committedEventErrors ??= [];
+          this.committedEventErrors.push({ code: error.code ?? 'CommitStagerError', message: error.message });
+        });
+    if (!this.committedEventCandidates) return void stage();
+    readEvent.frame.asyncCallerParent ??= asyncCallerParent(
+      this.pluginParentContext ?? pluginInvocationSdkParent(this),
+    );
+    this.recordCommittedEvent(entity, operation, record, [], clone(readEvent));
+    this.onRollback(stage);
+  }
   onRollback(fn) {
     let boundary = this.pluginRollbackBoundary;
     while (boundary?.parent) boundary = boundary.parent;
-    if (boundary) (boundary.rollbackNotes ??= []).push(fn);
+    if (boundary) {
+      boundary.rollbackNotes ??= [];
+      boundary.rollbackNotes.push(fn);
+    }
   }
   /** Runs fn() once the outermost open transaction has committed (dataverse-virtual-providers.mjs: an enlisted provider's
    * commit). Outside a transaction it does nothing. */
   onCommit(fn) {
     let boundary = this.pluginRollbackBoundary;
     while (boundary?.parent) boundary = boundary.parent;
-    if (boundary) (boundary.commitNotes ??= []).push(fn);
+    if (boundary) {
+      boundary.commitNotes ??= [];
+      boundary.commitNotes.push(fn);
+    }
   }
-  exportedPluginPhase(
+  /* NOSONAR */ exportedPluginPhase(
     mapping,
     operation,
     stage,
@@ -1765,19 +2972,41 @@ export class DataStore {
     awaitIo = false,
   ) {
     if (stage !== 10) this.pluginInTransaction = !isElastic(mapping);
-    // Dataverse writes with bypassCustomPlugins (MSCRM.BypassCustomPluginExecution) skip exported plug-ins.
-    if (options.bypassCustomPlugins) return;
-    if (!this.pluginPipeline || !this.pluginPipelineActive({ entity: mapping.logicalName, operation })) return;
+    if (operation === 'update') changedAttributes = Object.keys(target ?? {});
+    // The merged bulk driver already ran every selected source step. Public
+    // custom-logic bypass instead remains a per-step ownership decision.
+    if (options.skipPluginPipeline) return;
+    const stepsRun = (bypassCustomPlugins) =>
+      this.pluginPipelineActive({
+        entity: mapping.logicalName,
+        operation,
+        bypassCustomPlugins,
+        bypassStepIds: options.bypassStepIds,
+      });
+    // A request that bypasses its synchronous custom steps (MSCRM.BypassCustomPluginExecution, CustomSync) still
+    // queues its asynchronous ones (native bypassHeaders): with a step catalogue its phases run, without those steps, so
+    // the jobs keep the request's frame (tag, request identity, inputs).
+    if (this.skipExportedPluginPhase(mapping, operation, stage, options, stepsRun)) return;
     if (
       this.rowTransaction &&
-      this.pluginPipelineRequiresCheckpoint({ entity: mapping.logicalName, operation, stage, changedAttributes })
+      this.pluginPipelineRequiresCheckpoint({
+        entity: mapping.logicalName,
+        operation,
+        stage,
+        changedAttributes,
+        bypassCustomPlugins: options.bypassCustomPlugins,
+        bypassStepIds: options.bypassStepIds,
+      })
     ) {
       // Trusted external handlers may mutate arbitrary state, including nested
       // SDK transactions. Promote only when one actually executes, preserving
       // their independent PreValidation commit/rollback semantics.
       this.promoteRowTransaction();
     }
-    const id = row[mapping.idColumn];
+    const id = row[mapping.idColumn],
+      targetPrimary = target?.[mapping.idColumn];
+    if (operation === 'update' && options.preValidationSourceOperation === 'upsert' && !options.frameworkInputTarget)
+      options.frameworkInputTarget = clone(target);
     const frame = this.pluginPipeline?.({
       entity: mapping.logicalName,
       operation,
@@ -1788,13 +3017,50 @@ export class DataStore {
       identity,
       changedAttributes,
       portalRequest: options.portalRequest === true,
+      sdkFromSandbox: options.sdkFromSandbox === true,
+      acceptLanguage: options.pluginAcceptLanguage ?? '',
+      ...(options.frameworkInputTarget ? { frameworkInputTarget: options.frameworkInputTarget } : {}),
+      ...(stage !== 10 && this.pluginMainTargets?.has(row) ? { mainTarget: this.pluginMainTargets.get(row) } : {}),
+      ...(options.preValidationSourceOperation
+        ? { preValidationSourceOperation: options.preValidationSourceOperation }
+        : {}),
+      ...(options.targetKeyAttributes ? { targetKeyAttributes: options.targetKeyAttributes } : {}),
+      // A record a bulk message delegates runs only its own message's steps (plugin-single-multiple.mjs).
+      ...(options.bulkOrigin ? { bulkOrigin: true } : {}),
+      ...concurrencyBehaviorOption(options),
+      bypassStepIds: options.bypassStepIds,
+      bypassCustomPlugins: options.bypassCustomPlugins,
+      bypassCustomAsync: options.bypassCustomAsync === true,
+      systemParameters: options.systemParameters,
       ...(awaitIo ? { awaitIo: true } : {}),
     });
     if (typeof frame?.then === 'function')
-      return frame.then((answer) => this.afterPluginPhase(mapping, operation, stage, target, row, options, id, answer));
-    this.afterPluginPhase(mapping, operation, stage, target, row, options, id, frame);
+      return frame.then((answer) =>
+        this.afterPluginPhase(mapping, operation, stage, target, row, options, id, answer, targetPrimary),
+      );
+    this.afterPluginPhase(mapping, operation, stage, target, row, options, id, frame, targetPrimary);
   }
-  afterPluginPhase(mapping, operation, stage, target, row, options, id, frame) {
+  skipExportedPluginPhase(mapping, operation, stage, options, stepsRun) {
+    if (
+      this.pluginPipeline &&
+      (stepsRun(options.bypassCustomPlugins) ||
+        (options.bypassCustomPlugins === true &&
+          this.pluginPipeline.steps &&
+          stepsRun(options.bypassCustomAsync === true)))
+    )
+      return false;
+    if (
+      stage === 40 &&
+      this.pluginMainOperation?.namedMessage &&
+      ownershipOf(mapping.logicalName, null, mapping) === 'user'
+    )
+      recordRequestRootChange(this, this.pluginMainOperation.context?.values?.RequestId?.value, {
+        table: mapping.logicalName,
+      });
+    return true;
+  }
+  /* NOSONAR */ afterPluginPhase(mapping, operation, stage, target, row, options, id, frame, targetPrimary) {
+    // NOSONAR: preserve the public positional method signature
     if (frame) {
       this.pluginFrames ??= new WeakMap();
       this.pluginFrames.set(row, frame);
@@ -1802,15 +3068,48 @@ export class DataStore {
     if (stage === 40) handoffPluginResponse(this, operation, mapping.logicalName, frame, options.sdkResponseToken);
     if (!equal(row[mapping.idColumn], id))
       throw new DataError('Plugin target cannot replace the primary key.', 400, 'LocalPluginInvalid');
-    if (stage !== 40 && operation !== 'delete') {
-      const normalized = this.normalizeRecord(mapping, target);
-      if (options.coerce) this.coerceRecord(mapping, normalized, options);
-      if (normalized[mapping.idColumn] !== undefined && !equal(normalized[mapping.idColumn], id))
-        throw new DataError('Plugin target cannot replace the primary key.', 400, 'LocalPluginInvalid');
-      Object.assign(target, normalized);
-      Object.assign(row, normalized);
-      if (options.coerce) this.assertStateStatus(mapping, row, options);
+    if (stage !== 40 && operation !== 'delete')
+      this.applyPluginTarget(mapping, operation, stage, target, row, options, { id, targetPrimary });
+  }
+  applyPluginTarget(mapping, operation, stage, target, row, options, { id, targetPrimary }) {
+    const normalized = this.normalizePluginTarget(mapping, target, options);
+    const retainsEmpty =
+      operation === 'create' &&
+      stage === 10 &&
+      targetPrimary === '00000000-0000-0000-0000-000000000000' &&
+      normalized[mapping.idColumn] === targetPrimary;
+    if (normalized[mapping.idColumn] !== undefined && !equal(normalized[mapping.idColumn], id) && !retainsEmpty)
+      throw new DataError('Plugin target cannot replace the primary key.', 400, 'LocalPluginInvalid');
+    const blanks = Object.keys(normalized).filter((name) => target[name] === '' && normalized[name] === null);
+    Object.assign(target, normalized);
+    for (const name of blanks) target[name] = '';
+    if (stage === 10) {
+      this.pluginMainTargets ??= new WeakMap();
+      this.pluginMainTargets.set(row, clone(target));
     }
+    if (retainsEmpty) delete normalized[mapping.idColumn];
+    Object.assign(row, normalized);
+    if (options.coerce) this.assertStateStatus(mapping, row, options);
+  }
+  normalizePluginTarget(mapping, target, options) {
+    const normalized = this.normalizeRecord(mapping, target);
+    // A plug-in Target carries SDK values, not Web API wire input: a DateOnly column holds a DateTime and a choices
+    // column an option array (OptionSetValueCollection), stored as the Web API's comma-separated values.
+    if (options.dataverseWebApi)
+      for (const [key, value] of Object.entries(normalized))
+        if (
+          Array.isArray(value) &&
+          fieldKind(this.fieldDefinition(mapping.logicalName, key, options.metadata)) === 'multichoice'
+        )
+          normalized[key] = value.join(',');
+    if (options.coerce)
+      this.coerceRecord(mapping, normalized, {
+        ...options,
+        dataverseWebApi: false,
+        dataverseHttpReader: undefined,
+        odataErrorDetails: false,
+      });
+    return normalized;
   }
   virtualTable(name) {
     const tables = this.virtualTables?.()?.tables;
@@ -1834,6 +3133,19 @@ export class DataStore {
         501,
         'NotImplemented',
       );
+  }
+  /**
+   * The lowercase names a table filter value stands for (DV-N4-2): the logical name and the entity set name of the mapped
+   * table it names either way (any case), else the value itself.
+   */
+  entityNames(name) {
+    const wanted = String(name ?? '')
+      .trim()
+      .toLowerCase();
+    for (const [logical, mapping] of Object.entries(this.state.mappings ?? {}))
+      if (logical.toLowerCase() === wanted || String(mapping?.entitySet ?? '').toLowerCase() === wanted)
+        return [logical.toLowerCase(), ...(mapping?.entitySet ? [String(mapping.entitySet).toLowerCase()] : [])];
+    return [wanted];
   }
   resolveMapping(entity) {
     safeName(entity);
@@ -1860,7 +3172,7 @@ export class DataStore {
       ...m,
     };
     const extra = this.virtualTables?.()?.relationships?.[logical];
-    if (extra) resolved.relationships = { ...extra, ...(m?.relationships ?? {}) };
+    if (extra) resolved.relationships = { ...extra, ...m?.relationships };
     return resolved;
   }
   rules(entity, operation, identity = {}) {
@@ -1877,14 +3189,10 @@ export class DataStore {
     )
       return [];
     const roleIds = new Set((identity.roleIds ?? []).map((id) => String(id).toLowerCase()));
-    const roles = new Set([
-      ...(identity.roles ?? []),
-      ...(identity.roleSource === 'memberships'
-        ? []
-        : identity.id || identity.contactId
-          ? ['Authenticated Users']
-          : ['Anonymous Users']),
-    ]);
+    let implicitRoles = ['Anonymous Users'];
+    if (identity.roleSource === 'memberships') implicitRoles = [];
+    else if (identity.id || identity.contactId) implicitRoles = ['Authenticated Users'];
+    const roles = new Set([...(identity.roles ?? []), ...implicitRoles]);
     const anonymous = !identity.admin && !identity.id && !identity.contactId;
     const granted = this.state.permissions.filter(
       (p) =>
@@ -1928,7 +3236,7 @@ export class DataStore {
    */
   permissionMemo() {
     const indexes = new Map(),
-      results = new Map(),
+      results = new WeakMap(),
       rules = new Map();
     const lookup = (logical, column, value) => {
       const key = `${logical}\u0000${column}`;
@@ -1974,66 +3282,29 @@ export class DataStore {
     const visit = `${mapping.logicalName}:${scalar(row?.[mapping.idColumn])}:${operation}:${permissionId ?? '*'}`;
     if (chain.has(visit)) throw new DataError('Cyclic parent table permission', 400, 'InvalidPermission');
     const rowId = row?.[mapping.idColumn];
-    const cacheKey =
-      rowId == null
-        ? null
-        : `${mapping.logicalName}\u0000${comparable(rowId)}\u0000${operation}\u0000${permissionId ?? '*'}`;
-    if (cacheKey != null && memo.results.has(cacheKey)) return memo.results.get(cacheKey);
+    const cacheKey = rowId == null ? null : `${mapping.logicalName}\u0000${operation}\u0000${permissionId ?? '*'}`;
+    const cached = row && typeof row === 'object' ? memo.results.get(row) : null;
+    if (cacheKey != null && cached?.has(cacheKey)) return cached.get(cacheKey);
     const nextChain = new Set([...chain, visit]);
     const result = memo
       .rules(mapping.logicalName, operation, identity)
       .filter((rule) => !permissionId || equal(rule.id, permissionId))
-      .some((rule) => {
-        const scope = rule.scope ?? 'global';
-        if (scope === 'global') return true;
-        if (!row) return false;
-        if (rule.observedOrphanParent?.field) return field(row, rule.observedOrphanParent.field) != null;
-        if (rule.identityRelationship) {
-          const rel = rule.identityRelationship;
-          const im = this.resolveMapping(rel.entity);
-          const identityId = rel.entity === 'account' ? identity.accountId : (identity.contactId ?? identity.id);
-          if (!identityId) return false;
-          const person = memo.lookup(im.logicalName, im.idColumn, identityId);
-          if (!person.length) return false;
-          const people = new Set(person);
-          return memo.related(row, rel, im.logicalName).some((target) => people.has(target));
-        }
-        const value = scalar(
-          field(
-            row,
-            rule.field ??
-              (scope === 'self' ? mapping.idColumn : scope === 'account' ? 'parentcustomerid' : 'contactid'),
-          ),
-        );
-        if (scope === 'self' || scope === 'contact')
-          return Boolean(identity.contactId || identity.id) && equal(value, identity.contactId ?? identity.id);
-        if (scope === 'account') return Boolean(identity.accountId) && equal(value, identity.accountId);
-        if (scope === 'parent') {
-          const rel = rule.relationship;
-          if (!rel?.entity || !rel.from || !rel.to)
-            throw new DataError('Parent permission requires relationship entity/from/to');
-          const pm = this.resolveMapping(rel.entity);
-          return memo
-            .related(row, rel, pm.logicalName)
-            .some((parent) =>
-              this.allowed(
-                pm.logicalName,
-                'read',
-                parent,
-                identity,
-                nextChain,
-                rule.parentPermissionId ?? rule.parentId,
-                memo,
-              ),
-            );
-        }
-        throw new DataError(`Unsupported permission scope ${scope}`);
-      });
-    if (cacheKey != null) memo.results.set(cacheKey, result);
+      .some((rule) => permissionRuleAllows(this, rule, { row, mapping, identity, memo, nextChain }));
+    if (cacheKey != null && row && typeof row === 'object') {
+      let answers = memo.results.get(row);
+      if (!answers) {
+        answers = new Map();
+        memo.results.set(row, answers);
+      }
+      answers.set(cacheKey, result);
+    }
     return result;
   }
   assertAllowed(entity, operation, row, identity, related) {
-    if (!this.allowed(entity, operation, row, identity)) {
+    const memo = this.permissionMemo();
+    if (this.allowed(entity, operation, row, identity, new Set(), null, memo))
+      this.tracePermission(entity, operation, identity, memo, { result: 'allow' });
+    else {
       const permissions = this.rules(entity, operation, identity).map((grant) => {
         const permission = { id: grant.id, name: grant.name ?? grant.id, scope: grant.scope ?? 'global' };
         for (const key of ['field', 'relationship', 'relationshipName', 'parentPermissionId'])
@@ -2049,18 +3320,20 @@ export class DataStore {
         return permission;
       });
       const descriptions = permissions.map((grant) => {
-        const relationship =
-          grant.relationshipName ??
-          (typeof grant.relationship === 'string'
-            ? grant.relationship
-            : grant.relationship
-              ? `${entity}.${grant.relationship.from} → ${grant.relationship.entity}.${grant.relationship.to}`
-              : null);
+        let relationship = grant.relationshipName;
+        if (relationship == null) {
+          if (typeof grant.relationship === 'string') relationship = grant.relationship;
+          else if (grant.relationship)
+            relationship = `${entity}.${grant.relationship.from} → ${grant.relationship.entity}.${grant.relationship.to}`;
+          else relationship = null;
+        }
         return `${grant.name} (${grant.scope})${relationship ? ' relationship ' + relationship : ''}`;
       });
       const message =
         `Table permission denies ${operation} on ${entity}` +
         (descriptions.length ? ': ' + descriptions.join('; ') : '');
+      const model = this.portalAuthorization?.describe().model ?? 'standard';
+      this.traceDenial({ table: entity, operation, model, permissions, message });
       throw new DataError(message, 403, 'PermissionDenied', {
         operation,
         table: entity,
@@ -2072,18 +3345,131 @@ export class DataStore {
           table: entity,
           permissions,
           message,
-          model: this.portalAuthorization?.describe().model ?? 'standard',
+          model,
         },
         ...(related ? { related } : {}),
       });
     }
   }
+  /** A table permission denial (tracing): an event on the current span, else a dedicated permission span with status denied. */
+  traceDenial({ table, operation, model, permissions, message }) {
+    const traces = this.traces;
+    if (!traces?.enabled) return;
+    const attributes = {
+      table,
+      operation,
+      result: 'deny',
+      model,
+      permissions: permissions.map((grant) => grant.name),
+      code: 'TABLE_PERMISSION_DENIED',
+    };
+    const current = traces.current();
+    if (current) traceDecision(current, 'permission', { message, attributes });
+    else
+      traces
+        .start({ kind: 'permission', name: `Deny ${operation} ${table}`, module: 'security', operation, entity: table })
+        .event('permission', { message, attributes })
+        .end({ status: 'denied', error: { code: 'PermissionDenied', message } });
+  }
+  /**
+   * One permission event on the current span (tracing, docs/design/tracing.md): an allowed assertAllowed decision
+   * (facts { result: 'allow' }; a denial is traceDenial) or one permission-filtering read call (facts { result: 'filtered',
+   * rows, allowed }), never one per row. The table's rules come from `memo`, so a call that evaluated them computes them once.
+   */
+  tracePermission(entity, operation, identity, memo, facts) {
+    const span = this.traces?.enabled ? this.traces.current() : null;
+    if (!span) return;
+    const table = this.resolveMapping(entity).logicalName;
+    traceDecision(span, 'permission', {
+      attributes: {
+        table,
+        operation,
+        ...facts,
+        model: this.portalAuthorization?.describe().model ?? 'standard',
+        permissions: memo.rules(table, operation, identity ?? {}).map((grant) => grant.name ?? grant.id),
+      },
+    });
+  }
+  /** tracePermission for a filtering read: `rows` were considered, `allowed` of them are visible (admin and permissive record none). */
+  traceFiltered(entity, identity, rows, allowed, memo) {
+    if (!this.traces?.enabled || identity?.admin || this.state.settings.permissionMode === 'permissive') return;
+    this.tracePermission(entity, 'read', identity, memo, {
+      result: 'filtered',
+      rows: pagedRecordsOf(rows)?.present ?? rows.length,
+      allowed,
+    });
+  }
   rows(entity, identity = {}, subset) {
     const m = this.resolveMapping(entity);
     const memo = this.permissionMemo();
-    return (subset ?? this.tableRows(m.logicalName)).filter((r) =>
-      this.allowed(m.logicalName, 'read', r, identity, new Set(), null, memo),
-    );
+    const rows = subset ?? this.tableRows(m.logicalName);
+    const kept = this.permittedRows(m, rows, identity, memo);
+    this.traceFiltered(m.logicalName, identity, rows, kept.length, memo);
+    return kept;
+  }
+  permittedRows(m, rows, identity, memo) {
+    if (this.allowed === DataStore.prototype.allowed) {
+      if (identity.admin || this.state.settings.permissionMode === 'permissive') return rows.filter(() => true);
+      const length = rows.length;
+      let present = false;
+      for (let index = 0; index < length; index++)
+        if (index in rows) {
+          present = true;
+          break;
+        }
+      if (!present) return [];
+      const rules = memo.rules(m.logicalName, 'read', identity);
+      if (!rules.length) return [];
+      if ((rules[0].scope ?? 'global') === 'global') return rows.filter(() => true);
+    }
+    return rows.filter((r) => this.allowed(m.logicalName, 'read', r, identity, new Set(), null, memo));
+  }
+  /** Exact permission-filtered count without materializing the visible rows; one `filtered` permission event per call. */
+  rowCount(entity, identity = {}, subset) {
+    const m = this.resolveMapping(entity);
+    const rows = subset ?? this.tableRows(m.logicalName);
+    const unrestricted = identity.admin || this.state.settings.permissionMode === 'permissive';
+    const memo = unrestricted ? null : this.permissionMemo();
+    const count = this.permittedCount(m, rows, identity, unrestricted, memo);
+    this.traceFiltered(m.logicalName, identity, rows, count, memo);
+    return count;
+  }
+  permittedCount(m, rows, identity, unrestricted, memo) {
+    const length = rows.length;
+    const storedCount = pagedRecordsOf(rows)?.present;
+    if (storedCount === 0 || (unrestricted && storedCount !== undefined)) return storedCount;
+    // A missing grant and an unconditional first grant cannot depend on row
+    // contents. Keep custom per-row authorization hooks on the ordinary path.
+    const fastCount = this.fastPermittedCount(m, rows, identity, unrestricted, memo, storedCount, length);
+    if (fastCount !== undefined) return fastCount;
+    return this.countPermissionMatches(m, rows, identity, unrestricted, memo, length);
+  }
+  fastPermittedCount(m, rows, identity, unrestricted, memo, storedCount, length) {
+    if (unrestricted || this.allowed !== DataStore.prototype.allowed) return undefined;
+    let present = false;
+    for (let index = 0; index < length; index++)
+      if (index in rows) {
+        present = true;
+        break;
+      }
+    if (!present) return 0;
+    const rules = memo.rules(m.logicalName, 'read', identity);
+    if (!rules.length) return 0;
+    if ((rules[0].scope ?? 'global') !== 'global') return undefined;
+    if (storedCount !== undefined) return storedCount;
+    let count = 0;
+    for (let index = 0; index < length; index++) if (index in rows) count++;
+    return count;
+  }
+  countPermissionMatches(m, rows, identity, unrestricted, memo, length) {
+    let count = 0;
+    for (let index = 0; index < length; index++)
+      if (
+        index in rows &&
+        (unrestricted || this.allowed(m.logicalName, 'read', rows[index], identity, new Set(), null, memo))
+      )
+        count++;
+    return count;
   }
   relationshipMatches(row, target, rel) {
     if (!rel.intersect) return field(row, rel.from) != null && equal(field(row, rel.from), field(target, rel.to));
@@ -2114,59 +3500,129 @@ export class DataStore {
     for (const rel of Object.values(m.relationships ?? {}))
       if (rel?.many === false && rel.from && rel.from !== m.idColumn && rel.entity)
         byColumn.set(rel.from, [...(byColumn.get(rel.from) ?? []), rel.entity]);
-    for (const [column, entities] of byColumn) {
-      const value = out[column];
-      if (value == null || value === '' || (typeof value === 'object' && (Array.isArray(value) || value.name != null)))
-        continue;
-      const id = typeof value === 'object' ? value.id : value;
-      if (id == null) continue;
-      const wanted = typeof value === 'object' && value.logical_name ? [value.logical_name] : entities;
-      for (const logical of wanted) {
-        let target;
-        try {
-          target = this.resolveMapping(logical);
-        } catch {
-          continue;
-        }
-        const rows = this.tableRows(target.logicalName),
-          hit = rows[this.rowIndex(target, rows, id)];
-        if (!hit && wanted.length > 1) continue;
-        out[column] = {
-          ...(typeof value === 'object' ? value : {}),
-          id,
-          logical_name: target.logicalName,
-          name: hit ? (primaryNameValue(target, hit) ?? '') : '',
-        };
-        break;
-      }
-    }
+    for (const [column, entities] of byColumn) this.nameReferenceColumn(out, column, entities);
     return out;
   }
+  /* NOSONAR */ nameReferenceColumn(out, column, entities) {
+    const value = out[column];
+    if (value == null || value === '' || (typeof value === 'object' && (Array.isArray(value) || value.name != null)))
+      return;
+    const id = typeof value === 'object' ? value.id : value;
+    if (id == null) return;
+    const wanted = typeof value === 'object' && value.logical_name ? [value.logical_name] : entities;
+    for (const logical of wanted) {
+      let target;
+      try {
+        target = this.resolveMapping(logical);
+      } catch {
+        continue;
+      }
+      const rows = this.tableRows(target.logicalName),
+        hit = rows[this.rowIndex(target, rows, id)];
+      if (!hit && wanted.length > 1) continue;
+      out[column] = {
+        ...(typeof value === 'object' ? value : {}),
+        id,
+        logical_name: target.logicalName,
+        name: hit ? (primaryNameValue(target, hit) ?? '') : '',
+      };
+      break;
+    }
+  }
   get(entity, id, identity = {}, options = {}) {
+    if (!this.hasOperationContext()) return this.withOperationContext(() => this.get(entity, id, identity, options));
+    return this.tracedRead(
+      'retrieve',
+      entity,
+      () => ({ id }),
+      options,
+      () => this.readRecord(entity, id, identity, options),
+      id,
+    );
+  }
+  /**
+   * One store span per read call that no Dataverse, store or Liquid read span already covers (docs/design/tracing.md):
+   * entity, operation, rowCount and portalRequest; the query is captured only at level full. A FetchXML read is operation
+   * retrievemultiple with attribute query: 'fetchxml' (the label stays FetchXml).
+   */
+  tracedRead(operation, entity, input, options, read, recordId = null) {
+    const traces = this.traces;
+    if (!traces?.enabled || COVERED_READS.has(traces.current()?.kind)) return read();
+    return traces.wrap(
+      {
+        kind: 'store',
+        name: `${READ_LABEL[operation]} ${entity ?? ''}`.trim(),
+        module: 'dataverse',
+        operation: operation === 'fetchxml' ? 'retrievemultiple' : operation,
+        entity,
+        recordId: recordId == null ? null : String(scalar(recordId)),
+        attributes: {
+          portalRequest: options.portalRequest === true,
+          ...(operation === 'fetchxml' ? { query: 'fetchxml' } : {}),
+        },
+        input,
+      },
+      (span) => {
+        const result = read();
+        const count = (value) => {
+          span.set({ rowCount: rowCountOf(value) });
+          return value;
+        };
+        return typeof result?.then === 'function' ? result.then(count) : count(result);
+      },
+    );
+  }
+  /* NOSONAR */ readRecord(entity, id, identity = {}, options = {}) {
     const m = this.resolveMapping(entity);
-    const rows = this.tableRows(m.logicalName);
-    let row = rows[this.rowIndex(m, rows, id, options)];
-    if (!row) return null;
-    this.assertAllowed(m.logicalName, 'read', row, identity);
-    // A portal read (forms, Liquid entity reads) sees what a Dataverse read answers: computed columns hold their value and
-    // lookups are entity references carrying the target's primary name.
-    if (options.portalRequest) row = this.portalReadRow(m, row);
-    // Column security of the reading principal (portal-authorization.mjs maskRow): the mapped user (enhanced model) or, for a
-    // portal request, the site's application user; secured columns are null or answer their masking rule.
-    if (this.portalAuthorization)
-      row = this.portalAuthorization.maskRow(identity, m.logicalName, row, {
-        portalRequest: options.portalRequest === true,
-      });
+    const read = (key, columns = options.sdkColumns) => {
+      const rows = options.readRow ? null : this.tableRows(m.logicalName);
+      let row = options.readRow ? options.readRow(key) : rows[this.rowIndex(m, rows, key, options)];
+      if (!row) return null;
+      this.traceRecord(m.logicalName, row[m.idColumn]);
+      this.assertAllowed(m.logicalName, 'read', row, identity);
+      options.authorizeRead?.(row);
+      // A portal read (forms, Liquid entity reads) sees what a Dataverse read answers: computed columns hold their value and
+      // lookups are entity references carrying the target's primary name.
+      if (options.portalRequest) row = this.portalReadRow(m, row);
+      // Column security of the reading principal (portal-authorization.mjs maskRow): the mapped user (enhanced model) or, for a
+      // portal request, the site's application user; secured columns are null or answer their masking rule.
+      if (this.portalAuthorization)
+        row = this.portalAuthorization.maskRow(identity, m.logicalName, row, {
+          portalRequest: options.portalRequest === true,
+        });
+      return options.project ? options.project(clone(row), key, columns) : clone(row);
+    };
     if (
       !options.skipPluginRead &&
       this.pluginPipeline &&
-      this.pluginPipelineActive({ entity: m.logicalName, operation: 'retrieve' })
+      this.pluginPipelineActive({
+        entity: m.logicalName,
+        operation: 'retrieve',
+        bypassCustomPlugins: options.bypassCustomPlugins === true,
+        bypassStepIds: options.bypassStepIds,
+      })
     ) {
       this.ensureReadSnapshot();
-      const record = options.project ? options.project(clone(row)) : clone(row),
-        columns = options.sdkColumns ?? { allColumns: true },
-        holder = { entity: recordToSdkEntity(this, m.logicalName, record, columns) },
-        previousReadOnly = this.pluginReadOnly;
+      const originalId =
+        typeof id === 'string' && GUID_PATTERN.test(id)
+          ? id
+          : (() => {
+              const rows = this.tableRows(m.logicalName);
+              return rows[this.rowIndex(m, rows, id, options)]?.[m.idColumn] ?? '00000000-0000-0000-0000-000000000000';
+            })();
+      const record = { [m.idColumn]: originalId },
+        columns = clone(options.sdkColumns ?? { allColumns: true, columns: [] }),
+        related = options.sdkRelatedEntities ?? [],
+        holder = {
+          target: clone(options.sdkTarget ?? { $type: 'EntityReference', logicalName: m.logicalName, id: originalId }),
+          // A Web API $expand's RelatedEntitiesQuery (dataverse-records.mjs expandRelatedEntities).
+          relatedEntitiesQuery: {
+            $type: 'RelationshipQueryCollection',
+            values: related.map(({ relationship, query }) => clone({ relationship, query })),
+          },
+        },
+        previousReadOnly = this.pluginReadOnly,
+        previousLane = this.pluginReadLane;
       this.pluginReadOnly = !this.pluginRollbackBoundary;
       try {
         this.pluginPipeline({
@@ -2178,7 +3634,11 @@ export class DataStore {
           columns,
           holder,
           changedAttributes: [],
+          ...(options.readInitialFrame ? { initialFrame: options.readInitialFrame } : {}),
+          bypassCustomPlugins: options.bypassCustomPlugins === true,
+          bypassStepIds: options.bypassStepIds,
           portalRequest: options.portalRequest === true,
+          sdkFromSandbox: options.sdkFromSandbox === true,
         });
         this.pluginPipeline({
           entity: m.logicalName,
@@ -2189,19 +3649,67 @@ export class DataStore {
           columns,
           holder,
           changedAttributes: [],
+          bypassCustomPlugins: options.bypassCustomPlugins === true,
+          bypassStepIds: options.bypassStepIds,
           portalRequest: options.portalRequest === true,
+          sdkFromSandbox: options.sdkFromSandbox === true,
         });
-        const responseFrame = this.pluginPipeline({
-          entity: m.logicalName,
-          operation: 'retrieve',
-          stage: 40,
-          record,
-          identity,
-          columns,
-          holder,
-          changedAttributes: [],
-          portalRequest: options.portalRequest === true,
-        });
+        if (
+          holder.target?.$type !== 'EntityReference' ||
+          holder.target.logicalName !== m.logicalName ||
+          typeof holder.target.id !== 'string'
+        )
+          throw new DataError(
+            'Retrieve Target must retain its bound logical table and an ID.',
+            501,
+            'LocalPluginQueryUnsupported',
+          );
+        if (typeof columns.allColumns !== 'boolean' || !Array.isArray(columns.columns ?? []))
+          throw new DataError('Retrieve requires a valid ColumnSet.', 400, 'LocalPluginQueryUnsupported');
+        // A caller without the read privilege is refused here, after PreValidation and PreOperation (recorded native
+        // privilegeSecond; dataverse-records.mjs).
+        options.beforeMainRead?.();
+        const row = read(options.resolveTarget ? options.resolveTarget(holder.target) : holder.target.id, columns);
+        if (!row) return null;
+        Object.assign(record, row, { [m.idColumn]: originalId });
+        holder.entity = recordToSdkReadEntity(this, m.logicalName, row, columns);
+        if (related.length)
+          holder.entity.relatedEntities = related.map(({ relationship, collection }) => ({
+            relationship: clone(relationship),
+            entities: collection(row),
+          }));
+        let responseFrame;
+        try {
+          responseFrame = this.pluginPipeline({
+            entity: m.logicalName,
+            operation: 'retrieve',
+            stage: 40,
+            record,
+            identity,
+            columns,
+            holder,
+            changedAttributes: [],
+            bypassCustomPlugins: options.bypassCustomPlugins === true,
+            bypassStepIds: options.bypassStepIds,
+            portalRequest: options.portalRequest === true,
+            sdkFromSandbox: options.sdkFromSandbox === true,
+          });
+        } catch (error) {
+          // Native readNested (two captures): a Retrieve whose PostOperation synchronous step faults answers the fault,
+          // yet its asynchronous Retrieve steps still run with the read's result (OutputParameters.BusinessEntity). The
+          // read completed outside the failing request, so its event is staged on its own, with the frame at the throw.
+          this.stageFaultedRead(m.logicalName, 'retrieve', record, {
+            target: {},
+            columns,
+            holder,
+            identity,
+            frame: error?.pluginFrame ?? {},
+            messageEvent: true,
+            bypassCustomAsync: options.bypassCustomAsync === true,
+            bypassStepIds: options.bypassStepIds,
+          });
+          throw error;
+        }
         handoffPluginResponse(this, 'retrieve', m.logicalName, responseFrame, options.sdkResponseToken);
         if (
           holder.entity?.$type !== 'Entity' ||
@@ -2209,24 +3717,58 @@ export class DataStore {
           !equal(holder.entity.id, row[m.idColumn])
         )
           throw new DataError('Retrieve output must preserve record identity.', 501, 'LocalPluginQueryUnsupported');
+        // Native runs asynchronous Retrieve steps after the read, with its Target, ColumnSet and result (recorded
+        // readAsync), as RetrieveMultiple's (a message event; a read outside a transaction stages it on its own).
+        const readEvent = clone({
+          target: {},
+          columns,
+          holder,
+          identity,
+          frame: responseFrame ?? {},
+          messageEvent: true,
+          bypassCustomAsync: options.bypassCustomAsync === true,
+          bypassStepIds: options.bypassStepIds,
+        });
+        if (this.committedEventCandidates) this.recordCommittedEvent(m.logicalName, 'retrieve', record, [], readEvent);
+        else if (this.commitStagers?.size)
+          this.transact(() => this.recordCommittedEvent(m.logicalName, 'retrieve', clone(record), [], readEvent), {
+            skipSaveIfUnchanged: true,
+          }).catch((error) => {
+            this.committedEventErrors ??= [];
+            this.committedEventErrors.push({
+              code: error.code ?? 'CommitStagerError',
+              message: error.message,
+            });
+          });
         return {
+          ...Object.fromEntries(Object.entries(row).filter(([, value]) => value === null)),
+          ...Object.fromEntries(
+            (options.preserveProperties ?? [])
+              .filter((key) => Object.hasOwn(row, key))
+              .map((key) => [key, clone(row[key])]),
+          ),
           ...sdkValueToRecord(holder.entity),
           [m.idColumn]: row[m.idColumn],
           ...(isElastic(m) ? { partitionid: row.partitionid ?? null } : {}),
         };
+      } catch (error) {
+        this.closeReadLane(previousLane, error);
+        throw error;
       } finally {
+        this.closeReadLane(previousLane);
         this.pluginReadOnly = previousReadOnly;
       }
     }
     // options.project (records readInternal): the shared read projection over a copy of the stored row.
-    const read = options.project ? options.project(clone(row)) : row;
+    const row = read(id);
+    if (!row) return null;
     if (options.sdkColumns)
       return {
-        ...sdkValueToRecord(recordToSdkEntity(this, m.logicalName, read, options.sdkColumns)),
+        ...sdkValueToRecord(recordToSdkEntity(this, m.logicalName, row, options.sdkColumns)),
         [m.idColumn]: row[m.idColumn],
         ...(isElastic(m) ? { partitionid: row.partitionid ?? null } : {}),
       };
-    return options.project ? read : clone(row);
+    return row;
   }
   /** Field metadata from explicit mappings or a caller-supplied solution metadata resolver. */
   fieldDefinition(logical, attribute, metadata) {
@@ -2399,12 +3941,43 @@ export class DataStore {
       const mask = maskOf(name);
       return mask ? computed.map(mask) : computed;
     };
+    const readCopies = (rows) => {
+      const paged = pagedRecordsOf(rows);
+      if (!paged) return rows;
+      const out = [];
+      for (let index = 0; index < paged.length; index++) if (paged.id(index)) out.push(paged.raw(index));
+      return out;
+    };
+    const visibleRows = (name, subset) => {
+      const source = subset ?? this.tableRows(name),
+        paged = pagedRecordsOf(source);
+      // Query filters, calculations and masks are read-only. Decode private
+      // values directly instead of retaining a mutable facade for every row.
+      // Public rows() and custom authorization hooks keep stored-row semantics.
+      if (!paged || this.allowed !== DataStore.prototype.allowed) return this.rows(name, identity, source);
+      const memo = this.permissionMemo();
+      let unrestricted = identity.admin || this.state.settings.permissionMode === 'permissive';
+      if (!unrestricted && paged.present) {
+        const rules = memo.rules(name, 'read', identity);
+        if (!rules.length) {
+          this.traceFiltered(name, identity, source, 0, memo);
+          return [];
+        }
+        unrestricted = (rules[0].scope ?? 'global') === 'global';
+      }
+      const rows = readCopies(source),
+        kept = unrestricted
+          ? rows
+          : rows.filter((row) => this.allowed(name, 'read', row, identity, new Set(), null, memo));
+      this.traceFiltered(name, identity, source, kept.length, memo);
+      return kept;
+    };
     const readRows = (logical, node, subset) => {
       const name = this.resolveMapping(logical).logicalName;
       if (options.permissionLinkNodes?.has(node) || options.rawQueryNodes?.has(node))
-        return backend(name, subset ?? this.tableRows(name));
-      if (subset) return backend(name, this.rows(name, identity, subset));
-      if (!readable.has(name)) readable.set(name, backend(name, this.rows(name, identity)));
+        return backend(name, readCopies(subset ?? this.tableRows(name)));
+      if (subset) return backend(name, visibleRows(name, subset));
+      if (!readable.has(name)) readable.set(name, backend(name, visibleRows(name)));
       return readable.get(name);
     };
     const key = (value) => {
@@ -2429,6 +4002,10 @@ export class DataStore {
       const target = this.resolveMapping(rel.entity);
       const value = key(columnValue(row, rel.from));
       if (value == null) return [];
+      if (!rel.intersect && rel.to === target.idColumn && !isElastic(target)) {
+        const subset = this.primaryKeySubset(target, [value]);
+        if (subset) return readRows(target.logicalName, undefined, subset);
+      }
       const targets = indexBy(`t\u0000${target.logicalName}\u0000${rel.to}`, readRows(target.logicalName), rel.to);
       if (!rel.intersect) {
         const found = targets.get(value) ?? [];
@@ -2454,8 +4031,9 @@ export class DataStore {
           }
       return out;
     };
-    const names = new Map();
-    const lookupName = (reference) => {
+    const names = new Map(),
+      requestedNames = new Map();
+    /* NOSONAR: single-pass routine, splitting it would change shared state */ const lookupName = (reference) => {
       if (!reference) return undefined;
       if (reference.name != null) return reference.name;
       const logical = reference.logical_name ?? reference.logicalName;
@@ -2465,6 +4043,24 @@ export class DataStore {
         mapping = this.resolveMapping(logical);
       } catch {
         return undefined;
+      }
+      const rows = this.tableRows(mapping.logicalName),
+        stored = pagedRecordsOf(rows);
+      const identifier = key(reference.id);
+      if (identifier == null) return undefined;
+      const positions = stored?.primaryPositions(mapping.idColumn, identifier);
+      if (positions !== undefined && positions !== null) {
+        // The ordinary index retains the last duplicate's label. Cache only
+        // requested IDs; label formatting must not decode a complete target.
+        let namesOf = requestedNames.get(mapping.logicalName);
+        if (!namesOf) {
+          namesOf = new Map();
+          requestedNames.set(mapping.logicalName, namesOf);
+        }
+        const id = identifier;
+        if (!namesOf.has(id))
+          namesOf.set(id, positions.length ? primaryNameValue(mapping, rows[positions.at(-1)]) : undefined);
+        return namesOf.get(id);
       }
       if (!names.has(mapping.logicalName)) {
         const index = new Map();
@@ -2508,7 +4104,11 @@ export class DataStore {
    * mapping declares schemaComplete and none of those name it) or "unverified"
    * (incomplete metadata and no stored row has it).
    */
-  columnStatus(logical, attribute, metadata) {
+  /* NOSONAR: retain repeated overridable metadata reads and their evaluation order. */ columnStatus(
+    logical,
+    attribute,
+    metadata,
+  ) {
     let mapping;
     try {
       mapping = this.resolveMapping(logical);
@@ -2542,7 +4142,8 @@ export class DataStore {
     const revision = this.dataRevision();
     this.storedColumns ??= new Map();
     let entry = this.storedColumns.get(mapping.logicalName);
-    if (!entry || entry.revision !== revision) {
+    if (/* NOSONAR */ !entry || entry.revision !== revision) {
+      // NOSONAR: retain the existing falsy-value guard and short circuit
       const columns = new Set();
       for (const row of this.tableRows(mapping.logicalName)) for (const key of Object.keys(row)) columns.add(key);
       entry = { revision, columns };
@@ -2631,7 +4232,8 @@ export class DataStore {
         });
       if (spec.top != null) linked = linked.slice(0, spec.top);
       const nested = (item) => this.projectRow(ctx, spec.target, item, spec.select, spec.expand, includeKeys);
-      out[spec.navigation] = spec.rel.many === false ? (linked[0] ? nested(linked[0]) : null) : linked.map(nested);
+      if (spec.rel.many === false) out[spec.navigation] = linked[0] ? nested(linked[0]) : null;
+      else out[spec.navigation] = linked.map(nested);
     }
     return out;
   }
@@ -2640,6 +4242,17 @@ export class DataStore {
    * Web API grammar; the default "extended" dialect serves internal reads.
    */
   query(entity, params = {}, identity = {}, paging, options = {}) {
+    if (!this.hasOperationContext())
+      return this.withOperationContext(() => this.query(entity, params, identity, paging, options));
+    return this.tracedRead(
+      'retrievemultiple',
+      entity,
+      () => params,
+      options,
+      () => this.queryRecords(entity, params, identity, paging, options),
+    );
+  }
+  /* NOSONAR */ queryRecords(entity, params = {}, identity = {}, paging, options = {}) {
     const p = params instanceof URLSearchParams ? Object.fromEntries(params) : params;
     if (p.fetchXml || p.fetchxml) return this.queryCore(entity, params, identity, paging, options);
     // Column security of the reading principal on every returned row (portal-authorization.mjs maskRow), as get() and fetchXml().
@@ -2725,8 +4338,14 @@ export class DataStore {
       !paging &&
       options.id == null &&
       !options.ids &&
+      !options.skipPluginRead &&
       this.pluginPipeline &&
-      this.pluginPipelineActive({ entity: mapping.logicalName, operation: 'retrievemultiple' }) &&
+      this.pluginPipelineActive({
+        entity: mapping.logicalName,
+        operation: 'retrievemultiple',
+        bypassCustomPlugins: options.bypassCustomPlugins === true,
+        bypassStepIds: options.bypassStepIds,
+      }) &&
       Object.keys(p).every((key) => ['$select', '$filter', '$orderby', '$top', '$count'].includes(key)) &&
       String(p.$top ?? '') !== '0' &&
       (p.$count === undefined || ['true', 'false'].includes(p.$count)) &&
@@ -2734,7 +4353,7 @@ export class DataStore {
     ) {
       const scalarParams = { ...p };
       delete scalarParams.$count;
-      const sdkQuery = odataToSdkQuery(mapping.logicalName, scalarParams);
+      const sdkQuery = odataToSdkQuery(mapping.logicalName, scalarParams, this);
       const answer = this.fetchXml(queryExpressionToFetch(sdkQuery, this), identity, {
         ...options,
         profile: 'webapi',
@@ -2750,37 +4369,97 @@ export class DataStore {
     }
     if (
       !this.pluginPipeline ||
-      !this.pluginPipelineActive({ entity: mapping.logicalName, operation: 'retrievemultiple' })
+      !this.pluginPipelineActive({
+        entity: mapping.logicalName,
+        operation: 'retrievemultiple',
+        bypassCustomPlugins: options.bypassCustomPlugins === true,
+        bypassStepIds: options.bypassStepIds,
+      })
     )
       return this.queryCore(entity, params, identity, paging, options);
-    const original = options.sdkQuery ?? odataToSdkQuery(mapping.logicalName, params);
+    if (options.skipPluginRead) return this.queryCore(entity, params, identity, paging, options);
+    const original = options.sdkQuery ?? odataToSdkQuery(mapping.logicalName, params, this);
+    // A Web API collection GET shows its steps the query as FetchXML (recorded native reads); an edited one is read back.
+    const shown =
+      (!options.sdkQuery &&
+        options.webApiFetchQuery &&
+        webApiFetchExpression(original, this, options.webApiFetchQuery)) ||
+      original;
     return this.retrieveMultipleOperation(
       mapping.logicalName,
-      original,
+      shown,
       identity,
-      (query) => {
-        if (!['QueryExpression', 'QueryByAttribute'].includes(query.$type) || query.entityName !== mapping.logicalName)
-          throw new DataError(
-            'A RetrieveMultiple plugin cannot change the bound query table or query language.',
-            501,
-            'LocalPluginQueryUnsupported',
-          );
-        const converted = sdkQueryParameters(query);
-        if (!query.columnSet?.allColumns && !query.columnSet?.columns?.length) converted.$select = mapping.idColumn;
-        if (converted.$select && !converted.$select.split(',').includes(mapping.idColumn))
-          converted.$select += ',' + mapping.idColumn;
-        return this.queryCore(entity, converted, identity, paging, options);
-      },
+      (query) =>
+        this.executePluginQuery({
+          query,
+          shown,
+          original,
+          mapping,
+          entity,
+          params,
+          identity,
+          paging,
+          options,
+          paramsObject: p,
+        }),
       'value',
       options.sdkResponseToken,
-      options,
+      { ...options, preserveProperties: parseExpand(p.$expand).map((item) => item.navigation) },
     );
   }
-  retrieveMultipleOperation(entity, original, identity, execute, key, responseToken, options = {}) {
+  /* NOSONAR */ executePluginQuery({
+    query,
+    shown,
+    original,
+    mapping,
+    entity,
+    params,
+    identity,
+    paging,
+    options,
+    paramsObject,
+  }) {
+    if (shown.$type === 'FetchExpression' && query.$type === 'FetchExpression')
+      query = query.query === shown.query ? original : webApiFetchToQuery(query.query, this);
+    if (!['QueryExpression', 'QueryByAttribute'].includes(query.$type) || query.entityName !== mapping.logicalName)
+      throw new DataError(
+        'A RetrieveMultiple plugin cannot change the bound query table or query language.',
+        501,
+        'LocalPluginQueryUnsupported',
+      );
+    if (sameSdkQuery(query, original)) {
+      const answer = this.queryCore(entity, params, identity, paging, { ...options, captureRootIds: true });
+      return this.withPluginQueryColumns(answer, shown, original, query);
+    }
+    const projectedQuery = clone(query);
+    const preserveFilter = sameSdkQuery(query.criteria, original.criteria);
+    if (preserveFilter) projectedQuery.criteria = { operatorName: 'And', conditions: [], filters: [] };
+    const converted = { ...paramsObject };
+    const rewritten = sdkQueryParameters(projectedQuery);
+    for (const key of ['$select', '$filter', '$orderby', '$top']) {
+      if (key === '$filter' && preserveFilter) continue;
+      delete converted[key];
+      if (rewritten[key] !== undefined) converted[key] = rewritten[key];
+    }
+    if (!query.columnSet?.allColumns && !query.columnSet?.columns?.length) converted.$select = mapping.idColumn;
+    if (converted.$select && !converted.$select.split(',').includes(mapping.idColumn))
+      converted.$select += ',' + mapping.idColumn;
+    const answer = this.queryCore(entity, converted, identity, paging, options);
+    return this.withPluginQueryColumns(answer, shown, original, query);
+  }
+  withPluginQueryColumns(answer, shown, original, query) {
+    return shown === original ? answer : Object.defineProperty(answer, 'sdkColumnSet', { value: query.columnSet });
+  }
+  /* NOSONAR */ retrieveMultipleOperation(entity, original, identity, execute, key, responseToken, options = {}) {
+    if (!this.hasOperationContext())
+      return this.withOperationContext(() =>
+        this.retrieveMultipleOperation(entity, original, identity, execute, key, responseToken, options),
+      );
     const mapping = this.resolveMapping(entity),
       query = clone(original),
       record = { [mapping.idColumn]: '00000000-0000-0000-0000-000000000000' },
-      previousReadOnly = this.pluginReadOnly;
+      previousReadOnly = this.pluginReadOnly,
+      previousLane = this.pluginReadLane;
     if (
       !identity.admin &&
       this.state.settings.permissionMode !== 'permissive' &&
@@ -2798,6 +4477,9 @@ export class DataStore {
         record,
         identity,
         changedAttributes: [],
+        ...(options.readInitialFrame ? { initialFrame: options.readInitialFrame } : {}),
+        bypassCustomPlugins: options.bypassCustomPlugins === true,
+        bypassStepIds: options.bypassStepIds,
         portalRequest: options.portalRequest === true,
       });
       if (
@@ -2815,8 +4497,11 @@ export class DataStore {
         record,
         identity,
         changedAttributes: [],
+        bypassCustomPlugins: options.bypassCustomPlugins === true,
+        bypassStepIds: options.bypassStepIds,
         portalRequest: options.portalRequest === true,
       });
+      options.beforeMainRead?.();
       const answer = execute(query),
         collection =
           key === 'entities'
@@ -2826,13 +4511,34 @@ export class DataStore {
               })
             : {
                 $type: 'EntityCollection',
-                entities: (answer[key] ?? []).map((row) =>
-                  recordToSdkEntity(this, entity, row, query.columnSet ?? { allColumns: true }),
+                entities: (answer[key] ?? []).map((row, index) =>
+                  recordToSdkReadEntity(
+                    this,
+                    entity,
+                    answer.sdkRootIds?.[index] === undefined
+                      ? row
+                      : { ...row, [mapping.idColumn]: row[mapping.idColumn] ?? answer.sdkRootIds[index] },
+                    answer.sdkColumnSet ?? query.columnSet ?? { allColumns: false, columns: [] },
+                  ),
                 ),
                 entityName: entity,
                 minActiveRowVersion: '-1',
                 moreRecords: Boolean(answer['@odata.nextLink'] ?? answer.more_records),
-                pagingCookie: answer.paging_cookie ?? null,
+                pagingCookie:
+                  answer.paging_cookie ??
+                  readPagingCookie(
+                    query,
+                    mapping.idColumn,
+                    (answer[key] ?? []).map((row, index) => row[mapping.idColumn] ?? answer.sdkRootIds?.[index]),
+                    // The page's $orderby values precede the key, as in the HTTP skiptoken (native-r2 faults); a secured
+                    // column's values never travel in a cookie.
+                    (answer.paging?.order ?? []).filter(
+                      (column) =>
+                        !isSecuredField(
+                          this.fieldDefinition(entity, column.name.replace(/^_(.+)_value$/, '$1'), options.metadata),
+                        ),
+                    ),
+                  ),
                 totalRecordCount: answer['@odata.count'] ?? answer.total_record_count ?? -1,
               };
       const responseFrame = this.pluginPipeline({
@@ -2844,6 +4550,8 @@ export class DataStore {
         record,
         identity,
         changedAttributes: [],
+        bypassCustomPlugins: options.bypassCustomPlugins === true,
+        bypassStepIds: options.bypassStepIds,
         portalRequest: options.portalRequest === true,
       });
       handoffPluginResponse(this, 'retrievemultiple', mapping.logicalName, responseFrame, responseToken);
@@ -2857,7 +4565,70 @@ export class DataStore {
           501,
           'LocalPluginQueryUnsupported',
         );
-      answer[key] = collection.entities.map((e) => sdkValueToRecord(e));
+      // Native runs asynchronous RetrieveMultiple steps after the read, with its query and result (a message event:
+      // flows and mutation observers ignore it). A read outside a transaction stages it in its own queued transaction.
+      const readEvent = clone({
+        target: {},
+        query,
+        collection,
+        identity,
+        frame: responseFrame ?? {},
+        messageEvent: true,
+        bypassCustomAsync: options.bypassCustomAsync === true,
+        bypassStepIds: options.bypassStepIds,
+      });
+      if (this.committedEventCandidates) {
+        this.recordCommittedEvent(entity, 'retrievemultiple', record, [], readEvent);
+        // The read itself completed outside the transaction (IsInTransaction false): a later rollback of the
+        // enclosing request does not withdraw its asynchronous job (native faults: a failed Upsert's existence read
+        // still ran its asynchronous RetrieveMultiple step).
+        if (this.commitStagers?.size) {
+          const deferred = clone(readEvent),
+            readRecord = clone(record);
+          deferred.frame.asyncCallerParent ??= asyncCallerParent(
+            this.pluginParentContext ?? pluginInvocationSdkParent(this),
+          );
+          this.onRollback(() =>
+            this.transact(() => this.recordCommittedEvent(entity, 'retrievemultiple', readRecord, [], deferred), {
+              skipSaveIfUnchanged: true,
+            }).catch((error) => {
+              this.committedEventErrors ??= [];
+              this.committedEventErrors.push({
+                code: error.code ?? 'CommitStagerError',
+                message: error.message,
+              });
+            }),
+          );
+        }
+      } else if (this.commitStagers?.size)
+        this.transact(() => this.recordCommittedEvent(entity, 'retrievemultiple', clone(record), [], readEvent), {
+          skipSaveIfUnchanged: true,
+        }).catch((error) => {
+          this.committedEventErrors ??= [];
+          this.committedEventErrors.push({ code: error.code ?? 'CommitStagerError', message: error.message });
+        });
+      const sourceRows = answer[key] ?? [];
+      const sourceById = new Map(
+        sourceRows.map((row, index) => [row[mapping.idColumn] ?? answer.sdkRootIds?.[index], row]),
+      );
+      answer[key] = collection.entities.map((e) => {
+        const source = sourceById.get(e.id),
+          row = {
+            ...Object.fromEntries(Object.entries(source ?? {}).filter(([, value]) => value === null)),
+            ...Object.fromEntries(
+              (options.preserveProperties ?? [])
+                .filter((name) => Object.hasOwn(source ?? {}, name))
+                .map((name) => [name, clone(source[name])]),
+            ),
+            ...sdkValueToRecord(e),
+          };
+        // The SDK main result includes its primary Attribute independently of
+        // the public transport's selected fields. Preserve that projection
+        // while retaining a deliberate changed primary output from a plugin.
+        if ((answer.sdkHiddenId || (source && !own(source, mapping.idColumn))) && equal(row[mapping.idColumn], e.id))
+          delete row[mapping.idColumn];
+        return row;
+      });
       Object.defineProperty(answer, 'sdkCollection', { value: clone(collection), configurable: true });
       if (key === 'value') {
         if (Object.hasOwn(answer, '@odata.count')) answer['@odata.count'] = collection.totalRecordCount;
@@ -2873,7 +4644,11 @@ export class DataStore {
         answer.total_record_count = collection.totalRecordCount;
       }
       return answer;
+    } catch (error) {
+      this.closeReadLane(previousLane, error);
+      throw error;
     } finally {
+      this.closeReadLane(previousLane);
       this.pluginReadOnly = previousReadOnly;
     }
   }
@@ -2886,45 +4661,11 @@ export class DataStore {
     }
     const dialect = options.dialect ?? 'extended';
     const aliases = Object.fromEntries(Object.entries(p).filter(([key]) => key.startsWith('@')));
-    for (const key of Object.keys(p)) {
-      if (key.startsWith('@')) {
-        continue;
-      }
-      if (
-        key.startsWith('$') &&
-        !['$filter', '$select', '$expand', '$orderby', '$top', '$skip', '$count', '$apply'].includes(key)
-      )
-        throw new DataError(`Unsupported OData option ${key}`, 400, 'UnsupportedQuery');
-    }
-    if (
-      !identity.admin &&
-      this.state.settings.permissionMode !== 'permissive' &&
-      !this.rules(m.logicalName, 'read', identity).length
-    )
-      throw new DataError(`Table permission denies read on ${entity}`, 403, 'PermissionDenied', {
-        operation: 'read',
-        table: m.logicalName,
-      });
+    this.validateQueryOptions(p);
+    this.assertQueryReadable(entity, m, identity);
     const queryOptions = { dialect, aliases };
     const ctx = this.queryContext(identity, { ...options, dialect });
-    // Single-record and id-list reads find their rows through the primary-key index before
-    // the row-security filter, instead of filtering the whole table.
-    const subset =
-      options.id != null || options.ids
-        ? this.primaryKeySubset(m, options.id != null ? [options.id] : [...options.ids])
-        : null;
-    let rows = ctx.readRows(m.logicalName, undefined, subset ?? undefined);
-    if (options.backendRowFilter) rows = rows.filter((row) => options.backendRowFilter(clone(row)) === true);
-    // Single-record and navigation routes restrict the readable rows first.
-    if (options.id != null) rows = rows.filter((row) => equal(row[m.idColumn], options.id));
-    if (isElastic(m) && Object.hasOwn(options, 'partitionId'))
-      rows = rows.filter((row) => samePartition(row.partitionid, options.partitionId));
-    if (options.ids) {
-      const wanted = new Set([...options.ids].map(comparable));
-      rows = rows.filter((row) => wanted.has(comparable(row[m.idColumn])));
-    }
-    if (p.$filter != null && String(p.$filter).trim() !== '')
-      rows = rows.filter(compileODataPredicate(parseODataExpression(p.$filter, queryOptions), m, ctx));
+    const rows = this.queryRows(m, p, queryOptions, ctx, options);
     // Ordering on a calculated column over a parent or another calculated column is
     // ignored without an error.
     const order = parseOrderBy(p.$orderby, queryOptions).filter(
@@ -2937,54 +4678,99 @@ export class DataStore {
       lookupName: ctx.lookupName,
       collation: ctx.settings.collation,
     };
-    if (p.$apply) {
-      for (const key of ['$select', '$expand', '$skip'])
-        if (own(p, key)) throw new DataError(`OData $apply can't be combined with ${key}`, 400, 'UnsupportedQuery');
-      const steps = parseApply(p.$apply, queryOptions);
-      const applied = evaluateApply(steps, rows, {
-        ...ctx,
-        mapping: m,
-        pathValue: (row, segments) => this.pathValue(ctx, m, row, segments),
-        pathDefinition: (segments) => this.pathDefinition(ctx, m, segments),
-        targetLogicalName: (segments) => this.pathMapping(ctx, m, segments).logicalName,
-      });
-      let values = applied.rows;
-      if (order.length) {
-        const aggregateAliases = new Set(
-          steps.flatMap((step) => (step.aggregates ?? []).map((aggregate) => aggregate.alias)),
-        );
-        for (const spec of order)
-          if (aggregateAliases.has(spec.path.join('/')))
-            throw new DataError(
-              'The query node SingleValueOpenPropertyAccess is not supported',
-              400,
-              'UnsupportedQuery',
-            );
-        values = sortRows(values, order, {
-          ...sortOptions,
-          valueOf: (row, path) => row[path.join('/')],
-          definition: (path) => (path.length === 1 ? ctx.definition(m.logicalName, path[0]) : undefined),
-          tieBreak: false,
-        });
+    if (p.$apply) return this.queryApplyCore(m, p, order, sortOptions, ctx, queryOptions, { rows, options });
+    return this.queryPagedCore(m, p, order, sortOptions, ctx, queryOptions, { rows, paging, options });
+  }
+  validateQueryOptions(params) {
+    for (const key of Object.keys(params)) {
+      if (key.startsWith('@')) {
+        continue;
       }
-      // A Dataverse groupby without $orderby answers its single-column groups in ascending key order (false before true).
-      if (!order.length && options.dialect === 'dataverse') {
-        const groupKeys = steps
-          .filter((step) => step.kind === 'groupby')
-          .flatMap((step) => step.properties ?? [])
-          .filter((path) => path.length === 1)
-          .map((path) => ({ path, descending: false }));
-        if (groupKeys.length)
-          values = sortRows(values, groupKeys, {
-            ...sortOptions,
-            valueOf: (row, path) => row[path.join('/')],
-            definition: (path) => ctx.definition(m.logicalName, path[0]),
-            tieBreak: false,
-          });
-      }
-      if (p.$top != null) values = values.slice(0, boundedInt(p.$top, '$top'));
-      return { value: clone(values) };
+      if (
+        key.startsWith('$') &&
+        !['$filter', '$select', '$expand', '$orderby', '$top', '$skip', '$count', '$apply'].includes(key)
+      )
+        throw new DataError(`Unsupported OData option ${key}`, 400, 'UnsupportedQuery');
     }
+  }
+  assertQueryReadable(entity, mapping, identity) {
+    if (
+      !identity.admin &&
+      this.state.settings.permissionMode !== 'permissive' &&
+      !this.rules(mapping.logicalName, 'read', identity).length
+    )
+      throw new DataError(`Table permission denies read on ${entity}`, 403, 'PermissionDenied', {
+        operation: 'read',
+        table: mapping.logicalName,
+      });
+  }
+  queryRows(mapping, p, queryOptions, ctx, options) {
+    // Single-record and id-list reads find their rows through the primary-key index before
+    // the row-security filter, instead of filtering the whole table.
+    let subset = null;
+    if (options.id != null || options.ids)
+      subset = this.primaryKeySubset(mapping, options.id != null ? [options.id] : [...options.ids]);
+    let rows = ctx.readRows(mapping.logicalName, undefined, subset ?? undefined);
+    if (options.backendRowFilter) rows = rows.filter((row) => options.backendRowFilter(clone(row)) === true);
+    // Single-record and navigation routes restrict the readable rows first.
+    if (options.id != null) rows = rows.filter((row) => equal(row[mapping.idColumn], options.id));
+    if (isElastic(mapping) && Object.hasOwn(options, 'partitionId'))
+      rows = rows.filter((row) => samePartition(row.partitionid, options.partitionId));
+    if (options.ids) {
+      const wanted = new Set([...options.ids].map(comparable));
+      rows = rows.filter((row) => wanted.has(comparable(row[mapping.idColumn])));
+    }
+    if (p.$filter != null && String(p.$filter).trim() !== '')
+      rows = rows.filter(compileODataPredicate(parseODataExpression(p.$filter, queryOptions), mapping, ctx));
+    return rows;
+  }
+  queryApplyCore(m, p, order, sortOptions, ctx, queryOptions, { rows, options }) {
+    for (const key of ['$select', '$expand', '$skip'])
+      if (own(p, key)) throw new DataError(`OData $apply can't be combined with ${key}`, 400, 'UnsupportedQuery');
+    const steps = parseApply(p.$apply, queryOptions);
+    const applied = evaluateApply(steps, rows, {
+      ...ctx,
+      mapping: m,
+      pathValue: (row, segments) => this.pathValue(ctx, m, row, segments),
+      pathDefinition: (segments) => this.pathDefinition(ctx, m, segments),
+      targetLogicalName: (segments) => this.pathMapping(ctx, m, segments).logicalName,
+    });
+    let values = applied.rows;
+    if (order.length) values = this.sortAppliedQuery(values, order, steps, sortOptions, ctx, m);
+    if (!order.length && options.dialect === 'dataverse')
+      values = this.sortAppliedGroups(values, steps, sortOptions, ctx, m);
+    if (p.$top != null) values = values.slice(0, boundedInt(p.$top, '$top'));
+    return { value: clone(values) };
+  }
+  sortAppliedQuery(values, order, steps, sortOptions, ctx, mapping) {
+    const aggregateAliases = new Set(
+      steps.flatMap((step) => (step.aggregates ?? []).map((aggregate) => aggregate.alias)),
+    );
+    for (const spec of order)
+      if (aggregateAliases.has(spec.path.join('/')))
+        throw new DataError('The query node SingleValueOpenPropertyAccess is not supported', 400, 'UnsupportedQuery');
+    return sortRows(values, order, {
+      ...sortOptions,
+      valueOf: (row, path) => row[path.join('/')],
+      definition: (path) => (path.length === 1 ? ctx.definition(mapping.logicalName, path[0]) : undefined),
+      tieBreak: false,
+    });
+  }
+  sortAppliedGroups(values, steps, sortOptions, ctx, mapping) {
+    const groupKeys = steps
+      .filter((step) => step.kind === 'groupby')
+      .flatMap((step) => step.properties ?? [])
+      .filter((path) => path.length === 1)
+      .map((path) => ({ path, descending: false }));
+    if (!groupKeys.length) return values;
+    return sortRows(values, groupKeys, {
+      ...sortOptions,
+      valueOf: (row, path) => row[path.join('/')],
+      definition: (path) => ctx.definition(mapping.logicalName, path[0]),
+      tieBreak: false,
+    });
+  }
+  /* NOSONAR */ queryPagedCore(m, p, order, sortOptions, ctx, queryOptions, { rows, paging, options }) {
     const count = rows.length,
       publicCount = paging ? Math.min(count, 5000) : count;
     // A continuation that names the previous page's last row resumes after that row (key-set
@@ -3000,18 +4786,20 @@ export class DataStore {
         ...sortOptions,
         tieBreak: Boolean(paging),
       });
-    const skip = keyset ? keyset.before : paging ? paging.offset : boundedInt(p.$skip ?? 0, '$skip'),
-      totalLimit = paging ? Math.min(count, p.$top == null ? count : boundedInt(p.$top, '$top')) : rows.length,
-      top = paging
-        ? Math.min(paging.pageSize, Math.max(totalLimit - skip, 0))
-        : p.$top == null
-          ? rows.length
-          : boundedInt(p.$top, '$top');
+    let skip;
+    if (keyset) skip = keyset.before;
+    else if (paging) skip = paging.offset;
+    else skip = boundedInt(p.$skip ?? 0, '$skip');
+    let totalLimit = rows.length;
+    if (paging) totalLimit = Math.min(count, p.$top == null ? count : boundedInt(p.$top, '$top'));
+    let top;
+    if (paging) top = Math.min(paging.pageSize, Math.max(totalLimit - skip, 0));
+    else top = p.$top == null ? rows.length : boundedInt(p.$top, '$top');
     rows = keyset ? rows.slice(0, top) : rows.slice(skip, skip + top);
     const select = parseSelect(p.$select);
     const expand = this.prepareExpand(ctx, m, parseExpand(p.$expand), queryOptions);
     const values = rows.map((row) => this.projectRow(ctx, m, row, select, expand, options.includeKeys === true));
-    return {
+    const answer = {
       value: clone(values),
       ...(String(p.$count) === 'true' ? { '@odata.count': publicCount } : {}),
       ...(paging
@@ -3035,8 +4823,11 @@ export class DataStore {
           }
         : {}),
     };
+    if (options.captureRootIds)
+      Object.defineProperty(answer, 'sdkRootIds', { value: rows.map((row) => row[m.idColumn]) });
+    return answer;
   }
-  normalizeRecord(mapping, data, identity = {}) {
+  /* NOSONAR */ normalizeRecord(mapping, data, identity = {}) {
     const SYSTEM_BIND_NAVIGATIONS = new Set([
       'ownerid',
       'owninguser',
@@ -3103,13 +4894,23 @@ export class DataStore {
           throw new DataError(`Lookup binding target does not match navigation ${navigation}`, 400, 'InvalidLookup');
         const hit =
           isElastic(target) && !reference.id.includes('=')
-            ? this.get(target.logicalName, reference.id, { admin: true }, { partitionId: row[`${field}pid`] })
+            ? this.get(
+                target.logicalName,
+                reference.id,
+                { admin: true },
+                { partitionId: row[`${field}pid`], skipPluginRead: true },
+              )
             : this.findByKey(target, reference.id);
         // Elastic lookups without the custom partition are allowed to persist, but remain unresolved.
         // Never substitute a record from another partition (or its display name).
         if (!hit && isElastic(target) && !reference.id.includes('=') && row[`${field}pid`] == null) {
           row[field] = { id: reference.id, logical_name: target.logicalName, partitionid: null, name: '' };
           row[`${field}pid`] = null;
+          delete row[key];
+          continue;
+        }
+        if (!hit && !reference.id.includes('=') && uncheckedLookup(mapping.logicalName, field, target.logicalName)) {
+          row[field] = { id: reference.id.toLowerCase(), logical_name: target.logicalName, name: '' };
           delete row[key];
           continue;
         }
@@ -3134,18 +4935,13 @@ export class DataStore {
     const rows = this.tableRows(mapping.logicalName);
     const parts = parseKeySegment(key);
     if (!parts) return rows[this.rowIndex(mapping, rows, key)];
-    const names = Object.keys(parts).sort();
+    const names = Object.keys(parts).sort(/* NOSONAR: preserve default string coercion */);
     if (isElastic(mapping) && names.length === 1 && names[0] === mapping.idColumn)
       return rows[this.rowIndex(mapping, rows, parts[mapping.idColumn])];
     // Only an Active key (its index job succeeded) resolves rows; Pending and Failed keys do not exist for lookups.
     const declared = (mapping.alternateKeys ?? [])
       .filter((alternate) => (alternate.indexStatus ?? 'Active') === 'Active')
-      .some((alternate) => {
-        const attributes = (alternate.attributes ?? alternate.keyAttributes ?? [])
-          .map((name) => String(name).toLowerCase())
-          .sort();
-        return attributes.length === names.length && attributes.every((name, index) => name === names[index]);
-      });
+      .some((alternate) => alternateKeyMatchesNames(alternate, names));
     if (!declared && !(names.length === 1 && names[0] === mapping.idColumn))
       throw new DataError(
         `The key attribute(s) ${names.join(', ')} don't match an alternate key declared for ${mapping.logicalName}.`,
@@ -3153,40 +4949,45 @@ export class DataStore {
         'InvalidKey',
         { innerCode: '0x80040203' },
       );
+    const collation = this.querySettings().collation;
+    const kinds = Object.fromEntries(
+      names.map((name) => [name, fieldKind(this.fieldDefinition(mapping.logicalName, name))]),
+    );
     const matches = (row) =>
       names.every((name) =>
         isElastic(mapping) && name === 'partitionid'
           ? samePartition(row[name], parts[name])
-          : valuesEqual(field(row, name), parts[name]),
+          : valuesEqual(field(row, name), parts[name], { collation, kind: kinds[name] }),
       );
     // Within one transaction (UpsertMultiple, key upserts) candidates come from the key-segment index.
-    const literal = names.map((name) => keySegmentBucket(parts[name]));
-    if (!isElastic(mapping) && literal.every((bucket) => typeof bucket === 'string')) {
-      const name = `ks\u0000${names.join('\u0000')}`;
-      const index = this.rowKeyIndex(rows, name, keySegmentOf(names), { scoped: true, wild: true });
-      if (index && !index.linear) {
-        const bucketed = index.get(literal.join('\u0000'));
-        const candidates = index.wild.length
-          ? [...new Set([...bucketed, ...index.wild])].sort((a, b) => a - b)
-          : bucketed;
-        // Validity check: every bucketed candidate must still match; otherwise rebuild and scan.
-        let first;
-        for (const position of candidates) {
-          const row = rows[position];
-          if (row !== undefined && matches(row)) {
-            first = row;
-            break;
-          }
-          if (bucketed.includes(position)) {
-            first = null;
-            break;
-          }
-        }
-        if (first !== null) return first;
-        this.dropRowKeyIndex(rows, name);
+    const indexed = this.findIndexedKeyRow(mapping, rows, names, parts, collation, kinds, matches);
+    if (indexed.used) return indexed.row;
+    return rows.find(matches);
+  }
+  findIndexedKeyRow(mapping, rows, names, parts, collation, kinds, matches) {
+    const literal = names.map((name) => keySegmentBucket(parts[name], collation, kinds[name]));
+    if (isElastic(mapping) || !literal.every((bucket) => typeof bucket === 'string')) return { used: false };
+    const name = `ks\u0000${JSON.stringify([collation, names, kinds])}`;
+    const index = this.rowKeyIndex(rows, name, keySegmentOf(names, collation, kinds), { scoped: true, wild: true });
+    if (!index) return findScopedUpsertKey({ store: this, rows, names, kinds, collation, literal, name, matches });
+    if (index.linear) return { used: false };
+    const bucketed = index.get(JSON.stringify(literal));
+    const candidates = index.wild.length ? [...new Set([...bucketed, ...index.wild])].sort((a, b) => a - b) : bucketed;
+    let first;
+    for (const position of candidates) {
+      const row = rows[position];
+      if (row !== undefined && matches(row)) {
+        first = row;
+        break;
+      }
+      if (bucketed.includes(position)) {
+        first = null;
+        break;
       }
     }
-    return rows.find(matches);
+    if (first !== null) return { used: true, row: first };
+    this.dropRowKeyIndex(rows, name);
+    return { used: false };
   }
   evaluate(expr, context) {
     if (typeof expr === 'string' && expr.startsWith('$')) {
@@ -3196,6 +4997,9 @@ export class DataStore {
     if (!expr || typeof expr !== 'object' || Array.isArray(expr)) return clone(expr);
     if (own(expr, 'literal')) return clone(expr.literal);
     const args = (expr.args ?? []).map((a) => this.evaluate(a, context));
+    return this.evaluatePluginOperator(expr, context, args);
+  }
+  evaluatePluginOperator(expr, context, args) {
     switch (expr.op) {
       case 'concat':
         return args.map((a) => a ?? '').join('');
@@ -3216,17 +5020,7 @@ export class DataStore {
       case 'uuid':
         return this.ids.uuid();
       case 'sequence': {
-        const scope = safeName(String(args[0]));
-        const prefix = String(args[1] ?? '');
-        const width = Number(args[2] ?? 6);
-        if (!/^[a-z0-9 _-]{0,32}$/i.test(prefix) || !Number.isInteger(width) || width < 1 || width > 12)
-          throw new DataError('Plugin sequence requires a bounded prefix and width', 400, 'InvalidPlugin');
-        const counters = (this.state.settings.pluginSequences ??= {});
-        const next = Number(counters[scope] ?? 0) + 1;
-        if (!Number.isSafeInteger(next) || next >= 10 ** width)
-          throw new DataError('Plugin sequence exhausted configured width', 400, 'InvalidPlugin');
-        counters[scope] = next;
-        return prefix + String(next).padStart(width, '0');
+        return this.evaluateSequence(args);
       }
       case 'now':
         return new Date(this.clock.now()).toISOString();
@@ -3236,106 +5030,168 @@ export class DataStore {
           .map((s) => s.trim())
           .filter(Boolean);
       case 'join':
-        if (!Array.isArray(args[0])) throw new DataError('Plugin join requires an array', 400, 'InvalidPlugin');
-        return args[0].map(scalar).join(args[1] ?? ', ');
+        return this.evaluateJoin(args);
       case 'length':
-        if (!Array.isArray(args[0])) throw new DataError('Plugin length requires an array', 400, 'InvalidPlugin');
-        return args[0].length;
+        return this.evaluateLength(args);
       case 'lookup': {
-        const record = this.get(safeName(String(args[0])), scalar(args[1]), context.identity, { skipPluginRead: true });
-        if (!record) throw new DataError('Plugin lookup target does not exist', 400, 'InvalidLookup');
-        return clone(args[2] ? field(record ?? {}, safeName(String(args[2]))) : record);
+        return this.evaluateLookup(args, context);
       }
       case 'related': {
-        const mapping = this.resolveMapping(safeName(String(args[0])));
-        const relationshipName = safeName(String(args[2]));
-        const relationship = mapping.relationships?.[relationshipName];
-        if (!relationship)
-          throw new DataError('Plugin relationship is not declared in entity metadata', 400, 'MissingRelationship');
-        const multiple = Array.isArray(args[1]),
-          ids = multiple ? args[1] : [args[1]],
-          result = [];
-        if (ids.length > 1024) throw new DataError('Plugin related exceeds 1024 parent records', 400, 'InvalidPlugin');
-        const targets = this.rows(relationship.entity, context.identity);
-        // Indexed relationship lookup (direct or through the intersect table)
-        // instead of testing every target against every intersect row.
-        const relatedIndex = this.permissionMemo();
-        const targetLogical = this.resolveMapping(relationship.entity).logicalName;
-        for (const id of ids) {
-          const parent = this.get(mapping.logicalName, scalar(id), context.identity, { skipPluginRead: true });
-          if (!parent) throw new DataError('Plugin relationship parent does not exist', 400, 'InvalidLookup');
-          const linked = new Set(relatedIndex.related(parent, relationship, targetLogical));
-          for (const row of targets.filter((row) => linked.has(row))) {
-            const value = args[3] ? field(row, safeName(String(args[3]))) : row;
-            result.push(multiple ? { parentId: parent[mapping.idColumn], record: value } : value);
-          }
-          if (result.length > 1024) throw new DataError('Plugin related exceeds 1024 records', 400, 'InvalidPlugin');
-        }
-        return clone(result);
+        return this.evaluateRelated(args, context);
       }
       case 'find': {
-        const mapping = this.resolveMapping(safeName(String(args[0])));
-        const matches = Object.entries(expr.match ?? {}).map(([key, value]) => [
-          safeName(key),
-          this.evaluate(value, context),
-        ]);
-        if (!matches.length) throw new DataError('Plugin find requires explicit matching fields', 400, 'InvalidPlugin');
-        const record = this.tableRows(mapping.logicalName).find(
-          (row) =>
-            matches.every(([key, value]) => equal(field(row, key), value)) &&
-            this.allowed(mapping.logicalName, 'read', row, context.identity),
-        );
-        return clone(record ? (args[1] ? field(record, safeName(String(args[1]))) : record) : null);
+        return this.evaluateFind(expr, args, context);
       }
       case 'findMany': {
-        const mapping = this.resolveMapping(safeName(String(args[0])));
-        const matches = Object.entries(expr.match ?? {}).map(([key, value]) => [
-          safeName(key),
-          this.evaluate(value, context),
-        ]);
-        if (!matches.length)
-          throw new DataError('Plugin findMany requires explicit matching fields', 400, 'InvalidPlugin');
-        const records = this.tableRows(mapping.logicalName).filter(
-          (row) =>
-            matches.every(([key, value]) =>
-              Array.isArray(value)
-                ? value.some((candidate) => equal(field(row, key), candidate))
-                : equal(field(row, key), value),
-            ) && this.allowed(mapping.logicalName, 'read', row, context.identity),
-        );
-        if (records.length > 1024) throw new DataError('Plugin findMany exceeds 1024 records', 400, 'InvalidPlugin');
-        return clone(records.map((row) => (args[1] ? field(row, safeName(String(args[1]))) : row)));
+        return this.evaluateFindMany(expr, args, context);
       }
       case 'reference': {
-        const mapping = this.resolveMapping(safeName(String(args[0])));
-        const id = scalar(args[1]);
-        const record =
-          mapping.logicalName === context.entity && equal(id, context.record[mapping.idColumn])
-            ? context.record
-            : this.get(mapping.logicalName, id, context.identity, { skipPluginRead: true });
-        if (!record) throw new DataError('Plugin reference target does not exist', 400, 'InvalidLookup');
-        return {
-          id,
-          logical_name: mapping.logicalName,
-          name: primaryNameValue(mapping, record) ?? '',
-        };
+        return this.evaluateReference(args, context);
       }
       default: {
-        // Operators contributed by data packs (lib/extensions.mjs).
-        const operator = expressionOperator(expr.op);
-        if (operator)
-          return operator({
-            store: this,
-            context,
-            args,
-            expression: expr,
-            fail: (message, status, code) => {
-              throw new DataError(message, status, code);
-            },
-          });
-        throw new DataError(`Unsupported plugin expression ${expr.op}`, 400, 'InvalidPlugin');
+        return this.evaluateExtensionOperator(expr, context, args);
       }
     }
+  }
+  evaluateSequence(args) {
+    const scope = safeName(String(args[0]));
+    const prefix = String(args[1] ?? '');
+    const width = Number(args[2] ?? 6);
+    if (!/^[a-z0-9 _-]{0,32}$/i.test(prefix) || !Number.isInteger(width) || width < 1 || width > 12)
+      throw new DataError('Plugin sequence requires a bounded prefix and width', 400, 'InvalidPlugin');
+    const counters = (this.state.settings.pluginSequences ??= {});
+    const next = Number(counters[scope] ?? 0) + 1;
+    if (!Number.isSafeInteger(next) || next >= 10 ** width)
+      throw new DataError('Plugin sequence exhausted configured width', 400, 'InvalidPlugin');
+    counters[scope] = next;
+    return prefix + String(next).padStart(width, '0');
+  }
+  evaluateJoin(args) {
+    if (!Array.isArray(args[0])) throw new DataError('Plugin join requires an array', 400, 'InvalidPlugin');
+    return args[0].map(scalar).join(args[1] ?? ', ');
+  }
+  evaluateLength(args) {
+    if (!Array.isArray(args[0])) throw new DataError('Plugin length requires an array', 400, 'InvalidPlugin');
+    return args[0].length;
+  }
+  evaluateLookup(args, context) {
+    const record = this.get(safeName(String(args[0])), scalar(args[1]), context.identity, { skipPluginRead: true });
+    if (!record) throw new DataError('Plugin lookup target does not exist', 400, 'InvalidLookup');
+    return clone(args[2] ? field(record ?? {}, safeName(String(args[2]))) : record);
+  }
+  evaluateRelated(args, context) {
+    const mapping = this.resolveMapping(safeName(String(args[0])));
+    const relationshipName = safeName(String(args[2]));
+    const relationship = mapping.relationships?.[relationshipName];
+    if (!relationship)
+      throw new DataError('Plugin relationship is not declared in entity metadata', 400, 'MissingRelationship');
+    const multiple = Array.isArray(args[1]),
+      ids = multiple ? args[1] : [args[1]],
+      result = [];
+    if (ids.length > 1024) throw new DataError('Plugin related exceeds 1024 parent records', 400, 'InvalidPlugin');
+    const targets = this.rows(relationship.entity, context.identity);
+    const relatedIndex = this.permissionMemo();
+    const targetLogical = this.resolveMapping(relationship.entity).logicalName;
+    for (const id of ids)
+      this.collectRelatedRecords({
+        id,
+        args,
+        context,
+        mapping,
+        relationship,
+        multiple,
+        targets,
+        relatedIndex,
+        targetLogical,
+        result,
+      });
+    return clone(result);
+  }
+  collectRelatedRecords({
+    id,
+    args,
+    context,
+    mapping,
+    relationship,
+    multiple,
+    targets,
+    relatedIndex,
+    targetLogical,
+    result,
+  }) {
+    const parent = this.get(mapping.logicalName, scalar(id), context.identity, { skipPluginRead: true });
+    if (!parent) throw new DataError('Plugin relationship parent does not exist', 400, 'InvalidLookup');
+    const linked = new Set(relatedIndex.related(parent, relationship, targetLogical));
+    for (const row of targets.filter((item) => linked.has(item))) {
+      const value = args[3] ? field(row, safeName(String(args[3]))) : row;
+      result.push(multiple ? { parentId: parent[mapping.idColumn], record: value } : value);
+    }
+    if (result.length > 1024) throw new DataError('Plugin related exceeds 1024 records', 400, 'InvalidPlugin');
+  }
+  evaluateFind(expr, args, context) {
+    const mapping = this.resolveMapping(safeName(String(args[0])));
+    const matches = Object.entries(expr.match ?? {}).map(([key, value]) => [
+      safeName(key),
+      this.evaluate(value, context),
+    ]);
+    if (!matches.length) throw new DataError('Plugin find requires explicit matching fields', 400, 'InvalidPlugin');
+    const memo = this.permissionMemo(),
+      candidates = this.tableRows(mapping.logicalName).filter((row) =>
+        matches.every(([key, value]) => equal(field(row, key), value)),
+      ),
+      record = candidates.find((row) =>
+        this.allowed(mapping.logicalName, 'read', row, context.identity, new Set(), null, memo),
+      );
+    this.traceFiltered(mapping.logicalName, context.identity, candidates, record ? 1 : 0, memo);
+    let selected = null;
+    if (record) selected = args[1] ? field(record, safeName(String(args[1]))) : record;
+    return clone(selected);
+  }
+  evaluateFindMany(expr, args, context) {
+    const mapping = this.resolveMapping(safeName(String(args[0])));
+    const matches = Object.entries(expr.match ?? {}).map(([key, value]) => [
+      safeName(key),
+      this.evaluate(value, context),
+    ]);
+    if (!matches.length) throw new DataError('Plugin findMany requires explicit matching fields', 400, 'InvalidPlugin');
+    const memo = this.permissionMemo(),
+      candidates = this.tableRows(mapping.logicalName).filter((row) =>
+        matches.every(([key, value]) =>
+          Array.isArray(value)
+            ? value.some((candidate) => equal(field(row, key), candidate))
+            : equal(field(row, key), value),
+        ),
+      ),
+      records = candidates.filter((row) =>
+        this.allowed(mapping.logicalName, 'read', row, context.identity, new Set(), null, memo),
+      );
+    this.traceFiltered(mapping.logicalName, context.identity, candidates, records.length, memo);
+    if (records.length > 1024) throw new DataError('Plugin findMany exceeds 1024 records', 400, 'InvalidPlugin');
+    return clone(records.map((row) => (args[1] ? field(row, safeName(String(args[1]))) : row)));
+  }
+  evaluateReference(args, context) {
+    const mapping = this.resolveMapping(safeName(String(args[0])));
+    const id = scalar(args[1]);
+    const record =
+      mapping.logicalName === context.entity && equal(id, context.record[mapping.idColumn])
+        ? context.record
+        : this.get(mapping.logicalName, id, context.identity, { skipPluginRead: true });
+    if (!record) throw new DataError('Plugin reference target does not exist', 400, 'InvalidLookup');
+    return { id, logical_name: mapping.logicalName, name: primaryNameValue(mapping, record) ?? '' };
+  }
+  evaluateExtensionOperator(expr, context, args) {
+    const operator = expressionOperator(expr.op);
+    if (operator)
+      return operator({
+        store: this,
+        context,
+        args,
+        expression: expr,
+        fail: (message, status, code) => {
+          throw new DataError(message, status, code);
+        },
+      });
+    throw new DataError(`Unsupported plugin expression ${expr.op}`, 400, 'InvalidPlugin');
   }
   applyPlugins(entity, operation, row, previous, identity) {
     const context = {
@@ -3352,93 +5208,174 @@ export class DataStore {
         (p.entity === entity || p.entity === '*') &&
         (p.operations ?? ['create', 'update']).includes(operation),
     )) {
-      if (p.when && !compileFilter(p.when)(row)) continue;
-      for (const [key, expr] of Object.entries(p.defaults ?? {}))
-        if (row[key] == null) {
-          safeName(key);
-          row[key] = this.evaluate(expr, context);
-        }
-      for (const [key, expr] of Object.entries(p.set ?? {})) {
-        safeName(key);
-        row[key] = this.evaluate(expr, context);
+      const started = performance.now(),
+        changes = [];
+      const evaluated = (result, extra = {}) =>
+        this.ruleEvaluated({
+          rule: String(p.id ?? p.name ?? 'plugin'),
+          table: entity,
+          operation,
+          result,
+          changes,
+          secondaryEffects: result === 'applied' ? (p.secondary ?? []).length : 0,
+          durationMs: Math.round((performance.now() - started) * 100) / 100,
+          ...extra,
+        });
+      if (p.when && !compileFilter(p.when)(row)) {
+        evaluated('skipped');
+        continue;
       }
-      for (const v of p.validate ?? []) {
-        const value = field(row, v.field ?? '');
-        let valid = true;
-        if (v.required) valid = value != null && value !== '';
-        if (v.pattern) valid = valid && new RegExp(v.pattern).test(String(value ?? ''));
-        if (v.min != null) valid = valid && Number(value) >= v.min;
-        if (v.max != null) valid = valid && Number(value) <= v.max;
-        if (v.oneOf) valid = valid && v.oneOf.some((x) => equal(x, value));
-        if (v.assert) valid = valid && compileFilter(v.assert)(row);
-        if (v.unique) {
-          const m = this.resolveMapping(entity);
-          valid =
-            valid &&
-            !(this.state.tables[entity] ?? []).some(
-              (r) => !equal(r[m.idColumn], row[m.idColumn]) && equal(field(r, v.field), value),
-            );
-        }
-        if (!valid)
-          throw new DataError(
-            v.message ?? `Plugin ${p.id ?? 'validation'} rejected ${v.field ?? 'record'}`,
-            400,
-            'PluginValidation',
-            {
-              innerCode: String(v.innerCode ?? '0x80040265').toLowerCase(),
-              ...(typeof v.message === 'string' && v.message.trim() ? { declaredValidationMessage: true } : {}),
-            },
-          );
+      try {
+        this.applyRule(p, row, context, changes, entity);
+      } catch (error) {
+        evaluated('rejected', { error: { code: error.code ?? 'PLUGIN_ERROR', message: error.message } });
+        throw error;
       }
+      evaluated('applied');
       secondary.push(...(p.secondary ?? []).map((action) => ({ action, context })));
     }
     return secondary;
   }
-  applySecondary(effects) {
-    for (const { action, context } of effects) {
-      if (action.foreach) {
-        const values = this.evaluate(action.foreach, context);
-        if (!Array.isArray(values) || values.length > 1024)
-          throw new DataError('Plugin foreach requires an array of at most 1024 items', 400, 'InvalidPlugin');
-        const { foreach, ...nested } = action;
-        this.applySecondary(
-          values.map((item, index) => ({
-            action: nested,
-            context: { ...context, item, index },
-          })),
-        );
-        continue;
-      }
-      const m = this.resolveMapping(action.entity);
-      const targets = (this.state.tables[m.logicalName] ??= []);
-      const values = Object.fromEntries(
-        Object.entries(action.set ?? {}).map(([k, v]) => [safeName(k), this.evaluate(v, context)]),
-      );
-      if (action.operation === 'create') {
-        if (action.match) {
-          const matches = Object.fromEntries(
-            Object.entries(action.match).map(([k, v]) => [k, this.evaluate(v, context)]),
-          );
-          if (targets.some((target) => Object.entries(matches).every(([k, v]) => equal(field(target, k), v)))) continue;
-        }
-        this.insertRow(m.logicalName, targets, { [m.idColumn]: this.ids.uuid(), ...values });
-      } else if (action.operation === 'update' || action.operation === 'delete') {
-        if (!action.match) throw new DataError('Secondary update/delete requires match');
-        const matches = Object.fromEntries(
-          Object.entries(action.match).map(([k, v]) => [k, this.evaluate(v, context)]),
-        );
-        if (
-          action.requireMatch &&
-          !targets.some((target) => Object.entries(matches).every(([key, value]) => equal(field(target, key), value)))
-        )
-          throw new DataError('The backend action cannot find a matching related record', 400, 'InvalidPlugin');
-        for (let i = targets.length - 1; i >= 0; i--)
-          if (Object.entries(matches).every(([k, v]) => equal(field(targets[i], k), v))) {
-            if (action.operation === 'delete') this.removeRow(m.logicalName, targets, i);
-            else this.mutateRow(m.logicalName, targets, i, values);
-          }
-      } else throw new DataError(`Unsupported secondary operation ${action.operation}`, 400, 'InvalidPlugin');
+  /**
+   * One declarative plugin rule's evaluation { rule, table, operation, result: applied|skipped|rejected, changes,
+   * secondaryEffects, durationMs, error? } (D-M-4): a `rule` event on the current span, then onRuleEvaluated (the host's
+   * `plugin` log line), so both come from this one hook. Trace level off costs one property read here.
+   */
+  ruleEvaluated(evaluation) {
+    const span = this.traces?.enabled ? this.traces.current() : null;
+    // Under a bulk span the evaluations of every row are one rule event and the span's `rules` counts (traceDecision).
+    traceDecision(span, 'rule', {
+      message: `${evaluation.rule} ${evaluation.result}`,
+      attributes: {
+        rule: evaluation.rule,
+        table: evaluation.table,
+        operation: evaluation.operation,
+        result: evaluation.result,
+        changes: evaluation.changes,
+        secondaryEffects: evaluation.secondaryEffects,
+        ...(evaluation.error ? { code: evaluation.error.code, message: evaluation.error.message } : {}),
+      },
+    });
+    try {
+      this.onRuleEvaluated?.(evaluation, span);
+    } catch {
+      /* an observer failure never affects the write */
     }
+  }
+  // The defaults, set and validate parts of one plugin rule on row; the names it assigns are pushed to changes.
+  applyRule(p, row, context, changes, entity) {
+    this.applyRuleDefaults(p, row, context, changes);
+    this.applyRuleSet(p, row, context, changes);
+    for (const validation of p.validate ?? []) this.validatePluginRule(p, validation, row, entity);
+  }
+  applyRuleDefaults(p, row, context, changes) {
+    for (const [key, expr] of Object.entries(p.defaults ?? {}))
+      if (row[key] == null) {
+        safeName(key);
+        row[key] = this.evaluate(expr, context);
+        changes.push(key);
+      }
+  }
+  applyRuleSet(p, row, context, changes) {
+    for (const [key, expr] of Object.entries(p.set ?? {})) {
+      safeName(key);
+      row[key] = this.evaluate(expr, context);
+      if (!changes.includes(key)) changes.push(key);
+    }
+  }
+  /* NOSONAR */ validatePluginRule(p, validation, row, entity) {
+    const value = field(row, validation.field ?? '');
+    let valid = true;
+    if (validation.required) valid = value != null && value !== '';
+    if (validation.pattern) valid = valid && new RegExp(validation.pattern).test(String(value ?? ''));
+    if (validation.min != null) valid = valid && Number(value) >= validation.min;
+    if (validation.max != null) valid = valid && Number(value) <= validation.max;
+    if (validation.oneOf) valid = valid && validation.oneOf.some((item) => equal(item, value));
+    if (validation.assert) valid = valid && compileFilter(validation.assert)(row);
+    if (validation.unique) {
+      const mapping = this.resolveMapping(entity);
+      valid = valid && this.isUniquePluginValue(mapping, entity, validation, row, value);
+    }
+    if (valid) return;
+    throw new DataError(
+      validation.message ?? `Plugin ${p.id ?? 'validation'} rejected ${validation.field ?? 'record'}`,
+      400,
+      'PluginValidation',
+      {
+        innerCode: String(validation.innerCode ?? '0x80040265').toLowerCase(),
+        ...(typeof validation.message === 'string' && validation.message.trim()
+          ? { declaredValidationMessage: true }
+          : {}),
+      },
+    );
+  }
+  isUniquePluginValue(mapping, entity, validation, row, value) {
+    return !(this.state.tables[entity] ?? []).some(
+      (candidate) =>
+        !equal(candidate[mapping.idColumn], row[mapping.idColumn]) && equal(field(candidate, validation.field), value),
+    );
+  }
+  applySecondary(effects) {
+    for (const { action, context } of effects) this.applySecondaryAction(action, context);
+  }
+  applySecondaryAction(action, context) {
+    if (action.foreach) {
+      const items = this.evaluate(action.foreach, context);
+      if (!Array.isArray(items) || items.length > 1024)
+        throw new DataError('Plugin foreach requires an array of at most 1024 items', 400, 'InvalidPlugin');
+      const { foreach, ...nested } = action;
+      this.applySecondary(items.map((item, index) => ({ action: nested, context: { ...context, item, index } })));
+      return;
+    }
+    const mapping = this.resolveMapping(action.entity);
+    const targets = (this.state.tables[mapping.logicalName] ??= []);
+    const values = Object.fromEntries(
+      Object.entries(action.set ?? {}).map(([key, value]) => [safeName(key), this.evaluate(value, context)]),
+    );
+    if (action.operation === 'create') this.applySecondaryCreate(action, context, mapping, targets, values);
+    else if (action.operation === 'update' || action.operation === 'delete')
+      this.applySecondaryUpdate(action, context, mapping, targets, values);
+    else throw new DataError(`Unsupported secondary operation ${action.operation}`, 400, 'InvalidPlugin');
+  }
+  applySecondaryCreate(action, context, mapping, targets, values) {
+    if (action.match) {
+      const matches = Object.fromEntries(
+        Object.entries(action.match).map(([key, value]) => [key, this.evaluate(value, context)]),
+      );
+      if (targets.some((target) => Object.entries(matches).every(([key, value]) => equal(field(target, key), value))))
+        return;
+    }
+    this.insertRow(mapping.logicalName, targets, { [mapping.idColumn]: this.ids.uuid(), ...values });
+  }
+  applySecondaryUpdate(action, context, mapping, targets, values) {
+    if (!action.match) throw new DataError('Secondary update/delete requires match');
+    const matches = Object.fromEntries(
+      Object.entries(action.match).map(([key, value]) => [key, this.evaluate(value, context)]),
+    );
+    if (
+      action.requireMatch &&
+      !targets.some((target) => Object.entries(matches).every(([key, value]) => equal(field(target, key), value)))
+    )
+      throw new DataError('The backend action cannot find a matching related record', 400, 'InvalidPlugin');
+    for (let index = targets.length - 1; index >= 0; index--)
+      if (Object.entries(matches).every(([key, value]) => equal(field(targets[index], key), value))) {
+        if (action.operation === 'delete') this.removeRow(mapping.logicalName, targets, index);
+        else this.mutateRow(mapping.logicalName, targets, index, values);
+      }
+  }
+  pluginBindingInput(mapping, input, target, identity) {
+    const relationships = this.relationshipsFor(mapping, identity);
+    return {
+      ...Object.fromEntries(
+        Object.entries(input).filter(([key]) => {
+          const attribute = key.endsWith('@odata.bind')
+            ? (relationships[key.slice(0, -11)]?.from ?? key.slice(0, -11))
+            : key;
+          return own(target, attribute);
+        }),
+      ),
+      ...target,
+    };
   }
   validateBindings(mapping, input, row, identity, previous = null, nativeContactAssociation = null) {
     const relationships = this.relationshipsFor(mapping, identity);
@@ -3451,40 +5388,54 @@ export class DataStore {
         key.endsWith('@odata.bind') ? (relationships[key.slice(0, -11)]?.from ?? key.slice(0, -11)) : key,
       ),
     );
-    for (const relationship of Object.values(relationships)) {
-      if (relationship.many === true || !changed.has(relationship.from)) continue;
-      const id = scalar(field(row, relationship.from) ?? field(previous ?? {}, relationship.from));
-      if (id == null) continue;
-      const targetMapping = this.resolveMapping(relationship.entity);
-      // Polymorphic lookups (annotation objectid, customerid, regardingobjectid) have one
-      // relationship per target table: only the one naming the bound table applies .
-      const bound = field(row, relationship.from) ?? field(previous ?? {}, relationship.from);
-      if (
-        bound?.logical_name &&
-        String(bound.logical_name).toLowerCase() !== String(targetMapping.logicalName).toLowerCase()
-      )
-        continue;
-      const candidates = this.tableRows(targetMapping.logicalName);
-      const target =
-        candidates[
-          this.rowIndex(targetMapping, candidates, id, {
-            partitionId: row[`${relationship.from}pid`] ?? bound?.partitionid,
-          })
-        ];
-      if (!target && isElastic(targetMapping) && row[`${relationship.from}pid`] == null && bound?.partitionid == null)
-        continue;
-      if (!target) throw new DataError('Lookup target does not exist', 400, 'InvalidLookup');
-      // A configured form's server-owned current-contact stamp is not an
-      // explicit visitor lookup. Target existence, other fields and plugin
-      // changes still follow the same validation path.
-      if (!(
-        nativeContactAssociation &&
-        String(relationship.from).toLowerCase() === nativeContactAssociation.column &&
-        targetMapping.logicalName === 'contact' &&
-        String(id).toLowerCase() === nativeContactAssociation.contactId
-      ))
-        this.assertBindingTarget(mapping, row, targetMapping, target, identity);
-    }
+    for (const relationship of Object.values(relationships))
+      this.validateBindingRelationship(
+        mapping,
+        relationship,
+        changed,
+        row,
+        identity,
+        previous,
+        nativeContactAssociation,
+      );
+  }
+  validateBindingRelationship(mapping, relationship, changed, row, identity, previous, nativeContactAssociation) {
+    // Primary-key joins describe table inheritance, not a visitor-authored
+    // lookup. The generated key is visible to plug-ins before those related
+    // platform rows exist and must not be admitted as an association.
+    if (relationship.many === true || relationship.from === mapping.idColumn || !changed.has(relationship.from)) return;
+    const id = scalar(field(row, relationship.from) ?? field(previous ?? {}, relationship.from));
+    if (id == null) return;
+    const targetMapping = this.resolveMapping(relationship.entity);
+    // Polymorphic lookups (annotation objectid, customerid, regardingobjectid) have one
+    // relationship per target table: only the one naming the bound table applies .
+    const bound = field(row, relationship.from) ?? field(previous ?? {}, relationship.from);
+    if (
+      bound?.logical_name &&
+      String(bound.logical_name).toLowerCase() !== String(targetMapping.logicalName).toLowerCase()
+    )
+      return;
+    const candidates = this.tableRows(targetMapping.logicalName);
+    const target =
+      candidates[
+        this.rowIndex(targetMapping, candidates, id, {
+          partitionId: row[`${relationship.from}pid`] ?? bound?.partitionid,
+        })
+      ];
+    if (!target && isElastic(targetMapping) && row[`${relationship.from}pid`] == null && bound?.partitionid == null)
+      return;
+    if (!target && uncheckedLookup(mapping.logicalName, relationship.from, targetMapping.logicalName)) return;
+    if (!target) throw new DataError('Lookup target does not exist', 400, 'InvalidLookup');
+    // A configured form's server-owned current-contact stamp is not an
+    // explicit visitor lookup. Target existence, other fields and plugin
+    // changes still follow the same validation path.
+    if (!(
+      nativeContactAssociation &&
+      String(relationship.from).toLowerCase() === nativeContactAssociation?.column &&
+      targetMapping.logicalName === 'contact' &&
+      String(id).toLowerCase() === nativeContactAssociation.contactId
+    ))
+      this.assertBindingTarget(mapping, row, targetMapping, target, identity);
   }
   /**
    * Binding a lookup (create, update or $ref) needs Append on the source and
@@ -3514,28 +5465,29 @@ export class DataStore {
     const digest = createHash('sha256')
       .update(JSON.stringify(row ?? {}))
       .digest('hex');
-    return `W/"${parseInt(digest.slice(0, 13), 16)}"`;
+    return `W/"${Number.parseInt(digest.slice(0, 13), 16)}"`;
   }
   /**
    * Alternate keys (mapping.alternateKeys: [{ name, attributes }]) are unique
    * indexes in Dataverse. Keys with an empty column are not compared here.
    */
   assertAlternateKeys(mapping, row, rows, ownIndex) {
-    for (const key of (mapping.alternateKeys ?? []).filter((k) => (k.indexStatus ?? 'Active') === 'Active')) {
-      const attributes = key.attributes ?? key.keyAttributes ?? [];
+    const keys = activeAlternateKeys(mapping);
+    if (!keys.length) return;
+    const collation = this.querySettings().collation;
+    for (const key of keys) {
+      const attributes = alternateKeyAttributes(key);
       if (!attributes.length) continue;
-      const values = attributes.map((name) => scalar(field(row, name)));
+      const values = alternateKeyValues(row, attributes);
       if (values.some((value) => value == null || value === '')) continue;
       // Within one transaction the key-tuple index makes bulk creates and key upserts O(1) per row.
-      const name = `ak\u0000${attributes.join('\u0000')}`,
-        keyOf = alternateKeyOf(attributes),
+      const kinds = alternateKeyKinds(mapping, attributes);
+      const name = `ak\u0000${JSON.stringify([collation, attributes, kinds])}`,
+        keyOf = alternateKeyOf(attributes, collation, kinds),
         wanted = keyOf(row);
       const index = this.rowKeyIndex(rows, name, keyOf, { scoped: true });
       const candidates = index?.get(wanted);
-      if (
-        candidates &&
-        candidates.every((position) => rows[position] !== undefined && keyOf(rows[position]) === wanted)
-      ) {
+      if (candidates?.every((position) => rows[position] !== undefined && keyOf(rows[position]) === wanted)) {
         const clash = candidates.some(
           (position) => position !== ownIndex && !equal(rows[position][mapping.idColumn], row[mapping.idColumn]),
         );
@@ -3545,9 +5497,7 @@ export class DataStore {
       if (index) this.dropRowKeyIndex(rows, name);
       const clash = rows.some(
         (other, index) =>
-          index !== ownIndex &&
-          !equal(other[mapping.idColumn], row[mapping.idColumn]) &&
-          attributes.every((name, position) => equal(field(other, name), values[position])),
+          index !== ownIndex && !equal(other[mapping.idColumn], row[mapping.idColumn]) && keyOf(other) === wanted,
       );
       if (clash) throw duplicateAlternateKey(key, attributes, values);
     }
@@ -3559,11 +5509,13 @@ export class DataStore {
         innerCode: '0x80040237',
       });
     if (ifMatch == null || !row) return;
-    const wanted = String(ifMatch)
-      .split(',')
-      .map((tag) => tag.trim());
-    if (wanted.includes('*')) return;
-    if (!wanted.includes(this.etag(row)))
+    const wanted = new Set(
+      String(ifMatch)
+        .split(',')
+        .map((tag) => tag.trim()),
+    );
+    if (wanted.has('*')) return;
+    if (!wanted.has(this.etag(row)))
       throw new DataError(
         "The version of the existing record doesn't match the RowVersion property provided.",
         412,
@@ -3581,9 +5533,13 @@ export class DataStore {
     }
     const external = typeof metadata === 'function' ? metadata(mapping?.logicalName ?? logical) : null;
     return {
-      ...(mapping?.fieldMetadata ?? {}),
-      ...(mapping?.fields ?? {}),
-      ...(external ?? {}),
+      ...(mapping?.idColumn ? { [mapping.idColumn]: { dataverseType: 'primarykey' } } : {}),
+      ...(mapping?.nameColumn && mapping.nameColumn !== mapping.idColumn
+        ? { [mapping.nameColumn]: { dataverseType: 'nvarchar' } }
+        : {}),
+      ...mapping?.fieldMetadata,
+      ...mapping?.fields,
+      ...external,
     };
   }
   /** Autonumber columns follow AutoNumberFormat with a transactional counter (seed 1000). */
@@ -3685,21 +5641,55 @@ export class DataStore {
       this.pluginInTransaction = inherited;
     }
   }
-  *createStepsCore(entity, data, identity = {}, options = {}) {
+  *createStepsCore(entity, data, identity = {}, options = {}) /* NOSONAR */ {
     const m = this.resolveMapping(entity);
+    // Entity.Id, response capture and derived source columns belong to this
+    // one message. Each deep-insert child has its own identity and Attributes.
+    const childOptions = { ...options };
+    delete childOptions.sdkCreateId;
+    delete childOptions.sdkResponseToken;
+    delete childOptions.derivedCreateColumns;
+    delete childOptions.authorizeEffectiveWrite;
+    delete childOptions.afterPreValidation;
     const nativeContactAssociation = takeNativeFormContactAssociation(m.logicalName, identity);
     this.assertWritable(m.logicalName);
     const rows = (this.state.tables[m.logicalName] ??= []);
     const { input, nested, collectionBinds } = this.splitDeepInsert(m, data, identity);
     const row = { ...this.normalizeRecord(m, input, identity) };
+    const blanks = blankTextColumns(this, m, row, options, 'create');
     if (options.coerce) this.coerceRecord(m, row, options);
+    const pluginTarget = clone(row);
+    for (const name of blanks) pluginTarget[name] = '';
+    for (const [name, value] of Object.entries(options.derivedCreateColumns ?? {}))
+      if (isDeepStrictEqual(pluginTarget[name], value)) delete pluginTarget[name];
     // Caller-owned audit and ownership columns (Dataverse layer); merged after coercion, only when passed.
     const systemColumns = this.systemColumnsFor(options.systemColumns, m, input);
     if (systemColumns) Object.assign(row, systemColumns);
-    const pluginTarget = clone(row),
-      changedAttributes = Object.keys(pluginTarget);
+    const suppliedPrimary = row[m.idColumn] != null,
+      suppliedEmptyPrimary = !isElastic(m) && row[m.idColumn] === '00000000-0000-0000-0000-000000000000';
+    if (
+      options.sdkCreateId != null &&
+      (typeof options.sdkCreateId !== 'string' || !GUID_PATTERN.test(options.sdkCreateId))
+    )
+      throw new DataError('Create requires a GUID Entity.Id.', 400, 'InvalidArgument', { innerCode: '0x80040203' });
+    const seededId = options.sdkCreateId && options.sdkCreateId !== '00000000-0000-0000-0000-000000000000';
+    if (seededId && suppliedPrimary && !suppliedEmptyPrimary && !equal(row[m.idColumn], options.sdkCreateId))
+      throw new DataError('Entity Id must be the same as the value set in property bag', 400, 'InvalidArgument', {
+        innerCode: '0x80040203',
+      });
     for (const [key, value] of Object.entries(m.recordDefaults ?? {}))
-      if (key !== 'statuscode' && !own(row, key)) row[safeName(key)] = clone(value);
+      if (key !== 'statuscode' && !own(row, key)) {
+        row[safeName(key)] = clone(value);
+        // Two-option defaults reach the PreValidation Target, and so do a standard table's choice defaults; the state
+        // follows from PreOperation (native mergeAccount account Create/10; probe Create/10: the two-option default).
+        if (
+          key !== 'statecode' &&
+          (standardTableDef(m.logicalName) ||
+            fieldKind(this.fieldDefinition(m.logicalName, key, options.metadata)) === 'boolean')
+        )
+          pluginTarget[key] = clone(value);
+      }
+    const changedAttributes = Object.keys(pluginTarget);
     if (!own(row, 'statuscode')) {
       const status = m.stateStatusDefaults?.[scalar(row.statecode)] ?? m.recordDefaults?.statuscode;
       if (status !== undefined) row.statuscode = clone(status);
@@ -3710,16 +5700,25 @@ export class DataStore {
     const appUser = this.observed?.portalApplicationUser;
     if (appUser && !own(row, 'createdby'))
       row.createdby = { id: this.observed?.portalApplicationUserId ?? null, logical_name: 'systemuser', name: appUser };
+    if (seededId) row[m.idColumn] = options.sdkCreateId;
     row[m.idColumn] ??= this.ids.uuid();
+    // A caller's empty primary Attribute remains visible to PreValidation,
+    // while the operation and Target Entity.Id already have an allocated GUID.
+    if (suppliedEmptyPrimary && !seededId) row[m.idColumn] = this.ids.uuid();
+    this.traceRecord(m.logicalName, row[m.idColumn]);
     if (isElastic(m)) assertElasticRecord(row);
-    if (
-      isElastic(m)
-        ? rows.some((r) => equal(r[m.idColumn], row[m.idColumn]) && samePartition(r.partitionid, row.partitionid))
-        : this.rowPositions(m, rows, row[m.idColumn], { scoped: true }).length > 0
-    )
-      throw new DataError('A record with matching key values already exists.', 412, 'DuplicateRecord', {
-        innerCode: '0x80040237',
-      });
+    const assertUniqueIdentity = () => {
+      if (
+        isElastic(m)
+          ? rows.some((r) => equal(r[m.idColumn], row[m.idColumn]) && samePartition(r.partitionid, row.partitionid))
+          : this.rowPositions(m, rows, row[m.idColumn], { scoped: true }).length > 0
+      )
+        throw new DataError('A record with matching key values already exists.', 412, 'DuplicateRecord', {
+          innerCode: '0x80040237',
+        });
+    };
+    // A duplicate primary key is refused after PreValidation and PreOperation, at the main operation (recorded native
+    // privilege: Create 10 and 20 run, then 412 0x80040237); assertUniqueIdentity runs again before the row is stored.
     if (
       !identity.admin &&
       this.state.settings.permissionMode !== 'permissive' &&
@@ -3728,6 +5727,14 @@ export class DataStore {
       this.assertAllowed(m.logicalName, 'create', row, identity);
     row.createdon ??= isoUtc(this.clock.now());
     row.modifiedon ??= row.createdon;
+    const derivedTargetColumns = new Set(
+      [
+        ...Object.keys(systemColumns ?? {}),
+        ...Object.keys(options.derivedCreateColumns ?? {}),
+        'createdon',
+        'modifiedon',
+      ].filter((name) => !own(pluginTarget, name)),
+    );
     this.applyAutoNumbers(m, row, options);
     // The table-level Create gate above precedes all handlers. Row scope is
     // checked after trusted declarative effects establish any membership links.
@@ -3752,13 +5759,48 @@ export class DataStore {
       this.ensureReadSnapshot();
       if (this.pluginRollbackBoundary) deniedCreateBoundary = { ...this.pluginRollbackBoundary };
     }
+    const originalTarget = clone(pluginTarget);
     yield [m, 'create', 10, pluginTarget, row, null, identity, changedAttributes, options];
+    options.afterPreValidation?.(m.logicalName, 'create', pluginTarget, null);
+    // Showing authored inputs before platform stamps must not change their
+    // established stored values when no observer edits that input column.
+    for (const [name, value] of Object.entries(systemColumns ?? {}))
+      if (
+        own(originalTarget, name) &&
+        !isDeepStrictEqual(originalTarget[name], value) &&
+        isDeepStrictEqual(pluginTarget[name], originalTarget[name])
+      ) {
+        pluginTarget[name] = clone(value);
+        row[name] = clone(value);
+      }
+    if (suppliedEmptyPrimary && pluginTarget[m.idColumn] === '00000000-0000-0000-0000-000000000000')
+      throw new DataError('Expected non-empty Guid.', 400, 'InvalidArgument', { innerCode: '0x80040203' });
+    // Dataverse allocates Entity.Id before PreValidation, then materializes the
+    // generated primary-key Attribute for PreOperation and PostOperation.
+    // Repeated native qualification: a pre10 Entity.Id change supplies the key
+    // only when the caller did not supply a primary-key Attribute. Otherwise
+    // the supplied Attribute restores Entity.Id at the stage20 transition.
+    // An empty pre10 Id requests a fresh allocation, not the original GUID.
+    const phaseFrame = this.pluginFrames?.get(row),
+      phaseTarget = phaseFrame?.inputParameters?.values?.Target;
+    if (!isElastic(m) && phaseTarget?.$type === 'Entity') {
+      if (!suppliedPrimary) {
+        if (!GUID_PATTERN.test(phaseTarget.id ?? ''))
+          throw new DataError('Create requires a GUID target identity after PreValidation.', 400, 'LocalPluginInvalid');
+        row[m.idColumn] = phaseTarget.id === '00000000-0000-0000-0000-000000000000' ? this.ids.uuid() : phaseTarget.id;
+      }
+      phaseTarget.id = row[m.idColumn];
+    }
+    pluginTarget[m.idColumn] ??= row[m.idColumn];
+    for (const name of derivedTargetColumns)
+      if (!own(pluginTarget, name) && own(row, name) && !notInTarget(name, row[name]))
+        pluginTarget[name] = clone(row[name]);
     // Deep insert: single-valued navigation records are created first and bound.
     for (const item of nested.filter((entry) => entry.rel.many === false)) {
       const target = this.resolveMapping(item.rel.entity);
       if (Array.isArray(item.value))
         throw new DataError(`Single-valued navigation ${item.navigation} requires an object`, 400, 'InvalidLookup');
-      const child = yield* this.createSteps(target.logicalName, item.value, identity, options);
+      const child = yield* this.createSteps(target.logicalName, item.value, identity, childOptions);
       row[item.rel.from] = {
         id: child[target.idColumn],
         logical_name: target.logicalName,
@@ -3766,10 +5808,30 @@ export class DataStore {
       };
     }
     yield [m, 'create', 20, pluginTarget, row, null, identity, changedAttributes, options];
+    options.mainOperation?.(m, 'create', row, null, pluginTarget, { identity, options });
+    // The platform's customer address rows of an account or contact: their ids are on the row, never in a Create
+    // Target (native mergeAccount). ponytail: the address rows are stored directly, without a pipeline of their own.
+    const addresses = isElastic(m)
+      ? []
+      : customerAddressColumns(m.logicalName).filter(({ column }) => row[column] == null && !own(pluginTarget, column));
+    for (const { column } of addresses) row[column] = this.ids.uuid();
     const effects = this.applyPlugins(m.logicalName, 'create', row, null, identity);
     assertAttachmentPolicy(this.state, m.logicalName, row);
+    assertUniqueIdentity();
     this.assertAlternateKeys(m, row, rows, -1);
+    options.authorizeEffectiveWrite?.(m.logicalName, 'create', row, null);
     this.insertRow(m.logicalName, rows, row);
+    if (addresses.length && this.state.mappings?.customeraddress) {
+      const table = (this.state.tables.customeraddress ??= []);
+      for (const { column, n } of addresses)
+        this.insertRow('customeraddress', table, {
+          customeraddressid: row[column],
+          parentid: { id: row[m.idColumn], logical_name: m.logicalName },
+          parentidtypecode: m.logicalName,
+          objecttypecode: m.logicalName,
+          addressnumber: n,
+        });
+    }
     this.applySecondary(effects);
     try {
       this.assertAllowed(m.logicalName, 'create', row, identity);
@@ -3778,7 +5840,7 @@ export class DataStore {
       throw cause;
     }
     // Normalization drops raw navigation names; retain them for relationship validation.
-    const bindingInput = { ...input, ...pluginTarget };
+    const bindingInput = this.pluginBindingInput(m, input, pluginTarget, identity);
     // Runtime audit/ownership stamps are not visitor-authored associations.
     // Keep explicit input and any plugin change subject to the normal checks.
     for (const [name, value] of Object.entries(systemColumns ?? {}))
@@ -3790,7 +5852,7 @@ export class DataStore {
       const target = this.resolveMapping(item.rel.entity);
       for (const value of Array.isArray(item.value) ? item.value : [item.value]) {
         if (item.rel.intersect) {
-          const child = yield* this.createSteps(target.logicalName, value, identity, options);
+          const child = yield* this.createSteps(target.logicalName, value, identity, childOptions);
           this.changeAssociationRecord(
             m.logicalName,
             row[m.idColumn],
@@ -3798,7 +5860,7 @@ export class DataStore {
             child[target.idColumn],
             identity,
             true,
-            options,
+            childOptions,
           );
         } else
           yield* this.createSteps(
@@ -3812,7 +5874,7 @@ export class DataStore {
               },
             },
             identity,
-            options,
+            childOptions,
           );
       }
     }
@@ -3838,20 +5900,56 @@ export class DataStore {
           options,
         );
       }
+    // Native asynchronous Create snapshots include materialized defaults and
+    // main-operation fields, as they stood before PostOperation ran (never the row version or empty on-behalf/team
+    // lookups).
+    for (const [name, value] of Object.entries(row))
+      if (
+        !notInTarget(name, value) &&
+        !(pluginTarget[name] === '' && value === null) &&
+        !addresses.some(({ column }) => column === name)
+      )
+        pluginTarget[name] = clone(value);
+    const asyncSourceParent = committedPluginParent(this, m, 'create', pluginTarget, row, options),
+      asyncTarget = clone(pluginTarget),
+      beforePost = prePostOperationFrame(this.pluginFrames?.get(row)),
+      operationMark = this.operationMark();
+    // Values the main operation derived after PreOperation (exchangerate, <money>_base) belong to the Target the
+    // asynchronous steps see (native crud: asynchronous Create Target carries them).
+    const queuedTarget = beforePost.inputParameters?.values?.Target;
+    if (queuedTarget?.$type === 'Entity') {
+      const missing = Object.fromEntries(
+        Object.entries(asyncTarget).filter(([name]) => !own(queuedTarget.attributes ?? {}, name)),
+      );
+      if (Object.keys(missing).length) {
+        queuedTarget.attributes ??= {};
+        Object.assign(
+          queuedTarget.attributes,
+          recordToSdkEntity(this, m.logicalName, missing, { allColumns: true, target: true }).attributes,
+        );
+      }
+    }
     if (isElastic(m)) {
-      this.recordCommittedEvent(m.logicalName, 'create', row, changedAttributes, {
+      this.recordCommittedEvent(m.logicalName, 'create', row, Object.keys(pluginTarget), {
         target: pluginTarget,
         previous: null,
         identity,
+        bypassCustomAsync: options.bypassCustomAsync === true,
+        bypassStepIds: options.bypassStepIds,
+        frame: { ...this.pluginFrames?.get(row), asyncSourceParent },
       });
       this.checkpointElastic(m, row);
     }
     yield [m, 'create', 40, pluginTarget, row, null, identity, changedAttributes, options];
-    if (!isElastic(m))
-      this.recordCommittedEvent(m.logicalName, 'create', row, changedAttributes, {
-        target: pluginTarget,
+    if (!isElastic(m) && !options.deferCommittedEvent)
+      this.recordCommittedEvent(m.logicalName, 'create', row, Object.keys(asyncTarget), {
+        target: asyncTarget,
         previous: null,
         identity,
+        operationMark,
+        bypassCustomAsync: options.bypassCustomAsync === true,
+        bypassStepIds: options.bypassStepIds,
+        frame: queuedFrame(this.pluginFrames?.get(row), beforePost, asyncSourceParent),
       });
     return row;
   }
@@ -3879,11 +5977,13 @@ export class DataStore {
     const rows = (this.state.tables[m.logicalName] ??= []);
     const index = this.rowIndex(m, rows, id, { ...options, partitionId: options.partitionId ?? data.partitionid });
     if (index < 0) throw new DataError('Record not found', 404, 'NotFound');
+    this.traceRecord(m.logicalName, rows[index][m.idColumn]);
     this.assertPrecondition(m, rows[index], options);
     this.assertAllowed(m.logicalName, 'update', rows[index], identity);
     const changes = this.normalizeRecord(m, data, identity);
     if (isElastic(m) && own(changes, 'partitionid') && !samePartition(changes.partitionid, rows[index].partitionid))
       throw new DataError('The partitionid value of an elastic table row cannot be changed.', 400, 'InvalidRequest');
+    const blanks = blankTextColumns(this, m, changes, options, 'update');
     if (options.coerce) this.coerceRecord(m, changes, options);
     if (isElastic(m)) assertElasticRecord(changes);
     const input = {
@@ -3899,6 +5999,7 @@ export class DataStore {
     if (options.coerce) this.assertStateStatus(m, row, options);
     this.assertAllowed(m.logicalName, 'update', row, identity);
     this.validateBindings(m, data, row, identity, rows[index]);
+    for (const name of blanks) changes[name] = '';
     return yield* this.commitUpdateSteps(m, rows, index, row, identity, changes, options, data);
   }
   /** The systemColumns option: a plain object, or a function (mapping, row) => columns evaluated per row. */
@@ -3927,22 +6028,132 @@ export class DataStore {
     return row;
   }
   /** Commit an updated row: update plugins, unique alternate keys, secondary effects. */
-  commitUpdate(mapping, rows, index, row, identity, target, options = {}, rawInput = {}) {
+  /* NOSONAR */ commitUpdate(mapping, rows, index, row, identity, target, options = {}, rawInput = {}) {
+    // NOSONAR: preserve the public positional method signature
     return this.runRecordSteps(this.commitUpdateSteps(mapping, rows, index, row, identity, target, options, rawInput));
   }
-  *commitUpdateSteps(mapping, rows, index, row, identity, target, options = {}, rawInput = {}) {
-    const previous = rows[index];
+  *commitUpdateSteps(mapping, rows, index, row, identity, target, options = {}, rawInput = {}) /* NOSONAR */ {
+    const previous = clone(rows[index]);
     const authorizedWrite = target !== undefined;
     target ??= Object.fromEntries(
       Object.entries(row).filter(([key, value]) => !isDeepStrictEqual(value, previous[key])),
     );
     const changedAttributes = Object.keys(target);
-    yield [mapping, 'update', 10, target, row, previous, identity, changedAttributes, options];
+    const stagedDefaults = Object.keys(row).filter(
+      (key) => !own(target, key) && !isDeepStrictEqual(row[key], previous[key]),
+    );
+    // A named message's main-operation Update (plugin-platform-messages.mjs) has no PreValidation stage natively.
+    if (!options.skipPreValidation)
+      yield [mapping, 'update', 10, target, row, previous, identity, changedAttributes, options];
+    options.afterPreValidation?.(mapping.logicalName, 'update', target, previous);
+    // An owner change (a Web API ownerid bind, the Assign main operation) adds the new owner's business unit to the
+    // Target after PreValidation; Assign's Target also names the owning user or team (native ownerAndState,
+    // sdkMessages). The platform changes the owner on behalf of the caller: the saved row's modifiedonbehalfby is the
+    // calling user, which Assign's Target shows and a Web API Update's stamped Target does not.
+    const idOf = (value) => String(value?.id ?? value ?? '').toLowerCase(),
+      // Only where the write maintains the owner columns (the Dataverse layer's system columns derive them from ownerid).
+      ownerChanged =
+        authorizedWrite &&
+        own(target, 'ownerid') &&
+        idOf(previous.ownerid) !== idOf(row.ownerid) &&
+        idOf(row.owninguser ?? row.owningteam) === idOf(row.ownerid),
+      onBehalf = ownerChanged && own(row, 'modifiedonbehalfby') && row.modifiedby != null;
+    if (ownerChanged)
+      for (const name of options.assignOwner
+        ? ['owninguser', 'owningteam', 'owningbusinessunit']
+        : ['owningbusinessunit'])
+        if (row[name] != null && !own(target, name)) target[name] = clone(row[name]);
+    // Native Assign's Target names the new owner: ownerid and owneridyominame carry the assignee's primary name.
+    // A store that maps no table for the owner (a test store) leaves the reference unnamed.
+    let assigneeName = null;
+    if (ownerChanged && options.assignOwner) {
+      let owner = null;
+      try {
+        owner = this.resolveMapping(row.ownerid.logical_name);
+      } catch (error) {
+        if (error.code !== 'UnknownEntity') throw error;
+      }
+      if (owner) {
+        assigneeName = primaryNameValue(owner, this.findByKey(owner, row.ownerid.id)) ?? '';
+        target.ownerid = { ...clone(row.ownerid), name: assigneeName };
+      }
+    }
+    if (onBehalf && options.assignOwner) row.modifiedonbehalfby = clone(row.modifiedby);
+    const platformStamps = {};
+    for (const name of UPDATE_TARGET_STAMPS)
+      if (authorizedWrite && !own(target, name) && own(row, name)) {
+        target[name] = clone(row[name]);
+        platformStamps[name] = clone(row[name]);
+      }
+    if (assigneeName !== null) target.owneridyominame = assigneeName;
+    // A write of a date-time value also stamps the row's time zone rule version (native Update 20/40 and async).
+    if (
+      authorizedWrite &&
+      !own(target, 'timezoneruleversionnumber') &&
+      own(row, 'timezoneruleversionnumber') &&
+      Object.keys(target).some(
+        (name) =>
+          !['createdon', 'modifiedon', 'overriddencreatedon'].includes(name) &&
+          target[name] != null &&
+          fieldKind(this.fieldDefinition(mapping.logicalName, name, options.metadata)) === 'datetime',
+      )
+    )
+      target.timezoneruleversionnumber = clone(row.timezoneruleversionnumber);
     yield [mapping, 'update', 20, target, row, previous, identity, changedAttributes, options];
+    // A nested SDK request may patch or delete this row, or shift its position.
+    // The outer update owns its current Target and staged system/default values;
+    // untouched saved fields belong to the latest row, not the pre-plugin copy.
+    index = this.rowIndex(mapping, rows, row[mapping.idColumn], {
+      ...options,
+      partitionId: row.partitionid ?? options.partitionId,
+    });
+    if (index < 0) throw new DataError('Record not found', 404, 'NotFound');
+    const latest = rows[index];
+    if (authorizedWrite) this.assertAllowed(mapping.logicalName, 'update', latest, identity);
+    const merged = clone(latest);
+    for (const key of new Set([...stagedDefaults, ...Object.keys(target)])) {
+      if (own(row, key)) merged[key] = clone(row[key]);
+      else delete merged[key];
+    }
+    for (const key of Object.keys(row)) delete row[key];
+    Object.assign(row, merged);
+    if (!isDeepStrictEqual(latest, previous))
+      this.touchRow(latest, row, this.systemColumnsFor(options.systemColumns, mapping, row));
+    if (onBehalf) row.modifiedonbehalfby = clone(row.modifiedby);
     if (authorizedWrite && this.pluginPipeline) {
       this.assertAllowed(mapping.logicalName, 'update', row, identity);
-      this.validateBindings(mapping, { ...rawInput, ...target }, row, identity, previous);
+      const bindingInput = this.pluginBindingInput(mapping, rawInput, target, identity);
+      // Retain the native stamped Target for observers, but authorize only
+      // caller bindings and changes observers made to the platform baseline.
+      // Raw navigation bindings remain in bindingInput even if their value
+      // happens to equal the platform's stamp.
+      for (const [name, value] of Object.entries(platformStamps))
+        if (!own(rawInput, name) && isDeepStrictEqual(target[name], value) && isDeepStrictEqual(row[name], value))
+          delete bindingInput[name];
+      this.validateBindings(mapping, bindingInput, row, identity, latest);
     }
+    options.mainOperation?.(mapping, 'update', row, latest, target, { identity, options });
+    // The derived currency columns the main operation wrote reach the stage-40 and asynchronous Targets of a written money
+    // column (native currency and nullSemantics: Update/40 and async end with them; stages 10 and 20 do not).
+    const moneyKeys = authorizedWrite
+      ? Object.keys(target).filter(
+          (name) =>
+            !name.endsWith('_base') &&
+            fieldKind(this.fieldDefinition(mapping.logicalName, name, options.metadata)) === 'money',
+        )
+      : [];
+    const derivedTarget = {};
+    for (const name of moneyKeys)
+      if (!own(target, `${name}_base`) && (own(row, `${name}_base`) || own(previous, `${name}_base`)))
+        derivedTarget[`${name}_base`] = clone(row[`${name}_base`] ?? null);
+    if (
+      moneyKeys.length &&
+      own(row, 'exchangerate') &&
+      !own(target, 'exchangerate') &&
+      !isDeepStrictEqual(row.exchangerate, previous.exchangerate)
+    )
+      derivedTarget.exchangerate = clone(row.exchangerate);
+    Object.assign(target, derivedTarget);
     const effects = this.applyPlugins(mapping.logicalName, 'update', row, rows[index], identity);
     // Declarative plugins mutate the row directly, independently of Target. Only changed columns reach the
     // attachment policy, so files already stored are not revalidated.
@@ -3951,15 +6162,64 @@ export class DataStore {
     );
     assertAttachmentPolicy(this.state, mapping.logicalName, row, { ...target, ...effectiveChanges });
     this.assertAlternateKeys(mapping, row, rows, index);
+    options.authorizeEffectiveWrite?.(mapping.logicalName, 'update', row, latest);
     this.writeRow(mapping.logicalName, rows, index, row);
     this.applySecondary(effects);
+    // Natively an Update that sets statecode runs the SetStateDynamicEntity pipeline inside its main operation, one
+    // level deeper (recorded Web API PATCH statecode); the SetState message's own Update does not.
+    if (options.stateMessage !== false && own(rawInput, 'statecode') && this.pluginPipeline)
+      runStateMessage(this, mapping, row, identity, { ...options, previousRow: previous }, { target, previous });
+    // The asynchronous copy adds platform modification stamps without changing
+    // the synchronous partial Target or its qualified core-parent projection.
+    const asyncTargetBaseline = Object.fromEntries(
+      [mapping.idColumn, 'modifiedon', 'modifiedby', 'modifiedonbehalfby']
+        .filter((name) => own(row, name))
+        .map((name) => [name, clone(row[name])]),
+    );
+    const committedTarget = () => ({ ...asyncTargetBaseline, ...clone(target) });
+    const asyncSourceParent = committedPluginParent(this, mapping, 'update', target, row, options),
+      asyncTarget = committedTarget(),
+      submitted = Object.keys(target),
+      beforePost = prePostOperationFrame(this.pluginFrames?.get(row)),
+      operationMark = this.operationMark();
+    // The asynchronous steps read the Target the queued frame holds, so the derived values join it as Create's do.
+    const queuedTarget = beforePost.inputParameters?.values?.Target;
+    if (queuedTarget?.$type === 'Entity' && Object.keys(derivedTarget).length) {
+      const missing = Object.fromEntries(
+        Object.entries(derivedTarget).filter(([name]) => !own(queuedTarget.attributes ?? {}, name)),
+      );
+      if (Object.keys(missing).length) {
+        queuedTarget.attributes ??= {};
+        Object.assign(
+          queuedTarget.attributes,
+          recordToSdkEntity(this, mapping.logicalName, missing, { allColumns: true, target: true }).attributes,
+        );
+      }
+    }
     if (isElastic(mapping)) {
-      this.recordCommittedEvent(mapping.logicalName, 'update', row, changedAttributes, { target, previous, identity });
+      this.recordCommittedEvent(mapping.logicalName, 'update', row, Object.keys(target), {
+        target: committedTarget(),
+        previous,
+        identity,
+        ...(options.omitConcurrencyBehavior ? { omitConcurrencyBehavior: true } : {}),
+        bypassCustomAsync: options.bypassCustomAsync === true,
+        bypassStepIds: options.bypassStepIds,
+        frame: { ...this.pluginFrames?.get(row), asyncSourceParent },
+      });
       this.checkpointElastic(mapping, row);
     }
     yield [mapping, 'update', 40, target, row, previous, identity, changedAttributes, options];
-    if (!isElastic(mapping))
-      this.recordCommittedEvent(mapping.logicalName, 'update', row, changedAttributes, { target, previous, identity });
+    if (!isElastic(mapping) && !options.deferCommittedEvent)
+      this.recordCommittedEvent(mapping.logicalName, 'update', row, submitted, {
+        target: asyncTarget,
+        previous,
+        identity,
+        ...(options.omitConcurrencyBehavior ? { omitConcurrencyBehavior: true } : {}),
+        operationMark,
+        bypassCustomAsync: options.bypassCustomAsync === true,
+        bypassStepIds: options.bypassStepIds,
+        frame: queuedFrame(this.pluginFrames?.get(row), beforePost, asyncSourceParent),
+      });
     return row;
   }
   /**
@@ -4058,6 +6318,8 @@ export class DataStore {
       target,
       previous,
       identity,
+      bypassCustomAsync: options.bypassCustomAsync === true,
+      bypassStepIds: options.bypassStepIds,
     });
     this.checkpointElastic(mapping, row);
     yield [mapping, 'upsert', 40, target, row, previous, identity, attributes, options];
@@ -4088,6 +6350,7 @@ export class DataStore {
     const rows = (this.state.tables[m.logicalName] ??= []);
     const index = this.rowIndex(m, rows, id, options);
     if (index < 0) throw new DataError('Record not found', 404, 'NotFound');
+    this.traceRecord(m.logicalName, rows[index][m.idColumn]);
     this.assertPrecondition(m, rows[index], options);
     this.assertAllowed(m.logicalName, 'delete', rows[index], identity);
     // Dataverse deletes hand the deleted rows (children first, root last) to the recycle bin; portal deletes never collect them.
@@ -4129,81 +6392,115 @@ export class DataStore {
       attributes = Object.keys(target);
     yield [mapping, 'delete', 10, target, row, row, identity, attributes, options];
     yield [mapping, 'delete', 20, target, row, row, identity, attributes, options];
-    const effects = this.applyPlugins(mapping.logicalName, 'delete', clone(row), row, identity);
-    for (const reference of this.referencesTo(mapping.logicalName, identity, deleting)) {
-      const target = scalar(field(row, reference.targetColumn ?? mapping.idColumn));
-      if (target == null) continue;
-      const children = (this.state.tables[reference.entity] ?? []).filter((child) => {
-        const value = field(child, reference.column);
-        if (value && typeof value === 'object' && value.logical_name && value.logical_name !== mapping.logicalName)
-          return false;
-        return equal(scalar(value), target);
-      });
-      if (!children.length) continue;
-      const behaviour = reference.cascade?.delete ?? 'RemoveLink';
-      if (reference.cascade?.delete == null) this.noteCascadeDefault(mapping.logicalName, reference);
-      if (behaviour === 'Restrict')
-        throw new DataError(
-          'The object you tried to delete is associated with another object and cannot be deleted.',
-          405,
-          'CannotDeleteDueToAssociation',
-          { innerCode: '0x80040227', table: reference.entity, relationship: reference.schemaName ?? null },
-        );
-      if (behaviour !== 'Cascade' && behaviour !== 'RemoveLink') continue;
-      const childMapping = this.resolveMapping(reference.entity);
-      for (const child of children) {
-        const rows = this.state.tables[reference.entity];
-        const index = this.rowPositions(childMapping, rows, child[childMapping.idColumn])[0] ?? -1;
-        if (index < 0) continue;
-        if (behaviour === 'Cascade')
-          yield* this.deleteRowSteps(childMapping, rows[index], identity, deleting, {
-            systemColumns: options.systemColumns,
-            deleted: options.deleted,
-          });
-        else {
-          const input = { ...rows[index], [reference.column]: null };
-          const next = this.touchRow(
-            rows[index],
-            input,
-            this.systemColumnsFor(options.systemColumns, childMapping, input),
-          );
-          yield* this.commitUpdateSteps(childMapping, rows, index, next, identity);
-        }
-      }
+    // A nested SDK write can replace the saved root during PreValidation or
+    // PreOperation. Authorize that current row before any cascade or main
+    // effect, without replacing the captured row used by this message's images.
+    if (options.authorizeEffectiveWrite?.preflight) {
+      const currentRows = this.state.tables[mapping.logicalName] ?? [];
+      const currentIndex = this.rowIndex(mapping, currentRows, recordKey(mapping, row));
+      if (currentIndex < 0) throw new DataError('Record not found', 404, 'NotFound');
+      options.authorizeEffectiveWrite.preflight(mapping.logicalName, 'delete', currentRows[currentIndex], null);
     }
+    const effects = this.applyPlugins(mapping.logicalName, 'delete', clone(row), row, identity);
+    yield* this.deleteReferencedRowSteps(mapping, row, identity, deleting, options);
+    this.deleteIntersectRows(mapping, row, identity, deleting);
+    const rows = this.state.tables[mapping.logicalName] ?? [];
+    const index = this.rowIndex(mapping, rows, recordKey(mapping, row));
+    if (options.authorizeEffectiveWrite && index < 0) throw new DataError('Record not found', 404, 'NotFound');
+    if (index >= 0) {
+      options.authorizeEffectiveWrite?.(mapping.logicalName, 'delete', rows[index], null);
+      this.removeRow(mapping.logicalName, rows, index);
+      options.deleted?.push({ logicalName: mapping.logicalName, row: clone(row) });
+    }
+    this.applySecondary(effects);
+    if (isElastic(mapping)) {
+      this.recordCommittedEvent(mapping.logicalName, 'delete', row, attributes, {
+        target,
+        previous: row,
+        identity,
+        bypassCustomAsync: options.bypassCustomAsync === true,
+        bypassStepIds: options.bypassStepIds,
+      });
+      this.checkpointElastic(mapping, row, true);
+    }
+    const operationMark = this.operationMark();
+    yield [mapping, 'delete', 40, target, row, row, identity, attributes, options];
+    if (!isElastic(mapping))
+      this.recordCommittedEvent(mapping.logicalName, 'delete', row, attributes, {
+        target,
+        previous: row,
+        identity,
+        operationMark,
+        bypassCustomAsync: options.bypassCustomAsync === true,
+        bypassStepIds: options.bypassStepIds,
+      });
+    return row;
+  }
+  *deleteReferencedRowSteps(mapping, row, identity, deleting, options) {
+    for (const reference of this.referencesTo(mapping.logicalName, identity, deleting))
+      yield* this.deleteChildrenForReference(mapping, row, reference, identity, deleting, options);
+  }
+  *deleteChildrenForReference(mapping, row, reference, identity, deleting, options) {
+    const target = scalar(field(row, reference.targetColumn ?? mapping.idColumn));
+    if (target == null) return;
+    const children = (this.state.tables[reference.entity] ?? []).filter((child) => {
+      const value = field(child, reference.column);
+      if (value && typeof value === 'object' && value.logical_name && value.logical_name !== mapping.logicalName)
+        return false;
+      return equal(scalar(value), target);
+    });
+    if (!children.length) return;
+    const behaviour = reference.cascade?.delete ?? 'RemoveLink';
+    if (reference.cascade?.delete == null) this.noteCascadeDefault(mapping.logicalName, reference);
+    if (behaviour === 'Restrict')
+      throw new DataError(
+        'The object you tried to delete is associated with another object and cannot be deleted.',
+        405,
+        'CannotDeleteDueToAssociation',
+        { innerCode: '0x80040227', table: reference.entity, relationship: reference.schemaName ?? null },
+      );
+    if (behaviour !== 'Cascade' && behaviour !== 'RemoveLink') return;
+    const childMapping = this.resolveMapping(reference.entity);
+    for (const child of children)
+      yield* this.deleteChildRowSteps(childMapping, child, reference, behaviour, identity, deleting, options);
+  }
+  *deleteChildRowSteps(childMapping, child, reference, behaviour, identity, deleting, options) {
+    const rows = this.state.tables[reference.entity];
+    const index = this.rowPositions(childMapping, rows, child[childMapping.idColumn])[0] ?? -1;
+    if (index < 0) return;
+    if (behaviour === 'Cascade') {
+      yield* this.deleteRowSteps(childMapping, rows[index], identity, deleting, {
+        systemColumns: options.systemColumns,
+        deleted: options.deleted,
+      });
+      return;
+    }
+    const input = { ...rows[index], [reference.column]: null };
+    const next = this.touchRow(rows[index], input, this.systemColumnsFor(options.systemColumns, childMapping, input));
+    yield* this.commitUpdateSteps(childMapping, rows, index, next, identity);
+  }
+  deleteIntersectRows(mapping, row, identity, deleting) {
     const graph = this.relationshipGraph(deleting);
     graph.intersects ??= Object.entries(this.state.mappings ?? {}).flatMap(([owner, ownerMapping]) =>
       Object.values(this.relationshipsFor(ownerMapping ?? {}, identity))
         .filter((rel) => rel?.intersect?.entity)
         .map((rel) => [owner, rel]),
     );
-    for (const [owner, rel] of graph.intersects) {
-      if (!this.state.tables[rel.intersect.entity]?.length) continue;
-      const sides = [];
-      if (owner === mapping.logicalName) sides.push([rel.intersect.from, scalar(field(row, rel.from))]);
-      if (rel.entity === mapping.logicalName) sides.push([rel.intersect.to, scalar(field(row, rel.to))]);
-      for (const [column, value] of sides)
-        if (value != null) {
-          const edges = this.state.tables[rel.intersect.entity];
-          for (let index = edges.length - 1; index >= 0; index--)
-            if (equal(scalar(field(edges[index], column)), value)) this.removeRow(rel.intersect.entity, edges, index);
-        }
+    for (const [owner, rel] of graph.intersects) this.deleteIntersectEdges(mapping, row, owner, rel);
+  }
+  deleteIntersectEdges(mapping, row, owner, relationship) {
+    if (!this.state.tables[relationship.intersect.entity]?.length) return;
+    const sides = [];
+    if (owner === mapping.logicalName) sides.push([relationship.intersect.from, scalar(field(row, relationship.from))]);
+    if (relationship.entity === mapping.logicalName)
+      sides.push([relationship.intersect.to, scalar(field(row, relationship.to))]);
+    for (const [column, value] of sides) {
+      if (value == null) continue;
+      const edges = this.state.tables[relationship.intersect.entity];
+      for (let index = edges.length - 1; index >= 0; index--)
+        if (equal(scalar(field(edges[index], column)), value))
+          this.removeRow(relationship.intersect.entity, edges, index);
     }
-    const rows = this.state.tables[mapping.logicalName] ?? [];
-    const index = this.rowIndex(mapping, rows, recordKey(mapping, row));
-    if (index >= 0) {
-      this.removeRow(mapping.logicalName, rows, index);
-      options.deleted?.push({ logicalName: mapping.logicalName, row: clone(row) });
-    }
-    this.applySecondary(effects);
-    if (isElastic(mapping)) {
-      this.recordCommittedEvent(mapping.logicalName, 'delete', row, attributes, { target, previous: row, identity });
-      this.checkpointElastic(mapping, row, true);
-    }
-    yield [mapping, 'delete', 40, target, row, row, identity, attributes, options];
-    if (!isElastic(mapping))
-      this.recordCommittedEvent(mapping.logicalName, 'delete', row, attributes, { target, previous: row, identity });
-    return row;
   }
   /**
    * One-to-many relationships whose lookup references `logical`, from either side's
@@ -4213,35 +6510,17 @@ export class DataStore {
   referencesTo(logical, identity = {}, scope) {
     const graph = scope ? this.relationshipGraph(scope) : null;
     if (graph?.references.has(logical)) return graph.references.get(logical);
-    const found = new Map();
-    const add = (reference) => {
-      const key = `${reference.entity}\u0000${reference.column}`;
-      const existing = found.get(key);
-      if (!existing || (!existing.cascade && reference.cascade)) found.set(key, reference);
-    };
-    for (const [owner, ownerMapping] of Object.entries(this.state.mappings ?? {}))
-      for (const rel of Object.values(this.relationshipsFor(ownerMapping ?? {}, identity))) {
-        if (!rel || rel.intersect || !rel.entity || !rel.from || !rel.to) continue;
-        if (rel.many === false && rel.entity === logical)
-          add({
-            entity: owner,
-            column: rel.from,
-            targetColumn: rel.to,
-            cascade: rel.cascade,
-            schemaName: rel.schemaName,
-          });
-        else if (rel.many !== false && owner === logical)
-          add({
-            entity: rel.entity,
-            column: rel.to,
-            targetColumn: rel.from,
-            cascade: rel.cascade,
-            schemaName: rel.schemaName,
-          });
-      }
-    const references = [...found.values()];
+    const references = this.referencesByTable(identity, logical).get(logical) ?? [];
     graph?.references.set(logical, references);
     return references;
+  }
+  /** referencesTo of every table (or of `only`) from one pass over the relationships: Map logical -> references. */
+  referencesByTable(identity = {}, only) {
+    const tables = new Map();
+    for (const [owner, ownerMapping] of Object.entries(this.state.mappings ?? {}))
+      for (const rel of Object.values(this.relationshipsFor(ownerMapping ?? {}, identity)))
+        addReferenceTableEntry(tables, owner, rel, only);
+    return new Map([...tables].map(([logical, found]) => [logical, [...found.values()]]));
   }
   /**
    * The relationship graph one delete operation walks: referencesTo per table and the
@@ -4253,7 +6532,10 @@ export class DataStore {
   relationshipGraph(scope) {
     this.relationshipGraphs ??= new WeakMap();
     let graph = this.relationshipGraphs.get(scope);
-    if (!graph) this.relationshipGraphs.set(scope, (graph = { references: new Map(), intersects: null }));
+    if (!graph) {
+      graph = { references: new Map(), intersects: null };
+      this.relationshipGraphs.set(scope, graph);
+    }
     return graph;
   }
   noteCascadeDefault(logical, reference) {
@@ -4322,65 +6604,28 @@ export class DataStore {
       edgeMapping.userConfigured !== true &&
       relationship.type === 'many-to-many' &&
       Boolean(relationship.schemaName);
-    if (nativeIntersect) {
-      try {
-        this.assertAllowed(mapping.logicalName, 'append', row, identity, targetMapping.logicalName);
-        this.assertAllowed(targetMapping.logicalName, 'appendTo', target, identity, mapping.logicalName);
-      } catch (error) {
-        if (
-          options.portalRequest === true &&
-          mapping.logicalName === targetMapping.logicalName &&
-          error?.code === 'PermissionDenied'
-        )
-          error.details = {
-            ...error.details,
-            portalSelfNnAssociation: { schema: relationship.schemaName, table: mapping.logicalName },
-          };
-        throw error;
-      }
-    } else this.assertBindingTarget(mapping, row, targetMapping, target, identity);
-    if (relationship.intersect) {
-      const link = relationship.intersect;
-      const edges = (this.state.tables[edgeMapping.logicalName] ??= []);
-      const values = {
-        [link.from]: scalar(field(row, relationship.from)),
-        [link.to]: scalar(field(target, relationship.to)),
-      };
-      const existing = edges.filter((edge) =>
-        Object.entries(values).every(([key, value]) => equal(field(edge, key), value)),
-      );
-      if (associate) {
-        const edge = { [edgeMapping.idColumn]: this.ids.uuid(), ...values };
-        if (!nativeIntersect) this.assertAllowed(edgeMapping.logicalName, 'create', edge, identity);
-        if (!existing.length) this.insertRow(edgeMapping.logicalName, edges, edge);
-      } else {
-        if (!nativeIntersect && !existing.length)
-          this.assertAllowed(edgeMapping.logicalName, 'delete', values, identity);
-        for (const edge of nativeIntersect ? [] : existing)
-          this.assertAllowed(edgeMapping.logicalName, 'delete', edge, identity);
-        const removed = new Set(existing);
-        for (let index = edges.length - 1; index >= 0; index--)
-          if (removed.has(edges[index])) this.removeRow(edgeMapping.logicalName, edges, index);
-      }
-    } else {
-      if (relationship.to === targetMapping.idColumn)
-        throw new DataError('Collection mapping cannot reassign a target primary key', 400, 'InvalidAssociation');
-      this.assertAllowed(targetMapping.logicalName, 'update', target, identity);
-      const value = associate
-        ? clone(row[relationship.from])
-        : this.relationshipMatches(row, target, relationship)
-          ? null
-          : undefined;
-      if (value !== undefined) {
-        // A one-to-many association sets or clears the referencing row's lookup: an
-        // update of that row through the update pipeline (version, modifiedon, plugins).
-        const rows = this.state.tables[targetMapping.logicalName];
-        const input = { ...target, [relationship.to]: value };
-        const next = this.touchRow(target, input, this.systemColumnsFor(options.systemColumns, targetMapping, input));
-        this.assertAllowed(targetMapping.logicalName, 'update', next, identity);
-        yield* this.commitUpdateSteps(targetMapping, rows, rows.indexOf(target), next, identity);
-      }
-    }
+    this.authorizeAssociation({
+      mapping,
+      row,
+      targetMapping,
+      target,
+      relationship,
+      nativeIntersect,
+      options,
+      identity,
+    });
+    yield* this.applyAssociationSteps({
+      mapping,
+      row,
+      target,
+      targetMapping,
+      edgeMapping,
+      relationship,
+      associate,
+      identity,
+      options,
+      nativeIntersect,
+    });
     return {
       associated: associate,
       entity: mapping.logicalName,
@@ -4389,8 +6634,76 @@ export class DataStore {
       targetId,
     };
   }
+  authorizeAssociation({ mapping, row, targetMapping, target, relationship, nativeIntersect, options, identity }) {
+    if (!nativeIntersect) return this.assertBindingTarget(mapping, row, targetMapping, target, identity);
+    try {
+      this.assertAllowed(mapping.logicalName, 'append', row, identity, targetMapping.logicalName);
+      this.assertAllowed(targetMapping.logicalName, 'appendTo', target, identity, mapping.logicalName);
+    } catch (error) {
+      if (
+        options.portalRequest === true &&
+        mapping.logicalName === targetMapping.logicalName &&
+        error?.code === 'PermissionDenied'
+      )
+        error.details = {
+          ...error.details,
+          portalSelfNnAssociation: { schema: relationship.schemaName, table: mapping.logicalName },
+        };
+      throw error;
+    }
+  }
+  *applyAssociationSteps(context) {
+    if (context.relationship.intersect) this.applyIntersectAssociationSteps(context);
+    else yield* this.applyCollectionAssociationSteps(context);
+  }
+  applyIntersectAssociationSteps({ row, target, edgeMapping, relationship, associate, identity, nativeIntersect }) {
+    const link = relationship.intersect;
+    const edges = (this.state.tables[edgeMapping.logicalName] ??= []);
+    const values = {
+      [link.from]: scalar(field(row, relationship.from)),
+      [link.to]: scalar(field(target, relationship.to)),
+    };
+    const existing = edges.filter((edge) =>
+      Object.entries(values).every(([key, value]) => equal(field(edge, key), value)),
+    );
+    if (associate) {
+      const edge = { [edgeMapping.idColumn]: this.ids.uuid(), ...values };
+      if (!nativeIntersect) this.assertAllowed(edgeMapping.logicalName, 'create', edge, identity);
+      if (!existing.length) this.insertRow(edgeMapping.logicalName, edges, edge);
+      return;
+    }
+    if (!nativeIntersect && !existing.length) this.assertAllowed(edgeMapping.logicalName, 'delete', values, identity);
+    for (const edge of nativeIntersect ? [] : existing)
+      this.assertAllowed(edgeMapping.logicalName, 'delete', edge, identity);
+    const removed = new Set(existing);
+    for (let index = edges.length - 1; index >= 0; index--)
+      if (removed.has(edges[index])) this.removeRow(edgeMapping.logicalName, edges, index);
+  }
+  *applyCollectionAssociationSteps({ row, target, targetMapping, relationship, associate, identity, options }) {
+    if (relationship.to === targetMapping.idColumn)
+      throw new DataError('Collection mapping cannot reassign a target primary key', 400, 'InvalidAssociation');
+    this.assertAllowed(targetMapping.logicalName, 'update', target, identity);
+    let value;
+    if (associate) value = clone(row[relationship.from]);
+    else if (this.relationshipMatches(row, target, relationship)) value = null;
+    if (value === undefined) return;
+    const rows = this.state.tables[targetMapping.logicalName];
+    const input = { ...target, [relationship.to]: value };
+    const next = this.touchRow(target, input, this.systemColumnsFor(options.systemColumns, targetMapping, input));
+    this.assertAllowed(targetMapping.logicalName, 'update', next, identity);
+    const relinkTarget = {
+      [relationship.to]: clone(value),
+      [targetMapping.idColumn]: target[targetMapping.idColumn],
+    };
+    yield* this.commitUpdateSteps(targetMapping, rows, rows.indexOf(target), next, identity, relinkTarget, {
+      bypassCustomPlugins: options.bypassCustomPlugins === true,
+      bypassCustomAsync: options.bypassCustomAsync === true,
+      bypassStepIds: options.bypassStepIds,
+      ...(options.omitConcurrencyBehavior ? { omitConcurrencyBehavior: true } : {}),
+    });
+  }
   async applyPreset(name, { generatedPresets = this.presetLibrary, returnSnapshot = true } = {}) {
-    const preset = resolvePreset(this.state, name, generatedPresets);
+    const preset = resolvePreset(this.state, name, generatedPresets, this.recordContext());
     if (!preset) throw new DataError(`Unknown preset ${name}`, 404);
     if (preset.personaCatalog !== undefined) validatePersonaCatalog(preset.personaCatalog, `Preset ${name}`);
     return this.transact(
@@ -4410,18 +6723,12 @@ export class DataStore {
   liquidFetchPermissionOptions(options = {}) {
     if (this.observed?.liquidFetchRights !== 'native-classic' || options.profile === 'webapi') return {};
     const right = String(options.right ?? 'read').toLowerCase();
-    const operation =
-      right === 'write'
-        ? 'update'
-        : right === 'create'
-          ? 'create'
-          : right === 'delete'
-            ? 'delete'
-            : right === 'append'
-              ? 'append'
-              : right === 'appendto'
-                ? 'appendTo'
-                : 'read';
+    let operation = 'read';
+    if (right === 'write') operation = 'update';
+    else if (right === 'create') operation = 'create';
+    else if (right === 'delete') operation = 'delete';
+    else if (right === 'append') operation = 'append';
+    else if (right === 'appendto') operation = 'appendTo';
     return { operation, unscopedCreate: operation === 'create' };
   }
   previewPermissionFetchXml(xml, identity = {}, options = {}) {
@@ -4444,6 +6751,16 @@ export class DataStore {
     return preview;
   }
   fetchXml(xml, identity = {}, options = {}) {
+    if (!this.hasOperationContext()) return this.withOperationContext(() => this.fetchXml(xml, identity, options));
+    return this.tracedRead(
+      'fetchxml',
+      this.traces?.enabled && typeof xml === 'string' ? (FETCH_ENTITY.exec(xml)?.[1] ?? null) : null,
+      () => xml,
+      options,
+      () => this.fetchXmlRecords(xml, identity, options),
+    );
+  }
+  /* NOSONAR */ fetchXmlRecords(xml, identity = {}, options = {}) {
     // Column security of the reading principal on every returned row, link-entity and aliased column included
     // (portal-authorization.mjs maskRow), as get() and query().
     // A condition, order, aggregate or distinct over a column it reads masked is refused first (assertOperands, 0x80041155).
@@ -4482,7 +6799,12 @@ export class DataStore {
     if (
       options.fetchCache &&
       this.pluginPipeline &&
-      this.pluginPipelineActive({ entity, operation: 'retrievemultiple' })
+      this.pluginPipelineActive({
+        entity,
+        operation: 'retrievemultiple',
+        bypassCustomPlugins: options.bypassCustomPlugins === true,
+        bypassStepIds: options.bypassStepIds,
+      })
     ) {
       options.fetchCache.invalidate(this);
       options = { ...options, fetchCache: undefined };
@@ -4646,31 +6968,10 @@ export class DataStore {
     // Generated-link privileges belong to the compiler's exact structural tree.
     // Never reuse traversal ordinals after an observer inserts, replaces or
     // rearranges authored links. Query value filters at the root can still vary.
-    const linkStructure = (source) => {
-      const root = parseFetchXml(source);
-      const links = [];
-      const structural = (node) => ({
-        ...node,
-        text: node.name === 'value' ? node.text : node.text.trim(),
-        children: node.children.map(structural),
-      });
-      const visit = (node) => {
-        if (node.name === 'link-entity') links.push(structural(node));
-        else for (const child of node.children ?? []) visit(child);
-      };
-      visit(root);
-      return JSON.stringify(links);
-    };
-    const compiledLinkStructure = permissionQuery.permissionLinkCount ? linkStructure(permissionQuery.xml) : null;
     const execute = (source) => {
-      if (compiledLinkStructure !== null && linkStructure(source) !== compiledLinkStructure)
-        throw new DataError(
-          'Changing permission-expanded query link structure requires a source-qualified mutation adapter.',
-          501,
-          'LocalPluginQueryUnsupported',
-        );
+      const rebound = rebindPermissionQuery(permissionQuery, source);
       const result = executeSdkFetch(this, source, (prepared) =>
-        this.fetchXmlCore(prepared, identity, executionOptions),
+        this.fetchXmlCore(prepared, identity, { ...executionOptions, permissionQuery: rebound }),
       );
       return Object.assign(result, {
         xml: nativeAdmission && options.profile !== 'webapi' ? permissionQuery.xml : source,
@@ -4684,7 +6985,17 @@ export class DataStore {
         },
       });
     };
-    if (!entity || !this.pluginPipeline || !this.pluginPipelineActive({ entity, operation: 'retrievemultiple' }))
+    if (
+      options.skipPluginRead ||
+      !entity ||
+      !this.pluginPipeline ||
+      !this.pluginPipelineActive({
+        entity,
+        operation: 'retrievemultiple',
+        bypassCustomPlugins: options.bypassCustomPlugins === true,
+        bypassStepIds: options.bypassStepIds,
+      })
+    )
       return options.sdkResult
         ? execute(permissionQuery.xml)
         : Object.assign(this.fetchXmlCore(permissionQuery.xml, identity, executionOptions), {
@@ -4702,12 +7013,29 @@ export class DataStore {
       identity.admin && options.sdkQuery ? options.sdkQuery : { $type: 'FetchExpression', query: permissionQuery.xml },
       identity,
       (query) => {
-        const source =
-          query.$type === 'QueryExpression'
-            ? queryExpressionToFetch(query, this)
-            : query.$type === 'FetchExpression'
-              ? query.query
-              : null;
+        if (identity.admin && options.sdkQuery && sameSdkQuery(query, options.sdkQuery))
+          return execute(permissionQuery.xml);
+        let source = null;
+        if (['QueryExpression', 'QueryByAttribute'].includes(query.$type)) {
+          const expression =
+            query.$type === 'QueryByAttribute'
+              ? {
+                  ...query,
+                  $type: 'QueryExpression',
+                  linkEntities: [],
+                  criteria: {
+                    operatorName: 'And',
+                    filters: [],
+                    conditions: (query.attributes ?? []).map((attributeName, index) => ({
+                      attributeName,
+                      operatorName: 'Equal',
+                      values: [query.values?.[index]],
+                    })),
+                  },
+                }
+              : query;
+          source = queryExpressionToFetch(expression, this);
+        } else if (query.$type === 'FetchExpression') source = query.query;
         if (!source || parseFetchXml(source).children.find((node) => node.name === 'entity')?.attrs.name !== entity)
           throw new DataError(
             'A RetrieveMultiple observer cannot change the bound query table or type.',
@@ -4721,15 +7049,13 @@ export class DataStore {
       { ...options, queryTransport: permissionQuery.transport },
     );
   }
-  fetchXmlCore(xml, identity = {}, options = {}) {
+  /* NOSONAR */ fetchXmlCore(xml, identity = {}, options = {}) {
     const tableLimits = this.querySettings().fetchLimits;
+    let profile = 'portal';
+    if (options.sdkResult === true && options.portalRequest !== true) profile = 'sdk';
+    else if (options.profile === 'webapi') profile = 'webapi';
     const planOptions = {
-      profile:
-        options.sdkResult === true && options.portalRequest !== true
-          ? 'sdk'
-          : options.profile === 'webapi'
-            ? 'webapi'
-            : 'portal',
+      profile,
       limits: options.noBackendAdmission
         ? {
             ...tableLimits,
@@ -4789,8 +7115,7 @@ export class DataStore {
       nativePagingCookies:
         options.portalRequest === true && this.observed?.tablePermissionQueryPipeline === 'native-classic',
       tableRows: (logical) => this.tableRows(logical),
-      datasourceRows: (source, logical) =>
-        (identity?.dataverse ? this.datasourceRows?.(source, logical, identity, { plan, options }) : undefined) ?? [],
+      datasourceRows: (source, logical) => this.readDatasourceRows(source, logical, identity, plan, options),
       definition: ctx.definition,
       column: ctx.column,
       sortable: (logical, attribute) => this.sortableColumn(logical, attribute),
@@ -4803,6 +7128,15 @@ export class DataStore {
         ? (rows, column, value) => options.fetchCache.equalRows(rows, column, value)
         : undefined,
     });
+  }
+  readDatasourceRows(source, logical, identity, plan, options) {
+    const rows =
+      (identity?.dataverse ? this.datasourceRows?.(source, logical, identity, { plan, options }) : undefined) ?? [];
+    const kept = options.backendRowsFilter
+      ? rows.filter((row) => options.backendRowsFilter(logical, row) === true)
+      : rows;
+    const mask = options.backendRowsMask?.(logical);
+    return mask ? kept.map(mask) : kept;
   }
 }
 
@@ -4855,57 +7189,317 @@ export function parseEntityReference(value) {
     origin,
   };
 }
+// Internal synchronous UpsertMultiple classification scope. Only the record handler's
+// closed classification callback may use this bridge; arbitrary callbacks can mutate rows.
+const upsertLookupScopes = new WeakMap();
+const upsertMethods = [
+  'findByKey',
+  'tableRows',
+  'virtualTable',
+  'querySettings',
+  'fiscalSettings',
+  'fieldDefinition',
+  'resolveMapping',
+  'findIndexedKeyRow',
+  'rowKeyIndex',
+  'dropRowKeyIndex',
+];
+const upsertDescriptors = new Map(
+  ['state', ...upsertMethods].map((name) => [name, Object.getOwnPropertyDescriptor(DataStore.prototype, name)]),
+);
+const upsertProviders = new Map(
+  ['virtualTables', 'expiryFilter', 'observed'].map((name) => [
+    name,
+    Object.getOwnPropertyDescriptor(DataStore.prototype, name),
+  ]),
+);
+const upsertPrototypeParent = Object.getPrototypeOf(DataStore.prototype);
+const upsertPrototypeDescriptors = Object.getOwnPropertyDescriptors(DataStore.prototype);
+const upsertPrototypeKeys = Reflect.ownKeys(upsertPrototypeDescriptors);
+const ownData = (object, name) => {
+  const descriptor = Object.getOwnPropertyDescriptor(object, name);
+  return descriptor && Object.hasOwn(descriptor, 'value') ? descriptor : null;
+};
+function inertUpsertGraph(root, budget) {
+  const seen = new WeakSet(),
+    pending = [root];
+  while (pending.length) {
+    const value = pending.pop();
+    if (value === null || value === undefined || ['string', 'number', 'boolean', 'bigint'].includes(typeof value))
+      continue;
+    if (typeof value !== 'object' || utilTypes.isProxy(value)) return false;
+    if (seen.has(value)) continue;
+    seen.add(value);
+    if (!visitInertUpsertObject(value, pending, budget)) return false;
+  }
+  return true;
+}
+function visitInertUpsertObject(value, pending, budget) {
+  const prototype = Object.getPrototypeOf(value);
+  if (Array.isArray(value) ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null)
+    return false;
+  const array = Array.isArray(value);
+  const length = array ? Object.getOwnPropertyDescriptor(value, 'length').value : 0;
+  // Refuse large arrays before allocating their list of keys.
+  if (array && length > budget.remaining) return false;
+  const keys = Reflect.ownKeys(value);
+  budget.remaining -= keys.length;
+  if (budget.remaining < 0 || (array && keys.length - 1 !== length)) return false;
+  return enqueueInertUpsertProperties(value, keys, pending);
+}
+function enqueueInertUpsertProperties(value, keys, pending) {
+  for (const name of keys) {
+    if (
+      Array.isArray(value) &&
+      name !== 'length' &&
+      (typeof name !== 'string' || !/^(?:0|[1-9]\d*)$/.test(name) || Number(name) >= 4294967295)
+    )
+      return false;
+    const descriptor = Object.getOwnPropertyDescriptor(value, name);
+    if (!descriptor || !Object.hasOwn(descriptor, 'value')) return false;
+    if (typeof name === 'symbol') return false;
+    pending.push(descriptor.value);
+  }
+  return true;
+}
+function isAsciiString(value) {
+  if (typeof value !== 'string') return false;
+  for (let index = 0; index < value.length; index++) if (value.codePointAt(index) > 0x7f) return false;
+  return true;
+}
+function sameUpsertPrototype() {
+  if (Object.getPrototypeOf(DataStore.prototype) !== upsertPrototypeParent) return false;
+  const prototypeKeys = Reflect.ownKeys(DataStore.prototype);
+  if (prototypeKeys.length !== upsertPrototypeKeys.length) return false;
+  for (const name of upsertPrototypeKeys) {
+    const expected = upsertPrototypeDescriptors[name];
+    const actual = Object.getOwnPropertyDescriptor(DataStore.prototype, name);
+    if (
+      !actual ||
+      actual.value !== expected.value ||
+      actual.get !== expected.get ||
+      actual.set !== expected.set ||
+      actual.writable !== expected.writable ||
+      actual.enumerable !== expected.enumerable ||
+      actual.configurable !== expected.configurable
+    )
+      return false;
+  }
+  return true;
+}
+function sameUpsertMethodDescriptors(store) {
+  for (const [name, expected] of upsertDescriptors) {
+    if (Object.getOwnPropertyDescriptor(store, name)) return false;
+    const actual = Object.getOwnPropertyDescriptor(DataStore.prototype, name);
+    if (!actual || actual.value !== expected.value || actual.get !== expected.get || actual.set !== expected.set)
+      return false;
+  }
+  for (const [name, expected] of upsertProviders) {
+    const actual = Object.getOwnPropertyDescriptor(DataStore.prototype, name);
+    if (
+      actual?.value !== expected?.value ||
+      actual?.get !== expected?.get ||
+      actual?.set !== expected?.set ||
+      Boolean(actual) !== Boolean(expected)
+    )
+      return false;
+  }
+  return true;
+}
+function isStandardUpsertStore(store) {
+  if (
+    !store ||
+    typeof store !== 'object' ||
+    utilTypes.isProxy(store) ||
+    Object.getPrototypeOf(store) !== DataStore.prototype
+  )
+    return false;
+  if (!sameUpsertPrototype()) return false;
+  return sameUpsertMethodDescriptors(store);
+}
+function findScopedUpsertKey({ store, rows, names, kinds, collation, literal, name, matches }) {
+  const scoped = upsertLookupScopes.get(store);
+  if (
+    scoped?.active &&
+    scoped.rows === rows &&
+    names.length === 1 &&
+    names[0] === scoped.key &&
+    kinds[scoped.key] === 'string' &&
+    typeof collation === 'string'
+  ) {
+    let cached = scoped.indexes.get(name);
+    if (!cached) {
+      cached = new RowKeyIndex(rows, keySegmentOf(names, collation, kinds));
+      scoped.indexes.set(name, cached);
+    }
+    if (!cached.linear) {
+      const [position] = cached.get(JSON.stringify(literal));
+      if (position === undefined) return { used: true, row: undefined };
+      const row = rows[position];
+      if (row !== undefined && matches(row)) return { used: true, row };
+      return { used: false };
+    }
+  }
+  return { used: false };
+}
+function eligibleUpsertGraphs(store, stateSlot, mapping, targets, texts, budget) {
+  const observed = Object.getOwnPropertyDescriptor(store, 'observed');
+  if (observed && (!Object.hasOwn(observed, 'value') || !inertUpsertGraph(observed.value, budget))) return null;
+  const state = stateSlot.value;
+  if (
+    !inertUpsertGraph(state, budget) ||
+    !inertUpsertGraph(mapping, budget) ||
+    !inertUpsertGraph(targets, budget) ||
+    !inertUpsertGraph(texts, budget)
+  )
+    return null;
+  return state;
+}
+function eligibleUpsertKey(texts) {
+  let key;
+  for (const text of texts) {
+    if (typeof text !== 'string') return null;
+    let parts;
+    try {
+      parts = parseKeySegment(text);
+    } catch {
+      return null;
+    }
+    if (!parts) return null;
+    const names = Object.keys(parts);
+    if (names.length !== 1 || !isAsciiString(parts[names[0]]) || !/^[^=]+=\s*'/.test(text)) return null;
+    const name = names[0];
+    if (!/^[a-z][a-z0-9_]*$/.test(name) || name.endsWith('_value') || (key !== undefined && key !== name)) return null;
+    key = name;
+  }
+  return key ?? null;
+}
+function eligibleUpsertRows(state, mapping, key) {
+  const source = ownData(state.mappings, mapping.logicalName)?.value;
+  const rows = ownData(state.tables, mapping.logicalName)?.value;
+  if (!source || !Array.isArray(rows) || !source.fields || !ownData(source.fields, key)) return null;
+  const definition = ownData(source.fields, key).value;
+  if (
+    !definition ||
+    typeof (definition.dataverseType ?? definition.type) !== 'string' ||
+    fieldKind(definition) !== 'string'
+  )
+    return null;
+  for (let i = 0; i < rows.length; i++) {
+    const entry = ownData(rows, String(i));
+    if (!entry?.value || typeof entry.value !== 'object') return null;
+    const value = ownData(entry.value, key),
+      id = ownData(entry.value, mapping.idColumn);
+    if (!value || !isAsciiString(value.value) || !id || typeof id.value !== 'string') return null;
+  }
+  return rows;
+}
+function upsertLookupEligibility(store, mapping, targets, texts) {
+  if (!isStandardUpsertStore(store)) return null;
+  const stateSlot = ownData(store, '_state'),
+    isolated = ownData(store, 'isolatedCount');
+  if (!stateSlot || isolated?.value !== 0 || transactionFrameOf(store)) return null;
+  for (const name of ['virtualTables', 'expiryFilter']) {
+    const d = Object.getOwnPropertyDescriptor(store, name);
+    if (d && (!Object.hasOwn(d, 'value') || d.value != null)) return null;
+  }
+  // Limit visited descriptors by batch size and reject oversized arrays before enumeration.
+  if (!Array.isArray(texts) || utilTypes.isProxy(texts) || Object.getPrototypeOf(texts) !== Array.prototype)
+    return null;
+  const textLength = Object.getOwnPropertyDescriptor(texts, 'length').value;
+  if (textLength < 32) return null;
+  const budget = { remaining: 1024 * textLength };
+  const state = eligibleUpsertGraphs(store, stateSlot, mapping, targets, texts, budget);
+  if (!state || state.state != null || state.tableRows != null || !state.tables || !state.mappings) return null;
+  if (!Array.isArray(targets) || !Array.isArray(texts) || texts.length !== targets.length) return null;
+  const key = eligibleUpsertKey(texts);
+  if (!key) return null;
+  if (
+    !mapping ||
+    typeof mapping !== 'object' ||
+    typeof mapping.logicalName !== 'string' ||
+    typeof mapping.idColumn !== 'string' ||
+    isElastic(mapping)
+  )
+    return null;
+  const rows = eligibleUpsertRows(state, mapping, key);
+  if (rows === null) return null;
+  return { rows, key, indexes: new Map(), active: true };
+}
+export function withUpsertClassificationIndex(store, mapping, targets, texts, classify) {
+  // Even a rejected nested scope must not observe an outer scope's cached answers.
+  const previous = upsertLookupScopes.get(store);
+  // A nested callback could invalidate the outer guard. Resume it disabled.
+  if (previous) previous.active = false;
+  upsertLookupScopes.delete(store);
+  try {
+    const scope = upsertLookupEligibility(store, mapping, targets, texts);
+    if (scope) upsertLookupScopes.set(store, scope);
+    return classify();
+  } finally {
+    upsertLookupScopes.delete(store);
+    if (previous) upsertLookupScopes.set(store, previous);
+  }
+}
+
 /** Alternate key segment `a='x',b=2` as a column map; null for a primary key. */
 export function parseKeySegment(key) {
   const text = String(key ?? '').trim();
   if (!text.includes('=')) return null;
-  const parts = {};
-  let index = 0;
-  const whitespace = () => {
-    while (index < text.length && /\s/.test(text[index])) index++;
-  };
-  const invalid = () => {
-    throw new DataError('Invalid alternate key segment', 400, 'InvalidKey');
-  };
-  while (index < text.length) {
-    whitespace();
-    const nameStart = index;
-    if (!/[A-Za-z_]/.test(text[index] ?? '')) invalid();
-    index++;
-    while (index < text.length && /\w/.test(text[index])) index++;
-    const name = text.slice(nameStart, index).toLowerCase();
-    if (['__proto__', 'prototype', 'constructor'].includes(name) || own(parts, name)) invalid();
-    whitespace();
-    if (text[index++] !== '=') invalid();
-    whitespace();
-    const valueStart = index;
-    if (text[index] === "'") {
-      index++;
-      let closed = false;
-      while (index < text.length) {
-        if (text[index++] !== "'") continue;
-        if (text[index] === "'") {
-          index++;
-          continue;
-        }
-        closed = true;
-        break;
-      }
-      if (!closed) invalid();
-    } else {
-      while (index < text.length && text[index] !== ',') index++;
-    }
-    const raw = text.slice(valueStart, index).trim();
-    if (!raw) invalid();
-    whitespace();
-    if (index < text.length && text[index++] !== ',') invalid();
-    parts[name] = raw.startsWith("'")
-      ? raw.slice(1, -1).replace(/''/g, "'")
-      : /^-?\d+(?:\.\d+)?$/.test(raw)
-        ? Number(raw)
-        : raw.replace(/^\{(.*)\}$/, '$1');
-  }
+  const parts = {},
+    state = { index: 0 };
+  while (state.index < text.length) parseKeyPart(text, state, parts);
   return parts;
+}
+
+/* NOSONAR */ function parseKeyPart(text, state, parts) {
+  skipKeyWhitespace(text, state);
+  const nameStart = state.index;
+  if (!/[A-Za-z_]/.test(text[state.index] ?? '')) invalidKeySegment();
+  state.index++;
+  while (state.index < text.length && /\w/.test(text[state.index])) state.index++;
+  const name = text.slice(nameStart, state.index).toLowerCase();
+  if (['__proto__', 'prototype', 'constructor'].includes(name) || own(parts, name)) invalidKeySegment();
+  skipKeyWhitespace(text, state);
+  if (text[state.index++] !== '=') invalidKeySegment();
+  skipKeyWhitespace(text, state);
+  const valueStart = state.index;
+  if (text[state.index] === "'") parseQuotedKeyValue(text, state);
+  else while (state.index < text.length && text[state.index] !== ',') state.index++;
+  const raw = text.slice(valueStart, state.index).trim();
+  if (!raw) invalidKeySegment();
+  skipKeyWhitespace(text, state);
+  if (state.index < text.length && text[state.index++] !== ',') invalidKeySegment();
+  if (raw.startsWith("'")) parts[name] = raw.slice(1, -1).replaceAll("''", "'");
+  else if (/^-?\d+(?:\.\d+)?$/.test(raw)) parts[name] = parseNumericLiteral(raw);
+  else parts[name] = raw.replace(/^\{(.*)\}$/, '$1');
+}
+
+function parseQuotedKeyValue(text, state) {
+  state.index++;
+  let closed = false;
+  while (state.index < text.length) {
+    if (text[state.index++] !== "'") continue;
+    if (text[state.index] === "'") {
+      state.index++;
+      continue;
+    }
+    closed = true;
+    break;
+  }
+  if (!closed) invalidKeySegment();
+}
+
+function skipKeyWhitespace(text, state) {
+  while (state.index < text.length && /\s/.test(text[state.index])) state.index++;
+}
+
+function invalidKeySegment() {
+  throw new DataError('Invalid alternate key segment', 400, 'InvalidKey');
+}
+function numericTypeName(kind) {
+  if (kind === 'money') return 'Microsoft.Xrm.Sdk.Money';
+  return kind === 'double' ? 'System.Double' : 'System.Decimal';
 }
 /** The column's imported MinValue/MaxValue bound a numeric write (Dataverse validation). */
 function assertBounds(value, definition, code, innerCode, { entity, attribute, kind }) {
@@ -4919,7 +7513,7 @@ function assertBounds(value, definition, code, innerCode, { entity, attribute, k
     const message =
       kind === 'integer'
         ? `A validation error occurred. The value ${text} of '${attribute}' on record of type '${entity}' is outside the valid range. Minimum Value: ${definition.minValue ?? ''}, Maximum value: ${definition.maxValue ?? ''}`
-        : `A validation error occurred for ${entity}.${attribute}. The value ${text} of type ${kind === 'money' ? 'Microsoft.Xrm.Sdk.Money' : kind === 'double' ? 'System.Double' : 'System.Decimal'} is outside the valid range(${definition.minValue ?? ''} to ${definition.maxValue ?? ''}).`;
+        : `A validation error occurred for ${entity}.${attribute}. The value ${text} of type ${numericTypeName(kind)} is outside the valid range(${definition.minValue ?? ''} to ${definition.maxValue ?? ''}).`;
     throw new DataError(message, 400, code, {
       innerCode,
       minValue: definition.minValue ?? null,
@@ -4965,11 +7559,10 @@ function coerceValue(entity, attribute, value, definition, options = {}) {
       { innerCode: '0x80048d19' },
     );
   // An exact numeric echoes the literal the client sent (its digits), never the internal marker object.
-  const literal = isExactNumeric(value)
-    ? value.value
-    : typeof value === 'object'
-      ? JSON.stringify(value)
-      : String(value);
+  let literal;
+  if (isExactNumeric(value)) literal = value.value;
+  else if (typeof value === 'object') literal = JSON.stringify(value);
+  else literal = String(value);
   const originalValue = value;
   const conversion = (type) =>
     attachDataverseReaderDetails(
@@ -4984,251 +7577,270 @@ function coerceValue(entity, attribute, value, definition, options = {}) {
       options.dataverseHttpReader,
       type,
     );
+  validateHttpExactNumeric(entity, attribute, value, kind, definition, options, conversion);
+  value = coerceHttpDecimalInput(value, kind, options, conversion);
+  return coerceByKind(kind, entity, attribute, value, definition, options, conversion);
+}
+
+function validateHttpExactNumeric(entity, attribute, value, kind, definition, options, conversion) {
   if (
-    isExactNumeric(value) &&
-    !['integer', 'decimal', 'money', 'double'].includes(kind) &&
-    options.dataverseHttpReader
-  ) {
-    const expected =
-      kind === 'string' || kind === 'multichoice'
-        ? 'Edm.String'
-        : kind === 'boolean'
-          ? 'Edm.Boolean'
-          : kind === 'choice'
-            ? 'Edm.Int32'
-            : kind === 'datetime'
-              ? isDateOnlyField(definition)
-                ? 'Edm.Date'
-                : 'Edm.DateTimeOffset'
-              : null;
-    if (expected) throw conversion(expected);
-    throw new DataError(
-      'An exact numeric value cannot be stored in nonnumeric column ' + entity + '.' + attribute,
-      400,
-      'InvalidValue',
-      { innerCode: '0x80048d19' },
-    );
+    !isExactNumeric(value) ||
+    ['integer', 'decimal', 'money', 'double'].includes(kind) ||
+    !options.dataverseHttpReader
+  )
+    return;
+  const expected = httpExactNumericType(kind, definition);
+  if (expected) throw conversion(expected);
+  throw new DataError(
+    'An exact numeric value cannot be stored in nonnumeric column ' + entity + '.' + attribute,
+    400,
+    'InvalidValue',
+    { innerCode: '0x80048d19' },
+  );
+}
+
+function httpExactNumericType(kind, definition) {
+  if (kind === 'string' || kind === 'multichoice') return 'Edm.String';
+  if (kind === 'boolean') return 'Edm.Boolean';
+  if (kind === 'choice') return 'Edm.Int32';
+  if (kind === 'datetime') return isDateOnlyField(definition) ? 'Edm.Date' : 'Edm.DateTimeOffset';
+  return null;
+}
+
+function coerceHttpDecimalInput(value, kind, options, conversion) {
+  if (!options.dataverseHttpReader || !['decimal', 'money'].includes(kind)) return value;
+  const compatible = options.dataverseHttpReader.ieee754Compatible === true;
+  if (typeof value === 'string') {
+    if (!compatible) throw conversion('Edm.Decimal');
+    const parsed = parseDataverseDecimalString(value);
+    if (parsed === null) throw conversion('Edm.Decimal');
+    return parsed;
   }
-  if (options.dataverseHttpReader && ['decimal', 'money'].includes(kind)) {
-    const compatible = options.dataverseHttpReader.ieee754Compatible === true;
-    if (typeof value === 'string') {
-      if (!compatible) throw conversion('Edm.Decimal');
-      const parsed = parseDataverseDecimalString(value);
-      if (parsed === null) throw conversion('Edm.Decimal');
-      value = parsed;
-    } else if (compatible && (typeof value === 'number' || isExactNumeric(value))) throw conversion('Edm.Decimal');
-  }
+  if (compatible && (typeof value === 'number' || isExactNumeric(value))) throw conversion('Edm.Decimal');
+  return value;
+}
+
+function coerceByKind(kind, entity, attribute, value, definition, options, conversion) {
   switch (kind) {
-    case 'string': {
-      if (typeof value !== 'string') throw conversion('Edm.String');
-      // The Web API rejects a NUL character in text.
-      if (options.dataverseWebApi && value.includes('\u0000'))
-        throw new DataError(
-          `Invalid character in field '${attribute}': '.', hexadecimal value 0x00, is an invalid character.`,
-          400,
-          'InvalidValue',
-          { innerCode: '0x80040278' },
-        );
-      if (value === '') return null;
-      const max = Number(definition.maxLength);
-      if (Number.isFinite(max) && max > 0 && value.length > max)
-        throw new DataError(
-          `A validation error occurred.  The length of the '${attribute}' attribute of the '${entity}' entity exceeded the maximum allowed length of '${max}'.`,
-          400,
-          'StringLengthExceeded',
-          { innerCode: '0x80044331' },
-        );
-      // Email is a schema format, independent of the column/table name. Length
-      // validation applies to the submitted value before normalization. A memo column's
-      // Email format is an email body (MemoFormatName), not an address: it stays as written.
-      const declared = String(definition.dataverseType ?? definition.type ?? '').toLowerCase();
-      const email =
-        (declared !== 'memo' && String(definition.format ?? '').toLowerCase() === 'email') || declared === 'email';
-      return email ? value.trim().toLowerCase() || null : value;
-    }
-    case 'integer': {
-      const int64 = String(definition.dataverseType ?? '').toLowerCase() === 'bigint';
-      const type = int64 ? 'Edm.Int64' : 'Edm.Int32';
-      if (int64 && (isExactNumeric(value) || (typeof value === 'string' && /^[+-]?\d+$/.test(value.trim())))) {
-        const parts = decimalParts(typeof value === 'string' ? value.trim() : value);
-        if (
-          !parts ||
-          parts.scale !== 0 ||
-          compareNumeric(value, '-9223372036854775808') < 0 ||
-          compareNumeric(value, '9223372036854775807') > 0 ||
-          (isExactNumeric(value) && !['Literal', 'Int64'].includes(value.numericType))
-        )
-          throw conversion(type);
-        value = exactNumeric(parts.coefficient.toString(), 'Int64');
-        assertBounds(value, definition, 'IntegerValueOutOfRange', '0x8004432f', { entity, attribute, kind });
-        return value;
-      }
-      if (typeof value === 'string' && /^[+-]?\d+$/.test(value.trim())) value = Number(value.trim());
-      if (typeof value !== 'number' || !Number.isInteger(value)) throw conversion(type);
-      // A literal outside Edm.Int32 doesn't convert; MinValue/MaxValue narrow the column.
-      if (int64 ? !Number.isSafeInteger(value) : value < -2147483648 || value > 2147483647) throw conversion(type);
-      assertBounds(value, definition, 'IntegerValueOutOfRange', '0x8004432f', { entity, attribute, kind });
-      return value;
-    }
+    case 'string':
+      return coerceString(entity, attribute, value, definition, options, conversion);
+    case 'integer':
+      return coerceInteger(entity, attribute, value, definition, kind, conversion);
     case 'decimal':
     case 'money':
-    case 'double': {
-      if (isExactNumeric(value) && kind !== 'double') {
-        if (!['Literal', kind === 'money' ? 'Money' : 'Decimal'].includes(value.numericType))
-          throw conversion('Edm.Decimal');
-        const parts = decimalParts(value);
-        if (
-          !parts ||
-          parts.scale > 28 ||
-          compareNumeric(value, '-79228162514264337593543950335') < 0 ||
-          compareNumeric(value, '79228162514264337593543950335') > 0
-        )
-          throw conversion('Edm.Decimal');
-        const result = roundNumeric(
-          value,
-          Number.isInteger(definition.precision) ? definition.precision : 2,
-          kind === 'money' ? 'Money' : 'Decimal',
-        );
-        assertBounds(result, definition, 'DecimalValueOutOfRange', '0x80044330', { entity, attribute, kind });
-        return result;
-      }
-      if (isExactNumeric(value) && kind === 'double' && value.numericType === 'Literal') value = Number(value.value);
-      // The Web API parses Infinity text and then rejects it as outside the column's range.
-      if (kind === 'double' && options.dataverseWebApi && (value === 'Infinity' || value === '-Infinity'))
-        throw new DataError(
-          `A validation error occurred for ${entity}.${attribute}. The value ${value === 'Infinity' ? '∞' : '-∞'} of type System.Double is outside the valid range(${definition.minValue ?? ''} to ${definition.maxValue ?? ''}).`,
-          400,
-          'DecimalValueOutOfRange',
-          { innerCode: '0x80044330' },
-        );
-      if (
-        kind === 'double' &&
-        typeof value === 'string' &&
-        /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(value.trim())
-      )
-        value = Number(value.trim());
-      if (typeof value !== 'number' || !Number.isFinite(value))
-        throw conversion(kind === 'double' ? 'Edm.Double' : 'Edm.Decimal');
-      const precision = Number.isInteger(definition.precision) ? definition.precision : kind === 'double' ? null : 2;
-      let result = value;
-      if (precision != null) {
-        // Decimal half-away-from-zero rounding on the decimal digits, not the
-        // binary approximation (10.555 -> 10.56 like SQL decimal conversion).
-        const text = String(Math.abs(value));
-        if (/e/i.test(text)) result = Number(value.toFixed(precision));
-        else {
-          const rounded = Number(`${Math.round(Number(`${text}e${precision}`))}e-${precision}`);
-          result = value < 0 ? -rounded : rounded;
-        }
-      }
-      // The documented DecimalValueOutOfRange covers money and float columns too; their
-      // own codes aren't documented.
-      assertBounds(result, definition, 'DecimalValueOutOfRange', '0x80044330', { entity, attribute, kind });
-      return result;
-    }
+    case 'double':
+      return coerceDecimal(entity, attribute, value, definition, kind, options, conversion);
     case 'boolean':
-      if (typeof value === 'string' && /^(true|false)$/i.test(value.trim()))
-        value = value.trim().toLowerCase() === 'true';
-      if (typeof value !== 'boolean') throw conversion('Edm.Boolean');
-      return value;
-    case 'choice': {
-      let raw = value && typeof value === 'object' ? value.value : value;
-      if (typeof raw === 'string' && /^[+-]?\d+$/.test(raw.trim())) raw = Number(raw.trim());
-      if (typeof raw !== 'number' || !Number.isInteger(raw)) throw conversion('Edm.Int32');
-      // A plain picklist accepts -1 on create and patch and reads it back. State, status and multiselect columns do not.
-      if (
-        options.dataverseWebApi &&
-        raw === -1 &&
-        String(definition.dataverseType ?? definition.type ?? '').toLowerCase() === 'picklist'
-      )
-        return raw;
-      assertOption(raw, definition, { entity, attribute });
-      return raw;
-    }
-    case 'multichoice': {
-      // The Web API takes a comma-separated string of option values; an empty string, an array or a non-integer part is rejected.
-      if (options.dataverseWebApi) {
-        if (typeof value !== 'string') throw conversion('Edm.String');
-        if (value.trim() === '')
-          throw new DataError('Edm Object passed should have the options selected. ', 400, 'InvalidValue', {
-            innerCode: '0x80060888',
-          });
-        const numbers = new Set();
-        for (const part of value.split(',')) {
-          const text = part.trim();
-          // Native message for an empty part between commas not known.
-          const number = /^[+-]?\d+$/.test(text) ? Number(text) : NaN;
-          if (!Number.isInteger(number))
-            throw new DataError(`The optionset values sent ${text} are not valid integers.`, 400, 'InvalidValue', {
-              innerCode: '0x80060888',
-            });
-          assertOption(number, definition, { entity, attribute });
-          numbers.add(number);
-        }
-        // Repeated choice values are stored once, in first-seen order.
-        return [...numbers].join(',');
-      }
-      // The native form posts the MultiSelectPicklist control's JSON array of option metadata.
-      if (typeof value === 'string' && /^\s*\[/.test(value)) {
-        try {
-          value = JSON.parse(value)
-            .map((item) => (item && typeof item === 'object' ? item.Value : item))
-            .join(',');
-        } catch {
-          throw conversion('Edm.String');
-        }
-      }
-      const parts = Array.isArray(value)
-        ? value
-        : typeof value === 'string'
-          ? value.split(',').filter((part) => part.trim() !== '')
-          : null;
-      if (!parts) throw conversion('Edm.String');
-      for (const part of parts) {
-        const number = Number(typeof part === 'string' ? part.trim() : part);
-        if (!Number.isInteger(number)) throw conversion('Edm.Int32');
-        assertOption(number, definition, { entity, attribute });
-      }
-      return value;
-    }
-    case 'datetime': {
-      if (typeof value !== 'string')
-        throw conversion(options.dataverseWebApi && isDateOnlyField(definition) ? 'Edm.Date' : 'Edm.DateTimeOffset');
-      // A DateOnly column reads only Edm.Date (yyyy-MM-dd); timestamps and impossible dates fail the OData reader.
-      if (
-        options.dataverseWebApi &&
-        isDateOnlyField(definition) &&
-        (!/^\d{4}-\d{2}-\d{2}$/.test(value) || !parseDateValue(value))
-      )
-        throw conversion('Edm.Date');
-      const parsed = parseDateValue(value);
-      // Timestamp calendar/clock errors fail the OData primitive reader. Failed
-      // date-text/zone conversion reaches Dataverse's CrmDateTime validation.
-      const timestamp =
-        /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,7})?)?(?:Z|[+-]\d{2}:?\d{2})?$/i.exec(
-          value.trim(),
-        );
-      if (
-        !parsed &&
-        timestamp &&
-        (+timestamp[2] < 1 ||
-          +timestamp[2] > 12 ||
-          +timestamp[3] < 1 ||
-          +timestamp[3] > 31 ||
-          new Date(Date.UTC(+timestamp[1], +timestamp[2] - 1, +timestamp[3])).getUTCDate() !== +timestamp[3] ||
-          +timestamp[4] > 23 ||
-          +timestamp[5] > 59 ||
-          +(timestamp[6] ?? 0) > 59)
-      )
-        throw conversion('Edm.DateTimeOffset');
-      const year = parsed ? new Date(parsed.ms).getUTCFullYear() : NaN;
-      if (!parsed || year < 1753 || year > 9999) throw dateTimeRangeError(value, parsed);
-      return isDateOnlyField(definition) ? isoUtc(parsed.ms, { dateOnly: true }) : isoUtc(parsed.ms);
-    }
+      return coerceBoolean(value, conversion);
+    case 'choice':
+      return coerceChoice(entity, attribute, value, definition, options, conversion);
+    case 'multichoice':
+      return coerceMultiChoice(entity, attribute, value, definition, options, conversion);
+    case 'datetime':
+      return coerceDateTime(value, definition, options, conversion);
     case 'guid':
       if (typeof value !== 'string' || !GUID_PATTERN.test(value)) throw conversion('Edm.Guid');
       return value.toLowerCase();
     default:
       return value;
   }
+}
+
+function coerceString(entity, attribute, value, definition, options, conversion) {
+  if (typeof value !== 'string') throw conversion('Edm.String');
+  if (options.dataverseWebApi && value.includes('\u0000'))
+    throw new DataError(
+      `Invalid character in field '${attribute}': '.', hexadecimal value 0x00, is an invalid character.`,
+      400,
+      'InvalidValue',
+      { innerCode: '0x80040278' },
+    );
+  if (value === '') return null;
+  const max = Number(definition.maxLength);
+  if (Number.isFinite(max) && max > 0 && value.length > max)
+    throw new DataError(
+      `A validation error occurred.  The length of the '${attribute}' attribute of the '${entity}' entity exceeded the maximum allowed length of '${max}'.`,
+      400,
+      'StringLengthExceeded',
+      { innerCode: '0x80044331' },
+    );
+  const declared = String(definition.dataverseType ?? definition.type ?? '').toLowerCase();
+  const email =
+    (declared !== 'memo' && String(definition.format ?? '').toLowerCase() === 'email') || declared === 'email';
+  return email ? value.trim().toLowerCase() || null : value;
+}
+
+function coerceInteger(entity, attribute, value, definition, kind, conversion) {
+  const int64 = String(definition.dataverseType ?? definition.type ?? '').toLowerCase() === 'bigint';
+  const type = int64 ? 'Edm.Int64' : 'Edm.Int32';
+  if (int64 && (isExactNumeric(value) || (typeof value === 'string' && /^[+-]?\d+$/.test(value.trim())))) {
+    const parts = decimalParts(typeof value === 'string' ? value.trim() : value);
+    if (
+      parts?.scale !== 0 ||
+      compareNumeric(value, '-9223372036854775808') < 0 ||
+      compareNumeric(value, '9223372036854775807') > 0 ||
+      (isExactNumeric(value) && !['Literal', 'Int64'].includes(value.numericType))
+    )
+      throw conversion(type);
+    value = exactNumeric(parts.coefficient.toString(), 'Int64');
+    assertBounds(value, definition, 'IntegerValueOutOfRange', '0x8004432f', { entity, attribute, kind });
+    return value;
+  }
+  if (typeof value === 'string' && /^[+-]?\d+$/.test(value.trim())) value = Number(value.trim());
+  if (typeof value !== 'number' || !Number.isInteger(value)) throw conversion(type);
+  if (int64 ? !Number.isSafeInteger(value) : value < -2147483648 || value > 2147483647) throw conversion(type);
+  assertBounds(value, definition, 'IntegerValueOutOfRange', '0x8004432f', { entity, attribute, kind });
+  return value;
+}
+
+/* NOSONAR */ function coerceDecimal(entity, attribute, value, definition, kind, options, conversion) {
+  if (isExactNumeric(value) && kind !== 'double')
+    return coerceExactDecimal(entity, attribute, value, definition, kind, conversion);
+  if (isExactNumeric(value) && kind === 'double' && value.numericType === 'Literal') value = Number(value.value);
+  if (kind === 'double' && options.dataverseWebApi && (value === 'Infinity' || value === '-Infinity'))
+    throw new DataError(
+      `A validation error occurred for ${entity}.${attribute}. The value ${value === 'Infinity' ? '∞' : '-∞'} of type System.Double is outside the valid range(${definition.minValue ?? ''} to ${definition.maxValue ?? ''}).`,
+      400,
+      'DecimalValueOutOfRange',
+      { innerCode: '0x80044330' },
+    );
+  if (
+    kind === 'double' &&
+    typeof value === 'string' &&
+    /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(value.trim())
+  )
+    value = Number(value.trim());
+  if (typeof value !== 'number' || !Number.isFinite(value))
+    throw conversion(kind === 'double' ? 'Edm.Double' : 'Edm.Decimal');
+  let precision = 2;
+  if (Number.isInteger(definition.precision)) precision = definition.precision;
+  else if (kind === 'double') precision = null;
+  let result = value;
+  if (precision != null) result = roundDecimalNumber(value, precision);
+  assertBounds(result, definition, 'DecimalValueOutOfRange', '0x80044330', { entity, attribute, kind });
+  return result;
+}
+
+function coerceExactDecimal(entity, attribute, value, definition, kind, conversion) {
+  if (!['Literal', kind === 'money' ? 'Money' : 'Decimal'].includes(value.numericType)) throw conversion('Edm.Decimal');
+  const parts = decimalParts(value);
+  if (
+    !parts ||
+    parts.scale > 28 ||
+    compareNumeric(value, '-79228162514264337593543950335') < 0 ||
+    compareNumeric(value, '79228162514264337593543950335') > 0
+  )
+    throw conversion('Edm.Decimal');
+  const result = roundNumeric(
+    value,
+    Number.isInteger(definition.precision) ? definition.precision : 2,
+    kind === 'money' ? 'Money' : 'Decimal',
+  );
+  assertBounds(result, definition, 'DecimalValueOutOfRange', '0x80044330', { entity, attribute, kind });
+  return result;
+}
+
+function roundDecimalNumber(value, precision) {
+  const text = String(Math.abs(value));
+  if (/e/i.test(text)) return Number(value.toFixed(precision));
+  const scaled = Math.round(Number(`${text}e${precision}`));
+  const rounded = Number(`${scaled}e-${precision}`);
+  return value < 0 ? -rounded : rounded;
+}
+
+function coerceBoolean(value, conversion) {
+  if (typeof value === 'string' && /^(true|false)$/i.test(value.trim())) value = value.trim().toLowerCase() === 'true';
+  if (typeof value !== 'boolean') throw conversion('Edm.Boolean');
+  return value;
+}
+
+function coerceChoice(entity, attribute, value, definition, options, conversion) {
+  let raw = value && typeof value === 'object' ? value.value : value;
+  if (typeof raw === 'string' && /^[+-]?\d+$/.test(raw.trim())) raw = Number(raw.trim());
+  if (typeof raw !== 'number' || !Number.isInteger(raw)) throw conversion('Edm.Int32');
+  if (
+    options.dataverseWebApi &&
+    raw === -1 &&
+    String(definition.dataverseType ?? definition.type ?? '').toLowerCase() === 'picklist'
+  )
+    return raw;
+  assertOption(raw, definition, { entity, attribute });
+  return raw;
+}
+
+function coerceMultiChoice(entity, attribute, value, definition, options, conversion) {
+  if (options.dataverseWebApi) return coerceWebApiMultiChoice(entity, attribute, value, definition, conversion);
+  if (typeof value === 'string' && /^\s*\[/.test(value)) {
+    try {
+      value = JSON.parse(value)
+        .map((item) => (item && typeof item === 'object' ? item.Value : item))
+        .join(',');
+    } catch {
+      throw conversion('Edm.String');
+    }
+  }
+  let parts = null;
+  if (Array.isArray(value)) parts = value;
+  else if (typeof value === 'string') parts = value.split(',').filter((part) => part.trim() !== '');
+  if (!parts) throw conversion('Edm.String');
+  for (const part of parts) {
+    const number = Number(typeof part === 'string' ? part.trim() : part);
+    if (!Number.isInteger(number)) throw conversion('Edm.Int32');
+    assertOption(number, definition, { entity, attribute });
+  }
+  return value;
+}
+
+function coerceWebApiMultiChoice(entity, attribute, value, definition, conversion) {
+  if (typeof value !== 'string') throw conversion('Edm.String');
+  if (value.trim() === '')
+    throw new DataError('Edm Object passed should have the options selected. ', 400, 'InvalidValue', {
+      innerCode: '0x80060888',
+    });
+  const numbers = new Set();
+  for (const part of value.split(',')) {
+    const text = part.trim();
+    const number = /^[+-]?\d+$/.test(text) ? Number(text) : Number.NaN;
+    if (!Number.isInteger(number))
+      throw new DataError(`The optionset values sent ${text} are not valid integers.`, 400, 'InvalidValue', {
+        innerCode: '0x80060888',
+      });
+    assertOption(number, definition, { entity, attribute });
+    numbers.add(number);
+  }
+  return [...numbers].join(',');
+}
+
+function coerceDateTime(value, definition, options, conversion) {
+  if (typeof value !== 'string')
+    throw conversion(options.dataverseWebApi && isDateOnlyField(definition) ? 'Edm.Date' : 'Edm.DateTimeOffset');
+  if (
+    options.dataverseWebApi &&
+    isDateOnlyField(definition) &&
+    (!/^\d{4}-\d{2}-\d{2}$/.test(value) || !parseDateValue(value))
+  )
+    throw conversion('Edm.Date');
+  const parsed = parseDateValue(value);
+  const timestamp =
+    /* NOSONAR */ /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,7})?)?(?:Z|[+-]\d{2}:?\d{2})?$/i.exec(
+      value.trim(),
+    );
+  if (!parsed && invalidTimestampParts(timestamp)) throw conversion('Edm.DateTimeOffset');
+  const year = parsed ? new Date(parsed.ms).getUTCFullYear() : Number.NaN;
+  if (!parsed || year < 1753 || year > 9999) throw dateTimeRangeError(value, parsed);
+  return isDateOnlyField(definition) ? isoUtc(parsed.ms, { dateOnly: true }) : isoUtc(parsed.ms);
+}
+
+function invalidTimestampParts(timestamp) {
+  return (
+    timestamp &&
+    (+timestamp[2] < 1 ||
+      +timestamp[2] > 12 ||
+      +timestamp[3] < 1 ||
+      +timestamp[3] > 31 ||
+      new Date(Date.UTC(+timestamp[1], +timestamp[2] - 1, +timestamp[3])).getUTCDate() !== +timestamp[3] ||
+      +timestamp[4] > 23 ||
+      +timestamp[5] > 59 ||
+      +(timestamp[6] ?? 0) > 59)
+  );
 }

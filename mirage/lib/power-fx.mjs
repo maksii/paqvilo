@@ -31,6 +31,7 @@
 //   "UTC"); host.now() (ms, default Date.now); host.guid() (GUID() text, default crypto.randomUUID); host.dataRowLimit (non-delegated reads, default 500); host.diagnostic(entry)
 //   (delegation warnings); host.self / host.parent records; host.app ('canvas' makes IsMatch default to Complete).
 import { DataError } from './data-error.mjs';
+import { canvasColorNames } from './power-fx-colors.mjs';
 import {
   compareNumeric,
   decimalParts,
@@ -98,6 +99,24 @@ export class FxDate {
     this.tzi = tzi;
   }
 }
+// A source-declared option enum: labels are case-insensitive and unknown members are errors.
+export class FxEnum {
+  constructor(name, entries) {
+    this.name = name;
+    this.entries = new Map(
+      Object.entries(entries).map(([label, value]) => [label.toLowerCase(), new FxChoice(name, label, value)]),
+    );
+  }
+}
+class FxChoice {
+  constructor(enumName, label, value) {
+    this.enumName = enumName;
+    this.label = label;
+    this.value = value;
+  }
+}
+// Text-valued Canvas control properties implicitly display a choice's localized label.
+export const choiceDisplayValue = (value) => (value instanceof FxChoice ? value.label : value);
 export class FxGuid {
   constructor(text) {
     this.value = String(text).toLowerCase();
@@ -126,7 +145,7 @@ export class FxRecordRef {
 // A delegable table: adapter (power-fx-dataverse.mjs) answers reads, writes and the OData translation of columns; query
 // holds the delegated filters, order and top so far.
 export class FxDataSource {
-  constructor(name, adapter, query = { filters: [], orderby: [], top: null }) {
+  constructor(name, adapter, query = defaultDataSourceQuery()) {
     this.name = name;
     this.adapter = adapter;
     this.query = query;
@@ -134,6 +153,9 @@ export class FxDataSource {
   with(change) {
     return new FxDataSource(this.name, this.adapter, { ...this.query, ...change });
   }
+}
+function defaultDataSourceQuery() {
+  return { filters: [], orderby: [], top: null };
 }
 // A record's display-name aliases (Dataverse 'Display Name' -> logical name), kept off the enumerable fields.
 export const ALIASES = Symbol('power-fx.aliases');
@@ -170,6 +192,7 @@ export function fromFx(value, fx = null) {
   if (value instanceof FxError) throw runtimeError(value);
   if (value instanceof FxDate) return isoOf(value);
   if (value instanceof FxFloat) return value.value;
+  if (value instanceof FxChoice) return value.value;
   if (value instanceof FxGuid) return value.value;
   if (value instanceof FxUntyped) return value.raw;
   if (value instanceof FxRecordRef) return { id: value.id, logical_name: value.table };
@@ -259,52 +282,72 @@ function wallOfParts(year, month, day, hour = 0, minute = 0, second = 0, ms = 0)
     hour < 24 &&
     minute < 60 &&
     second < 60;
-  return valid ? wall : NaN;
+  return valid ? wall : Number.NaN;
+}
+const ISO_DATE_PATTERN = String.raw`^(\d{4})-(\d{2})-(\d{2})`;
+const ISO_TIME_PATTERN = String.raw`(?:[T ](\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d{1,7}))?)?)?`;
+const ISO_ZONE_PATTERN = String.raw`\s*(Z|[+-]\d{2}:?\d{2})?$`;
+function parseIsoDateText(value) {
+  const match = new RegExp(ISO_DATE_PATTERN + ISO_TIME_PATTERN + ISO_ZONE_PATTERN, 'i').exec(value);
+  if (!match) return null;
+  const wall = wallOfParts(
+    +match[1],
+    +match[2],
+    +match[3],
+    +(match[4] ?? 0),
+    +(match[5] ?? 0),
+    +(match[6] ?? 0),
+    Number(
+      String(match[7] ?? '0')
+        .slice(0, 3)
+        .padEnd(3, '0'),
+    ),
+  );
+  let zoned = null;
+  if (match[8]) {
+    if (match[8].toUpperCase() === 'Z') zoned = 0;
+    else
+      zoned =
+        (match[8].startsWith('-') ? -1 : 1) * (Number(match[8].slice(1, 3)) * 60 + Number(match[8].slice(-2))) * 60_000;
+  }
+  return { wall, zoned };
+}
+const DMY_DATE_PATTERN = String.raw`^(\d{1,2})\/(\d{1,2})\/(\d{2,4})`;
+const DMY_TIME_PATTERN = String.raw`(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?)?$`;
+function parseDmyDateText(value) {
+  const match = new RegExp(DMY_DATE_PATTERN + DMY_TIME_PATTERN, 'i').exec(value);
+  if (!match) return null;
+  let hour = +(match[4] ?? 0);
+  if (match[7]) hour = (hour % 12) + (match[7].toUpperCase() === 'PM' ? 12 : 0);
+  const year = match[3].length === 2 ? 2000 + Number(match[3]) : Number(match[3]);
+  return { wall: wallOfParts(year, +match[1], +match[2], hour, +(match[5] ?? 0), +(match[6] ?? 0)), zoned: null };
+}
+function parseTimeDateText(value, kind) {
+  const match = /^(\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?\s*(AM|PM)?$/i.exec(value);
+  if (!match) return null;
+  let hour = Number(match[1]);
+  if (match[5]) hour = (hour % 12) + (match[5].toUpperCase() === 'PM' ? 12 : 0);
+  return {
+    wall: wallOfParts(1970, 1, 1, hour, +match[2], +(match[3] ?? 0), Number(String(match[4] ?? '0').padEnd(3, '0'))),
+    zoned: null,
+    invalidForDateTime: kind === 'datetime',
+  };
 }
 function parseDateText(text, kind, timeZone) {
   const value = String(text).trim();
   if (!value) return null;
-  let m =
-    /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d{1,7}))?)?)?\s*(Z|[+-]\d{2}:?\d{2})?$/i.exec(
-      value,
-    );
-  let wall,
-    zoned = null;
-  if (m) {
-    wall = wallOfParts(
-      +m[1],
-      +m[2],
-      +m[3],
-      +(m[4] ?? 0),
-      +(m[5] ?? 0),
-      +(m[6] ?? 0),
-      Number(
-        String(m[7] ?? '0')
-          .slice(0, 3)
-          .padEnd(3, '0'),
-      ),
-    );
-    if (m[8])
-      zoned =
-        m[8].toUpperCase() === 'Z'
-          ? 0
-          : (m[8][0] === '-' ? -1 : 1) * (Number(m[8].slice(1, 3)) * 60 + Number(m[8].slice(-2))) * 60_000;
-  } else if ((m = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?)?$/i.exec(value))) {
-    let hour = +(m[4] ?? 0);
-    if (m[7]) hour = (hour % 12) + (m[7].toUpperCase() === 'PM' ? 12 : 0);
-    const year = m[3].length === 2 ? 2000 + Number(m[3]) : Number(m[3]);
-    wall = wallOfParts(year, +m[1], +m[2], hour, +(m[5] ?? 0), +(m[6] ?? 0));
-  } else if ((m = /^(\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?\s*(AM|PM)?$/i.exec(value))) {
-    let hour = Number(m[1]);
-    if (m[5]) hour = (hour % 12) + (m[5].toUpperCase() === 'PM' ? 12 : 0);
-    wall = wallOfParts(1970, 1, 1, hour, +m[2], +(m[3] ?? 0), Number(String(m[4] ?? '0').padEnd(3, '0')));
-    if (kind === 'datetime') return null;
-  } else {
-    const parsed = Date.parse(value);
-    if (Number.isNaN(parsed)) return null;
-    const d = new Date(parsed);
-    wall = Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds());
+  let parsed = parseIsoDateText(value) ?? parseDmyDateText(value) ?? parseTimeDateText(value, kind);
+  if (!parsed) {
+    const timestamp = Date.parse(value);
+    if (Number.isNaN(timestamp)) return null;
+    const d = new Date(timestamp);
+    parsed = {
+      wall: Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds()),
+      zoned: null,
+    };
   }
+  if (parsed.invalidForDateTime) return null;
+  const { wall, zoned } = parsed;
   if (Number.isNaN(wall)) return null;
   if (zoned !== null) {
     const utc = wall - zoned;
@@ -332,7 +375,7 @@ export const isNumeric = (v) => typeof v === 'number' || isExactNumeric(v) || v 
 const DECIMAL_PLACES = 28;
 // Exact decimal arithmetic on numbers and exact-numeric values. Division keeps every digit of a terminating quotient and
 // rounds a recurring one half away from zero at 28 places.
-export function decimalArithmetic(op, a, b) {
+/* NOSONAR: mixed return values are part of the contract */ export function decimalArithmetic(op, a, b) {
   try {
     return exactArithmetic(op, a, b);
   } catch (error) {
@@ -342,7 +385,7 @@ export function decimalArithmetic(op, a, b) {
     throw error;
   }
 }
-function exactArithmetic(op, a, b) {
+/* NOSONAR: mixed return values are part of the contract */ function exactArithmetic(op, a, b) {
   const pair = numericPair(a, b);
   const scale = Math.max(decimalParts(a).scale, decimalParts(b).scale);
   if (op === '+' || op === '-')
@@ -353,7 +396,8 @@ function exactArithmetic(op, a, b) {
     quotient = scaled / pair.y,
     rest = scaled % pair.y;
   const negative = pair.x < 0n !== pair.y < 0n;
-  const up = (rest < 0n ? -rest : rest) * 2n >= (pair.y < 0n ? -pair.y : pair.y) ? (negative ? -1n : 1n) : 0n;
+  let up = 0n;
+  if ((rest < 0n ? -rest : rest) * 2n >= (pair.y < 0n ? -pair.y : pair.y)) up = negative ? -1n : 1n;
   return exactNumeric(decimalText({ coefficient: quotient + up, scale: DECIMAL_PLACES }), 'Decimal');
 }
 // A numeric operand as a decimal (number or exact value); a Float as its double.
@@ -399,6 +443,9 @@ function numberSeparators(language = 'en-US') {
   };
 }
 // The invariant (en-US) form of number text in a language: { text, percent } or an FxError.
+function stripTrailingCurrency(value) {
+  return /[$€£¥]/.test(value[value.length - 1] ?? '') ? value.slice(0, -1).trimEnd() : value;
+}
 export function invariantNumberText(text, language = 'en-US') {
   let value = String(text).trim();
   const separators = numberSeparators(language);
@@ -411,27 +458,25 @@ export function invariantNumberText(text, language = 'en-US') {
     percent = true;
     value = value.slice(1).trim();
   }
-  value = value.replace(/^([+-]?)\s*[$€£¥]\s*/, '$1').replace(/\s*[$€£¥]$/, '');
+  value = stripTrailingCurrency(value.replace(/^([+-]?)\s*[$€£¥]\s*/, '$1'));
   // A space-like group separator (fr-FR U+202F, others U+00A0) also matches a plain space typed by a user; an apostrophe
   // (de-CH) also matches the typographic U+2019.
-  const group = /^\s$/.test(separators.group)
-    ? '[\\s\\u00a0\\u202f]'
-    : /^['’]$/.test(separators.group)
-      ? "['’]"
-      : separators.group.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  let group = separators.group.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
+  if (/^\s$/.test(separators.group)) group = String.raw`[\s\u00a0\u202f]`;
+  else if (/^['’]$/.test(separators.group)) group = "['’]";
   // Groups are removed only where they follow the language's widths (secondary groups, then the primary group last).
   const { primary, secondary } = separators;
   value = value.replace(
-    new RegExp(`^([+-]?)(\\d{1,${secondary}}(?:${group}\\d{${secondary}})*${group}\\d{${primary}})(?!\\d)`),
+    new RegExp(String.raw`^([+-]?)(\d{1,${secondary}}(?:${group}\d{${secondary}})*${group}\d{${primary}})(?!\d)`),
     (_, sign, digits) => sign + digits.replace(new RegExp(group, 'g'), ''),
   );
   // With a non-period decimal separator a remaining period is not part of a number in that language.
-  if (separators.decimal !== '.') value = value.replace(/\./g, 'x').split(separators.decimal).join('.');
-  if (!/^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i.test(value))
+  if (separators.decimal !== '.') value = value.replaceAll('.', 'x').split(separators.decimal).join('.');
+  if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(value))
     return fxError(ErrorKind.InvalidArgument, `The value '${text}' cannot be converted to a number.`);
-  return { text: value.replace(/^([+-]?)\./, '$10.').replace(/^\+/, ''), percent };
+  return { text: value.replace(/^([+-]?)\./, '$1' + '0.').replace(/^\+/, ''), percent };
 }
-export function parseNumber(text, language = 'en-US') {
+/* NOSONAR: mixed return values are part of the contract */ export function parseNumber(text, language = 'en-US') {
   if (!String(text).trim()) return null;
   const parsed = invariantNumberText(text, language);
   if (parsed instanceof FxError) return parsed;
@@ -446,7 +491,7 @@ export function parseNumber(text, language = 'en-US') {
   }
   return parsed.percent ? decimalArithmetic('/', exact, 100) : exact;
 }
-export function toBoolean(v) {
+/* NOSONAR: mixed return values are part of the contract */ export function toBoolean(v) {
   if (v === null || v === undefined) return false;
   if (typeof v === 'boolean') return v;
   if (isNumeric(v)) return toNumber(v) !== 0;
@@ -462,39 +507,40 @@ export function toBoolean(v) {
 }
 // General number format: up to 15 significant digits, no grouping.
 const numberText = (n) => (Number.isInteger(n) ? String(n) : String(round15(n)));
+function textOfDate(value, fx) {
+  let pattern = 'm/d/yyyy h:mm AM/PM';
+  if (value.kind === 'date') pattern = 'm/d/yyyy';
+  else if (value.kind === 'time') pattern = 'h:mm AM/PM';
+  return formatDate(value, pattern, fx?.timeZone, fx?.language);
+}
+/* NOSONAR: mixed return values are part of the contract */ function textOfUntyped(value) {
+  if (value.raw === null) return '';
+  if (typeof value.raw === 'object') return fxError(ErrorKind.InvalidArgument, 'The untyped value is not text.');
+  return String(value.raw);
+}
 export function toText(v, fx = null) {
+  if (v instanceof FxChoice) return v.label;
   if (v === null || v === undefined) return '';
   if (typeof v === 'string') return v;
   if (typeof v === 'number') return numberText(v);
   if (v instanceof FxFloat) return numberText(v.value);
   if (isExactNumeric(v)) return decimalText(decimalParts(v));
   if (typeof v === 'boolean') return v ? 'true' : 'false';
-  if (v instanceof FxDate)
-    return formatDate(
-      v,
-      v.kind === 'date' ? 'm/d/yyyy' : v.kind === 'time' ? 'h:mm AM/PM' : 'm/d/yyyy h:mm AM/PM',
-      fx?.timeZone,
-      fx?.language,
-    );
+  if (v instanceof FxDate) return textOfDate(v, fx);
   if (v instanceof FxGuid) return v.value;
-  if (v instanceof FxUntyped)
-    return v.raw === null
-      ? ''
-      : typeof v.raw === 'object'
-        ? fxError(ErrorKind.InvalidArgument, 'The untyped value is not text.')
-        : String(v.raw);
+  if (v instanceof FxUntyped) return textOfUntyped(v);
   if (v instanceof FxError) return v;
   if (typeof v === 'object' && typeof v.toString === 'function' && /^-?\d/.test(String(v))) return String(v); // exact-numeric
   return fxError(ErrorKind.InvalidArgument, 'The value cannot be converted to text.');
 }
+function convertFxDate(value, kind, fx) {
+  if (value.kind === kind || kind === 'any') return value;
+  if (kind === 'datetime') return fromWall('datetime', value.ms, fx?.timeZone);
+  return fromWall(kind, wallOf(value, fx?.timeZone), fx?.timeZone);
+}
 export function toDate(v, kind, fx) {
   if (v === null || v === undefined) return null;
-  if (v instanceof FxDate) {
-    if (v.kind === kind || kind === 'any') return v;
-    if (kind === 'datetime')
-      return v.kind === 'date' ? fromWall('datetime', v.ms, fx?.timeZone) : fromWall('datetime', v.ms, fx?.timeZone);
-    return fromWall(kind, wallOf(v, fx?.timeZone), fx?.timeZone);
-  }
+  if (v instanceof FxDate) return convertFxDate(v, kind, fx);
   if (typeof v === 'string' || v instanceof FxUntyped) {
     const text = v instanceof FxUntyped ? v.raw : v;
     if (text === null) return null;
@@ -506,6 +552,65 @@ export function toDate(v, kind, fx) {
   return fxError(ErrorKind.InvalidArgument, 'The value cannot be converted to a date/time.');
 }
 
+/* NOSONAR */ function formatDateToken(t, i, tokens, d, name, ampm) {
+  if (!t.token) return t.text;
+  const tok = t.token;
+  // m and mm are minutes after an hour token or before a seconds token (Excel rule).
+  const isMinute =
+    (tok === 'm' || tok === 'mm') &&
+    (tokens
+      .slice(0, i)
+      .reverse()
+      .find((x) => x.token)
+      ?.token?.startsWith('h') ||
+      tokens
+        .slice(i + 1)
+        .find((x) => x.token)
+        ?.token?.startsWith('s'));
+  if (isMinute) return tok === 'mm' ? pad(d.getUTCMinutes()) : String(d.getUTCMinutes());
+  const hour12 = d.getUTCHours() % 12 || 12;
+  switch (tok) {
+    case 'yyyy':
+      return String(d.getUTCFullYear());
+    case 'yy':
+      return pad(d.getUTCFullYear() % 100);
+    case 'mmmm':
+      return name({ month: 'long' });
+    case 'mmm':
+      return name({ month: 'short' });
+    case 'mm':
+      return pad(d.getUTCMonth() + 1);
+    case 'm':
+      return String(d.getUTCMonth() + 1);
+    case 'dddd':
+      return name({ weekday: 'long' });
+    case 'ddd':
+      return name({ weekday: 'short' });
+    case 'dd':
+      return pad(d.getUTCDate());
+    case 'd':
+      return String(d.getUTCDate());
+    case 'hh':
+      return pad(ampm ? hour12 : d.getUTCHours());
+    case 'h':
+      return String(ampm ? hour12 : d.getUTCHours());
+    case 'ss':
+      return pad(d.getUTCSeconds());
+    case 's':
+      return String(d.getUTCSeconds());
+    case 'AM/PM':
+      return d.getUTCHours() < 12 ? 'AM' : 'PM';
+    case 'am/pm':
+      return d.getUTCHours() < 12 ? 'am' : 'pm';
+    case 'A/P':
+      return d.getUTCHours() < 12 ? 'A' : 'P';
+    case 'a/p':
+      return d.getUTCHours() < 12 ? 'a' : 'p';
+    default:
+      return pad(d.getUTCMilliseconds(), 3).slice(0, tok.length); // f, ff, fff
+  }
+}
+
 // Learn, "Text function" date/time placeholders: yyyy yy mmmm mmm mm m dddd ddd dd d hh h mm(minutes) ss s f.. AM/PM am/pm
 // a/p, "quoted" literals and \x escapes. Month and day names come from Intl in the given language.
 export function formatDate(date, format, timeZone, language = 'en-US') {
@@ -513,7 +618,7 @@ export function formatDate(date, format, timeZone, language = 'en-US') {
   const d = new Date(wall);
   const name = (options) => new Intl.DateTimeFormat(language || 'en-US', { timeZone: 'UTC', ...options }).format(d);
   const tokens = [];
-  const re = /"([^"]*)"|\\(.)|(yyyy|yy|mmmm|mmm|mm|m|dddd|ddd|dd|d|hh|h|ss|s|f{1,3}|AM\/PM|am\/pm|A\/P|a\/p)|(.)/gs;
+  const re = new RegExp(FORMAT_QUOTED_PATTERN + FORMAT_TOKEN_PATTERN + FORMAT_OTHER_PATTERN, 'gs');
   for (const match of String(format).matchAll(re)) {
     if (match[1] !== undefined) tokens.push({ text: match[1] });
     else if (match[2] !== undefined) tokens.push({ text: match[2] });
@@ -521,64 +626,7 @@ export function formatDate(date, format, timeZone, language = 'en-US') {
     else tokens.push({ text: match[4] });
   }
   const ampm = tokens.some((t) => t.token && /\//.test(t.token));
-  const out = tokens.map((t, i) => {
-    if (!t.token) return t.text;
-    const tok = t.token;
-    // m and mm are minutes after an hour token or before a seconds token (Excel rule).
-    const isMinute =
-      (tok === 'm' || tok === 'mm') &&
-      (tokens
-        .slice(0, i)
-        .reverse()
-        .find((x) => x.token)
-        ?.token?.startsWith('h') ||
-        tokens
-          .slice(i + 1)
-          .find((x) => x.token)
-          ?.token?.startsWith('s'));
-    if (isMinute) return tok === 'mm' ? pad(d.getUTCMinutes()) : String(d.getUTCMinutes());
-    const hour12 = d.getUTCHours() % 12 || 12;
-    switch (tok) {
-      case 'yyyy':
-        return String(d.getUTCFullYear());
-      case 'yy':
-        return pad(d.getUTCFullYear() % 100);
-      case 'mmmm':
-        return name({ month: 'long' });
-      case 'mmm':
-        return name({ month: 'short' });
-      case 'mm':
-        return pad(d.getUTCMonth() + 1);
-      case 'm':
-        return String(d.getUTCMonth() + 1);
-      case 'dddd':
-        return name({ weekday: 'long' });
-      case 'ddd':
-        return name({ weekday: 'short' });
-      case 'dd':
-        return pad(d.getUTCDate());
-      case 'd':
-        return String(d.getUTCDate());
-      case 'hh':
-        return pad(ampm ? hour12 : d.getUTCHours());
-      case 'h':
-        return String(ampm ? hour12 : d.getUTCHours());
-      case 'ss':
-        return pad(d.getUTCSeconds());
-      case 's':
-        return String(d.getUTCSeconds());
-      case 'AM/PM':
-        return d.getUTCHours() < 12 ? 'AM' : 'PM';
-      case 'am/pm':
-        return d.getUTCHours() < 12 ? 'am' : 'pm';
-      case 'A/P':
-        return d.getUTCHours() < 12 ? 'A' : 'P';
-      case 'a/p':
-        return d.getUTCHours() < 12 ? 'a' : 'p';
-      default:
-        return pad(d.getUTCMilliseconds(), 3).slice(0, tok.length); // f, ff, fff
-    }
-  });
+  const out = tokens.map((t, i) => formatDateToken(t, i, tokens, d, name, ampm));
   return out.join('');
 }
 
@@ -588,49 +636,76 @@ export function formatDate(date, format, timeZone, language = 'en-US') {
 // by their fields (a related record by its id), blank equals only blank.
 // Not checked against native: Blank() = "" reads false here (IsBlank("") is true by Learn).
 export function equals(a, b, fx = null) {
-  if (a instanceof FxRecordRef) a = a.id;
-  if (b instanceof FxRecordRef) b = b.id;
+  if (differentChoiceSets(a, b)) return false;
+  [a, b] = comparableValues(a, b);
   if (isBlank(a) || isBlank(b)) return isBlank(a) && isBlank(b);
   if (a instanceof FxGuid || b instanceof FxGuid) return String(a).toLowerCase() === String(b).toLowerCase();
   if (a instanceof FxDate && b instanceof FxDate) return compareDates(a, b, fx) === 0;
+  [a, b] = untypedValues(a, b);
+  if (isNumeric(a) || isNumeric(b)) return numericOrder(a, b) === 0;
+  if (isRecord(a) && isRecord(b)) return equalRecords(a, b, fx);
+  if (Array.isArray(a) && Array.isArray(b)) return equalTables(a, b, fx);
+  return a === b;
+}
+function differentChoiceSets(a, b) {
+  return a instanceof FxChoice && b instanceof FxChoice && a.enumName.toLowerCase() !== b.enumName.toLowerCase();
+}
+function comparableValues(a, b) {
+  if (a instanceof FxChoice) a = a.value;
+  if (b instanceof FxChoice) b = b.value;
+  if (a instanceof FxRecordRef) a = a.id;
+  if (b instanceof FxRecordRef) b = b.id;
+  return [a, b];
+}
+function untypedValues(a, b) {
   if (a instanceof FxUntyped) a = a.raw;
   if (b instanceof FxUntyped) b = b.raw;
-  if (isNumeric(a) || isNumeric(b)) return numericOrder(a, b) === 0;
-  if (isRecord(a) && isRecord(b)) {
-    const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
-    return [...keys].every((key) => equals(a[key] ?? null, b[key] ?? null, fx));
-  }
-  if (Array.isArray(a) && Array.isArray(b))
-    return a.length === b.length && a.every((item, i) => equals(item, b[i], fx));
-  return a === b;
+  return [a, b];
+}
+function equalRecords(a, b, fx) {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  return [...keys].every((key) => equals(a[key] ?? null, b[key] ?? null, fx));
+}
+function equalTables(a, b, fx) {
+  return a.length === b.length && a.every((item, i) => equals(item, b[i], fx));
 }
 function compareDates(a, b, fx) {
   if (a.kind === 'datetime' && b.kind === 'datetime') return Math.sign(a.ms - b.ms);
   return Math.sign(wallOf(a, fx?.timeZone) - wallOf(b, fx?.timeZone));
 }
 // Ordering for < > and Sort: numbers (blank as 0), text, dates, Booleans. An incomparable pair is an error.
-export function compare(a, b, fx = null) {
+/* NOSONAR: mixed return values are part of the contract */ export function compare(a, b, fx = null) {
+  if (a instanceof FxChoice && b instanceof FxChoice && a.enumName.toLowerCase() !== b.enumName.toLowerCase())
+    return fxError(ErrorKind.InvalidArgument, 'Choices from different option sets cannot be compared.');
+  if (a instanceof FxChoice) a = a.value;
+  if (b instanceof FxChoice) b = b.value;
   if (a instanceof FxUntyped) a = a.raw;
   if (b instanceof FxUntyped) b = b.raw;
-  if (a instanceof FxDate || b instanceof FxDate) {
-    if (isBlank(a) || isBlank(b)) return isBlank(a) && isBlank(b) ? 0 : isBlank(a) ? -1 : 1;
-    const da = toDate(a, 'any', fx),
-      db = toDate(b, 'any', fx);
-    if (da instanceof FxError) return da;
-    if (db instanceof FxError) return db;
-    return compareDates(da, db, fx);
-  }
-  if (typeof a === 'string' || typeof b === 'string') {
-    if (isNumeric(a) || isNumeric(b)) return numericOrder(a, b);
-    const ta = a ?? '',
-      tb = b ?? '';
-    return ta < tb ? -1 : ta > tb ? 1 : 0;
-  }
+  if (a instanceof FxDate || b instanceof FxDate) return compareDateValues(a, b, fx);
+  if (typeof a === 'string' || typeof b === 'string') return compareTextValues(a, b);
   if (a instanceof FxGuid || b instanceof FxGuid) return String(a ?? '').localeCompare(String(b ?? ''));
   return numericOrder(a, b);
 }
+/* NOSONAR: mixed return values are part of the contract */ function compareDateValues(a, b, fx) {
+  if (isBlank(a) || isBlank(b)) {
+    if (isBlank(a) && isBlank(b)) return 0;
+    return isBlank(a) ? -1 : 1;
+  }
+  const da = toDate(a, 'any', fx),
+    db = toDate(b, 'any', fx);
+  if (da instanceof FxError) return da;
+  if (db instanceof FxError) return db;
+  return compareDates(da, db, fx);
+}
+/* NOSONAR: mixed return values are part of the contract */ function compareTextValues(a, b) {
+  if (isNumeric(a) || isNumeric(b)) return numericOrder(a, b);
+  const ta = a ?? '',
+    tb = b ?? '';
+  if (ta < tb) return -1;
+  return ta > tb ? 1 : 0;
+}
 // Numbers compare exactly (decimal digits, not doubles); a value that is not a number is an error.
-function numericOrder(a, b) {
+/* NOSONAR: mixed return values are part of the contract */ function numericOrder(a, b) {
   const da = toDecimal(a),
     db = toDecimal(b);
   if (da instanceof FxError) return da;
@@ -679,6 +754,70 @@ const OPERATORS = [
   '>',
 ];
 
+function lexNumberToken(text, start) {
+  const match = /^(\d*\.?\d*)(e[+-]?\d+)?/i.exec(text.slice(start));
+  let value;
+  try {
+    value = exactNumeric((match[0].startsWith('.') ? '0' : '') + match[0], 'Decimal');
+  } catch {
+    value = fxError(ErrorKind.Numeric, `The number ${match[0]} is out of range.`);
+  }
+  return { token: { k: 'num', v: value, at: start }, end: start + match[0].length };
+}
+function lexStringToken(text, start) {
+  let value = '',
+    i = start + 1;
+  for (;;) {
+    if (i >= text.length) throw new FxSyntaxError('Unterminated text literal', start);
+    if (text[i] === '"') {
+      if (text[i + 1] === '"') {
+        value += '"';
+        i += 2;
+        continue;
+      }
+      i++;
+      break;
+    }
+    value += text[i++];
+  }
+  return { token: { k: 'str', v: value, at: start }, end: i };
+}
+function lexQuotedIdentifier(text, start) {
+  let value = '',
+    i = start + 1;
+  for (;;) {
+    if (i >= text.length) throw new FxSyntaxError('Unterminated quoted identifier', start);
+    if (text[i] === "'") {
+      if (text[i + 1] === "'") {
+        value += "'";
+        i += 2;
+        continue;
+      }
+      i++;
+      break;
+    }
+    value += text[i++];
+  }
+  return { token: { k: 'id', v: value, quoted: true, at: start }, end: i };
+}
+function lexToken(text, start) {
+  const ch = text[start];
+  if (/\d/.test(ch) || (ch === '.' && /\d/.test(text[start + 1] ?? ''))) return lexNumberToken(text, start);
+  if (ch === '"') return lexStringToken(text, start);
+  if (ch === '$' && text[start + 1] === '"') {
+    const { parts, end } = lexInterpolation(text, start + 2);
+    return { token: { k: 'interp', parts, at: start }, end };
+  }
+  if (ch === "'") return lexQuotedIdentifier(text, start);
+  if (IDENT_START.test(ch)) {
+    let end = start;
+    while (end < text.length && IDENT_PART.test(text[end])) end++;
+    return { token: { k: 'id', v: text.slice(start, end), quoted: false, at: start }, end };
+  }
+  const op = OPERATORS.find((candidate) => text.startsWith(candidate, start));
+  if (!op) throw new FxSyntaxError(`Unexpected character '${ch}'`, start);
+  return { token: { k: 'op', v: op, at: start }, end: start + op.length };
+}
 function lex(text) {
   const tokens = [];
   let i = 0;
@@ -698,78 +837,35 @@ function lex(text) {
       i = end + 2;
       continue;
     }
-    const start = i;
-    if (/[0-9]/.test(ch) || (ch === '.' && /[0-9]/.test(text[i + 1] ?? ''))) {
-      const m = /^(\d*\.?\d*)(e[+-]?\d+)?/i.exec(text.slice(i));
-      let v;
-      try {
-        v = exactNumeric((m[0].startsWith('.') ? '0' : '') + m[0], 'Decimal');
-      } catch {
-        v = fxError(ErrorKind.Numeric, `The number ${m[0]} is out of range.`);
-      }
-      tokens.push({ k: 'num', v, at: start });
-      i += m[0].length;
-      continue;
-    }
-    if (ch === '"') {
-      let value = '';
-      i++;
-      for (;;) {
-        if (i >= text.length) throw new FxSyntaxError('Unterminated text literal', start);
-        if (text[i] === '"') {
-          if (text[i + 1] === '"') {
-            value += '"';
-            i += 2;
-            continue;
-          }
-          i++;
-          break;
-        }
-        value += text[i++];
-      }
-      tokens.push({ k: 'str', v: value, at: start });
-      continue;
-    }
-    if (ch === '$' && text[i + 1] === '"') {
-      const { parts, end } = lexInterpolation(text, i + 2);
-      tokens.push({ k: 'interp', parts, at: start });
-      i = end;
-      continue;
-    }
-    if (ch === "'") {
-      let value = '';
-      i++;
-      for (;;) {
-        if (i >= text.length) throw new FxSyntaxError('Unterminated quoted identifier', start);
-        if (text[i] === "'") {
-          if (text[i + 1] === "'") {
-            value += "'";
-            i += 2;
-            continue;
-          }
-          i++;
-          break;
-        }
-        value += text[i++];
-      }
-      tokens.push({ k: 'id', v: value, quoted: true, at: start });
-      continue;
-    }
-    if (IDENT_START.test(ch)) {
-      while (i < text.length && IDENT_PART.test(text[i])) i++;
-      tokens.push({ k: 'id', v: text.slice(start, i), quoted: false, at: start });
-      continue;
-    }
-    const op = OPERATORS.find((candidate) => text.startsWith(candidate, i));
-    if (!op) throw new FxSyntaxError(`Unexpected character '${ch}'`, i);
-    tokens.push({ k: 'op', v: op, at: start });
-    i += op.length;
+    const next = lexToken(text, i);
+    tokens.push(next.token);
+    i = next.end;
   }
   tokens.push({ k: 'eof', at: text.length });
   return tokens;
 }
 
 // $"..." body from `from`: literal text with "" and {{ }} escapes, and {expression} islands (strings inside them skipped).
+/* NOSONAR */ function interpolationIslandEnd(text, start) {
+  let depth = 1,
+    end = start + 1;
+  while (end < text.length && depth > 0) {
+    if (text[end] === '"') {
+      end++;
+      while (end < text.length && !(text[end] === '"' && text[end + 1] !== '"')) end += text[end] === '"' ? 2 : 1;
+    } else if (text[end] === '{') depth++;
+    else if (text[end] === '}') depth--;
+    end++;
+  }
+  if (depth) throw new FxSyntaxError('Unterminated interpolation island', start);
+  return end;
+}
+function interpolationEscape(text, index, ch) {
+  if (ch === '"' && text[index + 1] === '"') return '"';
+  if (ch === '{' && text[index + 1] === '{') return '{';
+  if (ch === '}' && text[index + 1] === '}') return '}';
+  return null;
+}
 function lexInterpolation(text, from) {
   const parts = [];
   let literal = '';
@@ -777,39 +873,20 @@ function lexInterpolation(text, from) {
   for (;;) {
     if (i >= text.length) throw new FxSyntaxError('Unterminated interpolated text', from - 2);
     const ch = text[i];
+    const escaped = interpolationEscape(text, i, ch);
+    if (escaped !== null) {
+      literal += escaped;
+      i += 2;
+      continue;
+    }
     if (ch === '"') {
-      if (text[i + 1] === '"') {
-        literal += '"';
-        i += 2;
-        continue;
-      }
       i++;
       break;
-    }
-    if (ch === '{' && text[i + 1] === '{') {
-      literal += '{';
-      i += 2;
-      continue;
-    }
-    if (ch === '}' && text[i + 1] === '}') {
-      literal += '}';
-      i += 2;
-      continue;
     }
     if (ch === '{') {
       if (literal) parts.push(literal);
       literal = '';
-      let depth = 1,
-        j = i + 1;
-      while (j < text.length && depth > 0) {
-        if (text[j] === '"') {
-          j++;
-          while (j < text.length && !(text[j] === '"' && text[j + 1] !== '"')) j += text[j] === '"' ? 2 : 1;
-        } else if (text[j] === '{') depth++;
-        else if (text[j] === '}') depth--;
-        j++;
-      }
-      if (depth) throw new FxSyntaxError('Unterminated interpolation island', i);
+      const j = interpolationIslandEnd(text, i);
       parts.push({ node: parse(text.slice(i + 1, j - 1)) });
       i = j;
       continue;
@@ -848,7 +925,18 @@ const PREFIX = 9;
 const KEYWORD_OPERATORS = new Set(['As', 'Or', 'And', 'in', 'exactin', 'Not']);
 
 const parsed = new Map();
+const FORMAT_QUOTED_PATTERN = String.raw`"([^"]*)"|\\(.)`;
+const FORMAT_TOKEN_PATTERN = String.raw`|(yyyy|yy|mmmm|mmm|mm|m|dddd|ddd|dd|d|hh|h|ss|s|f{1,3}|AM\/PM|am\/pm|A\/P|a\/p)`;
+const FORMAT_OTHER_PATTERN = String.raw`|(.)`; // NOSONAR: escaping is intentional
 /** Parses a Power Fx expression (with `;` chaining) into an AST. Cached per text. */
+function dottedName(node) {
+  if (node.t === 'id' && !node.global) return node.name;
+  if (node.t === 'dot') {
+    const base = dottedName(node.obj);
+    return base === null ? null : `${base}.${node.name}`;
+  }
+  return null;
+}
 export function parse(text) {
   if (parsed.has(text)) return parsed.get(text);
   const tokens = lex(String(text));
@@ -892,7 +980,10 @@ export function parse(text) {
         continue;
       }
       const right = expression(BINARY[op] + 1);
-      left = { t: 'bin', op: op === 'Or' ? '||' : op === 'And' ? '&&' : op, l: left, r: right };
+      let operator = op;
+      if (op === 'Or') operator = '||';
+      else if (op === 'And') operator = '&&';
+      left = { t: 'bin', op: operator, l: left, r: right };
     }
   }
   function unary() {
@@ -940,14 +1031,6 @@ export function parse(text) {
       return node;
     }
   }
-  function dottedName(node) {
-    if (node.t === 'id' && !node.global) return node.name;
-    if (node.t === 'dot') {
-      const base = dottedName(node.obj);
-      return base === null ? null : `${base}.${node.name}`;
-    }
-    return null;
-  }
   function call(name) {
     expect('(');
     const args = [];
@@ -964,68 +1047,72 @@ export function parse(text) {
     expect(')');
     return { t: 'call', name, args };
   }
-  function primary() {
-    const token = next();
-    switch (token.k) {
-      case 'num':
-        return { t: 'lit', v: token.v };
-      case 'str':
-        return { t: 'lit', v: token.v };
-      case 'interp':
-        return { t: 'interp', parts: token.parts };
-      case 'id': {
-        if (!token.quoted && (token.v === 'true' || token.v === 'false')) return { t: 'lit', v: token.v === 'true' };
-        if (isOp('(')) return call(token.v);
-        return { t: 'id', name: token.v, at: token.at };
+  function recordPrimary() {
+    const fields = [];
+    while (!isOp('}')) {
+      const name = identifier();
+      expect(':');
+      fields.push([name, expression(0)]);
+      if (isOp(',')) {
+        next();
+        continue;
       }
-      case 'op': {
-        if (token.v === '(') {
-          const inner = chain();
-          expect(')');
-          return inner;
-        }
-        if (token.v === '[@') {
-          const name = identifier();
-          expect(']');
-          return { t: 'id', name, global: true, at: token.at };
-        }
-        if (token.v === '{') {
-          const fields = [];
-          while (!isOp('}')) {
-            const name = identifier();
-            expect(':');
-            fields.push([name, expression(0)]);
-            if (isOp(',')) {
-              next();
-              continue;
-            }
-            if (!isOp('}')) throw new FxSyntaxError("Expected ',' or '}'", peek().at);
-          }
-          next();
-          return { t: 'rec', fields };
-        }
-        if (token.v === '[') {
-          const items = [];
-          while (!isOp(']')) {
-            items.push(expression(0));
-            if (isOp(',')) {
-              next();
-              continue;
-            }
-            if (!isOp(']')) throw new FxSyntaxError("Expected ',' or ']'", peek().at);
-          }
-          next();
-          return { t: 'tbl', items };
-        }
-        break;
-      }
-      default:
-        break;
+      if (!isOp('}')) throw new FxSyntaxError("Expected ',' or '}'", peek().at);
     }
+    next();
+    return { t: 'rec', fields };
+  }
+  function tablePrimary() {
+    const items = [];
+    while (!isOp(']')) {
+      items.push(expression(0));
+      if (isOp(',')) {
+        next();
+        continue;
+      }
+      if (!isOp(']')) throw new FxSyntaxError(`Expected ',' or ']'`, peek().at);
+    }
+    next();
+    return { t: 'tbl', items };
+  }
+  function invalidPrimary(token) {
     throw new FxSyntaxError(
       token.k === 'eof' ? 'Unexpected end of formula' : `Unexpected '${token.v ?? token.k}'`,
       token.at,
     );
+  }
+  function operatorPrimary(token) {
+    if (token.v === '(') {
+      const inner = chain();
+      expect(')');
+      return inner;
+    }
+    if (token.v === '[@') {
+      const name = identifier();
+      expect(']');
+      return { t: 'id', name, global: true, at: token.at };
+    }
+    if (token.v === '{') return recordPrimary();
+    if (token.v === '[') return tablePrimary();
+    return invalidPrimary(token);
+  }
+  function primary() {
+    const token = next();
+    switch (token.k) {
+      case 'num':
+      case 'str':
+        return { t: 'lit', v: token.v };
+      case 'interp':
+        return { t: 'interp', parts: token.parts };
+      case 'id':
+        if (!token.quoted && (token.v === 'true' || token.v === 'false')) return { t: 'lit', v: token.v === 'true' };
+        if (isOp('(')) return call(token.v);
+        return { t: 'id', name: token.v, at: token.at };
+      case 'op':
+        return operatorPrimary(token);
+      default:
+        return invalidPrimary(token);
+    }
   }
 
   if (peek().k === 'eof') throw new FxSyntaxError('The formula is empty', 0);
@@ -1043,6 +1130,21 @@ export function parse(text) {
 // Guessed: the underlying values of the text-valued enumerations; they are the option and pattern strings each one stands
 //   for here, and the DateTimeFormat members are the en-US patterns Learn's Text examples print.
 const ENUMS = {
+  Color: canvasColorNames,
+  DataSourceInfo: Object.fromEntries(
+    [
+      'DisplayName',
+      'MaxLength',
+      'MaxValue',
+      'MinValue',
+      'Required',
+      'AllowedValues',
+      'CreatePermission',
+      'DeletePermission',
+      'EditPermission',
+      'ReadPermission',
+    ].map((name) => [name, name]),
+  ),
   ErrorKind,
   TimeUnit: {
     Milliseconds: 'Milliseconds',
@@ -1079,24 +1181,24 @@ const ENUMS = {
   Match: {
     Any: '.',
     Comma: ',',
-    Digit: '\\d',
-    Email: '[^@\\s]+@[^@\\s]+\\.[^@\\s]+',
+    Digit: String.raw`\d`,
+    Email: String.raw`[^@\s]+@[^@\s]+\.[^@\s]+`,
     Hyphen: '-',
-    LeftParen: '\\(',
-    Letter: '\\p{L}',
-    MultipleDigits: '\\d+',
-    MultipleLetters: '\\p{L}+',
-    MultipleNonSpaces: '\\S+',
-    MultipleSpaces: '\\s+',
-    NonSpace: '\\S',
-    OptionalDigits: '\\d*',
-    OptionalLetters: '\\p{L}*',
-    OptionalNonSpaces: '\\S*',
-    OptionalSpaces: '\\s*',
-    Period: '\\.',
-    RightParen: '\\)',
-    Space: '\\s',
-    Tab: '\\t',
+    LeftParen: String.raw`\(`,
+    Letter: String.raw`\p{L}`,
+    MultipleDigits: String.raw`\d+`,
+    MultipleLetters: String.raw`\p{L}+`,
+    MultipleNonSpaces: String.raw`\S+`,
+    MultipleSpaces: String.raw`\s+`,
+    NonSpace: String.raw`\S`,
+    OptionalDigits: String.raw`\d*`,
+    OptionalLetters: String.raw`\p{L}*`,
+    OptionalNonSpaces: String.raw`\S*`,
+    OptionalSpaces: String.raw`\s*`,
+    Period: String.raw`\.`,
+    RightParen: String.raw`\)`,
+    Space: String.raw`\s`,
+    Tab: String.raw`\t`,
   },
   JSONFormat: {
     Compact: '',
@@ -1122,6 +1224,8 @@ const ENUMS = {
   },
   RemoveFlags: { First: 'First', All: 'All' },
 };
+
+export const powerFxBuiltinEnums = () => Object.keys(ENUMS);
 
 class FxNameError extends DataError {
   constructor(name) {
@@ -1166,24 +1270,8 @@ class Fx {
 function lookupName(fx, node) {
   const { name } = node;
   if (!node.global) {
-    if (name === 'ThisRecord') {
-      for (let i = fx.scopes.length - 1; i >= 0; i--)
-        if (fx.scopes[i].record !== undefined && !fx.scopes[i].vars) return fx.scopes[i].record;
-      if (fx.host.scope) return fx.host.scope;
-    }
-    for (let i = fx.scopes.length - 1; i >= 0; i--) {
-      const scope = fx.scopes[i];
-      if (scope.vars && Object.hasOwn(scope.vars, name)) return scope.vars[name];
-      if (scope.name === name) return scope.record;
-      if (scope.record !== undefined && !scope.vars) {
-        const found = field(scope.record, name);
-        if (found !== MISSING) return found;
-      }
-    }
-    if (fx.host.scope) {
-      const found = field(fx.host.scope, name);
-      if (found !== MISSING) return found;
-    }
+    const scoped = lookupScopedName(fx, name);
+    if (scoped !== MISSING) return scoped;
   }
   if (name === 'Self' && fx.host.self !== undefined) return fx.host.self;
   if (name === 'Parent' && fx.host.parent !== undefined) return fx.host.parent;
@@ -1196,6 +1284,36 @@ function lookupName(fx, node) {
   throw new FxNameError(name);
 }
 
+function lookupScopedName(fx, name) {
+  if (name === 'ThisRecord') {
+    const record = lookupThisRecord(fx);
+    if (record !== MISSING) return record;
+  }
+  for (let i = fx.scopes.length - 1; i >= 0; i--) {
+    const found = lookupScopeValue(fx.scopes[i], name);
+    if (found !== MISSING) return found;
+  }
+  if (fx.host.scope) {
+    const found = field(fx.host.scope, name);
+    if (found !== MISSING) return found;
+  }
+  return MISSING;
+}
+function lookupThisRecord(fx) {
+  for (let i = fx.scopes.length - 1; i >= 0; i--)
+    if (fx.scopes[i].record !== undefined && !fx.scopes[i].vars) return fx.scopes[i].record;
+  return fx.host.scope || MISSING;
+}
+function lookupScopeValue(scope, name) {
+  if (scope.vars && Object.hasOwn(scope.vars, name)) return scope.vars[name];
+  if (scope.name === name) return scope.record;
+  if (scope.record !== undefined && !scope.vars) {
+    const found = field(scope.record, name);
+    if (found !== MISSING) return found;
+  }
+  return MISSING;
+}
+
 const MISSING = Symbol('missing');
 // A record field by name, then case-insensitively, then by display-name alias; MISSING when the record has none.
 function field(record, name) {
@@ -1203,7 +1321,7 @@ function field(record, name) {
   if (!isRecord(record)) return MISSING;
   if (Object.hasOwn(record, name)) return record[name];
   const alias = record[ALIASES]?.get(name) ?? record[ALIASES]?.get(name.toLowerCase());
-  if (alias && Object.hasOwn(record, alias)) return record[alias];
+  if (alias) return Object.hasOwn(record, alias) ? record[alias] : null;
   return MISSING;
 }
 export const fieldName = (record, name) => {
@@ -1214,6 +1332,11 @@ export const fieldName = (record, name) => {
 // Property selection on a value: a record field (blank when absent), a related record's field, an untyped object's
 // property, a table column (a single-column table of that name).
 export function member(fx, value, name) {
+  if (value instanceof FxEnum) {
+    const key = name.toLowerCase();
+    if (!value.entries.has(key)) throw new FxNameError(`${value.name}.${name}`);
+    return value.entries.get(key);
+  }
   if (value instanceof FxError || isBlank(value)) return value ?? null;
   if (value instanceof FxRecordRef) return member(fx, value.record, name);
   if (value instanceof FxUntyped) {
@@ -1257,57 +1380,85 @@ export function readAll(fx, value, operation) {
   return truncated ? rows.slice(0, limit) : rows;
 }
 
+/* NOSONAR: mixed return values are part of the contract */ function evaluateInterpolation(fx, node) {
+  let out = '';
+  for (const part of node.parts) {
+    if (typeof part === 'string') {
+      out += part;
+      continue;
+    }
+    const text = toText(fx.ev(part.node), fx);
+    if (text instanceof FxError) return text;
+    out += text;
+  }
+  return out;
+}
+function evaluateDisambiguation(fx, node) {
+  for (let i = fx.scopes.length - 1; i >= 0; i--)
+    if (fx.scopes[i].source === node.table) return member(fx, fx.scopes[i].record, node.field);
+  throw new FxNameError(`${node.table}[@${node.field}]`);
+}
+function evaluateDot(fx, node) {
+  const base = fx.ev(node.obj);
+  // An unknown member of a built-in enumeration is a name error, not a blank.
+  const isEnum = node.obj.t === 'id' && Object.hasOwn(ENUMS, node.obj.name) && base === ENUMS[node.obj.name];
+  if (isEnum && node.obj.name === 'Color') {
+    const key = Object.keys(base).find((item) => item.toLowerCase() === node.name.toLowerCase());
+    if (!key) throw new FxNameError(`${node.obj.name}.${node.name}`);
+    return base[key];
+  }
+  if (isEnum && !Object.hasOwn(base, node.name)) throw new FxNameError(`${node.obj.name}.${node.name}`);
+  return member(fx, base, node.name);
+}
+function evaluateRecord(fx, node) {
+  const record = {};
+  for (const [name, value] of node.fields) record[name] = fx.ev(value);
+  return record;
+}
+function evaluateTable(fx, node) {
+  return node.items.map((item) => {
+    const value = fx.ev(item);
+    return isRecord(value) ? value : { Value: value };
+  });
+}
+function evaluateUnary(fx, node) {
+  const value = fx.ev(node.e);
+  if (value instanceof FxError) return value;
+  if (node.op === '!') {
+    const b = toBoolean(value);
+    return b instanceof FxError ? b : !b;
+  }
+  return arithmetic(fx, '-', 0, value);
+}
+function evaluateChain(fx, node) {
+  // Learn ("Error handling", Stopping further processing): each chained formula runs even when an earlier one failed;
+  // Assumed: the chain's result is the earlier errors when any, else the last value.
+  const errors = [];
+  let last = null;
+  for (const item of node.items) {
+    last = fx.ev(item);
+    if (last instanceof FxError) errors.push(...last.errors);
+  }
+  return errors.length ? new FxError(errors) : last;
+}
 function evaluateNode(fx, node) {
   switch (node.t) {
     case 'lit':
       return node.v;
-    case 'interp': {
-      let out = '';
-      for (const part of node.parts) {
-        if (typeof part === 'string') {
-          out += part;
-          continue;
-        }
-        const text = toText(fx.ev(part.node), fx);
-        if (text instanceof FxError) return text;
-        out += text;
-      }
-      return out;
-    }
+    case 'interp':
+      return evaluateInterpolation(fx, node);
     case 'id':
       return lookupName(fx, node);
-    case 'disamb': {
-      for (let i = fx.scopes.length - 1; i >= 0; i--) {
-        if (fx.scopes[i].source === node.table) return member(fx, fx.scopes[i].record, node.field);
-      }
-      throw new FxNameError(`${node.table}[@${node.field}]`);
-    }
-    case 'dot': {
-      const base = fx.ev(node.obj);
-      // An unknown member of a built-in enumeration is a name error, not a blank.
-      const isEnum = node.obj.t === 'id' && Object.hasOwn(ENUMS, node.obj.name) && base === ENUMS[node.obj.name];
-      if (isEnum && !Object.hasOwn(base, node.name)) throw new FxNameError(`${node.obj.name}.${node.name}`);
-      return member(fx, base, node.name);
-    }
-    case 'rec': {
-      const record = {};
-      for (const [name, value] of node.fields) record[name] = fx.ev(value);
-      return record;
-    }
+    case 'disamb':
+      return evaluateDisambiguation(fx, node);
+    case 'dot':
+      return evaluateDot(fx, node);
+    case 'rec':
+      return evaluateRecord(fx, node);
     case 'tbl':
-      return node.items.map((item) => {
-        const value = fx.ev(item);
-        return isRecord(value) ? value : { Value: value };
-      });
-    case 'unary': {
-      const value = fx.ev(node.e);
-      if (value instanceof FxError) return value;
-      if (node.op === '!') {
-        const b = toBoolean(value);
-        return b instanceof FxError ? b : !b;
-      }
-      return arithmetic(fx, '-', 0, value);
-    }
+      return evaluateTable(fx, node);
+    case 'unary':
+      return evaluateUnary(fx, node);
     case 'pct': {
       const value = fx.ev(node.e);
       return value instanceof FxError ? value : arithmetic(fx, '/', value, 100);
@@ -1316,17 +1467,8 @@ function evaluateNode(fx, node) {
       return binary(fx, node);
     case 'as':
       return fx.ev(node.e);
-    case 'chain': {
-      // Learn ("Error handling", Stopping further processing): each chained formula runs even when an earlier one failed;
-      // Assumed: the chain's result is the earlier errors when any, else the last value.
-      const errors = [];
-      let last = null;
-      for (const item of node.items) {
-        last = fx.ev(item);
-        if (last instanceof FxError) errors.push(...last.errors);
-      }
-      return errors.length ? new FxError(errors) : last;
-    }
+    case 'chain':
+      return evaluateChain(fx, node);
     case 'call':
       return callFunction(fx, node);
     default:
@@ -1334,24 +1476,42 @@ function evaluateNode(fx, node) {
   }
 }
 
+/* NOSONAR: mixed return values are part of the contract */ function logicalBinary(fx, node, op) {
+  const left = toBoolean(fx.ev(node.l));
+  if (left instanceof FxError) return left;
+  if (op === '&&' ? !left : left) return left;
+  const right = toBoolean(fx.ev(node.r));
+  return right;
+}
+/* NOSONAR: mixed return values are part of the contract */ function orderedBinary(fx, op, left, right) {
+  const comparison = compare(left, right, fx);
+  if (comparison instanceof FxError) return comparison;
+  if (op === '<') return comparison < 0;
+  if (op === '<=') return comparison <= 0;
+  if (op === '>') return comparison > 0;
+  return comparison >= 0;
+}
 function binary(fx, node) {
   const { op } = node;
-  if (op === '&&' || op === '||') {
-    const left = toBoolean(fx.ev(node.l));
-    if (left instanceof FxError) return left;
-    if (op === '&&' ? !left : left) return left;
-    const right = toBoolean(fx.ev(node.r));
-    return right;
-  }
+  if (op === '&&' || op === '||') return logicalBinary(fx, node, op);
   const l = fx.ev(node.l);
   if (l instanceof FxError) return l;
   const r = fx.ev(node.r);
   if (r instanceof FxError) return r;
+  const differentChoices =
+    ['=', '<>', '<', '<=', '>', '>='].includes(op) &&
+    l instanceof FxChoice &&
+    r instanceof FxChoice &&
+    l.enumName.toLowerCase() !== r.enumName.toLowerCase();
+  if (differentChoices)
+    return fxError(ErrorKind.InvalidArgument, 'Choices from different option sets cannot be compared.');
   switch (op) {
     case '&': {
       const a = toText(l, fx),
         b = toText(r, fx);
-      return a instanceof FxError ? a : b instanceof FxError ? b : a + b;
+      if (a instanceof FxError) return a;
+      if (b instanceof FxError) return b;
+      return a + b;
     }
     case '=':
       return equals(l, r, fx);
@@ -1361,9 +1521,7 @@ function binary(fx, node) {
     case '<=':
     case '>':
     case '>=': {
-      const c = compare(l, r, fx);
-      if (c instanceof FxError) return c;
-      return op === '<' ? c < 0 : op === '<=' ? c <= 0 : op === '>' ? c > 0 : c >= 0;
+      return orderedBinary(fx, op, l, r);
     }
     case 'in':
     case 'exactin':
@@ -1394,15 +1552,41 @@ function membership(fx, needle, haystack, exact) {
   return exact ? text.includes(part) : text.toLowerCase().includes(part.toLowerCase());
 }
 
+function dateArithmetic(fx, op, left, right) {
+  const amount = toNumber(right);
+  if (amount instanceof FxError) return amount;
+  // A day is a wall-clock day, as DateAdd(..., TimeUnit.Days) counts it (one rule for both, across daylight saving).
+  return fromWall(left.kind, wallOf(left, fx.timeZone) + (op === '+' ? amount : -amount) * DAY, fx.timeZone, left.tzi);
+}
+function floatArithmetic(op, left, right) {
+  const x = toNumber(left),
+    y = toNumber(right);
+  if (op === '/' && y === 0) return fxError(ErrorKind.Div0, 'Invalid operation: division by zero.');
+  let result;
+  switch (op) {
+    case '+':
+      result = x + y;
+      break;
+    case '-':
+      result = x - y;
+      break;
+    case '*':
+      result = x * y;
+      break;
+    case '/':
+      result = x / y;
+      break;
+    default:
+      result = Math.pow(x, y);
+  }
+  return Number.isFinite(result)
+    ? new FxFloat(result)
+    : fxError(ErrorKind.Numeric, 'Invalid operation: the result is not a number.');
+}
 function arithmetic(fx, op, l, r) {
   // Date arithmetic: date/time + number adds days (Learn, "Data types": date/time values in arithmetic), date - date gives
   // days. The result kinds of mixed date arithmetic are a guess.
-  if (l instanceof FxDate && (op === '+' || op === '-') && !(r instanceof FxDate)) {
-    const n = toNumber(r);
-    if (n instanceof FxError) return n;
-    // A day is a wall-clock day, as DateAdd(..., TimeUnit.Days) counts it (one rule for both, across daylight saving).
-    return fromWall(l.kind, wallOf(l, fx.timeZone) + (op === '+' ? n : -n) * DAY, fx.timeZone, l.tzi);
-  }
+  if (l instanceof FxDate && (op === '+' || op === '-') && !(r instanceof FxDate)) return dateArithmetic(fx, op, l, r);
   if (l instanceof FxDate && r instanceof FxDate && op === '-')
     return round15((wallOf(l, fx.timeZone) - wallOf(r, fx.timeZone)) / DAY);
   const a = toDecimal(l),
@@ -1410,15 +1594,7 @@ function arithmetic(fx, op, l, r) {
   if (a instanceof FxError) return a;
   if (b instanceof FxError) return b;
   // Learn (formula column data types): ^ returns a float, and a float operand makes the result a float.
-  if (op === '^' || l instanceof FxFloat || r instanceof FxFloat) {
-    const x = toNumber(a),
-      y = toNumber(b);
-    if (op === '/' && y === 0) return fxError(ErrorKind.Div0, 'Invalid operation: division by zero.');
-    const result = op === '+' ? x + y : op === '-' ? x - y : op === '*' ? x * y : op === '/' ? x / y : Math.pow(x, y);
-    return Number.isFinite(result)
-      ? new FxFloat(result)
-      : fxError(ErrorKind.Numeric, 'Invalid operation: the result is not a number.');
-  }
+  if (op === '^' || l instanceof FxFloat || r instanceof FxFloat) return floatArithmetic(op, a, b);
   if (!['+', '-', '*', '/'].includes(op)) throw new DataError(`Unknown operator '${op}'.`, 500, 'PowerFxInternal');
   return decimalArithmetic(op, a, b);
 }
@@ -1429,17 +1605,51 @@ class FxFunctionError extends DataError {
   }
 }
 
-function callFunction(fx, node) {
-  const definition = Object.hasOwn(FUNCTIONS, node.name) ? FUNCTIONS[node.name] : null;
-  if (!definition) {
-    const hosted = fx.host.functions?.[node.name];
-    if (typeof hosted === 'function') return toFx(hosted(...node.args.map((arg) => fromFx(fx.ev(arg), fx))));
+// Trusted hosts can opt into Power Fx values without the lossy JSON conversion used by connectors.
+const TYPED_HOST_FUNCTION = Symbol('power-fx.typed-host-function');
+export function typedPowerFxFunction(fn) {
+  if (typeof fn !== 'function') throw new TypeError('typedPowerFxFunction needs a function.');
+  Object.defineProperty(fn, TYPED_HOST_FUNCTION, { value: true });
+  return fn;
+}
+const PURE_COMPONENT_DENIED = new Set([
+  'Set',
+  'UpdateContext',
+  'Collect',
+  'ClearCollect',
+  'Clear',
+  'Patch',
+  'Remove',
+  'RemoveIf',
+  'UpdateIf',
+  'Navigate',
+  'Back',
+  'Notify',
+  'Trace',
+]);
+function arityText(min, max) {
+  if (min === max) return String(min);
+  if (max === Infinity) return `${min} or more`;
+  return `${min} to ${max}`;
+}
+function callHostFunction(fx, node) {
+  const hosted = fx.host.functions?.[node.name];
+  if (typeof hosted !== 'function')
     throw new FxFunctionError(`'${node.name}' is an unknown or unsupported function.`, { function: node.name });
-  }
+  if (!hosted[TYPED_HOST_FUNCTION]) return toFx(hosted(...node.args.map((arg) => fromFx(fx.ev(arg), fx))));
+  const args = node.args.map((arg) => fx.ev(arg));
+  const error = args.find((arg) => arg instanceof FxError);
+  if (error) return error;
+  const result = hosted(...args);
+  if (result && typeof result.then === 'function')
+    throw new FxFunctionError('Typed host functions must complete synchronously.', { function: node.name });
+  return toFx(result);
+}
+function callBuiltinFunction(fx, node, definition) {
   const { min = 0, max = Infinity } = definition;
   if (node.args.length < min || node.args.length > max)
     throw new FxFunctionError(
-      `Invalid number of arguments to ${node.name}: received ${node.args.length}, expected ${min === max ? min : max === Infinity ? `${min} or more` : `${min} to ${max}`}.`,
+      `Invalid number of arguments to ${node.name}: received ${node.args.length}, expected ${arityText(min, max)}.`,
       { function: node.name },
     );
   if (definition.lazy) return definition.fn(fx, node.args, node);
@@ -1449,6 +1659,13 @@ function callFunction(fx, node) {
     if (failed.length) return failed.length === 1 ? failed[0] : new FxError(failed.flatMap((error) => error.errors));
   }
   return definition.fn(fx, ...args);
+}
+function callFunction(fx, node) {
+  if (fx.host.pureComponent && PURE_COMPONENT_DENIED.has(node.name))
+    return fxError(ErrorKind.NotSupported, `${node.name} is not available in a pure component function.`);
+  const definition = Object.hasOwn(FUNCTIONS, node.name) ? FUNCTIONS[node.name] : null;
+  if (!definition) return callHostFunction(fx, node);
+  return callBuiltinFunction(fx, node, definition);
 }
 
 // ---- Engine (the evaluator adapter canvas-power-fx.mjs registers as the default)
@@ -1460,7 +1677,7 @@ export function evaluateFx(expression, { values = {}, host = {} } = {}) {
 }
 
 export function functionNames() {
-  return Object.keys(FUNCTIONS).sort();
+  return Object.keys(FUNCTIONS).sort(/* NOSONAR: preserve default string coercion */);
 }
 
 // Names a formula calls that the function table does not hold (recursively through every node).

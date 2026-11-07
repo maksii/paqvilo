@@ -35,7 +35,7 @@ const XRM_TYPES = new Set([
   'AliasedValue',
   'OrganizationResponse',
 ]);
-const DYNAMICS_NS = 'http://schemas.datacontract.org/2004/07/Microsoft.Dynamics.CRM'; // assumed DataContract default for a Dynamics type
+const DYNAMICS_NS = 'http://schemas.datacontract.org/2004/07/Microsoft.Dynamics.CRM'; // NOSONAR: XML namespace identifier, not a transport; assumed DataContract default for a Dynamics type
 const namespaceOf = (name) => {
   if (CRM_TYPES.has(name) || name.endsWith('Response')) return NS.g;
   if (XRM_TYPES.has(name)) return NS.a;
@@ -104,7 +104,11 @@ function complexTypesOf(registry) {
 function membersOf(types, name) {
   const def = types.get(name);
   if (!def) return [];
-  const own = [...def.properties].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  const own = [...def.properties].sort((a, b) => {
+    if (a.name < b.name) return -1;
+    if (a.name > b.name) return 1;
+    return 0;
+  });
   return [...membersOf(types, def.base), ...own];
 }
 
@@ -144,17 +148,22 @@ function inferredKind(ctx, value) {
   if (Array.isArray(value)) return { kind: 'array', item: null };
   if (typeof value === 'string') return { kind: 'edm', edm: 'string' };
   if (typeof value === 'boolean') return { kind: 'edm', edm: 'boolean' };
-  if (typeof value === 'number') {
-    if (!Number.isInteger(value)) return { kind: 'edm', edm: 'double' };
-    return { kind: 'edm', edm: value >= INT_MIN && value <= INT_MAX ? 'int' : 'long' };
-  }
-  if (value && typeof value === 'object') {
-    const odataType = localOf(value['@odata.type']);
-    if (value['@odata.id'] !== undefined) return { kind: 'entity', logical: null };
-    if (odataType && ctx.types.has(odataType)) return { kind: 'complex', name: odataType };
-    if (odataType && entityLogical(ctx.api, odataType))
-      return { kind: 'entity', logical: entityLogical(ctx.api, odataType) };
-  }
+  if (typeof value === 'number') return inferredNumberKind(value);
+  if (value && typeof value === 'object') return inferredObjectKind(ctx, value);
+  return { kind: 'unknown' };
+}
+
+function inferredNumberKind(value) {
+  if (!Number.isInteger(value)) return { kind: 'edm', edm: 'double' };
+  return { kind: 'edm', edm: value >= INT_MIN && value <= INT_MAX ? 'int' : 'long' };
+}
+
+function inferredObjectKind(ctx, value) {
+  const odataType = localOf(value['@odata.type']);
+  if (value['@odata.id'] !== undefined) return { kind: 'entity', logical: null };
+  if (odataType && ctx.types.has(odataType)) return { kind: 'complex', name: odataType };
+  if (odataType && entityLogical(ctx.api, odataType))
+    return { kind: 'entity', logical: entityLogical(ctx.api, odataType) };
   return { kind: 'unknown' };
 }
 

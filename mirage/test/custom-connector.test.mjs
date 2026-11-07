@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { executeFlowDefinition, inspectFlowDefinition } from '../lib/flow-runtime.mjs';
+import { makeTemporaryDirectorySync } from '../testing/owned-fixture.mjs';
 
 // A Solution custom connector compiles into a contract-level connector provider.
 const NAME = 'x_5ffxapi',
@@ -253,7 +254,7 @@ test('an unsupported policy blocks the connector; a script operation without the
   );
   // A script the project does not register (connectorScripts: connector + SHA-256 of its text) is refused before
   // anything is generated or built, whether or not the SDK is present; the preflight row names it untrusted.
-  const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'connector-untrusted-'));
+  const stateDirectory = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'connector-untrusted-'));
   try {
     for (const trusted of [
       [],

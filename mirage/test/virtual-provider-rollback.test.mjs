@@ -161,7 +161,8 @@ test('an SDK write to a provider without a synchronous write operation answers 5
     status: 501,
     code: 'SdkAsyncPreOperationUnsupported',
   });
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  // The provider and store are in-process with no I/O: one macrotask turn drains any stray continuation.
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(local(A).x_name, 'Alpha');
   assert.equal(external.get(A).x_name, 'Alpha');
   assert.deepEqual(calls, []);

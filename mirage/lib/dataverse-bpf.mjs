@@ -1,3 +1,4 @@
+import { cloneStateData } from './state-clone.mjs';
 // Business process flows (workflow category 4) in the Dataverse API: an inventory of the definitions and the creation of instance rows.
 //
 // A flow's definition is a workflow row of category 4, primaryentity = the table it runs on. Its instance table is named by the
@@ -99,15 +100,16 @@ function xamlStages(xaml) {
 // The stages of a flow as { id, name, entity }, or null when no simple, complete stage list is present.
 function stagesOf(row, primaryentity) {
   const json = jsonOf(row.clientdata);
-  const entries = Array.isArray(json?.stages)
-    ? json.stages.map((stage) => ({
-        id: stage?.stageid ?? stage?.id,
-        name: stage?.stagename ?? stage?.name,
-        entity: stage?.entityname ?? stage?.entity,
-      }))
-    : row.xaml
-      ? xamlStages(row.xaml)
-      : null;
+  let entries = null;
+  if (Array.isArray(json?.stages)) {
+    entries = json.stages.map((stage) => ({
+      id: stage?.stageid ?? stage?.id,
+      name: stage?.stagename ?? stage?.name,
+      entity: stage?.entityname ?? stage?.entity,
+    }));
+  } else if (row.xaml) {
+    entries = xamlStages(row.xaml);
+  }
   if (!entries?.length || !entries.every((entry) => isGuid(bare(entry.id)) && String(entry.name ?? '').trim()))
     return null;
   return entries.map((entry) => ({
@@ -223,7 +225,7 @@ export async function createInstance(api, workflowid, targetId) {
           },
           { authorized: true },
         );
-        return structuredClone(row);
+        return cloneStateData(row);
       },
       { nested: true },
     ),

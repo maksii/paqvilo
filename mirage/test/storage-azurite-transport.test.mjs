@@ -39,7 +39,6 @@ test('prototype-shaped query names are signed as data and an invalid signature c
       'x-ms-date': new Date().toUTCString(),
       'x-ms-version': BLOB_API_VERSION,
     },
-    signal: AbortSignal.timeout(2000),
   });
   assert.equal(response.status, 403);
   assert.equal(response.headers.get('x-ms-error-code'), 'AuthenticationFailed');
@@ -186,9 +185,9 @@ test('a data operation against an endpoint that never answers is Unavailable onc
   const sockets = new Set();
   const silent = net.createServer((socket) => sockets.add(socket)); // accepts, never answers
   await new Promise((resolve) => silent.listen(0, '127.0.0.1', resolve));
-  t.after(() => {
+  t.after(async () => {
     for (const socket of sockets) socket.destroy();
-    silent.close();
+    await new Promise((resolve) => silent.close(resolve));
   });
   const s = guardProvider(
     createAzuriteStorage({
@@ -199,12 +198,11 @@ test('a data operation against an endpoint that never answers is Unavailable onc
       },
     }),
   );
-  const started = Date.now();
+  // The message carries the configured limit, so the 30 s default cannot pass for it.
   await assert.rejects(
     s.head('fx/slow'),
     (error) => code('Unavailable', 'PROVIDER_UNREACHABLE')(error) && /no answer within 300 ms/.test(error.message),
   );
-  assert.ok(Date.now() - started < 5000);
   assert.deepEqual(s.descriptor.level, 'behaviour');
 });
 

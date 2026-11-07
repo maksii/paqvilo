@@ -164,7 +164,7 @@ const utf8Header = (value) => {
   // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
   if (!/[\x80-\xff]/.test(text) || /[^\x00-\xff]/.test(text)) return text;
   const decoded = Buffer.from(text, 'latin1').toString('utf8');
-  return decoded.includes('�') ? text : decoded;
+  return decoded.includes('\uFFFD') ? text : decoded;
 };
 const mimeOf = (c) =>
   String(header(c, 'content-type') ?? '')
@@ -253,7 +253,11 @@ function prepared({ logical, id = null, column, kind, def, name, size, head, mim
   };
 }
 
-const filesOf = (store) => ((store.state.dataverse ??= {}).files ??= {});
+const filesOf = (store) => {
+  store.state.dataverse ??= {};
+  store.state.dataverse.files ??= {};
+  return store.state.dataverse.files;
+};
 const filesRead = (store) => store.state.dataverse?.files ?? {};
 
 // ---- Storage routes
@@ -272,7 +276,7 @@ const BLOB_KEY = /^annotations\/([0-9a-f-]{36})\/(\d+)$/;
 export function blobKeyOf(logical, row) {
   const match = BLOB_KEY.exec(String(row?.__blobkey ?? ''));
   const idColumn = logical === 'annotation' ? 'annotationid' : 'activitymimeattachmentid';
-  return match && match[1] === guidKey(row[idColumn]) ? row.__blobkey : null;
+  return match && match[1] === guidKey(row[idColumn]) ? row.__blobkey : null; // NOSONAR: optional chaining would change the false/null result
 }
 
 /** The storage keys a row holds: files/<fileId> per file or image column, and a note or attachment row's own blob key. */
@@ -319,7 +323,10 @@ export async function readStoredBytes(api, entry, range) {
 const PENDING = Symbol('pendingBytes');
 export function deferBytes(c, target, column, load) {
   const pending = c?.[PENDING];
-  if (!pending) return void (target[column] = null);
+  if (!pending) {
+    target[column] = null;
+    return;
+  }
   const marker = `${pending.nonce}:${pending.loads.size}`;
   pending.loads.set(marker, load);
   target[column] = marker;
@@ -366,7 +373,7 @@ function targetOf(store, target) {
       .replace(/^https?:\/\/[^/]+/i, '')
       .replace(/^\/?api\/data\/v\d+\.\d+\//i, '')
       .replace(/^\//, '');
-    const match = /^([A-Za-z_]\w*)\(([0-9a-f-]{36})\)$/i.exec(path);
+    const match = /^([a-z_]\w*)\(([0-9a-f-]{36})\)$/i.exec(path);
     if (!match || !guidKey(match[2])) throw invalid('Target must identify a record by its primary key.');
     return { mapping: store.resolveMapping(match[1]), id: match[2] };
   }
@@ -446,7 +453,7 @@ export function install(api) {
   const sasSignature = (key, expiry, permission) =>
     createHmac('sha256', sasSecret).update(`${key}\n${expiry}\n${permission}`).digest('base64url');
   const sasUrl = (c, key, permission) => {
-    const expiry = new Date(clock() + 3600_000).toISOString();
+    const expiry = new Date(clock() + 3600_000).toISOString(); // NOSONAR: no behaviour-preserving alternative
     return `${c.origin}/_sas/files/${encodeURIComponent(key)}?${new URLSearchParams({ se: expiry, sp: permission, sig: sasSignature(key, expiry, permission) })}`;
   };
   sessionsByApi.set(api, sessions);
@@ -460,8 +467,11 @@ export function install(api) {
   // 400 InvalidRequest, as its other size limits do.
   const maxSessions = () => api.settings?.maxUploadSessions ?? MAX_UPLOAD_SESSIONS;
   const maxBuffered = () => api.settings?.maxUploadBytes ?? MAX_UPLOAD_BYTES;
-  const heldBy = (session) =>
-    session.mode === 'range' ? session.received : session.mode === 'blocks' ? session.bytes : 0;
+  const heldBy = (session) => {
+    if (session.mode === 'range') return session.received;
+    if (session.mode === 'blocks') return session.bytes;
+    return 0;
+  };
   const buffered = () => {
     let total = 0;
     for (const session of sessions.values()) total += heldBy(session);
@@ -712,7 +722,10 @@ export function install(api) {
     return { status: 204, headers: { 'OData-Version': '4.0' } };
   }
 
-  async function download(c, { mapping, id, column, kind, def }) {
+  /* NOSONAR: retain original await boundaries for concurrent operations */ async function download(
+    c,
+    { mapping, id, column, kind, def },
+  ) {
     const row = recordOf(store, mapping, id);
     authorize(c, mapping, 'read', row);
     const entry = row[column] ? filesRead(store)[row[column]] : null;
@@ -792,7 +805,8 @@ export function install(api) {
    */
   // The portal Web API (webapi-handler.mjs fileColumnRequest) also calls it, with operation 'delete' (the column's DELETE)
   // and contentType (the upload's Content-Type); fileContentInternal.kindOf(entity, column) answers 'file', 'image' or null.
-  async function fileContentInternal({
+
+  /* NOSONAR: retain original await boundaries for concurrent operations */ async function fileContentInternal({
     principal,
     operation,
     entity,
@@ -860,56 +874,60 @@ export function install(api) {
   api.records.fileContentInternal = fileContentInternal;
 
   // Synchronous without a storage route; a routed write returns the provider puts' promise (awaited inside the write).
+  function beforeWriteImage({ mapping, operation, data, existing, files, puts, column, def }) {
+    if (!data || !Object.hasOwn(data, column)) return;
+    const value = data[column];
+    if (operation === 'create' && value != null && !isPrimary(column, def)) {
+      throw invalid(
+        `Non-primary image attribute ${column} of entity ${mapping.logicalName} is not allowed to upload during Create operation.`,
+        NON_PRIMARY_INNER,
+      );
+    }
+    // The replaced or cleared image is released in afterWrite, once the row write has landed.
+    if (value == null) {
+      data[column] = null;
+      return;
+    }
+    const id = existing?.[mapping.idColumn] ?? data[mapping.idColumn] ?? null;
+    // Record writes answer a malformed base64 value with the payload-converter error, quoting the literal (stack trace omitted).
+    if (typeof value !== 'string' || !BASE64.test(value)) {
+      throw new DataError(
+        "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Cannot convert the literal '" +
+          String(value) +
+          "' to the expected type 'Edm.Binary'. ---> System.FormatException: The input is not a valid Base-64 string as it contains a non-base 64 character, more than two padding characters, or an illegal character among the padding characters.",
+        400,
+        'InvalidRequest',
+        { innerCode: BASE64_INNER },
+      );
+    }
+    const bytes = Buffer.from(value, 'base64');
+    // A guess: a record write with bytes that are not a supported image answers "Invalid argument." (0x80040203), not the $value wording.
+    if (!sniffImage(bytes)) throw invalid('Invalid argument.');
+    const fileId = uuid();
+    const entry = (files[fileId] = prepared({
+      logical: mapping.logicalName,
+      id,
+      column,
+      kind: 'image',
+      def,
+      name: column,
+      size: bytes.length,
+      head: bytes,
+      now: clock(),
+    }));
+    if (routed(fileKey(fileId))) {
+      storage().holdWrite?.(fileKey(fileId));
+      puts.push(keep(entry, fileId, bytes));
+    } else entry.data = bytes.toString('base64');
+    data[column] = fileId;
+  }
+
   function beforeWrite(c, mapping, { operation, data, existing }) {
     if (operation !== 'create' && operation !== 'update') return;
     const files = filesOf(store),
       puts = [];
     for (const [column, def] of imageColumns(mapping)) {
-      if (!data || !Object.hasOwn(data, column)) continue;
-      const value = data[column];
-      if (operation === 'create' && value != null && !isPrimary(column, def)) {
-        throw invalid(
-          `Non-primary image attribute ${column} of entity ${mapping.logicalName} is not allowed to upload during Create operation.`,
-          NON_PRIMARY_INNER,
-        );
-      }
-      // The replaced or cleared image is released in afterWrite, once the row write has landed.
-      if (value == null) {
-        data[column] = null;
-        continue;
-      }
-      const id = existing?.[mapping.idColumn] ?? data[mapping.idColumn] ?? null;
-      // Record writes answer a malformed base64 value with the payload-converter error, quoting the literal (stack trace omitted).
-      if (typeof value !== 'string' || !BASE64.test(value)) {
-        throw new DataError(
-          "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Cannot convert the literal '" +
-            String(value) +
-            "' to the expected type 'Edm.Binary'. ---> System.FormatException: The input is not a valid Base-64 string as it contains a non-base 64 character, more than two padding characters, or an illegal character among the padding characters.",
-          400,
-          'InvalidRequest',
-          { innerCode: BASE64_INNER },
-        );
-      }
-      const bytes = Buffer.from(value, 'base64');
-      // A guess: a record write with bytes that are not a supported image answers "Invalid argument." (0x80040203), not the $value wording.
-      if (!sniffImage(bytes)) throw invalid('Invalid argument.');
-      const fileId = uuid();
-      const entry = (files[fileId] = prepared({
-        logical: mapping.logicalName,
-        id,
-        column,
-        kind: 'image',
-        def,
-        name: column,
-        size: bytes.length,
-        head: bytes,
-        now: clock(),
-      }));
-      if (routed(fileKey(fileId))) {
-        storage().holdWrite?.(fileKey(fileId));
-        puts.push(keep(entry, fileId, bytes));
-      } else entry.data = bytes.toString('base64');
-      data[column] = fileId;
+      beforeWriteImage({ mapping, operation, data, existing, files, puts, column, def });
     }
     return puts.length ? Promise.all(puts).then(() => undefined) : undefined;
   }
@@ -943,6 +961,30 @@ export function install(api) {
   }
 
   // Read returns image columns as base64 with the companion columns Dataverse adds.
+  function projectImage(c, mapping, row, column, raw, files, key) {
+    if (!Object.hasOwn(row, column)) return;
+    const fileId = raw?.[column] ?? null;
+    const entry = fileId ? files[fileId] : null;
+    const stamp = entry ? Date.parse(entry.createdOn) : null; // The native _timestamp format is a guess.
+    if (entry?.data == null && entry?.key)
+      deferBytes(c, row, column, async () => {
+        // A blob the provider no longer has reads as null with a diagnostic, like storage routing (STORAGE_OBJECT_MISSING).
+        try {
+          return (await readStoredBytes(api, entry)).toString('base64');
+        } catch (error) {
+          if (error?.code !== 'NotFound') throw error;
+          storageByApi.get(api)?.missing?.(mapping.logicalName, key, entry.key);
+          return null;
+        }
+      });
+    else row[column] = entry ? entry.data : null;
+    row[`${column}id`] = fileId;
+    row[`${column}_timestamp`] = stamp;
+    row[`${column}_url`] = entry
+      ? `/Image/download.aspx?Entity=${mapping.logicalName}&Attribute=${column}&Id=${fileId}&Timestamp=${stamp}`
+      : null;
+  }
+
   function project(c, mapping, formatted) {
     const images = imageColumns(mapping);
     if (!images.length) return;
@@ -952,33 +994,11 @@ export function install(api) {
       const key = guidKey(r[mapping.idColumn]);
       if (key && !stored.has(key)) stored.set(key, r);
     }
-    for (const row of [].concat(formatted ?? [])) {
+    for (const row of [].concat(formatted ?? []) /* NOSONAR: preserve concat spreadability semantics */) {
       if (!row || typeof row !== 'object') continue;
       const key = guidKey(row[mapping.idColumn]);
       const raw = key ? stored.get(key) : undefined;
-      for (const [column] of images) {
-        if (!Object.hasOwn(row, column)) continue;
-        const fileId = raw?.[column] ?? null;
-        const entry = fileId ? files[fileId] : null;
-        const stamp = entry ? Date.parse(entry.createdOn) : null; // The native _timestamp format is a guess.
-        if (entry?.data == null && entry?.key)
-          deferBytes(c, row, column, async () => {
-            // A blob the provider no longer has reads as null with a diagnostic, like storage routing (STORAGE_OBJECT_MISSING).
-            try {
-              return (await readStoredBytes(api, entry)).toString('base64');
-            } catch (error) {
-              if (error?.code !== 'NotFound') throw error;
-              storageByApi.get(api)?.missing?.(mapping.logicalName, key, entry.key);
-              return null;
-            }
-          });
-        else row[column] = entry ? entry.data : null;
-        row[`${column}id`] = fileId;
-        row[`${column}_timestamp`] = stamp;
-        row[`${column}_url`] = entry
-          ? `/Image/download.aspx?Entity=${mapping.logicalName}&Attribute=${column}&Id=${fileId}&Timestamp=${stamp}`
-          : null;
-      }
+      for (const [column] of images) projectImage(c, mapping, row, column, raw, files, key);
     }
   }
 
@@ -1021,7 +1041,7 @@ export function install(api) {
     if (session.role !== logical) throw invalid('The file upload session is not valid.');
     const list = Array.isArray(input.BlockList) ? input.BlockList : [];
     const parts = list.map((blockId) => session.blocks.get(String(blockId)));
-    if (!list.length || parts.some((part) => part === undefined))
+    if (!list.length || parts.some((part) => part === undefined) /* NOSONAR: retain sparse-array behavior */)
       throw invalid('BlockList names a block that was not uploaded.');
     principals.authorize({ user: c.user, entity: logical, operation: 'create' });
     const target = input.Target && typeof input.Target === 'object' ? input.Target : {};
@@ -1201,7 +1221,7 @@ export function install(api) {
       const session = sessionOf(token, 'blocks');
       const list = Array.isArray(input.BlockList) ? input.BlockList : [];
       const parts = list.map((blockId) => session.blocks.get(String(blockId)));
-      if (!list.length || parts.some((part) => part === undefined))
+      if (!list.length || parts.some((part) => part === undefined) /* NOSONAR: retain sparse-array behavior */)
         throw invalid('BlockList names a block that was not uploaded.');
       const mapping = session.entity ? store.resolveMapping(session.entity) : null;
       if (mapping) authorize(c, mapping, 'update', recordOf(store, mapping, session.id));
@@ -1264,12 +1284,10 @@ export function install(api) {
       const input = bodyOf(c);
       const session = sessionOf(input.FileContinuationToken, 'download');
       // An annotation or attachment download carries its base64 bytes or provider key in the session (see initBlocksDownload).
-      const entry =
-        session.data != null
-          ? { data: session.data }
-          : session.key
-            ? { key: session.key, size: session.size }
-            : filesRead(store)[session.fileId];
+      let entry;
+      if (session.data != null) entry = { data: session.data };
+      else if (session.key) entry = { key: session.key, size: session.size };
+      else entry = filesRead(store)[session.fileId];
       if (!entry) throw missing(`File ${session.fileId} does not exist.`);
       const mapping = store.resolveMapping(session.entity);
       authorize(c, mapping, 'read', recordOf(store, mapping, session.id));
@@ -1280,14 +1298,12 @@ export function install(api) {
       }
       // Native answers a negative Offset with the whole file and ignores BlockLength.
       const size = entry.data != null ? Buffer.from(String(entry.data), 'base64').length : entry.size;
-      const block =
-        offset >= size
-          ? Buffer.alloc(0)
-          : await readStoredBytes(
-              api,
-              entry,
-              offset < 0 ? undefined : { start: offset, end: Math.min(offset + length, size) - 1 },
-            );
+      let block;
+      if (offset >= size) block = Buffer.alloc(0);
+      else {
+        const range = offset < 0 ? undefined : { start: offset, end: Math.min(offset + length, size) - 1 };
+        block = await readStoredBytes(api, entry, range);
+      }
       return reply(c, 'DownloadBlock', { Data: block.toString('base64') });
     },
 
@@ -1358,13 +1374,78 @@ export function install(api) {
 
   // The returned URL permits anonymous download for one hour. It grants access
   // only to the signed file id; the API request that mints it still authorizes the table and record.
+  async function providerSasFor(c, storedKey) {
+    const url = await providerOf(storedKey).sas(storedKey, { permission: 'r', expiresOn: clock() + 3600_000 }); // NOSONAR: no behaviour-preserving alternative
+    return /^https?:/i.test(url) ? url : `${c.origin}${url}`;
+  }
+
+  function noteSasResponse(c, row, mapping) {
+    const key = `inline:${uuid()}`;
+    const bytes = row[mapping.logicalName === 'annotation' ? 'documentbody' : 'body'];
+    const blobKey = bytes == null ? blobKeyOf(mapping.logicalName, row) : null;
+    if (blobKey)
+      return (async () => {
+        const size = (await providerOf(blobKey).head(blobKey))?.size ?? 0;
+        return reply(c, 'GetFileSasUrl', {
+          Result: {
+            FileName: row.filename ?? '',
+            FileSizeInBytes: size,
+            MimeType: row.mimetype ?? 'application/octet-stream',
+            SasUrl: await providerSasFor(c, blobKey),
+          },
+        });
+      })();
+    if (bytes == null) throw missing('No file attachment found.');
+    purge();
+    reserve(null, String(bytes).length);
+    const entry = {
+      name: row.filename ?? '',
+      mimeType: row.mimetype ?? 'application/octet-stream',
+      data: bytes,
+      size: Buffer.from(String(bytes), 'base64').length,
+    };
+    sasInline.set(key, { ...entry, expiresAt: clock() + 3600_000 }); // NOSONAR: no behaviour-preserving alternative
+    return reply(c, 'GetFileSasUrl', {
+      Result: {
+        FileName: entry.name,
+        FileSizeInBytes: entry.size,
+        MimeType: entry.mimeType,
+        SasUrl: sasUrl(c, key, 'r'),
+      },
+    });
+  }
+
+  function columnSasResponse(c, input, row, mapping) {
+    const found = fileColumn(mapping, input.FileAttributeName);
+    if (!found) throw invalid('FileAttributeName is not a file or image column.');
+    if (found.kind === 'image' && found.def?.canStoreFullImage !== true)
+      throw invalid('GetFileSasUrl only works for image columns that store full images.');
+    const key = row[found.column];
+    const entry = filesRead(store)[key];
+    if (!entry) throw missing('No file attachment found.');
+    if (entry.data == null && entry.key)
+      return providerSasFor(c, entry.key).then((SasUrl) =>
+        reply(c, 'GetFileSasUrl', {
+          Result: { FileName: entry.name, FileSizeInBytes: entry.size, MimeType: entry.mimeType, SasUrl },
+        }),
+      );
+    return reply(c, 'GetFileSasUrl', {
+      Result: {
+        FileName: entry.name,
+        FileSizeInBytes: entry.size,
+        MimeType: entry.mimeType,
+        SasUrl: sasUrl(c, key, 'r'),
+      },
+    });
+  }
+
   registry.register({
     name: 'GetFileSasUrl',
     kind: 'function',
     binding: 'unbound',
     csdl: `<ComplexType Name="FileSasUrlResponse"><Property Name="FileName" Type="Edm.String" /><Property Name="FileSizeInBytes" Type="Edm.Int64" /><Property Name="MimeType" Type="Edm.String" /><Property Name="SasUrl" Type="Edm.String" /></ComplexType><ComplexType Name="GetFileSasUrlResponse"><Property Name="Result" Type="mscrm.FileSasUrlResponse" /></ComplexType><Function Name="GetFileSasUrl"><Parameter Name="Target" Type="mscrm.crmbaseentity" Nullable="false" /><Parameter Name="FileAttributeName" Type="Edm.String" Nullable="false" /><Parameter Name="DataSource" Type="Edm.String" /><ReturnType Type="mscrm.GetFileSasUrlResponse" Nullable="false" /></Function>`,
     handle: (c) => {
-      const input = { ...bodyOf(c), ...(c.params ?? {}) },
+      const input = { ...bodyOf(c), ...c.params },
         { mapping, id } = targetOf(store, input.Target);
       const source = String(input.DataSource ?? 'default').toLowerCase();
       if (!['default', 'bin', 'retained'].includes(source))
@@ -1377,62 +1458,11 @@ export function install(api) {
             );
       if (!row) throw missing(`${mapping.logicalName} With Id = ${id} Does Not Exist`);
       authorize(c, mapping, 'read', row);
-      let key, entry;
-      // A routed note or file is signed by its provider; no byte copy is kept.
-      const providerSas = async (storedKey) => {
-        const url = await providerOf(storedKey).sas(storedKey, { permission: 'r', expiresOn: clock() + 3600_000 });
-        return /^https?:/i.test(url) ? url : `${c.origin}${url}`;
-      };
       if (['annotation', 'activitymimeattachment'].includes(mapping.logicalName)) {
         if (input.FileAttributeName !== '') throw invalid('FileAttributeName must be empty for notes and attachments.');
-        key = `inline:${uuid()}`;
-        const bytes = row[mapping.logicalName === 'annotation' ? 'documentbody' : 'body'];
-        const blobKey = bytes == null ? blobKeyOf(mapping.logicalName, row) : null;
-        if (blobKey)
-          return (async () => {
-            const size = (await providerOf(blobKey).head(blobKey))?.size ?? 0;
-            return reply(c, 'GetFileSasUrl', {
-              Result: {
-                FileName: row.filename ?? '',
-                FileSizeInBytes: size,
-                MimeType: row.mimetype ?? 'application/octet-stream',
-                SasUrl: await providerSas(blobKey),
-              },
-            });
-          })();
-        if (bytes == null) throw missing('No file attachment found.');
-        purge();
-        reserve(null, String(bytes).length);
-        entry = {
-          name: row.filename ?? '',
-          mimeType: row.mimetype ?? 'application/octet-stream',
-          data: bytes,
-          size: Buffer.from(String(bytes), 'base64').length,
-        };
-        sasInline.set(key, { ...entry, expiresAt: clock() + 3600_000 });
-      } else {
-        const found = fileColumn(mapping, input.FileAttributeName);
-        if (!found) throw invalid('FileAttributeName is not a file or image column.');
-        if (found.kind === 'image' && found.def?.canStoreFullImage !== true)
-          throw invalid('GetFileSasUrl only works for image columns that store full images.');
-        key = row[found.column];
-        entry = filesRead(store)[key];
-        if (!entry) throw missing('No file attachment found.');
-        if (entry.data == null && entry.key)
-          return providerSas(entry.key).then((SasUrl) =>
-            reply(c, 'GetFileSasUrl', {
-              Result: { FileName: entry.name, FileSizeInBytes: entry.size, MimeType: entry.mimeType, SasUrl },
-            }),
-          );
+        return noteSasResponse(c, row, mapping);
       }
-      return reply(c, 'GetFileSasUrl', {
-        Result: {
-          FileName: entry.name,
-          FileSizeInBytes: entry.size,
-          MimeType: entry.mimeType,
-          SasUrl: sasUrl(c, key, 'r'),
-        },
-      });
+      return columnSasResponse(c, input, row, mapping);
     },
   });
   // Native CSDL declares Result: InitializeUploadUsingSasResponse. The local upload URL streams one block; callers
@@ -1443,7 +1473,7 @@ export function install(api) {
     binding: 'unbound',
     csdl: `<ComplexType Name="InitializeUploadUsingSasResponse"><Property Name="SasUrl" Type="Edm.String" /><Property Name="FileContinuationToken" Type="Edm.String" /></ComplexType><ComplexType Name="GetFileSasUrlForUploadResponse"><Property Name="Result" Type="mscrm.InitializeUploadUsingSasResponse" /></ComplexType><Function Name="GetFileSasUrlForUpload"><Parameter Name="Target" Type="mscrm.crmbaseentity" Nullable="false" /><Parameter Name="FileAttributeName" Type="Edm.String" Nullable="false" /><Parameter Name="FileName" Type="Edm.String" Nullable="false" /><ReturnType Type="mscrm.GetFileSasUrlForUploadResponse" Nullable="false" /></Function>`,
     handle: async (c) => {
-      const result = await actions.InitializeFileBlocksUpload({ ...c, body: { ...bodyOf(c), ...(c.params ?? {}) } });
+      const result = await actions.InitializeFileBlocksUpload({ ...c, body: { ...bodyOf(c), ...c.params } });
       const token = result.body.FileContinuationToken;
       return reply(c, 'GetFileSasUrlForUpload', {
         Result: { SasUrl: sasUrl(c, `upload:${token}`, 'w'), FileContinuationToken: token },

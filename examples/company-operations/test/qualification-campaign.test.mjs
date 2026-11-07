@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile, mkdtemp, mkdir, writeFile, rm, access } from 'node:fs/promises';
+import { readFile, mkdir, writeFile, rm, access } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
@@ -17,6 +17,7 @@ import {
 } from '../portal-security/qualification-domain.mjs';
 import { buildBlueprint } from '../portal-security/blueprint.mjs';
 import { stable } from '../portal-harness/core.mjs';
+import { makeTemporaryDirectory } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 
 const sha = (value) => createHash('sha256').update(value).digest('hex');
 const id = (number) => `00000000-0000-0000-0000-${String(number).padStart(12, '0')}`;
@@ -362,7 +363,7 @@ test('bounded loopback fixture executes actual lease, archives repeated cells, r
     },
     replayNativeCell: async ({ native }) => structuredClone(native),
   };
-  const temporary = await mkdtemp(path.join(os.tmpdir(), 'configuration-driver-')),
+  const temporary = await makeTemporaryDirectory(path.join(os.tmpdir(), 'configuration-driver-')),
     directory = path.join(temporary, '.paqvilo');
   const options = {
     directory,
@@ -401,7 +402,7 @@ test('bounded loopback fixture executes actual lease, archives repeated cells, r
 });
 
 test('power-cut recovery retains foreign locks and verifies cleanup/cache receipts before releasing its own lock', async () => {
-  const temporary = await mkdtemp(path.join(os.tmpdir(), 'qualification-campaign-'));
+  const temporary = await makeTemporaryDirectory(path.join(os.tmpdir(), 'qualification-campaign-'));
   const directory = path.join(temporary, '.paqvilo');
   await mkdir(directory);
   const domainHash = 'f'.repeat(64),

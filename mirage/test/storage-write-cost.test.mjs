@@ -1,27 +1,17 @@
-// With 64 MiB of file bytes stored through the storage router, an unrelated row update costs about what it does with no
-// files (bytes are not cloned with the state's non-table sections on every write). Both are measured here.
-// Only the routed runtime is measured: without a router the bytes stay in state by design and this cost remains.
+// With file bytes stored through the storage router, an unrelated row update costs what it does with no files: the
+// bytes are neither cloned with the state's non-table sections on every write nor read back from the provider.
+// Both mechanisms are asserted directly (state size and provider reads) rather than through machine-dependent
+// wall-clock ratios. Only the routed runtime is covered: without a router the bytes stay in state by design.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { routingApi } from './storage-routing-fixture.mjs';
 
 const OTHER = '77777777-7777-4777-8777-7777777777e1';
 const FILES = 16,
-  FILE_BYTES = 4 * 1024 * 1024; // 64 MiB in all
-const median = (values) => values.sort((a, b) => a - b)[Math.floor(values.length / 2)];
+  FILE_BYTES = 256 * 1024; // 4 MiB in all: 64 times the state-growth bound below
+const STATE_GROWTH_BOUND = 64 * 1024;
 
-async function updateCost(h, rounds = 15) {
-  const times = [];
-  for (let i = 0; i < rounds; i++) {
-    const started = performance.now();
-    const response = await h.call('PATCH', `fx_widgets(${OTHER})`, { fx_name: `Unrelated ${i}` });
-    times.push(performance.now() - started);
-    assert.equal(response.status, 204);
-  }
-  return median(times);
-}
-
-test('an unrelated row update stays within 3x of the no-files baseline with 64 MiB of routed files', async (t) => {
+test('an unrelated row update neither carries nor reads routed file bytes', async (t) => {
   const h = await routingApi(t, {
     storage: true,
     before: (store) => {
@@ -34,10 +24,6 @@ test('an unrelated row update stays within 3x of the no-files baseline with 64 M
       store.state.tables.fx_widget.push({ fx_widgetid: OTHER, fx_name: 'Unrelated' });
     },
   });
-  await updateCost(h, 3); // warm-up
-  const baseline = await updateCost(h);
-  if (baseline > 1000)
-    return t.skip(`baseline update took ${Math.round(baseline)} ms; this machine is too slow to compare write costs`);
   const stateBefore = JSON.stringify(h.store.state).length;
   const block = Buffer.alloc(FILE_BYTES, 7);
   for (let i = 0; i < FILES; i++) {
@@ -49,14 +35,34 @@ test('an unrelated row update stays within 3x of the no-files baseline with 64 M
     );
     assert.equal(response.status, 204);
   }
+  await h.settle();
   assert.equal(Object.keys(h.store.state.dataverse.files).length, FILES);
+  assert.equal((await h.blobKeys()).length, FILES, 'every file body is stored by the provider');
   assert.ok(
-    JSON.stringify(h.store.state).length - stateBefore < 64 * 1024,
-    'state grew by file metadata, not by the 64 MiB',
+    JSON.stringify(h.store.state).length - stateBefore < STATE_GROWTH_BOUND,
+    'state grew by file metadata, not by the file bytes',
   );
-  const loaded = await updateCost(h);
-  assert.ok(
-    loaded <= 3 * baseline + 5,
-    `update with files ${loaded.toFixed(1)} ms vs baseline ${baseline.toFixed(1)} ms`,
+  const reads = [];
+  for (const operation of ['get', 'head', 'list']) {
+    const original = h.provider[operation].bind(h.provider);
+    h.provider[operation] = (...args) => {
+      reads.push(operation);
+      return original(...args);
+    };
+  }
+  for (let i = 0; i < 3; i++) {
+    const response = await h.call('PATCH', `fx_widgets(${OTHER})`, { fx_name: `Unrelated ${i}` });
+    assert.equal(response.status, 204);
+  }
+  await h.settle();
+  assert.deepEqual(reads, [], 'an unrelated update does not touch stored file bodies');
+  assert.equal(h.store.tableRows('fx_widget').at(-1).fx_name, 'Unrelated 2');
+  // The spy observes the router's provider calls: downloading a routed file reads its body.
+  const download = await h.call(
+    'GET',
+    `fx_widgets(77777777-7777-4777-8777-${String(0).padStart(12, '0')})/fx_doc/$value`,
   );
+  assert.equal(download.status, 200);
+  assert.equal(download.buffer.length, FILE_BYTES);
+  assert.ok(reads.includes('get'), reads.join(','));
 });

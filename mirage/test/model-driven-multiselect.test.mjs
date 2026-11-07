@@ -68,8 +68,7 @@ test('boolean metadata choice values retain boolean form writes for both option 
 });
 
 test('imported multiselect metadata round trips through the shared organization pipeline', async (t) => {
-  const fixture = await modelDrivenFixture(t);
-  await fixture.sim.close();
+  const fixture = await modelDrivenFixture(t, { defer: true });
   const file = path.join(fixture.solutionDir, 'Entities/x_item/Entity.xml');
   const xml = await fs.readFile(file, 'utf8');
   await fs.writeFile(
@@ -80,7 +79,6 @@ test('imported multiselect metadata round trips through the shared organization 
     ),
   );
   const sim = await fixture.start();
-  t.after(() => sim.close());
   const origin = sim.url;
   const catalogue = await (await fetch(origin + '/_apps/api')).json();
   assert.equal(catalogue.tables.x_item.fields.x_choices.type, 'multiselect');

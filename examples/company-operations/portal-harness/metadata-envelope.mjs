@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { parseExactJson } from 'paqvilo/mirage/lib/exact-numeric.mjs';
 
 const guid = (value) => typeof value === 'string' && /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/.test(value);
-const numeric = (value) => typeof value === 'string' && /^[0-9]{1,32}$/.test(value);
+const numeric = (value) => typeof value === 'string' && /^\d{1,32}$/.test(value);
 const sha = (value) => typeof value === 'string' && /^[a-f\d]{64}$/.test(value);
 const origin = (value) => {
   try {
@@ -17,7 +17,7 @@ const stable = (value) =>
     item && typeof item === 'object' && !Array.isArray(item)
       ? Object.fromEntries(
           Object.keys(item)
-            .sort()
+            .sort() // NOSONAR: preserve default coercion and UTF-16 sort order
             .map((key) => [key, item[key]]),
         )
       : item,
@@ -136,7 +136,7 @@ export async function readPortalMetadataEnvelope({
     requestPath,
     runId,
     actorId,
-    roleIds: [...roleIds].sort(),
+    roleIds: [...roleIds].sort(), // NOSONAR: preserve default coercion and UTF-16 sort order
     siteSourceHash,
     registrationHash,
     snapshotHash,

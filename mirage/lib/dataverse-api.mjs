@@ -1,4 +1,12 @@
 import { readRawBody } from './http-body.mjs';
+import {
+  accessNamesOf,
+  entryMessageActive,
+  maskOfNames,
+  recordSharingChange,
+  runEntryMessage,
+  sharedMaskOf,
+} from './plugin-platform-messages.mjs';
 import { dataverseHttpReaderContext } from './dataverse-scalar-reader.mjs';
 // Dataverse HTTP listeners: STS, discovery, SOAP and the Web API router.
 // Table rows are delegated to dataverse-records.mjs; metadata to dataverse-metadata.mjs.
@@ -14,7 +22,10 @@ import { createOrganizationRuntime } from './dataverse-organization.mjs';
 import { createModelDrivenRecordService } from './dataverse-model-driven.mjs';
 import { organizationPrincipalContext } from './dataverse-principal-context.mjs';
 import { gzipSync } from 'node:zlib';
+import { acceptsGzip } from './http-content-encoding.mjs';
 import { DataError } from './data-error.mjs';
+import { bypassStepIds as parseBypassStepIds } from './plugin-bypass.mjs';
+import { withPluginRequestTag } from './plugin-request-tag.mjs';
 import { createAuthority, verifySecret } from './dataverse-auth.mjs';
 import { executeBatch, parseBatch } from './dataverse-batch.mjs';
 import {
@@ -48,13 +59,15 @@ import {
   preferenceApplied,
 } from './dataverse-odata.mjs';
 import { parseExactJson, stringifyExactJson } from './exact-numeric.mjs';
+import { recordHttpError, statusFromHttp } from './trace-store.mjs';
+import { ANONYMOUS_ROOT, setTraceHeaders } from './trace-hosts.mjs';
 
 const ZERO_GUID = '00000000-0000-0000-0000-000000000000';
 const GLOBAL_DISCO = 'https://globaldisco.crm.dynamics.com';
 const SYSTEMUSER_TYPE = typeCodeOf('systemuser');
 const TENANT = '(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|common|organizations|consumers)';
 const STS_PATH = new RegExp(
-  `^/(${TENANT})/(oauth2/v2\\.0/token|oauth2/token|oauth2/v2\\.0/authorize|oauth2/authorize|oauth2/v2\\.0/devicecode|oauth2/v2\\.0/logout|v2\\.0/\\.well-known/openid-configuration|\\.well-known/openid-configuration|discovery/v2\\.0/keys|discovery/keys)$`,
+  String.raw`^/(${TENANT})/(oauth2/v2\.0/token|oauth2/token|oauth2/v2\.0/authorize|oauth2/authorize|oauth2/v2\.0/devicecode|oauth2/v2\.0/logout|v2\.0/\.well-known/openid-configuration|\.well-known/openid-configuration|discovery/v2\.0/keys|discovery/keys)$`,
   'i',
 );
 const CORS = {
@@ -64,7 +77,7 @@ const CORS = {
     'Authorization, Content-Type, Accept, Prefer, If-Match, If-None-Match, OData-Version, OData-MaxVersion, MSCRMCallerID, CallerObjectId, *',
   'Access-Control-Allow-Methods': 'GET,POST,PATCH,PUT,DELETE,OPTIONS',
   'Access-Control-Expose-Headers':
-    'OData-EntityId, ETag, Preference-Applied, x-ms-service-request-id, REQ_ID, Retry-After, x-ms-dop-hint, Location',
+    'OData-EntityId, ETag, Preference-Applied, x-ms-service-request-id, REQ_ID, Retry-After, x-ms-dop-hint, Location, X-Trace-Id, X-Sim-Span-Id',
 };
 // The SOAP endpoint with or without /web (SDKClientVersion is a query parameter and never part of the pathname).
 const SOAP_ROUTE = /^\/XRMServices\/2011\/Organization\.svc(?:\/web)?\/?$/i;
@@ -93,14 +106,14 @@ const RING_SIZE = 500;
 const MAX_HEADER_SIZE = 65536;
 const MAX_URL_LENGTH = 32768;
 const PLAIN_INVALID_URL = 'Bad Request - Invalid URL';
-// The other MSCRM headers (SuppressDuplicateDetection, SolutionUniqueName, MergeLabels) and Consistency are accepted and ignored.
+// SuppressDuplicateDetection is handled by record validation; SolutionUniqueName, MergeLabels and Consistency have no local effect.
 // Names a browser or client may use for the listeners: the TLS certificate's subjectAltNames and the listener's own host.
 const TLS_HOST_NAMES = ['localhost', '127.0.0.1', '[::1]'];
 
 const refOf = (value) => (value !== null && typeof value === 'object' ? value.id : value) ?? undefined;
 const asJson = (result) => ({
   ...result,
-  headers: { 'content-type': 'application/json; charset=utf-8', ...(result.headers ?? {}) },
+  headers: { 'content-type': 'application/json; charset=utf-8', ...result.headers },
 });
 const envelope = (status, code, message, requestId) => ({
   status,
@@ -112,21 +125,116 @@ const methodNotAllowed = (c) =>
 const notFound = (c) =>
   envelope(404, '', `No HTTP resource was found that matches the request URI '${c.url.href}'.`, c.requestId);
 
+// The message never reaches the response (a native 401 has no body); it names the refusal on the trace (D-R3-4).
 const unauthorized = (verdict) =>
-  new DataError('', 401, 'Unauthorized', { reason: verdict.reason === 'missing' ? 'missing' : 'invalid_token' });
+  new DataError(
+    verdict.reason === 'missing'
+      ? 'The request carries no access token.'
+      : `The access token was refused (${verdict.reason}).`,
+    401,
+    'Unauthorized',
+    { reason: verdict.reason === 'missing' ? 'missing' : 'invalid_token', verdict: verdict.reason },
+  );
+
+const tracesOf = (d) => d.traces ?? d.store?.traces;
+const CLIENT_CLOSED = Object.freeze({
+  code: 'ClientClosedRequest',
+  message: 'the client closed the connection before the response completed',
+  status: 499,
+});
+// A request body as the trace keeps it at full: parsed JSON, else the text (an octet-stream body by its size only).
+function requestBody(contentType, buffer) {
+  if (!buffer?.length) return undefined;
+  const type = String(contentType ?? '').toLowerCase();
+  if (type.includes('octet-stream')) return { bytes: buffer.length, contentType: type };
+  const text = buffer.toString('utf8');
+  if (!type.includes('json')) return text;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+const headerOf = (headers, name) => Object.entries(headers ?? {}).find(([key]) => key.toLowerCase() === name)?.[1];
+// The error a handled answer names (D-R3-4): the JSON envelope's code and message, the legacy _error body, or a plain-text
+// body; null for any other body (a SOAP fault and a failed $batch record their own).
+function answeredError(result) {
+  const body = result?.body;
+  if (body?.error && typeof body.error === 'object')
+    return { code: body.error.code || undefined, message: body.error.message ?? undefined };
+  if (body?._error && typeof body._error === 'object')
+    return { code: body._error.Code || undefined, message: body._error.Description ?? undefined };
+  if (
+    typeof body === 'string' &&
+    String(headerOf(result.headers, 'content-type') ?? '')
+      .toLowerCase()
+      .startsWith('text/plain')
+  )
+    return { message: body.slice(0, 2000) };
+  return null;
+}
+// One span per Web API function, action or bulk message (D-R3-8, D-R3-21, D-R3-25), named by the message and its bound table:
+// the parameters and the answer are captured at full, and an error answer is the span's error. run() may return a promise.
+function messageSpan(d, { kind, message, name, entity = null, recordId = null, attributes, input, output }, run) {
+  const traces = tracesOf(d);
+  if (!traces?.enabled) return run();
+  return traces.wrap(
+    {
+      kind,
+      name: name ?? (entity ? `${message} ${entity}` : message),
+      module: 'dataverse',
+      operation: message,
+      entity,
+      recordId: recordId == null ? null : String(recordId),
+      attributes: { message, ...attributes },
+      input,
+    },
+    (span) => {
+      const finish = (result) => {
+        const status = result?.status ?? 204;
+        span.set({ statusCode: status });
+        if (status >= 400) recordHttpError(span, status, answeredError(result) ?? {});
+        else
+          span.output(() => {
+            if (output) return output(result);
+            if (Buffer.isBuffer(result?.body)) return `[binary ${result.body.length} bytes]`;
+            return result?.body ?? null;
+          });
+        return result;
+      };
+      const result = run();
+      return typeof result?.then === 'function' ? result.then(finish) : finish(result);
+    },
+  );
+}
+const BUILT_IN_FUNCTIONS = new Set([
+  'WhoAmI',
+  'RetrieveVersion',
+  'RetrieveCurrentOrganization',
+  'RetrieveTotalRecordCount',
+  'RetrieveMetadataChanges',
+]);
+const BULK_MESSAGES = new Set(['CreateMultiple', 'UpdateMultiple', 'UpsertMultiple', 'DeleteMultiple']);
 
 function originOf(req, fallbackHost) {
   const encrypted = Boolean(req.socket?.encrypted);
   const proto = encrypted ? 'https' : 'http';
   const defaultPort = encrypted ? 443 : 80;
   const host = String(req.headers.host ?? '');
-  if (host && /^[a-z0-9.:[\]-]+$/i.test(host)) return `${proto}://${host.replace(new RegExp(`:${defaultPort}$`), '')}`;
+  if (host && /^[a-z0-9.:[\]-]+$/i.test(host)) {
+    const hostPart = host.replace(new RegExp(`:${defaultPort}$`), '');
+    return `${proto}://${hostPart}`;
+  }
   const port = req.socket?.localPort;
-  return `${proto}://${fallbackHost}${port && port !== defaultPort ? `:${port}` : ''}`;
+  const portPart = port && port !== defaultPort ? `:${port}` : '';
+  return `${proto}://${fallbackHost}${portPart}`;
 }
 
-const listenerOrigin = (proto, host, port) =>
-  `${proto}://${host}${port === (proto === 'https' ? 443 : 80) ? '' : `:${port}`}`;
+const listenerOrigin = (proto, host, port) => {
+  const defaultPort = proto === 'https' ? 443 : 80;
+  const portPart = port === defaultPort ? '' : `:${port}`;
+  return `${proto}://${host}${portPart}`;
+};
 
 // The Host header becomes the origin that tokens carry (iss/aud) and CORS allows any origin, so a page reaching the
 // simulator under another name (DNS rebinding, a cross-site fetch by IP) must not get a token or data.
@@ -211,7 +319,6 @@ const wantsCors = (req, origin) =>
   req.headers.origin !== undefined &&
   (String(req.headers.origin).toLowerCase() !== origin.toLowerCase() ||
     (req.method === 'OPTIONS' && req.headers['access-control-request-method'] !== undefined));
-const acceptsGzip = (req) => /gzip/i.test(String(req.headers['accept-encoding'] ?? ''));
 
 // Every write to res happens here; a throw (for example ERR_INVALID_CHAR from a header value) is the caller's to answer.
 // The fallback answer passes no options: no CORS and no gzip.
@@ -220,20 +327,29 @@ function send(res, result, requestId, clientRequestId, { cors = false, gzip = fa
     ...(cors ? CORS : {}),
     ...baseHeaders(requestId),
     ...(clientRequestId ? { 'x-ms-client-request-id': clientRequestId } : {}),
-    ...(result.headers ?? {}),
+    ...result.headers,
   };
   const headers = {};
   for (const [name, value] of Object.entries(merged))
     if (value !== undefined && value !== null) headers[name.toLowerCase()] = value;
+  const status = result.status ?? 200;
+  const payload = prepareResponsePayload(result.body, headers, status, gzip);
+  for (const [name, value] of Object.entries(headers)) res.setHeader(name, value);
+  res.statusCode = status;
+  res.end(payload);
+}
+
+function prepareResponsePayload(body, headers, status, gzip) {
   let payload;
-  const body = result.body;
   if (body !== undefined && body !== null) {
     const text = typeof body === 'string';
     const binary = Buffer.isBuffer(body);
     payload = text || binary ? body : stringifyExactJson(orderAnnotations(body));
-    headers['content-type'] ??= text ? 'text/plain' : binary ? 'application/octet-stream' : JSON_CONTENT_TYPE;
+    let contentType = JSON_CONTENT_TYPE;
+    if (text) contentType = 'text/plain';
+    else if (binary) contentType = 'application/octet-stream';
+    headers['content-type'] ??= contentType;
   }
-  const status = result.status ?? 200;
   if (status === 304) delete headers['odata-version'];
   // Every native 200 that is not an octet-stream download is gzipped when the caller accepts it.
   if (status === 200 && gzip && payload !== undefined && headers['content-type'] !== 'application/octet-stream') {
@@ -245,9 +361,7 @@ function send(res, result, requestId, clientRequestId, { cors = false, gzip = fa
   if (status < 400) headers['x-content-type-options'] ??= 'nosniff';
   // Every native 204 (image and file ones included) is answered as an empty text/html response.
   if (status === 204) headers['content-type'] ??= 'text/html; charset=utf-8';
-  for (const [name, value] of Object.entries(headers)) res.setHeader(name, value);
-  res.statusCode = status;
-  res.end(payload);
+  return payload;
 }
 
 function organizationDetail(d, origin) {
@@ -280,7 +394,7 @@ function organizationDetail(d, origin) {
 // Sign-in pages are HTML; everything else the authority returns is JSON.
 const stsReply = (result) =>
   typeof result.body === 'string'
-    ? { ...result, headers: { 'content-type': 'text/html; charset=utf-8', ...(result.headers ?? {}) } }
+    ? { ...result, headers: { 'content-type': 'text/html; charset=utf-8', ...result.headers } }
     : asJson(result);
 
 async function stsRoute(d, c) {
@@ -436,8 +550,22 @@ function listParamTotals(d, c, route, common) {
   };
 }
 
-function unboundFunction(d, c, route, common) {
+export function unboundFunction(d, c, route, common) {
   if (c.method !== 'GET') return notFound(c);
+  // A name that is not a function reads as an entity set (the default branch), which the record handlers trace.
+  if (!BUILT_IN_FUNCTIONS.has(route.name)) return builtInFunction(d, c, route, common);
+  return messageSpan(
+    d,
+    {
+      kind: 'function',
+      message: route.name,
+      input: () => ({ parameters: parseFunctionParameters(route.params, c.url.searchParams) }),
+    },
+    () => builtInFunction(d, c, route, common),
+  );
+}
+
+function builtInFunction(d, c, route, common) {
   switch (route.name) {
     case 'WhoAmI':
       return {
@@ -492,14 +620,46 @@ function metadataChanges(d, c, route) {
   };
 }
 
-function principalAccess(d, c, route, subjectId, common) {
+function principalTableOf(set) {
+  if (set === 'teams') return 'team';
+  if (set === 'organizations') return 'organization';
+  return 'systemuser';
+}
+
+async function principalAccess(d, c, route, subjectId, common) {
   const reference = referenceOf(parseFunctionParameters(route.params, c.url.searchParams).Target);
   const target = referenceRoute(reference, c.origin, route.version);
   if (target?.kind !== 'entity') throw new DataError('Invalid argument.', 400, 'InvalidKey');
   const logical = d.store.resolveMapping(target.set).logicalName;
   const rowId = parseKey(target.key)?.id ?? target.key;
-  const row = d.store.get(logical, rowId, common.identity);
+  // No Retrieve pipeline runs before RetrievePrincipalAccess (recorded native webApiNamed).
+  const row = d.store.get(logical, rowId, common.identity, { skipPluginRead: true });
   if (!row) throw new DataError(`${logical} With Id = ${rowId} Does Not Exist`, 404, 'NotFound', { id: rowId });
+  // RetrievePrincipalAccess runs its own pipeline (Target the row, Principal the bound subject; recorded native
+  // webApiNamed), as the SDK path does (plugin-platform-messages.mjs).
+  const subjectTable = principalTableOf(route.set);
+  if (subjectTable !== 'organization' && entryMessageActive(d.store, 'RetrievePrincipalAccess', logical, common)) {
+    let answer;
+    await runEntryMessage(d.store, {
+      message: 'RetrievePrincipalAccess',
+      entity: logical,
+      id: rowId,
+      inputs: {
+        Target: { $type: 'EntityReference', logicalName: logical, id: rowId, name: null },
+        Principal: { $type: 'EntityReference', logicalName: subjectTable, id: subjectId, name: null },
+      },
+      context: common,
+      main: () => {
+        answer = principalAccessAnswer(d, c, route, subjectId, common, logical, row);
+        return { AccessRights: { $type: 'AccessRights', value: maskOfNames(answer.body.AccessRights) } };
+      },
+    });
+    return answer;
+  }
+  return principalAccessAnswer(d, c, route, subjectId, common, logical, row);
+}
+
+function principalAccessAnswer(d, c, route, subjectId, common, logical, row) {
   let AccessRights;
   if (route.set === 'systemusers') {
     const subject = d.principals.byId(subjectId);
@@ -507,12 +667,19 @@ function principalAccess(d, c, route, subjectId, common) {
       throw new DataError(`systemuser With Id = ${subjectId} Does Not Exist`, 404, 'NotFound', { id: subjectId });
     AccessRights = d.principals.principalAccess({ user: subject, entity: logical, row });
   } else if (route.set === 'teams') {
-    const team = d.store.get('team', subjectId, common.identity);
+    const team = d.store.get('team', subjectId, common.identity, { skipPluginRead: true });
     if (!team) throw new DataError(`team With Id = ${subjectId} Does Not Exist`, 404, 'NotFound', { id: subjectId });
     AccessRights = d.principals.teamAccess({ team, entity: logical, row });
   } else {
     AccessRights = d.principals.organizationAccess({ entity: logical });
   }
+  // A team's direct share gives it the shared rights on the row (recorded native webApiNamed: a team holding only a
+  // share answers them), as on the SDK path. A user's share without the table privilege stays None (local model).
+  if (route.set === 'teams')
+    AccessRights = accessNamesOf(
+      maskOfNames(AccessRights) |
+        sharedMaskOf(d.store, logical, row[d.store.resolveMapping(logical).idColumn], subjectId),
+    );
   return {
     status: 200,
     body: {
@@ -530,6 +697,20 @@ function boundFunction(d, c, route, common) {
   // A function is not bound to any other type, so the segment resolves to no resource (no 501 on a native path).
   if (!subjectSets.includes(route.set) || !route.key) return notFound(c);
   const subjectId = parseKey(route.key)?.id ?? route.key;
+  return messageSpan(
+    d,
+    {
+      kind: 'function',
+      message: route.name,
+      entity: principalTableOf(route.set),
+      recordId: subjectId,
+      input: () => ({ parameters: parseFunctionParameters(route.params, c.url.searchParams) }),
+    },
+    () => principalFunction(d, c, route, subjectId, common),
+  );
+}
+
+function principalFunction(d, c, route, subjectId, common) {
   if (route.name === 'RetrieveUserPrivileges') {
     return {
       status: 200,
@@ -566,7 +747,8 @@ function entityParameter(d, value) {
 async function shareAction(d, c, route, common) {
   const body = common.body ?? {};
   const target = entityParameter(d, body.Target);
-  const row = d.store.get(target.logical, target.id, common.identity);
+  // No Retrieve pipeline runs before a sharing message (recorded native webApiNamed).
+  const row = d.store.get(target.logical, target.id, common.identity, { skipPluginRead: true });
   if (!row)
     throw new DataError(`${target.logical} With Id = ${target.id} Does Not Exist`, 404, 'NotFound', { id: target.id });
   // Sharing needs Read on the row as well as Share.
@@ -587,7 +769,7 @@ async function shareAction(d, c, route, common) {
   const principal = entityParameter(d, route.name === 'RevokeAccess' ? body.Revokee : body.PrincipalAccess?.Principal);
   if (
     !['systemuser', 'team'].includes(principal.logical) ||
-    !d.store.get(principal.logical, principal.id, common.identity)
+    !d.store.get(principal.logical, principal.id, common.identity, { skipPluginRead: true })
   )
     throw invalidArgument();
   const share = {
@@ -605,8 +787,35 @@ async function shareAction(d, c, route, common) {
       identity: common.identity,
     });
   };
+  // The message's own plug-in pipeline runs around the share inside its write (the change slot's transaction), with
+  // the SDK's inputs (Target and PrincipalAccess, or Revokee), as the SDK path does (plugin-platform-messages.mjs).
+  const ref = ({ logical, id }) => ({ $type: 'EntityReference', logicalName: logical, id, name: null });
+  const pipelined = () =>
+    runEntryMessage(d.store, {
+      message: route.name,
+      entity: target.logical,
+      id: target.id,
+      inputs: {
+        Target: ref(target),
+        ...(route.name === 'RevokeAccess'
+          ? { Revokee: ref(principal) }
+          : {
+              PrincipalAccess: {
+                $type: 'PrincipalAccess',
+                principal: ref(principal),
+                accessMask: share.mask,
+              },
+            }),
+      },
+      context: common,
+      main: () => {
+        recordSharingChange(d.store, target.logical);
+        return run().then(() => ({}));
+      },
+    });
+  const shared = entryMessageActive(d.store, route.name, target.logical, common) ? pipelined : run;
   // Inside a $batch the batch already holds the change slot (see ownsChange); a nested change call would wait on itself.
-  await (ownsChange() ? run() : d.change(run));
+  await (ownsChange() ? shared() : d.change(shared));
   return { status: 204 };
 }
 
@@ -624,11 +833,11 @@ function expandNames(text) {
 }
 
 // Read-only metadata: EntityDefinitions, RelationshipDefinitions and GlobalOptionSetDefinitions.
-function metadataRead(c, metadata, route) {
+export function metadataRead(c, metadata, route) {
   const select = c.url.searchParams.get('$select') ?? '';
   const filter = c.url.searchParams.get('$filter') ?? '';
   const expand = expandNames(c.url.searchParams.get('$expand'));
-  const { set, key, segment, segmentKey, cast } = route;
+  const { set, key } = route;
   const context = (suffix) => contextUrl(c.origin, route.version, suffix);
   const collection = (items, suffix) => ({ status: 200, body: { '@odata.context': context(suffix), value: items } });
   const single = (item, suffix) => ({ status: 200, body: { '@odata.context': context(suffix), ...item } });
@@ -643,32 +852,55 @@ function metadataRead(c, metadata, route) {
   // Native writes the key as requested without its LogicalName= name, and the $select inside the set's parentheses.
   const keyedContext = (path, key) => `${path}(${key.replace(/^LogicalName=/i, '')})`;
   const selectContext = (select) => (select ? `(${select})` : '');
+  const contextState = {
+    ...route,
+    select,
+    filter,
+    expand,
+    metadata,
+    collection,
+    single,
+    missing,
+    shape,
+    listed,
+    keyedContext,
+    selectContext,
+  };
 
-  if (set === 'GlobalOptionSetDefinitions') {
-    if (c.url.searchParams.has('$filter'))
-      throw new DataError(
-        'The $filter query option is not supported for GlobalOptionSetDefinitions.',
-        400,
-        'InvalidRequest',
-      );
-    if (key == null) return collection(shape(metadata.globalOptionSets()), set);
-    const name = /^Name=['"]?([^'")]+)/i.exec(key)?.[1];
-    const found = name ? metadata.globalOptionSet(name) : null;
-    // A global option set is typed OptionSetMetadata in the context URL.
-    return found
-      ? single(metadata.selectMetadata(found, select), `${set}/Microsoft.Dynamics.CRM.OptionSetMetadata/$entity`)
-      : missing(set);
-  }
-  if (set === 'RelationshipDefinitions') {
-    if (key == null) return collection(shape(metadata.relationships({ cast })), set);
-    const found = metadata.relationship(key, { cast });
-    return found ? single(metadata.selectMetadata(found, select), `${set}/$entity`) : missing(set);
-  }
+  if (set === 'GlobalOptionSetDefinitions') return globalOptionSetMetadata(c, contextState);
+  if (set === 'RelationshipDefinitions') return relationshipMetadata(contextState);
   if (key == null) {
     let entities = metadata.entities();
     if (expand.length) entities = entities.map((entity) => metadata.entity(entity.LogicalName, { expand }));
     return collection(shape(entities), select ? `${set}(${select})` : set);
   }
+  return entityMetadata(contextState);
+}
+
+function globalOptionSetMetadata(c, { set, key, select, metadata, collection, single, shape, missing }) {
+  if (c.url.searchParams.has('$filter'))
+    throw new DataError(
+      'The $filter query option is not supported for GlobalOptionSetDefinitions.',
+      400,
+      'InvalidRequest',
+    );
+  if (key == null) return collection(shape(metadata.globalOptionSets()), set);
+  const name = /^Name=['"]?([^'")]+)/i.exec(key)?.[1];
+  const found = name ? metadata.globalOptionSet(name) : null;
+  // A global option set is typed OptionSetMetadata in the context URL.
+  return found
+    ? single(metadata.selectMetadata(found, select), `${set}/Microsoft.Dynamics.CRM.OptionSetMetadata/$entity`)
+    : missing(set);
+}
+
+function relationshipMetadata({ set, key, cast, select, metadata, collection, single, shape, missing }) {
+  if (key == null) return collection(shape(metadata.relationships({ cast })), set);
+  const found = metadata.relationship(key, { cast });
+  return found ? single(metadata.selectMetadata(found, select), `${set}/$entity`) : missing(set);
+}
+
+function entityMetadata(state) {
+  const { set, key, segment, select, expand, metadata, single, missing } = state;
   const entity = metadata.entity(key, { expand });
   if (!entity && set === 'EntityDefinitions' && !segment) {
     // Native names the metadata id it looked for, under 0x80060888 (not the segment error).
@@ -681,28 +913,47 @@ function metadataRead(c, metadata, route) {
   if (!segment) {
     // The context URL writes $expand navigations as name().
     const names = [...(select ? [select] : []), ...expand.map((name) => `${name}()`)];
-    return single(
-      metadata.selectMetadata(entity, select),
-      `${names.length ? `${set}(${names.join(',')})` : set}/$entity`,
-    );
+    const setContext = names.length ? `${set}(${names.join(',')})` : set;
+    return single(metadata.selectMetadata(entity, select), `${setContext}/$entity`);
   }
+  return entityMetadataSegment({ ...state, entity });
+}
+
+function entityMetadataSegment({
+  set,
+  key,
+  segment,
+  segmentKey,
+  cast,
+  select,
+  expand,
+  filter,
+  metadata,
+  entity,
+  single,
+  collection,
+  missing,
+  listed,
+  keyedContext,
+  selectContext,
+  subSegment,
+}) {
   const logical = entity.LogicalName;
-  // EntityDefinitions(k)/Attributes(k2)/Microsoft.Dynamics.CRM.X/OptionSet (or GlobalOptionSet) → OptionSetMetadata.
-  if (route.subSegment) {
+  if (subSegment) {
     const option = metadata.attributeOptionSet(key, segmentKey, {
-      global: route.subSegment === 'GlobalOptionSet',
+      global: subSegment === 'GlobalOptionSet',
       select,
     });
-    return option ? single(option, `${set}/Attributes/${route.subSegment}/$entity`) : missing(route.subSegment);
+    return option ? single(option, `${set}/Attributes/${subSegment}/$entity`) : missing(subSegment);
   }
   switch (segment) {
     case 'Attributes': {
       const list = metadata.attributes(key, { cast, key: segmentKey, select, expand }) ?? missing(set);
       if (segmentKey != null) return list[0] ? single(list[0], `${set}/Attributes/$entity`) : missing('Attributes');
-      // A cast makes the context a typed attribute collection.
+      const castContext = cast ? `/Microsoft.Dynamics.CRM.${cast}` : '';
       return collection(
         metadata.filterMetadata(list, filter),
-        keyedContext(set, key) + `/Attributes${cast ? `/Microsoft.Dynamics.CRM.${cast}` : ''}${selectContext(select)}`,
+        keyedContext(set, key) + `/Attributes${castContext}${selectContext(select)}`,
       );
     }
     case 'Keys':
@@ -743,6 +994,9 @@ async function recordCall(d, route, common) {
     identity: common.identity,
     requestId: common.requestId,
     bypassCustomPlugins: common.bypassCustomPlugins === true,
+    bypassCustomAsync: common.bypassCustomAsync === true,
+    bypassStepIds: common.bypassStepIds,
+    systemParameters: common.systemParameters,
     dataverseHttpReader: dataverseHttpReaderContext({
       method: common.method,
       route,
@@ -751,6 +1005,31 @@ async function recordCall(d, route, common) {
     }),
   });
   return result ?? { status: 204 };
+}
+
+// A bulk message through the Web API opens the bulk span the SDK path opens (plugin-bulk.mjs, D-R3-21): one span per message
+// with the table and the number of targets; the record handlers open no dispatch span under it.
+function bulkCall(d, route, common) {
+  let entity = null;
+  try {
+    entity = d.store.resolveMapping(route.set).logicalName;
+  } catch {
+    // An unknown set is the record handlers' own 404; the span names the set.
+  }
+  const targets = Array.isArray(common.body?.Targets) ? common.body.Targets.length : null;
+  return messageSpan(
+    d,
+    {
+      kind: 'bulk',
+      message: route.name,
+      name: `${route.name} ${entity ?? route.set}`,
+      entity,
+      attributes: { table: entity, entity, targets, action: route.name },
+      input: () => common.body,
+      output: (result) => ({ ids: result?.body?.Ids ?? null }),
+    },
+    () => recordCall(d, route, common),
+  );
 }
 
 // Full privilege-denied text, as the security module words it for entity access (without the entity clause).
@@ -916,15 +1195,44 @@ async function authenticated(d, c, handle) {
     if (impersonation.refused) return impersonation.refused;
     const user = impersonation.user ?? caller;
 
-    const { identity } = organizationPrincipalContext(d.store, user, { caller, appId: verdict.claims.appid });
+    const { identity } = organizationPrincipalContext(d.store, user, {
+      caller,
+      appId: verdict.claims.appid,
+      // Plug-in contexts report the caller's User-Agent (InitiatingUserAgent) and Accept-Language (AcceptLang).
+      userAgent: req.headers['user-agent'] ?? null,
+      acceptLanguage: req.headers['accept-language'] ?? '*',
+    });
+    const actorKind = verdict.claims.appid ? 'app' : 'staff';
+    // The root span opened before the caller was known: it takes the resolved caller as its actor (the actorKind and
+    // actorId filters match it, and the spans it starts inherit it), and the attributes keep the impersonated user.
+    c.span?.setActor({ kind: actorKind, id: caller.systemuserid, name: caller.fullname ?? null }).set({
+      actorKind,
+      actorId: caller.systemuserid,
+      ...(user !== caller ? { impersonatedUserId: user.systemuserid } : {}),
+    });
     const bodyBuffer = BODY_METHODS.has(c.method) ? await readBody(req) : Buffer.alloc(0);
+    // The request at full (D-R3-10): its OData query (credential-named values redacted), the headers that change the
+    // answer and the body (JSON parsed when it is JSON), size-capped by the store. Nothing is read at summary.
+    c.span?.setInput(() => ({
+      query: c.url.searchParams,
+      headers: {
+        prefer: req.headers.prefer,
+        'if-match': req.headers['if-match'],
+        'if-none-match': req.headers['if-none-match'],
+        'mscrm.bypasscustompluginexecution': req.headers['mscrm.bypasscustompluginexecution'],
+        'mscrm.bypassbusinesslogicexecution': req.headers['mscrm.bypassbusinesslogicexecution'],
+        callerobjectid: req.headers.callerobjectid,
+        mscrmcallerid: req.headers.mscrmcallerid,
+      },
+      body: requestBody(req.headers['content-type'], bodyBuffer),
+    }));
     // The request context names who asked (the caller) and who executes (the impersonated user) from here on.
     const context = currentRequest();
     const run = () => handle({ user, caller, identity, bodyBuffer });
     return await (context
       ? runWithRequest(
           context.with({
-            initiator: { kind: verdict.claims.appid ? 'app' : 'staff', id: caller.systemuserid },
+            initiator: { kind: actorKind, id: caller.systemuserid },
             principal: { systemUserId: user.systemuserid, callerId: caller.systemuserid },
           }),
           run,
@@ -989,12 +1297,46 @@ function bodyOf(method, headers, bodyBuffer, route, isRecordSet = () => false) {
 
 // Answers one Web API request for a caller already authenticated. The HTTP path and $batch parts both come through here,
 // and it returns a result rather than writing to the response.
-async function handleDataRequest(
+function handleDataRequest(d, request) {
+  const parameters = request.url.searchParams.has('tag') ? { tag: request.url.searchParams.get('tag') } : {};
+  return withPluginRequestTag(d.store, parameters, () => handleTaggedDataRequest(d, request));
+}
+async function handleTaggedDataRequest(
   d,
   { method, url, route, headers = {}, bodyBuffer = Buffer.alloc(0), user, caller, identity, prefer, origin, requestId },
 ) {
   const req = { method, headers };
   const c = { req, method, url, origin, requestId, prefer, meta: {} };
+  const { bypassCustomPlugins, bypassCustomAsync, bypassStepIds, systemParameters } = bypassRequestSettings(
+    d,
+    headers,
+    caller,
+  );
+  const body = bodyOf(method, headers, bodyBuffer, route, (set) => entitySetNamed(d.store, set));
+
+  const common = {
+    req,
+    origin,
+    requestId,
+    prefer,
+    method,
+    url,
+    body,
+    bodyBuffer,
+    user,
+    caller,
+    identity,
+    bypassCustomPlugins,
+    bypassCustomAsync,
+    bypassStepIds,
+    systemParameters,
+  };
+  const operated = await operationCall(d, route, common);
+  if (operated) return operated;
+  return dispatchTaggedRoute(d, c, route, common, body);
+}
+
+function bypassRequestSettings(d, headers, caller) {
   // MSCRM.BypassCustomPluginExecution: true needs prvBypassCustomPlugins. MSCRM.BypassBusinessLogicExecution (a comma list)
   // needs prvBypassCustomBusinessLogic; CustomSync also skips the synchronous plug-in phase, as the header asks.
   const plugins = ['true', '1'].includes(
@@ -1013,24 +1355,24 @@ async function handleDataRequest(
   if (logic.length && !holds('prvBypassCustomBusinessLogic'))
     throw privilegeDenied(d, caller, 'prvBypassCustomBusinessLogic');
   const bypassCustomPlugins = plugins || logic.includes('customsync');
-  const body = bodyOf(method, headers, bodyBuffer, route, (set) => entitySetNamed(d.store, set));
-
-  const common = {
-    req,
-    origin,
-    requestId,
-    prefer,
-    method,
-    url,
-    body,
-    bodyBuffer,
-    user,
-    caller,
-    identity,
-    bypassCustomPlugins,
+  const bypassCustomAsync = logic.includes('customasync');
+  const bypassStepIds = parseBypassStepIds(d.store, headers['mscrm.bypassbusinesslogicexecutionstepids']);
+  if (bypassStepIds.length && !holds('prvBypassCustomBusinessLogic'))
+    throw privilegeDenied(d, caller, 'prvBypassCustomBusinessLogic');
+  const systemParameters = {
+    ...(Object.hasOwn(headers, 'mscrm.bypasscustompluginexecution') ? { BypassCustomPluginExecution: plugins } : {}),
+    ...(Object.hasOwn(headers, 'mscrm.bypassbusinesslogicexecution')
+      ? { BypassBusinessLogicExecution: headers['mscrm.bypassbusinesslogicexecution'] }
+      : {}),
+    ...(Object.hasOwn(headers, 'mscrm.bypassbusinesslogicexecutionstepids')
+      ? { BypassBusinessLogicExecutionStepIds: headers['mscrm.bypassbusinesslogicexecutionstepids'] }
+      : {}),
   };
-  const operated = await operationCall(d, route, common);
-  if (operated) return operated;
+  return { bypassCustomPlugins, bypassCustomAsync, bypassStepIds, systemParameters };
+}
+
+function dispatchTaggedRoute(d, c, route, common, body) {
+  const { method, origin, url, prefer } = c;
   switch (route.kind) {
     case 'service':
       // Native omits Expires on the service document and $metadata (see baseHeaders).
@@ -1053,7 +1395,10 @@ async function handleDataRequest(
     case 'batch':
       return batchCall(d, c, common);
     case 'function':
-      if (method === 'POST' && Object.hasOwn(SHARE_ACTIONS, route.name)) return shareAction(d, c, route, common);
+      if (method === 'POST' && Object.hasOwn(SHARE_ACTIONS, route.name))
+        return messageSpan(d, { kind: 'action', message: route.name, input: () => ({ body }) }, () =>
+          shareAction(d, c, route, common),
+        );
       return unboundFunction(d, { ...c, origin, version: route.version }, route, common);
     case 'boundFunction':
       return boundFunction(d, { ...c, origin, version: route.version }, route, common);
@@ -1061,6 +1406,7 @@ async function handleDataRequest(
     case 'boundAction':
       if (ROUTER_BOUND.has(route.name))
         return boundFunction(d, { ...c, origin, version: route.version }, route, common);
+      if (BULK_MESSAGES.has(route.name) && route.key == null) return bulkCall(d, route, common);
       return recordCall(d, route, common);
     case 'metadataEntity':
       return metadataCall(d, c, route);
@@ -1075,7 +1421,7 @@ const entitySetNamed = (store, name) =>
   Object.values(store.state.mappings ?? {}).some((mapping) => mapping?.entitySet === name) ||
   store.virtualTable?.(name)?.mapping?.entitySet === name;
 
-async function operationCall(d, route, common) {
+export async function operationCall(d, route, common) {
   const ops = d.operations;
   // A bound operation written without the Microsoft.Dynamics.CRM. prefix parses as a property of the entity row.
   if ((route.kind === 'property' || route.kind === 'member') && ops.has(route.segment)) {
@@ -1084,43 +1430,70 @@ async function operationCall(d, route, common) {
   const kind = common.method === 'GET' ? 'function' : 'action';
   // One segment that names a registered unbound operation (route.candidate) is that operation before it is read as a set.
   // A wrong verb there falls through to the set, which may be a real entity; a registered bound name does not.
-  if (route.candidate && route.kind !== 'function' && ops.has(route.candidate.name)) {
-    const op = ops.find({ name: route.candidate.name, kind, binding: 'unbound' });
-    if (op) return runOperation(d, op, route, route.candidate.params, common, undefined);
-    // A wrong verb on a registered name falls to the set only when an entity set has that name; otherwise there is no route (native: 404, no code).
-    return entitySetNamed(d.store, route.candidate.name) ? null : notFound(common);
-  }
+  if (route.candidate && route.kind !== 'function' && ops.has(route.candidate.name))
+    return candidateOperation(d, route, common, kind);
   if (!['function', 'boundFunction', 'boundAction'].includes(route.kind) || !ops.has(route.name)) return null;
+  // The name is registered, so a bound route the operation cannot serve (unknown set, alternate key) is a 404, not a built-in.
+  const unroutable = () => notFound({ url: common.url, requestId: common.requestId });
+  const resolved = resolveOperationBinding(d, route, unroutable);
+  if (resolved.response) return resolved.response;
+  const { binding, entity, mapping, id, keyAttributes } = resolved;
+  const op = ops.find({ name: route.name, kind, binding, entity });
+  if (!op) return notFound({ url: common.url, requestId: common.requestId });
+  const target = operationTarget(d, binding, entity, id, mapping, keyAttributes, common.identity);
+  return runOperation(d, op, route, route.params, common, target);
+}
+
+function candidateOperation(d, route, common, kind) {
+  const op = d.operations.find({ name: route.candidate.name, kind, binding: 'unbound' });
+  if (op) return runOperation(d, op, route, route.candidate.params, common, undefined);
+  // A wrong verb on a registered name falls to the set only when an entity set has that name; otherwise there is no route (native: 404, no code).
+  return entitySetNamed(d.store, route.candidate.name) ? null : notFound(common);
+}
+
+function operationTarget(d, binding, entity, id, mapping, keyAttributes, identity) {
+  if (binding === 'entity') {
+    // The platform loads a bound operation's target without a Retrieve pipeline (recorded native customApi).
+    const row = d.store.get(entity, id, identity, { skipPluginRead: true });
+    if (!row) throw new DataError(`${entity} With Id = ${id} Does Not Exist`, 404, 'NotFound', { id });
+    return { mapping, id, row, ...(keyAttributes ? { keyAttributes } : {}) };
+  }
+  if (binding === 'collection') return { mapping };
+}
+
+function resolveOperationBinding(d, route, unroutable) {
   let binding = 'unbound';
   let entity;
   let mapping;
   let id;
-  // The name is registered, so a bound route the operation cannot serve (unknown set, alternate key) is a 404, not a built-in.
-  const unroutable = () => notFound({ url: common.url, requestId: common.requestId });
-  if (route.kind !== 'function') {
-    try {
-      mapping = d.store.resolveMapping(route.set);
-    } catch {
-      return unroutable();
-    }
-    entity = mapping.logicalName;
-    if (route.key == null) binding = 'collection';
-    else {
-      // ponytail: alternate-key addressing is not resolved for operations; a GUID key is the supported form.
-      id = parseKey(route.key)?.id;
-      if (!id) return unroutable();
-      binding = 'entity';
-    }
+  let keyAttributes;
+  if (route.kind === 'function') return { binding, entity, mapping, id, keyAttributes };
+  try {
+    mapping = d.store.resolveMapping(route.set);
+  } catch {
+    return { response: unroutable() };
   }
-  const op = ops.find({ name: route.name, kind, binding, entity });
-  if (!op) return notFound({ url: common.url, requestId: common.requestId });
-  let target;
-  if (binding === 'entity') {
-    const row = d.store.get(entity, id, common.identity);
-    if (!row) throw new DataError(`${entity} With Id = ${id} Does Not Exist`, 404, 'NotFound', { id });
-    target = { mapping, id, row };
-  } else if (binding === 'collection') target = { mapping };
-  return runOperation(d, op, route, route.params, common, target);
+  entity = mapping.logicalName;
+  if (route.key == null) binding = 'collection';
+  else {
+    // A row addressed by an alternate key binds by its id and keeps the key for the Target (recorded native
+    // webApiNamed: a bound custom API by alternate key answers 200 with Target.KeyAttributes).
+    const key = parseKey(route.key);
+    id = key?.id;
+    if (!id && key?.alternate) {
+      let keyed;
+      try {
+        keyed = d.store.findByKey(mapping, route.key);
+      } catch {
+        keyed = null; // an undeclared key names no row
+      }
+      id = keyed?.[mapping.idColumn];
+      keyAttributes = id ? key.alternate : undefined;
+    }
+    if (!id) return { response: unroutable() };
+    binding = 'entity';
+  }
+  return { binding, entity, mapping, id, keyAttributes };
 }
 
 // Calls the operation's handle(ctx) and shapes its result: object bodies are JSON, Buffers go out as they are.
@@ -1144,20 +1517,35 @@ async function runOperation(d, op, route, paramsText, common, target) {
       headers,
       bodyBuffer: common.bodyBuffer,
     }),
-    params: parseFunctionParameters(paramsText, common.url.searchParams),
+    params: common.functionParameters ?? parseFunctionParameters(paramsText, common.url.searchParams),
     user: common.user,
     caller: common.caller,
     identity: common.identity,
     requestId: common.requestId,
     target,
+    bypassCustomPlugins: common.bypassCustomPlugins === true,
+    bypassCustomAsync: common.bypassCustomAsync === true,
+    bypassStepIds: common.bypassStepIds,
+    systemParameters: common.systemParameters,
     api: d.api,
   };
   // A Prefer: respond-async call to a custom API is answered 202 here and runs later; otherwise the operation runs now.
-  const result = (await runInBackground(d.api, call, op)) ?? (await op.handle(call));
+  const result = await messageSpan(
+    d,
+    {
+      kind: op.kind === 'action' ? 'action' : 'function',
+      message: op.name,
+      entity: target?.mapping?.logicalName ?? null,
+      recordId: target?.id ?? null,
+      attributes: { binding: op.binding },
+      input: () => ({ parameters: call.params, body: call.body }),
+    },
+    async () => (await runInBackground(d.api, call, op)) ?? (await op.handle(call)),
+  );
   if (!result) return { status: 204 };
   const jsonBody = result.body !== null && typeof result.body === 'object' && !Buffer.isBuffer(result.body);
   // Native operation responses are application/json; odata.metadata=minimal with no charset.
-  return jsonBody ? { ...result, headers: { 'content-type': JSON_CONTENT_TYPE, ...(result.headers ?? {}) } } : result;
+  return jsonBody ? { ...result, headers: { 'content-type': JSON_CONTENT_TYPE, ...result.headers } } : result;
 }
 
 // $batch: parts run in process under the caller verified for the batch; a changeset rolls back on failure (runAtomic).
@@ -1186,8 +1574,12 @@ async function batchCall(d, c, common) {
     if (impersonation.refused) return impersonation.refused;
     const user = impersonation.user ?? common.user;
     const identity = impersonation.user
-      ? organizationPrincipalContext(d.store, user, { caller: common.caller, appId: common.identity?.dataverse?.appId })
-          .identity
+      ? organizationPrincipalContext(d.store, user, {
+          caller: common.caller,
+          appId: common.identity?.dataverse?.appId,
+          userAgent: common.identity?.dataverse?.userAgent,
+          acceptLanguage: common.identity?.dataverse?.acceptLanguage,
+        }).identity
       : common.identity;
     // Extension routes (metadata writes and the other api.addRoute writes) answer inside a batch as they do at top level. In a
     // changeset they run in its transaction, so a metadata change rolls back with the changeset.
@@ -1225,9 +1617,11 @@ async function batchCall(d, c, common) {
   // would otherwise JSON.stringify it without the annotation ordering or exact numerics.
   const dispatch = async (part) => {
     let result;
+    let failure = null;
     try {
       result = await runPart(part);
     } catch (error) {
+      failure = { code: error?.code ?? error?.name, message: error?.message };
       result = dataverseError(error, {
         prefer: parsePrefer(part.headers?.prefer),
         requestId: c.requestId,
@@ -1243,20 +1637,38 @@ async function batchCall(d, c, common) {
     }
     result = encodeDataverseText(parseDataverseRoute(new URL(part.url).pathname), result);
     const body = result.body ?? undefined;
+    // The part's error for its span (D-R3-8), read before the body becomes text; the part writer ignores the member.
+    if (result.status >= 400) failure ??= answeredError(result);
     return {
       ...result,
       body: body === undefined || typeof body === 'string' ? body : stringifyExactJson(orderAnnotations(body)),
+      ...(failure ? { failure } : {}),
     };
   };
-  dispatch.transaction = (fn) => runAtomic(d.api, fn);
+  // A changeset's contexts start with the batch's transaction facts (native batch: IsODataTransaction and count).
+  dispatch.transaction = (fn, { requests } = {}) =>
+    runAtomic(d.api, () => {
+      d.store.pluginODataChangeset = { requestCount: requests };
+      return fn();
+    });
   const continueOnError = common.prefer.continueOnError;
+  const traces = tracesOf(d);
+  const root = traces?.enabled ? traces.current() : null;
   // ponytail: the whole batch takes one slot in the server's change queue, so no other write lands while a changeset runs.
   // Ceiling: a long batch holds writers back; split the batch if that matters.
   const result = await d.change(() =>
     runOwned(() =>
-      executeBatch(parsed, { dispatch, origin: c.origin, base: new URL('./', c.url).href, continueOnError }),
+      executeBatch(parsed, {
+        dispatch,
+        origin: c.origin,
+        base: new URL('./', c.url).href,
+        continueOnError,
+        traces: root ? traces : null,
+      }),
     ),
   );
+  // A failed batch names its failing part's error on the listener root (D-R3-4).
+  if (root && result.status >= 400) recordHttpError(root, result.status, result.failure ?? {});
   const applied = preferenceApplied(common.prefer);
   return applied ? { ...result, headers: { ...result.headers, 'Preference-Applied': applied } } : result;
 }
@@ -1320,10 +1732,54 @@ async function route(d, c) {
   return dataApi(d, c, parsed);
 }
 
+// One solution metadata epoch per request (api.readMetadata forwards these options to the overlay's withReadEpoch):
+// per-column field security and record checks resolve the overlay once. A resolution is reused only outside store
+// transactions or inside an unmodified read, and expires at every commit.
+const requestMetadata = (d, fn) =>
+  d.api?.readMetadata && d.store
+    ? d.api.readMetadata(fn, {
+        valid: () => !d.store.inTransaction() || d.store.isUnmodifiedRead(),
+        revision: () => d.store.revision,
+      })
+    : fn();
 const DATA_PLANE = /^\/api\/data\/v\d+(?:\.\d+)*(?:\/|$)/i;
+
+function endHttpSpan(span, status, failure, meta) {
+  let error;
+  if (status === 499) error = failure ?? CLIENT_CLOSED;
+  else if (status >= 400) error = failure ?? undefined;
+  return span?.end({
+    status: statusFromHttp(status),
+    error,
+    attributes: { statusCode: status, kind: meta.kind, appId: meta.appId, grant: meta.grant },
+  });
+}
+
+function incrementDataverseRequestCounters(d, c, meta, res) {
+  const counters = d.store?.counters;
+  if (!counters) return;
+  const pathname = c.url?.pathname ?? '';
+  if (meta.kind !== 'data' || !DATA_PLANE.test(pathname) || /\/\$metadata$/i.test(pathname))
+    return counters.increment('dataverseRequests.other');
+  counters.increment('dataverseRequests');
+  if (res.statusCode >= 400) counters.increment('dataverseRequests.failed');
+}
+
+function replyOrDrop(reply, result, res, log, requestId, errorOptions) {
+  try {
+    reply(result);
+  } catch (error) {
+    log('dataverse response failed', { requestId: requestId(), message: error?.message });
+    try {
+      reply(dataverseError(error, errorOptions()));
+    } catch {
+      res.destroy();
+    }
+  }
+}
+
 export function createDataverseHandler(deps) {
-  const limits =
-    deps.limits ?? createServiceProtection({ ...(deps.settings?.serviceProtection ?? {}), clock: deps.clock });
+  const limits = deps.limits ?? createServiceProtection({ ...deps.settings?.serviceProtection, clock: deps.clock });
   const d = {
     ...deps,
     change: deps.change ?? ((fn) => fn()),
@@ -1334,26 +1790,63 @@ export function createDataverseHandler(deps) {
   const log = deps.log ?? (() => {});
   // Every response write sits inside serve's try; a header that cannot be sent (for example a non-Latin-1 OData-EntityId)
   // becomes a Dataverse error envelope, and only if that write fails too does the connection drop.
-  const serve = async (req, res) => {
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ const serve = async (req, res) => {
     const requestId = randomUUID();
     const started = d.clock();
     const clientRequestId = req.headers['x-ms-client-request-id'];
     const origin = originOf(req, d.host);
     const meta = { appId: null, userId: null, grant: null, kind: 'data' };
     const prefer = parsePrefer(req.headers.prefer);
-    const c = { req, url: null, origin, requestId, meta, prefer, method: req.method === 'HEAD' ? 'GET' : req.method };
+    // The http span of this handler (docs/design/tracing.md). On its own listener it is a root whose parent comes from the
+    // loopback trace headers only; called in process (the model-driven Xrm.WebApi transport) it nests under the caller's span.
+    // A root (not nested in process) is explicitly anonymous with no session until authentication names its caller
+    // (setActor), so a header-named parent never lends it another caller's actor or session.
+    // At level off nothing below reads a header for tracing (D-R3-13): the span is null and every use is `span?.`.
+    const traces = tracesOf(d);
+    const tracing = traces?.enabled === true;
+    const inbound = tracing ? traces.fromHeaders(req.headers) : null;
+    const nested = inbound && !inbound.traceId && !inbound.parentSpanId && traces.current();
+    const pathname = tracing ? String(req.url ?? '/').split('?')[0] : null;
+    const contentLength = tracing ? Number(req.headers['content-length']) : Number.NaN;
+    const span = tracing
+      ? traces.start({
+          kind: 'http',
+          name: `${req.method} ${pathname}`,
+          module: 'dataverse',
+          operation: req.method,
+          // The organization service (SOAP) is its own origin host (D-R3-3); everything else here is the Web API listener.
+          origin: { host: SOAP_ROUTE.test(pathname) ? 'soap' : 'dataverse-api', portal: null, preset: null },
+          attributes: {
+            requestId,
+            ...(typeof clientRequestId === 'string' ? { clientRequestId } : {}),
+            contentType: req.headers['content-type'],
+            contentLength: Number.isFinite(contentLength) ? contentLength : undefined,
+          },
+          ...(nested ? {} : { ...ANONYMOUS_ROOT, ...inbound }),
+        })
+      : null;
+    // Every traced response names its trace (an overflow handle of a full trace names the trace only).
+    setTraceHeaders(res, span);
+    const c = {
+      req,
+      url: null,
+      origin,
+      requestId,
+      meta,
+      prefer,
+      method: req.method === 'HEAD' ? 'GET' : req.method,
+      span,
+    };
+    let failure = null;
+    // Ends on finish, or on a close before it (an aborted request or a destroyed in-process response, 499); idempotent.
+    // A response the client closed before it completed (499) names that as its error (DV-Y8-4).
+    const endSpan = (status) => endHttpSpan(span, status, failure, meta);
+    res.on('finish', () => endSpan(res.statusCode));
+    res.on('close', () => endSpan(res.writableFinished ? res.statusCode : 499));
     // Dashboard counters (runtime-counters.mjs): dataverseRequests and dataverseRequests.failed count data-plane Web API
     // requests (/api/data/v*, not $metadata); token, discovery, metadata document, SOAP and every other request on this
     // listener count as dataverseRequests.other. TDS has its own listener and is not counted.
-    res.on('finish', () => {
-      const counters = d.store?.counters;
-      if (!counters) return;
-      const pathname = c.url?.pathname ?? '';
-      if (meta.kind !== 'data' || !DATA_PLANE.test(pathname) || /\/\$metadata$/i.test(pathname))
-        return counters.increment('dataverseRequests.other');
-      counters.increment('dataverseRequests');
-      if (res.statusCode >= 400) counters.increment('dataverseRequests.failed');
-    });
+    res.on('finish', () => incrementDataverseRequestCounters(d, c, meta, res));
     res.on('finish', () =>
       remember(d.requests, {
         at: started,
@@ -1365,6 +1858,9 @@ export function createDataverseHandler(deps) {
         userId: meta.userId,
         grant: meta.grant,
         kind: meta.kind,
+        // The request's trace (D-M-4); null at trace level off.
+        traceId: span?.traceId ?? null,
+        spanId: span?.spanId ?? null,
       }),
     );
     const reply = (result) =>
@@ -1401,11 +1897,15 @@ export function createDataverseHandler(deps) {
             organization: d.api ? { organizationId: d.organizationId, clock: d.clock, ids: d.api.ids } : null,
             correlationId: req.headers['x-ms-correlation-request-id'] ?? requestId,
             requestId,
+            traceId: span?.traceId ?? null,
+            spanId: span?.spanId ?? null,
           });
-          result = await runWithRequest(context, () => route(d, c));
+          const routed = () => runWithRequest(context, () => requestMetadata(d, () => route(d, c)));
+          result = await (span ? traces.run(span, routed) : routed());
         }
       }
     } catch (error) {
+      failure = error;
       result = dataverseError(error, {
         prefer,
         requestId,
@@ -1421,20 +1921,23 @@ export function createDataverseHandler(deps) {
         message: error?.message,
       });
     }
+    // A handler that answered its own error names it on the root (D-R3-4); a thrown one is the root's error at end.
+    if (span && !failure && result.status >= 400) {
+      const named = answeredError(result);
+      if (named) recordHttpError(span, result.status, named);
+    }
     // Every response for an authenticated caller carries the remaining service-protection headers; none reach unauthenticated ones.
     const withLimits = meta.userId
-      ? { ...result, headers: { ...(result.headers ?? {}), ...d.limits.headers(meta.userId) } }
+      ? { ...result, headers: { ...result.headers, ...d.limits.headers(meta.userId) } }
       : result;
-    try {
-      reply(withLimits);
-    } catch (error) {
-      log('dataverse response failed', { requestId, message: error?.message });
-      try {
-        reply(dataverseError(error, { prefer, requestId, origin, tenantId: d.tenantId, method: c.method }));
-      } catch {
-        res.destroy();
-      }
-    }
+    replyOrDrop(
+      reply,
+      withLimits,
+      res,
+      log,
+      () => requestId,
+      () => ({ prefer, requestId, origin, tenantId: d.tenantId, method: c.method }),
+    );
   };
   // serve never rejects here: whatever escapes it still gets an answer or a dropped connection.
   return function handle(req, res) {
@@ -1459,6 +1962,13 @@ function listen(server, port, host) {
   });
 }
 
+function closeServer(server) {
+  return new Promise((resolve) => {
+    server.closeAllConnections();
+    server.close(() => resolve());
+  });
+}
+
 export async function startDataverseApi({
   store,
   change = (fn) => fn(),
@@ -1475,6 +1985,7 @@ export async function startDataverseApi({
   managedIdentity = null,
   organization = null,
   beforeListen,
+  traces = null,
 }) {
   const ownsOrganization = !organization;
   organization ??= await createOrganizationRuntime({
@@ -1499,13 +2010,7 @@ export async function startDataverseApi({
     (closing ??= (async () => {
       const results = await Promise.allSettled([
         Promise.resolve().then(() => tds?.close()),
-        ...servers.map(
-          (server) =>
-            new Promise((resolve) => {
-              server.closeAllConnections();
-              server.close(() => resolve());
-            }),
-        ),
+        ...servers.map(closeServer),
       ]);
       if (ownsOrganization) await organization.close();
       const failures = results.filter((result) => result.status === 'rejected').map((result) => result.reason);
@@ -1550,6 +2055,7 @@ export async function startDataverseApi({
       requests,
       managedIdentity,
       limits,
+      traces,
     });
 
     await beforeListen?.(organization);
@@ -1583,6 +2089,7 @@ export async function startDataverseApi({
       host,
       port: tdsSettings.port,
       enabled: tdsSettings.enabled,
+      traces: traces ?? store.traces,
     });
     api.tdsPort = tds?.port ?? null;
 
@@ -1616,7 +2123,7 @@ export async function startDataverseApi({
       handle,
     };
   } catch (error) {
-    await close().catch((cleanup) => log('transport-cleanup', cleanup));
+    await close().catch((error_) => log('transport-cleanup', error_));
     throw error;
   }
 }

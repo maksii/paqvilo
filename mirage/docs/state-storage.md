@@ -24,7 +24,10 @@ await store.compact(); // schedule during an idle period, when desired
 file yourself: a large state is a journal, not JSON. Section projections avoid retaining unselected checkpoint
 rows and skip reconstructing discarded fragmented values, although integrity verification
 still reads and checksums every journal byte. Small JSON values use a bounded native parse;
-larger documents retain streaming parsing. `snapshot()` intentionally
+larger documents retain streaming parsing. A journal entry larger than one line is written
+as fragment records: each line embeds a bounded JSON value directly, so large metadata
+sections are escaped once and parsed natively line by line. Journals written with the
+earlier escaped-chunk fragments remain readable. `snapshot()` intentionally
 copies its requested data; select sections/tables when a complete copy is unnecessary.
 For optimistic fixture replacement, use `store.snapshotDigest()` and
 `replaceState(next, { expectedDigest })`; this hashes bounded chunks without building

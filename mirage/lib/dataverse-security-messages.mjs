@@ -5,6 +5,7 @@ import { organizationRecord } from './organization-context.mjs';
 // Registered as extension operations (dataverse-operations.mjs).
 // The built-in RetrieveUserPrivileges and RetrievePrincipalAccess stay in dataverse-api.mjs and are not registered here.
 import { DataError } from './data-error.mjs';
+import { principalAccessesOf } from './plugin-platform-messages.mjs';
 import { objectTypeCode } from './dataverse-metadata.mjs';
 import {
   ACCESS_RIGHTS,
@@ -17,6 +18,7 @@ import {
   ownershipOf,
   privilegeDeniedError,
   privilegeName,
+  revokeAccess,
   seedTablePrivileges,
   setBusinessUnit,
   teamsOfUser,
@@ -58,7 +60,11 @@ const sameId = (a, b) => key(a) === key(b);
 const refId = (value) => (value !== null && typeof value === 'object' ? value.id : value) ?? undefined;
 const ref = (logical, id) => (id == null ? null : { id, logical_name: logical, name: '' });
 const tableOf = (store, logical) => (store.state.tables[logical] ??= []);
-const listOf = (value) => (value === undefined || value === null ? [] : Array.isArray(value) ? value : [value]);
+const listOf = (value) => {
+  if (value === undefined || value === null) return [];
+  if (Array.isArray(value)) return value;
+  return [value];
+};
 const body = (c) => (typeof c.body === 'string' ? JSON.parse(c.body || '{}') : (c.body ?? {}));
 const notFound = (logical, id) => new DataError(`${logical} With Id = ${id} Does Not Exist`, 404, 'NotFound', { id });
 // Refusals carry the Dataverse inner code; InvalidArgument (0x80040203) is the default for an argument the platform rejects.
@@ -242,7 +248,7 @@ function addMember(store, teamId, userId) {
 // Entity id from { "@odata.id": "widgets(<guid>)" } or a bare reference string.
 function targetRef(api, value) {
   const text = String(value?.['@odata.id'] ?? value ?? '');
-  const match = /([a-z_][a-z0-9_]*)\(\s*'?([0-9a-f-]{36})'?\s*\)\s*$/i.exec(text);
+  const match = /(?<![a-z0-9_])\d*([a-z_][a-z0-9_]*)\(\s*'?([0-9a-f-]{36})'?\s*\)\s*$/i.exec(text);
   if (!match) throw invalid('Invalid argument.');
   return { mapping: api.store.resolveMapping(match[1]), id: match[2] };
 }
@@ -311,7 +317,7 @@ function operations(api) {
   // this one and never finish. A throw discards the working copy.
   const write = (fn) => api.change(() => store.transact(fn, { isolated: true }));
   const need = (c, privilege, entity) => {
-    if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, entity);
+    if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, entity); // NOSONAR: operand can be NaN or undefined, the negated test differs
   };
   // A complex response carries its Web API context, as the other Dataverse modules' function responses do.
   const respond = (c, name, body) => ({
@@ -322,6 +328,36 @@ function operations(api) {
   // `user` is the principal the read runs as: the caller by default, the SYSTEM user for an operation that needs no privilege.
   const collectionOf = (c, logical, ids, user = c.user) => messageCollection(api, c, logical, ids, user);
   // Privileges a user holds directly or through team roles (team grants report Basic), filtered by a predicate.
+  // Team membership changes, for the Web API (write answers a promise) and a plug-in's SDK Execute (a synchronous write).
+  const afterWrite = (written, answer) => (typeof written?.then === 'function' ? written.then(() => answer) : answer);
+  const addMembersTeam = (c, writeMembers) => {
+    need(c, 'prvWriteTeam', 'team');
+    const teamId = c.target.id,
+      members = membersOf(c);
+    assertTeamAcceptsMembers(store, c.target);
+    members.forEach((id) => assertCanJoinTeam(store, id));
+    return afterWrite(
+      writeMembers(() => {
+        for (const id of members) addMember(store, teamId, id);
+      }),
+      { status: 204 },
+    );
+  };
+  const removeMembersTeam = (c, writeMembers) => {
+    need(c, 'prvWriteTeam', 'team');
+    const teamId = c.target.id,
+      members = membersOf(c);
+    assertTeamAcceptsMembers(store, c.target);
+    return afterWrite(
+      writeMembers(() => {
+        removeWhere(
+          tableOf(store, 'teammembership'),
+          (m) => sameId(refId(m.teamid), teamId) && members.some((id) => sameId(refId(m.systemuserid), id)),
+        );
+      }),
+      { status: 204 },
+    );
+  };
   const userPrivileges = (c, name, keep) => {
     need(c, 'prvReadUser', 'systemuser');
     if (!api.principals.byId(c.target.id)) throw notFound('systemuser', c.target.id);
@@ -418,7 +454,7 @@ function operations(api) {
       name: 'RetrieveRolePrivilegesRole',
       kind: 'function',
       binding: 'unbound',
-      handle: async (c) => {
+      handle: (c) => {
         need(c, 'prvReadRole', 'role');
         const id = c.params?.RoleId;
         if (!id) throw invalid('RoleId is required.');
@@ -435,7 +471,7 @@ function operations(api) {
       kind: 'function',
       binding: 'entity',
       entity: 'systemuser',
-      handle: async (c) =>
+      handle: (c) =>
         userPrivileges(c, 'RetrieveUserPrivilegeByPrivilegeName', (p) => p.PrivilegeName === c.params?.PrivilegeName),
       csdl: csdlOf('function', 'RetrieveUserPrivilegeByPrivilegeName', {
         bound: 'systemuser',
@@ -448,7 +484,7 @@ function operations(api) {
       kind: 'function',
       binding: 'entity',
       entity: 'systemuser',
-      handle: async (c) =>
+      handle: (c) =>
         userPrivileges(c, 'RetrieveUserPrivilegeByPrivilegeId', (p) => sameId(p.PrivilegeId, c.params?.PrivilegeId)),
       csdl: csdlOf('function', 'RetrieveUserPrivilegeByPrivilegeId', {
         bound: 'systemuser',
@@ -461,7 +497,7 @@ function operations(api) {
       kind: 'function',
       binding: 'entity',
       entity: 'systemuser',
-      handle: async (c) => {
+      handle: (c) => {
         const names = listOf(c.params?.PrivilegeNames);
         return userPrivileges(c, 'RetrieveUserSetOfPrivilegesByNames', (p) => names.includes(p.PrivilegeName));
       },
@@ -476,9 +512,9 @@ function operations(api) {
       kind: 'function',
       binding: 'entity',
       entity: 'systemuser',
-      handle: async (c) => {
-        const ids = listOf(c.params?.PrivilegeIds).map(key);
-        return userPrivileges(c, 'RetrieveUserSetOfPrivilegesByIds', (p) => ids.includes(key(p.PrivilegeId)));
+      handle: (c) => {
+        const ids = new Set(listOf(c.params?.PrivilegeIds).map(key));
+        return userPrivileges(c, 'RetrieveUserSetOfPrivilegesByIds', (p) => ids.has(key(p.PrivilegeId)));
       },
       csdl: csdlOf('function', 'RetrieveUserSetOfPrivilegesByIds', {
         bound: 'systemuser',
@@ -491,7 +527,7 @@ function operations(api) {
       kind: 'function',
       binding: 'entity',
       entity: 'team',
-      handle: async (c) => {
+      handle: (c) => {
         need(c, 'prvReadTeam', 'team');
         const roleIds = new Set(
           tableOf(store, 'teamroles')
@@ -510,17 +546,9 @@ function operations(api) {
       kind: 'action',
       binding: 'entity',
       entity: 'team',
-      handle: async (c) => {
-        need(c, 'prvWriteTeam', 'team');
-        const teamId = c.target.id,
-          members = membersOf(c);
-        assertTeamAcceptsMembers(store, c.target);
-        members.forEach((id) => assertCanJoinTeam(store, id));
-        await write(() => {
-          for (const id of members) addMember(store, teamId, id);
-        });
-        return { status: 204 };
-      },
+      handle: async (c) => addMembersTeam(c, write),
+      // A plug-in's SDK Execute (AddMembersTeamRequest) writes inside its caller's transaction.
+      sdk: (c) => addMembersTeam(c, c.sdkWrite),
       csdl: csdlOf('action', 'AddMembersTeam', {
         bound: 'team',
         params: [['Members', 'Collection(mscrm.systemuser)']],
@@ -531,19 +559,8 @@ function operations(api) {
       kind: 'action',
       binding: 'entity',
       entity: 'team',
-      handle: async (c) => {
-        need(c, 'prvWriteTeam', 'team');
-        const teamId = c.target.id,
-          members = membersOf(c);
-        assertTeamAcceptsMembers(store, c.target);
-        await write(() => {
-          removeWhere(
-            tableOf(store, 'teammembership'),
-            (m) => sameId(refId(m.teamid), teamId) && members.some((id) => sameId(refId(m.systemuserid), id)),
-          );
-        });
-        return { status: 204 };
-      },
+      handle: async (c) => removeMembersTeam(c, write),
+      sdk: (c) => removeMembersTeam(c, c.sdkWrite),
       csdl: csdlOf('action', 'RemoveMembersTeam', {
         bound: 'team',
         params: [['Members', 'Collection(mscrm.systemuser)']],
@@ -561,7 +578,7 @@ function operations(api) {
           member = systemuserOf(store, memberId);
         // The member needs Basic (User) Read on the record's table; the message is the one the platform returns.
         if (
-          !(
+          /* NOSONAR: operand can be NaN or undefined, the negated test differs */ !(
             api.principals
               .privileges(member)
               .get(privilegeName('Read', api.principals.privilegeNoun(mapping.logicalName))) > 0
@@ -592,7 +609,7 @@ function operations(api) {
             // ponytail: one access team per (template, record); the platform's team naming and cascade rules are not modelled.
             const org = organizationRecord(store);
             team = {
-              teamid: uuidV5(template.teamtemplateid, `access-team:${id}`),
+              teamid: store.ids.uuid(),
               name: template.teamtemplatename ?? '',
               teamtype: ACCESS_TEAM,
               systemmanaged: true,
@@ -624,18 +641,32 @@ function operations(api) {
       kind: 'action',
       binding: 'entity',
       entity: 'systemuser',
-      // ponytail: the access team is kept when its last member leaves; the platform's cleanup is not modelled.
       handle: async (c) => {
         await write(() => ensureTeamTemplates(store));
-        const { id, template } = recordTeamContext(c);
+        const { mapping, id, template } = recordTeamContext(c);
         const memberId = c.target.id;
-        await write(() => {
+        await write(async () => {
           const team = accessTeamOf(store, template.teamtemplateid, id);
-          if (team)
-            removeWhere(
-              tableOf(store, 'teammembership'),
-              (m) => sameId(refId(m.teamid), team.teamid) && sameId(refId(m.systemuserid), memberId),
-            );
+          if (!team) return;
+          const memberships = tableOf(store, 'teammembership');
+          let removed = false;
+          for (let index = memberships.length - 1; index >= 0; index--) {
+            const member = memberships[index];
+            if (sameId(refId(member.teamid), team.teamid) && sameId(refId(member.systemuserid), memberId)) {
+              store.removeRow('teammembership', memberships, index);
+              removed = true;
+            }
+          }
+          if (!removed || memberships.some((member) => sameId(refId(member.teamid), team.teamid))) return;
+          // Microsoft documents final-member removal as removing the team's
+          // record share and deleting the system-managed access team. The
+          // enclosing transaction publishes both removals together.
+          await revokeAccess(store, {
+            target: { id, logical: mapping.logicalName },
+            principal: { id: team.teamid, logical_name: 'team' },
+          });
+          const teams = tableOf(store, 'team');
+          store.removeRow('team', teams, teams.indexOf(team));
         });
         return { status: 204 };
       },
@@ -728,7 +759,8 @@ function operations(api) {
       binding: 'unbound',
       handle: async (c) => {
         const { mapping, id } = targetRef(api, c.params?.Target);
-        const row = store.get(mapping.logicalName, id, c.identity);
+        // No Retrieve pipeline runs before it (recorded native webApiNamed).
+        const row = store.get(mapping.logicalName, id, c.identity, { skipPluginRead: true });
         if (!row) throw notFound(mapping.logicalName, id);
         api.principals.authorize({ user: c.user, entity: mapping.logicalName, operation: 'read', row, mapping });
         const shares = tableOf(store, 'principalobjectaccess').filter(
@@ -743,6 +775,11 @@ function operations(api) {
             };
           }),
         });
+      },
+      // Steps read PrincipalAccess[] (native webApiNamed RetrieveSharedPrincipalsAndAccess/40 OutputParameters).
+      pluginOutputs: (body, c) => {
+        const { mapping, id } = targetRef(api, c.params?.Target);
+        return { PrincipalAccesses: principalAccessesOf(store, { logicalName: mapping.logicalName, id }) };
       },
       csdl: csdlOf('function', 'RetrieveSharedPrincipalsAndAccess', {
         params: [['Target', 'mscrm.crmbaseentity']],

@@ -8,12 +8,15 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parse } from 'parse5';
 import { importPortal } from '../lib/importer.mjs';
 import { DataError } from '../lib/data-error.mjs';
 import { createPortalRenderer } from '../lib/liquid.mjs';
 import { FILTER_SIGNATURES, createFilters } from '../lib/liquid-filters.mjs';
+import { retainedResponseBody } from '../lib/render-sweep-body.mjs';
 import { expressionPaths, inventoryPortal, scanTokens } from '../liquid-inventory.mjs';
 import { ciSummary, classifyResponse, idParameterTable, renderSweep, resolveTarget } from '../render-sweep.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const SITE = '9a4d1c2e-0000-4000-8000-000000000001';
 const HOME = '9a4d1c2e-0000-4000-8000-000000000010';
@@ -93,7 +96,7 @@ const files = {
 };
 
 async function fixturePortal(t, extra = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'liquid-parity-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'liquid-parity-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   for (const [name, content] of Object.entries({ ...files, ...extra })) {
     const file = path.join(dir, name);
@@ -1165,6 +1168,54 @@ test('render sweep classifies Liquid errors and local injection into non-documen
   assert.equal(idParameterTable(['{{ request.params.page }}']), null);
 });
 
+test('render sweep samples authored content after oversized runtime injection without hiding response classification', () => {
+  const authored =
+    '<!doctype html><html><body>[]rows=2<script>const marker="data-paqvilo-mirage-runtime";</script></body></html>';
+  const injected = `<script data-paqvilo-mirage-runtime>${'/* local runtime */'.repeat(1500)}</script><script src="/__sim-static/pages.js" data-paqvilo-mirage-runtime></script>`;
+  assert.ok(injected.length > 20_000);
+  assert.deepEqual(retainedResponseBody(injected + authored, 'text/html; charset=utf-8'), {
+    body: authored,
+    bodyTruncated: false,
+    bodyOmittedRuntimeScripts: 2,
+  });
+  assert.deepEqual(retainedResponseBody('a'.repeat(20_001), 'text/plain'), {
+    body: 'a'.repeat(20_000),
+    bodyTruncated: true,
+    bodyOmittedRuntimeScripts: 0,
+  });
+  const classified = classifyResponse({
+    status: 200,
+    contentType: 'application/json',
+    body: injected + '{"rows":2}',
+    diagnostics: [],
+  });
+  assert.equal(classified.document, false);
+  assert.deepEqual(classified.injected, ['sim-static', 'sim-runtime']);
+  assert.equal(classified.bytes, Buffer.byteLength(injected + '{"rows":2}'));
+});
+
+test('render sweep body sampling handles deeply nested authored markup before the sample limit', () => {
+  const authored = '<div>'.repeat(12_000) + 'synthetic' + '</div>'.repeat(12_000);
+  const sample = retainedResponseBody(authored, 'text/html');
+  assert.equal(sample.body, authored.slice(0, 20_000));
+  assert.equal(sample.bodyTruncated, true);
+  assert.equal(sample.bodyOmittedRuntimeScripts, 0);
+});
+
+test('render sweep preserves literal runtime marker markup in non-HTML samples', () => {
+  const markup = '<script data-paqvilo-mirage-runtime>synthetic</script>';
+  for (const [body, contentType] of [
+    [JSON.stringify({ markup }), 'application/json'],
+    [markup, 'text/plain'],
+    [markup, null],
+  ])
+    assert.deepEqual(retainedResponseBody(body, contentType), {
+      body,
+      bodyTruncated: false,
+      bodyOmittedRuntimeScripts: 0,
+    });
+});
+
 test("user web-role relationship and enhanced attribute aliases follow the site's data model", async (t) => {
   // Standard model: adx_webrole_contact lists adx_webrole records.
   const { render } = await setup(
@@ -1187,7 +1238,7 @@ test("user web-role relationship and enhanced attribute aliases follow the site'
   );
   // Enhanced model: powerpagecomponent_mspp_webrole_contact lists powerpagecomponent rows, and
   // bare content columns are readable with adx_ and mspp_ prefixes.
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'liquid-enhanced-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'liquid-enhanced-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const component = (id, type, name, content) =>
     `<powerpagecomponent powerpagecomponentid="${id}"><content>${JSON.stringify(content).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</content><name>${name}</name><powerpagecomponenttype>${type}</powerpagecomponenttype><statecode>0</statecode></powerpagecomponent>`;
@@ -1240,7 +1291,7 @@ test("user web-role relationship and enhanced attribute aliases follow the site'
 });
 
 test('render sweep resolves export directories and Mirage projects and summarises each persona for CI', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'render-sweep-target-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'render-sweep-target-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   await fs.mkdir(path.join(dir, 'portal'));
   await fs.mkdir(path.join(dir, 'solution'));
@@ -1295,7 +1346,7 @@ test('render sweep resolves export directories and Mirage projects and summarise
 });
 
 test("render sweep personas change only the identity and keep the state's rows", async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'render-sweep-personas-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'render-sweep-personas-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const portalFiles = {
     'website.yml': `adx_websiteid: ${SITE}\nadx_name: Personas`,
@@ -1341,7 +1392,17 @@ test("render sweep personas change only the identity and keep the state's rows",
     keepBodies: true,
   });
   const bodies = Object.fromEntries(
-    report.runs.map((run) => [run.persona, run.results.find((result) => result.url === '/').body]),
+    report.runs.map((run) => {
+      const result = run.results.find((result) => result.url === '/');
+      assert.equal(result.bodyTruncated, false);
+      const text = (node) =>
+        ['script', 'style'].includes(node.tagName)
+          ? ''
+          : node.nodeName === '#text'
+            ? node.value
+            : (node.childNodes ?? []).map(text).join('');
+      return [run.persona, text(parse(result.body))];
+    }),
   );
   assert.match(bodies.anonymous, /\[\]rows=2/);
   assert.match(bodies.authenticated, /\[Authenticated Users\]rows=2/);

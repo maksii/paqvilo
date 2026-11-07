@@ -6,6 +6,7 @@ import path from 'node:path';
 import { collectFetchXmlPages, escapeXmlAttribute } from '../lib/paging-validation.mjs';
 import { createSimulator } from '../server.mjs';
 import { decodePagingCookie } from '../lib/live.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('bounded complete paging preserves cookie continuity and rejects missing/repeated/error/partial continuations', async () => {
   const calls = [];
@@ -72,7 +73,7 @@ test('bounded complete paging preserves cookie continuity and rejects missing/re
 });
 
 test('public FetchXML returns genuine continuation annotations while preserving record scope and selected columns', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-fetch-continuation-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-fetch-continuation-'));
   let app;
   t.after(async () => {
     await app?.close();

@@ -6,10 +6,10 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('a reload while a job that calls change() is pending completes', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'standalone-reload-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'standalone-reload-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'solution');
   await fs.mkdir(path.join(solution, 'Other'), { recursive: true });
@@ -39,14 +39,7 @@ test('a reload while a job that calls change() is pending completes', async (t) 
     0,
     { name: 'invented-job' },
   );
-  let timer;
-  const outcome = await Promise.race([
-    reloading.then(() => 'reloaded'),
-    new Promise((resolve) => {
-      timer = setTimeout(() => resolve('deadlocked'), 10000);
-    }),
-  ]);
-  clearTimeout(timer);
-  assert.equal(outcome, 'reloaded');
+  // A deadlock never settles and fails at the test timeout; a wall-clock race would also fail a slow, correct reload.
+  await reloading;
   assert.equal(ran, true);
 });

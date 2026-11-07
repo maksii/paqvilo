@@ -2,8 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import { parseArgs } from 'node:util';
+import { parseArgs, promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { editSource } from 'paqvilo/lense/source-edit.mjs';
 
@@ -18,11 +17,11 @@ if (
   environment.password ||
   environment.search ||
   environment.hash ||
-  !/^\/[\s]*$/.test(environment.pathname)
+  !/^\/\s*$/.test(environment.pathname)
 ) {
   throw new Error('Use --environment https://YOUR-ENVIRONMENT.crm.dynamics.com');
 }
-const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-component-query-'));
+const temporary = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-component-query-')));
 try {
   const query = path.join(temporary, 'control.xml');
   await fs.writeFile(
@@ -52,7 +51,9 @@ try {
   const catalogue = path.join(root, 'paqvilo.config.yml');
   const configuration = await fs.readFile(catalogue, 'utf8');
   const mappings = [
-    ...configuration.matchAll(/^(\s*)([0-9a-f-]{36})(:\s*exa_ExamplePages\.ExampleAccountFields\s*)$/gim),
+    ...configuration.matchAll(
+      /^([^\S\r\n\u2028\u2029]*)([0-9a-f-]{36})(:\s*exa_ExamplePages\.ExampleAccountFields\s*)$/gim,
+    ),
   ];
   if (mappings.length !== 1)
     throw new Error('The local catalogue must contain exactly one observed ExampleAccountFields mapping.');
@@ -61,7 +62,10 @@ try {
       text.replace(/(\{%\s*codecomponent\s+name\s*:\s*)[0-9a-f-]{36}(\s*%\})/gi, '$1' + ids[0] + '$2'),
     );
   editSource({ file: catalogue, sourceDir: root }, (text) =>
-    text.replace(/^(\s*)[0-9a-f-]{36}(:\s*exa_ExamplePages\.ExampleAccountFields\s*)$/gim, '$1' + ids[0] + '$2'),
+    text.replace(
+      /^([^\S\r\n\u2028\u2029]*)[0-9a-f-]{36}(:\s*exa_ExamplePages\.ExampleAccountFields\s*)$/gim,
+      '$1' + ids[0] + '$2',
+    ),
   );
   console.log('PCF source configured for the selected environment.');
   console.log('Next: pac pages upload --path ./portal --modelVersion 2 --environment ' + environment.origin);

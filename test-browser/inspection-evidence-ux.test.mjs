@@ -33,7 +33,6 @@ async function fixture(t, withPanel = false) {
   const context = await browser.newContext({ viewport: { width: 1420, height: 1050 } });
   t.after(() => context.close());
   const page = await context.newPage();
-  page.setDefaultTimeout(5000);
   const errors = [],
     opened = [];
   page.on('pageerror', (error) => errors.push(error.message));

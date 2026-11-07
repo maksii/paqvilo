@@ -88,3 +88,7 @@ Keep business data, observations and project tests in your own project. See [pro
 ## Use it as a starting point
 
 This project and scaffolded projects enforce LF line endings with `.gitattributes`. After installing your npm dependency, `npx paqvilo doctor --setup --json` checks readiness without reinstalling Mirage. Run your project tests after upgrades. `node editor-workspace.mjs` generates editor paths from your resolved catalogue. For your own site, capture deployed styles explicitly with `npx paqvilo mirage capture-shell --config ./paqvilo.config.yml --site my-site --env dev --path /`; the invented demo has no reference portal. See [consumer setup](https://github.com/maksii/paqvilo/blob/main/docs/getting-started.md) and [public APIs](https://github.com/maksii/paqvilo/blob/main/docs/public-api.md).
+
+## Code Apps adapter example
+
+The separate [Code Apps example](code-app/) runs an invented `x_item` app in Mirage with a local staff persona and a loopback app server. It exercises context, CRUD and an unsupported connector; follow the [setup and debugging guide](../../mirage/docs/code-apps.md#run-the-invented-example). It does not run Microsoft's Power Apps host or generated SDK services.

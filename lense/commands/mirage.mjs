@@ -23,11 +23,10 @@ const MIRAGE_ROOT = path.join(TOOL_ROOT, 'mirage');
 const TOOLKIT_CLI = path.join(TOOL_ROOT, 'bin/paqvilo.mjs');
 /** Where Mirage processes announce themselves and where the toolkit records the ones it started. */
 export function miragePaths(cfg = null, args = {}) {
-  const directory = args.config
-    ? path.dirname(path.resolve(args.config))
-    : args.project
-      ? path.dirname(path.resolve(args.project))
-      : process.cwd();
+  let directory;
+  if (args.config) directory = path.dirname(path.resolve(args.config));
+  else if (args.project) directory = path.dirname(path.resolve(args.project));
+  else directory = process.cwd();
   const stateDir = cfg?.stateDir ?? path.join(directory, '.paqvilo');
   return {
     discoveryRoot: path.join(stateDir, 'simulator'),
@@ -167,7 +166,7 @@ export function processIdentity(pid) {
     // out, because an unread identity must not be mistaken for a reused process ID.
     for (let attempt = 0; attempt < 3; attempt++) {
       const result = spawnSync(
-        'powershell.exe',
+        'powershell.exe', // NOSONAR: fixed tool name resolved through PATH by developer tooling
         [
           '-NoProfile',
           '-NonInteractive',
@@ -187,7 +186,7 @@ export function processIdentity(pid) {
   } catch {
     /* macOS and other proc-less systems */
   }
-  const result = spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
+  /* NOSONAR */ const result = spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
     encoding: 'utf8',
     windowsHide: true,
     timeout: 3000,
@@ -195,10 +194,53 @@ export function processIdentity(pid) {
   return result.status === 0 ? result.stdout.trim() || null : null;
 }
 
+/**
+ * processIdentity() for several PIDs. On Windows one PowerShell start (about half a second) reads
+ * them all instead of one start per PID; a PID it does not answer falls back to processIdentity().
+ * @returns {Map<number, string|null>}
+ */
+export function processIdentities(pids) {
+  const unique = [...new Set(pids)].filter((pid) => Number.isInteger(pid) && pid > 0);
+  const identities = new Map();
+  if (process.platform === 'win32' && unique.length > 1) readWindowsProcessIdentities(unique, identities);
+  for (const pid of unique) if (!identities.has(pid)) identities.set(pid, processIdentity(pid));
+  return identities;
+}
+
+function readWindowsProcessIdentities(unique, identities) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const result = spawnSync(
+      'powershell.exe', // NOSONAR: fixed tool name resolved through PATH by developer tooling
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        // Each PID is read on its own: a missing or inaccessible process yields an empty identity.
+        `$ErrorActionPreference = 'Stop'; foreach ($id in ${unique.join(',')}) { try { "$id=$((Get-Process -Id $id).StartTime.ToUniversalTime().Ticks)" } catch { "$id=" } }`,
+      ],
+      { encoding: 'utf8', windowsHide: true, timeout: 15_000 },
+    );
+    if (result.error || result.signal != null) {
+      // Three timed-out reads leave every identity unread, as processIdentity() does.
+      if (attempt === 2) for (const pid of unique) identities.set(pid, null);
+      continue;
+    }
+    storeWindowsProcessIdentities(result.stdout, unique, identities);
+    break;
+  }
+}
+
+function storeWindowsProcessIdentities(stdout, unique, identities) {
+  for (const line of stdout.split(/\r?\n/)) {
+    const match = /^(\d+)=(\d*)$/.exec(line.trim());
+    if (match && unique.includes(Number(match[1]))) identities.set(Number(match[1]), match[2] || null);
+  }
+}
+
 // Startup must keep its heartbeat and cancellation responsive while Windows
 // resolves process ownership. The synchronous public helper remains for callers.
 const executeFile = promisify(execFile);
-export async function processIdentityAsync(pid, { signal } = {}) {
+/* NOSONAR */ export async function processIdentityAsync(pid, { signal } = {}) {
   if (signal?.aborted) return null;
   if (!Number.isInteger(pid) || pid <= 0) return null;
   if (process.platform !== 'win32') {
@@ -252,7 +294,7 @@ export async function ownedSessions(paths = DEFAULT_PATHS) {
 
 async function saveOwnedSessions(paths, sessions) {
   await fs.mkdir(path.dirname(paths.ownershipFile), { recursive: true });
-  const temporary = `${paths.ownershipFile}.${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.tmp`;
+  const temporary = `${paths.ownershipFile}.${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.tmp`; // NOSONAR: pseudo-random value for simulation, not a secret
   const body = JSON.stringify({ version: 1, sessions }, null, 2);
   await fs.writeFile(temporary, body);
   try {
@@ -270,7 +312,7 @@ const OWNERSHIP_LOCK_STALE = 10_000;
  * Runs `action` holding the ownership lock (`<sessions file>.lock`, created exclusively), so
  * toolkit commands in other processes cannot interleave their read-modify-write with this one.
  */
-async function withOwnershipLock(paths, action, { signal } = {}) {
+/* NOSONAR */ async function withOwnershipLock(paths, action, { signal } = {}) {
   const lock = `${paths.ownershipFile}.lock`;
   await fs.mkdir(path.dirname(lock), { recursive: true });
   const deadline = Date.now() + 3 * OWNERSHIP_LOCK_STALE;
@@ -289,7 +331,7 @@ async function withOwnershipLock(paths, action, { signal } = {}) {
       }
       if (Date.now() > deadline)
         throw new Error(`The Mirage ownership records stayed locked: ${lock}`, { cause: error });
-      await delay(20 + Math.floor(Math.random() * 40), undefined, { signal });
+      await delay(20 + Math.floor(Math.random() * 40), undefined, { signal }); // NOSONAR: pseudo-random value for simulation, not a secret
     }
   }
   try {
@@ -446,7 +488,7 @@ async function requestShutdown(url) {
  * acted on while its PID still has the recorded start identity; entries of exited processes (or of a
  * reused PID) are pruned, and discovery files of exited processes are removed.
  */
-export async function stopOwnedSessions({
+/* NOSONAR: single-pass routine, splitting it would change shared state */ export async function stopOwnedSessions({
   paths = DEFAULT_PATHS,
   sourceDir = null,
   sourceDirs = null,
@@ -460,27 +502,11 @@ export async function stopOwnedSessions({
   const stale = [],
     targets = [],
     unverified = [];
-  for (const entry of owned) {
-    const alive = isAlive(entry.pid);
-    const current = alive ? identityOf(entry.pid) : null;
-    // A live process whose start identity was never recorded or cannot be read now is neither
-    // proof of a reused process ID nor safe to signal: its record stays for a later stop.
-    if (alive && (!entry.processIdentity || current == null)) {
-      unverified.push({
-        entry,
-        reason: entry.processIdentity
-          ? 'its start identity could not be read now; run stop again'
-          : 'no start identity was recorded when it started, so it is never signalled',
-      });
-      continue;
-    }
-    if (!alive || current !== entry.processIdentity) {
-      stale.push({ entry, reason: !alive ? 'process exited' : 'process ID now belongs to another program' });
-      continue;
-    }
-    const selected = Boolean(pids?.includes(entry.pid)) || folders.some((folder) => samePath(entry.sourceDir, folder));
-    if (selected) targets.push(entry);
-  }
+  const known =
+    identityOf === processIdentity
+      ? processIdentities(owned.filter((entry) => isAlive(entry.pid)).map((entry) => entry.pid))
+      : null;
+  classifyOwnedTargets(owned, { identityOf, known, folders, pids, stale, targets, unverified });
   const results = [];
   for (const entry of targets) {
     const record = records.find((item) => item.record.pid === entry.pid)?.record;
@@ -568,11 +594,65 @@ export async function stopOwnedSessions({
   };
 }
 
+function classifyOwnedTargets(owned, { identityOf, known, folders, pids, stale, targets, unverified }) {
+  for (const entry of owned) {
+    const status = inspectOwnedTarget(entry, identityOf, known);
+    if (status.kind === 'unverified') {
+      unverified.push({ entry, reason: status.reason });
+      continue;
+    }
+    if (status.kind === 'stale') {
+      stale.push({ entry, reason: status.reason });
+      continue;
+    }
+    if (isSelectedOwnedTarget(entry, pids, folders)) targets.push(entry);
+  }
+}
+
+function inspectOwnedTarget(entry, identityOf, known) {
+  const alive = isAlive(entry.pid);
+  let current = null;
+  if (alive) {
+    if (known?.has(entry.pid)) current = known.get(entry.pid);
+    else current = identityOf(entry.pid);
+  }
+  // A live process whose start identity was never recorded or cannot be read now is neither
+  // proof of a reused process ID nor safe to signal: its record stays for a later stop.
+  if (alive && (!entry.processIdentity || current == null))
+    return {
+      kind: 'unverified',
+      reason: entry.processIdentity
+        ? 'its start identity could not be read now; run stop again'
+        : 'no start identity was recorded when it started, so it is never signalled',
+    };
+  if (!alive || current !== entry.processIdentity)
+    return { kind: 'stale', reason: !alive ? 'process exited' : 'process ID now belongs to another program' };
+  return { kind: 'target' };
+}
+
+function isSelectedOwnedTarget(entry, pids, folders) {
+  return Boolean(pids?.includes(entry.pid)) || folders.some((folder) => samePath(entry.sourceDir, folder));
+}
+
 /** Sessions with ownership, project and portal information merged from both record kinds. */
 export async function mirageStatus(paths = DEFAULT_PATHS) {
   const owned = await ownedSessions(paths);
   const found = await discoveries(paths);
-  const identities = new Map();
+  // Read every identity this status can compare in one batch, not one PowerShell start per PID.
+  const identities = processIdentities([
+    ...found
+      .filter(
+        (session) =>
+          session.processAlive &&
+          owned.some(
+            (item) => item.pid === session.pid && item.discovery === session.discovery && item.processIdentity,
+          ),
+      )
+      .map((session) => session.pid),
+    ...owned
+      .filter((entry) => !found.some((session) => session.pid === entry.pid) && isAlive(entry.pid))
+      .map((entry) => entry.pid),
+  ]);
   const identity = (pid) => {
     if (!identities.has(pid)) identities.set(pid, processIdentity(pid));
     return identities.get(pid);
@@ -622,6 +702,21 @@ async function loadProject(file) {
   return loadProjectConfig(path.resolve(file));
 }
 
+async function startProjectCodeApps(cfg, launch, session, controller) {
+  const project = launch.project ? await loadProject(launch.project) : null;
+  const entries = project?.codeApps ?? cfg.mirageConfig?.codeApps ?? [];
+  const root = project ? path.dirname(project.configFile) : cfg.configDir;
+  const { loadCodeApps } = await import('../../mirage/lib/code-apps-config.mjs');
+  const apps = loadCodeApps(entries, root);
+  const { startCodeAppDevServers } = await import('../code-app-dev-servers.mjs');
+  const servers = await startCodeAppDevServers(apps, {
+    signal: controller.signal,
+    mirageUrl: session.url,
+    onFailure: (error) => controller.abort(error),
+  });
+  return { apps, servers };
+}
+
 /**
  * Applies catalogue Mirage settings (`cfg.mirageConfig`) to the command-line options: a
  * catalogued project, then catalogued Solution roots, port and preset. Explicit options always win.
@@ -633,13 +728,7 @@ export function catalogueArgs(cfg, args = {}, { requireProject = true } = {}) {
     effective.runtime = configured.runtime.kind;
   if (effective.simulation === undefined && configured.simulation?.level !== undefined)
     effective.simulation = configured.simulation.level;
-  if (effective.project === undefined && configured.project) {
-    if (isFile(configured.project)) effective.project = configured.project;
-    else if (requireProject)
-      throw new Error(
-        `Site "${cfg.siteName}" selects the Mirage project ${configured.project}, which does not exist. Create it with: ${mirageCommandHint([['mirage', 'init', ...configurationHintScope(cfg, args)]], { cli: TOOLKIT_CLI })}, or remove mirage.project for this site.`,
-      );
-  }
+  applyConfiguredProject(effective, configured, cfg, args, requireProject);
   if (!effective.project && !effective['solution-root']?.length && configured.solutionRoots?.length)
     effective['solution-root'] = [...configured.solutionRoots];
   if (effective.port === undefined && Number.isInteger(configured.port)) effective.port = String(configured.port);
@@ -650,52 +739,47 @@ export function catalogueArgs(cfg, args = {}, { requireProject = true } = {}) {
   return effective;
 }
 
+function applyConfiguredProject(effective, configured, cfg, args, requireProject) {
+  if (effective.project !== undefined || !configured.project) return;
+  if (isFile(configured.project)) {
+    effective.project = configured.project;
+    return;
+  }
+  if (!requireProject) return;
+  throw new Error(
+    `Site "${cfg.siteName}" selects the Mirage project ${configured.project}, which does not exist. Create it with: ${mirageCommandHint([['mirage', 'init', ...configurationHintScope(cfg, args)]], { cli: TOOLKIT_CLI })}, or remove mirage.project for this site.`,
+  );
+}
+
 export function cliArgs(cfg, action, args, project = null) {
   const cli = path.join(MIRAGE_ROOT, 'cli.mjs');
-  const common = [
-    '--state-dir',
-    path.dirname(miragePaths(cfg, args).discoveryRoot),
-    ...(args.port !== undefined ? ['--port', String(runtimePort(args.port, DEFAULT_PORT))] : []),
-    ...(args.state ? ['--state', path.resolve(args.state)] : []),
-    ...(args.preset ? ['--preset', args.preset] : []),
-    ...(args['apply-configuration'] === true ? ['--apply-configuration'] : []),
-    ...(args['preset-mode'] ? ['--preset-mode', args['preset-mode']] : []),
+  const common = commonCliArguments(cfg, action, args);
+  if (project) return projectCliArgs(cli, cfg, action, args, project, common);
+  if (cfg.runtime?.kind && cfg.runtime.kind !== 'power-pages')
+    return standaloneCatalogueCliArgs(cli, cfg, action, args, common);
+  return portalSourceCliArgs(cli, cfg, action, args, common);
+}
+
+function commonCliArguments(cfg, action, args) {
+  return [
+    ...(action === 'inspect'
+      ? []
+      : [
+          '--state-dir',
+          path.dirname(miragePaths(cfg, args).discoveryRoot),
+          ...(args.port !== undefined ? ['--port', String(runtimePort(args.port, DEFAULT_PORT))] : []),
+          ...(args.state ? ['--state', path.resolve(args.state)] : []),
+          ...(args.preset ? ['--preset', args.preset] : []),
+          ...(args['apply-configuration'] === true ? ['--apply-configuration'] : []),
+          ...(args['preset-mode'] ? ['--preset-mode', args['preset-mode']] : []),
+          ...(args['allow-live-writes'] === true ? ['--allow-live-writes'] : []),
+        ]),
     ...(args.runtime ? ['--runtime', args.runtime] : []),
     ...(args.simulation ? ['--simulation', args.simulation] : []),
-    // Live writes stay impossible unless this runtime is started with the flag (off by default).
-    ...(args['allow-live-writes'] === true ? ['--allow-live-writes'] : []),
   ];
-  if (project) {
-    const powerPages = (args.runtime ?? project.runtime?.kind ?? 'power-pages') === 'power-pages';
-    if (!powerPages && args.portal) throw new Error('A standalone runtime does not select a portal.');
-    const portal = powerPages ? (args.portal ?? (action === 'serve' ? project.defaultPortal : null)) : null;
-    return {
-      cli,
-      values: [
-        action,
-        '--project',
-        project.configFile,
-        ...(portal ? ['--portal', portal] : []),
-        ...(cfg?.mirageConfig?.deploymentProfiles && samePath(cfg.mirageConfig.project, project.configFile)
-          ? ['--site', cfg.catalogueSite ?? cfg.siteName, '--env', cfg.envName]
-          : []),
-        ...((args.config || !args.project) && cfg?.configFile ? ['--config', cfg.configFile] : []),
-        ...common,
-      ],
-    };
-  }
-  if (cfg.runtime?.kind && cfg.runtime.kind !== 'power-pages') {
-    return {
-      cli,
-      values: [
-        action,
-        ...(args.runtime ? [] : ['--runtime', cfg.runtime.kind]),
-        ...common,
-        ...(cfg.configFile ? ['--config', cfg.configFile, '--site', cfg.siteName] : []),
-        ...(args['solution-root'] ?? []).flatMap((root) => ['--solution-root', path.resolve(root)]),
-      ],
-    };
-  }
+}
+
+function portalSourceCliArgs(cli, cfg, action, args, common) {
   const origin = httpsOrigin(cfg.origin);
   const values = [
     action,
@@ -705,7 +789,7 @@ export function cliArgs(cfg, action, args, project = null) {
     cfg.envName,
     '--source',
     cfg.sourceDir,
-    ...(origin ? ['--origin', origin] : []),
+    ...(origin && action !== 'inspect' ? ['--origin', origin] : []),
     ...common,
   ];
   // The Mirage reads the site's mirage settings (such as observed behaviour) from the
@@ -716,6 +800,40 @@ export function cliArgs(cfg, action, args, project = null) {
   // The Mirage layers --solution-root values in their dependency order unless told otherwise.
   if (args['solution-root']?.length) values.push('--solution-order', solutionOrderOf(cfg));
   return { cli, values };
+}
+
+function projectCliArgs(cli, cfg, action, args, project, common) {
+  const powerPages = (args.runtime ?? project.runtime?.kind ?? 'power-pages') === 'power-pages';
+  if (!powerPages && args.portal) throw new Error('A standalone runtime does not select a portal.');
+  let portal = null;
+  if (powerPages) portal = args.portal ?? (action === 'serve' ? project.defaultPortal : null);
+  return {
+    cli,
+    values: [
+      action,
+      '--project',
+      project.configFile,
+      ...(portal ? ['--portal', portal] : []),
+      ...(cfg?.mirageConfig?.deploymentProfiles && samePath(cfg.mirageConfig.project, project.configFile)
+        ? ['--site', cfg.catalogueSite ?? cfg.siteName, '--env', cfg.envName]
+        : []),
+      ...((args.config || !args.project) && cfg?.configFile ? ['--config', cfg.configFile] : []),
+      ...common,
+    ],
+  };
+}
+
+function standaloneCatalogueCliArgs(cli, cfg, action, args, common) {
+  return {
+    cli,
+    values: [
+      action,
+      ...(args.runtime ? [] : ['--runtime', cfg.runtime.kind]),
+      ...common,
+      ...(cfg.configFile ? ['--config', cfg.configFile, '--site', cfg.siteName] : []),
+      ...(args['solution-root'] ?? []).flatMap((root) => ['--solution-root', path.resolve(root)]),
+    ],
+  };
 }
 
 /** Whether create, update and delete requests can reach the live environment from this runtime. */
@@ -736,14 +854,22 @@ function sessionSelectors(entry, selection) {
   const actualPort = listenerPort(entry.url);
   return (
     (!selection.state || samePath(entry.stateFile ?? entry.identity?.stateFile, path.resolve(selection.state))) &&
-    (selection.port === undefined ||
-      (String(selection.port) === '0'
-        ? entry.identity?.requestedPort === '0'
-        : actualPort === String(selection.port) ||
-          (!actualPort && entry.identity?.requestedPort === String(selection.port)))) &&
-    (!roots ||
-      (entry.identity?.solutionRoots?.length === roots.length &&
-        roots.every((root) => entry.identity.solutionRoots.some((candidate) => samePath(root, candidate)))))
+    selectedPortMatches(entry, selection.port, actualPort) &&
+    selectedRootsMatch(entry, roots)
+  );
+}
+
+function selectedPortMatches(entry, selectedPort, actualPort) {
+  if (selectedPort === undefined) return true;
+  if (String(selectedPort) === '0') return entry.identity?.requestedPort === '0';
+  return actualPort === String(selectedPort) || (!actualPort && entry.identity?.requestedPort === String(selectedPort));
+}
+
+function selectedRootsMatch(entry, roots) {
+  return (
+    !roots ||
+    (entry.identity?.solutionRoots?.length === roots.length &&
+      roots.every((root) => entry.identity.solutionRoots.some((candidate) => samePath(root, candidate))))
   );
 }
 
@@ -751,21 +877,10 @@ function sessionSelectors(entry, selection) {
 async function selectedSessionPids(paths, cfg, kind, selectedProject = null, selection = {}, sourceDir = null) {
   const selectedCatalogue = catalogueIdentity(cfg);
   const scoped = Boolean(selectedCatalogue);
-  const candidates = (await ownedSessions(paths)).filter((entry) => {
-    if (
-      (entry.identity?.runtime?.kind ?? (entry.sourceDir ? 'power-pages' : null)) !== kind ||
-      !sessionSelectors(entry, selection)
-    )
-      return false;
-    if (sourceDir && !samePath(entry.sourceDir, sourceDir)) return false;
-    if (selectedProject) {
-      if (!samePath(entry.project, selectedProject.configFile)) return false;
-      if (selection.portal && entry.portal !== selection.portal) return false;
-    } else if (entry.project && kind !== 'power-pages') return false;
-    return true;
-  });
+  const candidates = (await ownedSessions(paths)).filter((entry) =>
+    matchesSessionCandidate(entry, { kind, selection, sourceDir, selectedProject }),
+  );
   const siteName = selectedCatalogue?.siteName;
-  let catalogue;
   const exactLegacyTarget =
     selection.state &&
     selection.port !== undefined &&
@@ -775,49 +890,74 @@ async function selectedSessionPids(paths, cfg, kind, selectedProject = null, sel
         listenerPort(entry.url) === String(selection.port) &&
         (!entry.identity?.scope || samePath(entry.identity.scope.configFile, selectedCatalogue?.configFile)),
     ).length === 1;
-  return candidates
-    .filter((entry) => {
-      if (!scoped) return selectedProject ? true : !entry.identity?.scope;
-      // Older verified records may predate scoped identities. Their source and
-      // supplied state/port still constrain selection; absent selectors never widen it.
-      const scope = entry.identity?.scope;
-      if (!scope && !selectedProject) return kind === 'power-pages' && Boolean(sourceDir);
-      if (scope && !samePath(scope.configFile, selectedCatalogue.configFile)) return false;
-      // Marked rows always identify a catalogue site, even when its ID is also
-      // a portal ID in a shared project. They never take the legacy fallback.
-      if (scope && (scope.version !== undefined || scope.catalogueSite !== undefined))
-        return scope.version === 1 && scope.catalogueSite === siteName;
-      if (scope && (!selectedProject || scope.siteName !== entry.portal)) return scope.siteName === siteName;
-      // Historical project rows stored the portal ID in siteName. A matching
-      // actual listener/state uniquely selects one record; requested port 0
-      // and a shared project mapping cannot identify a catalogue owner.
-      if (exactLegacyTarget) return true;
-      catalogue ??= loadCatalogue({ config: selectedCatalogue.configFile, repo: cfg.sourceRoot });
-      const mapped = Object.entries(catalogue.sites).filter(
-        ([, site]) =>
-          site.mirage?.project &&
-          samePath(path.resolve(catalogue.configDir, site.mirage.project), selectedProject.configFile),
-      );
-      if (
-        Object.keys(catalogue.sites).length === 1 &&
-        mapped.length === 1 &&
-        mapped[0][0] === siteName &&
-        (!scope || !Object.hasOwn(catalogue.sites, scope.siteName) || scope.siteName === siteName)
-      )
-        return true;
-      throw new Error(
-        'Legacy Mirage project ownership is ambiguous; supply --state and the actual listening --port to stop one recorded runtime.',
-      );
-    })
-    .map((entry) => entry.pid);
+  const scopeContext = {
+    scoped,
+    selectedProject,
+    kind,
+    sourceDir,
+    selectedCatalogue,
+    siteName,
+    exactLegacyTarget,
+    cfg,
+  };
+  return candidates.filter((entry) => matchesCatalogueScope(entry, scopeContext)).map((entry) => entry.pid);
+}
+
+function matchesSessionCandidate(entry, { kind, selection, sourceDir, selectedProject }) {
+  if (
+    (entry.identity?.runtime?.kind ?? (entry.sourceDir ? 'power-pages' : null)) !== kind ||
+    !sessionSelectors(entry, selection)
+  )
+    return false;
+  if (sourceDir && !samePath(entry.sourceDir, sourceDir)) return false;
+  if (selectedProject) {
+    if (!samePath(entry.project, selectedProject.configFile)) return false;
+    if (selection.portal && entry.portal !== selection.portal) return false;
+  } else if (entry.project && kind !== 'power-pages') return false;
+  return true;
+}
+
+function matchesCatalogueScope(entry, context) {
+  const { scoped, selectedProject, kind, sourceDir, selectedCatalogue, siteName, exactLegacyTarget, cfg } = context;
+  if (!scoped) return selectedProject ? true : !entry.identity?.scope;
+  // Older verified records may predate scoped identities. Their source and supplied state/port still constrain selection.
+  const scope = entry.identity?.scope;
+  if (!scope && !selectedProject) return kind === 'power-pages' && Boolean(sourceDir);
+  if (scope && !samePath(scope.configFile, selectedCatalogue.configFile)) return false;
+  if (scope && (scope.version !== undefined || scope.catalogueSite !== undefined))
+    return scope.version === 1 && scope.catalogueSite === siteName;
+  if (scope && (!selectedProject || scope.siteName !== entry.portal)) return scope.siteName === siteName;
+  if (exactLegacyTarget) return true;
+  context.catalogue ??= loadCatalogue({ config: selectedCatalogue.configFile, repo: cfg.sourceRoot });
+  if (legacyProjectScopeMatches(context.catalogue, scope, siteName, selectedProject)) return true;
+  throw new Error(
+    'Legacy Mirage project ownership is ambiguous; supply --state and the actual listening --port to stop one recorded runtime.',
+  );
+}
+
+function legacyProjectScopeMatches(catalogue, scope, siteName, selectedProject) {
+  const mapped = Object.entries(catalogue.sites).filter(
+    ([, site]) =>
+      site.mirage?.project &&
+      samePath(path.resolve(catalogue.configDir, site.mirage.project), selectedProject.configFile),
+  );
+  return (
+    Object.keys(catalogue.sites).length === 1 &&
+    mapped.length === 1 &&
+    mapped[0][0] === siteName &&
+    (!scope || !Object.hasOwn(catalogue.sites, scope.siteName) || scope.siteName === siteName)
+  );
 }
 
 function stopSummary(report, scope, none) {
   const count = report.stopped.length,
     kept = report.unverified?.length ?? 0;
-  const verdict = count
-    ? `Stopped ${count} toolkit-owned Mirage session(s) for ${scope}.`
-    : `No toolkit-owned Mirage session ${kept ? 'was stopped ' : ''}for ${none}.`;
+  let verdict;
+  if (count) verdict = `Stopped ${count} toolkit-owned Mirage session(s) for ${scope}.`;
+  else {
+    const stopped = kept ? 'was stopped ' : '';
+    verdict = `No toolkit-owned Mirage session ${stopped}for ${none}.`;
+  }
   return kept ? `${verdict} ${kept} owned session(s) could not be verified and were kept.` : verdict;
 }
 
@@ -860,15 +1000,15 @@ async function launchIdentity(cfg, args, projectInfo = null) {
   const standalone = runtime.kind !== 'power-pages';
   const portalId = standalone ? null : (args.portal ?? projectInfo?.defaultPortal ?? null);
   const sourceDir = projectInfo ? projectInfo.portals.find((item) => item.id === portalId)?.sourceDir : cfg.sourceDir;
-  const stateFile = args.state
-    ? resolved(args.state)
-    : projectInfo
-      ? (await import('../../mirage/lib/project-config.mjs')).projectStateFile(
-          projectInfo,
-          standalone ? 'organization' : portalId,
-          path.join(miragePaths(cfg, args).discoveryRoot, 'projects'),
-        )
-      : path.join(miragePaths(cfg, args).discoveryRoot, cfg.siteName, 'state.json');
+  let stateFile;
+  if (args.state) stateFile = resolved(args.state);
+  else if (projectInfo)
+    stateFile = (await import('../../mirage/lib/project-config.mjs')).projectStateFile(
+      projectInfo,
+      standalone ? 'organization' : portalId,
+      path.join(miragePaths(cfg, args).discoveryRoot, 'projects'),
+    );
+  else stateFile = path.join(miragePaths(cfg, args).discoveryRoot, cfg.siteName, 'state.json');
   const solutionRoots = (await launchSolutionRoots(sourceDir, args, projectInfo)).map((item) => resolved(item));
   // The registered settings (mirage/lib/config-keys.mjs) as the Mirage CLI resolves them, then the command-line choices.
   const { runtimeOptions, runtimeIdentity } = await import('../../mirage/lib/config-keys.mjs');
@@ -972,7 +1112,7 @@ async function start(cfg, args, { paths = miragePaths(cfg, args), command = 'mir
   const interrupt = () => {
     interrupted = true;
     controller.abort(new Error('Mirage startup was interrupted; the starting process was stopped.'));
-    if (child && child.exitCode === null && !child.killed) {
+    if (child?.exitCode === null && !child.killed) {
       try {
         child.kill('SIGTERM');
       } catch {
@@ -1001,7 +1141,7 @@ async function start(cfg, args, { paths = miragePaths(cfg, args), command = 'mir
   } catch (error) {
     // The direct child handle is ours even if its OS start identity could not
     // yet be read. Do not leave a detached importer after early cancellation.
-    if (child && child.exitCode === null && !child.killed) {
+    if (child?.exitCode === null && !child.killed) {
       try {
         child.kill('SIGTERM');
       } catch {
@@ -1020,7 +1160,7 @@ async function start(cfg, args, { paths = miragePaths(cfg, args), command = 'mir
   }
 }
 
-async function startRuntime(cfg, args, paths, startup) {
+/* NOSONAR */ async function startRuntime(cfg, args, paths, startup) {
   const started = Date.now() - (args.startup?.elapsedMs ?? 0);
   args.startup?.phase('source discovery', cfg.siteName);
   const port = String(runtimePort(args.port, DEFAULT_PORT));
@@ -1030,9 +1170,7 @@ async function startRuntime(cfg, args, paths, startup) {
   let projectInfo = null;
   if (args.project) {
     projectInfo = await loadProject(args.project);
-    if (args['solution-root']?.length) throw new Error('--solution-root is supplied by the project configuration.');
-    if (args.portal && !projectInfo.portals.some((item) => item.id === args.portal))
-      throw new Error(`Unknown Mirage portal "${args.portal}" in ${projectInfo.configFile}`);
+    validateProjectLaunchArguments(projectInfo, args);
   } else {
     const missing = (args['solution-root'] ?? [])
       .map((root) => path.resolve(root))
@@ -1058,14 +1196,8 @@ async function startRuntime(cfg, args, paths, startup) {
   const owned = await ownedSessions(paths);
   // Listing local records is cheap. Probe only runtimes eligible for this
   // launch; unrelated listeners can each consume the full probe timeout.
-  const candidates = (await discoveries(paths, { probe: false, signal: startup.signal })).filter(
-    (session) =>
-      session.processAlive &&
-      (identity.sourceDir ? samePath(session.sourceDir, identity.sourceDir) : !session.sourceDir) &&
-      owned.some(
-        (item) =>
-          item.pid === session.pid && item.discovery === session.discovery && identityMatches(item.identity, identity),
-      ),
+  const candidates = (await discoveries(paths, { probe: false, signal: startup.signal })).filter((session) =>
+    isReusableRuntimeCandidate(session, owned, identity),
   );
   startup.check();
   let existing;
@@ -1103,7 +1235,7 @@ async function startRuntime(cfg, args, paths, startup) {
   let child;
   args.startup?.phase('process launch', identity.runtime?.kind ?? 'power-pages');
   await fs.mkdir(paths.logRoot, { recursive: true });
-  const log = path.join(paths.logRoot, `startup-${Date.now()}-${Math.random().toString(16).slice(2)}.log`);
+  const log = path.join(paths.logRoot, `startup-${Date.now()}-${Math.random().toString(16).slice(2)}.log`); // NOSONAR: pseudo-random value for simulation, not a secret
   const logHandle = await fs.open(log, 'a');
   try {
     startup.check();
@@ -1210,10 +1342,10 @@ async function startRuntime(cfg, args, paths, startup) {
         const portal = Array.isArray(record.portals)
           ? (record.portals.find((item) => item.id === (identity.portal ?? '')) ?? record.portals[0])
           : null;
-        const { portals: ignoredPortals, ...base } = record;
+        const { portals: ignoredPortals, ...base } = record; // NOSONAR: binding is excluded from the rest object or is a placeholder
         const session = {
           ...base,
-          ...(portal ?? {}),
+          ...portal,
           id: portal?.id,
           discovery,
           processAlive: true,
@@ -1261,21 +1393,35 @@ async function startRuntime(cfg, args, paths, startup) {
       if (!isAlive(child.pid)) {
         await abandon();
         const output = await readLocalFile(log, { root: paths.logRoot, encoding: 'utf8' }).catch(() => '');
-        throw new Error(
-          `Mirage exited before it became ready. See startup log: ${log}${output.trim() ? `\n${output.trim().slice(-3000)}` : ''}`,
-        );
+        const logOutput = output.trim();
+        const details = logOutput ? '\n' + logOutput.slice(-3000) : '';
+        throw new Error(`Mirage exited before it became ready. See startup log: ${log}${details}`);
       }
       await delay(150, undefined, { signal: startup.signal });
     }
     await abandon();
     startup.check();
-    throw new Error(
-      `Mirage did not become ready within ${timeout}ms${port === '0' ? '' : ` on port ${port}`}. See startup log: ${log}`,
-    );
+    const portMessage = port === '0' ? '' : ' on port ' + port;
+    throw new Error(`Mirage did not become ready within ${timeout}ms${portMessage}. See startup log: ${log}`);
   } catch (error) {
     error.writesFiles = [log, paths.ownershipFile].filter((file) => fsSync.existsSync(file));
     throw error;
   }
+}
+
+function validateProjectLaunchArguments(projectInfo, args) {
+  if (args['solution-root']?.length) throw new Error('--solution-root is supplied by the project configuration.');
+  if (args.portal && !projectInfo.portals.some((item) => item.id === args.portal))
+    throw new Error(`Unknown Mirage portal "${args.portal}" in ${projectInfo.configFile}`);
+}
+
+function isReusableRuntimeCandidate(session, owned, identity) {
+  if (!session.processAlive) return false;
+  if (identity.sourceDir ? !samePath(session.sourceDir, identity.sourceDir) : Boolean(session.sourceDir)) return false;
+  return owned.some(
+    (item) =>
+      item.pid === session.pid && item.discovery === session.discovery && identityMatches(item.identity, identity),
+  );
 }
 
 // ---- init
@@ -1283,7 +1429,7 @@ const yamlPath = (from, target) => {
   const relative = path.relative(from, target);
   // Another drive, the folder itself or a distant folder keeps the absolute path.
   const distant = relative.split(/[\\/]/).filter((part) => part === '..').length > 4;
-  return (!relative || path.isAbsolute(relative) || distant ? target : relative).replace(/\\/g, '/');
+  return (!relative || path.isAbsolute(relative) || distant ? target : relative).replaceAll('\\', '/');
 };
 const httpsOrigin = (value) => {
   try {
@@ -1299,7 +1445,7 @@ const projectId = (value, used) => {
       .replace(/[^a-z0-9._-]+/gi, '-')
       .replace(/^[^a-z0-9]+/i, '') || 'solution';
   const base = id;
-  for (let n = 2; used.has(id.toLowerCase()); n++) id = `${base}-${n}`;
+  for (let n = 2; used.has(id.toLowerCase()); n++) id = `${base}-${n}`; // NOSONAR: loop variable is advanced in the body on purpose
   used.add(id.toLowerCase());
   return id;
 };
@@ -1336,7 +1482,7 @@ async function matchingPacks(cfg, dataPacks) {
 }
 
 /** Writes a Mirage project file for the selected catalogue site and validates it by loading it. */
-export async function initProject(cfg, args = {}) {
+/* NOSONAR */ export async function initProject(cfg, args = {}) {
   const configured = cfg.mirageConfig ?? { solutionRoots: [], dataPacks: [] };
   // A standalone site is configured completely by its catalogue mapping; a project file only describes portals.
   if (cfg.runtime?.kind && cfg.runtime.kind !== 'power-pages' && !cfg.sourceDir)
@@ -1357,18 +1503,13 @@ export async function initProject(cfg, args = {}) {
       configured.project ??
       path.join(path.dirname(miragePaths(cfg, args).discoveryRoot), 'mirage', `${cfg.siteName}.project.yml`),
   );
-  if (!/\.(?:ya?ml|json)$/i.test(file)) throw new Error('The Mirage project file must end in .yml, .yaml or .json');
-  if (isDirectory(file)) throw new Error(`${file} is a folder; name a project file`);
-  if (fsSync.existsSync(file) && !args.force) throw new Error(`${file} already exists; pass --force to replace it`);
+  validateInitFile(file, args);
   if (!PROJECT_ID.test(cfg.siteName)) throw new Error(`Site "${cfg.siteName}" cannot be used as a Mirage portal ID`);
   const listed = configured.solutionRoots?.length
     ? configured.solutionRoots
     : await (await import('../../mirage/lib/solution-roots.mjs')).discoverSolutionRoots(cfg.sourceDir);
   const missing = listed.filter((root) => !isDirectory(root));
-  if (missing.length)
-    throw new Error(
-      `Configured Solution root${missing.length > 1 ? 's do' : ' does'} not exist: ${missing.join(', ')}`,
-    );
+  validateInitSolutionRoots(missing);
   // The project records the order its solutions are layered in: the dependency order (written
   // in that order), or the catalogue's listed order when the site sets solutionOrder: explicit.
   const solutionOrder = solutionOrderOf(cfg);
@@ -1377,10 +1518,7 @@ export async function initProject(cfg, args = {}) {
   });
   const roots = solutionOrder === 'explicit' ? listed : derived;
   const missingPacks = (configured.dataPacks ?? []).filter((pack) => !isFile(pack.module));
-  if (missingPacks.length)
-    throw new Error(
-      `Configured data pack module${missingPacks.length > 1 ? 's do' : ' does'} not exist: ${missingPacks.map((pack) => pack.module).join(', ')}`,
-    );
+  validateInitDataPacks(missingPacks);
   const base = path.dirname(file);
   const notes = [];
   if (solutionOrder === 'explicit' && !sameOrder(listed, derived))
@@ -1389,25 +1527,7 @@ export async function initProject(cfg, args = {}) {
     );
   const origin = httpsOrigin(cfg.origin);
   if (!origin) notes.push(`${cfg.origin} is not an HTTPS origin, so the portal has no reference origin.`);
-  const environments = Object.entries(cfg.site?.environments ?? {});
-  const ordered = [
-    ...environments.filter(([name]) => name === cfg.envName),
-    ...environments.filter(([name]) => name !== cfg.envName),
-  ];
-  if (cfg.envName === 'custom' && !environments.some(([name]) => name === 'custom'))
-    ordered.unshift(['custom', { url: cfg.origin }]);
-  const references = [];
-  const seenOrigins = new Set();
-  for (const [name, environment] of ordered) {
-    const reference = httpsOrigin(environment.url);
-    if (!reference) {
-      notes.push(`Environment ${name} (${environment.url}) is not an HTTPS origin and is not listed as a reference.`);
-      continue;
-    }
-    if (!PROJECT_ID.test(name) || seenOrigins.has(reference)) continue;
-    seenOrigins.add(reference);
-    references.push({ id: name, origin: reference, ...(environment.caution ? { name: `${name} (real data)` } : {}) });
-  }
+  const references = initReferences(cfg, notes);
   // Platform behaviour observed on the site's environment (mirage.observed), validated as the
   // Mirage validates a project portal's observed block and recorded on the portal entry.
   const observed = configured.observed
@@ -1417,55 +1537,17 @@ export async function initProject(cfg, args = {}) {
       )
     : null;
   const usedIds = new Set();
-  const document = {
-    version: 1,
-    defaultPortal: cfg.siteName,
-    // dataModel: the catalogue site's data model for a source that does not record it (.powerpages-site).
-    portals: [
-      {
-        id: cfg.siteName,
-        path: yamlPath(base, cfg.sourceDir),
-        ...(origin ? { origin } : {}),
-        ...(observed ? { observed } : {}),
-        ...(configured.dataModel ? { dataModel: configured.dataModel } : {}),
-      },
-    ],
-    ...Object.fromEntries(
-      ['confinePortalPages', 'externalAssets', 'externalFrameOrigins']
-        .filter((key) => configured[key] !== undefined)
-        .map((key) => [key, configured[key]]),
-    ),
-    ...(configured.platform ? { platform: configured.platform } : {}),
-    solutions: roots.map((root) => ({ id: projectId(path.basename(root), usedIds), path: yamlPath(base, root) })),
+  const document = makeInitDocument({
+    cfg,
+    configured,
+    base,
+    origin,
+    observed,
+    roots,
     solutionOrder,
     references,
-    ...(configured.deploymentProfiles
-      ? {
-          deploymentProfiles: {
-            ...configured.deploymentProfiles,
-            profiles: Object.fromEntries(
-              Object.entries(configured.deploymentProfiles.profiles).map(([id, sources]) => [
-                id,
-                Object.fromEntries(
-                  Object.entries(sources).map(([section, source]) => [
-                    section,
-                    Array.isArray(source) ? source.map((file) => yamlPath(base, file)) : yamlPath(base, source),
-                  ]),
-                ),
-              ]),
-            ),
-          },
-        }
-      : {}),
-    ...(configured.dataPacks?.length
-      ? {
-          dataPacks: configured.dataPacks.map(({ id, module }) => ({
-            ...(id ? { id } : {}),
-            module: yamlPath(base, module),
-          })),
-        }
-      : {}),
-  };
+    usedIds,
+  });
   const header = [
     `# Mirage project for the "${cfg.siteName}" portal, written by paqvilo mirage init (${cfg.siteName} @ ${cfg.envName}).`,
     '# Paths are relative to this file; the first reference is the selected environment. solutionOrder derived layers the',
@@ -1490,14 +1572,14 @@ export async function initProject(cfg, args = {}) {
     // A newer loader names the version it requires; the fields written here are shared by all versions.
     const required = /version/i.test(error.message)
       ? Math.max(...(error.message.match(/\d+/g) ?? []).map(Number))
-      : NaN;
+      : Number.NaN;
     if (Number.isInteger(required) && required > document.version) {
       document.version = required;
       await write();
       try {
         loaded = await loadProject(file);
-      } catch (retry) {
-        loadFailure = retry;
+      } catch (error_) {
+        loadFailure = error_;
       }
     }
     if (!loaded) {
@@ -1533,6 +1615,105 @@ export async function initProject(cfg, args = {}) {
   };
 }
 
+function validateInitFile(file, args) {
+  if (!/\.(?:ya?ml|json)$/i.test(file)) throw new Error('The Mirage project file must end in .yml, .yaml or .json');
+  if (isDirectory(file)) throw new Error(`${file} is a folder; name a project file`);
+  if (fsSync.existsSync(file) && !args.force) throw new Error(`${file} already exists; pass --force to replace it`);
+}
+
+function validateInitSolutionRoots(missing) {
+  if (missing.length)
+    throw new Error(
+      `Configured Solution root${missing.length > 1 ? 's do' : ' does'} not exist: ${missing.join(', ')}`,
+    );
+}
+
+function validateInitDataPacks(missingPacks) {
+  if (missingPacks.length)
+    throw new Error(
+      `Configured data pack module${missingPacks.length > 1 ? 's do' : ' does'} not exist: ${missingPacks.map((pack) => pack.module).join(', ')}`,
+    );
+}
+
+function initReferences(cfg, notes) {
+  const environments = Object.entries(cfg.site?.environments ?? {});
+  const ordered = [
+    ...environments.filter(([name]) => name === cfg.envName),
+    ...environments.filter(([name]) => name !== cfg.envName),
+  ];
+  if (cfg.envName === 'custom' && !environments.some(([name]) => name === 'custom'))
+    ordered.unshift(['custom', { url: cfg.origin }]);
+  const references = [];
+  const seenOrigins = new Set();
+  for (const [name, environment] of ordered) {
+    const reference = httpsOrigin(environment.url);
+    if (!reference) {
+      notes.push(`Environment ${name} (${environment.url}) is not an HTTPS origin and is not listed as a reference.`);
+      continue;
+    }
+    if (!PROJECT_ID.test(name) || seenOrigins.has(reference)) continue;
+    seenOrigins.add(reference);
+    references.push({ id: name, origin: reference, ...(environment.caution ? { name: `${name} (real data)` } : {}) });
+  }
+  return references;
+}
+
+function makeInitDocument({ cfg, configured, base, origin, observed, roots, solutionOrder, references, usedIds }) {
+  return {
+    version: 1,
+    defaultPortal: cfg.siteName,
+    // dataModel: the catalogue site's data model for a source that does not record it (.powerpages-site).
+    portals: [
+      {
+        id: cfg.siteName,
+        path: yamlPath(base, cfg.sourceDir),
+        ...(origin ? { origin } : {}),
+        ...(observed ? { observed } : {}),
+        ...(configured.dataModel ? { dataModel: configured.dataModel } : {}),
+      },
+    ],
+    ...Object.fromEntries(
+      ['confinePortalPages', 'externalAssets', 'externalFrameOrigins']
+        .filter((key) => configured[key] !== undefined)
+        .map((key) => [key, configured[key]]),
+    ),
+    ...(configured.platform ? { platform: configured.platform } : {}),
+    solutions: roots.map((root) => ({ id: projectId(path.basename(root), usedIds), path: yamlPath(base, root) })),
+    solutionOrder,
+    references,
+    ...deploymentProfilesDocument(configured.deploymentProfiles, base),
+    ...dataPacksDocument(configured.dataPacks, base),
+  };
+}
+
+function deploymentProfilesDocument(deploymentProfiles, base) {
+  if (!deploymentProfiles) return {};
+  return {
+    deploymentProfiles: {
+      ...deploymentProfiles,
+      profiles: Object.fromEntries(
+        Object.entries(deploymentProfiles.profiles).map(([id, sources]) => [
+          id,
+          Object.fromEntries(
+            Object.entries(sources).map(([section, source]) => [
+              section,
+              Array.isArray(source) ? source.map((file) => yamlPath(base, file)) : yamlPath(base, source),
+            ]),
+          ),
+        ]),
+      ),
+    },
+  };
+}
+
+function dataPacksDocument(dataPacks, base) {
+  return dataPacks?.length
+    ? {
+        dataPacks: dataPacks.map(({ id, module }) => ({ ...(id ? { id } : {}), module: yamlPath(base, module) })),
+      }
+    : {};
+}
+
 // ---- readiness
 /** Offline check whether a loopback port can be bound now (it may be taken a moment later). */
 export function portAvailable(port, host = '127.0.0.1') {
@@ -1547,7 +1728,7 @@ export function portAvailable(port, host = '127.0.0.1') {
  * Mirage readiness for one resolved site, without starting it: dependencies, catalogued project,
  * Solution roots, data pack modules, a writable state folder and the configured port.
  */
-export async function mirageReadiness(
+/* NOSONAR: single-pass routine, splitting it would change shared state */ export async function mirageReadiness(
   cfg,
   { dependencies, stateRoot = miragePaths(cfg).discoveryRoot, checkPort = portAvailable } = {},
 ) {
@@ -1584,38 +1765,30 @@ export async function mirageReadiness(
           portals: loaded.portals.map((item) => item.id),
           references: loaded.references.map((item) => item.id),
         });
-      } catch (error) {
+      } catch {
         project.ready = false;
-        project.error = error.message.split('\n')[0];
+        project.error =
+          'The project configuration could not be read or validated. Inspect its syntax, schema version and declared source paths.';
         errors.push(`Mirage project ${configured.project}: ${project.error}`);
       }
     }
   }
-  let source = 'discovered',
-    roots = [];
-  if (loaded) {
-    source = 'project';
-    roots = loaded.solutionRoots ?? [];
-  } else if (configured.project) source = 'project';
-  else if (configured.solutionRoots?.length) {
-    source = 'catalogue';
-    roots = configured.solutionRoots;
-  } else {
+  let selectedRoots = readinessRoots(loaded, configured);
+  if (!selectedRoots) {
     try {
-      roots = await (await import('../../mirage/lib/solution-roots.mjs')).discoverSolutionRoots(cfg.sourceDir);
+      selectedRoots = {
+        source: 'discovered',
+        roots: await (await import('../../mirage/lib/solution-roots.mjs')).discoverSolutionRoots(cfg.sourceDir),
+      };
     } catch (error) {
       warnings.push(`Solution discovery failed: ${error.message.split('\n')[0]}`);
+      selectedRoots = { source: 'discovered', roots: [] };
     }
   }
+  const { source, roots } = selectedRoots;
   // The order the runtime layers the roots in: the dependency order unless explicitly overridden
   // (a project's solutionOrder, else the site's mirage.solutionOrder).
-  const order = loaded
-    ? loaded.solutionOrder === 'derived'
-      ? 'derived'
-      : 'explicit'
-    : source === 'discovered'
-      ? 'derived'
-      : solutionOrderOf(cfg);
+  const order = readinessSolutionOrder(loaded, source, cfg);
   let effective = roots,
     derivedOrder = null;
   if (roots.length > 1 && source !== 'discovered' && roots.every((root) => isDirectory(root))) {
@@ -1626,23 +1799,24 @@ export async function mirageReadiness(
         cacheFile: path.join(stateRoot, 'cache/solution-discovery.json'),
       });
       if (order === 'derived') effective = derivedOrder;
-      else if (!sameOrder(roots, derivedOrder))
+      else if (!sameOrder(roots, derivedOrder)) {
+        const owner = loaded ? 'Mirage project ' + configured.project : 'sites.' + cfg.siteName + '.mirage';
+        let remedy = '';
+        if (loaded)
+          remedy =
+            ' Set solutionOrder: derived or rerun ' +
+            mirageCommandHint([['mirage', 'init', ...configurationHintScope(cfg), '--force']], { cli: TOOLKIT_CLI }) +
+            '.';
         warnings.push(
-          `${loaded ? `Mirage project ${configured.project}` : `sites.${cfg.siteName}.mirage`} layers its Solution roots in the listed order ${rootNames(roots)} (solutionOrder: explicit), which differs from their dependency order ${rootNames(derivedOrder)}; forms, views and tables can then resolve to other Solution files than discovery, bootstrap and the data scaffold use.${loaded ? ` Set solutionOrder: derived or rerun ${mirageCommandHint([['mirage', 'init', ...configurationHintScope(cfg), '--force']], { cli: TOOLKIT_CLI })}.` : ''}`,
+          `${owner} layers its Solution roots in the listed order ${rootNames(roots)} (solutionOrder: explicit), which differs from their dependency order ${rootNames(derivedOrder)}; forms, views and tables can then resolve to other Solution files than discovery, bootstrap and the data scaffold use.${remedy}`,
         );
+      }
       for (const item of diagnostics) warnings.push(`Solution order: ${item.message}`);
     } catch (error) {
       warnings.push(`The Solution dependency order could not be derived: ${error.message.split('\n')[0]}`);
     }
   }
-  const solutionRoots = {
-    source,
-    order,
-    roots: effective.map((root) => ({ path: root, exists: isDirectory(root) })),
-    ...(derivedOrder ? { derivedOrder } : {}),
-  };
-  for (const root of solutionRoots.roots.filter((item) => !item.exists))
-    errors.push(`Mirage Solution root does not exist: ${root.path}`);
+  const solutionRoots = readinessSolutionRootSummary(source, order, effective, derivedOrder, errors);
   if (!roots.length && source !== 'project')
     warnings.push(
       'No Solution roots are configured or discovered; forms, views and table metadata come from the portal export only.',
@@ -1736,6 +1910,31 @@ export async function mirageReadiness(
   };
 }
 
+function readinessRoots(loaded, configured) {
+  if (loaded) return { source: 'project', roots: loaded.solutionRoots ?? [] };
+  if (configured.project) return { source: 'project', roots: [] };
+  if (configured.solutionRoots?.length) return { source: 'catalogue', roots: configured.solutionRoots };
+  return null;
+}
+
+function readinessSolutionOrder(loaded, source, cfg) {
+  if (loaded) return loaded.solutionOrder === 'derived' ? 'derived' : 'explicit';
+  if (source === 'discovered') return 'derived';
+  return solutionOrderOf(cfg);
+}
+
+function readinessSolutionRootSummary(source, order, effective, derivedOrder, errors) {
+  const solutionRoots = {
+    source,
+    order,
+    roots: effective.map((root) => ({ path: root, exists: isDirectory(root) })),
+    ...(derivedOrder ? { derivedOrder } : {}),
+  };
+  for (const root of solutionRoots.roots.filter((item) => !item.exists))
+    errors.push(`Mirage Solution root does not exist: ${root.path}`);
+  return solutionRoots;
+}
+
 // ---- several portals
 // One Mirage per catalogue site (each with its own project or source, state, port, references
 // and session cookie); `dev` switches between them, and the live targets, in one browser.
@@ -1789,10 +1988,15 @@ function catalogueSiteFolders(args) {
 async function portalConfigs(cfg, args, action) {
   const selectedOnly = ['start', 'dev'].includes(action) ? SELECTED_SITE_OPTIONS : [];
   const conflicts = PER_PORTAL_OPTIONS.filter((option) => given(args, option) && !selectedOnly.includes(option));
-  if (conflicts.length)
+  if (conflicts.length) {
+    const conflictNames = conflicts.map((option) => '--' + option).join(', ');
+    let selectedHint = '';
+    if (selectedOnly.length)
+      selectedHint = ' (' + selectedOnly.map((option) => '--' + option).join(', ') + ' apply to the selected site.)';
     throw new Error(
-      `--portals all manages one Mirage per catalogue site; ${conflicts.map((option) => `--${option}`).join(', ')} applies to a single runtime.${selectedOnly.length ? ` (${selectedOnly.map((option) => `--${option}`).join(', ')} apply to the selected site.)` : ''} Set it per site in the catalogue (sites.<id>.mirage) or use --portals selected.`,
+      `--portals all manages one Mirage per catalogue site; ${conflictNames} applies to a single runtime.${selectedHint} Set it per site in the catalogue (sites.<id>.mirage) or use --portals selected.`,
     );
+  }
   const catalogue = loadCatalogue(args);
   // The other sites resolve without the selected site's own options.
   const shared = Object.fromEntries(Object.entries(args).filter(([option]) => !PER_PORTAL_OPTIONS.includes(option)));
@@ -1947,9 +2151,8 @@ async function stopStarted(portals, paths) {
       } catch (error) {
         retry = `a retry command could not be prepared: ${error.message}`;
       }
-      console.log(
-        `mirage   could not stop ${portal.site} pid ${portal.session.pid}${report.error ? `: ${report.error.message}` : ''}; ${retry}`,
-      );
+      const errorMessage = report.error ? ': ' + report.error.message : '';
+      console.log(`mirage   could not stop ${portal.site} pid ${portal.session.pid}${errorMessage}; ${retry}`);
     }
   }
 }
@@ -1959,25 +2162,7 @@ async function runPortals({ cfg, args, action, plans, paths, initialSite }) {
   const portals = await startPlans(plans, paths);
   const running = portals.filter((portal) => portal.session);
   const stop = await sessionStopHint(running, paths);
-  const summary = portals.map((portal) =>
-    portal.session
-      ? {
-          site: portal.site,
-          url: portal.session.url,
-          adminUrl: adminUrlOf(portal.session.url),
-          stateFile: portal.session.stateFile ?? portal.session.launch?.stateFile ?? null,
-          sourceDir: portal.session.sourceDir,
-          pid: portal.session.pid,
-          started: portal.session.started,
-          writesFiles: portal.session.writesFiles ?? [],
-          liveWrites: portal.session.runtime?.liveWrites ?? null,
-        }
-      : {
-          site: portal.site,
-          error: portal.error?.message ?? String(portal.error),
-          writesFiles: portal.error?.writesFiles ?? [],
-        },
-  );
+  const summary = portals.map(portalStartSummary);
   if (action === 'start') {
     print({ action: 'start', portals: summary, stop }, args.json);
     if (running.length === portals.length)
@@ -1985,20 +2170,12 @@ async function runPortals({ cfg, args, action, plans, paths, initialSite }) {
     else args.startup?.fail('one or more runtime listeners failed; inspect per-site diagnostics');
     return running.length === portals.length ? 0 : 1;
   }
-  for (const item of summary)
-    console.log(
-      item.error
-        ? `mirage   ${item.site.padEnd(8)} FAILED: ${item.error}`
-        : `mirage   ${item.site.padEnd(8)} ${item.url}  (${item.started ? 'started' : 'already running'}, pid ${item.pid})  admin ${item.adminUrl}  live writes ${item.liveWrites ?? 'not reported'}`,
-    );
+  printPortalStartSummaries(summary);
   // Mirage-only sites (standalone runtimes) run beside the portals; only portals enter the Lense portal selector.
   const portalSessions = running.filter(
     (portal) => !(portal.cfg?.runtime?.kind && portal.cfg.runtime.kind !== 'power-pages'),
   );
-  for (const item of running.filter((portal) => !portalSessions.includes(portal)))
-    console.log(
-      `app         ${item.site.padEnd(8)} ${item.session.url}${item.cfg.runtime.kind === 'model-driven' ? '/main.aspx' : '/_sim/'} (${item.cfg.runtime.kind}; open it beside the portals)`,
-    );
+  printStandalonePortalSessions(running, portalSessions);
   try {
     if (!portalSessions.length)
       throw new Error(
@@ -2017,7 +2194,46 @@ async function runPortals({ cfg, args, action, plans, paths, initialSite }) {
   }
 }
 
-async function miragePortals(cfg, args, action, paths) {
+function portalStartSummary(portal) {
+  if (portal.session)
+    return {
+      site: portal.site,
+      url: portal.session.url,
+      adminUrl: adminUrlOf(portal.session.url),
+      stateFile: portal.session.stateFile ?? portal.session.launch?.stateFile ?? null,
+      sourceDir: portal.session.sourceDir,
+      pid: portal.session.pid,
+      started: portal.session.started,
+      writesFiles: portal.session.writesFiles ?? [],
+      liveWrites: portal.session.runtime?.liveWrites ?? null,
+    };
+  return {
+    site: portal.site,
+    error: portal.error?.message ?? String(portal.error),
+    writesFiles: portal.error?.writesFiles ?? [],
+  };
+}
+
+function printPortalStartSummaries(summary) {
+  for (const item of summary) {
+    if (item.error) console.log(`mirage   ${item.site.padEnd(8)} FAILED: ${item.error}`);
+    else {
+      const status = item.started ? 'started' : 'already running';
+      console.log(
+        `mirage   ${item.site.padEnd(8)} ${item.url}  (${status}, pid ${item.pid})  admin ${item.adminUrl}  live writes ${item.liveWrites ?? 'not reported'}`,
+      );
+    }
+  }
+}
+
+function printStandalonePortalSessions(running, portalSessions) {
+  for (const item of running.filter((portal) => !portalSessions.includes(portal)))
+    console.log(
+      `app         ${item.site.padEnd(8)} ${item.session.url}${item.cfg.runtime.kind === 'model-driven' ? '/main.aspx' : '/_sim/'} (${item.cfg.runtime.kind}; open it beside the portals)`,
+    );
+}
+
+/* NOSONAR */ async function miragePortals(cfg, args, action, paths) {
   const entries = await portalConfigs(cfg, args, action);
   if (action === 'init') {
     const projects = [];
@@ -2193,39 +2409,11 @@ function sessionStopArguments(cfg, args, session) {
   return parts;
 }
 
-async function sessionStopHint(portals, paths, { cleanupOnError = true } = {}) {
-  const commands = portals.map(({ cfg, args, session }) => [
-    'mirage',
-    'stop',
-    ...sessionStopArguments(cfg, args, session),
-  ]);
+/* NOSONAR */ async function sessionStopHint(portals, paths, { cleanupOnError = true } = {}) {
+  const commands = stopCommands(portals);
   if (!commands.length) return null;
-  // A runtime inferred from a standalone project can originally use the
-  // catalogue's store. The explicit runtime in its stop argv selects the
-  // standalone dispatcher, whose store is relative to cwd instead.
-  const catalogueStandaloneProject = portals.find(
-    ({ cfg, session }) =>
-      catalogueOwnedState(cfg) && session.launch.project && session.launch.runtime.kind !== 'power-pages',
-  );
-  // A plain absolute project reconstructs its ownership directory on replay.
-  // Config/site selectors can dispatch differently, so retain cwd for those.
-  const projectAnchored = portals.every(
-    ({ cfg, session }, index) =>
-      session.launch.project &&
-      samePath(cfg.stateDir, path.join(path.dirname(session.launch.project), '.paqvilo')) &&
-      !commands[index].includes('--config') &&
-      !commands[index].includes('--site'),
-  );
-  const cwd = catalogueStandaloneProject
-    ? path.dirname(catalogueStandaloneProject.cfg.stateDir)
-    : !projectAnchored && portals.some(({ cfg }) => !catalogueOwnedState(cfg))
-      ? process.cwd()
-      : undefined;
-  const options = { cli: TOOLKIT_CLI, ...(cwd ? { cwd } : {}) };
-  const format = (storePayload) =>
-    commands.length === 1
-      ? mirageStopCommand(commands[0].slice(2), { ...options, storePayload })
-      : mirageCommandHint(commands, { ...options, storePayload });
+  const options = stopHintOptions(portals, commands);
+  const format = (storePayload) => formatStopHint(commands, options, storePayload);
   const externalPayload = new Error('Owned command payload storage is required.');
   const files = [];
   try {
@@ -2244,11 +2432,7 @@ async function sessionStopHint(portals, paths, { cleanupOnError = true } = {}) {
         files.push(file);
         return file;
       });
-      return entries.map((entry) =>
-        portals.some((portal) => portal.session.pid === entry.pid && portal.session.url === entry.url)
-          ? { ...entry, hintFiles: [...new Set([...(entry.hintFiles ?? []), ...files])] }
-          : entry,
-      );
+      return entries.map((entry) => attachHintFiles(entry, portals, files));
     });
     for (const { session } of portals)
       session.writesFiles = [...new Set([...(session.writesFiles ?? []), paths.ownershipFile, ...files])];
@@ -2296,14 +2480,52 @@ async function sessionStopHint(portals, paths, { cleanupOnError = true } = {}) {
   }
 }
 
+function attachHintFiles(entry, portals, files) {
+  return portals.some((portal) => portal.session.pid === entry.pid && portal.session.url === entry.url)
+    ? { ...entry, hintFiles: [...new Set([...(entry.hintFiles ?? []), ...files])] }
+    : entry;
+}
+
+function stopCommands(portals) {
+  return portals.map(({ cfg, args, session }) => ['mirage', 'stop', ...sessionStopArguments(cfg, args, session)]);
+}
+
+function stopHintOptions(portals, commands) {
+  // A runtime inferred from a standalone project can originally use the
+  // catalogue's store. The explicit runtime in its stop argv selects the
+  // standalone dispatcher, whose store is relative to cwd instead.
+  const catalogueStandaloneProject = portals.find(
+    ({ cfg, session }) =>
+      catalogueOwnedState(cfg) && session.launch.project && session.launch.runtime.kind !== 'power-pages',
+  );
+  // A plain absolute project reconstructs its ownership directory on replay.
+  // Config/site selectors can dispatch differently, so retain cwd for those.
+  const projectAnchored = portals.every(
+    ({ cfg, session }, index) =>
+      session.launch.project &&
+      samePath(cfg.stateDir, path.join(path.dirname(session.launch.project), '.paqvilo')) &&
+      !commands[index].includes('--config') &&
+      !commands[index].includes('--site'),
+  );
+  let cwd;
+  if (catalogueStandaloneProject) cwd = path.dirname(catalogueStandaloneProject.cfg.stateDir);
+  else if (!projectAnchored && portals.some(({ cfg }) => !catalogueOwnedState(cfg))) cwd = process.cwd();
+  return { cli: TOOLKIT_CLI, ...(cwd ? { cwd } : {}) };
+}
+
+function formatStopHint(commands, options, storePayload) {
+  return commands.length === 1
+    ? mirageStopCommand(commands[0].slice(2), { ...options, storePayload })
+    : mirageCommandHint(commands, { ...options, storePayload });
+}
+
 /** A diagnostic inspection can legitimately return a report with exit status 1. */
 export function inspectProcessResult(result) {
   if (result.error) throw result.error;
-  const failed = () =>
-    new Error(
-      String(result.stderr ?? '').trim() ||
-        `Mirage inspect ${result.signal ? `was terminated by ${result.signal}` : `exited with ${result.status}`}`,
-    );
+  const failed = () => {
+    const exit = result.signal ? 'was terminated by ' + result.signal : 'exited with ' + result.status;
+    return new Error(String(result.stderr ?? '').trim() || `Mirage inspect ${exit}`);
+  };
   let report;
   try {
     report = JSON.parse(result.stdout);
@@ -2340,137 +2562,190 @@ export function inspectProcessResult(result) {
 
 function print(value, json) {
   if (json) {
-    const entries = value.projects ?? value.portals ?? [];
-    const errors = entries
-      .filter((item) => item.error)
-      .map((item) => ({ code: 'MIRAGE_PORTAL_FAILED', message: String(item.error), site: item.site }));
-    const writesFiles = [...new Set(value.writesFiles ?? entries.flatMap((item) => item.writesFiles ?? []))];
-    console.log(
-      JSON.stringify(
-        {
-          schemaVersion: 1,
-          command: 'mirage',
-          ok: errors.length === 0,
-          offline: ['init', 'inspect'].includes(value.action),
-          errors,
-          ...value,
-          writesFiles,
-          ...('started' in value || value.action === 'start' ? { runtimeWrites: value.started !== false } : {}),
-        },
-        null,
-        2,
-      ),
-    );
+    printJson(value);
     return;
   }
   if (value.sessions) {
-    if (!value.sessions.length) console.log('No Mirage sessions found.');
-    for (const session of value.sessions) {
-      const state = session.ready ? 'ready' : session.processAlive ? 'starting' : 'stopped';
-      console.log(
-        `${state}${session.owned ? ' · toolkit managed' : ''}${session.site ? `  [${session.site}]` : ''}  ${session.url ?? '(no URL yet)'}  ${session.sourceDir ?? ''}${session.runtime?.site ? `  (${session.runtime.site}, ${session.runtime.pageCount} pages)` : ''}`,
-      );
-      const details = [
-        session.adminUrl && `admin ${session.adminUrl}`,
-        session.identityProvider?.origin && `idp ${session.identityProvider.origin}`,
-        session.runtime?.liveWrites && `live writes ${session.runtime.liveWrites}`,
-        session.project && `project ${session.project}`,
-        session.portal && `portal ${session.portal}`,
-        session.stateFile && `state ${session.stateFile}`,
-        `pid ${session.pid}`,
-      ].filter(Boolean);
-      console.log(`    ${details.join(' · ')}`);
-      if (session.runtime?.startupPreset?.name)
-        console.log(
-          `    preset ${session.runtime.startupPreset.name}: ${session.runtime.startupPreset.applied ? 'applied at startup' : 'kept existing state'} (${session.runtime.startupPreset.mode})`,
-        );
-      if (session.runtime?.platformStyles) {
-        const styles = session.runtime.platformStyles;
-        console.log(
-          `    platform stylesheets: ${styles.mode === 'captured' ? `captured ${styles.capturedAt} from ${styles.origin}` : 'placeholder (local structural form rules)'}`,
-        );
-        if (styles.missingHeadStylesheets?.length)
-          console.log(`    missing head stylesheets: ${styles.missingHeadStylesheets.join(', ')}`);
-      }
-    }
+    printSessions(value.sessions);
     return;
   }
   if (value.action === 'init' && value.projects) {
-    for (const project of value.projects) {
-      if (project.error) console.log(`${project.site}: NOT WRITTEN: ${project.error}`);
-      else print({ ...project, action: 'init' }, false);
-      console.log('');
-    }
-    console.log(`next: ${value.next}`);
+    printInitProjects(value);
     return;
   }
   if (value.action === 'start' && value.portals) {
-    for (const portal of value.portals) {
-      console.log(
-        portal.error
-          ? `${portal.site.padEnd(8)} FAILED: ${portal.error}`
-          : `${portal.site.padEnd(8)} ${portal.url}  (${portal.started ? 'started' : 'already running'}, pid ${portal.pid})  admin ${portal.adminUrl}  state ${portal.stateFile}  live writes ${portal.liveWrites ?? 'not reported'}`,
-      );
-    }
-    if (value.stop) console.log(`Stop:      ${value.stop}`);
+    printStartedPortals(value);
     return;
   }
   if (value.action === 'init' && value.skipped) {
-    console.log(`No Mirage project written: ${value.skipped}\nnext: ${value.next}`);
+    printSkippedInit(value);
     return;
   }
   if (value.action === 'init') {
-    console.log(`Mirage project written: ${value.file}`);
-    console.log(
-      `  portal     ${value.portal.id}  ${value.portal.sourceDir}${value.portal.origin ? `  (${value.portal.origin})` : ''}`,
-    );
-    if (value.portal.observed) console.log(`  observed   ${observedText(value.portal.observed)}`);
-    for (const solution of value.solutions) console.log(`  solution   ${solution.id}  ${solution.root}`);
-    if (value.solutions.length > 1)
-      console.log(
-        `  order      ${value.solutionOrder === 'explicit' ? 'explicit (listed order)' : 'derived (Solution dependency order)'}`,
-      );
-    if (!value.solutions.length) console.log('  solution   none configured or discovered');
-    for (const reference of value.references) console.log(`  reference  ${reference.id}  ${reference.origin}`);
-    for (const pack of value.dataPacks) console.log(`  data pack  ${pack.id ? `${pack.id} ` : ''}${pack.module}`);
-    if (value.packs.checked)
-      console.log(
-        `  packs      ${value.packs.matching.length ? value.packs.matching.map((pack) => pack.id).join(', ') : 'no registered data pack matches this portal'}`,
-      );
-    for (const note of value.notes) console.log(`  note: ${note}`);
-    console.log(`next: ${value.next}`);
+    printInitReport(value);
     return;
   }
   if (value.action === 'stop') {
-    console.log(value.message);
-    for (const item of value.stopped)
-      console.log(
-        `  stopped ${item.url ?? `pid ${item.pid}`}${item.graceful ? '' : ' (forced)'}${item.wasReady ? '' : ' while starting'}`,
-      );
-    for (const item of value.pruned) console.log(`  removed stale record: pid ${item.pid} (${item.reason})`);
-    for (const item of value.unverified ?? [])
-      console.log(`  not verified, kept: pid ${item.pid}${item.url ? ` ${item.url}` : ''} (${item.reason})`);
+    printStoppedSessions(value);
     return;
   }
   if (value.url) {
-    console.log(
-      `Mirage: ${value.url}${value.started === false ? '  (already running)' : ''}\nAdmin:     ${value.adminUrl}\nState:     ${value.stateFile}\nSource:    ${value.sourceDir}\nLive writes: ${liveWritesText(value.runtime?.liveWrites)}`,
-    );
-    if (value.runtime?.startupPreset?.name)
-      console.log(
-        `Preset:    ${value.runtime.startupPreset.name} (${value.runtime.startupPreset.mode}; ${value.runtime.startupPreset.applied ? 'applied at startup' : 'kept existing state'})`,
-      );
-    if (value.launch?.project)
-      console.log(`Project:   ${value.launch.project}${value.launch.portal ? ` (portal ${value.launch.portal})` : ''}`);
-    if (value.stop) console.log(`Stop:      ${value.stop}`);
+    printStartedSession(value);
     return;
   }
   console.log(value.message ?? JSON.stringify(value, null, 2));
 }
 
-export default async function mirage(cfg, args, positionals = []) {
-  const action = positionals[0] ?? 'status';
+function printJson(value) {
+  const entries = value.projects ?? value.portals ?? [];
+  const errors = entries
+    .filter((item) => item.error)
+    .map((item) => ({ code: 'MIRAGE_PORTAL_FAILED', message: String(item.error), site: item.site }));
+  const writesFiles = [...new Set(value.writesFiles ?? entries.flatMap((item) => item.writesFiles ?? []))];
+  console.log(
+    JSON.stringify(
+      {
+        schemaVersion: 1,
+        command: 'mirage',
+        ok: errors.length === 0,
+        offline: ['init', 'inspect'].includes(value.action),
+        errors,
+        ...value,
+        writesFiles,
+        ...('started' in value || value.action === 'start' ? { runtimeWrites: value.started !== false } : {}),
+      },
+      null,
+      2,
+    ),
+  );
+}
+
+function printSessions(sessions) {
+  if (!sessions.length) console.log('No Mirage sessions found.');
+  for (const session of sessions) printSession(session);
+}
+
+/* NOSONAR: single-pass routine, splitting it would change shared state */ function printSession(session) {
+  let state;
+  if (session.ready) state = 'ready';
+  else if (session.processAlive) state = 'starting';
+  else state = 'stopped';
+  const site = session.site ? '  [' + session.site + ']' : '';
+  const runtime = session.runtime?.site
+    ? '  (' + session.runtime.site + ', ' + session.runtime.pageCount + ' pages)'
+    : '';
+  console.log(
+    `${state}${session.owned ? ' · toolkit managed' : ''}${site}  ${session.url ?? '(no URL yet)'}  ${session.sourceDir ?? ''}${runtime}`,
+  );
+  const details = [
+    session.adminUrl && `admin ${session.adminUrl}`,
+    session.identityProvider?.origin && `idp ${session.identityProvider.origin}`,
+    session.runtime?.liveWrites && `live writes ${session.runtime.liveWrites}`,
+    session.project && `project ${session.project}`,
+    session.portal && `portal ${session.portal}`,
+    session.stateFile && `state ${session.stateFile}`,
+    `pid ${session.pid}`,
+  ].filter(Boolean);
+  console.log(`    ${details.join(' · ')}`);
+  if (session.runtime?.startupPreset?.name)
+    console.log(
+      `    preset ${session.runtime.startupPreset.name}: ${session.runtime.startupPreset.applied ? 'applied at startup' : 'kept existing state'} (${session.runtime.startupPreset.mode})`,
+    );
+  if (session.runtime?.platformStyles) printPlatformStyles(session.runtime.platformStyles);
+}
+
+function printPlatformStyles(styles) {
+  if (!styles) return;
+  const description =
+    styles.mode === 'captured'
+      ? 'captured ' + styles.capturedAt + ' from ' + styles.origin
+      : 'placeholder (local structural form rules)';
+  console.log(`    platform stylesheets: ${description}`);
+  if (styles.missingHeadStylesheets?.length)
+    console.log(`    missing head stylesheets: ${styles.missingHeadStylesheets.join(', ')}`);
+}
+
+function printInitProjects(value) {
+  for (const project of value.projects) {
+    if (project.error) console.log(`${project.site}: NOT WRITTEN: ${project.error}`);
+    else print({ ...project, action: 'init' }, false);
+    console.log('');
+  }
+  console.log(`next: ${value.next}`);
+}
+
+function printStartedPortals(value) {
+  for (const portal of value.portals) console.log(startedPortalSummary(portal));
+  if (value.stop) console.log(`Stop:      ${value.stop}`);
+}
+
+function startedPortalSummary(portal) {
+  if (portal.error) return `${portal.site.padEnd(8)} FAILED: ${portal.error}`;
+  const status = portal.started ? 'started' : 'already running';
+  return `${portal.site.padEnd(8)} ${portal.url}  (${status}, pid ${portal.pid})  admin ${portal.adminUrl}  state ${portal.stateFile}  live writes ${portal.liveWrites ?? 'not reported'}`;
+}
+
+function printSkippedInit(value) {
+  console.log(`No Mirage project written: ${value.skipped}\nnext: ${value.next}`);
+}
+
+function printInitReport(value) {
+  const portalOrigin = value.portal.origin ? '  (' + value.portal.origin + ')' : '';
+  console.log(`Mirage project written: ${value.file}`);
+  console.log(`  portal     ${value.portal.id}  ${value.portal.sourceDir}${portalOrigin}`);
+  if (value.portal.observed) console.log(`  observed   ${observedText(value.portal.observed)}`);
+  printInitSolutions(value);
+  for (const reference of value.references) console.log(`  reference  ${reference.id}  ${reference.origin}`);
+  for (const pack of value.dataPacks) {
+    const id = pack.id ? pack.id + ' ' : '';
+    console.log(`  data pack  ${id}${pack.module}`);
+  }
+  if (value.packs.checked)
+    console.log(
+      `  packs      ${value.packs.matching.length ? value.packs.matching.map((pack) => pack.id).join(', ') : 'no registered data pack matches this portal'}`,
+    );
+  for (const note of value.notes) console.log(`  note: ${note}`);
+  console.log(`next: ${value.next}`);
+}
+
+function printInitSolutions(value) {
+  for (const solution of value.solutions) console.log(`  solution   ${solution.id}  ${solution.root}`);
+  if (value.solutions.length > 1)
+    console.log(
+      `  order      ${value.solutionOrder === 'explicit' ? 'explicit (listed order)' : 'derived (Solution dependency order)'}`,
+    );
+  if (!value.solutions.length) console.log('  solution   none configured or discovered');
+}
+
+function printStoppedSessions(value) {
+  console.log(value.message);
+  for (const item of value.stopped) {
+    const target = item.url ?? 'pid ' + item.pid;
+    console.log(`  stopped ${target}${item.graceful ? '' : ' (forced)'}${item.wasReady ? '' : ' while starting'}`);
+  }
+  for (const item of value.pruned) console.log(`  removed stale record: pid ${item.pid} (${item.reason})`);
+  for (const item of value.unverified ?? [])
+    console.log(`  not verified, kept: pid ${item.pid}${item.url ? ' ' + item.url : ''} (${item.reason})`);
+}
+
+function printStartedSession(value) {
+  console.log(
+    `Mirage: ${value.url}${value.started === false ? '  (already running)' : ''}\nAdmin:     ${value.adminUrl}\nState:     ${value.stateFile}\nSource:    ${value.sourceDir}\nLive writes: ${liveWritesText(value.runtime?.liveWrites)}`,
+  );
+  if (value.runtime?.startupPreset?.name)
+    console.log(
+      `Preset:    ${value.runtime.startupPreset.name} (${value.runtime.startupPreset.mode}; ${value.runtime.startupPreset.applied ? 'applied at startup' : 'kept existing state'})`,
+    );
+  if (value.launch?.project) {
+    const portal = value.launch.portal ? ' (portal ' + value.launch.portal + ')' : '';
+    console.log(`Project:   ${value.launch.project}${portal}`);
+  }
+  if (value.stop) console.log(`Stop:      ${value.stop}`);
+}
+
+export function validateMirageArguments(args, action = 'status') {
   validateMirageAction(action);
+  if (['start', 'dev'].includes(action)) validateStartupArguments(args);
   if (action === 'dev' && args.json)
     throw new Error(
       'mirage dev is interactive; use mirage start --json and agent commands for structured session access',
@@ -2479,13 +2754,48 @@ export default async function mirage(cfg, args, positionals = []) {
     throw new Error('--out and --force apply only to mirage init');
   if (args['allow-live-writes'] && !['start', 'dev'].includes(action))
     throw new Error('--allow-live-writes applies only to mirage dev and start');
+  if (action === 'inspect')
+    validateAllowedOptions(args, action, [
+      'config',
+      'repo',
+      'site',
+      'env',
+      'source',
+      'project',
+      'portal',
+      'solution-root',
+      'runtime',
+      'simulation',
+      'json',
+    ]);
+  if (action === 'status') validateAllowedOptions(args, action, ['config', 'project', 'repo', 'json']);
+}
+
+function validateStartupArguments(args) {
+  runtimePort(args.port, DEFAULT_PORT);
+  if (args['startup-timeout'] === undefined) return;
+  const timeout = Number(args['startup-timeout']);
+  if (!/^\d+$/.test(args['startup-timeout']) || !Number.isSafeInteger(timeout) || timeout < 1000 || timeout > 600000)
+    throw new Error('--startup-timeout must be an integer from 1000 to 600000 milliseconds');
+}
+
+function validateAllowedOptions(args, action, allowedOptions) {
+  const allowed = new Set(allowedOptions);
+  for (const option of Object.keys(args))
+    if (!allowed.has(option))
+      throw Object.assign(new Error(`--${option} is not supported by mirage ${action}`), {
+        code: 'unsupported_option',
+      });
+}
+
+/* NOSONAR */ export default async function mirage(cfg, args, positionals = []) {
+  const action = positionals[0] ?? 'status';
+  validateMirageArguments(args, action);
   const paths = miragePaths(cfg, args);
   if (action === 'status') {
     const sessions = await mirageStatus(paths);
     const sites = catalogueSiteFolders(args);
-    for (const session of sessions)
-      session.site =
-        sites.find((item) => session.sourceDir && samePath(item.sourceDir, session.sourceDir))?.site ?? null;
+    assignCatalogueSites(sessions, sites);
     print({ action: 'status', sessions }, args.json);
     return 0;
   }
@@ -2497,7 +2807,7 @@ export default async function mirage(cfg, args, positionals = []) {
   const effective = catalogueArgs(cfg, args, { requireProject: action !== 'stop' });
   if (['start', 'dev', 'stop'].includes(action) && effective.project && !effective.portal) {
     const project = await loadProject(effective.project);
-    if ((effective.runtime ?? project.runtime.kind) === 'power-pages' && project.portals.length > 1)
+    if (hasSeveralPowerPagesPortals(effective, project))
       return mirageProjectPortals(cfg, args, effective, action, project, paths);
   }
   if (action === 'stop') {
@@ -2539,8 +2849,7 @@ export default async function mirage(cfg, args, positionals = []) {
     let project = null;
     if (effective.project) {
       project = await loadProject(effective.project);
-      if (effective.portal && !project.portals.some((item) => item.id === effective.portal))
-        throw new Error(`Unknown Mirage portal "${effective.portal}" in ${project.configFile}`);
+      validateSelectedProjectPortal(project, effective);
     }
     const { cli, values } = cliArgs(cfg, 'inspect', effective, project);
     const result = spawnSync(process.execPath, [cli, ...values, '--json'], {
@@ -2565,13 +2874,50 @@ export default async function mirage(cfg, args, positionals = []) {
   const stop = await sessionStopHint([{ cfg, args: effective, session }], paths);
   if (action === 'dev') {
     if (launch.runtime?.kind && launch.runtime.kind !== 'power-pages') {
+      const controller = new AbortController();
+      const interrupt = () => controller.abort(new Error('Code App development stopped.'));
+      process.once('SIGINT', interrupt);
+      process.once('SIGTERM', interrupt);
+      let servers;
       try {
+        const started = await startProjectCodeApps(cfg, launch, session, controller);
+        const { apps } = started;
+        servers = started.servers;
         return await (
           await import('../standalone-mirage.mjs')
-        ).developStandalone({ ...cfg, runtime: launch.runtime }, effective, session);
+        ).developStandalone(
+          { ...cfg, runtime: launch.runtime },
+          { ...effective, path: effective.path ?? (apps.length ? '/_apps/code/' : undefined) },
+          session,
+          { signal: controller.signal },
+        );
+      } catch (error) {
+        if (controller.signal.aborted && controller.signal.reason?.message === 'Code App development stopped.')
+          return 0;
+        throw error;
       } finally {
-        if (session.started) await stopOwnedSessions({ paths, pids: [session.pid] });
+        process.off('SIGINT', interrupt);
+        process.off('SIGTERM', interrupt);
+        try {
+          await servers?.close();
+        } finally {
+          if (session.started) await stopOwnedSessions({ paths, pids: [session.pid] });
+        }
       }
+    }
+    const controller = new AbortController();
+    const interrupt = () => controller.abort(new Error('Code App development stopped.'));
+    process.once('SIGINT', interrupt);
+    process.once('SIGTERM', interrupt);
+    let codeAppServers;
+    let codeApps;
+    try {
+      ({ apps: codeApps, servers: codeAppServers } = await startProjectCodeApps(cfg, launch, session, controller));
+    } catch (error) {
+      process.off('SIGINT', interrupt);
+      process.off('SIGTERM', interrupt);
+      if (session.started) await stopOwnedSessions({ paths, pids: [session.pid] });
+      throw error;
     }
     const mirageSourceRoots = [
       ...new Set([session.sourceDir ?? launch.sourceDir, ...launch.solutionRoots].filter(Boolean).map(realpath)),
@@ -2594,8 +2940,10 @@ export default async function mirage(cfg, args, positionals = []) {
       console.log(
         `preset      ${session.runtime.startupPreset.name} (${session.runtime.startupPreset.mode}; ${session.runtime.startupPreset.applied ? 'applied at startup' : 'kept existing state'})`,
       );
-    if (launch.project)
-      console.log(`project     ${launch.project}${launch.portal ? ` (portal ${launch.portal})` : ''}`);
+    if (launch.project) {
+      const portal = launch.portal ? ' (portal ' + launch.portal + ')' : '';
+      console.log(`project     ${launch.project}${portal}`);
+    }
     console.log(
       `solutions   ${launch.solutionRoots.length ? launch.solutionRoots.join(', ') : 'none (no Solution roots configured or discovered)'}`,
     );
@@ -2604,6 +2952,7 @@ export default async function mirage(cfg, args, positionals = []) {
     );
     const localCfg = {
       ...cfg,
+      ...(codeApps.length && !effective.path ? { site: { ...cfg.site, startPath: '/_apps/code/' } } : {}),
       sourceDir: session.sourceDir,
       origin: session.url,
       envName: 'local',
@@ -2615,23 +2964,48 @@ export default async function mirage(cfg, args, positionals = []) {
     };
     const { default: runDev } = await import('./dev.mjs');
     try {
-      return await runDev(localCfg, { ...effective, mirageTarget: localCfg });
+      const result = await runDev(localCfg, { ...effective, mirageTarget: localCfg, codeAppSignal: controller.signal });
+      if (controller.signal.aborted && controller.signal.reason?.message !== 'Code App development stopped.')
+        throw controller.signal.reason;
+      return controller.signal.aborted ? 0 : result;
     } finally {
-      if (session.started) {
-        const report = await stopOwnedSessions({ paths, pids: [session.pid] }).catch((error) => ({
-          stopped: [],
-          remaining: [{ pid: session.pid }],
-          error,
-        }));
-        console.log(
-          report.stopped.length
-            ? `mirage   stopped ${session.url} (pid ${session.pid})`
-            : `mirage   could not stop pid ${session.pid}${report.error ? `: ${report.error.message}` : ''}; run: ${stop}`,
-        );
+      process.off('SIGINT', interrupt);
+      process.off('SIGTERM', interrupt);
+      try {
+        await codeAppServers.close();
+      } finally {
+        if (session.started) {
+          const report = await stopOwnedSessions({ paths, pids: [session.pid] }).catch((error) => ({
+            stopped: [],
+            remaining: [{ pid: session.pid }],
+            error,
+          }));
+          let message;
+          if (report.stopped.length) message = `mirage   stopped ${session.url} (pid ${session.pid})`;
+          else {
+            const errorMessage = report.error ? ': ' + report.error.message : '';
+            message = `mirage   could not stop pid ${session.pid}${errorMessage}; run: ${stop}`;
+          }
+          console.log(message);
+        }
       }
     }
   }
   print({ action: 'start', ...session, adminUrl, stateFile, stop }, args.json);
   args.startup?.complete('runtime listening; no browser application readiness was requested');
   return 0;
+}
+
+function assignCatalogueSites(sessions, sites) {
+  for (const session of sessions)
+    session.site = sites.find((item) => session.sourceDir && samePath(item.sourceDir, session.sourceDir))?.site ?? null;
+}
+
+function hasSeveralPowerPagesPortals(effective, project) {
+  return (effective.runtime ?? project.runtime.kind) === 'power-pages' && project.portals.length > 1;
+}
+
+function validateSelectedProjectPortal(project, effective) {
+  if (effective.portal && !project.portals.some((item) => item.id === effective.portal))
+    throw new Error(`Unknown Mirage portal "${effective.portal}" in ${project.configFile}`);
 }

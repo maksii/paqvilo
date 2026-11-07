@@ -39,10 +39,12 @@ const control = (version) => ({
   },
 });
 
-test('metadata controls observe a separate portal cache envelope and never infer it from current Dataverse timestamps', async () => {
+test('metadata controls observe a separate portal cache envelope and never infer it from current Dataverse timestamps', async (t) => {
+  // A controlled clock: the reversed window below must differ by real milliseconds on any host clock resolution.
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-13T00:00:00.000Z') });
   const nativeBefore = await readNativeMetadataEnvelope(native('9100')),
     portalBefore = await readPortalMetadataEnvelope(control('9000'));
-  await new Promise((resolve) => setTimeout(resolve, 2));
+  t.mock.timers.tick(2);
   const portalAfter = await readPortalMetadataEnvelope(control('9000')),
     nativeAfter = await readNativeMetadataEnvelope(native('9100'));
   const result = compareMetadataEnvelopeWindow({ nativeBefore, nativeAfter, portalBefore, portalAfter });

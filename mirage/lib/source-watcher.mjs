@@ -42,7 +42,11 @@ export function watchSources(roots, options = {}) {
           return;
         }
         pending.delete(file);
-        events.emit('all', info ? (notification.event === 'rename' ? 'add' : 'change') : 'unlink', file);
+        let eventName;
+        if (!info) eventName = 'unlink';
+        else if (notification.event === 'rename') eventName = 'add';
+        else eventName = 'change';
+        events.emit('all', eventName, file);
       } catch (error) {
         pending.delete(file);
         if (!closed) events.emit('error', error);
@@ -129,7 +133,7 @@ export function watchSources(roots, options = {}) {
   void (async () => {
     try {
       const bases = [];
-      for (const root of [...new Set(roots.filter(Boolean).map((root) => path.resolve(root)))]) {
+      for (const root of new Set(roots.filter(Boolean).map((root) => path.resolve(root)))) {
         const info = await fs.stat(root);
         interests.push({ path: root, directory: info.isDirectory() });
         bases.push(info.isDirectory() ? root : path.dirname(root));

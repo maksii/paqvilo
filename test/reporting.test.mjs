@@ -1,3 +1,4 @@
+// @test-kind contract: status reports distinguish local-only assets from failed comparisons and preserve offline behavior
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -90,11 +91,26 @@ test('map check reports access failures without calling them authentication or l
 });
 
 test('offline mapping performs no request and missing online assets are valid comparison results', async (t) => {
-  t.mock.method(console, 'log', () => {});
-  const fetch = t.mock.method(globalThis, 'fetch', async () => new Response(null, { status: 404 }));
+  const output = [],
+    requested = [];
+  t.mock.method(console, 'log', (text) => output.push(text));
+  const fetch = t.mock.method(globalThis, 'fetch', async (url) => {
+    requested.push(String(url));
+    return new Response(null, { status: 404 });
+  });
   assert.equal(await map(cfg, { json: true }), 0);
   assert.equal(fetch.mock.callCount(), 0);
   assert.equal(await status(cfg, { json: true }), 0);
+  const report = JSON.parse(output.at(-1));
+  assert.deepEqual(
+    report.results.map(({ url, state }) => [url, state]).sort(([left], [right]) => left.localeCompare(right)),
+    [
+      ['/Logo.svg', 'not online (local only)'],
+      ['/scripts/app.js', 'not online (local only)'],
+    ],
+  );
+  assert.deepEqual(requested.sort(), ['https://portal.example/Logo.svg', 'https://portal.example/scripts/app.js']);
+  assert.equal(fetch.mock.callCount(), 2);
 });
 
 test('mapping retains disabled kinds with an explicit enabled flag', () => {

@@ -9,11 +9,11 @@ import { preflight, preflightExitCode, buildPreflightReport } from '../lib/capab
 import { buildSourceGraph } from '../lib/source-graph.mjs';
 import { platformChangeDiagnostics } from '../lib/platform-changes.mjs';
 import { createSimulator } from '../api.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // gap: a served modern list whose settings configure an action the local adapter does not serve (a real unsupported row).
 async function site(t, authorization, { gap = false } = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'preflight-surfaces-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'preflight-surfaces-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   await fs.writeFile(
     path.join(dir, 'website.yml'),
@@ -188,7 +188,7 @@ test('custom page SubAreas and virtual PCF controls without platform libraries a
 });
 
 test('mobile offline is a behaviour capability (model-driven/offline.mjs)', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'preflight-offline-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'preflight-offline-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const report = await preflight({
     runtime: { kind: 'dataverse-api' },
@@ -236,7 +236,7 @@ test('a scenario naming a host surface brings its gap rows into scope and is sat
 });
 
 test('mobile offline profiles and an offline app without its profile are model-driven:offline rows on the staff surface', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'preflight-offline-profiles-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'preflight-offline-profiles-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const write = async (name, text) => {
     await fs.mkdir(path.dirname(path.join(root, name)), { recursive: true });
@@ -335,7 +335,7 @@ test('a virtual code component under a portal source is a portal:pcf row with th
 });
 
 test('offline preflight and GET /_sim/api/preflight agree on provider, connector, outbox and storage rows', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'preflight-parity-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'preflight-parity-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'solution');
   await fs.mkdir(path.join(solution, 'Other'), { recursive: true });
@@ -368,7 +368,7 @@ test('offline preflight and GET /_sim/api/preflight agree on provider, connector
 });
 
 test('offline and live preflight judge a dashboard over a locally mapped table as its page does', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'preflight-dashboard-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'preflight-dashboard-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'solution');
   const write = async (name, text) => {

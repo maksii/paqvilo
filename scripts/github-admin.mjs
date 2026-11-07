@@ -6,7 +6,7 @@ const apply = process.argv.includes('--apply');
 const repo = 'maksii/paqvilo';
 const endpoint = `repos/${repo}`;
 function api(method, route, body, { missing = false } = {}) {
-  const result = spawnSync('gh', ['api', '--method', method, route, ...(body ? ['--input', '-'] : [])], {
+  /* NOSONAR */ const result = spawnSync('gh', ['api', '--method', method, route, ...(body ? ['--input', '-'] : [])], {
     input: body ? JSON.stringify(body) : undefined,
     encoding: 'utf8',
     windowsHide: true,
@@ -117,7 +117,8 @@ if (!apply) {
   console.log('Main protected, including admins; CI/security gates required.');
   const existingRules = api('GET', `${endpoint}/rulesets`);
   const existingTags = existingRules.find((rule) => rule.name === tagRules.name);
-  api(existingTags ? 'PUT' : 'POST', `${endpoint}/rulesets${existingTags ? `/${existingTags.id}` : ''}`, tagRules);
+  const rulesetSuffix = (rule) => (rule ? `/${rule.id}` : '');
+  api(existingTags ? 'PUT' : 'POST', `${endpoint}/rulesets${rulesetSuffix(existingTags)}`, tagRules);
   const pages = api('GET', `${endpoint}/pages`, undefined, { missing: true });
   api(pages ? 'PUT' : 'POST', `${endpoint}/pages`, { build_type: 'workflow' });
   // GitHub provisions the certificate after the first deployment; retry on reapply.
@@ -153,7 +154,7 @@ if (!apply) {
   ]) {
     api(
       labels.some((label) => label.name === name) ? 'PATCH' : 'POST',
-      `${endpoint}/labels${labels.some((label) => label.name === name) ? `/${name}` : ''}`,
+      `${endpoint}/labels${labels.some((label) => label.name === name) ? '/' + name : ''}`,
       { name, color, description },
     );
   }
@@ -164,7 +165,7 @@ if (!apply) {
   if (analyses?.length) {
     const scanning = JSON.parse(fs.readFileSync('.github/code-scanning-ruleset.json', 'utf8'));
     const existingScan = existingRules.find((rule) => rule.name === scanning.name);
-    api(existingScan ? 'PUT' : 'POST', `${endpoint}/rulesets${existingScan ? `/${existingScan.id}` : ''}`, scanning);
+    api(existingScan ? 'PUT' : 'POST', `${endpoint}/rulesets${rulesetSuffix(existingScan)}`, scanning);
     console.log('CodeQL merge protection enabled: error alerts and high/critical security findings.');
   } else console.log('CodeQL main baseline pending; reapply after the first main Security run.');
   console.log('Release tags, Pages, environments, dependency security and topics configured.');

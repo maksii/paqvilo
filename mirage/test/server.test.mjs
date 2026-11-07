@@ -6,6 +6,7 @@ import os from 'node:os';
 import http from 'node:http';
 import { createHash } from 'node:crypto';
 import { createSimulator } from '../server.mjs';
+import { makeTemporaryDirectory, assertTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('embedded simulator rejects empty and malformed ports before reading sources', async () => {
   for (const port of ['', ' ', null, true, -1, '0x10', '1.5', 65536]) {
@@ -16,8 +17,78 @@ test('embedded simulator rejects empty and malformed ports before reading source
   }
 });
 
+test('startup validates and applies one owned preset body without generating a second private candidate', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-owned-preset-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.writeFile(path.join(root, 'website.yml'), 'adx_websiteid: invented\nadx_name: Invented ownership');
+  let calls = 0;
+  const pack = {
+    id: 'invented-owned',
+    name: 'Invented owned',
+    description: 'Invented',
+    matches: () => true,
+    presets: () => ({
+      invented: {
+        name: 'Invented factory',
+        configurationPreset: 'source-defaults',
+        createOwned() {
+          calls++;
+          return {
+            tables: { x_item: [{ x_itemid: 'one', name: 'Invented ' + calls }] },
+            mappings: { x_item: { idColumn: 'x_itemid', nameColumn: 'name' } },
+          };
+        },
+      },
+    }),
+  };
+  const sim = await createSimulator({
+    sourceDir: root,
+    stateFile: null,
+    watch: false,
+    packs: [pack],
+    preset: 'invented',
+    presetConfiguration: 'apply',
+  });
+  t.after(() => sim.close());
+  assert.equal(calls, 1);
+  assert.equal(sim.store.state.tables.x_item[0].name, 'Invented 1');
+  await sim.applyPreset('invented');
+  assert.equal(calls, 2);
+  assert.equal(sim.store.state.tables.x_item[0].name, 'Invented 2');
+});
+
+test('startup ownership keeps caller initial records and simulator settings detached', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-owned-initial-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.writeFile(path.join(root, 'website.yml'), 'adx_websiteid: invented\nadx_name: Invented ownership');
+  const initial = {
+    tables: { item: [{ itemid: 'one', nested: { value: 1 } }] },
+    mappings: { item: { idColumn: 'itemid', fields: { nested: { type: 'object' } } } },
+    simulator: { externalAssets: false },
+  };
+  const sim = await createSimulator({ sourceDir: root, stateFile: null, initial, watch: false });
+  t.after(() => sim.close());
+  initial.tables.item[0].nested.value = 2;
+  initial.simulator.externalAssets = true;
+  assert.equal(sim.store.state.tables.item[0].nested.value, 1);
+  assert.equal(sim.store.state.simulator.externalAssets, false);
+  sim.store.state.tables.item[0].nested.value = 3;
+  assert.equal(initial.tables.item[0].nested.value, 2);
+  const reset = await fetch(new URL('/_sim/api/reset', sim.url), {
+    method: 'POST',
+    headers: { 'x-sim-csrf': sim.csrf },
+  });
+  assert.equal(reset.status, 200);
+  await reset.arrayBuffer();
+  // Reset still uses the caller's configured baseline, including later edits.
+  assert.equal(sim.store.state.tables.item[0].nested.value, 2);
+  assert.equal(sim.store.state.simulator.externalAssets, true);
+  sim.store.state.tables.item[0].nested.value = 4;
+  assert.equal(initial.tables.item[0].nested.value, 2);
+});
+
 async function setup(t, { liveBridge, onShutdown, allowLiveWrites = false } = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-mirage-server-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-mirage-server-'));
   const files = {
     'website.yml': 'adx_name: Integration\nadx_websiteid: site',
     'sitesetting.yml': ['contact', 'account']
@@ -78,8 +149,7 @@ async function setup(t, { liveBridge, onShutdown, allowLiveWrites = false } = {}
   });
   t.after(async () => {
     await app.close();
-    const resolved = await fs.realpath(dir);
-    assert.ok(resolved.startsWith(await fs.realpath(os.tmpdir())));
+    const resolved = await assertTemporaryDirectory(dir);
     await fs.rm(resolved, { recursive: true, force: true });
   });
   const state = await (await fetch(`${app.url}/__sim/api/state?summary=1`)).json();
@@ -96,6 +166,192 @@ async function setup(t, { liveBridge, onShutdown, allowLiveWrites = false } = {}
     });
   return { app, call, dir, state };
 }
+test('status polling reuses unchanged local storage capabilities while public state remains detached', async (t) => {
+  const { app, call } = await setup(t);
+  const fromEntries = Object.fromEntries;
+  let maps = 0;
+  try {
+    Object.fromEntries = (...args) => {
+      const result = fromEntries(...args);
+      if (
+        result.contact?.create === true &&
+        result.contact?.delete === true &&
+        Object.keys(result.contact).length === 3
+      )
+        maps++;
+      return result;
+    };
+    for (let i = 0; i < 5; i++)
+      assert.equal((await (await call('/_sim/api/status')).json()).recordCapabilities.contact.create, true);
+    assert.equal(maps, 1, 'Unchanged HTTP polls do not allocate another map and rights object per table.');
+    app.store.state.mappings.invented_extra = { idColumn: 'id' };
+    app.store.state.tables.invented_extra = [];
+    assert.equal((await (await call('/_sim/api/status')).json()).recordCapabilities.invented_extra.create, true);
+    assert.equal(maps, 2);
+    delete app.store.state.mappings.invented_extra;
+    delete app.store.state.tables.invented_extra;
+    assert.equal((await (await call('/_sim/api/status')).json()).recordCapabilities.invented_extra, undefined);
+    assert.equal(maps, 3);
+  } finally {
+    Object.fromEntries = fromEntries;
+  }
+  const first = app.state({ summary: true });
+  first.recordCapabilities.contact.create = false;
+  first.status.recordCapabilities.contact.update = false;
+  const next = app.state({ summary: true });
+  assert.equal(next.recordCapabilities.contact.create, true);
+  assert.equal(next.status.recordCapabilities.contact.update, true);
+  assert.equal((await (await call('/_sim/api/status')).json()).recordCapabilities.contact.create, true);
+});
+
+test('status lists saved preset descriptors without cloning or reading their record bodies', async (t) => {
+  const { app, call } = await setup(t);
+  const preset = {
+    name: 'Invented saved data',
+    userConfigured: true,
+    configurationPreset: { id: 'invented', settings: { enabled: true } },
+  };
+  Object.defineProperty(preset, 'tables', {
+    enumerable: true,
+    get() {
+      throw Error('Record body read during status');
+    },
+  });
+  app.store.state.presets.invented = preset;
+  const response = await call('/_sim/api/status');
+  assert.equal(response.status, 200);
+  const descriptor = (await response.json()).presets.find((item) => item.id === 'invented');
+  assert.equal(descriptor.name, preset.name);
+  assert.deepEqual(descriptor.configurationPreset, preset.configurationPreset);
+  descriptor.configurationPreset.settings.enabled = false;
+  assert.equal(preset.configurationPreset.settings.enabled, true);
+  delete app.store.state.presets.invented;
+});
+
+test('one status poll shares its detached simulator snapshot across configuration projections', async (t) => {
+  const { app, call } = await setup(t);
+  const snapshot = app.store.snapshot;
+  let simulatorCopies = 0;
+  app.store.snapshot = function (options) {
+    if (options?.sections?.includes('simulator')) simulatorCopies++;
+    return snapshot.call(this, options);
+  };
+  const first = await (await call('/_sim/api/status')).json();
+  assert.equal(
+    simulatorCopies,
+    1,
+    'Synchronous classification and skipped portal authentication do not clone the simulator.',
+  );
+  app.store.state.simulator.activeExperiment = 'invented-change';
+  const second = await (await call('/_sim/api/status')).json();
+  assert.equal(simulatorCopies, 2);
+  assert.equal(second.activeConfigurationPreset, 'invented-change');
+  assert.notEqual(first.activeConfigurationPreset, second.activeConfigurationPreset);
+});
+
+// Each route starts its own simulator and reloads it up to three times; the suite's hang guard bounds the whole test,
+// and each phase's elapsed time is reported so a slow host shows where the time went.
+test('HTTP: a source refresh during rendering retains the revision of the rendered source', async (t) => {
+  for (const route of ['/', '/SignIn/', '/_portal/modal-form-template-path/site?entityformid=modal-edit&id=one'])
+    await t.test(route, async (t) => {
+      const started = Date.now();
+      const phase = (name) => t.diagnostic(`${name}: ${Date.now() - started} ms`);
+      const { app, call, dir } = await setup(t);
+      let sourceFile = path.join(dir, 'web-templates/Main.webtemplate.source.html');
+      if (route.startsWith('/_portal/')) {
+        await fs.mkdir(path.join(dir, 'basic-forms'), { recursive: true });
+        await fs.writeFile(
+          path.join(dir, 'basic-forms/Modal.basicform.yml'),
+          'adx_entityformid: modal-edit\nadx_name: Modal edit\nadx_entityname: contact\nadx_mode: 100000001',
+        );
+        await fs.writeFile(
+          path.join(dir, 'basic-forms/Modal.basicform.custom_javascript.js'),
+          'window.inventedModalSource = "{% include \'ModalMarker\' %}";',
+        );
+        await fs.writeFile(
+          path.join(dir, 'web-templates/ModalMarker.webtemplate.yml'),
+          'adx_webtemplateid: modal-marker\nadx_name: ModalMarker',
+        );
+        sourceFile = path.join(dir, 'web-templates/ModalMarker.webtemplate.source.html');
+        await fs.writeFile(sourceFile, 'Original modal source');
+        const configured = await call('/__sim/api/config', 'PATCH', {
+          componentSchemas: { 'Modal edit': { entity: 'contact', mode: 100000001, fields: [{ name: 'fullname' }] } },
+        });
+        assert.equal(configured.status, 200);
+        await app.reload();
+      } else if (route === '/SignIn/') {
+        await fs.appendFile(path.join(dir, 'website.yml'), '\nadx_headerwebtemplateid: header');
+        await fs.writeFile(
+          path.join(dir, 'web-templates/Header.webtemplate.yml'),
+          'adx_webtemplateid: header\nadx_name: Header',
+        );
+        sourceFile = path.join(dir, 'web-templates/Header.webtemplate.source.html');
+        await fs.writeFile(
+          sourceFile,
+          '{% fetchxml rows %}<fetch><entity name="contact"><attribute name="fullname"/></entity></fetch>{% endfetchxml %}<h1>{{rows.results.entities[0].fullname}}</h1>',
+        );
+        await app.reload();
+      }
+      phase('prepared');
+      const baseline = await fetch(app.url + route).then((response) => response.text());
+      phase('baseline rendered');
+      const revisionOf = (html) => Number(/simulation\.revision=(\d+)/.exec(html)?.[1]);
+      const initialRevision = revisionOf(baseline);
+      assert.ok(Number.isSafeInteger(initialRevision));
+      let entered, release;
+      const arrived = new Promise((resolve) => {
+        entered = resolve;
+      });
+      const gate = new Promise((resolve) => {
+        release = resolve;
+      });
+      t.signal.addEventListener('abort', release, { once: true });
+      const read = app.store.readOperation.bind(app.store);
+      let formRecordRead = false;
+      if (route.startsWith('/_portal/')) {
+        const get = app.store.get.bind(app.store);
+        app.store.get = (...args) => {
+          if (args[0] === 'contact' && args[1] === 'one') formRecordRead = true;
+          return get(...args);
+        };
+      }
+      let held = false;
+      app.store.readOperation = async (...args) => {
+        const value = await read(...args);
+        if (!held && (!route.startsWith('/_portal/') || formRecordRead)) {
+          held = true;
+          entered();
+          await gate;
+        }
+        return value;
+      };
+      const pending = fetch(app.url + route).then((response) => response.text());
+      try {
+        await Promise.race([arrived, pending.then(() => assert.fail('The render did not reach its controlled read.'))]);
+        await fs.writeFile(
+          sourceFile,
+          route.startsWith('/_portal/')
+            ? 'Changed source'
+            : '<!doctype html><html><body><h1>Changed source</h1></body></html>',
+        );
+        phase('render held');
+        await app.reload();
+        phase('reloaded while held');
+      } finally {
+        release();
+      }
+      const stale = await pending;
+      if (!route.startsWith('/_portal/'))
+        assert.ok(/Visible(?:&#32;| )member/.test(stale), 'The original page read remains in the response.');
+      assert.ok(!stale.includes('Changed source'), 'Nested Liquid must use the selected source renderer.');
+      if (route.startsWith('/_portal/')) assert.ok(stale.includes('Original modal source'));
+      assert.equal(revisionOf(stale), initialRevision, 'ready reconciliation must see the old source revision');
+      phase('held render completed');
+      const current = await fetch(app.url + route).then((response) => response.text());
+      assert.match(current, /Changed source/);
+      assert.equal(revisionOf(current), initialRevision + 1);
+    });
+});
 test('HTTP: source application-relative links redirect locally, retaining parameters and access checks', async (t) => {
   const { app } = await setup(t);
   for (const [route, target] of [
@@ -818,6 +1074,7 @@ test('HTTP: explicit snippet composition keeps source gates, preserves profiles 
 
 test('HTTP: shell capture persists a complete profile and preserves it on capture failure', async (t) => {
   const requests = [];
+  const managedStyle = '/_pcfwebresource/11111111-1111-1111-1111-111111111111?v=2';
   let broken = false;
   const liveBridge = {
     origin: 'https://portal.example',
@@ -834,8 +1091,14 @@ test('HTTP: shell capture persists a complete profile and preserves it on captur
           status: 200,
           headers: { 'content-type': 'text/html' },
           body: Buffer.from(
-            `<html><head><link rel="stylesheet" media="screen" href="/platform.css"><script src="/jquery.min.js"></script>${broken ? '<link rel="stylesheet" href="/missing.css?access_token=DO_NOT_PERSIST">' : ''}</head><body><script>const privatePageValue="not persisted";</script></body></html>`,
+            `<html><head><link rel="stylesheet" media="screen" href="/platform.css"><link rel="stylesheet" href="${managedStyle}"><script src="/jquery.min.js"></script>${broken === true ? '<link rel="stylesheet" href="/missing.css?access_token=DO_NOT_PERSIST">' : ''}</head><body><script>const privatePageValue="not persisted";</script></body></html>`,
           ),
+        };
+      if (path === managedStyle)
+        return {
+          status: 200,
+          headers: { 'content-type': broken === 'wrong-role' ? 'application/javascript' : 'text/css; charset=utf-8' },
+          body: Buffer.from(broken === 'wrong-role' ? 'window.unexpected=1;' : '.editor{color:blue}'),
         };
       if (path === '/platform.css')
         return {
@@ -863,10 +1126,10 @@ test('HTTP: shell capture persists a complete profile and preserves it on captur
   assert.equal(response.status, 200);
   const report = await response.json();
   assert.equal(report.complete, true);
-  assert.equal(report.captured.length, 2);
+  assert.equal(report.captured.length, 3);
   assert.ok(Number.isFinite(Date.parse(report.shellProfile.platformStyles.capturedAt)));
   assert.deepEqual(report.shellProfile, {
-    stylesheets: [{ href: '/platform.css', media: 'screen' }],
+    stylesheets: [{ href: '/platform.css', media: 'screen' }, managedStyle],
     headScripts: ['/jquery.min.js'],
     bodyScripts: [],
     beforeContentScripts: [],
@@ -884,6 +1147,13 @@ test('HTTP: shell capture persists a complete profile and preserves it on captur
       missingHeadStylesheets: [],
     },
   });
+  assert.deepEqual(app.store.snapshot().simulator.shellProfile, report.shellProfile);
+  broken = 'wrong-role';
+  response = await call('/__sim/api/assets/capture-shell', 'POST', { path: '/workspace/' });
+  assert.equal(response.status, 409);
+  assert.ok(
+    (await response.json()).failures.some((failure) => failure.code === 'ASSET_CONTENT_TYPE' && failure.blocking),
+  );
   assert.deepEqual(app.store.snapshot().simulator.shellProfile, report.shellProfile);
   assert.ok(requests.every((r) => !r.options?.method || r.options.method === 'GET'));
   const saved = await fs.readFile(path.join(dir, 'state.json'), 'utf8');
@@ -927,14 +1197,8 @@ test('HTTP: shutdown requires CSRF, acknowledges before callback and closes idem
   });
   assert.equal(accepted.status, 202);
   assert.deepEqual(await accepted.json(), { accepted: true, message: 'Mirage shutdown accepted.' });
-  let timer;
-  await Promise.race([
-    shutdownDone,
-    new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error('shutdown callback timed out')), 2000);
-    }),
-  ]);
-  clearTimeout(timer);
+  // The callback's own completion is the signal; a callback that never runs fails at the test timeout.
+  await shutdownDone;
   assert.equal(shutdownCalls, 1);
   await fixture.app.close();
 });

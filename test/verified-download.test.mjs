@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
@@ -10,7 +11,7 @@ import { downloadVerifiedArchive } from '../scripts/verified-download.mjs';
 const payload = Buffer.from('Invented verified archive bytes');
 const expected = createHash('sha256').update(payload).digest('hex');
 async function fixture(t) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-verified-download-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-verified-download-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const server = http.createServer((request, response) => {
     if (request.url === '/unavailable') {

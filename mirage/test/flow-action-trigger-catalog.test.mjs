@@ -7,7 +7,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const ASSIGNED = '77777777-7777-4777-8777-0000000000e5',
   UNASSIGNED = '77777777-7777-4777-8777-0000000000e6',
@@ -47,7 +47,7 @@ const CATALOGS = {
 };
 
 async function simulator(t, extra) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'flow-action-catalog-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'flow-action-catalog-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'Other/Solution.xml':

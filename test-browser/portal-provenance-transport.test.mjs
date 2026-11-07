@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -24,7 +25,7 @@ const scope = {
   sourceRevision: 'invented-current',
 };
 async function fixture(t, { mirage = false, delayDescriptor = false } = {}) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-proof-ui-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-proof-ui-'));
   const metadataFile = path.join(directory, 'Main.webtemplate.yml');
   await fs.writeFile(metadataFile, 'adx_webtemplateid: invented-main\nadx_name: Main');
   await fs.writeFile(
@@ -63,7 +64,7 @@ async function fixture(t, { mirage = false, delayDescriptor = false } = {}) {
   };
   const server = http.createServer((request, response) => {
     const address = new URL(request.url, 'http://fixture.invalid');
-    requests.push({ path: address.pathname, cookie: request.headers.cookie });
+    requests.push({ path: address.pathname, cookie: request.headers.cookie, proof: address.searchParams.get('proof') });
     if (address.pathname === '/_sim/api/page-provenance') {
       if (request.headers['x-paqvilo-provenance-access'] !== '1'.repeat(64))
         return response.writeHead(404, { 'content-type': 'application/json' }).end('{}');
@@ -94,11 +95,22 @@ async function fixture(t, { mirage = false, delayDescriptor = false } = {}) {
   await once(server, 'listening');
   const origin = `http://127.0.0.1:${server.address().port}`;
   const context = await browser.newContext();
-  context.setDefaultTimeout(5000);
   const page = await context.newPage();
   await context.addCookies([{ name: 'invented', value: 'one', url: origin }]);
   const transport = createPortalProvenanceTransport(context, [{ origin, mirage }]);
   const acknowledgments = [];
+  let acknowledge = () => {};
+  // Resolves with the fulfillment result of `pathname` once interception has it.
+  const acknowledgment = async (pathname) => {
+    while (!acknowledgments.some((item) => item.path === pathname))
+      await new Promise((resolve) => (acknowledge = resolve));
+    return acknowledgments.find((item) => item.path === pathname);
+  };
+  // Resolves once the server has received the Mirage sideband request for `proof`.
+  const sideband = async (proof) => {
+    while (!requests.some((item) => item.path === '/_sim/api/page-provenance' && item.proof === proof))
+      await once(server, 'request');
+  };
   let releaseSlow, enteredSlow;
   const slowEntered = new Promise((resolve) => {
     enteredSlow = resolve;
@@ -143,6 +155,7 @@ async function fixture(t, { mirage = false, delayDescriptor = false } = {}) {
           provenance: { ...generated.provenance, channel: 'lense-applied-response' },
         });
         acknowledgments.push({ path: address.pathname, acknowledged });
+        acknowledge();
       },
       { onAttach: transport.onAttach },
     );
@@ -175,6 +188,8 @@ async function fixture(t, { mirage = false, delayDescriptor = false } = {}) {
     proved,
     requests,
     acknowledgments,
+    acknowledgment,
+    sideband,
     slowEntered,
     releaseSlow,
     slot: transport.slot,
@@ -308,7 +323,9 @@ test('Mirage observes one native document response and reads only its same-cooki
     fx.requests.some(({ path, cookie }) => path === '/_sim/api/page-provenance' && cookie?.includes('invented=one')),
   );
   await fx.page.goto(fx.origin + '/redirect');
-  await fx.page.waitForTimeout(100);
+  await fx.sideband('redirect-proof');
+  // A followed redirect would request its location as soon as the 302 arrives; nothing marks one that never comes.
+  await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal((await fx.query()).facts.length, 0);
   assert.equal(
     fx.requests.some(({ path }) => path === '/must-not-follow'),
@@ -341,10 +358,7 @@ test('existing authored lookalike registries are never claimed and canceled fulf
   await fx.page.goto(fx.origin + '/native');
   fx.releaseSlow();
   await canceled;
-  const deadline = Date.now() + 3000;
-  while (!fx.acknowledgments.some((item) => item.path === '/slow-fulfill') && Date.now() < deadline)
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.equal(fx.acknowledgments.find((item) => item.path === '/slow-fulfill')?.acknowledged, false);
+  assert.equal((await fx.acknowledgment('/slow-fulfill')).acknowledged, false);
   const packet = await fx.query();
   assert.ok(packet === null || packet.facts.length === 0);
 });

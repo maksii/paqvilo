@@ -1,3 +1,4 @@
+// @test-kind contract+security: Paqvilo's _sim audit and Activity UI; valid-token denial, sanitized export and hostile hash values stay inert
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -7,12 +8,13 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test(
-  'real simulator admin lazy records and audit show API/Liquid correlation, valid-token denial and sanitized export',
+  'real simulator admin lazy records, audit API/Liquid correlation, valid-token denial, sanitized export and #audit landing in Activity',
   { timeout: 60000 },
   async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-admin-audit-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-admin-audit-'));
     const files = {
       'website.yml': 'adx_websiteid: site\nadx_name: Audit fixture',
       'sitesetting.yml':
@@ -75,19 +77,20 @@ test(
     await signInContext(context, app, 'contact0', { roles: ['Reader'] });
     page.on('request', (request) => calls.push(new URL(request.url()).pathname + new URL(request.url()).search));
     page.on('pageerror', (error) => errors.push(error.message));
-    await page.goto(app.adminUrl + '#overview');
-    await page.getByRole('heading', { name: 'Overview', exact: true }).waitFor();
+    await page.goto(app.adminUrl + '#home');
+    await page.getByRole('heading', { name: 'Home', exact: true }).waitFor();
     assert.ok(calls.includes('/__sim/api/state?summary=1'));
     assert.ok(!calls.some((url) => url.includes('/records/') || url.includes('/audit')));
     await page.locator('#navigation').getByRole('link', { name: 'Data records', exact: true }).click();
-    assert.equal(await page.getByLabel('Entity', { exact: true }).inputValue(), 'contact');
-    await page.getByLabel('Entity', { exact: true }).selectOption('contact');
+    assert.equal(await page.getByLabel('Table', { exact: true }).inputValue(), 'contact');
+    await page.getByLabel('Table', { exact: true }).selectOption('contact');
     await page.waitForFunction(() => document.querySelectorAll('table[data-table="records"] tbody tr').length === 20);
     assert.ok(calls.includes('/__sim/api/records/contact?page=1&pageSize=20&search='));
     await page.getByRole('button', { name: 'Next', exact: true }).click();
     await page.waitForFunction(() =>
       document.querySelector('table[data-table="records"] tbody')?.textContent.includes('Synthetic member 20'),
     );
+    // D-M-11: the record search sits in the toolbar row (a summary-mode workspace searches on the runtime).
     await page.getByRole('searchbox', { name: 'Search record values' }).fill('member 80');
     await page.waitForFunction(() => document.querySelectorAll('table[data-table="records"] tbody tr').length === 1);
     assert.match(await page.locator('table[data-table="records"] tbody').innerText(), /Synthetic member 80/);
@@ -106,22 +109,10 @@ test(
     });
     assert.equal(denied.status(), 403);
     assert.equal((await denied.json()).error.code, '90040103');
-    await page.getByRole('link', { name: 'Request audit', exact: false }).click();
-    await page.locator('table[data-table="audit"] tbody').getByText('liquid-fetchxml', { exact: true }).waitFor();
-    await page.locator('[data-audit-filter="kind"]').selectOption('api');
-    await page.waitForFunction(() => document.querySelectorAll('table[data-table="audit"] tbody tr').length === 2);
-    await page.locator('[data-audit-filter="outcome"]').selectOption('denied');
-    await page.waitForFunction(() => document.querySelectorAll('table[data-table="audit"] tbody tr').length === 1);
-    // The row shows the simulator code (X-Sim-Error-Code) and the Power Pages envelope code.
-    await page
-      .locator('table[data-table="audit"] tbody tr .row-detail')
-      .getByText('PermissionDenied · portal 90040103', { exact: true })
-      .waitFor();
-    await page.getByRole('button', { name: 'Inspect request' }).click();
-    await page.locator('#inspection-json').getByText('PermissionDenied', { exact: false }).waitFor();
-    assert.match(await page.locator('#inspection-json').innerText(), /Reader/);
-    assert.match(await page.locator('#inspection-json').innerText(), /"portalCode": "90040103"/);
-    await page.getByRole('button', { name: 'Close request details' }).click();
+    // The request audit is read in Activity: an old #audit address lands there with its filters renamed.
+    await page.goto(app.adminUrl + '#audit?kind=api&outcome=denied');
+    await page.waitForFunction(() => location.hash === '#activity?auditKind=api&result=denied');
+    await page.getByRole('heading', { name: 'Activity', exact: true }).waitFor();
     const exported = await (await context.request.get(app.url + '/__sim/api/audit/export')).json(),
       liquid = exported.items.find((item) => item.kind === 'liquid-fetchxml'),
       read = exported.items.find((item) => item.kind === 'api' && item.method === 'GET');
@@ -133,32 +124,26 @@ test(
     assert.deepEqual(read.identity.roles, ['Reader']);
     assert.ok(exported.items.every((item) => item.provider === 'local' && typeof item.durationMs === 'number'));
     assert.doesNotMatch(JSON.stringify(exported), /DO_NOT_RETAIN|WRITE_BODY_MUST_NOT_RETAIN/);
-    const evidence = process.env.PAQVILO_MIRAGE_EVIDENCE_DIR;
-    if (evidence) {
-      await fs.mkdir(evidence, { recursive: true });
-      await page.screenshot({ path: path.join(evidence, 'audit-desktop.png'), fullPage: true });
-    }
     await page.setViewportSize({ width: 390, height: 844 });
-    if (evidence) await page.screenshot({ path: path.join(evidence, 'audit-mobile.png'), fullPage: true });
     assert.equal(
       await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
       true,
-      'the audit view fits a 390 px viewport',
+      'Activity fits a 390 px viewport',
     );
-    await page.getByRole('button', { name: 'Clear audit', exact: true }).click();
-    await page.getByRole('button', { name: 'Clear audit', exact: true }).last().click();
-    await page.getByText('0 kept', { exact: false }).waitFor();
     const hostile = '"><img src=x onerror="window.auditInjected=true">';
     await page.goto(app.adminUrl + '#audit?kind=' + encodeURIComponent(hostile));
-    await page.locator('[data-audit-filter="kind"]').waitFor();
-    assert.equal(await page.locator('[data-audit-filter="kind"]').inputValue(), hostile);
+    await page.waitForFunction(() => location.hash.startsWith('#activity?auditKind='));
+    assert.equal(
+      new URLSearchParams((await page.evaluate(() => location.hash)).split('?')[1]).get('auditKind'),
+      hostile,
+    );
+    await page.getByRole('heading', { name: 'Activity', exact: true }).waitFor();
     assert.equal(await page.locator('#content img').count(), 0);
     assert.equal(await page.evaluate(() => window.auditInjected), undefined);
-    assert.ok((await page.locator('[data-audit-filter="kind"]').innerText()).includes(hostile));
     // Invalid hash names cannot dispatch inherited Object methods or become HTML.
     await page.goto(app.adminUrl + '#__proto__');
     await page.reload();
-    await page.getByRole('heading', { name: 'Overview', exact: true }).waitFor();
+    await page.getByRole('heading', { name: 'Home', exact: true }).waitFor();
     assert.deepEqual(errors, []);
   },
 );

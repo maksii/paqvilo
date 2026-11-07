@@ -1,3 +1,4 @@
+import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -5,12 +6,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { HtmlRewriter } from '../lense/html-rewriter.mjs';
 import { SITE } from './fixture.mjs';
+import { settleFileTimes } from '../mirage/test/support/file-times.mjs';
 
 let dir;
 let sources;
 let versions;
 beforeEach(() => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-rewrite-safety-'));
+  dir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-rewrite-safety-'));
   sources = [];
   versions = new Map();
 });
@@ -567,7 +569,7 @@ test('enhanced sources sharing a file share the raw read but retain separate ext
 test('cached source reads reject a directory replaced by an external junction', () => {
   script('mapped/form.js', 'original();', 'local();');
   const rewriter = makeRewriter({ model: { sourceDir: dir, inlineSources: sources } });
-  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-rewrite-outside-'));
+  const outside = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-rewrite-outside-'));
   const mapped = path.join(dir, 'mapped');
   fs.writeFileSync(path.join(outside, 'form.js'), 'outsideSecret();');
   fs.renameSync(mapped, path.join(dir, 'original-directory'));
@@ -758,7 +760,9 @@ test('async construction revalidates early files after other reads finish', asyn
   }
 });
 
-test('explicit source revalidation invalidates only stale bytes and follows the shared changed snapshot', () => {
+test('explicit source revalidation invalidates only stale bytes and follows the shared changed snapshot', (t) => {
+  // The reuse assertions below concern files written moments ago.
+  settleFileTimes(t);
   script('first.js', 'firstOriginal();', 'firstLocal();');
   script('second.js', 'secondOriginal();', 'secondLocal();');
   const changed = new Set([sources[0].file]);

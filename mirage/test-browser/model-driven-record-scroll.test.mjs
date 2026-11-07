@@ -8,8 +8,7 @@ import { sharedBrowser } from './shared-browser.mjs';
 const chrome = sharedBrowser();
 
 test('record title and tabs stay pinned while long exported sections and their controls scroll', async (t) => {
-  const source = await modelDrivenFixture(t);
-  await source.sim.close();
+  const source = await modelDrivenFixture(t, { defer: true });
   const entityFile = path.join(source.solutionDir, 'Entities/x_item/Entity.xml');
   const names = Array.from({ length: 30 }, (_, index) => `x_text${index}`);
   const attributes =

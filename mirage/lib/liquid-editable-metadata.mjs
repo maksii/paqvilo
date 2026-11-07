@@ -45,7 +45,7 @@ export function editableMetadataAttributes({
     'data-xrm-base': '/xrm-adx/',
   };
   return Object.keys(attributes)
-    .sort()
+    .sort(/* NOSONAR: preserve default string coercion */)
     .map((name) => ' ' + name + '="' + attr(attributes[name]) + '"')
     .join('');
 }

@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -20,7 +21,7 @@ before(async () => {
 after(() => browser?.close());
 
 async function fixture(t, source, { scriptFor } = {}) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-parser-boundary-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-parser-boundary-'));
   const metadataFile = path.join(directory, 'Main.webtemplate.yml');
   await fs.writeFile(metadataFile, 'adx_webtemplateid: invented-main\nadx_name: Main');
   await fs.writeFile(path.join(directory, 'Main.webtemplate.source.html'), source);
@@ -64,7 +65,6 @@ async function fixture(t, source, { scriptFor } = {}) {
   await once(server, 'listening');
   const origin = 'http://127.0.0.1:' + server.address().port;
   context = await browser.newContext();
-  context.setDefaultTimeout(7000);
   const page = await context.newPage(),
     errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -232,7 +232,6 @@ attackStatus.status=request.status;attackStatus.descriptorExposed=request.respon
     else deliver();
   });
   context = await browser.newContext();
-  context.setDefaultTimeout(7000);
   const page = await context.newPage();
   const transport = createInspectionProvenanceTransport(context, [{ origin: app.url, mirage: true }]);
   detach = await interceptOrigin(context, app.url, (route) => route.fallback(), { onAttach: transport.onAttach });

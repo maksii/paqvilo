@@ -7,6 +7,8 @@ import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto
 import { ProviderError, STORAGE_OPERATIONS, validateKey } from './storage-provider.mjs';
 import { isLoopbackUrl, loopbackFetch } from './dataverse-webhooks.mjs';
 import { clockFunction, systemClock } from './runtime-clock.mjs';
+import { tracedFetch } from './trace-hosts.mjs';
+import { stripTrailingCharacter } from './text-scanning.mjs';
 
 /** x-ms-version pinned for every request and the SAS `sv` (listed in "Previous Azure Storage service versions"). */
 export const BLOB_API_VERSION = '2021-08-06';
@@ -21,7 +23,7 @@ const BLOCK_SIZE = 4 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 // Learn: metadata names follow C# identifier rules (ASCII letters, digits, underscore; not starting with a digit).
-const METADATA_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const METADATA_NAME = /^[A-Za-z_]\w*$/;
 const START_HINT = 'Start it outside Paqvilo, for example: npx azurite --location .paqvilo/azurite';
 
 const NOTES = Object.freeze([
@@ -85,7 +87,7 @@ export function parseConnectionString(text, source = 'the connection string') {
   if (!accountName || !/^[A-Za-z0-9-]{1,64}$/.test(accountName))
     return invalid(`AccountName in ${source} is missing or invalid.`);
   if (!accountKey || !BASE64.test(accountKey)) return invalid(`AccountKey in ${source} is missing or not base64.`);
-  return { accountName, accountKey, blobEndpoint: url.href.replace(/\/+$/, '') };
+  return { accountName, accountKey, blobEndpoint: stripTrailingCharacter(url.href, '/') };
 }
 
 // Shared Key (Blob, 2009-09-19 and later): the standard headers in this order, values only, one line each.
@@ -118,7 +120,7 @@ export function sharedKeyStringToSign({ method, url, headers = {}, accountName }
   // The service's comparer for names with '_' or '-' next to letters (ordinal vs culture order) is not known.
   const canonicalHeaders = [...h.keys()]
     .filter((name) => name.startsWith('x-ms-'))
-    .sort()
+    .sort(/* NOSONAR: preserve default string coercion */)
     .map((name) => `${name}:${h.get(name).replace(/\s+/g, ' ').trim()}\n`)
     .join('');
   const target = new URL(url);
@@ -126,7 +128,7 @@ export function sharedKeyStringToSign({ method, url, headers = {}, accountName }
   for (const [name, value] of target.searchParams)
     params.set(name.toLowerCase(), [...(params.get(name.toLowerCase()) ?? []), value]);
   const query = [...params.keys()]
-    .sort()
+    .sort(/* NOSONAR: preserve default string coercion */)
     .map((name) => `\n${name}:${params.get(name).sort().join(',')}`)
     .join('');
   return `${[method.toUpperCase(), ...standard].join('\n')}\n${canonicalHeaders}/${accountName}${target.pathname}${query}`;
@@ -154,21 +156,31 @@ const sasTime = (time) => new Date(time).toISOString().replace(/\.\d{3}Z$/, 'Z')
  * contract whose operations answer Unavailable with the reason and whose preflight() reports it. ponytail: restart the host
  * to pick up a changed connection string.
  */
-export function createAzuriteStorage({ id = 'azurite', settings = {}, env = process.env, clock = systemClock } = {}) {
+export function createAzuriteStorage({
+  id = 'azurite',
+  settings = {},
+  env = process.env,
+  clock = systemClock,
+  // The runtime's trace store, or a function answering it (read per request): each Blob request is an http-out span.
+  traces = null,
+} = {}) {
   const now = clockFunction(clock);
   const container = settings.container ?? 'paqvilo';
-  const variable = /^env:([A-Za-z_][A-Za-z0-9_]*)$/.exec(settings.connectionString ?? '')?.[1] ?? null;
+  const variable = /^env:([A-Za-z_]\w*)$/.exec(settings.connectionString ?? '')?.[1] ?? null;
   const raw = variable ? env?.[variable] : null;
-  const config = !variable
-    ? {
-        error: {
-          message: `Storage provider '${id}' needs connectionString env:NAME.`,
-          diagnostic: 'PROVIDER_CONNECTION_STRING_INVALID',
-        },
-      }
-    : !raw
-      ? { error: { message: `Environment variable ${variable} is not set.`, diagnostic: 'PROVIDER_SECRET_MISSING' } }
-      : parseConnectionString(raw, variable);
+  let config;
+  if (!variable)
+    config = {
+      error: {
+        message: `Storage provider '${id}' needs connectionString env:NAME.`,
+        diagnostic: 'PROVIDER_CONNECTION_STRING_INVALID',
+      },
+    };
+  else if (!raw)
+    config = {
+      error: { message: `Environment variable ${variable} is not set.`, diagnostic: 'PROVIDER_SECRET_MISSING' },
+    };
+  else config = parseConnectionString(raw, variable);
   const { accountName, accountKey, blobEndpoint } = config.error ? {} : config;
   const shown = blobEndpoint ?? '';
   // Every request is bounded: providers.storage.<id>.timeoutMs (default 30 s) until the response headers arrive.
@@ -207,11 +219,16 @@ export function createAzuriteStorage({ id = 'azurite', settings = {}, env = proc
       limit,
     );
     try {
-      const response = await loopbackFetch(url, {
-        method,
-        headers: all,
-        body,
-        signal: signal ? AbortSignal.any([signal, timer.signal]) : timer.signal,
+      // Each Blob request is an http-out span of the current trace (D-R3-5): blob bytes are never captured, the span names
+      // the provider, container and size. The forwarded trace headers are not x-ms-* headers, so the signature is unchanged.
+      const response = await tracedFetch(typeof traces === 'function' ? traces() : traces, {
+        module: 'storage',
+        operation: method.toLowerCase(),
+        url,
+        init: { method, headers: all, body, signal: signal ? AbortSignal.any([signal, timer.signal]) : timer.signal },
+        capture: 'none',
+        attributes: { provider: id, container, ...(body?.length ? { bytes: body.length } : {}) },
+        fetch: loopbackFetch,
       });
       health =
         response.status === 401 || response.status === 403
@@ -223,6 +240,9 @@ export function createAzuriteStorage({ id = 'azurite', settings = {}, env = proc
       return response;
     } catch (error) {
       if (signal?.aborted) throw error;
+      const unreachableReason = timer.signal.aborted
+        ? `no answer within ${limit} ms`
+        : (error?.cause?.code ?? error?.code ?? 'connection failed');
       const refused =
         error?.code === 'InvalidRequest'
           ? fail(
@@ -233,11 +253,7 @@ export function createAzuriteStorage({ id = 'azurite', settings = {}, env = proc
           : Object.assign(
               fail(
                 'Unavailable',
-                `Azurite is not reachable at ${shown} (${
-                  timer.signal.aborted
-                    ? `no answer within ${limit} ms`
-                    : (error?.cause?.code ?? error?.code ?? 'connection failed')
-                }). ${START_HINT}`,
+                `Azurite is not reachable at ${shown} (${unreachableReason}). ${START_HINT}`,
                 'PROVIDER_UNREACHABLE',
               ),
               { cause: error },
@@ -340,7 +356,8 @@ export function createAzuriteStorage({ id = 'azurite', settings = {}, env = proc
       'Put Block',
     );
   const putBlockList = async (key, blockIds, options) => {
-    const xml = `<?xml version="1.0" encoding="utf-8"?><BlockList>${blockIds.map((blockId) => `<Latest>${blockId}</Latest>`).join('')}</BlockList>`;
+    const latest = blockIds.map((blockId) => `<Latest>${blockId}</Latest>`).join('');
+    const xml = `<?xml version="1.0" encoding="utf-8"?><BlockList>${latest}</BlockList>`;
     const headers = {
       'content-type': 'application/xml',
       'x-ms-blob-content-type': options.contentType ?? 'application/octet-stream',
@@ -427,7 +444,7 @@ export function createAzuriteStorage({ id = 'azurite', settings = {}, env = proc
           etag: quoted(response.headers.get('etag')),
           lastModified: iso(response.headers.get('last-modified')),
           contentType,
-          metadata: { ...(options.metadata ?? {}) },
+          metadata: { ...options.metadata },
         };
       }
       if (pendingBytes) await stage(true);
@@ -537,7 +554,7 @@ export function createAzuriteStorage({ id = 'azurite', settings = {}, env = proc
       key = validateKey(key, id);
       if (!['r', 'w', 'rw'].includes(permission)) throw fail('InvalidKey', "SAS permission must be 'r', 'w' or 'rw'.");
       endpoint();
-      const se = sasTime(expiresOn ?? now() + 3600_000);
+      const se = sasTime(expiresOn ?? now() + 3_600_000);
       const sig = hmac(accountKey, serviceSasStringToSign({ sp: permission, se, accountName, container, key }));
       return `${blobUrl(key)}?${new URLSearchParams({ sv: BLOB_API_VERSION, sr: 'b', sp: permission, se, sig })}`;
     },

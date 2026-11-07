@@ -6,7 +6,7 @@ import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 let browser;
 before(async () => {
@@ -101,7 +101,7 @@ const state = {
 };
 
 async function portal(t, settings, header) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-external-browser-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-external-browser-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(files(settings, header))) {
     await fs.mkdir(path.dirname(path.join(directory, name)), { recursive: true });
@@ -243,7 +243,9 @@ test(
     assert.ok(personas.personas.some((persona) => persona.name === 'Dana New'));
     // Sign out: LogOff, the provider's end-session, back to the portal anonymous.
     const before = navigations.length;
-    await Promise.all([tab.waitForURL(app.url + '/'), tab.locator('#sign-out').click()]);
+    // Sign-out returns to the page it started from, so await the replacement document's load, then its URL.
+    await Promise.all([tab.waitForEvent('load'), tab.locator('#sign-out').click()]);
+    assert.equal(tab.url(), app.url + '/');
     assert.ok(navigations.slice(before).includes(idp), "sign-out visited the identity provider's end-session");
     assert.equal(await tab.locator('#user').innerText(), 'anonymous');
     // Switching accounts: sign in again as a preset user through the provider page.
@@ -320,7 +322,8 @@ test(
     const contacts = (await (await tab.request.get(app.url + '/__sim/api/state')).json()).data.contact;
     assert.equal(contacts.find((row) => row.emailaddress1 === 'nia@example.test').telephone1, '+44 20 7946 0000');
     // A preset user signs in through the same flow.
-    await Promise.all([tab.waitForURL((url) => url.pathname === '/'), tab.locator('#sign-out').click()]);
+    await Promise.all([tab.waitForEvent('load'), tab.locator('#sign-out').click()]);
+    assert.equal(new URL(tab.url()).pathname, '/');
     await Promise.all([tab.waitForURL((url) => url.pathname === '/SignIn'), tab.locator('#sign-in').click()]);
     await Promise.all([tab.waitForURL((url) => url.origin === idp), provider.click()]);
     await Promise.all([

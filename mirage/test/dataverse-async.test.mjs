@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of the Dataverse asynchronous service (BulkDelete jobs, background operations, recurrence); no native capture cited
 // Simulated Dataverse asynchronous service: BulkDelete jobs, background operations, their state transitions and the
 // system-table write rules. Jobs are run by a test scheduler on a test clock, so no timers are needed.
 import test from 'node:test';
@@ -416,6 +417,7 @@ test('a respond-async custom API call is answered 202 and its result is read fro
   assert.deepEqual(monitored.body, { backgroundOperationStateCode: 3, backgroundOperationStatusCode: 30, Out: 'hi' });
 });
 
+// @test-kind security: callbacks are posted only to loopback addresses; other hosts are refused before the request is queued
 test('a callback is posted only to a loopback address; any other host is refused before the request is queued', async () => {
   const t = await setup();
   const op = echoApi(t);
@@ -515,6 +517,7 @@ test('cancel: DELETE on the monitor or a PATCH stops a queued operation; a finis
   );
 });
 
+// @test-kind unproven+security: 404 for an unknown id is a local model; the refused caller without privileges is a security boundary
 test('the monitor answers 404 for an unknown id, and a caller without the privileges is refused with no row written', async () => {
   const t = await setup();
   const op = echoApi(t);
@@ -657,6 +660,7 @@ test('a cancel that arrives while the operation runs does not replace its result
   assert.equal((await t.monitor('GET', id)).body.Out, 'done');
 });
 
+// @test-kind security: privilege check: prvBulkDelete is held only by System Administrator and refuses the submit before any job row
 test('BulkDelete needs prvBulkDelete, which only System Administrator holds', async () => {
   const t = await setup();
   await t.widget('Old A', 2);
@@ -835,6 +839,7 @@ test('BulkDelete retained filters and pages only retained snapshots; default tar
   assert.equal(t.store.state.dataverse.retained.widget.length, 1);
 });
 
+// @test-kind security: privilege and row-access checks: the submitter's read and delete grants decide each retained delete
 test("retained BulkDelete uses the submitter's row read and delete grants", async () => {
   for (const [readDepth, deleteDepth, expectedFailures] of [
     [1, 8, 0],

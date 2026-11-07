@@ -8,16 +8,16 @@ import { signInHeaders } from '../testing/session.mjs';
 import { DataStore } from '../lib/data.mjs';
 import { importPortal } from '../lib/importer.mjs';
 import { configurationPresetDiagnostics, defineLazyPreset } from '../packs.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 async function tempDir(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-runtime-diagnostics-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-runtime-diagnostics-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   return root;
 }
 
 async function fixture(t, options = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-runtime-diagnostics-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-runtime-diagnostics-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_websiteid: invented\nadx_name: Invented diagnostics',

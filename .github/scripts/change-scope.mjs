@@ -14,7 +14,7 @@ const sourceRoots = [
   'examples/company-operations',
 ];
 const secondary =
-  /^(?:docs\/|site\/|mirage\/(?:README\.md$|docs\/)|examples\/(?:project|company-operations)\/(?:[^/]+\/)*README\.md$|(?:README\.md|AGENTS\.md|CONTRIBUTING\.md|SECURITY\.md|CODE_OF_CONDUCT\.md|LICENSE|NOTICE)$|\.github\/(?:ISSUE_TEMPLATE\/|DISCUSSION_TEMPLATE\/|PULL_REQUEST_TEMPLATE\.md$|CODEOWNERS$|release\.yml$|workflows\/pages\.yml$))/;
+  /^(?:docs\/|site\/|mirage\/(?:README\.md$|docs\/)|examples\/(?:project|company-operations)\/(?:[^/]+\/)*README\.md$|(?:README\.md|AGENTS\.md|CONTRIBUTING\.md|SECURITY\.md|CODE_OF_CONDUCT\.md|LICENSE|NOTICE)$|\.github\/(?:ISSUE_TEMPLATE\/|DISCUSSION_TEMPLATE\/|PULL_REQUEST_TEMPLATE\.md$|CODEOWNERS$|release\.yml$|workflows\/pages\.yml$))/; // NOSONAR: regex kept: a rewrite would change matches or captures
 // These files execute only inside the Lense overlay. The development CLI imports them to
 // launch an overlay from Mirage, but that import does not make them simulation runtime code.
 const overlayPresentation = new Set([
@@ -24,10 +24,43 @@ const overlayPresentation = new Set([
   'lense/xray-ui.mjs',
 ]);
 
-// Literal imports only expand a suite selection; they never authorize skipping an unknown path.
+function indexSourceFile(file, root, add, resolveSelf, templates) {
+  const consumer = path.relative(root, file).replaceAll('\\', '/');
+  const source = fs.readFileSync(file, 'utf8');
+  for (const match of source.matchAll(
+    /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s*|\brequire\s*\(\s*)['"]([^'"]+)['"]/g,
+  )) {
+    const resolved = resolveSelf(match[1]);
+    if (resolved) add(resolved, consumer);
+  }
+  // A bare './' or '../' is usually a URL, not a reference to every sibling file.
+  for (const match of source.matchAll(/(['"`])(\.\.?\/(?:\.\.\/)*[^'"`$\n./][^'"`$\n]*)\1/g))
+    add(path.resolve(path.dirname(file), match[2]), consumer);
+  for (const match of source.matchAll(/`(\.\.?\/[^`$\n]*\/)\$\{[^}`]*\}([^`$/\n]*)`/g)) {
+    const directory = path.relative(root, path.resolve(path.dirname(file), match[1])).replaceAll('\\', '/');
+    if (!directory.startsWith('../')) templates.push({ directory, suffix: match[2], consumer });
+  }
+}
+
+function visitSources(directory, root, add, resolveSelf, templates) {
+  if (!fs.existsSync(directory)) return;
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    if (entry.isSymbolicLink() || ['node_modules', '.git', '.paqvilo', 'bin', 'obj', 'out'].includes(entry.name))
+      continue;
+    const file = path.join(directory, entry.name);
+    if (entry.isDirectory()) visitSources(file, root, add, resolveSelf, templates);
+    else if (/\.[cm]?js$/.test(entry.name)) indexSourceFile(file, root, add, resolveSelf, templates);
+  }
+}
+
+// Literal references only expand a suite selection; they never authorize skipping an unknown path.
 // Tests and package self-imports are included so a cross-tool integration test selects its suite too.
+// Besides imports, any quoted relative path counts: tests read documents and fixtures and spawn
+// CLIs through `new URL('../x', import.meta.url)`, and a directory reference covers its contents.
+// A template such as `../mirage/${tool}.mjs` references every matching file in that directory.
 export function dependencyConsumers(root = toolkitRoot) {
   const reverse = new Map();
+  const templates = [];
   const pkg = fs.existsSync(path.join(root, 'package.json'))
     ? JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
     : {};
@@ -51,29 +84,18 @@ export function dependencyConsumers(root = toolkitRoot) {
     }
     return null;
   }
-  const visit = (directory) => {
-    if (!fs.existsSync(directory)) return;
-    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-      if (entry.isSymbolicLink() || ['node_modules', '.git', '.paqvilo', 'bin', 'obj', 'out'].includes(entry.name))
-        continue;
-      const file = path.join(directory, entry.name);
-      if (entry.isDirectory()) visit(file);
-      else if (/\.[cm]?js$/.test(entry.name)) {
-        const consumer = path.relative(root, file).replaceAll('\\', '/');
-        for (const match of fs
-          .readFileSync(file, 'utf8')
-          .matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s*|\brequire\s*\(\s*)['"]([^'"]+)['"]/g)) {
-          const specifier = match[1];
-          const resolved = specifier.startsWith('.')
-            ? path.resolve(path.dirname(file), specifier)
-            : resolveSelf(specifier);
-          if (resolved) add(resolved, consumer);
-        }
-      }
-    }
+  for (const directory of sourceRoots) visitSources(path.join(root, directory), root, add, resolveSelf, templates);
+  return {
+    // A changed file is consumed through its own path, any referenced ancestor directory or a template.
+    get(file) {
+      const consumers = new Set(reverse.get(file));
+      for (let parent = path.posix.dirname(file); parent !== '.'; parent = path.posix.dirname(parent))
+        for (const consumer of reverse.get(parent) ?? []) consumers.add(consumer);
+      for (const { directory, suffix, consumer } of templates)
+        if (path.posix.dirname(file) === directory && file.endsWith(suffix)) consumers.add(consumer);
+      return consumers;
+    },
   };
-  for (const directory of sourceRoots) visit(path.join(root, directory));
-  return reverse;
 }
 
 function initialScope() {
@@ -88,6 +110,7 @@ function initialScope() {
     smoke: false,
     site: false,
     full: false,
+    sdk: false,
     // Required code-scanning comparisons need the same configurations as main,
     // including PRs that change only documentation or one source language.
     codeql: true,
@@ -95,9 +118,21 @@ function initialScope() {
   };
 }
 
-export function classifyChanges(files, { root = toolkitRoot, full = false } = {}) {
-  const scope = initialScope();
-  scope.quality = files.length > 0;
+function expandChange(file, scope, reverse) {
+  const pending = [file],
+    seen = new Set();
+  while (pending.length) {
+    const current = pending.pop();
+    if (seen.has(current)) continue;
+    seen.add(current);
+    if (/^(?:lense|test|test-browser)\//.test(current)) scope.lense = true;
+    if (current.startsWith('mirage/')) scope.mirage = true;
+    if (current.startsWith('examples/')) scope.examples = true;
+    for (const consumer of reverse.get(current) ?? []) pending.push(consumer);
+  }
+}
+
+function setInitialChangeFlags(files, scope) {
   scope.package = files.some((file) => !/^(?:site\/|\.github\/|SECURITY\.md$|CODE_OF_CONDUCT\.md$)/.test(file));
   scope.dependencies = files.some((file) =>
     /(?:^|\/)(?:package(?:-lock)?\.json|npm-shrinkwrap\.json|packages\.lock\.json|[^/]+\.csproj)$/.test(file),
@@ -110,37 +145,41 @@ export function classifyChanges(files, { root = toolkitRoot, full = false } = {}
       file,
     ),
   );
-  let reverse;
-  const expand = (file) => {
-    reverse ??= dependencyConsumers(root);
-    const pending = [file],
-      seen = new Set();
-    while (pending.length) {
-      const current = pending.pop();
-      if (seen.has(current)) continue;
-      seen.add(current);
-      if (/^(?:lense|test|test-browser)\//.test(current)) scope.lense = true;
-      if (/^mirage\//.test(current)) scope.mirage = true;
-      if (/^examples\//.test(current)) scope.examples = true;
-      for (const consumer of reverse.get(current) ?? []) pending.push(consumer);
-    }
-  };
-  for (const file of files) {
-    if (secondary.test(file)) continue;
+}
+
+function classifyOneChange(file, scope, getReverse) {
+  if (secondary.test(file)) {
+    // A document that a test reads, such as a settings table, still selects that suite.
+    if (!getReverse().get(file).size) return;
     scope.runtime = true;
-    if (overlayPresentation.has(file)) {
-      scope.lense = true;
-      continue;
-    }
-    if (/^(?:lense|test|test-browser|mirage)\//.test(file) && !/(?:^|\/)package(?:-lock)?\.json$/.test(file)) {
-      expand(file);
-      // These browser modules are also served through URL mappings, not only filesystem imports.
-      if (/^(?:lense\/setup\/|mirage\/admin\/)/.test(file)) scope.lense = scope.mirage = true;
-    } else {
-      // Dependencies, templates, build/workflow changes and new paths remain shared until classified.
-      scope.lense = scope.mirage = scope.examples = scope.smoke = true;
-    }
+    expandChange(file, scope, getReverse());
+    return;
   }
+  scope.runtime = true;
+  if (overlayPresentation.has(file)) {
+    scope.lense = true;
+    return;
+  }
+  if (/^(?:lense|test|test-browser|mirage)\//.test(file) && !/(?:^|\/)package(?:-lock)?\.json$/.test(file)) {
+    expandChange(file, scope, getReverse());
+    // These browser modules are also served through URL mappings, not only filesystem imports.
+    if (/^(?:lense\/setup\/|mirage\/admin\/)/.test(file)) scope.lense = scope.mirage = true;
+  } else {
+    // Dependencies, templates, build/workflow changes and new paths remain shared until classified.
+    scope.lense = scope.mirage = scope.examples = scope.smoke = true;
+  }
+}
+
+export function classifyChanges(files, { root = toolkitRoot, full = false } = {}) {
+  const scope = initialScope();
+  scope.quality = files.length > 0;
+  setInitialChangeFlags(files, scope);
+  let reverse;
+  const getReverse = () => {
+    reverse ??= dependencyConsumers(root);
+    return reverse;
+  };
+  for (const file of files) classifyOneChange(file, scope, getReverse);
   if (scope.dependencies) scope.lense = scope.mirage = scope.examples = scope.smoke = scope.runtime = true;
   if (full) {
     for (const name of [
@@ -157,11 +196,32 @@ export function classifyChanges(files, { root = toolkitRoot, full = false } = {}
     ])
       scope[name] = true;
   }
+  scope.sdk = scope.full || scope.mirage;
   return scope;
 }
 
 export function suitesForScope(scope) {
   return ['lense', 'mirage', 'examples'].filter((suite) => scope[suite]);
+}
+
+// CI splits the longest suites into node:test file shards (ci.mjs --shard); together the shards
+// run every file once, and the CI gate requires every leg. Local validation runs whole suites.
+// Lense stays whole: one long file (mirage-stop-scope) bounds its wall time either way.
+const SHARDS = { unit: { mirage: 3 }, browser: { mirage: 2 } };
+export function ciLanes(kind, suites) {
+  return suites.flatMap((suite) => {
+    const total = SHARDS[kind][suite] ?? 1;
+    if (total === 1) return [{ suite }];
+    return Array.from({ length: total }, (_, index) => ({ suite, shard: `${index + 1}/${total}` }));
+  });
+}
+
+export function browserLanes(suites) {
+  return ciLanes('browser', suites).flatMap((lane) => [
+    { ...lane, os: 'ubuntu-24.04', channel: 'chromium' },
+    { ...lane, os: 'windows-2025', channel: 'chromium' },
+    { ...lane, os: 'windows-2025', channel: 'msedge' },
+  ]);
 }
 
 export function preCommitScripts(files) {
@@ -186,7 +246,7 @@ export function githubScope(event, eventName, env = process.env, root = toolkitR
   if (!base || /^0+$/.test(base) || !head) return classifyChanges([], { root, full: true });
   const revisions = event.pull_request ? [`${base}...${head}`] : [base, head];
   const diff = spawnSync(
-    'git',
+    'git', // NOSONAR: fixed tool name resolved through PATH by developer tooling
     ['--no-optional-locks', 'diff', '--name-only', '--no-renames', '-z', ...revisions, '--'],
     {
       cwd: root,
@@ -202,7 +262,14 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const event = JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
   const scope = githubScope(event, process.env.GITHUB_EVENT_NAME, process.env, process.cwd());
   const suites = suitesForScope(scope);
-  const outputs = { ...scope, suites: JSON.stringify(suites.length ? suites : ['none']) };
+  const outputs = {
+    ...scope,
+    suites: JSON.stringify(suites.length ? suites : ['none']),
+    units: JSON.stringify(suites.length ? ciLanes('unit', suites) : [{ suite: 'none' }]),
+    browsers: JSON.stringify(
+      suites.length ? browserLanes(suites) : [{ suite: 'none', os: 'ubuntu-24.04', channel: 'chromium' }],
+    ),
+  };
   fs.appendFileSync(
     process.env.GITHUB_OUTPUT,
     Object.entries(outputs)

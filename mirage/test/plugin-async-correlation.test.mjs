@@ -1,5 +1,6 @@
-// Runner request contexts (plugin-async.mjs): an asynchronous step runs in a child of the request that wrote the row, so
-// the plug-in trace log it writes carries the HTTP x-ms-correlation-request-id.
+// @test-kind unproven: local async child-request correlation model (runner request context); no native capture cited
+// Runner request contexts (plugin-async.mjs): an asynchronous step runs in a child of the request that wrote the row (the
+// HTTP x-ms-correlation-request-id); its System Job row and plug-in trace log carry the CorrelationId of its execution context.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createAsyncPluginRunner } from '../lib/plugin-async.mjs';
@@ -32,14 +33,18 @@ const step = {
   images: [],
 };
 
-test("an asynchronous step's plug-in trace log carries the HTTP correlation id", async (t) => {
-  const seen = [];
+// @test-kind unproven: local model of the runner request context (currentRequest() of an asynchronous run); the job and trace correlationid follow the native-r2 asyncLoop and native traceFaults facts pinned in dataverse-plugin-jobs and plugin-step-faults
+test('an asynchronous step runs in a child of the HTTP request, and its job and trace carry its context CorrelationId', async (t) => {
+  const seen = [],
+    contexts = [];
   const handlers = pluginHandlers([
     {
       id: 'invented',
-      pluginSteps: {
-        [STEP]: ({ trace }) => {
+      // A typed handler: its execution context reports the CorrelationId the asyncoperation row must carry.
+      pluginTypes: {
+        'Invented.Plugins.Trace': ({ context, trace }) => {
           seen.push(currentRequest());
+          contexts.push(context.CorrelationId);
           trace('Invented async trace');
         },
       },
@@ -82,10 +87,14 @@ test("an asynchronous step's plug-in trace log carries the HTTP correlation id",
   const [trace] = store.tableRows('plugintracelog');
   assert.equal(trace?.messageblock, 'Invented async trace');
   assert.equal(trace.mode, 1);
-  assert.equal(trace.correlationid, CORRELATION);
   assert.equal(seen.length, 1);
   assert.equal(seen[0].mode, 'async');
   assert.equal(seen[0].correlationId, CORRELATION);
   assert.equal(seen[0].parentId, CORRELATION);
   assert.equal(seen[0].inBatch, false);
+  // The System Job row carries the CorrelationId its execution context reported.
+  const [job] = store.tableRows('asyncoperation');
+  assert.equal(contexts.length, 1);
+  assert.equal(job.correlationid, contexts[0]);
+  assert.equal(trace.correlationid, contexts[0]);
 });

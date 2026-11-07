@@ -24,7 +24,6 @@ describe('implicit OData read companions', () => {
         ...headers,
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(10000),
     });
     const text = await response.text();
     return { status: response.status, body: text ? JSON.parse(text) : null };

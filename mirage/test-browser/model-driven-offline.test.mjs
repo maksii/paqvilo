@@ -13,8 +13,7 @@ const PROFILE = '77777777-7777-4777-8777-777777777791',
   COPPER = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 
 test('the shell goes offline, edits a record in the offline copy, shows it pending and syncs it when back online', async (t) => {
-  const initial = await modelDrivenFixture(t);
-  await initial.sim.close();
+  const initial = await modelDrivenFixture(t, { defer: true });
   const dir = initial.solutionDir;
   await fs.mkdir(path.join(dir, 'MobileOfflineProfiles'), { recursive: true });
   await fs.writeFile(

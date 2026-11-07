@@ -7,8 +7,8 @@
  */
 (() => {
   'use strict';
-  const bind = () => window.__portalSimulation?.initializeDateControls?.();
-  if (typeof window.jQuery?.fn?.jquery === 'string') window.jQuery(bind);
+  const bind = () => globalThis.__portalSimulation?.initializeDateControls?.();
+  if (typeof globalThis.jQuery?.fn?.jquery === 'string') globalThis.jQuery(bind);
   else if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bind, { once: true });
   else bind();
 })();

@@ -1,3 +1,4 @@
+// @test-kind contract: X-ray source identity reports uncertain candidates with their complete authored provenance
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
@@ -15,7 +16,6 @@ after(() => browser?.close());
 // Each test gets its own context on the shared browser; the root path serves the fixture and any other path a plain frame.
 async function fixture(t, html, report = {}) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
-  context.setDefaultTimeout(5000);
   t.after(() => context.close());
   const page = await context.newPage();
   await page.route('**/*', (route) =>
@@ -54,6 +54,26 @@ async function fixture(t, html, report = {}) {
     }, selector);
   return { page, identify, data };
 }
+
+test('X-ray action feedback survives source refresh and clears when selecting another element', async (t) => {
+  const { page } = await fixture(t, '<!doctype html><input id="first"><input id="second">');
+  const feedback = 'Opened <invented>.xml in the editor';
+  const observed = await page.evaluate((feedback) => {
+    const host = document.getElementById('paqvilo-xray'),
+      api = host.__px;
+    const status = () => host.shadowRoot.querySelector('.status');
+    api.select(document.getElementById('first'));
+    api.status(feedback);
+    api.refreshSelection('controlled-source-refresh');
+    const afterRefresh = status().textContent,
+      markup = status().innerHTML;
+    api.select(document.getElementById('second'));
+    return { afterRefresh, markup, afterNewSelection: status().textContent };
+  }, feedback);
+  assert.equal(observed.afterRefresh, feedback);
+  assert.equal(observed.markup.includes('<invented>'), false, 'feedback stays text after the redraw');
+  assert.equal(observed.afterNewSelection, '', 'another selection does not inherit the editor result');
+});
 
 const assertNoExact = (row, message) => {
   assert.notEqual(row.evidence.owner.status, 'exact', message);
@@ -273,19 +293,16 @@ test('descent remembers the selected child, native controls are picked without f
   });
   // Wait for pending pointer/layout events to settle even when the full suite is busy.
   // A recurring geometry poll cannot pass this quiet window.
-  await page.waitForFunction(
-    () => {
-      const now = performance.now();
-      if (window.lastGeometryReads !== window.geometryReads) {
-        window.lastGeometryReads = window.geometryReads;
-        window.geometryQuietSince = now;
-      }
-      return now - window.geometryQuietSince > 450;
-    },
-    null,
-    { timeout: 5000 },
-  );
+  await page.waitForFunction(() => {
+    const now = performance.now();
+    if (window.lastGeometryReads !== window.geometryReads) {
+      window.lastGeometryReads = window.geometryReads;
+      window.geometryQuietSince = now;
+    }
+    return now - window.geometryQuietSince > 450;
+  });
   await page.evaluate(() => (window.geometryReads = 0));
+  // No event marks a poll that never runs: any recurring geometry poll of up to one second reads within this window.
   await page.waitForTimeout(1100);
   assert.equal(await page.evaluate(() => window.geometryReads), 0);
 });
@@ -429,15 +446,11 @@ test('Web Animations started after enabling X-ray and element resizes move the s
   });
   // Outline geometry is compared inside the page so a missed repaint fails at the bounded wait instead of being slept past.
   const outlineMatches = (key) =>
-    page.waitForFunction(
-      (key) => {
-        const a = document.getElementById('moving').getBoundingClientRect(),
-          m = document.getElementById('paqvilo-xray').shadowRoot.querySelector('.selected')?.getBoundingClientRect();
-        return m && Math.abs(a[key] - m[key]) < 2;
-      },
-      key,
-      { timeout: 3000 },
-    );
+    page.waitForFunction((key) => {
+      const a = document.getElementById('moving').getBoundingClientRect(),
+        m = document.getElementById('paqvilo-xray').shadowRoot.querySelector('.selected')?.getBoundingClientRect();
+      return m && Math.abs(a[key] - m[key]) < 2;
+    }, key);
   await page.evaluate(
     () =>
       document
@@ -686,6 +699,9 @@ test('a runtime notification class cannot promote an inactive template over a sh
   await page.locator('.alert').evaluate((node) => node.classList.add('notification'));
   const found = await identify('.notification');
   assertNoExact(found);
+  const depthZeroNames = found.matches.filter((item) => item.depth === 0).map((item) => item.name);
+  assert.ok(depthZeroNames.includes('Global shell'));
+  assert.ok(depthZeroNames.includes('Unrelated application wizard'));
   assert.ok(found.matches.filter((item) => item.depth === 0).every((item) => !item.strong));
   assertSourceCandidate(await identify('#active-next'), 'Active wizard');
   const rect = await page.locator('.notification').boundingBox();
@@ -844,7 +860,9 @@ test('framework-only evidence remains uncertain despite unique static include re
     elementSources: [...header, ...own],
   });
   assertNoExact(await identify('a'));
-  assert.ok((await identify('a')).matches.every((item) => !item.strong));
+  const pageCandidates = await identify('a');
+  assert.ok(pageCandidates.matches.some((item) => item.name === 'Page'));
+  assert.ok(pageCandidates.matches.every((item) => !item.strong));
   await page.evaluate(({ data, report }) => document.getElementById('paqvilo-xray').__px.update(data, report), {
     data,
     report: { elementSources: [...own, ...hints('<a class="btn btn-link">Go</a>', 'Other', { includedBy: ['page'] })] },
@@ -852,7 +870,7 @@ test('framework-only evidence remains uncertain despite unique static include re
   assertNoExact(await identify('a'));
 });
 
-test('framework-only matches count sibling sources, reject class subsets and do not headline enclosing regions', async (t) => {
+test('framework-only matches count sibling sources and do not claim exact attribution', async (t) => {
   const sources = Array.from({ length: 5 }, (_, i) =>
     hints('<button class="close">Close</button>', 'Close' + i, { includedBy: ['page'] }),
   ).flat();
@@ -861,7 +879,15 @@ test('framework-only matches count sibling sources, reject class subsets and do 
     '<button class="close">Close</button><button class="btn btn-default">Generated</button><div class="title"><span>Generated</span></div>',
     { elementSources: sources },
   );
-  assertNoExact(await identify('button.close'));
+  const closeCandidates = await identify('button.close');
+  assertNoExact(closeCandidates);
+  assert.deepEqual(
+    closeCandidates.matches
+      .filter((item) => item.depth === 0)
+      .map((item) => item.name)
+      .sort(),
+    ['Close0', 'Close1', 'Close2', 'Close3', 'Close4'],
+  );
   const elementSources = [
     ...hints('<button class="btn">A</button><button class="btn">B</button>', 'Subset', { includedBy: ['page'] }),
     ...['Full1', 'Full2'].flatMap((name) =>
@@ -875,6 +901,11 @@ test('framework-only matches count sibling sources, reject class subsets and do 
     data,
     report: { elementSources },
   });
+  const buttonCandidates = await identify('.btn.btn-default');
+  const buttonNames = buttonCandidates.matches.filter((item) => item.depth === 0).map((item) => item.name);
+  assert.ok(buttonNames.includes('Full1'));
+  assert.ok(buttonNames.includes('Full2'));
+  assert.ok(buttonCandidates.matches.every((item) => !item.strong));
   assertNoExact(await identify('.btn'));
   assertNoExact(await identify('span'));
 });
@@ -1052,12 +1083,12 @@ test('viewport candidates survive early offscreen matches and limit notes appear
 test('selected sources precede bounded secondary context and disclosure choices survive picks', async (t) => {
   const { page } = await fixture(t, '<button id="one">One</button><button id="two">Two</button>', {
     elementSources: hints('<button id="one">One</button><button id="two">Two</button>', 'Selected source'),
-    apiReferences: Array.from({ length: 100 }, (_, index) => ({
+    apiReferences: Array.from({ length: 1000 }, (_, index) => ({
       name: 'fx_table' + index,
       entity: 'table' + index,
       ref: 'api' + index + '.js',
     })),
-    permissionRules: Array.from({ length: 100 }, (_, index) => ({
+    permissionRules: Array.from({ length: 1000 }, (_, index) => ({
       name: 'Rule' + index,
       entity: 'table0',
       ref: 'rule' + index + '.yml',
@@ -1085,6 +1116,8 @@ test('selected sources precede bounded secondary context and disclosure choices 
   assert.match(await context.innerText(), /fx_table8/);
   assert.doesNotMatch(await context.innerText(), /\/_api\/fx_table0\b/);
   await pick('two');
+  assert.match(await context.innerText(), /fx_table8/, 'Paging survives an ordinary new selection');
+  assert.equal(await context.locator('.binding').count(), 8, 'A thousand contexts do not expand the card DOM');
   assert.equal(await page.locator('#paqvilo-xray .content').evaluate((node) => node.scrollTop), 0);
 });
 

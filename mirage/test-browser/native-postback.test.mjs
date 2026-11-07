@@ -6,9 +6,10 @@ import os from 'node:os';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('postback mode submits actual URLencoded successful controls and navigates to escaped source HTML', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'native-browser-postback-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'native-browser-postback-'));
   const files = {
     'website.yml': 'adx_websiteid: browser-site\nadx_name: Invented postback',
     'Home.webpage.yml':

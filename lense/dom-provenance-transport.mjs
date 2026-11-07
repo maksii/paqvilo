@@ -4,11 +4,132 @@ import { installDomProvenance } from './dom-provenance.mjs';
 import { normalizeInspectionSourceRef } from './inspection-evidence.mjs';
 import { createResponseProofQueue } from './response-proof-queue.mjs';
 
+const unanswered = Symbol('unanswered');
 const digest = (value) => createHash('sha256').update(value).digest('hex');
 const safeURL = (value) =>
   typeof value === 'string' && value.length <= 32768 && /^(?:https?:\/\/|file:\/\/\/)/.test(value)
     ? { url: value.split(/[?#]/, 1)[0], urlKey: digest(value) }
     : null;
+/* NOSONAR */ function collectNodeMatches(record, event, parsed, frame, locate) {
+  const matches = [];
+  for (const compiled of parsed) {
+    for (const proof of record.proofs.values()) {
+      if (
+        proof.generatedHash !== compiled.hash ||
+        !(proof.urlKey ? proof.urlKey === compiled.urlKey : proof.url === compiled.url)
+      )
+        continue;
+      if (
+        !proof.external &&
+        !compiled.hasSourceURL &&
+        (compiled.startLine !== proof.documentStart?.line || compiled.startColumn !== proof.documentStart?.column)
+      )
+        continue;
+      const point = locate(proof, compiled, frame),
+        ref = point && proof.refs.get(point.sourceRefId);
+      if (!ref) continue;
+      matches.push({
+        ref: {
+          ...ref,
+          region: point.region,
+          relationship: event.relationship,
+          observations: { ...ref.observations, served: true, parsed: true, executed: true },
+        },
+        region: point.region,
+        sourceRevision: proof.sourceRevision,
+        limited: proof.linesTruncated || proof.mappingsTruncated,
+      });
+    }
+  }
+  return matches;
+}
+
+function hasUnverifiedScriptVersion(record, parsed) {
+  return parsed.some(
+    (script) =>
+      ![...record.proofs.values()].some(
+        (proof) =>
+          proof.generatedHash === script.hash &&
+          (proof.urlKey ? proof.urlKey === script.urlKey : proof.url === script.url),
+      ),
+  );
+}
+
+function unresolvedCallsite(event, reason) {
+  return Date.now() - event.createdAt >= 3000 ? { sourceRefs: [], facts: [], reason } : null;
+}
+
+async function callDomRecord(record, command, functionDeclaration, value, unanswered) {
+  const result = await command(
+    'Runtime.callFunctionOn',
+    { objectId: record.objectId, functionDeclaration, arguments: [{ value }], returnByValue: true },
+    unanswered,
+  );
+  if (result === unanswered || result?.exceptionDetails) {
+    record.closed = true;
+    record.nodes.clear();
+    clearTimeout(record.retry);
+    return false;
+  }
+  return result !== null;
+}
+
+function validScriptProof(proof) {
+  return !(
+    !proof ||
+    typeof proof !== 'object' ||
+    typeof proof.id !== 'string' ||
+    !proof.id.length ||
+    proof.id.length > 256 ||
+    proof.hashAlgorithm !== 'sha256-utf8' ||
+    !/^[a-f0-9]{64}$/.test(proof.generatedHash ?? '') ||
+    !Array.isArray(proof.lineStarts) ||
+    !proof.lineStarts.length ||
+    proof.lineStarts[0] !== 0 ||
+    proof.lineStarts.length > 16384 ||
+    !proof.lineStarts.every(
+      (offset, index, starts) =>
+        Number.isSafeInteger(offset) &&
+        offset >= 0 &&
+        offset <= 1_000_000_000 &&
+        (!index || offset > starts[index - 1]),
+    ) ||
+    !Array.isArray(proof.mappings)
+  );
+}
+
+function storeScriptProof(record, descriptor, request, proof, refs) {
+  if (!validScriptProof(proof)) return;
+  const mappings = proof.mappings
+    .slice(0, 50000)
+    .filter(
+      (mapping) =>
+        mapping &&
+        typeof mapping === 'object' &&
+        refs.has(mapping.sourceRefId) &&
+        mapping.generatedEnd > mapping.generatedStart &&
+        mapping.sourceEnd > mapping.sourceStart &&
+        ['generatedStart', 'generatedEnd', 'sourceStart', 'sourceEnd'].every(
+          (field) => Number.isSafeInteger(mapping[field]) && mapping[field] >= 0,
+        ),
+    );
+  const address = proof.debugUrlKey ? { url: proof.debugUrl, urlKey: proof.debugUrlKey } : request;
+  if (!address.urlKey && !address.url) return;
+  if (record.proofs.size >= 256 && !record.proofs.has(proof.id)) {
+    record.limitReason ??= 'script-proof-index-limit';
+    record.proofs.delete(record.proofs.keys().next().value);
+  }
+  record.proofs.set(proof.id, {
+    ...proof,
+    mappingsTruncated: proof.mappingsTruncated || proof.mappings.length > 50000,
+    mappings,
+    refs,
+    ...address,
+    sourceRevision: descriptor.sourceRevision,
+    external:
+      descriptor.channel === 'lense-script-resource' || descriptor.channel === 'mirage-resource' || proof.external,
+  });
+}
 const frameLoaders = (tree) => {
   const found = new Map(),
     queue = [tree];
@@ -40,7 +161,8 @@ export function createDomProvenanceTransport(context, configs) {
         initial = new Map(),
         script,
         closed = false;
-      const command = async (method, params = {}) => {
+      // A rejected command resolves to `rejected`; a command that outlives its deadline resolves to null.
+      const command = async (method, params = {}, rejected = null) => {
         if (
           closed &&
           ![
@@ -65,7 +187,7 @@ export function createDomProvenanceTransport(context, configs) {
           return await Promise.race([
             Promise.resolve()
               .then(() => cdp.send(method, params))
-              .catch(() => null),
+              .catch(() => rejected),
             expired,
           ]);
         } finally {
@@ -116,36 +238,7 @@ export function createDomProvenanceTransport(context, configs) {
             (line !== lastLine || column < lastColumn)
           );
         });
-        const matches = [];
-        for (const compiled of parsed) {
-          for (const proof of record.proofs.values()) {
-            if (
-              proof.generatedHash !== compiled.hash ||
-              !(proof.urlKey ? proof.urlKey === compiled.urlKey : proof.url === compiled.url)
-            )
-              continue;
-            if (
-              !proof.external &&
-              !compiled.hasSourceURL &&
-              (compiled.startLine !== proof.documentStart?.line || compiled.startColumn !== proof.documentStart?.column)
-            )
-              continue;
-            const point = locate(proof, compiled, frame),
-              ref = point && proof.refs.get(point.sourceRefId);
-            if (!ref) continue;
-            matches.push({
-              ref: {
-                ...ref,
-                region: point.region,
-                relationship: event.relationship,
-                observations: { ...ref.observations, served: true, parsed: true, executed: true },
-              },
-              region: point.region,
-              sourceRevision: proof.sourceRevision,
-              limited: proof.linesTruncated || proof.mappingsTruncated,
-            });
-          }
-        }
+        const matches = collectNodeMatches(record, event, parsed, frame, locate);
         const distinct = [
           ...new Map(
             matches.map((item) => [
@@ -155,27 +248,12 @@ export function createDomProvenanceTransport(context, configs) {
           ).values(),
         ];
         if (distinct.length !== 1)
-          return Date.now() - event.createdAt >= 3000
-            ? {
-                sourceRefs: [],
-                facts: [],
-                reason: distinct.length > 1 ? 'script-callsite-ambiguous' : 'script-callsite-unmapped',
-              }
-            : null;
+          return unresolvedCallsite(
+            event,
+            distinct.length > 1 ? 'script-callsite-ambiguous' : 'script-callsite-unmapped',
+          );
         // An overlapping different script version cannot be attributed by URL alone.
-        if (
-          parsed.some(
-            (script) =>
-              ![...record.proofs.values()].some(
-                (proof) =>
-                  proof.generatedHash === script.hash &&
-                  (proof.urlKey ? proof.urlKey === script.urlKey : proof.url === script.url),
-              ),
-          )
-        )
-          return Date.now() - event.createdAt >= 3000
-            ? { sourceRefs: [], facts: [], reason: 'script-version-unverified' }
-            : null;
+        if (hasUnverifiedScriptVersion(record, parsed)) return unresolvedCallsite(event, 'script-version-unverified');
         const selected = distinct[0];
         return {
           sourceRefs: [selected.ref],
@@ -195,23 +273,31 @@ export function createDomProvenanceTransport(context, configs) {
           ],
         };
       };
-      const flush = async (record) => {
+      /* NOSONAR: single-pass routine, splitting it would change shared state */ const flush = async (record) => {
         record.dirty = true;
         if (record.flushing || !record.objectId || closed || record.closed) return;
         record.flushing = true;
         try {
-          if (record.limitReason && !record.limitSent) {
-            record.limitSent = true;
-            await command('Runtime.callFunctionOn', {
-              objectId: record.objectId,
-              functionDeclaration: 'function(reason){return this.markLimited(reason)}',
-              arguments: [{ value: record.limitReason }],
-              returnByValue: true,
-            });
-          }
+          // A rejected call or a page-side exception means the claimed object no
+          // longer answers: the record closes instead of resending to it.
           do {
             record.dirty = false;
             if (loaders.get(record.frameId) !== record.loaderId) break;
+            // New bindings can overflow the pending queue while a preceding
+            // batch is awaiting its protocol acknowledgement.
+            if (record.limitReason && !record.limitSent) {
+              if (
+                !(await callDomRecord(
+                  record,
+                  command,
+                  'function(reason){return this.markLimited(reason)}',
+                  record.limitReason,
+                  unanswered,
+                ))
+              )
+                break;
+              record.limitSent = true;
+            }
             const batch = [];
             for (const [id, event] of record.nodes) {
               const proof = resolveNode(record, event);
@@ -222,12 +308,14 @@ export function createDomProvenanceTransport(context, configs) {
               if (batch.length >= 64) break;
             }
             if (!batch.length) break;
-            await command('Runtime.callFunctionOn', {
-              objectId: record.objectId,
-              functionDeclaration: 'function(entries){return this.resolveMany(entries)}',
-              arguments: [{ value: batch }],
-              returnByValue: true,
-            });
+            await callDomRecord(
+              record,
+              command,
+              'function(entries){return this.resolveMany(entries)}',
+              batch,
+              unanswered,
+            );
+            if (record.closed) break;
             if (record.nodes.size) record.dirty = true;
           } while (record.dirty && !closed && !record.closed);
         } finally {
@@ -278,61 +366,8 @@ export function createDomProvenanceTransport(context, configs) {
               .filter(Boolean)
               .map((ref) => [ref.id, ref]),
           );
-          for (const proof of descriptor.scriptProofs.slice(0, 128)) {
-            if (
-              !proof ||
-              typeof proof !== 'object' ||
-              typeof proof.id !== 'string' ||
-              !proof.id.length ||
-              proof.id.length > 256 ||
-              proof.hashAlgorithm !== 'sha256-utf8' ||
-              !/^[a-f0-9]{64}$/.test(proof.generatedHash ?? '') ||
-              !Array.isArray(proof.lineStarts) ||
-              !proof.lineStarts.length ||
-              proof.lineStarts[0] !== 0 ||
-              proof.lineStarts.length > 16384 ||
-              !proof.lineStarts.every(
-                (offset, index, starts) =>
-                  Number.isSafeInteger(offset) &&
-                  offset >= 0 &&
-                  offset <= 1_000_000_000 &&
-                  (!index || offset > starts[index - 1]),
-              ) ||
-              !Array.isArray(proof.mappings)
-            )
-              continue;
-            const mappings = proof.mappings
-              .slice(0, 50000)
-              .filter(
-                (mapping) =>
-                  mapping &&
-                  typeof mapping === 'object' &&
-                  refs.has(mapping.sourceRefId) &&
-                  mapping.generatedEnd > mapping.generatedStart &&
-                  mapping.sourceEnd > mapping.sourceStart &&
-                  ['generatedStart', 'generatedEnd', 'sourceStart', 'sourceEnd'].every(
-                    (field) => Number.isSafeInteger(mapping[field]) && mapping[field] >= 0,
-                  ),
-              );
-            const address = proof.debugUrlKey ? { url: proof.debugUrl, urlKey: proof.debugUrlKey } : request;
-            if (!address.urlKey && !address.url) continue;
-            if (record.proofs.size >= 256 && !record.proofs.has(proof.id)) {
-              record.limitReason ??= 'script-proof-index-limit';
-              record.proofs.delete(record.proofs.keys().next().value);
-            }
-            record.proofs.set(proof.id, {
-              ...proof,
-              mappingsTruncated: proof.mappingsTruncated || proof.mappings.length > 50000,
-              mappings,
-              refs,
-              ...address,
-              sourceRevision: descriptor.sourceRevision,
-              external:
-                descriptor.channel === 'lense-script-resource' ||
-                descriptor.channel === 'mirage-resource' ||
-                proof.external,
-            });
-          }
+          for (const proof of descriptor.scriptProofs.slice(0, 128))
+            storeScriptProof(record, descriptor, request, proof, refs);
         }
         flush(record).catch(() => {});
       };

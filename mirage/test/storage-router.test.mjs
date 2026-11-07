@@ -13,17 +13,18 @@ import {
 } from '../lib/storage-provider.mjs';
 import { createLocalDiskStorage } from '../lib/storage-local-disk.mjs';
 import { azuriteDescriptor, create as createAzurite, preflight } from '../lib/storage-azurite.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 async function tempRoot(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'storage-router-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'storage-router-'));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   return root;
 }
 
 test('router defaults: local routes, export web files and a missing cloud attachment route', async (t) => {
   const root = await tempRoot(t);
   const local = createLocalDiskStorage({ root: path.join(root, 'blobs') });
-  t.after(() => local.close());
+  ownedFixture(t).add(() => local.close());
   const router = createStorageRouter({ providers: { local } });
   assert.deepEqual(router.routes(), {
     dataverseFiles: 'local',

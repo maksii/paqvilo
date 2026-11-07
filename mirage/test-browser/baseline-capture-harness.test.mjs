@@ -1,18 +1,17 @@
 // Baseline capture: `harness: true` steps leave no evidence.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
-import { once } from 'node:events';
-import { chromium } from 'playwright-core';
-import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { pageRunner } from '../baseline-capture.mjs';
+import { loopbackServer, sharedBrowser } from './shared-browser.mjs';
+
+const chrome = sharedBrowser({ headless: true });
 
 test(
   'harness steps run but their requests, console entries and final URL are not recorded',
   { timeout: 120_000 },
   async (t) => {
     let cleared = 0;
-    const server = http.createServer((req, res) => {
+    const { origin } = await loopbackServer(t, (req, res) => {
       const page = (body) =>
         res
           .writeHead(200, { 'content-type': 'text/html' })
@@ -25,13 +24,7 @@ test(
       if (req.url === '/item') return page("<h1 id='item'>Item</h1>");
       res.writeHead(404).end();
     });
-    server.listen(0, '127.0.0.1');
-    await once(server, 'listening');
-    t.after(() => new Promise((resolve) => server.close(resolve)));
-    const origin = `http://127.0.0.1:${server.address().port}`;
-    const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-    t.after(() => browser.close());
-    const page = await (await browser.newContext()).newPage();
+    const page = await chrome.page(t);
     const run = (steps) =>
       pageRunner(page, {
         origin,
@@ -74,7 +67,7 @@ test(
   'same-origin frames are inventoried: DOM keyed by frame path, elements prefixed with the frame',
   { timeout: 120_000 },
   async (t) => {
-    const server = http.createServer((req, res) => {
+    const { origin } = await loopbackServer(t, (req, res) => {
       const page = (body) =>
         res
           .writeHead(200, { 'content-type': 'text/html' })
@@ -86,13 +79,7 @@ test(
       if (req.url === '/inner') return page('<form><input id="inner_name" value="x"></form>');
       res.writeHead(404).end();
     });
-    server.listen(0, '127.0.0.1');
-    await once(server, 'listening');
-    t.after(() => new Promise((resolve) => server.close(resolve)));
-    const origin = `http://127.0.0.1:${server.address().port}`;
-    const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-    t.after(() => browser.close());
-    const page = await (await browser.newContext()).newPage();
+    const page = await chrome.page(t);
     const result = await pageRunner(page, {
       origin,
       scenario: {

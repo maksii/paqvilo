@@ -88,7 +88,7 @@ function destinationOf(target) {
 function profileIdOf(target) {
   const type = String(target?.['@odata.type'] ?? '').replace(/^#?Microsoft\.Dynamics\.CRM\./, '');
   const text = String(target?.mobileofflineprofileid ?? target?.['@odata.id'] ?? '');
-  const set = /([a-z_]+)\(/i.exec(text)?.[1]?.toLowerCase();
+  const set = /(?<![a-z_])([a-z_]+)\(/i.exec(text)?.[1]?.toLowerCase();
   const id = GUID.exec(text)?.[1];
   if (!id || (type && type !== 'mobileofflineprofile') || (set && set !== 'mobileofflineprofiles')) {
     throw invalid('Target must be a mobileofflineprofile reference.'); // native message text not known
@@ -119,7 +119,7 @@ function operations(api) {
   const write = (fn) => api.change(() => store.transact(fn, { isolated: true }));
   const need = (c, operation, schemaName, entity) => {
     const name = privilegeName(operation, schemaName);
-    if (!(api.principals.privileges(c.user).get(name) > 0)) throw privilegeDeniedError(c.user, name, entity);
+    if (!(api.principals.privileges(c.user).get(name) > 0)) throw privilegeDeniedError(c.user, name, entity); // NOSONAR: operand can be NaN or undefined, the negated test differs
   };
   const respond = (c, name, body) => ({
     status: 200,
@@ -330,12 +330,10 @@ function operations(api) {
           component.kind === 'entity' || component.kind === 'attribute'
             ? store.resolveMapping(component.logical)
             : null;
-        const customizable =
-          component.kind === 'attribute'
-            ? mapping.fields[component.name]?.columnMetadata?.isCustomizable
-            : component.kind === 'entity'
-              ? mapping.dataverseMetadata?.IsCustomizable?.Value
-              : undefined;
+        let customizable;
+        if (component.kind === 'attribute')
+          customizable = mapping.fields[component.name]?.columnMetadata?.isCustomizable;
+        else if (component.kind === 'entity') customizable = mapping.dataverseMetadata?.IsCustomizable?.Value;
         return respond(c, 'IsComponentCustomizable', { IsComponentCustomizable: customizable ?? true });
       },
       csdl: csdlOf('function', 'IsComponentCustomizable', {
@@ -404,25 +402,27 @@ function operations(api) {
 
   for (const entity of UNPUBLISHED_ENTITIES) {
     if (!store.state.mappings[entity]) continue;
-    ops.push({
-      name: 'RetrieveUnpublished',
-      kind: 'function',
-      binding: 'entity',
-      entity,
-      handle: async (c) => read(c, `/api/data/${c.version}/${c.target.mapping.entitySet}(${c.target.id})`),
-      csdl: csdlOf('function', 'RetrieveUnpublished', { bound: entity, returns: 'mscrm.savedqueryvisualization' }),
-    });
-    ops.push({
-      name: 'RetrieveUnpublishedMultiple',
-      kind: 'function',
-      binding: 'collection',
-      entity,
-      handle: async (c) => read(c, `/api/data/${c.version}/${c.target.mapping.entitySet}`),
-      csdl: csdlOf('function', 'RetrieveUnpublishedMultiple', {
-        bound: entity,
-        returns: 'Collection(mscrm.savedqueryvisualization)',
-      }),
-    });
+    ops.push(
+      {
+        name: 'RetrieveUnpublished',
+        kind: 'function',
+        binding: 'entity',
+        entity,
+        handle: async (c) => read(c, `/api/data/${c.version}/${c.target.mapping.entitySet}(${c.target.id})`),
+        csdl: csdlOf('function', 'RetrieveUnpublished', { bound: entity, returns: 'mscrm.savedqueryvisualization' }),
+      },
+      {
+        name: 'RetrieveUnpublishedMultiple',
+        kind: 'function',
+        binding: 'collection',
+        entity,
+        handle: async (c) => read(c, `/api/data/${c.version}/${c.target.mapping.entitySet}`),
+        csdl: csdlOf('function', 'RetrieveUnpublishedMultiple', {
+          bound: entity,
+          returns: 'Collection(mscrm.savedqueryvisualization)',
+        }),
+      },
+    );
   }
   return ops;
 }

@@ -5,6 +5,36 @@ import path from 'node:path';
 
 const plain = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 
+function addTopologyNode(nodes, id, label, status, detail = {}) {
+  const existing = nodes.get(id);
+  if (existing) {
+    if (status === 'planned') existing.status = 'planned';
+    Object.assign(existing.detail, detail);
+    return;
+  }
+  nodes.set(id, { id, kind: id.split(':')[0], label, status, detail });
+}
+
+function addTopologyEdge(edges, from, to, kind, label) {
+  if (!edges.some((item) => item.from === from && item.to === to)) edges.push({ from, to, kind, label });
+}
+
+const isPortalTarget = (item) => item.kind === 'power-pages' && item.portals;
+const isModelDrivenTarget = (item) => item.kind === 'model-driven' || (item.kind === 'power-pages' && item.solutions);
+const dataverseEnabled = (item) =>
+  item.mirage.dataverse?.enabled === true ||
+  (item.mirage.dataverse?.enabled === undefined && item.kind === 'dataverse-api');
+
+function topologyEdges(edges, nodes) {
+  const status = (id) => nodes.get(id)?.status;
+  return edges
+    .filter((item) => nodes.has(item.from) && nodes.has(item.to))
+    .map((item) => ({
+      ...item,
+      status: [status(item.from), status(item.to)].includes('disabled') ? 'disabled' : 'planned',
+    }));
+}
+
 /** Resolved Mirage settings per runtime target of a setup snapshot (catalogue sites, or the project). */
 function targets(snapshot) {
   if (snapshot.kind === 'project') {
@@ -13,7 +43,7 @@ function targets(snapshot) {
       {
         id: settings.defaultSite ?? 'project',
         kind: settings.runtime?.kind ?? 'power-pages',
-        mirage: { ...(settings.mirage ?? {}), dataverse: settings.dataverse, simulation: settings.simulation },
+        mirage: { ...settings.mirage, dataverse: settings.dataverse, simulation: settings.simulation },
         solutions: (snapshot.solutions ?? []).length,
         packs: snapshot.packs ?? [],
         portals: (snapshot.sites ?? []).length,
@@ -67,7 +97,7 @@ function configuration(snapshot, list, dataverseOn) {
           .map(relative),
       ),
     ],
-    settingsKeys: [...new Set(list.flatMap((item) => item.keys))].sort(),
+    settingsKeys: [...new Set(list.flatMap((item) => item.keys))].sort(/* NOSONAR: preserve default string coercion */),
     // The visitor sign-in provider listens on a loopback port of its own, chosen at start (null until then).
     ports: {
       portal,
@@ -79,39 +109,36 @@ function configuration(snapshot, list, dataverseOn) {
   };
 }
 
-export function plannedTopology(snapshot = {}) {
-  const nodes = new Map(),
-    edges = [];
-  const node = (id, label, status, detail = {}) => {
-    const existing = nodes.get(id);
-    if (existing) {
-      if (status === 'planned') existing.status = 'planned';
-      Object.assign(existing.detail, detail);
-      return;
-    }
-    nodes.set(id, { id, kind: id.split(':')[0], label, status, detail });
-  };
-  const edge = (from, to, kind, label) => {
-    if (!edges.some((item) => item.from === from && item.to === to)) edges.push({ from, to, kind, label });
-  };
-  const list = targets(snapshot);
-  const portals = list.filter((item) => item.kind === 'power-pages' && item.portals);
-  const modelDriven = list.filter(
-    (item) => item.kind === 'model-driven' || (item.kind === 'power-pages' && item.solutions),
-  );
-  const dataverseOn = (item) =>
-    item.mirage.dataverse?.enabled === true ||
-    (item.mirage.dataverse?.enabled === undefined && item.kind === 'dataverse-api');
-  const api = list.filter(dataverseOn);
+function addOrganizationNodes(list, node, edge) {
+  for (const [id, label] of [
+    ['org:store', 'Organization store'],
+    ['org:security', 'Security'],
+    ['org:plugins', 'Plug-ins'],
+    ['org:workflows', 'Workflows'],
+    ['org:flows', 'Cloud flows'],
+    ['org:jobs', 'Background jobs'],
+  ])
+    node(id, label, list.length ? 'planned' : 'disabled');
+  edge('host:portal', 'org:store', 'process', 'records (table permissions)');
+  edge('host:model-driven', 'org:store', 'process', 'records and Web API messages, in the app');
+  edge('host:dataverse-api', 'org:store', 'process', 'records');
+  edge('org:store', 'org:security', 'process', 'access checks');
+  edge('org:store', 'org:plugins', 'process', 'pipeline');
+  edge('org:plugins', 'org:store', 'process', 'SDK calls');
+  edge('org:plugins', 'org:jobs', 'process', 'async steps');
+  edge('org:store', 'org:workflows', 'process', 'runs on save');
+  edge('org:workflows', 'org:jobs', 'process', 'background');
+  edge('org:jobs', 'org:flows', 'process', 'row triggers');
+  edge('host:portal', 'org:flows', 'process', 'cloud flows (/_api/cloudflow)');
+}
 
+function addCoreTopology(list, portals, modelDriven, api, snapshot, node, edge) {
   node('host:setup', 'Setup', 'planned');
   node('host:admin', 'Administration', 'planned');
-  // Staff use setup and the simulator administration; visitors open the website.
   node('client:browser', 'Browser', 'planned');
   node('client:staff', 'Staff browser', 'planned');
   edge('client:staff', 'host:setup', 'http', 'configure');
   edge('client:staff', 'host:admin', 'http', 'administer');
-  // Lense shows local files on a live website: it appears once a target names a live address (not an example or this computer).
   const live = list.filter((item) =>
     (item.environments ?? []).some(
       (url) =>
@@ -130,7 +157,6 @@ export function plannedTopology(snapshot = {}) {
   });
   edge('client:browser', 'host:identity-provider', 'http', 'sign-in page');
   edge('host:portal', 'host:identity-provider', 'http', 'tokens and user info');
-
   node('host:model-driven', 'Model-driven apps', modelDriven.length ? 'planned' : 'disabled', {
     sites: modelDriven.map((item) => item.id),
   });
@@ -149,137 +175,129 @@ export function plannedTopology(snapshot = {}) {
     edge('client:api', 'host:tds', 'http', 'TDS');
     edge('host:tds', 'org:store', 'process', 'records as the caller');
   }
+  addOrganizationNodes(list, node, edge);
+}
 
-  for (const [id, label] of [
-    ['org:store', 'Organization store'],
-    ['org:security', 'Security'],
-    ['org:plugins', 'Plug-ins'],
-    ['org:workflows', 'Workflows'],
-    ['org:flows', 'Cloud flows'],
-    ['org:jobs', 'Background jobs'],
-  ])
-    node(id, label, list.length ? 'planned' : 'disabled');
-  // As the running map draws them (organization-host.mjs): the model-driven shell calls its own in-app Web API, not the listener.
-  edge('host:portal', 'org:store', 'process', 'records (table permissions)');
-  edge('host:model-driven', 'org:store', 'process', 'records and Web API messages, in the app');
-  edge('host:dataverse-api', 'org:store', 'process', 'records');
-  edge('org:store', 'org:security', 'process', 'access checks');
-  edge('org:store', 'org:plugins', 'process', 'pipeline');
-  edge('org:plugins', 'org:store', 'process', 'SDK calls');
-  edge('org:plugins', 'org:jobs', 'process', 'async steps');
-  edge('org:store', 'org:workflows', 'process', 'runs on save');
-  edge('org:workflows', 'org:jobs', 'process', 'background');
-  edge('org:jobs', 'org:flows', 'process', 'row triggers');
-  edge('host:portal', 'org:flows', 'process', 'cloud flows (/_api/cloudflow)');
+function addPackNodes(item, node, edge) {
+  for (const pack of item.packs) {
+    const parts = String(pack.module ?? pack.path ?? 'pack')
+        .split(/[\\/]/)
+        .filter(Boolean),
+      name = pack.id ?? (parts.length > 1 ? parts.at(-2) : parts[0].replace(/\.[cm]?js$/i, ''));
+    const id = `org:pack:${name}`;
+    node(id, `Sample data ${name}`, pack.exists === false ? 'missing' : 'planned', {
+      module: pack.module ?? pack.path,
+    });
+    edge(id, 'org:store', 'reads', 'data and handlers');
+  }
+}
 
-  for (const item of list) {
-    const settings = item.mirage;
-    for (const pack of item.packs) {
-      // A module registered by its path is named by its folder: pack/pack.mjs reads "pack", fx/pack.mjs reads "fx".
-      const parts = String(pack.module ?? pack.path ?? 'pack')
-          .split(/[\\/]/)
-          .filter(Boolean),
-        name = pack.id ?? (parts.length > 1 ? parts.at(-2) : parts[0].replace(/\.[cm]?js$/i, ''));
-      const id = `org:pack:${name}`;
-      node(id, `Sample data ${name}`, pack.exists === false ? 'missing' : 'planned', {
-        module: pack.module ?? pack.path,
-      });
-      edge(id, 'org:store', 'reads', 'data and handlers');
-    }
-    const providers = settings.providers ?? {};
-    if (plain(providers.storage) || plain(providers.routes)) {
-      node('provider:storage', 'Storage', 'planned', { providers: Object.keys(providers.storage ?? {}) });
-      // File columns and notes go through the organization's storage routing; the portal reads web files and stages uploads.
-      edge('org:store', 'provider:storage', 'storage', 'file columns and notes (storage routing)');
-      if (item.kind === 'power-pages') edge('host:portal', 'provider:storage', 'storage', 'web files and uploads');
-      for (const [route, target] of Object.entries(providers.routes ?? {})) {
-        node(`provider:storage-route:${route}`, route, 'planned', { target });
-        edge('provider:storage', `provider:storage-route:${route}`, 'storage', target);
-      }
-      const azurite = Object.entries(providers.storage ?? {})
-        .filter(([, entry]) => entry?.kind === 'azurite')
-        .map(([id]) => id);
-      if (azurite.length) {
-        node('external:azurite', 'Azurite (declared)', 'planned');
-        const routes = Object.entries(providers.routes ?? {}).filter(([, target]) => azurite.includes(target));
-        for (const [route] of routes)
-          edge(`provider:storage-route:${route}`, 'external:azurite', 'storage', 'Blob REST');
-        if (!routes.length) edge('provider:storage', 'external:azurite', 'storage', 'configured, no route uses it');
-      }
-    }
-    if (plain(providers.messaging)) {
-      node('provider:messaging', 'Messaging', 'planned', {
-        providers: Object.keys(providers.messaging).filter((key) => key !== 'endpoints'),
-      });
-      edge('org:plugins', 'provider:messaging', 'bus', 'service endpoints');
-      for (const target of Object.values(providers.messaging.endpoints ?? {})) {
-        const entity = String(target).split('/').slice(1).join('/');
-        node(`provider:messaging-endpoint:${entity}`, entity, 'planned', { target });
-        edge('provider:messaging', `provider:messaging-endpoint:${entity}`, 'bus', entity);
-      }
-      if (Object.values(providers.messaging).some((entry) => entry?.kind === 'servicebus-emulator')) {
-        node('external:servicebus-emulator', 'Service Bus emulator (AMQP, started outside Paqvilo)', 'planned');
-        edge('provider:messaging', 'external:servicebus-emulator', 'bus', 'AMQP');
-      }
-    }
-    if (plain(providers.outbox)) {
-      node('provider:outbox', 'Outbox', 'planned', { kind: providers.outbox.kind ?? 'local' });
-      edge('org:store', 'provider:outbox', 'process', 'SendEmail (activity messages)');
-      edge('host:admin', 'provider:outbox', 'process', 'outbox');
-    }
-    const connections = Object.entries(settings.connections ?? {});
-    if (connections.length) {
-      node('provider:connectors', 'Connectors', 'planned', { connections: connections.length });
-      edge('org:flows', 'provider:connectors', 'process', 'actions');
-      edge('provider:connectors', 'org:store', 'process', 'Dataverse connector');
-      if (plain(providers.messaging)) edge('provider:connectors', 'provider:messaging', 'bus', 'Service Bus connector');
-      for (const [id, entry] of connections) {
-        node(`connection:${id}`, id, 'planned', { provider: entry?.provider ?? null });
-        edge('provider:connectors', `connection:${id}`, 'process', entry?.provider ?? 'connection');
-      }
-    }
-    const secrets = Object.keys(settings.secrets ?? {});
-    // Names are counted only; references and values never leave the store.
-    if (secrets.length) {
-      node('provider:secrets', 'Secrets', 'planned', { references: secrets.length });
-      edge('org:store', 'provider:secrets', 'reads', 'secret environment variables (org messages)');
-      edge('org:flows', 'provider:secrets', 'reads', 'secret parameters');
-      if (item.kind === 'power-pages') edge('host:portal', 'provider:secrets', 'reads', 'secret site settings');
-    }
-    for (const [id, entry] of Object.entries(settings.localServices ?? {})) {
-      node(`provider:local-service:${id}`, id, 'planned', {
-        kind: entry?.kind ?? null,
-        required: entry?.required === true,
-      });
-      // Local services are only probed, by the preflight check of the administration; each points at its outside process.
-      edge('host:admin', `provider:local-service:${id}`, 'http', 'preflight probe');
-      if (entry?.kind === 'azure-storage') {
-        node('external:azurite', 'Azurite (declared)', 'planned');
-        edge(`provider:local-service:${id}`, 'external:azurite', 'http', 'health probe');
-      }
-      if (entry?.kind === 'service-bus') {
-        node('external:servicebus-emulator', 'Service Bus emulator (AMQP, started outside Paqvilo)', 'planned');
-        edge(`provider:local-service:${id}`, 'external:servicebus-emulator', 'bus', 'health probe');
-      }
-    }
-    // Canvas apps come from project canvas sources or from the Solutions; the switch turns them off.
-    // Apps inside Solutions are counted only once the preview reads them, so the plan names a count of canvas folders only.
-    if (settings.canvas || (item.solutions && item.kind !== 'dataverse-api'))
-      node('app:canvas', 'Canvas apps', settings.canvas?.enabled === false ? 'disabled' : 'planned', {
-        ...(settings.canvas?.sources?.length ? { sources: settings.canvas.sources.length } : {}),
-        solutions: item.solutions,
-      });
-    if (Array.isArray(settings.codeApps) && settings.codeApps.length)
-      node('app:code', 'Code apps', 'planned', { apps: settings.codeApps.length });
-    if (item.kind === 'power-pages') {
-      const max = settings.personaContexts?.maxInstances ?? 4;
-      node(`persona-runtime:${item.id}`, `Persona contexts (${item.id})`, max > 0 ? 'planned' : 'disabled', {
-        maxInstances: max,
-      });
-      edge('host:portal', `persona-runtime:${item.id}`, 'process', 'isolated sessions');
+function addStorageTopology(item, providers, node, edge) {
+  if (!plain(providers.storage) && !plain(providers.routes)) return;
+  node('provider:storage', 'Storage', 'planned', { providers: Object.keys(providers.storage ?? {}) });
+  edge('org:store', 'provider:storage', 'storage', 'file columns and notes (storage routing)');
+  if (item.kind === 'power-pages') edge('host:portal', 'provider:storage', 'storage', 'web files and uploads');
+  for (const [route, target] of Object.entries(providers.routes ?? {})) {
+    node(`provider:storage-route:${route}`, route, 'planned', { target });
+    edge('provider:storage', `provider:storage-route:${route}`, 'storage', target);
+  }
+  const azurite = Object.entries(providers.storage ?? {})
+    .filter(([, entry]) => entry?.kind === 'azurite')
+    .map(([id]) => id);
+  if (!azurite.length) return;
+  node('external:azurite', 'Azurite (declared)', 'planned');
+  const routes = Object.entries(providers.routes ?? {}).filter(([, target]) => azurite.includes(target));
+  for (const [route] of routes) edge(`provider:storage-route:${route}`, 'external:azurite', 'storage', 'Blob REST');
+  if (!routes.length) edge('provider:storage', 'external:azurite', 'storage', 'configured, no route uses it');
+}
+
+function addMessagingTopology(providers, node, edge) {
+  if (!plain(providers.messaging)) return;
+  node('provider:messaging', 'Messaging', 'planned', {
+    providers: Object.keys(providers.messaging).filter((key) => key !== 'endpoints'),
+  });
+  edge('org:plugins', 'provider:messaging', 'bus', 'service endpoints');
+  for (const target of Object.values(providers.messaging.endpoints ?? {})) {
+    const entity = String(target).split('/').slice(1).join('/');
+    node(`provider:messaging-endpoint:${entity}`, entity, 'planned', { target });
+    edge('provider:messaging', `provider:messaging-endpoint:${entity}`, 'bus', entity);
+  }
+  if (Object.values(providers.messaging).some((entry) => entry?.kind === 'servicebus-emulator')) {
+    node('external:servicebus-emulator', 'Service Bus emulator (AMQP, started outside Paqvilo)', 'planned');
+    edge('provider:messaging', 'external:servicebus-emulator', 'bus', 'AMQP');
+  }
+}
+
+function addLocalServiceTopology(id, entry, node, edge) {
+  node(`provider:local-service:${id}`, id, 'planned', {
+    kind: entry?.kind ?? null,
+    required: entry?.required === true,
+  });
+  edge('host:admin', `provider:local-service:${id}`, 'http', 'preflight probe');
+  if (entry?.kind === 'azure-storage') {
+    node('external:azurite', 'Azurite (declared)', 'planned');
+    edge(`provider:local-service:${id}`, 'external:azurite', 'http', 'health probe');
+  }
+  if (entry?.kind === 'service-bus') {
+    node('external:servicebus-emulator', 'Service Bus emulator (AMQP, started outside Paqvilo)', 'planned');
+    edge(`provider:local-service:${id}`, 'external:servicebus-emulator', 'bus', 'health probe');
+  }
+}
+
+function addConnectionsAndSecrets(item, settings, providers, node, edge) {
+  const connections = Object.entries(settings.connections ?? {});
+  if (connections.length) {
+    node('provider:connectors', 'Connectors', 'planned', { connections: connections.length });
+    edge('org:flows', 'provider:connectors', 'process', 'actions');
+    edge('provider:connectors', 'org:store', 'process', 'Dataverse connector');
+    if (plain(providers.messaging)) edge('provider:connectors', 'provider:messaging', 'bus', 'Service Bus connector');
+    for (const [id, entry] of connections) {
+      node(`connection:${id}`, id, 'planned', { provider: entry?.provider ?? null });
+      edge('provider:connectors', `connection:${id}`, 'process', entry?.provider ?? 'connection');
     }
   }
-  // Staff open the apps; their data runs through the records layer as that person, and code apps take their tokens from the Web API.
+  const secrets = Object.keys(settings.secrets ?? {});
+  if (!secrets.length) return;
+  node('provider:secrets', 'Secrets', 'planned', { references: secrets.length });
+  edge('org:store', 'provider:secrets', 'reads', 'secret environment variables (org messages)');
+  edge('org:flows', 'provider:secrets', 'reads', 'secret parameters');
+  if (item.kind === 'power-pages') edge('host:portal', 'provider:secrets', 'reads', 'secret site settings');
+}
+
+function addAppTopology(item, settings, node, edge) {
+  if (settings.canvas || (item.solutions && item.kind !== 'dataverse-api'))
+    node('app:canvas', 'Canvas apps', settings.canvas?.enabled === false ? 'disabled' : 'planned', {
+      ...(settings.canvas?.sources?.length ? { sources: settings.canvas.sources.length } : {}),
+      solutions: item.solutions,
+    });
+  if (Array.isArray(settings.codeApps) && settings.codeApps.length)
+    node('app:code', 'Code apps', 'planned', { apps: settings.codeApps.length });
+  if (item.kind !== 'power-pages') return;
+  const max = settings.personaContexts?.maxInstances ?? 4;
+  node(`persona-runtime:${item.id}`, `Persona contexts (${item.id})`, max > 0 ? 'planned' : 'disabled', {
+    maxInstances: max,
+  });
+  edge('host:portal', `persona-runtime:${item.id}`, 'process', 'isolated sessions');
+}
+
+function addTargetTopology(item, node, edge) {
+  const settings = item.mirage;
+  addPackNodes(item, node, edge);
+  const providers = settings.providers ?? {};
+  addStorageTopology(item, providers, node, edge);
+  addMessagingTopology(providers, node, edge);
+  if (plain(providers.outbox)) {
+    node('provider:outbox', 'Outbox', 'planned', { kind: providers.outbox.kind ?? 'local' });
+    edge('org:store', 'provider:outbox', 'process', 'SendEmail (activity messages)');
+    edge('host:admin', 'provider:outbox', 'process', 'outbox');
+  }
+  addConnectionsAndSecrets(item, settings, providers, node, edge);
+  for (const [id, entry] of Object.entries(settings.localServices ?? {}))
+    addLocalServiceTopology(id, entry, node, edge);
+  addAppTopology(item, settings, node, edge);
+}
+
+function addStaffAppEdges(nodes, api, node, edge) {
   for (const id of ['app:canvas', 'app:code'])
     if (nodes.has(id)) {
       node('client:staff', 'Staff browser', 'planned');
@@ -287,15 +305,26 @@ export function plannedTopology(snapshot = {}) {
       edge(id, 'org:store', 'process', 'records as the user');
     }
   if (nodes.has('app:code') && api.length) edge('app:code', 'host:dataverse-api', 'http', 'tokens');
-  const status = (id) => nodes.get(id)?.status;
+}
+
+export function plannedTopology(snapshot = {}) {
+  const nodes = new Map(),
+    edges = [];
+  const node = (id, label, status, detail = {}) => addTopologyNode(nodes, id, label, status, detail);
+  const edge = (from, to, kind, label) => addTopologyEdge(edges, from, to, kind, label);
+  const list = targets(snapshot);
+  const portals = list.filter(isPortalTarget);
+  const modelDriven = list.filter(isModelDrivenTarget);
+  const dataverseOn = (item) => dataverseEnabled(item);
+  const api = list.filter(dataverseOn);
+
+  addCoreTopology(list, portals, modelDriven, api, snapshot, node, edge);
+
+  for (const item of list) addTargetTopology(item, node, edge);
+  addStaffAppEdges(nodes, api, node, edge);
   return {
     nodes: [...nodes.values()],
     configuration: configuration(snapshot, list, dataverseOn),
-    edges: edges
-      .filter((item) => nodes.has(item.from) && nodes.has(item.to))
-      .map((item) => ({
-        ...item,
-        status: [status(item.from), status(item.to)].includes('disabled') ? 'disabled' : 'planned',
-      })),
+    edges: topologyEdges(edges, nodes),
   };
 }

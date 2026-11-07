@@ -2,7 +2,8 @@
 // (strict, TLS first). Login and queries are delegated to the caller. Protocol only: no SQL or store knowledge.
 //
 // createTdsServer({ secureContext, serverName, version, onLogin, onQuery, packetSize }) -> { listen(port, host), close() }
-//   secureContext  tls.SecureContext. Wrapped (TDS 7.x) TLS needs maxVersion 'TLSv1.2' on it (see framing.mjs).
+//   secureContext  tls.SecureContext, or a function returning one at each handshake. Wrapped (TDS 7.x) TLS needs
+//                  maxVersion 'TLSv1.2' on it (see framing.mjs).
 //   serverName     LOGINACK program name (default 'Microsoft SQL Server'). version: PRELOGIN/LOGINACK version (default '12.0.2000').
 //   onLogin({ token, fedAuth, login }) -> { ok: true, principal } | { ok: false, error?: { number, message, state, class } }
 //                                     | { fedAuthInfo: { stsUrl, spn } }
@@ -51,6 +52,7 @@ const INTERNAL_ERROR = 50000;
 const LOGIN_FAILED = { number: 18456, state: 1, class: 14, message: 'Login failed.' };
 const COLLATION = Buffer.from([0x09, 0x04, 0xd0, 0x00, 0x34]); // Latin1_General_CI_AS
 const EMPTY = Buffer.alloc(0);
+const contextOf = (context) => (typeof context === 'function' ? context() : context);
 
 export function createTdsServer({
   secureContext,
@@ -79,7 +81,7 @@ export function createTdsServer({
     const mode = detectTdsMode(first);
     if (mode === 'tds8')
       return session(
-        acceptTls(socket, { secureContext: strictSecureContext, initial: inbox.detach(), strict: true }),
+        acceptTls(socket, { secureContext: contextOf(strictSecureContext), initial: inbox.detach(), strict: true }),
         true,
       );
     if (mode !== 'tds7') throw new Error('connection does not start with PRELOGIN or TLS');
@@ -88,7 +90,7 @@ export function createTdsServer({
     const fields = decodePrelogin(request.payload);
     const encryption = fields.encryption?.[0] === ENCRYPT_OFF ? ENCRYPT_REQ : ENCRYPT_ON;
     writeMessage(socket, TDS.TABULAR, preloginReply(fields, encryption), packetSize);
-    return session(acceptTls(socket, { secureContext, initial: inbox.detach() }), false);
+    return session(acceptTls(socket, { secureContext: contextOf(secureContext), initial: inbox.detach() }), false);
   }
 
   function preloginReply(fields, encryption) {
@@ -194,7 +196,7 @@ export function createTdsServer({
     }
 
     function reject(error) {
-      reply(errorToken({ ...LOGIN_FAILED, ...(error ?? {}) }), doneToken({ error: true }));
+      reply(errorToken({ ...LOGIN_FAILED, ...error }), doneToken({ error: true }));
       stream.end();
     }
 
@@ -240,8 +242,11 @@ function resultTokens(result, rpc) {
   const tokens = [];
   if (sets.length === 0) tokens.push(endOfSet({ more: rpc, rowCount: result?.rowCount }));
   sets.forEach((set, i) => {
-    tokens.push(columnMetadata(set.columns), ...set.rows.map((values) => row(set.columns, values)));
-    tokens.push(endOfSet({ more: rpc || i < sets.length - 1, rowCount: set.rows.length, curCmd: CUR_CMD_SELECT }));
+    tokens.push(
+      columnMetadata(set.columns),
+      ...set.rows.map((values) => row(set.columns, values)),
+      endOfSet({ more: rpc || i < sets.length - 1, rowCount: set.rows.length, curCmd: CUR_CMD_SELECT }),
+    );
   });
   if (rpc) tokens.push(returnStatus(0), doneProc());
   return tokens;
@@ -325,17 +330,29 @@ function takeMessage(buffer) {
   let type;
   let at = 0;
   for (;;) {
-    if (buffer.length - at < HEADER_BYTES) return null;
-    const length = buffer.readUInt16BE(at + 2);
-    if (length < HEADER_BYTES) throw new Error(`TDS packet length ${length} is below the header size`);
-    if (buffer.length - at < length) return null;
-    if (type === undefined) type = buffer[at];
-    else if (buffer[at] !== type) throw new Error('TDS message packets mix message types');
-    parts.push(buffer.subarray(at + HEADER_BYTES, at + length));
-    const endOfMessage = (buffer[at + 1] & 0x01) !== 0;
+    const packet = takePacket(buffer, at, type);
+    if (!packet) return null;
+    type = packet.type;
+    parts.push(packet.payload);
+    const endOfMessage = packet.endOfMessage;
+    const length = packet.length;
     at += length;
     if (at > MAX_MESSAGE_BYTES) throw new Error(`TDS message exceeds ${MAX_MESSAGE_BYTES} bytes`);
     if (endOfMessage)
       return { type, payload: parts.length === 1 ? parts[0] : Buffer.concat(parts), rest: buffer.subarray(at) };
   }
+}
+
+function takePacket(buffer, at, type) {
+  if (buffer.length - at < HEADER_BYTES) return null;
+  const length = buffer.readUInt16BE(at + 2);
+  if (length < HEADER_BYTES) throw new Error(`TDS packet length ${length} is below the header size`);
+  if (buffer.length - at < length) return null;
+  if (type !== undefined && buffer[at] !== type) throw new Error('TDS message packets mix message types');
+  return {
+    length,
+    type: type === undefined ? buffer[at] : type,
+    payload: buffer.subarray(at + HEADER_BYTES, at + length),
+    endOfMessage: (buffer[at + 1] & 0x01) !== 0,
+  };
 }

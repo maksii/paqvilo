@@ -9,7 +9,7 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 let browser;
 before(async () => {
@@ -23,7 +23,7 @@ const FORM = '77777777-7777-4777-8777-777777777703';
 const CONTACT = '77777777-7777-4777-8777-777777777704';
 
 test('$pages forms bind to the rendered basic form: tabs, sections, values, visibility, required state and validators', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pages-forms-browser-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pages-forms-browser-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
     'website.yml': `adx_websiteid: ${SITE}\nadx_name: Example`,

@@ -4,9 +4,10 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { savePrivateJson } from '../portal-harness/private-journal.mjs';
+import { makeTemporaryDirectory } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 
 test('failed atomic journal replacement preserves the last complete mutation intent', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-journal-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-journal-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'lease.json'),
     before = { state: 'pending', operationId: 'owned' },

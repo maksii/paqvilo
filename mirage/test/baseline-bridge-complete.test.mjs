@@ -5,12 +5,18 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+
+// baseline-suite.mjs races each bridge call against a 30-second evidence fallback timer. A run takes one to two seconds;
+// a process that kept that timer would exit only after 30 seconds, so the deadline sits between the two.
+const EVIDENCE_FALLBACK_MS = 30_000,
+  EXIT_DEADLINE_MS = 20_000;
 
 test(
   'a complete loopback bridge capture closes without leftover evidence or child grace timers',
-  { timeout: 12000 },
+  { timeout: EVIDENCE_FALLBACK_MS },
   async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'baseline positive fixture '));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'baseline positive fixture '));
     t.after(() => fs.rm(directory, { recursive: true, force: true }));
     const marker = path.join(directory, 'closed.txt'),
       server = path.join(directory, 'server.mjs');
@@ -19,7 +25,7 @@ test(
       `
     import fs from 'node:fs';
     import readline from 'node:readline';
-    const timer=setTimeout(()=>{fs.writeFileSync(process.argv[2],'watchdog');process.exit(0)},3000);
+    const timer=setTimeout(()=>{fs.writeFileSync(process.argv[2],'watchdog');process.exit(0)},300000);
     readline.createInterface({input:process.stdin}).on('line',async line=>{
       const message=JSON.parse(line);if(message.id===undefined)return;
       let result;
@@ -54,6 +60,7 @@ test(
     const child = spawn(process.execPath, [script, 'capture', '--matrix', matrix, '--out', out, '--side', 'live'], {
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
+      signal: t.signal,
     });
     let output = '',
       timedOut = false;
@@ -66,7 +73,7 @@ test(
     const deadline = setTimeout(() => {
       timedOut = true;
       child.kill();
-    }, 8000);
+    }, EXIT_DEADLINE_MS);
     const exit = await new Promise((resolve, reject) => {
       child.once('error', reject);
       child.once('exit', resolve);

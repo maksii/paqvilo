@@ -12,12 +12,20 @@ import { resolvePreset } from './presets.mjs';
 import { fieldIndexFromMappings, formatViolations, schemaViolations } from './schema-validation.mjs';
 import { validatePersonaCatalog, mergePersonaCatalogs } from './persona-catalog.mjs';
 import { membershipsForRoles } from './permissions.mjs';
+import { assertDatasetAlternateKeys } from './alternate-key-values.mjs';
 import { guidKey } from './dataverse-values.mjs';
+import { cloneStateData } from './state-clone.mjs';
+import { pagedRecordsOf, readRecordValues } from './record-tables.mjs';
+import { compactRecordGraph } from './record-compaction.mjs';
 
-const clone = (value) => structuredClone(value);
+const clone = cloneStateData;
 const own = (value, key) => (value != null && Object.hasOwn(value, key) ? value[key] : undefined);
 const idColumnOf = (state, table) => own(state.mappings, table)?.idColumn ?? `${table}id`;
 const rowKey = (value) => guidKey(value) ?? String(value).toLowerCase();
+// `missing` stands in for an absent key value (the scaffold counts such existing rows as '').
+function* rowKeys(rows, column, missing) {
+  for (const row of readRecordValues(rows)) yield rowKey(own(row, column) ?? missing);
+}
 const object = (value) =>
   value !== null &&
   typeof value === 'object' &&
@@ -26,29 +34,40 @@ const object = (value) =>
 const validName = (value) =>
   typeof value === 'string' && /^[\w.-]+$/.test(value) && !['__proto__', 'constructor', 'prototype'].includes(value);
 
-function validateDatasetBody(value, label) {
-  if (!object(value)) throw new Error(`${label} must be a dataset object`);
-  for (const section of ['mappings', 'tables'])
-    if (value[section] !== undefined && !object(value[section]))
-      throw new Error(`${label}.${section} must be an object`);
-  for (const [table, mapping] of Object.entries(value.mappings ?? {})) {
+function validateDatasetMappings(mappings, label) {
+  for (const [table, mapping] of Object.entries(mappings ?? {})) {
     if (!validName(table) || !object(mapping))
       throw new Error(`${label}.mappings must contain valid table names and mapping objects`);
     for (const field of ['idColumn', 'entitySet'])
       if (mapping[field] !== undefined && !validName(mapping[field]))
         throw new Error(`${label}.mappings.${table}.${field} must be a valid name`);
   }
-  for (const [table, rows] of Object.entries(value.tables ?? {})) {
+}
+
+function validateDatasetTables(tables, label) {
+  for (const [table, rows] of Object.entries(tables ?? {})) {
     if (!validName(table) || !Array.isArray(rows))
       throw new Error(`${label}.tables must contain valid table names and row arrays`);
-    for (const row of rows) if (!object(row)) throw new Error(`${label}.tables.${table} rows must be objects`);
+    for (const row of readRecordValues(rows))
+      if (!object(row)) throw new Error(`${label}.tables.${table} rows must be objects`);
   }
-  if (value.permissions !== undefined) {
-    if (!Array.isArray(value.permissions))
-      throw new Error(`${label}.permissions must be an array of permission objects`);
-    for (const permission of value.permissions)
-      if (!object(permission)) throw new Error(`${label}.permissions must be an array of permission objects`);
-  }
+}
+
+function validateDatasetPermissions(permissions, label) {
+  if (permissions === undefined) return;
+  if (!Array.isArray(permissions)) throw new Error(`${label}.permissions must be an array of permission objects`);
+  for (const permission of permissions)
+    if (!object(permission)) throw new Error(`${label}.permissions must be an array of permission objects`);
+}
+
+function validateDatasetBody(value, label) {
+  if (!object(value)) throw new Error(`${label} must be a dataset object`);
+  for (const section of ['mappings', 'tables'])
+    if (value[section] !== undefined && !object(value[section]))
+      throw new Error(`${label}.${section} must be an object`);
+  validateDatasetMappings(value.mappings, label);
+  validateDatasetTables(value.tables, label);
+  validateDatasetPermissions(value.permissions, label);
 }
 
 /** Merge mappings: generated definitions under existing (explicit edits win). */
@@ -70,9 +89,9 @@ function mergeRows(state, tables = {}, report) {
   for (const [table, rows] of Object.entries(tables)) {
     const idColumn = idColumnOf(state, table);
     const target = own(state.tables, table) ?? (state.tables[table] = []);
-    const seen = new Set(target.map((row) => rowKey(own(row, idColumn))));
+    const seen = new Set(rowKeys(target, idColumn));
     const entry = own(report, table) ?? (report[table] = { added: 0, alreadyPresent: 0 });
-    for (const row of rows) {
+    for (const row of readRecordValues(rows)) {
       const id = own(row, idColumn);
       if (id == null) throw new Error(`Cannot merge ${table} row without ${idColumn}`);
       if (seen.has(rowKey(id))) {
@@ -86,20 +105,103 @@ function mergeRows(state, tables = {}, report) {
   }
 }
 
+function mergeDatasetCatalogAndPermissions(result, fragment, basePreset, packId) {
+  let catalog = result.personaCatalog;
+  if (basePreset?.personaCatalog !== undefined)
+    catalog = mergePersonaCatalogs(
+      catalog,
+      validatePersonaCatalog(basePreset.personaCatalog, `Preset ${basePreset.id ?? basePreset.name ?? 'base'}`),
+    );
+  if (fragment.personaCatalog !== undefined)
+    catalog = mergePersonaCatalogs(
+      catalog,
+      validatePersonaCatalog(fragment.personaCatalog, `Dataset ${packId ?? 'pack'}`),
+    );
+  if (catalog !== undefined) result.personaCatalog = validatePersonaCatalog(catalog, 'Merged state');
+  const permissionIds = new Set(result.permissions.map((permission) => permission.id));
+  let addedPermissions = 0;
+  for (const permission of [...(basePreset?.permissions ?? []), ...(fragment.permissions ?? [])])
+    if (permission.id && !permissionIds.has(permission.id)) {
+      result.permissions.push(clone(permission));
+      permissionIds.add(permission.id);
+      addedPermissions++;
+    }
+  return addedPermissions;
+}
+
+function validatePersonaRoleDescriptor(descriptor) {
+  if (
+    !descriptor ||
+    typeof descriptor !== 'object' ||
+    Array.isArray(descriptor) ||
+    typeof (descriptor.contactId ?? descriptor.id) !== 'string' ||
+    !(descriptor.contactId ?? descriptor.id).trim() ||
+    !Array.isArray(descriptor.roles) ||
+    descriptor.roles.some((name) => typeof name !== 'string' || !name.trim())
+  )
+    throw new Error('Dataset personaRoles must contain explicit contactId and role-name arrays.');
+}
+
+function materializeDatasetMemberships(result, fragment, basePreset, portal) {
+  if (!portal || !Array.isArray(portal.records))
+    throw new Error('Persona memberships require the selected imported portal export.');
+  const descriptors = fragment.personaRoles ?? [];
+  if (!Array.isArray(descriptors))
+    throw new Error('Dataset personaRoles must be an array of { contactId, roles } descriptors.');
+  const normalizeId = (value) =>
+    guidKey(value) ??
+    String(value ?? '')
+      .replace(/[{}]/g, '')
+      .toLowerCase();
+  const contactIdColumn = idColumnOf(result, 'contact');
+  const contacts = new Map((result.tables.contact ?? []).map((row) => [normalizeId(row[contactIdColumn]), row]));
+  const generatedContacts = new Set(
+    [...(basePreset?.tables?.contact ?? []), ...(fragment.tables?.contact ?? [])].map((row) =>
+      normalizeId(row[contactIdColumn]),
+    ),
+  );
+  for (const descriptor of descriptors) {
+    validatePersonaRoleDescriptor(descriptor);
+    const contact = contacts.get(normalizeId(descriptor.contactId ?? descriptor.id));
+    if (!contact || Number(contact.statecode?.value ?? contact.statecode ?? 0) !== 0)
+      throw new Error('Persona membership contact is missing or inactive in the merged local data.');
+    if (!generatedContacts.has(normalizeId(descriptor.contactId ?? descriptor.id)))
+      throw new Error('Persona membership contact must be supplied by this dataset or its base preset.');
+  }
+  // Resolve every role before adding any assignments. Catalogue metadata and
+  // a base preset never implicitly create memberships during additive merge.
+  const assignments = membershipsForRoles(portal, descriptors);
+  if (!assignments.length) return 0;
+  result.simulator ??= {};
+  const memberships = (result.simulator.contactRoles ??= []);
+  const seen = new Set(memberships.map((entry) => `${normalizeId(entry.contactId)}:${normalizeId(entry.roleId)}`));
+  let addedMemberships = 0;
+  for (const assignment of assignments) {
+    const key = `${assignment.contactId}:${assignment.roleId}`;
+    if (seen.has(key)) continue;
+    memberships.push(assignment);
+    seen.add(key);
+    addedMemberships++;
+  }
+  return addedMemberships;
+}
+
 /** Every `{ id, logical_name }` lookup in the listed tables resolves to a row. */
 export function findDanglingLookups(state, tables = Object.keys(state.tables ?? {})) {
   const indexes = new Map();
   const has = (table, id) => {
-    if (!indexes.has(table))
-      indexes.set(
-        table,
-        new Set((own(state.tables, table) ?? []).map((row) => rowKey(own(row, idColumnOf(state, table))))),
-      );
+    const rows = own(state.tables, table) ?? [],
+      column = idColumnOf(state, table),
+      paged = pagedRecordsOf(rows);
+    // The persistent key tree covers all-string tables. A miss still checks the
+    // legacy GUID-whitespace coercion before declaring a lookup unresolved.
+    if (paged?.primaryPositions(column, rowKey(id))?.length) return true;
+    if (!indexes.has(table)) indexes.set(table, new Set(rowKeys(rows, column)));
     return indexes.get(table).has(rowKey(id));
   };
   const dangling = [];
   for (const table of tables)
-    for (const row of own(state.tables, table) ?? [])
+    for (const row of readRecordValues(own(state.tables, table) ?? []))
       for (const [field, value] of Object.entries(row))
         if (
           value &&
@@ -123,10 +225,11 @@ export function findDanglingLookups(state, tables = Object.keys(state.tables ?? 
  * Merge a pack dataset fragment (and its base preset, when named) into a copy
  * of `state`. Returns { state, report }.
  */
-export function mergeDataset(
+function mergeDatasetState(
   state,
   fragment,
   { basePreset, packId, materializePersonaMemberships = false, portal } = {},
+  copy = clone,
 ) {
   if (!state || typeof state !== 'object' || Array.isArray(state))
     throw new Error('state must be a Mirage state object');
@@ -139,7 +242,7 @@ export function mergeDataset(
   if (basePreset !== undefined && basePreset !== null) validateDatasetBody(basePreset, 'Base preset');
   if (typeof materializePersonaMemberships !== 'boolean')
     throw new Error('materializePersonaMemberships must be a boolean');
-  const result = clone(state);
+  const result = copy(state);
   result.tables ??= {};
   const report = { base: {}, generated: {} };
   if (basePreset) {
@@ -148,29 +251,21 @@ export function mergeDataset(
   }
   mergeMappings(result.mappings, fragment.mappings);
   mergeRows(result, fragment.tables, report.generated);
-  let catalog = result.personaCatalog;
-  if (basePreset?.personaCatalog !== undefined)
-    catalog = mergePersonaCatalogs(
-      catalog,
-      validatePersonaCatalog(basePreset.personaCatalog, `Preset ${basePreset.id ?? basePreset.name ?? 'base'}`),
-    );
-  if (fragment.personaCatalog !== undefined)
-    catalog = mergePersonaCatalogs(
-      catalog,
-      validatePersonaCatalog(fragment.personaCatalog, `Dataset ${packId ?? 'pack'}`),
-    );
-  if (catalog !== undefined) result.personaCatalog = validatePersonaCatalog(catalog, 'Merged state');
-  const permissionIds = new Set(result.permissions.map((permission) => permission.id));
-  let addedPermissions = 0;
-  for (const permission of [...(basePreset?.permissions ?? []), ...(fragment.permissions ?? [])])
-    if (permission.id && !permissionIds.has(permission.id)) {
-      result.permissions.push(clone(permission));
-      permissionIds.add(permission.id);
-      addedPermissions++;
-    }
+  assertDatasetAlternateKeys(
+    result.mappings,
+    result.tables,
+    new Set([
+      ...Object.keys(basePreset?.tables ?? {}),
+      ...Object.keys(fragment.tables ?? {}),
+      ...Object.keys(basePreset?.mappings ?? {}),
+      ...Object.keys(fragment.mappings ?? {}),
+    ]),
+    result.settings?.collation,
+  );
+  const addedPermissions = mergeDatasetCatalogAndPermissions(result, fragment, basePreset, packId);
   result.provenance = {
-    ...(result.provenance ?? {}),
-    dataPacks: { ...(result.provenance?.dataPacks ?? {}), [packId ?? 'pack']: clone(fragment.provenance ?? {}) },
+    ...result.provenance,
+    dataPacks: { ...result.provenance?.dataPacks, [packId ?? 'pack']: clone(fragment.provenance ?? {}) },
   };
   const dangling = findDanglingLookups(result, Object.keys(fragment.tables ?? {}));
   if (dangling.length)
@@ -187,58 +282,60 @@ export function mergeDataset(
       `Generated data does not match the bootstrapped schema:\n${formatViolations(violations).join('\n')}`,
     );
   let addedMemberships = 0;
-  if (materializePersonaMemberships) {
-    if (!portal || !Array.isArray(portal.records))
-      throw new Error('Persona memberships require the selected imported portal export.');
-    const descriptors = fragment.personaRoles ?? [];
-    if (!Array.isArray(descriptors))
-      throw new Error('Dataset personaRoles must be an array of { contactId, roles } descriptors.');
-    const normalizeId = (value) =>
-      guidKey(value) ??
-      String(value ?? '')
-        .replace(/[{}]/g, '')
-        .toLowerCase();
-    const contactIdColumn = idColumnOf(result, 'contact');
-    const contacts = new Map((result.tables.contact ?? []).map((row) => [normalizeId(row[contactIdColumn]), row]));
-    const generatedContacts = new Set(
-      [...(basePreset?.tables?.contact ?? []), ...(fragment.tables?.contact ?? [])].map((row) =>
-        normalizeId(row[contactIdColumn]),
-      ),
-    );
-    for (const descriptor of descriptors) {
-      if (
-        !descriptor ||
-        typeof descriptor !== 'object' ||
-        Array.isArray(descriptor) ||
-        typeof (descriptor.contactId ?? descriptor.id) !== 'string' ||
-        !(descriptor.contactId ?? descriptor.id).trim() ||
-        !Array.isArray(descriptor.roles) ||
-        descriptor.roles.some((name) => typeof name !== 'string' || !name.trim())
-      )
-        throw new Error('Dataset personaRoles must contain explicit contactId and role-name arrays.');
-      const contact = contacts.get(normalizeId(descriptor.contactId ?? descriptor.id));
-      if (!contact || Number(contact.statecode?.value ?? contact.statecode ?? 0) !== 0)
-        throw new Error('Persona membership contact is missing or inactive in the merged local data.');
-      if (!generatedContacts.has(normalizeId(descriptor.contactId ?? descriptor.id)))
-        throw new Error('Persona membership contact must be supplied by this dataset or its base preset.');
+  if (materializePersonaMemberships)
+    addedMemberships = materializeDatasetMemberships(result, fragment, basePreset, portal);
+  return { state: result, report: { ...report, addedPermissions, addedMemberships, schemaViolations: 0 } };
+}
+
+export function mergeDataset(state, fragment, options) {
+  return mergeDatasetState(state, fragment, options);
+}
+
+async function withOfflineResources(run) {
+  const closers = [];
+  let failure,
+    result,
+    failed = false;
+  try {
+    result = await run((resource, close = () => resource.closeRecordStorage()) => {
+      closers.push(close);
+      return resource;
+    });
+  } catch (error) {
+    failed = true;
+    failure = error;
+  }
+  const errors = [];
+  for (const close of closers)
+    try {
+      close();
+    } catch (error) {
+      errors.push(error);
     }
-    // Resolve every role before adding any assignments. Catalogue metadata and
-    // a base preset never implicitly create memberships during additive merge.
-    const assignments = membershipsForRoles(portal, descriptors);
-    if (assignments.length) {
-      result.simulator ??= {};
-      const memberships = (result.simulator.contactRoles ??= []);
-      const seen = new Set(memberships.map((entry) => `${normalizeId(entry.contactId)}:${normalizeId(entry.roleId)}`));
-      for (const assignment of assignments) {
-        const key = `${assignment.contactId}:${assignment.roleId}`;
-        if (seen.has(key)) continue;
-        memberships.push(assignment);
-        seen.add(key);
-        addedMemberships++;
-      }
+  if (errors.length)
+    throw new AggregateError(failed ? [failure, ...errors] : errors, 'Offline data resources failed to close', {
+      cause: failure,
+    });
+  if (failed) throw failure;
+  return result;
+}
+
+async function writeOfflineState(ownResource, source, outputPath, state) {
+  let output = state;
+  if (source && outputPath !== source.file) {
+    const copied = await compactRecordGraph(state, outputPath + '.records', { stateOwner: outputPath });
+    if (copied) {
+      ownResource(copied, () => copied.session.close());
+      output = copied.state;
     }
   }
-  return { state: result, report: { ...report, addedPermissions, addedMemberships, schemaViolations: 0 } };
+  const destination =
+    source?.file === outputPath ? source : await ownResource(new DataStore({ file: outputPath, state: output })).init();
+  await destination.replaceState(output, {
+    expectedDigest: destination.snapshotDigest(),
+    cloneInput: false,
+    returnSnapshot: false,
+  });
 }
 
 const parseCount = (value, option) => {
@@ -249,8 +346,20 @@ const parseCount = (value, option) => {
   return count;
 };
 
-/** CLI adapter: `node mirage/cli.mjs data generate --pack ID ...` (parsed args). */
-export async function runDataCommand(subcommands, args) {
+const parseCounts = (entries = []) => {
+  const counts = {};
+  for (const entry of entries) {
+    const match = /^([A-Za-z]\w*)=(.+)$/.exec(entry);
+    if (!match || ['__proto__', 'constructor', 'prototype'].includes(match[1]))
+      throw new Error('--count must be NAME=N with a valid generator-defined name');
+    if (Object.hasOwn(counts, match[1])) throw new Error(`Duplicate --count ${match[1]}`);
+    counts[match[1]] = parseCount(match[2], `count ${match[1]}`);
+  }
+  return counts;
+};
+
+/** Validate data actions without resolving sources or opening state. */
+export function validateDataCommand(subcommands, args) {
   if (subcommands.length !== 1)
     throw new Error(
       'Data commands require exactly one action: generate or scaffold; unexpected positional arguments are not accepted.',
@@ -261,6 +370,19 @@ export async function runDataCommand(subcommands, args) {
       if (args[name] !== undefined) throw new Error(`--${name} is supported only by data generate`);
   if (action === 'generate' && args.rows !== undefined)
     throw new Error('--rows is supported only by data scaffold; use --count NAME=N for pack-defined generation counts');
+  if (action !== 'generate' && action !== 'scaffold')
+    throw new Error(
+      'Usage: node mirage/cli.mjs data generate --pack ID --profile NAME --state FILE [--out FILE] [--seed S]\n' +
+        '       node mirage/cli.mjs data scaffold --source PORTAL_DIR --profile smoke|dev --state FILE [--solution-root DIR ...] [--rows N] [--out FILE] [--seed S]',
+    );
+  if (action === 'scaffold') parseCount(args.rows, 'rows');
+  else parseCounts(args.count);
+  return action;
+}
+
+/** CLI adapter: `node mirage/cli.mjs data generate --pack ID ...` (parsed args). */
+export async function runDataCommand(subcommands, args) {
+  const action = validateDataCommand(subcommands, args);
   if (action === 'scaffold')
     return scaffoldDataCommand({
       profile: args.profile ?? 'smoke',
@@ -273,24 +395,12 @@ export async function runDataCommand(subcommands, args) {
       resolution: args.resolution,
       dataModel: args.dataModel ?? args['data-model'],
     });
-  if (action !== 'generate')
-    throw new Error(
-      'Usage: node mirage/cli.mjs data generate --pack ID --profile NAME --state FILE [--out FILE] [--seed S]\n' +
-        '       node mirage/cli.mjs data scaffold --source PORTAL_DIR --profile smoke|dev --state FILE [--solution-root DIR ...] [--rows N] [--out FILE] [--seed S]',
-    );
   let project;
   if (args.project) {
     const { loadProjectConfig } = await import('./project-config.mjs');
     project = await loadProjectConfig(args.project);
   }
-  const counts = {};
-  for (const entry of args.count ?? []) {
-    const match = /^([A-Za-z][A-Za-z0-9_]*)=(.+)$/.exec(entry);
-    if (!match || ['__proto__', 'constructor', 'prototype'].includes(match[1]))
-      throw new Error('--count must be NAME=N with a valid generator-defined name');
-    if (Object.hasOwn(counts, match[1])) throw new Error(`Duplicate --count ${match[1]}`);
-    counts[match[1]] = parseCount(match[2], `count ${match[1]}`);
-  }
+  const counts = parseCounts(args.count);
   return generateDataCommand({
     pack: args.pack,
     profile: args.profile ?? 'deep',
@@ -323,61 +433,112 @@ async function generateDataCommand({
   source: portalSource,
   dataModel,
 } = {}) {
-  if (!packId) throw new Error('--pack is required');
-  if (!statePath) throw new Error('--state is required');
-  const inputPath = path.resolve(statePath);
-  const outputPath = path.resolve(out ?? statePath);
-  const packs = await discoverPacks({ project, explicit: packModules });
-  const pack = packs.find((candidate) => candidate.id === packId);
-  if (!pack)
-    throw new Error(`Unknown data pack '${packId}'. Available: ${packs.map((p) => p.id).join(', ') || 'none'}`);
-  if (typeof pack.dataset !== 'function') throw new Error(`Data pack '${packId}' does not provide dataset()`);
-  if (pack.profiles && !Object.hasOwn(pack.profiles, profile))
-    throw new Error(`Data pack '${packId}' has no profile '${profile}' (${Object.keys(pack.profiles).join(', ')})`);
-  await assertOfflineState(outputPath);
-  if (outputPath !== inputPath) await assertOfflineState(inputPath);
-  const started = performance.now();
-  const source = await new DataStore({ file: inputPath }).init();
-  const input = source.snapshot();
-  const fragment = await pack.dataset({ profile, seed, counts });
-  validateDatasetBody(fragment, 'Dataset');
-  const library = presetLibrary({ packs: [pack] });
-  const basePreset = fragment.base ? resolvePreset(input, fragment.base, library) : null;
-  if (fragment.base && !basePreset) throw new Error(`Base preset '${fragment.base}' is unavailable`);
-  if (materializePersonaMemberships && !portalSource)
-    throw new Error('Persona memberships require the selected portal source (--source, --site or --project).');
-  const portal = materializePersonaMemberships
-    ? await (await import('./importer.mjs')).importPortal(path.resolve(portalSource), { dataModel })
-    : undefined;
-  const { state: output, report } = mergeDataset(input, fragment, {
-    basePreset,
-    packId,
-    materializePersonaMemberships,
-    portal,
+  return withOfflineResources(async (ownResource) => {
+    if (!packId) throw new Error('--pack is required');
+    if (!statePath) throw new Error('--state is required');
+    const inputPath = path.resolve(statePath);
+    const outputPath = path.resolve(out ?? statePath);
+    const packs = await discoverPacks({ project, explicit: packModules });
+    const pack = packs.find((candidate) => candidate.id === packId);
+    if (!pack)
+      throw new Error(`Unknown data pack '${packId}'. Available: ${packs.map((p) => p.id).join(', ') || 'none'}`);
+    if (typeof pack.dataset !== 'function') throw new Error(`Data pack '${packId}' does not provide dataset()`);
+    if (pack.profiles && !Object.hasOwn(pack.profiles, profile))
+      throw new Error(`Data pack '${packId}' has no profile '${profile}' (${Object.keys(pack.profiles).join(', ')})`);
+    await assertOfflineState(outputPath);
+    if (outputPath !== inputPath) await assertOfflineState(inputPath);
+    const started = performance.now();
+    const source = await ownResource(new DataStore({ file: inputPath })).init();
+    // The command owns this input. The merge makes one private copy, sharing
+    // immutable record pages instead of materializing complete row arrays.
+    const input = source.state;
+    const fragment = await pack.dataset({ profile, seed, counts });
+    validateDatasetBody(fragment, 'Dataset');
+    const library = presetLibrary({ packs: [pack] });
+    const basePreset = fragment.base ? resolvePreset(input, fragment.base, library, source.recordContext()) : null;
+    if (fragment.base && !basePreset) throw new Error(`Base preset '${fragment.base}' is unavailable`);
+    if (materializePersonaMemberships && !portalSource)
+      throw new Error('Persona memberships require the selected portal source (--source, --site or --project).');
+    const portal = materializePersonaMemberships
+      ? await (await import('./importer.mjs')).importPortal(path.resolve(portalSource), { dataModel })
+      : undefined;
+    const { state: output, report } = mergeDatasetState(
+      input,
+      fragment,
+      {
+        basePreset,
+        packId,
+        materializePersonaMemberships,
+        portal,
+      },
+      (value) => cloneStateData(value, { forkTables: true }),
+    );
+    const generatedMs = performance.now() - started;
+    // Re-check immediately before writing; the store applies its own lock and
+    // digest checks (docs/state-write-integrity.md).
+    await assertOfflineState(outputPath);
+    await writeOfflineState(ownResource, source, outputPath, output);
+    return {
+      written: outputPath,
+      pack: packId,
+      profile,
+      seed: fragment.provenance?.seed ?? seed ?? null,
+      base: fragment.base ?? null,
+      rows: Object.fromEntries(
+        Object.entries(report.generated).filter(([, entry]) => entry.added || entry.alreadyPresent),
+      ),
+      baseRowsAdded: Object.values(report.base).reduce((sum, entry) => sum + entry.added, 0),
+      addedPermissions: report.addedPermissions,
+      addedMemberships: report.addedMemberships,
+      measures: fragment.provenance?.measures ?? null,
+      elapsedMs: Math.round(performance.now() - started),
+      generationMs: Math.round(generatedMs),
+    };
   });
-  const generatedMs = performance.now() - started;
-  // Re-check immediately before writing; the store applies its own lock and
-  // digest checks (docs/state-write-integrity.md).
-  await assertOfflineState(outputPath);
-  const destination =
-    outputPath === inputPath ? source : await new DataStore({ file: outputPath, state: output }).init();
-  await destination.replaceState(output, { expectedDigest: destination.snapshotDigest() });
-  return {
-    written: outputPath,
-    pack: packId,
-    profile,
-    seed: fragment.provenance?.seed ?? seed ?? null,
-    base: fragment.base ?? null,
-    rows: Object.fromEntries(
-      Object.entries(report.generated).filter(([, entry]) => entry.added || entry.alreadyPresent),
-    ),
-    baseRowsAdded: Object.values(report.base).reduce((sum, entry) => sum + entry.added, 0),
-    addedPermissions: report.addedPermissions,
-    addedMemberships: report.addedMemberships,
-    measures: fragment.provenance?.measures ?? null,
-    elapsedMs: Math.round(performance.now() - started),
-    generationMs: Math.round(generatedMs),
-  };
+}
+
+function mergeScaffoldTables(output, scaffold, metadata) {
+  const rows = {};
+  for (const [table, generated] of Object.entries(scaffold.tables)) {
+    if (!own(output.mappings, table) && own(metadata.mappings, table)) {
+      const { fieldMetadata: _fields, schemaComplete: _complete, ...mapping } = own(metadata.mappings, table); // NOSONAR: binding is excluded from the rest object or is a placeholder
+      output.mappings[table] = cloneStateData(mapping);
+    } else if (!own(output.mappings, table))
+      // Tables the solution layers do not define (such as the web role
+      // membership intersect) get the conventional mapping of their rows.
+      output.mappings[table] = {
+        entitySet: `${table}s`,
+        idColumn: own(scaffold.idColumns, table),
+        relationships: {},
+        inferred: true,
+      };
+    const key = own(output.mappings, table)?.idColumn ?? own(scaffold.idColumns, table);
+    const existing = own(output.tables, table) ?? (output.tables[table] = []);
+    // An existing row without the key never hides a generated row without it.
+    const ids = new Set(rowKeys(existing, key, ''));
+    let added = 0;
+    for (const row of generated)
+      if (!ids.has(rowKey(own(row, key)))) {
+        existing.push(cloneStateData(row));
+        added++;
+      }
+    rows[table] = { added, alreadyPresent: generated.length - added };
+  }
+  return rows;
+}
+
+function mergeScaffoldMemberships(output, scaffold) {
+  const memberships = (output.simulator.contactRoles ??= []);
+  const seen = new Set(memberships.map((entry) => `${rowKey(entry.contactId)}:${rowKey(entry.roleId)}`));
+  let addedMemberships = 0;
+  for (const entry of scaffold.contactRoles) {
+    const key = `${rowKey(entry.contactId)}:${rowKey(entry.roleId)}`;
+    if (seen.has(key)) continue;
+    memberships.push(cloneStateData(entry));
+    seen.add(key);
+    addedMemberships++;
+  }
+  return addedMemberships;
 }
 
 /**
@@ -397,106 +558,73 @@ export async function scaffoldDataCommand({
   resolution,
   dataModel,
 } = {}) {
-  if (!statePath) throw new Error('--state is required');
-  if (!source) throw new Error('A portal source is required (--site/--env, --project or --source)');
-  const [
-    { importPortal },
-    { importSolutionData, applySolutionData },
-    { discoverSolutionRoots },
-    { scaffoldData },
-    { initialState },
-  ] = await Promise.all([
-    import('./importer.mjs'),
-    import('./solution-data.mjs'),
-    import('./solution-roots.mjs'),
-    import('./scaffold-data.mjs'),
-    import('./bootstrap.mjs'),
-  ]);
-  const inputPath = path.resolve(statePath);
-  const outputPath = path.resolve(out ?? statePath);
-  await assertOfflineState(outputPath);
-  if (outputPath !== inputPath) await assertOfflineState(inputPath);
-  const started = performance.now();
-  const sourceDir = path.resolve(source);
-  const portal = await importPortal(sourceDir, { dataModel });
-  const roots = solutionRoots.length
-    ? solutionRoots.map((root) => path.resolve(root))
-    : await discoverSolutionRoots(sourceDir);
-  const metadata = await importSolutionData(roots);
-  const scaffold = scaffoldData({
-    portal,
-    schema: metadata.schema,
-    profile,
-    ...(seed ? { seed } : {}),
-    ...(rowsPerTable ? { rowsPerTable } : {}),
+  return withOfflineResources(async (ownResource) => {
+    if (!statePath) throw new Error('--state is required');
+    if (!source) throw new Error('A portal source is required (--site/--env, --project or --source)');
+    const [
+      { importPortal },
+      { importSolutionData, applySolutionData },
+      { discoverSolutionRoots },
+      { scaffoldData },
+      { initialState },
+    ] = await Promise.all([
+      import('./importer.mjs'),
+      import('./solution-data.mjs'),
+      import('./solution-roots.mjs'),
+      import('./scaffold-data.mjs'),
+      import('./bootstrap.mjs'),
+    ]);
+    const inputPath = path.resolve(statePath);
+    const outputPath = path.resolve(out ?? statePath);
+    await assertOfflineState(outputPath);
+    if (outputPath !== inputPath) await assertOfflineState(inputPath);
+    const started = performance.now();
+    const sourceDir = path.resolve(source);
+    const portal = await importPortal(sourceDir, { dataModel });
+    const roots = solutionRoots.length
+      ? solutionRoots.map((root) => path.resolve(root))
+      : await discoverSolutionRoots(sourceDir);
+    const metadata = await importSolutionData(roots);
+    const scaffold = scaffoldData({
+      portal,
+      schema: metadata.schema,
+      profile,
+      ...(seed ? { seed } : {}),
+      ...(rowsPerTable !== undefined ? { rowsPerTable } : {}),
+    });
+    let input, sourceStore;
+    let bootstrapped = false;
+    try {
+      await fs.access(inputPath);
+      sourceStore = await ownResource(new DataStore({ file: inputPath })).init();
+      input = sourceStore.snapshot(undefined, { forkTables: true });
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      input = applySolutionData(initialState(portal, { metadata }), metadata);
+      bootstrapped = true;
+    }
+    // Both bootstrap and snapshot produced a private graph owned by this command.
+    const output = input;
+    output.tables ??= {};
+    output.mappings ??= {};
+    output.permissions ??= [];
+    output.simulator ??= {};
+    const rows = mergeScaffoldTables(output, scaffold, metadata);
+    const addedMemberships = mergeScaffoldMemberships(output, scaffold);
+    output.provenance = { ...output.provenance, scaffold: { ...scaffold.report, source: sourceDir } };
+    await assertOfflineState(outputPath);
+    await writeOfflineState(ownResource, sourceStore, outputPath, output);
+    return {
+      written: outputPath,
+      bootstrapped,
+      profile,
+      report: scaffold.report,
+      rows,
+      addedMemberships,
+      source: sourceDir,
+      solutionRoots: roots,
+      resolution: resolution ?? { kind: 'source', solutionRoots: solutionRoots.length ? 'explicit' : 'discovered' },
+      elapsedMs: Math.round(performance.now() - started),
+    };
   });
-  let input;
-  let bootstrapped = false;
-  try {
-    await fs.access(inputPath);
-    input = (await new DataStore({ file: inputPath }).init()).snapshot();
-  } catch (error) {
-    if (error.code !== 'ENOENT') throw error;
-    input = applySolutionData(initialState(portal, { metadata }), metadata);
-    bootstrapped = true;
-  }
-  const output = structuredClone(input);
-  output.tables ??= {};
-  output.mappings ??= {};
-  output.permissions ??= [];
-  output.simulator ??= {};
-  const rows = {};
-  for (const [table, generated] of Object.entries(scaffold.tables)) {
-    if (!own(output.mappings, table) && own(metadata.mappings, table)) {
-      const { fieldMetadata: _fields, schemaComplete: _complete, ...mapping } = own(metadata.mappings, table);
-      output.mappings[table] = structuredClone(mapping);
-    } else if (!own(output.mappings, table))
-      // Tables the solution layers do not define (such as the web role
-      // membership intersect) get the conventional mapping of their rows.
-      output.mappings[table] = {
-        entitySet: `${table}s`,
-        idColumn: own(scaffold.idColumns, table),
-        relationships: {},
-        inferred: true,
-      };
-    const key = own(output.mappings, table)?.idColumn ?? own(scaffold.idColumns, table);
-    const existing = own(output.tables, table) ?? (output.tables[table] = []);
-    const ids = new Set(existing.map((row) => rowKey(own(row, key) ?? '')));
-    let added = 0;
-    for (const row of generated)
-      if (!ids.has(rowKey(own(row, key)))) {
-        existing.push(structuredClone(row));
-        added++;
-      }
-    rows[table] = { added, alreadyPresent: generated.length - added };
-  }
-  const memberships = (output.simulator.contactRoles ??= []);
-  const seen = new Set(memberships.map((entry) => `${rowKey(entry.contactId)}:${rowKey(entry.roleId)}`));
-  let addedMemberships = 0;
-  for (const entry of scaffold.contactRoles) {
-    const key = `${rowKey(entry.contactId)}:${rowKey(entry.roleId)}`;
-    if (seen.has(key)) continue;
-    memberships.push(structuredClone(entry));
-    seen.add(key);
-    addedMemberships++;
-  }
-  output.provenance = { ...(output.provenance ?? {}), scaffold: { ...scaffold.report, source: sourceDir } };
-  await assertOfflineState(outputPath);
-  const destination =
-    outputPath === inputPath && !bootstrapped
-      ? await new DataStore({ file: inputPath }).init()
-      : await new DataStore({ file: outputPath, state: output }).init();
-  await destination.replaceState(output, { expectedDigest: destination.snapshotDigest() });
-  return {
-    written: outputPath,
-    bootstrapped,
-    profile,
-    report: scaffold.report,
-    rows,
-    addedMemberships,
-    source: sourceDir,
-    solutionRoots: roots,
-    resolution: resolution ?? { kind: 'source', solutionRoots: solutionRoots.length ? 'explicit' : 'discovered' },
-    elapsedMs: Math.round(performance.now() - started),
-  };
 }

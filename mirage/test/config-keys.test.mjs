@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own simulator administration, CLI, configuration and runtime behaviour
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -32,6 +33,7 @@ import { contentPolicyDefaults } from '../lib/content-policy-defaults.mjs';
 import { validateLocalOverrides } from '../lib/local-overrides.mjs';
 import { validateCatalogue } from '../../lense/config-schema.mjs';
 import { resolveMirageConfig } from '../../lense/config.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const cli = fileURLToPath(new URL('../cli.mjs', import.meta.url));
 const NEW_KEYS = [
@@ -43,6 +45,8 @@ const NEW_KEYS = [
   'canvas',
   'codeApps',
   'sourceMaps',
+  'trace',
+  'logs',
 ];
 const PRE_MIGRATION_CATALOGUE = [
   'project',
@@ -301,6 +305,7 @@ test('configuredSettingKeys lists the authored setting names, including those th
   assert.deepEqual(configuredSettingKeys(), []);
 });
 
+// @test-kind contract+security: runtimeIdentity redacts secrets
 test('runtimeIdentity is stable, limited to identity rows and redacts secrets', () => {
   const a = runtimeIdentity({
     runtime: { kind: 'power-pages' },
@@ -322,7 +327,7 @@ test('runtimeIdentity is stable, limited to identity rows and redacts secrets', 
 });
 
 test('project files: v1 reports unknown keys, v2 rejects them, pending parsers report a diagnostic', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'config-keys-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'config-keys-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'project.json');
   const standalone = { runtime: { kind: 'dataverse-api' }, solutions: [] };
@@ -351,6 +356,22 @@ test('project files: v1 reports unknown keys, v2 rejects them, pending parsers r
   assert.equal(pendingSettingParsers().includes('localServices'), false, 'the registered parser is restored');
 });
 
+test('config-keys loads as the first module of a process', async () => {
+  // A parser module reached through config-keys' own imports (secret-resolver via data.mjs) used to register before the
+  // parser table existed and failed every `mirage start` with "Cannot access 'parsers' before initialization".
+  const url = new URL('../lib/config-keys.mjs', import.meta.url).href;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', `await import(${JSON.stringify(url)})`], {
+    stdio: ['ignore', 'ignore', 'pipe'],
+    windowsHide: true,
+  });
+  let stderr = '';
+  child.stderr.on('data', (data) => {
+    stderr += data;
+  });
+  const code = await new Promise((resolve) => child.on('close', resolve));
+  assert.equal(code, 0, stderr);
+});
+
 test('registerSettingParser replaces the pending default', () => {
   const key = 'localServices';
   withoutSettingParser(key, () => {
@@ -373,7 +394,7 @@ test('registerSettingParser replaces the pending default', () => {
 });
 
 test('a project without dataverse leaves the catalogue site dataverse in force', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'config-keys-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'config-keys-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const project = await resolveProjectConfig(
     { version: 2, runtime: { kind: 'model-driven' }, solutions: [] },
@@ -447,7 +468,7 @@ test(
   'multi-portal serve --project applies the project dataverse and platform to every portal',
   { timeout: 120_000 },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'config-keys-cli-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'config-keys-cli-'));
     await fs.mkdir(path.join(root, 'portal'), { recursive: true });
     await fs.writeFile(
       path.join(root, 'portal', 'Home.webpage.yml'),

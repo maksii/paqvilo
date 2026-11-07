@@ -9,12 +9,16 @@ const ID = 'packs';
 const SETUP = '/_setup/#packs';
 const { e, list, helpBlock, heading, panel } = viewCommon({ id: ID, label: 'Data packs', kit, help: HELP });
 const count = (exports) => Object.values(exports ?? {}).reduce((total, item) => total + Number(item || 0), 0);
-const matchedBadge = (pack) =>
-  pack.matched === true
-    ? kit.badge('matched', 'ok')
-    : pack.matched === false
-      ? kit.badge('not matched', 'warn')
-      : kit.badge('not evaluated', 'neutral');
+const matchedBadge = (pack) => {
+  if (pack.matched === true) return kit.badge('matched', 'ok');
+  if (pack.matched === false) return kit.badge('not matched', 'warn');
+  return kit.badge('not evaluated', 'neutral');
+};
+const severityTone = (severity) => {
+  if (severity === 'error') return 'bad';
+  if (severity === 'warning') return 'warn';
+  return 'info';
+};
 
 function detail(ctx, pack) {
   const catalog = pack.personaCatalog ?? {};
@@ -78,11 +82,7 @@ function detail(ctx, pack) {
       { label: 'Code', render: (item) => `<code>${e(item.code ?? '')}</code>` },
       {
         label: 'Severity',
-        render: (item) =>
-          kit.badge(
-            item.severity ?? 'info',
-            item.severity === 'error' ? 'bad' : item.severity === 'warning' ? 'warn' : 'info',
-          ),
+        render: (item) => kit.badge(item.severity ?? 'info', severityTone(item.severity)),
       },
       { label: 'Message', render: (item) => e(item.message ?? '') },
     ],
@@ -217,7 +217,7 @@ export const view = {
     const details = event.target?.closest?.('[data-pack-details]');
     if (details) {
       d.selected = details.dataset.packDetails;
-      ctx.reveal?.(`[data-ui-section="${ID}:detail:${d.selected.replace(/["\\]/g, '\\$&')}"]`);
+      ctx.reveal?.(`[data-ui-section="${ID}:detail:${d.selected.replace(/["\\]/g, (match) => '\\' + match)}"]`);
       ctx.refresh();
       return true;
     }

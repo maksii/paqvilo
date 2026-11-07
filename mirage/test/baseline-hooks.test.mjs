@@ -6,7 +6,8 @@ import os from 'node:os';
 import { runHook } from '../baseline-hooks.mjs';
 
 test('baseline hooks retain quoted script paths, spaces, Unicode and persona argument boundaries', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'baseline hook path '));
+  // The child reports its working directory as the OS resolves it (8.3 aliases and symlinked temp roots expanded).
+  const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'baseline hook path ')));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const file = path.join(directory, 'hook script.mjs');
   await fs.writeFile(file, 'console.log(JSON.stringify({cwd:process.cwd(),args:process.argv.slice(2)}))');

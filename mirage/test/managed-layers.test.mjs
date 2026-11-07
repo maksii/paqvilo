@@ -6,7 +6,7 @@ import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
 import { readSolutionZip } from '../lib/solution-schema.mjs';
-import { zipOf } from '../lib/dataverse-solutions.mjs';
+import { zipOf, solutionImportJob } from '../lib/dataverse-solutions.mjs';
 
 const APP = '55555555-5555-4555-8555-555555555555';
 const label = (text) => ({ LocalizedLabels: [{ Label: text, LanguageCode: 1033 }] });
@@ -165,10 +165,16 @@ const stackOf = (dst) => {
     (entry) => solutions.find((s) => s.solutionid === entry.solutionid)?.uniquename ?? entry.solutionid,
   );
 };
+// Waits for the uninstall's own asyncoperation to complete and requires it to have succeeded.
 async function uninstall(dst, name) {
-  assert.equal((await dst.request('POST', '/UninstallSolutionAsync', { SolutionUniqueName: name })).status, 200);
-  for (let i = 0; i < 100 && dst.store.state.tables.solution.some((s) => s.uniquename === name); i++)
-    await new Promise((resolve) => setTimeout(resolve, 20));
+  const started = await dst.request('POST', '/UninstallSolutionAsync', { SolutionUniqueName: name });
+  assert.equal(started.status, 200);
+  const job = await solutionImportJob({ store: dst.store }, started.json.AsyncOperationId);
+  assert.equal(job.statuscode, 30, job.message);
+  assert.equal(
+    dst.store.state.tables.solution.some((s) => s.uniquename === name),
+    false,
+  );
 }
 
 test('uninstalling an upper managed layer restores the lower managed definition', async (t) => {

@@ -8,7 +8,7 @@ import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { PAGES_CLIENT_API_SCRIPT } from '../lib/platform.mjs';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const SITE = '77777777-7777-4777-8777-777777777701';
 const CONTACT = '77777777-7777-4777-8777-777777777702';
@@ -54,8 +54,8 @@ before(async () => {
 after(() => browser?.close());
 
 // One x_item list (page size 3) included twice on the home page, as a modern and a classic list.
-async function launch(t, { operations = ['read'], features = false } = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'modern-list-browser-'));
+async function launch(t, { operations = ['read'], features = false, spacer = false, beforeNavigation } = {}) {
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'modern-list-browser-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const solutionDir = path.join(dir, 'solution');
   if (features)
@@ -69,7 +69,7 @@ async function launch(t, { operations = ['read'], features = false } = {}) {
       'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true\nadx_pagetemplateid: list',
     'ListPage.pagetemplate.yml': 'adx_pagetemplateid: list\nadx_webtemplateid: listcontent',
     'ListContent.webtemplate.yml': 'adx_webtemplateid: listcontent\nadx_name: List content',
-    'ListContent.webtemplate.source.html': `<div id="modern">{% include 'entity_list' key: 'Items' isModern: 'true' %}</div><div id="classic">{% include 'entity_list' key: 'Items' %}</div>
+    'ListContent.webtemplate.source.html': `${spacer ? '<div style="height:1000px"></div>' : ''}<div id="modern">{% include 'entity_list' key: 'Items' isModern: 'true' %}</div><div id="classic">{% include 'entity_list' key: 'Items' %}</div>
 <script>window.loadedPages=[];window.clicked=[];Microsoft.PowerPages.onPagesClientApiReady(function($pages){var list=$pages.currentPage.lists.getAll().find(function(l){return l.isModern;});
 list.on('loaded',function(e){window.loadedPages.push(e.rows.length);var column=list.getColumn('x_name');if(column)column.setHeader(column.getDisplayName()+' *');});
 list.on('rowclick',function(e){window.clicked.push(e.row.getId());});window.pagesReady=true;});</script>`,
@@ -117,13 +117,38 @@ list.on('rowclick',function(e){window.clicked.push(e.row.getId());});window.page
   const script = await fetch(app.url + PAGES_CLIENT_API_SCRIPT);
   const served = [[script.status, script.headers.get('content-type')]];
   await page.route('**/*', (route) => (route.request().url().startsWith(app.url) ? route.fallback() : route.abort()));
+  if (beforeNavigation) await beforeNavigation(page);
   await page.goto(`${app.url}/`);
   await page.waitForFunction(() => window.pagesReady === true);
   return { page, errors, bodies, served, app };
 }
 
 test('a modern list continues the secured list query on scroll and publishes rows through $pages', async (t) => {
-  const { page, errors, bodies, served } = await launch(t);
+  let releaseSecond, releaseThird, secondRequested, thirdRequested;
+  const secondGate = new Promise((resolve) => (releaseSecond = resolve));
+  const thirdGate = new Promise((resolve) => (releaseThird = resolve));
+  const secondSeen = new Promise((resolve) => (secondRequested = resolve));
+  const thirdSeen = new Promise((resolve) => (thirdRequested = resolve));
+  t.after(() => {
+    releaseSecond();
+    releaseThird();
+  });
+  const { page, errors, bodies, served } = await launch(t, {
+    spacer: true,
+    beforeNavigation: (page) =>
+      page.route('**/_services/entity-grid-data.json/**', async (route) => {
+        const pageNumber = route.request().postDataJSON().page;
+        if (pageNumber === 2) {
+          secondRequested();
+          await secondGate;
+        }
+        if (pageNumber === 3) {
+          thirdRequested();
+          await thirdGate;
+        }
+        await route.fallback();
+      }),
+  });
   assert.ok(
     served.some(([status, type]) => status === 200 && /javascript/.test(type)),
     JSON.stringify(served),
@@ -132,11 +157,25 @@ test('a modern list continues the secured list query on scroll and publishes row
   await modern.locator('tbody tr').first().waitFor();
   // The first page holds the list's page size; later pages follow while the end of the list is in view.
   assert.equal((await page.evaluate(() => window.loadedPages))[0], 3);
-  // Scrolling to the end loads the next pages until the query has no more records.
-  for (let attempt = 0; attempt < 10 && (await modern.locator('tbody tr').count()) < 7; attempt++) {
-    await modern.locator('[data-pp-modern-list-more]').scrollIntoViewIfNeeded();
-    await page.waitForTimeout(150);
-  }
+  // Keep page 2 in flight so its response cannot hide the sentinel during the scroll.
+  // The spacer ensures the first continuation requires this scroll, not an initial intersection.
+  assert.deepEqual(
+    bodies.filter((body) => body.page > 1),
+    [],
+  );
+  await modern.locator('[data-pp-modern-list-more]').scrollIntoViewIfNeeded();
+  await secondSeen;
+  assert.deepEqual(await page.evaluate(() => window.loadedPages), [3]);
+  // Keep the sentinel in view while page 2 is released. Its re-observation must start page 3
+  // without a second scroll; hold page 3 to make that ordering observable.
+  await page.setViewportSize({ width: 800, height: 1200 });
+  releaseSecond();
+  await thirdSeen;
+  assert.deepEqual(await page.evaluate(() => window.loadedPages), [3, 6]);
+  releaseThird();
+  await page.waitForFunction(() => window.loadedPages.length === 3);
+  // The final response hides the sentinel: attempting another scroll here would wait forever.
+  assert.equal(await modern.locator('[data-pp-modern-list-more]').isVisible(), false);
   assert.deepEqual(
     await modern.locator('tbody tr td:first-child').allInnerTexts(),
     Array.from({ length: 7 }, (_, index) => `Item ${index + 1}`),
@@ -181,12 +220,17 @@ test('a modern list without read permission shows the access-denied message', as
 test('a modern list searches, sorts, switches views and runs the delete action through the classic grid engine', async (t) => {
   const { page, errors, bodies, app } = await launch(t, { operations: ['read', 'delete'], features: true });
   const modern = page.locator('#modern [data-pp-modern-list]');
-  const names = () => modern.locator('tbody tr td:first-child').allInnerTexts();
-  const until = async (expected) => {
-    for (let attempt = 0; attempt < 40 && JSON.stringify(await names()) !== JSON.stringify(expected); attempt++)
-      await page.waitForTimeout(100);
-    assert.deepEqual(await names(), expected);
-  };
+  // Every expected row list is only produced by the restarted query, so it marks that query as applied.
+  const until = (expected) =>
+    page.waitForFunction(
+      (expected) =>
+        JSON.stringify(
+          [...document.querySelectorAll('#modern [data-pp-modern-list] tbody tr td:first-child')].map(
+            (cell) => cell.innerText,
+          ),
+        ) === JSON.stringify(expected),
+      expected,
+    );
   await until(['Item 1', 'Item 2', 'Item 3']);
   // The toolbar comes from the list definition: a view selector over both views, the search box and the download action.
   assert.deepEqual(await modern.locator('[data-pp-modern-list-view] option').allInnerTexts(), [

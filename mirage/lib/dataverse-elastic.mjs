@@ -7,6 +7,9 @@ import { DataError } from './data-error.mjs';
 import { createHash } from 'node:crypto';
 import { contextUrl } from './dataverse-url.mjs';
 import { compileCosmosQuery, cosmosParameters } from './dataverse-cosmos-query.mjs';
+// runJob is imported when a job runs: a static import of dataverse-async.mjs would close an import cycle through
+// dataverse-security.mjs and data.mjs (config-keys.mjs loads this module early).
+const runJob = async (...args) => (await import('./dataverse-async.mjs')).runJob(...args);
 const refuse = (message) => new DataError(message, 400, 'InvalidRequest'); // status and code are guesses
 const bare = (type) => String(type ?? '').replace(/^#?Microsoft\.Dynamics\.CRM\./, '');
 const flagOf = (value) => (value !== null && typeof value === 'object' ? value.Value === true : value === true);
@@ -196,6 +199,20 @@ export function sweepExpired(api) {
   });
 }
 
+/**
+ * The TTL purge the install timer runs: sweepExpired through api.change as a job root (dataverse-async.mjs runJob, kind
+ * elastic-ttl-purge) whose rows event counts the purged rows; the delete events it commits stage their asynchronous steps
+ * and flows under it. Nothing is traced when nothing has expired. Resolves to the number of rows purged.
+ */
+function purgeExpired(api) {
+  if (!hasExpired(api.store, api.clock())) return Promise.resolve(0);
+  return runJob(api.store, { name: 'Elastic table TTL purge', kind: 'elastic-ttl-purge' }, async (span) => {
+    const rows = await api.change(() => sweepExpired(api));
+    span?.event('rows', { attributes: { operation: 'delete', rows } });
+    return rows;
+  });
+}
+
 const lifecycles = new WeakMap();
 
 // ExecuteCosmosSqlQuery. The local engine is immediately
@@ -209,7 +226,7 @@ function installCosmosQuery(api) {
     csdl: `<ComplexType Name="ParameterCollection"><Property Name="Keys" Type="Collection(Edm.String)" /><Property Name="Values" Type="Collection(mscrm.Object)" /></ComplexType>
 <Function Name="ExecuteCosmosSqlQuery"><Parameter Name="QueryText" Type="Edm.String" Nullable="false" /><Parameter Name="EntityLogicalName" Type="Edm.String" Nullable="false" /><Parameter Name="QueryParameters" Type="mscrm.ParameterCollection" /><Parameter Name="PageSize" Type="Edm.Int64" /><Parameter Name="PagingCookie" Type="Edm.String" /><Parameter Name="PartitionId" Type="Edm.String" /><ReturnType Type="mscrm.crmbaseentity" Nullable="false" /></Function>`,
     handle: (ctx) => {
-      const args = { ...(ctx.body ?? {}), ...(ctx.params ?? {}) };
+      const args = { ...ctx.body, ...ctx.params };
       const mapping = api.store.resolveMapping(String(args.EntityLogicalName ?? ''));
       if (!isElastic(mapping)) throw refuse('ExecuteCosmosSqlQuery requires an elastic table.');
       api.principals.authorize({ user: ctx.user, entity: mapping.logicalName, operation: 'read', mapping });
@@ -237,7 +254,7 @@ function installCosmosQuery(api) {
         .map((row) => {
           const props = { ...(api.fieldSecurity?.mask?.(ctx.user, mapping.logicalName, row, { view }) ?? row) };
           for (const [name, value] of Object.entries(props)) {
-            if (typeof value !== 'string' || !/^[\s]*[[{]/.test(value)) continue;
+            if (typeof value !== 'string' || !/^\s*[[{]/.test(value)) continue;
             const definition = api.store.fieldDefinition(mapping.logicalName, name, api.metadataFields);
             const format =
               definition?.columnMetadata?.formatName ??
@@ -318,7 +335,7 @@ export function install(api) {
   const timer = setInterval(() => {
     if (!hasExpired(store, api.clock())) return;
     Promise.resolve()
-      .then(() => api.change(() => sweepExpired(api)))
+      .then(() => purgeExpired(api))
       .catch((error) => api.log?.('elastic TTL purge failed', { message: error?.message }));
   }, 1000);
   timer.unref?.();

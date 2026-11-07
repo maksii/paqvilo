@@ -1,3 +1,4 @@
+import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -10,9 +11,10 @@ import { PortalModel } from '../lense/portal-model.mjs';
 import { auditResources } from '../lense/resource-audit.mjs';
 import { createFixture, SITE, HOME_ID } from './fixture.mjs';
 
+// No Git baseline: the audit is offline, never reads Git and skips .git.
 function fixture(t) {
   const fx = createFixture();
-  t.after(() => fx.cleanup());
+  t.after(fx.cleanup);
   return fx;
 }
 const audit = (fx, site = SITE) => auditResources(new PortalModel(fx.dir), site);
@@ -153,7 +155,7 @@ test('inactive metadata sequence records do not conceal unknown fields on active
 });
 
 test('enhanced absent fields are not invented as resource occurrences; metadata-only components are valid', (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-audit-'));
+  const dir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-audit-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const write = (id, xml) => {
     const file = path.join(dir, 'powerpagecomponents', id, 'powerpagecomponent.xml');
@@ -207,14 +209,15 @@ test('audit CLI is offline, reports all sites and strict mode fails on blocked c
     report.reports.map((item) => item.site),
     ['first', 'second'],
   );
-  assert.equal(run('--all', '--strict').status, 1);
+  // Exit code 1 is also what a crash returns; the JSON error names the actual refusal.
+  const refusal = (result) => [result.status, JSON.parse(result.stdout).errors.map((error) => error.code)];
+  assert.deepEqual(refusal(run('--all', '--strict')), [1, ['strict_failed']]);
   assert.equal(fs.existsSync(fx.file('.paqvilo')), false);
-  assert.equal(run('--all', '--site', 'first').status, 1);
+  assert.deepEqual(refusal(run('--all', '--site', 'first')), [1, ['invalid_argument']]);
 });
 
 test('duplicate active page URLs warn once and inactive single-extension web files stay inactive in dotted source roots', (t) => {
-  const fx = createFixture();
-  t.after(fx.cleanup);
+  const fx = fixture(t);
   for (const id of ['a', 'b'])
     fx.write(
       `web-pages/${id}/${id}.webpage.yml`,
@@ -225,7 +228,7 @@ test('duplicate active page URLs warn once and inactive single-extension web fil
   fx.write('web-pages/b/b.webpage.yml', fx.read('web-pages/b/b.webpage.yml') + '\nadx_statecode: 1');
   model = new PortalModel(fx.dir);
   assert.equal(model.warnings.filter((message) => message.includes('duplicate page URL')).length, 0);
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo.inactive.audit.'));
+  const root = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo.inactive.audit.'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.mkdirSync(path.join(root, 'web-files'));
   fs.mkdirSync(path.join(root, 'web-pages'));

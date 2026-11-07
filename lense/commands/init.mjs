@@ -36,6 +36,118 @@ Use TODO(paqvilo-init) markers for values the project owner must fill in.
 never imports pack modules or contacts portals; doctor may write ignored local cache/probes.
 `;
 
+function validateInitValues(values) {
+  for (const [key, value] of Object.entries(values)) {
+    const entries = Array.isArray(value) ? value : [value];
+    if (entries.some((item) => typeof item === 'string' && !item.trim()))
+      throw new Error(`--${key} must not be empty or whitespace`);
+  }
+}
+
+function validateInitPositionals(positionals) {
+  if (positionals.some((item) => !item.trim()))
+    throw new Error('init target directory must not be empty or whitespace');
+  if (positionals.length > 1) throw new Error('init accepts at most one target directory');
+}
+
+function validateInitOperations(values) {
+  if ([values.check, values.ready, values['refresh-editor']].filter(Boolean).length > 1)
+    throw new Error('--check, --ready and --refresh-editor are separate operations');
+  if (values['workspace-only'] && !values['refresh-editor'])
+    throw new Error('--workspace-only requires --refresh-editor');
+  const generationOptions = [
+    'name',
+    'site',
+    'pack',
+    'no-pack',
+    'default-env',
+    'source-root',
+    'browser',
+    'toolkit',
+    'no-vscode',
+    'into-existing',
+    'interactive',
+  ];
+  if (
+    (values.check || values.ready || values['refresh-editor']) &&
+    generationOptions.some((key) => values[key] !== undefined)
+  )
+    throw new Error('Generation options cannot be combined with check/ready/editor refresh');
+  if (values.config && !values.check && !values.ready && !values['refresh-editor'])
+    throw new Error('--config applies only to --check, --ready and --refresh-editor');
+  if (values.interactive && values.json) throw new Error('--interactive cannot be combined with --json');
+}
+
+function printReadyReport(report) {
+  for (const group of ['completion', 'adoption', 'paths'])
+    for (const item of report[group].diagnostics)
+      console.log(
+        `${item.file ?? '.'}${item.line ? ':' + item.line : ''}: [${item.code}] ${item.action ?? 'Complete this item; use init --check for file:line guidance.'}`,
+      );
+  for (const site of report.doctor.sites)
+    console.log(
+      `${site.ready ? 'READY' : 'ERROR'} ${site.site}: offline Lense/Sources/Mirage checks; ${site.profiles.filter((profile) => !profile.valid).length} invalid profile(s).`,
+    );
+  if (!report.doctor.ok)
+    console.log('Offline doctor gate failed; run paqvilo lense doctor --all --mirage for detailed local diagnostics.');
+  console.log(
+    report.ok
+      ? 'Configured project is ready for local preview and acceptance checks.'
+      : 'Configured project is not ready.',
+  );
+}
+
+function printCheckReport(report) {
+  for (const item of report.todo)
+    console.log(`${item.file}:${item.line}: ${item.severity ?? 'error'} [${item.kind}] ${item.text}`);
+  console.log(report.ok ? 'Project scaffold is complete.' : `${report.todo.length} unfinished scaffold item(s).`);
+}
+
+function printGeneratedReport(report) {
+  console.log(
+    `Project: ${report.directory}\nCreated ${report.created.length}, updated ${report.updated?.length ?? 0}, skipped ${report.skipped.length} file(s).`,
+  );
+  for (const file of report.skipped) console.log(`Kept existing: ${file}`);
+  for (const item of report.conflicts ?? []) console.log(`Kept edited ${item.file}; review ${item.generated}.`);
+  for (const change of report.scriptChanges ?? []) {
+    console.log(
+      `Script ${change.action}: ${change.name}${change.requiresReview ? ' (preserve custom command; manual review)' : ''}. ${change.reason}`,
+    );
+    if (change.proposed) console.log(`  Proposed: ${change.proposed}`);
+  }
+  for (const warning of report.pathWarnings ?? [])
+    console.log(`${warning.file}: [${warning.code}] ${warning.field}: ${warning.action}`);
+  if (typeof report.adoption === 'string') console.log(report.adoption);
+  if (report.next) console.log(`Next: ${report.next.join(' → ')}`);
+}
+
+async function generateInitProject(directory, values) {
+  if (values.interactive)
+    values.browser ??= await choose(
+      'Browser for this project?',
+      ['msedge', 'chrome', 'chromium'].map((value) => ({ value })),
+      'msedge',
+    );
+  try {
+    return await prepareProject(directory, {
+      name: values.name,
+      sites: values.site,
+      packs: values.pack,
+      noPack: values['no-pack'],
+      defaultEnv: values['default-env'],
+      sourceRoot: values['source-root'],
+      browser: values.browser,
+      toolkit: values.toolkit,
+      noVscode: values['no-vscode'],
+      intoExisting: values['into-existing'],
+    });
+  } catch (error) {
+    if (values.name === undefined && error.message.startsWith('--name must '))
+      error.message += '; supply --name with a valid slug when the directory name is unsuitable';
+    throw error;
+  }
+}
+
 export async function runInit(args = process.argv.slice(2)) {
   const { values, positionals } = parseArgs({
     args,
@@ -65,99 +177,20 @@ export async function runInit(args = process.argv.slice(2)) {
     console.log(INIT_HELP);
     return 0;
   }
-  if (positionals.length > 1) throw new Error('init accepts at most one target directory');
-  if ([values.check, values.ready, values['refresh-editor']].filter(Boolean).length > 1)
-    throw new Error('--check, --ready and --refresh-editor are separate operations');
-  if (values['workspace-only'] && !values['refresh-editor'])
-    throw new Error('--workspace-only requires --refresh-editor');
-  const generationOptions = [
-    'name',
-    'site',
-    'pack',
-    'no-pack',
-    'default-env',
-    'source-root',
-    'browser',
-    'toolkit',
-    'no-vscode',
-    'into-existing',
-    'interactive',
-  ];
-  if (
-    (values.check || values.ready || values['refresh-editor']) &&
-    generationOptions.some((key) => values[key] !== undefined)
-  )
-    throw new Error('Generation options cannot be combined with check/ready/editor refresh');
-  if (values.config && !values.check && !values.ready && !values['refresh-editor'])
-    throw new Error('--config applies only to --check, --ready and --refresh-editor');
-  if (values.interactive && values.json) throw new Error('--interactive cannot be combined with --json');
+  validateInitValues(values);
+  validateInitPositionals(positionals);
+  validateInitOperations(values);
   const directory = path.resolve(positionals[0] ?? '.');
   let report;
   if (values.check) report = checkProject(directory, { config: values.config });
   else if (values.ready) report = await readyProject(directory, { config: values.config });
   else if (values['refresh-editor'])
     report = await refreshEditor(directory, { config: values.config, workspaceOnly: values['workspace-only'] });
-  else {
-    if (values.interactive)
-      values.browser ??= await choose(
-        'Browser for this project?',
-        ['msedge', 'chrome', 'chromium'].map((value) => ({ value })),
-        'msedge',
-      );
-    report = await prepareProject(directory, {
-      name: values.name,
-      sites: values.site,
-      packs: values.pack,
-      noPack: values['no-pack'],
-      defaultEnv: values['default-env'],
-      sourceRoot: values['source-root'],
-      browser: values.browser,
-      toolkit: values.toolkit,
-      noVscode: values['no-vscode'],
-      intoExisting: values['into-existing'],
-    });
-  }
+  else report = await generateInitProject(directory, values);
   if (values.json) console.log(JSON.stringify(report, null, 2));
-  else if (values.ready) {
-    for (const group of ['completion', 'adoption', 'paths'])
-      for (const item of report[group].diagnostics)
-        console.log(
-          `${item.file ?? '.'}${item.line ? `:${item.line}` : ''}: [${item.code}] ${item.action ?? 'Complete this item; use init --check for file:line guidance.'}`,
-        );
-    for (const site of report.doctor.sites)
-      console.log(
-        `${site.ready ? 'READY' : 'ERROR'} ${site.site}: offline Lense/Sources/Mirage checks; ${site.profiles.filter((profile) => !profile.valid).length} invalid profile(s).`,
-      );
-    if (!report.doctor.ok)
-      console.log(
-        'Offline doctor gate failed; run paqvilo lense doctor --all --mirage for detailed local diagnostics.',
-      );
-    console.log(
-      report.ok
-        ? 'Configured project is ready for local preview and acceptance checks.'
-        : 'Configured project is not ready.',
-    );
-  } else if (values.check) {
-    for (const item of report.todo)
-      console.log(`${item.file}:${item.line}: ${item.severity ?? 'error'} [${item.kind}] ${item.text}`);
-    console.log(report.ok ? 'Project scaffold is complete.' : `${report.todo.length} unfinished scaffold item(s).`);
-  } else {
-    console.log(
-      `Project: ${report.directory}\nCreated ${report.created.length}, updated ${report.updated?.length ?? 0}, skipped ${report.skipped.length} file(s).`,
-    );
-    for (const file of report.skipped) console.log(`Kept existing: ${file}`);
-    for (const item of report.conflicts ?? []) console.log(`Kept edited ${item.file}; review ${item.generated}.`);
-    for (const change of report.scriptChanges ?? []) {
-      console.log(
-        `Script ${change.action}: ${change.name}${change.requiresReview ? ' (preserve custom command; manual review)' : ''}. ${change.reason}`,
-      );
-      if (change.proposed) console.log(`  Proposed: ${change.proposed}`);
-    }
-    for (const warning of report.pathWarnings ?? [])
-      console.log(`${warning.file}: [${warning.code}] ${warning.field}: ${warning.action}`);
-    if (typeof report.adoption === 'string') console.log(report.adoption);
-    if (report.next) console.log(`Next: ${report.next.join(' → ')}`);
-  }
+  else if (values.ready) printReadyReport(report);
+  else if (values.check) printCheckReport(report);
+  else printGeneratedReport(report);
   return report.ok ? 0 : 1;
 }
 
@@ -166,7 +199,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     .then((code) => {
       process.exitCode = code;
     })
-    .catch((error) => {
+    .catch((error) => /* NOSONAR: module-level promise chain must not block evaluation */ {
       if (process.argv.includes('--json'))
         console.log(
           JSON.stringify({

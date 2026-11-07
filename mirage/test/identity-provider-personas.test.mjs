@@ -13,6 +13,7 @@ import { loadConfig } from '../../lense/config.mjs';
 import { identityProviderAssets } from '../lib/identity-provider-settings.mjs';
 import { chooserSearch, chooserSelection, chooserResults, chooserReport } from '../lib/persona-chooser.mjs';
 import { indexPersonaCatalog } from '../lib/persona-search.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 const nodes = (html) => {
   const all = [];
   const visit = (node) => {
@@ -36,7 +37,8 @@ test('bounded account facets retain a selected value when URL spelling differs i
   }
 });
 
-// Wall time is compared across sizes, never against an absolute budget: 10x the personas may cost at most 30x the time.
+// Wall time is compared across sizes, never against an absolute budget: 10x the personas may cost at most 30x the time
+// (linear work measures about 2-5x; a quadratic chooser would be about 100x).
 const chooserMs = {};
 for (const count of [500, 5000])
   test(`identity chooser bounds markup and search at ${count} personas`, async (t) => {
@@ -50,10 +52,15 @@ for (const count of [500, 5000])
     t.after(() => idp.close());
     const url = new URL(idp.authority(provider) + 'oauth2/authorize');
     url.search = new URLSearchParams(params);
-    const started = performance.now(),
-      response = await fetch(url),
+    // The best of three identical requests, so one scheduling stall on a loaded runner does not decide the ratio.
+    let response, html;
+    chooserMs[count] = Infinity;
+    for (let sample = 0; sample < 3; sample++) {
+      const started = performance.now();
+      response = await fetch(url);
       html = await response.text();
-    chooserMs[count] = performance.now() - started;
+      chooserMs[count] = Math.min(chooserMs[count], performance.now() - started);
+    }
     assert.equal(response.status, 200);
     assert.ok(Buffer.byteLength(html) <= 150000);
     if (count === 5000)
@@ -164,7 +171,7 @@ test('runtime identity provider receives the effective state/pack catalogue and 
 });
 
 test('catalogue/default chooser settings and project-local head assets are validated', async (t) => {
-  const parent = await fs.mkdtemp(path.join(tmpdir(), 'chooser-project-'));
+  const parent = await makeTemporaryDirectory(path.join(tmpdir(), 'chooser-project-'));
   t.after(() => fs.rm(parent, { recursive: true, force: true }));
   const root = path.join(parent, 'project');
   await fs.mkdir(root);

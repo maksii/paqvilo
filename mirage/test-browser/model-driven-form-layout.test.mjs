@@ -5,10 +5,10 @@ import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 async function layoutFixture(t) {
-  const source = await modelDrivenFixture(t);
-  await source.sim.close();
+  const source = await modelDrivenFixture(t, { defer: true });
   const attributes = ['x_notes', 'x_left', 'x_right', 'x_hidden', 'x_pcf', 'x_third']
     .map(
       (name) =>
@@ -71,15 +71,20 @@ async function layoutFixture(t) {
     'window.Layout={Editor:class{init(context,notify,state,container){this.input=document.createElement("input");this.input.setAttribute("aria-label","Mounted editor");this.input.style.cssText="width:100%;box-sizing:border-box";this.input.addEventListener("input",()=>{this.value=this.input.value;notify()});container.append(this.input)}updateView(context){this.value=context.parameters.value.raw;this.input.value=this.value??"";this.input.disabled=context.mode.isControlDisabled}getOutputs(){return{value:this.value}}destroy(){this.input.remove()}}};',
   );
   const sim = await source.start({ modelDriven: { trustedExtensions: true } });
-  t.after(() => sim.close());
   return sim.origin ?? sim.url;
 }
 
 test('exported two and three column forms preserve spacers, spans, labels and PCF widths across responsive reflow and saves', async (t) => {
   const origin = await layoutFixture(t);
   const browser = await chromium.launch(browserLaunchOptions());
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 1582, height: 1000 } });
+  // The form's tab overflow and --form-usable-height follow a ResizeObserver, delivered in the rendering step after
+  // the resize; geometry is read once a later animation frame shows that step has run.
+  const resize = async (size) => {
+    await page.setViewportSize(size);
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  };
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto(
@@ -139,7 +144,7 @@ test('exported two and three column forms preserve spacers, spans, labels and PC
   ).json();
   assert.equal(saved.row.x_name, 'Layout edit');
   assert.equal(saved.row.x_pcf, 'Bound edit');
-  await page.setViewportSize({ width: 390, height: 844 });
+  await resize({ width: 390, height: 844 });
   assert.ok(
     await page
       .getByLabel('Name', { exact: true })
@@ -149,7 +154,7 @@ test('exported two and three column forms preserve spacers, spans, labels and PC
     'native two-column tabs retain their Left label column on a narrow form',
   );
   assert.equal(await editorFits(), true);
-  await page.setViewportSize({ width: 1582, height: 1000 });
+  await resize({ width: 1582, height: 1000 });
   await page.getByRole('tab', { name: 'Three columns', exact: true }).click();
   await page.getByLabel('Mounted editor', { exact: true }).waitFor();
   const thirds = await page
@@ -169,7 +174,7 @@ test('exported two and three column forms preserve spacers, spans, labels and PC
     true,
     'source Top label placement must sit above the PCF',
   );
-  await page.setViewportSize({ width: 390, height: 844 });
+  await resize({ width: 390, height: 844 });
   await page.waitForFunction(() => document.documentElement.scrollWidth <= innerWidth);
   await page.waitForFunction(() => document.querySelectorAll('[role="tab"]:not([hidden])').length === 1);
   assert.equal(
@@ -202,7 +207,7 @@ test('exported two and three column forms preserve spacers, spans, labels and PC
     );
   assert.equal(reflow[0].left, reflow[1].left);
   assert.ok(reflow[0].top < reflow[1].top && reflow[1].top < reflow[2].top);
-  await page.setViewportSize({ width: 1100, height: 900 });
+  await resize({ width: 1100, height: 900 });
   const wrapped = await page.locator('.form-column').evaluateAll((nodes) =>
     nodes.map((node) => {
       const { left, top, width } = node.getBoundingClientRect();
@@ -217,7 +222,7 @@ test('exported two and three column forms preserve spacers, spans, labels and PC
     'wrapped columns retain their source width ratio',
   );
   assert.ok(wrapped[2].top - wrapped[0].top > 200, 'short wrapped column rows share the native available form height');
-  await page.setViewportSize({ width: 1582, height: 1000 });
+  await resize({ width: 1582, height: 1000 });
   await page.getByRole('tab', { name: 'Matrix', exact: true }).click();
   await page.getByLabel('Mounted editor', { exact: true }).waitFor();
   const matrixShape = () =>
@@ -267,7 +272,7 @@ test('exported two and three column forms preserve spacers, spans, labels and PC
   const restoredMatrix = await matrixShape();
   assert.equal(restoredMatrix.email.top, wideMatrix.email.top);
   assert.equal(restoredMatrix.measurement.top, wideMatrix.measurement.top);
-  await page.setViewportSize({ width: 1100, height: 900 });
+  await resize({ width: 1100, height: 900 });
   const sectionWidth = await page
     .locator('.section-fields[data-columns="3"]')
     .evaluate((node) => node.getBoundingClientRect().width);
@@ -283,7 +288,7 @@ test('exported two and three column forms preserve spacers, spans, labels and PC
     'supported matrix inputs expand instead of clipping into three undersized columns',
   );
   assert.equal(narrowMatrix.spacerVisible, 0);
-  await page.setViewportSize({ width: 390, height: 844 });
+  await resize({ width: 390, height: 844 });
   const smallMatrix = await matrixShape();
   assert.ok(smallMatrix.quantity.top > smallMatrix.notes.top && smallMatrix.measurement.top > smallMatrix.quantity.top);
   assert.equal(smallMatrix.spacerVisible, 0);

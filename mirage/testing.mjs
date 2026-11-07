@@ -6,3 +6,4 @@ export { runSessionMatrix } from './testing/session-matrix.mjs';
 export { compareVerificationWitnesses } from './lib/verification-witness.mjs';
 export { runStorageContract, STORAGE_CONTRACT_CASES } from './testing/storage-contract.mjs';
 export { fixedClock, sequentialIds, createScheduler } from './lib/runtime-clock.mjs';
+export { createFixtureRecipes } from './testing/fixture-recipes.mjs';

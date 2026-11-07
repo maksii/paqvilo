@@ -1,0 +1,590 @@
+{
+  "comment": "Invented answers of the Activity routes (N1 shapes): /audit?traceId=, /logs, /diagnostics, /trace?kind=render, a page trace with render-template steps, /render-sources and the workspace state. The trace list, stats, settings and the plug-in trace come from trace-sample.json.",
+  "auditIds": {
+    "a6b72bdc-4bb8-4d3c-affa-0b162404bff3": "fx-audit-create",
+    "6e354c10-c74e-45e2-b4fd-a4e3d04530e5": "fx-audit-denied",
+    "fx-throw": "fx-audit-throw"
+  },
+  "throw": {
+    "traceId": "fx-throw",
+    "sequence": 20,
+    "latestSequence": 24,
+    "startedAt": "2026-10-22T09:00:01.000Z",
+    "status": "error",
+    "ended": true,
+    "durationMs": 12,
+    "totalDurationMs": 12,
+    "spanCount": 5,
+    "droppedSpans": 0,
+    "errorCount": 3,
+    "deniedCount": 0,
+    "auditId": "fx-audit-throw",
+    "firstError": {
+      "spanId": "fx-throw-step",
+      "kind": "plugin-step",
+      "name": "Invented.Plugin.Throw",
+      "status": "error",
+      "code": "0x80040224",
+      "message": "Pre-validation crashed"
+    },
+    "pluginCount": 1,
+    "flowCount": 0,
+    "connectorCount": 0,
+    "dataverseCount": 1,
+    "kinds": {
+      "http": 1,
+      "webapi": 1,
+      "dataverse": 1,
+      "plugin-stage": 1,
+      "plugin-step": 1
+    },
+    "entities": [
+      "x_item"
+    ],
+    "modules": [
+      "portal",
+      "webapi",
+      "dataverse",
+      "plugins",
+      "clr"
+    ],
+    "root": {
+      "traceId": "fx-throw",
+      "spanId": "fx-throw-root",
+      "parentSpanId": null,
+      "sequence": 20,
+      "kind": "http",
+      "name": "POST /_api/x_items",
+      "module": "portal",
+      "operation": "post",
+      "entity": null,
+      "recordId": null,
+      "startedAt": "2026-10-22T09:00:01.000Z",
+      "durationMs": 12,
+      "status": "error",
+      "depth": 0,
+      "async": false,
+      "actor": {
+        "kind": "contact",
+        "id": "c0ffee00-0000-4000-8000-000000000001",
+        "name": "Invented Contact"
+      },
+      "session": {
+        "visitorId": "visitor-1",
+        "sessionKey": "contact:c0ffee00-0000-4000-8000-000000000001"
+      },
+      "origin": {
+        "host": "power-pages",
+        "portal": "fx-portal",
+        "preset": null
+      },
+      "attributes": {
+        "kindHint": "api",
+        "provider": "local",
+        "statusCode": 500,
+        "auditId": "fx-audit-throw"
+      },
+      "events": [],
+      "links": []
+    }
+  },
+  "audit": {
+    "items": [
+      {
+        "id": "fx-audit-create",
+        "sequence": 11,
+        "correlationId": "fx-audit-create",
+        "parentId": null,
+        "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
+        "spanId": "4a6c818d-f625-4d31-a655-55976ebc5fd3",
+        "startedAt": "2026-10-22T09:00:00.000Z",
+        "kind": "api",
+        "method": "POST",
+        "path": "/_api/x_items",
+        "provider": "local",
+        "entity": "x_item",
+        "identity": {
+          "contactId": "c0ffee00-0000-4000-8000-000000000001",
+          "roles": [
+            "Invented Members"
+          ]
+        },
+        "query": {},
+        "status": 201,
+        "rowCount": 1,
+        "outcome": "success",
+        "durationMs": 21,
+        "saveMs": 1.5,
+        "saveMode": "journal",
+        "visitorId": null,
+        "sessionKey": "contact:c0ffee00-0000-4000-8000-000000000001"
+      },
+      {
+        "id": "fx-audit-read",
+        "sequence": 12,
+        "correlationId": "fx-audit-create",
+        "parentId": "fx-audit-create",
+        "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
+        "spanId": "d654c55e-0000-4000-8000-000000000000",
+        "startedAt": "2026-10-22T09:00:00.010Z",
+        "kind": "entity-query",
+        "method": "GET",
+        "path": "/_api/x_categories",
+        "provider": "local",
+        "entity": "x_category",
+        "identity": {
+          "contactId": "c0ffee00-0000-4000-8000-000000000001",
+          "roles": [
+            "Invented Members"
+          ]
+        },
+        "query": {
+          "$top": "5"
+        },
+        "status": 200,
+        "rowCount": 3,
+        "outcome": "success",
+        "durationMs": 2,
+        "visitorId": null,
+        "sessionKey": "contact:c0ffee00-0000-4000-8000-000000000001"
+      },
+      {
+        "id": "fx-audit-denied",
+        "sequence": 9,
+        "correlationId": "fx-audit-denied",
+        "parentId": null,
+        "traceId": "6e354c10-c74e-45e2-b4fd-a4e3d04530e5",
+        "spanId": "e2250b6c-0947-4758-b351-405c3453d9c5",
+        "startedAt": "2026-10-22T09:00:00.100Z",
+        "kind": "api",
+        "method": "GET",
+        "path": "/_api/x_secrets",
+        "provider": "local",
+        "entity": "x_secret",
+        "identity": {
+          "contactId": null,
+          "roles": []
+        },
+        "query": {},
+        "status": 403,
+        "rowCount": null,
+        "outcome": "denied",
+        "durationMs": 3,
+        "error": {
+          "code": "TABLE_PERMISSION_DENIED",
+          "message": "No table permission grants read.",
+          "portalCode": "90040120"
+        },
+        "visitorId": "ad87d220-0000-4000-8000-000000000002",
+        "sessionKey": "visitor:ad87d220-0000-4000-8000-000000000002"
+      },
+      {
+        "id": "fx-audit-throw",
+        "sequence": 13,
+        "correlationId": "fx-audit-throw",
+        "parentId": null,
+        "traceId": "fx-throw",
+        "spanId": "fx-throw-root",
+        "startedAt": "2026-10-22T09:00:01.000Z",
+        "kind": "api",
+        "method": "POST",
+        "path": "/_api/x_items",
+        "provider": "live",
+        "entity": "x_item",
+        "identity": {
+          "contactId": "c0ffee00-0000-4000-8000-000000000001",
+          "roles": [
+            "Invented Members"
+          ]
+        },
+        "query": {},
+        "status": 500,
+        "rowCount": null,
+        "outcome": "error",
+        "durationMs": 12,
+        "visitorId": null,
+        "sessionKey": "contact:c0ffee00-0000-4000-8000-000000000001"
+      }
+    ],
+    "total": 4,
+    "page": 1,
+    "pageSize": 100,
+    "pageCount": 1,
+    "retained": 4,
+    "dropped": 0,
+    "summary": {
+      "success": 2,
+      "error": 1,
+      "denied": 1,
+      "pending": 0
+    },
+    "kinds": [
+      "api",
+      "liquid-fetchxml",
+      "form",
+      "page",
+      "entity-read",
+      "entity-query"
+    ],
+    "latestSequence": 13,
+    "oldestSequence": 9
+  },
+  "logs": {
+    "items": [
+      {
+        "sequence": 1,
+        "type": "startup",
+        "time": "2026-10-22T08:59:58.000Z",
+        "level": "info",
+        "traceId": null,
+        "spanId": null,
+        "phase": "portal-import",
+        "elapsedMs": 41,
+        "message": "Imported the portal export (3 pages)."
+      },
+      {
+        "sequence": 2,
+        "type": "diagnostic",
+        "time": "2026-10-22T08:59:58.100Z",
+        "level": "warning",
+        "traceId": null,
+        "spanId": null,
+        "diagnostic": {
+          "code": "CASCADE_REPARENT_NOT_SIMULATED",
+          "message": "x_item cascade reparent is not simulated."
+        }
+      },
+      {
+        "sequence": 3,
+        "type": "request",
+        "time": "2026-10-22T09:00:00.021Z",
+        "level": "info",
+        "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
+        "spanId": "4a6c818d-f625-4d31-a655-55976ebc5fd3",
+        "entry": {
+          "method": "POST",
+          "path": "/_api/x_items",
+          "status": 201,
+          "entity": "x_item",
+          "rowCount": 1,
+          "durationMs": 21
+        }
+      },
+      {
+        "sequence": 4,
+        "type": "plugin",
+        "time": "2026-10-22T09:00:00.005Z",
+        "level": "info",
+        "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
+        "spanId": "547bc840-0000-4000-8000-000000000000",
+        "entity": "x_item",
+        "operation": "create",
+        "rule": "Require item name",
+        "plugins": [
+          "Require item name"
+        ],
+        "result": "applied",
+        "outcome": "evaluated",
+        "changes": [
+          "x_name"
+        ],
+        "secondaryEffects": 0,
+        "durationMs": 0.2
+      },
+      {
+        "sequence": 5,
+        "type": "diagnostic",
+        "time": "2026-10-22T09:00:00.103Z",
+        "level": "warning",
+        "traceId": "6e354c10-c74e-45e2-b4fd-a4e3d04530e5",
+        "spanId": "e2250b6c-0947-4758-b351-405c3453d9c5",
+        "diagnostic": {
+          "code": "TABLE_PERMISSION_DENIED",
+          "message": "No table permission grants read on x_secret.",
+          "path": "/_api/x_secrets"
+        }
+      },
+      {
+        "sequence": 6,
+        "type": "reload",
+        "time": "2026-10-22T09:00:02.000Z",
+        "level": "info",
+        "traceId": null,
+        "spanId": null,
+        "revision": 2,
+        "message": "Sources reloaded: runtime revision 2."
+      }
+    ],
+    "latestSequence": 6,
+    "oldestSequence": 1,
+    "retained": 6,
+    "dropped": 0,
+    "retain": 2000,
+    "more": false
+  },
+  "diagnostics": {
+    "diagnostics": [
+      {
+        "code": "CASCADE_REPARENT_NOT_SIMULATED",
+        "severity": "warning",
+        "message": "x_item cascade reparent is not simulated.",
+        "file": "solution/Entities/x_item/Entity.xml"
+      },
+      {
+        "code": "TABLE_PERMISSION_DENIED",
+        "severity": "warning",
+        "message": "No table permission grants read on x_secret.",
+        "path": "/_api/x_secrets",
+        "time": "2026-10-22T09:00:00.103Z",
+        "traceId": "6e354c10-c74e-45e2-b4fd-a4e3d04530e5",
+        "spanId": "e2250b6c-0947-4758-b351-405c3453d9c5"
+      },
+      {
+        "code": "TABLE_PERMISSION_DENIED",
+        "severity": "warning",
+        "message": "No table permission grants write on x_secret.",
+        "path": "/_api/x_secrets",
+        "time": "2026-10-22T09:00:00.903Z",
+        "traceId": "fx-gone",
+        "spanId": "fx-gone-root"
+      }
+    ],
+    "requests": []
+  },
+  "pageTree": {
+    "trace": {
+      "traceId": "fx-page",
+      "sequence": 30,
+      "latestSequence": 34,
+      "startedAt": "2026-10-22T09:00:03.000Z",
+      "status": "ok",
+      "ended": true,
+      "durationMs": 9,
+      "totalDurationMs": 9,
+      "spanCount": 5,
+      "droppedSpans": 0,
+      "errorCount": 0,
+      "deniedCount": 0,
+      "auditId": "fx-audit-page",
+      "kinds": {
+        "http": 1,
+        "render": 1,
+        "render-template": 2,
+        "read": 1
+      },
+      "entities": [
+        "x_item"
+      ],
+      "modules": [
+        "portal",
+        "liquid"
+      ]
+    },
+    "root": {
+      "traceId": "fx-page",
+      "spanId": "fx-page-root",
+      "parentSpanId": null,
+      "sequence": 30,
+      "kind": "http",
+      "name": "GET /order/",
+      "module": "portal",
+      "operation": "get",
+      "entity": null,
+      "recordId": null,
+      "startedAt": "2026-10-22T09:00:03.000Z",
+      "durationMs": 9,
+      "status": "ok",
+      "depth": 0,
+      "async": false,
+      "level": "summary",
+      "actor": {
+        "kind": "anonymous",
+        "id": null,
+        "name": null
+      },
+      "session": {
+        "visitorId": "accb980f-0000-4000-8000-000000000000",
+        "sessionKey": "visitor:accb980f-0000-4000-8000-000000000000"
+      },
+      "origin": {
+        "host": "power-pages",
+        "portal": "fx-portal",
+        "preset": null
+      },
+      "attributes": {
+        "kindHint": "page",
+        "statusCode": 200,
+        "auditId": "fx-audit-page"
+      },
+      "events": [],
+      "links": []
+    },
+    "spans": [
+      {
+        "traceId": "fx-page",
+        "spanId": "fx-page-root",
+        "parentSpanId": null,
+        "sequence": 30,
+        "kind": "http",
+        "name": "GET /order/",
+        "module": "portal",
+        "startedAt": "2026-10-22T09:00:03.000Z",
+        "durationMs": 9,
+        "status": "ok",
+        "depth": 0,
+        "async": false,
+        "level": "summary",
+        "attributes": {
+          "kindHint": "page",
+          "statusCode": 200,
+          "auditId": "fx-audit-page"
+        },
+        "events": [],
+        "links": []
+      },
+      {
+        "traceId": "fx-page",
+        "spanId": "fx-page-render",
+        "parentSpanId": "fx-page-root",
+        "sequence": 31,
+        "kind": "render",
+        "name": "render /order/",
+        "module": "liquid",
+        "startedAt": "2026-10-22T09:00:03.001Z",
+        "durationMs": 7,
+        "status": "ok",
+        "depth": 1,
+        "async": false,
+        "level": "summary",
+        "attributes": {},
+        "events": [],
+        "links": []
+      },
+      {
+        "traceId": "fx-page",
+        "spanId": "fx-page-template",
+        "parentSpanId": "fx-page-render",
+        "sequence": 32,
+        "kind": "render-template",
+        "name": "webtemplate Order",
+        "module": "liquid",
+        "startedAt": "2026-10-22T09:00:03.002Z",
+        "durationMs": 5,
+        "status": "ok",
+        "depth": 2,
+        "async": false,
+        "level": "summary",
+        "attributes": {
+          "sourceRefId": "fx-ref-order"
+        },
+        "events": [],
+        "links": []
+      },
+      {
+        "traceId": "fx-page",
+        "spanId": "fx-page-snippet",
+        "parentSpanId": "fx-page-template",
+        "sequence": 33,
+        "kind": "render-template",
+        "name": "snippet Order/Heading",
+        "module": "liquid",
+        "startedAt": "2026-10-22T09:00:03.003Z",
+        "durationMs": 1,
+        "status": "ok",
+        "depth": 3,
+        "async": false,
+        "level": "summary",
+        "attributes": {
+          "sourceRefId": "fx-ref-gone"
+        },
+        "events": [],
+        "links": []
+      },
+      {
+        "traceId": "fx-page",
+        "spanId": "fx-page-read",
+        "parentSpanId": "fx-page-template",
+        "sequence": 34,
+        "kind": "read",
+        "name": "read liquid-fetchxml x_item",
+        "module": "liquid",
+        "entity": "x_item",
+        "startedAt": "2026-10-22T09:00:03.004Z",
+        "durationMs": 1,
+        "status": "ok",
+        "depth": 3,
+        "async": false,
+        "level": "summary",
+        "attributes": {
+          "auditId": "fx-audit-page-read",
+          "callSite": "6-34"
+        },
+        "events": [],
+        "links": []
+      }
+    ]
+  },
+  "renderSources": {
+    "sourceDir": "/fx/site",
+    "items": [
+      {
+        "id": "fx-ref-order",
+        "path": "web-templates/order/Order.webtemplate.source.html",
+        "file": "/fx/site/web-templates/order/Order.webtemplate.source.html",
+        "line": 3,
+        "column": 1,
+        "kind": "webtemplate",
+        "name": "Order",
+        "recordId": "11111111-0000-4000-8000-000000000001",
+        "field": "source",
+        "languageId": null
+      }
+    ],
+    "missing": [
+      "fx-ref-gone"
+    ]
+  },
+  "state": {
+    "status": {
+      "routes": [
+        "/trace",
+        "/audit",
+        "/logs",
+        "/diagnostics",
+        "/render-sources",
+        "/activity",
+        "/personas"
+      ],
+      "eventChannels": [
+        "logs",
+        "trace"
+      ],
+      "pages": [
+        {
+          "name": "Order",
+          "path": "/order/"
+        },
+        {
+          "name": "Home",
+          "path": "/"
+        }
+      ]
+    },
+    "evidence": {
+      "path": "/order/",
+      "time": "2026-10-22T08:30:00.000Z",
+      "passed": true,
+      "verified": true,
+      "stale": false,
+      "pixels": {
+        "different": 12,
+        "total": 100000,
+        "fraction": 0.00012
+      },
+      "artifactUrls": {
+        "local": "/__sim/evidence/local.png",
+        "outside": "https://example.test/x.png"
+      }
+    }
+  }
+}

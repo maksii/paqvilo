@@ -258,10 +258,10 @@ function installGit(api) {
         if (!list.includes(config)) list.push(config);
         const branches = tableOf(api, 'sourcecontrolbranchconfiguration');
         let branch = branches.find((b) => lower(b.name) === lower(name));
-        if (!branch)
-          branches.push(
-            (branch = { sourcecontrolbranchconfigurationid: randomUUID(), partitionid: null, ttlinseconds: null }),
-          );
+        if (!branch) {
+          branch = { sourcecontrolbranchconfigurationid: randomUUID(), partitionid: null, ttlinseconds: null };
+          branches.push(branch);
+        }
         Object.assign(branch, {
           name,
           branchname: a.Branch,
@@ -328,7 +328,7 @@ function installGit(api) {
         message: a.CommitMessage,
         author: c.caller?.systemuserid ?? null,
         time: stamp(api),
-        solutions: { ...(parent?.solutions ?? {}), [solution.uniquename]: zips },
+        solutions: { ...parent?.solutions, [solution.uniquename]: zips },
       });
       setHead(repo, branch.branchname, id);
       await write(api, () => {
@@ -386,14 +386,10 @@ function installGit(api) {
         for (const m of componentsOf(api.store.state).filter((m) => members.has(lower(m.id))))
           rows.push(gitRow(solution.uniquename, m.type, m.name ?? m.logical, ACTION.Push));
       if (localChanged || remoteChanged) {
-        rows.push(
-          gitRow(
-            solution.uniquename,
-            SOLUTION_TYPE,
-            solution.uniquename,
-            localChanged && remoteChanged ? ACTION.Conflict : localChanged ? ACTION.Push : ACTION.Pull,
-          ),
-        );
+        let action = ACTION.Pull;
+        if (localChanged && remoteChanged) action = ACTION.Conflict;
+        else if (localChanged) action = ACTION.Push;
+        rows.push(gitRow(solution.uniquename, SOLUTION_TYPE, solution.uniquename, action));
       }
       await write(api, () => {
         removeRows(api, 'sourcecontrolcomponent', (r) => r.solutionuniquename === solution.uniquename);
@@ -471,7 +467,9 @@ function installGit(api) {
         { name: `Export ${a.SolutionName} from Git`, operationtype: null, callerId: c.caller.systemuserid },
         () =>
           write(api, () => {
-            ((api.store.state.dataverse ??= {}).exportJobs ??= {})[lower(exportJobId)] = {
+            api.store.state.dataverse ??= {};
+            api.store.state.dataverse.exportJobs ??= {};
+            api.store.state.dataverse.exportJobs[lower(exportJobId)] = {
               solutionName: a.SolutionName,
               managed: a.Managed === true,
               file,

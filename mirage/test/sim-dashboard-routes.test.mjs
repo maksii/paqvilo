@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own simulator administration, CLI, configuration and runtime behaviour
 // GET /_sim/api/dashboard on both hosts: the payload shape, node ids and statuses, no credential material, memoised
 // nodes, and counters that move after a Web API create, a web hook that is not contacted and a storage put.
 import test from 'node:test';
@@ -7,8 +8,9 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
+import { fixedClock } from '../lib/runtime-clock.mjs';
 import { createDashboardRoutes, DASHBOARD_STATUSES, activityFacts } from '../lib/sim-dashboard-routes.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const CLIENT = '77777777-7777-4777-8777-777777777781';
 const ENDPOINT = '77777777-7777-4777-8777-777777777782';
@@ -26,7 +28,7 @@ async function json(response, status = 200) {
 }
 
 async function standalone(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-dashboard-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'sim-dashboard-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'solution');
   const files = {
@@ -92,6 +94,7 @@ function assertShape(body) {
   assert.equal(typeof body.docs.simAdministration.path, 'string');
 }
 
+// @test-kind contract+security: the dashboard payload carries no credential material
 test('standalone dashboard: payload shape, no credential material, memoised nodes and moving counters', async (t) => {
   const sim = await standalone(t);
   const dashboard = async () => json(await fetch(`${sim.url}/_sim/api/dashboard`));
@@ -306,18 +309,22 @@ const portalFiles = {
   'web-templates/Main.webtemplate.source.html': '<p>Invented</p>',
 };
 
+// @test-kind contract+security: the dashboard payload carries no credential material
 test('Power Pages dashboard adds the portal listener, admin hosts and the portal request ring', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-dashboard-pp-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'sim-dashboard-pp-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(portalFiles)) {
     await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });
     await fs.writeFile(path.join(dir, name), body);
   }
+  // A fixed clock decides when the shared topology is rebuilt (its 5-second bucket), so the test does not race it.
+  const clock = fixedClock(Date.now());
   const sim = await createSimulator({
     sourceDir: dir,
     stateFile: path.join(dir, 'state.json'),
     port: 0,
     watch: false,
+    clock,
     initial: {
       version: 1,
       mappings: {},
@@ -367,8 +374,22 @@ test('Power Pages dashboard adds the portal listener, admin hosts and the portal
   const busy = await json(await fetch(`${sim.url}/_sim/api/dashboard`));
   assert.equal(busy.activity.requests.retained, 300);
   assert.ok(busy.activity.requests.total >= 301, `total ${busy.activity.requests.total}`);
+  // Traced requests move activity.trace on every read, while the nodes stay the same topology even after the shared part
+  // is rebuilt in the next 5-second bucket (a node that carried the trace counters changed here).
+  assert.ok(busy.activity.trace.retained > body.activity.trace.retained, JSON.stringify(busy.activity.trace));
+  assert.ok(busy.activity.trace.spans > body.activity.trace.spans);
+  clock.advance(5000);
   const again = await json(await fetch(`${sim.url}/_sim/api/dashboard`));
   assert.deepEqual(again.nodes, body.nodes);
+  // The runtime's start is fixed; its uptime is read fresh on every answer, across the 5-second topology cache.
+  assert.ok(!Number.isNaN(Date.parse(body.runtime.startedAt)), body.runtime.startedAt);
+  assert.equal(again.runtime.startedAt, body.runtime.startedAt);
+  assert.equal(
+    again.runtime.uptimeMs - body.runtime.uptimeMs,
+    Date.parse(again.generatedAt) - Date.parse(body.generatedAt),
+  );
+  assert.ok(again.runtime.uptimeMs >= 5000);
+  assert.ok(again.activity.trace.latestSequence >= busy.activity.trace.latestSequence);
   assert.equal(
     (await json(await fetch(`${sim.url}/_sim/api/status`))).docs.simAdministration.path,
     'mirage/docs/sim-administration.md',
@@ -376,7 +397,7 @@ test('Power Pages dashboard adds the portal listener, admin hosts and the portal
 });
 
 test('Power Pages dashboard connects code components to the pages that host them and the records they read', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-dashboard-pcf-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'sim-dashboard-pcf-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const control = 'solution/Controls/x_Invented.Editor';
   const files = {
@@ -475,7 +496,7 @@ test('standalone dashboard connects each part to what really calls it, and draws
 });
 
 test('with the Web API listener off, Web API messages still run from the model-driven in-app Web API', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-dashboard-md-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'sim-dashboard-md-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   await fs.mkdir(path.join(root, 'solution', 'Other'), { recursive: true });
   await fs.writeFile(
@@ -519,6 +540,7 @@ test('the dashboard route answers 503 starting before its host exists', async (t
   assert.equal((await fetch(`${origin}/_sim/api/other`)).status, 404);
 });
 
+// @test-kind contract+security: dashboard activity bodies are redacted
 test('activity keeps counts named like credentials; the rest of the body is redacted', async (t) => {
   const host = {
     organization: null,

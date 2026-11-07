@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own _sim, Lense and setup user interface behaviour
 // A synthetic live bridge stands in for a reference browser.
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -7,6 +8,7 @@ import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const FILES = {
   'website.yml': 'adx_websiteid: site\nadx_name: Workspace fixture',
@@ -100,7 +102,8 @@ before(async () => {
 after(() => browser?.close());
 
 async function fixture(t, { liveBridge, project, observed, allowLiveWrites } = {}) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-admin-workspace-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-admin-workspace-'));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(FILES)) {
     await fs.mkdir(path.dirname(path.join(directory, name)), { recursive: true });
     await fs.writeFile(path.join(directory, name), body);
@@ -115,22 +118,17 @@ async function fixture(t, { liveBridge, project, observed, allowLiveWrites } = {
     ...(observed ? { observed } : {}),
     ...(allowLiveWrites ? { allowLiveWrites } : {}),
   });
+  ownedFixture(t).add(() => app.close());
   const context = await browser.newContext({
     serviceWorkers: 'block',
     acceptDownloads: true,
     viewport: { width: 1360, height: 900 },
   });
-  t.after(async () => {
-    await context.close();
-    await app.close();
-    await fs.rm(directory, { recursive: true, force: true });
-  });
+  ownedFixture(t).add(() => context.close());
   await context.route('**/*', (route) =>
     route.request().url().startsWith(app.url) ? route.continue() : route.abort(),
   );
   const page = await context.newPage();
-  // Generous: these end-to-end flows share the machine with other browser suites.
-  page.setDefaultTimeout(20_000);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   const notice = async (text) => {
@@ -163,6 +161,36 @@ async function fixture(t, { liveBridge, project, observed, allowLiveWrites } = {
   return { app, context, page, errors, notice, directory, evidence };
 }
 
+async function openWorkspace({ page, app, errors }, t, view) {
+  const failed = Promise.withResolvers();
+  const onError = (error) => failed.reject(error);
+  const onAbort = () => failed.reject(t.signal.reason);
+  page.on('pageerror', onError);
+  t.signal.addEventListener('abort', onAbort, { once: true });
+  try {
+    await Promise.race([
+      (async () => {
+        await page.goto(`${app.url}/_sim/#${view}`, { waitUntil: 'domcontentloaded', timeout: 0 });
+        if (errors.length) throw new Error(errors.join('\n'));
+        await page.waitForFunction(
+          () => {
+            const label = document.getElementById('connection-label')?.textContent;
+            if (label === 'Connection interrupted')
+              throw new Error(document.getElementById('notification')?.textContent || label);
+            return label === 'Simulator connected';
+          },
+          null,
+          { timeout: 0 },
+        );
+      })(),
+      failed.promise,
+    ]);
+  } finally {
+    page.off('pageerror', onError);
+    t.signal.removeEventListener('abort', onAbort);
+  }
+}
+
 test(
   'deep links open records and portal items; access rules, personas and diagnostics links work through the admin',
   { timeout: 180_000 },
@@ -187,7 +215,7 @@ test(
     await page.getByText('Anonymous: this browser is not signed in', { exact: true }).waitFor();
     // The admin runs the portal's own sign-in (here the local sign-in page: the fixture has no
     // external provider) and comes back to this view.
-    await page.getByText('Local sign-in page', { exact: false }).first().waitFor();
+    await page.locator('#sign-in-route').getByText('Local sign-in page', { exact: false }).first().waitFor();
     await page.getByLabel('Persona for this browser', { exact: true }).selectOption('alex');
     await page.getByRole('button', { name: 'Sign in as Alex Local', exact: true }).click();
     await page.getByText('Signed in as Alex Local', { exact: true }).waitFor();
@@ -267,16 +295,14 @@ test(
       /<title>Workspace<\/title>/,
       'the Page Not Found page renders through its template',
     );
+    // The old Render & diagnostics and request audit addresses (Lense links) land in Activity.
     await page.goto(`${app.url}/_sim/#evidence`);
-    await page.locator('.diagnostic-group').filter({ hasText: 'PAGE_NOT_FOUND' }).locator('summary').click();
-    await page.getByRole('link', { name: 'Requests for this path', exact: true }).first().click();
-    await page.getByRole('heading', { name: 'Request audit', exact: true }).waitFor();
-    assert.equal(await page.getByLabel('Filter audit by path', { exact: true }).inputValue(), '/missing-page/');
-    // The rendered 404 page may add correlated Liquid reads; every listed request is for this path.
-    await page.waitForFunction(() => {
-      const rows = [...document.querySelectorAll('table[data-table="audit"] tbody tr')];
-      return rows.length >= 1 && rows.every((row) => row.textContent.includes('/missing-page/'));
-    });
+    await page.waitForFunction(() => location.hash === '#activity?tab=pages');
+    await page.getByRole('heading', { name: 'Activity', exact: true }).waitFor();
+    await page.goto(`${app.url}/_sim/#audit?path=${encodeURIComponent('/missing-page/')}`);
+    await page.waitForFunction(() => location.hash === '#activity?path=%2Fmissing-page%2F');
+    await page.getByRole('heading', { name: 'Activity', exact: true }).waitFor();
+    await page.getByRole('button', { name: 'Remove filter Path: /missing-page/' }).waitFor();
     assert.deepEqual(errors, []);
   },
 );
@@ -607,60 +633,6 @@ test(
 );
 
 test(
-  'live logs stream requests and Liquid reads with type/text filters, pause, copy and audit correlation',
-  { timeout: 180_000 },
-  async (t) => {
-    const { app, context, page, errors, evidence } = await fixture(t);
-    await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: app.url });
-    await page.goto(`${app.url}/_sim/#logs`);
-    await page.locator('#log-status').getByText('Streaming', { exact: false }).waitFor();
-    const portal = await context.newPage();
-    await portal.goto(`${app.url}/`);
-    await page.locator('.log-row').filter({ hasText: 'GET / → 200' }).first().waitFor();
-    await page.locator('.log-row').filter({ hasText: 'liquid' }).first().waitFor();
-    await page.getByLabel('Log type', { exact: true }).selectOption('liquid');
-    await page.waitForFunction(
-      () => [...document.querySelectorAll('.log-row')].every((row) => row.textContent.includes('liquid')),
-      null,
-      { polling: 100 },
-    );
-    await page.getByLabel('Log type', { exact: true }).selectOption('');
-    await page.getByRole('button', { name: 'Pause', exact: true }).click();
-    const before = await page.locator('.log-row').count();
-    await portal.goto(`${app.url}/secure/`);
-    await page.locator('#log-status').getByText('new entries waiting', { exact: false }).waitFor();
-    assert.equal(await page.locator('.log-row').count(), before, 'paused logs do not move');
-    await page.getByRole('button', { name: 'Resume', exact: true }).click();
-    await page.locator('.log-row').filter({ hasText: 'GET /secure/' }).first().waitFor();
-    await evidence('admin-live-logs');
-    await page.getByLabel('Filter live logs', { exact: true }).fill('/secure/');
-    await page.getByRole('button', { name: 'Copy filtered JSON', exact: true }).click();
-    const copied = JSON.parse(await page.evaluate(() => navigator.clipboard.readText()));
-    assert.ok(copied.length > 0 && copied.every((entry) => JSON.stringify(entry).includes('/secure/')));
-    await page
-      .locator('.log-row')
-      .filter({ hasText: 'GET /secure/' })
-      .first()
-      .getByRole('button', { name: 'Inspect', exact: true })
-      .click();
-    await page.getByRole('button', { name: 'Show correlated requests', exact: true }).click();
-    await page.getByRole('heading', { name: 'Request audit', exact: true }).waitFor();
-    await page.getByRole('button', { name: /^Correlation / }).waitFor();
-    await page.waitForFunction(() =>
-      document.querySelector('table[data-table="audit"] tbody')?.textContent.includes('/secure/'),
-    );
-    // An anonymous visitor is redirected to the local sign-in page.
-    await page.locator('[data-audit-filter="status"]').selectOption('3xx');
-    await page.waitForFunction(
-      () =>
-        document.querySelector('table[data-table="audit"] tbody')?.textContent.includes('/secure/') &&
-        document.querySelectorAll('table[data-table="audit"] tbody tr').length === 1,
-    );
-    assert.deepEqual(errors, []);
-  },
-);
-
-test(
   'page confinement groups its exceptions under one toggle that is saved with the routing form',
   { timeout: 180_000 },
   async (t) => {
@@ -673,7 +645,10 @@ test(
     assert.equal(await toggle.isChecked(), false, 'local pages are not confined by default');
     assert.deepEqual([await assets.isDisabled(), await frames.isDisabled()], [true, true]);
     assert.match(await page.locator('#confinement-options').getAttribute('class'), /is-off/);
-    await page.getByText('These apply only while local pages are confined to loopback.', { exact: true }).waitFor();
+    // The explanation is behind the (i) of the confinement options (D-M-6).
+    await page
+      .getByText('These apply only while local pages are confined to loopback.', { exact: true })
+      .waitFor({ state: 'attached' });
 
     await toggle.check();
     assert.deepEqual([await assets.isDisabled(), await frames.isDisabled()], [false, false]);
@@ -714,6 +689,7 @@ test(
   },
 );
 
+// @test-kind contract+security: startup readiness precedes flag assertions; a missing opt-in cannot grant live writes.
 test(
   'the live-writes switch is disabled, with the reason, unless the runtime was started with --allow-live-writes',
   { timeout: 180_000 },
@@ -721,7 +697,7 @@ test(
     // Started without the flag (the default): the switch cannot be turned on, and saving the
     // routing form keeps live writes off.
     const locked = await fixture(t);
-    await locked.page.goto(`${locked.app.url}/_sim/#connection`);
+    await openWorkspace(locked, t, 'connection');
     const writes = locked.page.locator('#live-writes');
     await writes.waitFor();
     assert.deepEqual([await writes.isDisabled(), await writes.isChecked()], [true, false]);
@@ -739,7 +715,24 @@ test(
 
     // Started with the flag: the switch is available, and turning it on is saved.
     const allowed = await fixture(t, { allowLiveWrites: true });
-    await allowed.page.goto(`${allowed.app.url}/_sim/#connection`);
+    const arrived = Promise.withResolvers(),
+      release = Promise.withResolvers();
+    ownedFixture(t).add(() => release.resolve());
+    await allowed.page.route(`${allowed.app.url}/__sim/api/state?summary=1`, async (route) => {
+      arrived.resolve();
+      await release.promise;
+      await route.continue();
+    });
+    const opening = openWorkspace(allowed, t, 'connection');
+    await arrived.promise;
+    await allowed.page.waitForLoadState('domcontentloaded');
+    assert.equal(
+      await allowed.page.locator('#live-writes').count(),
+      0,
+      'document load does not establish workspace readiness',
+    );
+    release.resolve();
+    await opening;
     const toggle = allowed.page.locator('#live-writes');
     await toggle.waitFor();
     assert.equal(await toggle.isDisabled(), false);

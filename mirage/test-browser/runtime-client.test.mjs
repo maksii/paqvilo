@@ -8,9 +8,10 @@ import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { connectRuntime } from '../testing.mjs';
 import { captureShell } from '../capture-shell.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('running-runtime client signs a Playwright context in and out with the configured persona', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-runtime-client-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-runtime-client-'));
   let simulator, browser;
   try {
     await fs.writeFile(path.join(root, 'website.yml'), 'adx_name: Invented\nadx_websiteid: invented\n');
@@ -48,7 +49,7 @@ test('running-runtime client signs a Playwright context in and out with the conf
 });
 
 test('shell capture owns an anonymous temporary CDP browser and closes it after local capture', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-owned-capture-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-owned-capture-'));
   let attached, endpoint;
   const bridge = {
     origin: 'https://invented.example.test',

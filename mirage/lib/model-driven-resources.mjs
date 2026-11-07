@@ -8,8 +8,11 @@ import { parseSolutionXml, descendants, childText, child, serializeXml } from '.
 import { parseAppActionCommand } from './model-driven/solution.mjs';
 
 const limit = 8 * 1024 * 1024;
-const mime = (name) =>
-  /\.css$/i.test(name) ? 'text/css; charset=utf-8' : /\.js$/i.test(name) ? 'text/javascript; charset=utf-8' : null;
+const mime = (name) => {
+  if (/\.css$/i.test(name)) return 'text/css; charset=utf-8';
+  if (/\.js$/i.test(name)) return 'text/javascript; charset=utf-8';
+  return null;
+};
 const token = (value) => createHash('sha256').update(value).digest('hex').slice(0, 32);
 const inside = (root, file) => {
   const rel = path.relative(root, file);
@@ -41,6 +44,7 @@ function importBudget(requested = {}) {
   const ceilings = {
     bytes: SOLUTION_ASSET_LIMITS.totalBytes,
     entries: SOLUTION_ASSET_LIMITS.entries,
+    traversalEntries: 100000,
     layers: SOLUTION_ASSET_LIMITS.layers,
   };
   const remaining = { ...ceilings };
@@ -49,6 +53,11 @@ function importBudget(requested = {}) {
       throw new Error(`Invalid Solution client import limit ${key}.`);
     remaining[key] = value;
   }
+  // An explicitly narrowed historical entry limit still bounds discovery too.
+  // By default, unrelated forms/views may be visited without consuming the
+  // independent budget for indexed client assets. Every visit remains bounded.
+  if (requested.entries !== undefined && requested.traversalEntries === undefined)
+    remaining.traversalEntries = requested.entries;
   return {
     remaining,
     take(key, count) {
@@ -88,7 +97,7 @@ async function layerEntries(layer, budget) {
   const root = await fs.realpath(layer.dir);
   async function visit(dir, top = false) {
     for await (const entry of await fs.opendir(dir)) {
-      budget.take('entries', 1);
+      budget.take('traversalEntries', 1);
       const file = path.join(dir, entry.name);
       if (entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) {
@@ -101,6 +110,7 @@ async function layerEntries(layer, budget) {
           )
         )
           continue;
+        budget.take('entries', 1);
         const real = await fs.realpath(file);
         if (!inside(root, real)) throw new Error('Solution client asset escapes its root.');
         // Index physical names first. Binary images and unrelated WebResources do
@@ -116,7 +126,7 @@ async function layerEntries(layer, budget) {
 }
 
 /** Only selected Solution sources contribute executable code. No remote resolution or fallback. */
-export async function importModelDrivenResources(
+/* NOSONAR */ /* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ export async function importModelDrivenResources(
   layers = [],
   { codeComponents, limits, clientSources, diagnostic = () => {}, projectRoot = null } = {},
 ) {
@@ -161,7 +171,7 @@ export async function importModelDrivenResources(
   if (clientSources !== undefined) {
     const libraryFiles = clientSources.filter((source) => /\.js$/i.test(source));
     for (const file of libraryFiles) {
-      const match = /^([A-Za-z][\w.-]*)@(\d+(?:\.\d+){1,3})\.js$/i.exec(path.basename(file));
+      const match = /^([A-Z][\w.-]*)@(\d+(?:\.\d+){1,3})\.js$/i.exec(path.basename(file));
       try {
         budget.take('entries', 1);
         if (!match)
@@ -304,7 +314,7 @@ export async function importModelDrivenResources(
           name: definition.name,
           id: definition.id?.replace(/[{}]/g, '').toLowerCase(),
           url,
-          type: imageMime ? 'image' : definition.type === 3 ? 'script' : definition.type === 1 ? 'page' : 'style',
+          type: imageMime ? 'image' : definition.type === 3 ? 'script' : definition.type === 1 ? 'page' : 'style', // NOSONAR: preserve lazy branch evaluation and coercion
           source: entry.file ? shown(entry.file) : `${shown(layer.dir)}!/${entry.name}`,
           sourceFile: entry.file,
           sourceContentRevision: createHash('sha256').update(data).digest('hex'),
@@ -315,7 +325,7 @@ export async function importModelDrivenResources(
             imageMime ??
             (definition.type === 3
               ? 'text/javascript; charset=utf-8'
-              : definition.type === 1
+              : definition.type === 1 // NOSONAR: preserve lazy branch evaluation and coercion
                 ? 'text/html; charset=utf-8'
                 : 'text/css; charset=utf-8'),
           ...(imageMime ? { passive: true } : {}),

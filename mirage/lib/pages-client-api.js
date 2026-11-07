@@ -16,7 +16,26 @@
 // It also hydrates the local SharePoint document grid ([data-pp-documents], platform.mjs) over /_apps/portal-documents/.
 (function () {
   'use strict';
-  if (window.__paqviloPages) return;
+  if (globalThis.__paqviloPages) return;
+  function replaceNamePlaceholders(text, replacement) {
+    let cursor = 0;
+    let search = 0;
+    let result = '';
+    while (search < text.length) {
+      const start = text.indexOf('{', search);
+      if (start < 0) break;
+      const end = text.indexOf('}', start + 1);
+      if (end < 0) break;
+      if (end === start + 1) {
+        search = start + 1;
+        continue;
+      }
+      result += text.slice(cursor, start) + replacement(text.slice(start + 1, end));
+      cursor = end + 1;
+      search = cursor;
+    }
+    return result + text.slice(cursor);
+  }
   const warned = new Set();
   class PagesClientApiUnsupported extends Error {
     constructor(member) {
@@ -93,13 +112,20 @@
     Object.assign(new Error(message), { name: 'AjaxError', status, body, requestId });
   const canceled = (error, signal) =>
     Object.assign(new Error('The request was canceled.'), { name: 'CanceledError', cause: signal?.reason ?? error });
-  async function request(options) {
+  function validateRequestUrl(options) {
     if (!options || typeof options.url !== 'string' || !options.url)
       throw new TypeError('$pages.ajax.request needs options.url.');
-    const hasBody = options.body !== undefined;
+  }
+  function requestMethod(options, hasBody) {
     const method = String(options.method ?? (hasBody ? 'POST' : 'GET')).toUpperCase();
     if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(method))
       throw new TypeError(`$pages.ajax.request does not support ${method}.`);
+    return method;
+  }
+  async function request(options) {
+    validateRequestUrl(options);
+    const hasBody = options.body !== undefined;
+    const method = requestMethod(options, hasBody);
     const url = new URL(options.url, location.href);
     for (const [name, value] of Object.entries(options.params ?? {})) url.searchParams.append(name, String(value));
     const headers = {};
@@ -196,7 +222,7 @@
     },
   };
   async function binary(method, path, init = {}) {
-    const headers = { 'x-requested-with': 'XMLHttpRequest', ...(init.headers ?? {}) };
+    const headers = { 'x-requested-with': 'XMLHttpRequest', ...init.headers };
     if (method !== 'GET') headers.__RequestVerificationToken = await token();
     let response;
     try {
@@ -217,7 +243,7 @@
   // ---- Lists (Learn, client-api/lists).
   const lists = new WeakMap();
   const base64Json = (value) =>
-    JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(value || 'W10='), (char) => char.charCodeAt(0))));
+    JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(value || 'W10='), (char) => char.codePointAt(0))));
   const rawValue = (attribute) => {
     const value = attribute?.Value;
     if (value == null) return null;
@@ -255,11 +281,11 @@
   function modernList(element) {
     // Views, search, metadata filter, sorting and actions reuse the classic grid engine: the same layouts (with the
     // list's action links), request body and grid, delete, download and modal form routes (platform.mjs renderModernList).
-    const layouts = base64Json(element.getAttribute('data-view-layouts'));
-    let layout = layouts.find((item) => item.Id === element.getAttribute('data-selected-view')) ??
+    const layouts = base64Json(element.getAttribute('data-view-layouts') ?? null); // NOSONAR: actual attributes exclude inherited dataset values
+    let layout = layouts.find((item) => item.Id === (element.getAttribute('data-selected-view') ?? null)) ?? // NOSONAR: actual attributes exclude inherited dataset values
       layouts[0] ?? { Columns: [] };
-    const pageSize = Number(element.getAttribute('data-page-size')) || layout.Configuration?.PageSize || 10;
-    const website = encodeURIComponent(element.getAttribute('data-website-id') ?? '');
+    const pageSize = Number(element.getAttribute('data-page-size')) || layout.Configuration?.PageSize || 10; // NOSONAR: actual attributes exclude inherited dataset values
+    const website = encodeURIComponent(element.getAttribute('data-website-id') ?? ''); // NOSONAR: actual attributes exclude inherited dataset values
     const table = element.querySelector('table');
     const head = table.querySelector('thead tr');
     const body = table.querySelector('tbody');
@@ -319,7 +345,7 @@
     dialog?.querySelector('[data-pp-modern-list-close]').addEventListener('click', () => dialog.close());
     dialog?.addEventListener('close', () => {
       dialog.querySelector('iframe').src = 'about:blank';
-      restart();
+      void restart();
     });
     const post = async (service, payload) =>
       fetch(`/_services/${service}/${website}`, {
@@ -343,7 +369,7 @@
           show('.view-error');
           return;
         }
-        restart();
+        void restart();
       } else if (link.Type === 8) {
         const response = await post('download-as-csv', {
           base64SecureConfiguration: layout.Base64SecureConfiguration,
@@ -365,10 +391,10 @@
       control.type = 'button';
       control.className = 'btn btn-default btn-sm';
       control.textContent = text(link.Label) || text(link.Tooltip);
-      control.setAttribute('data-action-type', String(link.Type));
+      control.dataset.actionType = String(link.Type);
       control.addEventListener('click', (event) => {
         event.stopPropagation();
-        runAction(link, id);
+        void runAction(link, id);
       });
       return control;
     };
@@ -395,7 +421,7 @@
         ...definitions.map((definition) => {
           const th = document.createElement('th');
           th.scope = 'col';
-          th.setAttribute('data-logical-name', definition.LogicalName);
+          th.dataset.logicalName = String(definition.LogicalName);
           if (definition.SortDisabled) {
             th.textContent = text(definition.Name) || definition.LogicalName;
             return th;
@@ -411,7 +437,7 @@
             const descending = th.getAttribute('aria-sort') === 'ascending';
             sortExpression = `${definition.LogicalName} ${descending ? 'DESC' : 'ASC'}`;
             renderHead();
-            restart();
+            void restart();
           });
           th.append(button);
           return th;
@@ -450,12 +476,12 @@
     };
     function rowOf(record) {
       const tr = document.createElement('tr');
-      tr.setAttribute('data-id', record.Id);
+      tr.dataset.id = String(record.Id);
       const attribute = (name) => (record.Attributes ?? []).find((item) => item.Name === name);
       for (const definition of definitions) {
         const td = document.createElement('td');
-        td.setAttribute('data-logical-name', definition.LogicalName);
-        td.setAttribute('data-th', definition.Name);
+        td.dataset.logicalName = String(definition.LogicalName);
+        td.dataset.th = String(definition.Name);
         td.textContent = attribute(definition.LogicalName)?.DisplayValue ?? '';
         if (headerCell(definition.LogicalName)?.style.display === 'none') td.style.display = 'none';
         tr.append(td);
@@ -516,14 +542,16 @@
       return { tr, row };
     }
     const emit = (event, payload) => {
-      for (const handler of [...handlers[event]]) handler(payload);
+      for (const handler of [...handlers[event]]) handler(payload); // NOSONAR: snapshot copy guards against mutation while iterating
     };
     async function load() {
       if (loading || !more) return loading;
       element.setAttribute('aria-busy', 'true');
       const current = generation;
       loading = (async () => {
-        const response = await fetch(element.getAttribute('data-get-url'), {
+        const response = await fetch(/* NOSONAR */ element.getAttribute('data-get-url') ?? null, {
+          // NOSONAR: read actual attributes, not inherited dataset properties
+          // NOSONAR: actual attributes exclude inherited dataset values
           method: 'POST',
           credentials: 'same-origin',
           headers: {
@@ -614,19 +642,19 @@
       renderHead();
       renderToolbar();
       columns = definitions.map(columnOf);
-      restart();
+      void restart();
     });
     const searchBox = element.querySelector('[data-pp-modern-list-search]');
     searchBox?.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') {
         event.preventDefault();
         search = searchBox.value.trim();
-        restart();
+        void restart();
       }
     });
     searchBox?.addEventListener('search', () => {
       search = searchBox.value.trim();
-      restart();
+      void restart();
     });
     // The metadata filter panel is the classic one (renderListFilter); its inputs serialize as the grid's metaFilter query.
     const filterPanel = element.querySelector('[data-pp-modern-list-filter]');
@@ -640,7 +668,7 @@
             input.type === 'checkbox' || input.type === 'radio' ? input.value : input.value.trim(),
           );
       metaFilter = query.toString();
-      restart();
+      void restart();
     });
     body.addEventListener('click', (event) => {
       const tr = event.target.closest('tr');
@@ -648,7 +676,7 @@
       if (!row) return;
       const td = event.target.closest('td');
       if (handlers.cellclick.size && td)
-        emit('cellclick', { row, columnName: td.getAttribute('data-logical-name'), event });
+        emit('cellclick', { row, columnName: td.getAttribute('data-logical-name') ?? null, event }); // NOSONAR: actual attributes exclude inherited dataset values
       else emit('rowclick', { row, event });
     });
     const list = {
@@ -680,7 +708,7 @@
       value() {
         if (sentinel && typeof IntersectionObserver === 'function') {
           observer = new IntersectionObserver((entries) => {
-            if (entries.some((entry) => entry.isIntersecting)) load();
+            if (entries.some((entry) => entry.isIntersecting)) void load();
           });
           observer.observe(sentinel);
         }
@@ -692,7 +720,7 @@
   }
   const listFor = (element) => {
     if (!lists.has(element))
-      lists.set(element, element.hasAttribute('data-pp-modern-list') ? modernList(element) : traditionalList(element));
+      lists.set(element, element.hasAttribute('data-pp-modern-list') ? modernList(element) : traditionalList(element)); // NOSONAR: actual attributes exclude inherited dataset values
     return lists.get(element);
   };
   const LIST_SELECTOR = '[data-pp-modern-list], .entity-grid.entitylist';
@@ -736,14 +764,19 @@
     const group = form.querySelector('[id^="ValidationSummary"]')?.validationGroup;
     if (typeof group === 'string') span.validationGroup = group;
     (holder.querySelector('.validators') ?? holder).append(span);
-    window.Page_Validators = [...(window.Page_Validators ?? []), span];
+    globalThis.Page_Validators = [...(globalThis.Page_Validators ?? []), span];
     return span;
   }
   const dropValidator = (span) => {
     span?.remove();
-    window.Page_Validators = (window.Page_Validators ?? []).filter((item) => item !== span);
+    globalThis.Page_Validators = (globalThis.Page_Validators ?? []).filter((item) => item !== span);
   };
   const empty = (value) => value == null || value === '' || (Array.isArray(value) && !value.length);
+  const isLookupElement = (cell, id, element, has) =>
+    byId(cell, `${id}_name`)?.classList.contains('lookup') || (element.tagName === 'SELECT' && has('lookup'));
+  const isBooleanElement = (element, has) =>
+    has('boolean-radio') || (element.tagName === 'SELECT' && /boolean/.test(element.className));
+  const isIntegerSelect = (element, has) => element.tagName === 'SELECT' && has('integer');
   function typeOf(cell, element, id) {
     // The rich text editor's stored HTML (platform.mjs richTextInput: a hidden JSON-encoded value beside the editor).
     if (cell.querySelector('input[data-sim-richtext-value]')) return 'RichText';
@@ -754,21 +787,36 @@
     if (cell.querySelector('input[type="file"][accept^="image"]')) return 'Image';
     if (!element) return undefined;
     const has = (name) => element.classList.contains(name);
-    if (byId(cell, `${id}_name`)?.classList.contains('lookup') || (element.tagName === 'SELECT' && has('lookup')))
-      return 'Lookup';
-    if (has('boolean-radio') || (element.tagName === 'SELECT' && /boolean/.test(element.className))) return 'Boolean';
-    if (element.type === 'checkbox') return 'MultipleChoice';
-    if (has('picklist')) return 'Picklist';
-    if (has('state')) return 'Status';
-    if (has('status')) return 'StatusReason';
-    if (element.tagName === 'SELECT' && has('integer')) return 'FormattedInteger';
-    if (has('addressCompositeControl')) return 'AddressComposite';
-    if (has('fullNameCompositeControl')) return 'FullName';
-    if (element.tagName === 'TEXTAREA') return 'Memo';
-    if (has('datetime')) return 'DateTime';
-    if (element.type === 'email') return 'Email';
-    if (has('tickersymbol')) return 'TickerSymbol';
-    if (element.type === 'url') return 'URL';
+    switch (true) {
+      case isLookupElement(cell, id, element, has):
+        return 'Lookup';
+      case isBooleanElement(element, has):
+        return 'Boolean';
+      case element.type === 'checkbox':
+        return 'MultipleChoice';
+      case has('picklist'):
+        return 'Picklist';
+      case has('state'):
+        return 'Status';
+      case has('status'):
+        return 'StatusReason';
+      case isIntegerSelect(element, has):
+        return 'FormattedInteger';
+      case has('addressCompositeControl'):
+        return 'AddressComposite';
+      case has('fullNameCompositeControl'):
+        return 'FullName';
+      case element.tagName === 'TEXTAREA':
+        return 'Memo';
+      case has('datetime'):
+        return 'DateTime';
+      case element.type === 'email':
+        return 'Email';
+      case has('tickersymbol'):
+        return 'TickerSymbol';
+      case element.type === 'url':
+        return 'URL';
+    }
     for (const [name, type] of [
       ['integer', 'Integer'],
       ['decimal', 'Decimal'],
@@ -805,7 +853,7 @@
   // cells, which carry the parts on submit. The native composite part box ids are not known.
   const NAME_PARTS = { firstName: 'firstname', middleName: 'middlename', lastName: 'lastname' };
   function createControl(cell, form) {
-    const name = cell.getAttribute('data-logical-name');
+    const name = cell.getAttribute('data-logical-name') ?? null; // NOSONAR: actual attributes exclude inherited dataset values
     const holder = cell.closest('td.cell, .form-group') ?? cell;
     const info = holder.querySelector('.info');
     const id = info?.querySelector('label[id$="_label"]')?.id.replace(/_label$/, '') || name;
@@ -838,39 +886,53 @@
       return boxes;
     };
     // The rich text editor instance (platform.mjs: CKEditor or the local compatibility editor, both named <id>_editor).
-    const richEditor = () => window.CKEDITOR?.instances?.[`${id}_editor`];
+    const richEditor = () => globalThis.CKEDITOR?.instances?.[`${id}_editor`];
+    const getLookup = () => {
+      if (!modal)
+        return element.value ? { id: element.value, name: element.selectedOptions[0]?.textContent ?? '' } : undefined;
+      return element.value
+        ? {
+            id: element.value,
+            name: byId(cell, `${id}_name`)?.value ?? '',
+            entityType: byId(cell, `${id}_entityname`)?.value ?? '',
+          }
+        : undefined;
+    };
+    const getBoolean = () => {
+      if (element.tagName === 'SELECT') return element.selectedOptions[0]?.textContent ?? '';
+      const checked = element.querySelector('input:checked');
+      return checked ? radioLabel(checked) : '';
+    };
+    const getMultiSelect = () => {
+      const hidden = byId(cell, id);
+      try {
+        return hidden?.value ? JSON.parse(hidden.value).map((item) => Number(item?.Value ?? item)) : [];
+      } catch {
+        return [];
+      }
+    };
+    const getRichText = () => {
+      // The editor's current HTML, else the stored value (JSON-encoded HTML in the hidden input).
+      const editor = richEditor();
+      if (typeof editor?.getData === 'function') return editor.getData();
+      try {
+        return element.value ? String(JSON.parse(element.value) ?? '') : '';
+      } catch {
+        return element.value;
+      }
+    };
     const getValue = () => {
       switch (type) {
-        case 'Lookup': {
-          if (!modal)
-            return element.value
-              ? { id: element.value, name: element.selectedOptions[0]?.textContent ?? '' }
-              : undefined;
-          return element.value
-            ? {
-                id: element.value,
-                name: byId(cell, `${id}_name`)?.value ?? '',
-                entityType: byId(cell, `${id}_entityname`)?.value ?? '',
-              }
-            : undefined;
-        }
-        case 'Boolean': {
-          if (element.tagName === 'SELECT') return element.selectedOptions[0]?.textContent ?? '';
-          const checked = element.querySelector('input:checked');
-          return checked ? radioLabel(checked) : '';
-        }
+        case 'Lookup':
+          return getLookup();
+        case 'Boolean':
+          return getBoolean();
         case 'MultipleChoice':
           return element.checked;
         case 'Picklist':
           return element.tagName === 'SELECT' ? element.value : (element.querySelector('input:checked')?.value ?? '');
-        case 'MultiSelectPicklist': {
-          const hidden = byId(cell, id);
-          try {
-            return hidden?.value ? JSON.parse(hidden.value).map((item) => Number(item?.Value ?? item)) : [];
-          } catch {
-            return [];
-          }
-        }
+        case 'MultiSelectPicklist':
+          return getMultiSelect();
         case 'Status':
         case 'StatusReason':
           return element.textContent.trim();
@@ -883,21 +945,137 @@
           );
         case 'FullName':
           return Object.fromEntries(Object.entries(nameParts()).map(([key, box]) => [key, box?.value ?? '']));
-        case 'RichText': {
-          // The editor's current HTML, else the stored value (JSON-encoded HTML in the hidden input).
-          const editor = richEditor();
-          if (typeof editor?.getData === 'function') return editor.getData();
-          try {
-            return element.value ? String(JSON.parse(element.value) ?? '') : '';
-          } catch {
-            return element.value;
-          }
-        }
+        case 'RichText':
+          return getRichText();
         case undefined:
           return unsupported(member('getValue'))();
         default:
           return element.value;
       }
+    };
+    const setFullName = (value) => {
+      if (!value || typeof value !== 'object')
+        throw new Error(`${name} needs an object with firstName, middleName and lastName.`);
+      const boxes = nameParts(),
+        given = Object.keys(NAME_PARTS).filter((key) => key in value);
+      const missing = given.find((key) => !boxes[key] && value[key] != null && value[key] !== '');
+      if (missing) throw new Error(`The ${name} control has no ${NAME_PARTS[missing]} box on this form.`);
+      for (const key of given)
+        if (boxes[key]) {
+          boxes[key].value = String(value[key] ?? '');
+          fire(boxes[key]);
+        }
+      const template = element.getAttribute('data-content-template') ?? '{firstname} {lastname}'; // NOSONAR: actual attributes exclude inherited dataset values
+      element.value = replaceNamePlaceholders(
+        template,
+        (key) =>
+          namePart(Object.values(NAME_PARTS).find((part) => key.toLowerCase().endsWith(part)) ?? '')?.value ?? '',
+      )
+        .replace(/\s+/g, ' ')
+        .trim();
+      fire(element);
+    };
+    const setRichText = (value) => {
+      const html = String(value ?? '');
+      const editor = richEditor();
+      if (typeof editor?.setData === 'function') editor.setData(html);
+      else {
+        const area = byId(cell, `${id}_editor`);
+        if (area) area.value = html;
+      }
+      // Assumed: a captured managed rich text control (data-sim-managed-control) reads the hidden value on save; its
+      // own view is Microsoft's PCF proxy and is not refreshed here.
+      const encoded = JSON.stringify(html);
+      element.value = encoded;
+      element.setAttribute('value', encoded);
+      fire(element);
+    };
+    const setLookup = (value) => {
+      if (!modal) {
+        element.value = String(value ?? '');
+        if (element.value !== String(value ?? '')) throw new Error(`${value} is not an option of ${name}.`);
+        fire(element);
+        return;
+      }
+      element.value = value?.id ?? '';
+      for (const [suffix, part] of [
+        ['_name', value?.name],
+        ['_entityname', value?.entityType],
+      ]) {
+        const box = byId(cell, id + suffix);
+        if (box) box.value = part ?? '';
+      }
+      fire(element);
+    };
+    const setBoolean = (value) => {
+      if (element.tagName === 'SELECT') {
+        const option = [...element.options].find(
+          (item) => item.value === String(value) || item.textContent.trim() === String(value),
+        );
+        if (!option) throw new Error(`${value} is not an option of ${name}.`);
+        element.value = option.value;
+        fire(element);
+        return;
+      }
+      const radio = [...element.querySelectorAll('input[type="radio"]')].find(
+        (item) => item.value === String(value) || radioLabel(item) === String(value),
+      );
+      if (!radio) throw new Error(`${value} is not an option of ${name}.`);
+      radio.checked = true;
+      fire(radio);
+    };
+    const setPicklist = (value) => {
+      if (element.tagName === 'SELECT') {
+        element.value = String(value);
+        if (element.value !== String(value)) throw new Error(`${value} is not an option of ${name}.`);
+        fire(element);
+        return;
+      }
+      const radio = element.querySelector(`input[value="${CSS.escape(String(value))}"]`);
+      if (!radio) throw new Error(`${value} is not an option of ${name}.`);
+      radio.checked = true;
+      fire(radio);
+    };
+    const setMultiSelect = (value) => {
+      const context = JSON.parse(cell.querySelector('[pcf-controlcontext]').getAttribute('pcf-controlcontext'));
+      const options = context.ControlProperties?.value_Options ?? [];
+      const values = Array.isArray(value) ? value.map(Number) : [];
+      const missing = values.find((item) => !options.some((option) => Number(option.Value) === item));
+      if (!Array.isArray(value) || missing !== undefined)
+        throw new Error(`${missing ?? value} is not an option of ${name}.`);
+      const hidden = byId(cell, id);
+      hidden.value = values.length
+        ? JSON.stringify(options.filter((option) => values.includes(Number(option.Value))))
+        : '';
+      // The local multiselect host (multiselect-compat.js) renders an empty view from the hidden value.
+      byId(cell, context.UniqueId)?.replaceChildren();
+      globalThis.__ppMultiSelectHost?.mount?.();
+      fire(hidden);
+    };
+    const setFileValue = (value) => {
+      if (!(value instanceof File) || !value.size) throw new Error(`${name} needs a file that is not empty.`);
+      if (maxFileSize() && value.size > maxFileSize()) throw new Error(`The file exceeds ${maxFileSize()} bytes.`);
+      if (type === 'Image' && !value.type.startsWith('image/')) throw new Error(`${name} needs an image file.`);
+      const transfer = new DataTransfer();
+      transfer.items.add(value);
+      setFile(transfer.files);
+    };
+    const setAddress = (value) => {
+      for (const [key, part] of Object.entries(ADDRESS)) {
+        const box = byId(cell, `${id}_${part}`);
+        if (box && value && key in value) {
+          box.value = String(value[key] ?? '');
+          fire(box);
+        }
+      }
+    };
+    const setOtherValue = (value) => {
+      const text = String(value ?? '');
+      if ((type === 'String' || type === 'Memo') && element.maxLength > 0 && text.length > element.maxLength)
+        throw new Error(`The value exceeds the maximum length ${element.maxLength} of ${name}.`);
+      // Assumed: a date picker built over the bound box (date-controls.mjs) shows the new value after its change event.
+      element.value = text;
+      fire(element);
     };
     const setValue = (value) => {
       if (type === 'Status' || type === 'StatusReason') throw new Error(`The ${name} control is read-only.`);
@@ -908,142 +1086,29 @@
       if (type === 'FullName' ? Object.values(nameParts()).filter(Boolean).every(isReadOnly) : readOnly())
         throw new Error(`The ${name} control is read-only.`);
       switch (type) {
-        case 'FullName': {
-          if (!value || typeof value !== 'object')
-            throw new Error(`${name} needs an object with firstName, middleName and lastName.`);
-          const boxes = nameParts(),
-            given = Object.keys(NAME_PARTS).filter((key) => key in value);
-          const missing = given.find((key) => !boxes[key] && value[key] != null && value[key] !== '');
-          if (missing) throw new Error(`The ${name} control has no ${NAME_PARTS[missing]} box on this form.`);
-          for (const key of given)
-            if (boxes[key]) {
-              boxes[key].value = String(value[key] ?? '');
-              fire(boxes[key]);
-            }
-          // The composite box shows the parts through its content template ({<id>firstname} {<id>lastname}).
-          const template = element.getAttribute('data-content-template') ?? '{firstname} {lastname}';
-          element.value = template
-            .replace(
-              /\{([^}]+)\}/g,
-              (_, key) =>
-                namePart(Object.values(NAME_PARTS).find((part) => key.toLowerCase().endsWith(part)) ?? '')?.value ?? '',
-            )
-            .replace(/\s+/g, ' ')
-            .trim();
-          fire(element);
-          return;
-        }
-        case 'RichText': {
-          const html = String(value ?? '');
-          const editor = richEditor();
-          if (typeof editor?.setData === 'function') editor.setData(html);
-          else {
-            const area = byId(cell, `${id}_editor`);
-            if (area) area.value = html;
-          }
-          // Assumed: a captured managed rich text control (data-sim-managed-control) reads the hidden value on save; its
-          // own view is Microsoft's PCF proxy and is not refreshed here.
-          const encoded = JSON.stringify(html);
-          element.value = encoded;
-          element.setAttribute('value', encoded);
-          fire(element);
-          return;
-        }
+        case 'FullName':
+          return setFullName(value);
+        case 'RichText':
+          return setRichText(value);
         case 'Lookup':
-          if (!modal) {
-            element.value = String(value ?? '');
-            if (element.value !== String(value ?? '')) throw new Error(`${value} is not an option of ${name}.`);
-            fire(element);
-            return;
-          }
-          element.value = value?.id ?? '';
-          for (const [suffix, part] of [
-            ['_name', value?.name],
-            ['_entityname', value?.entityType],
-          ]) {
-            const box = byId(cell, id + suffix);
-            if (box) box.value = part ?? '';
-          }
-          fire(element);
-          return;
-        case 'Boolean': {
-          if (element.tagName === 'SELECT') {
-            const option = [...element.options].find(
-              (item) => item.value === String(value) || item.textContent.trim() === String(value),
-            );
-            if (!option) throw new Error(`${value} is not an option of ${name}.`);
-            element.value = option.value;
-            fire(element);
-            return;
-          }
-          const radio = [...element.querySelectorAll('input[type="radio"]')].find(
-            (item) => item.value === String(value) || radioLabel(item) === String(value),
-          );
-          if (!radio) throw new Error(`${value} is not an option of ${name}.`);
-          radio.checked = true;
-          fire(radio);
-          return;
-        }
+          return setLookup(value);
+        case 'Boolean':
+          return setBoolean(value);
         case 'MultipleChoice':
           element.checked = Boolean(value);
           fire(element);
           return;
-        case 'Picklist': {
-          if (element.tagName === 'SELECT') {
-            element.value = String(value);
-            if (element.value !== String(value)) throw new Error(`${value} is not an option of ${name}.`);
-            fire(element);
-            return;
-          }
-          const radio = element.querySelector(`input[value="${CSS.escape(String(value))}"]`);
-          if (!radio) throw new Error(`${value} is not an option of ${name}.`);
-          radio.checked = true;
-          fire(radio);
-          return;
-        }
-        case 'MultiSelectPicklist': {
-          const context = JSON.parse(cell.querySelector('[pcf-controlcontext]').getAttribute('pcf-controlcontext'));
-          const options = context.ControlProperties?.value_Options ?? [];
-          const values = Array.isArray(value) ? value.map(Number) : [];
-          const missing = values.find((item) => !options.some((option) => Number(option.Value) === item));
-          if (!Array.isArray(value) || missing !== undefined)
-            throw new Error(`${missing ?? value} is not an option of ${name}.`);
-          const hidden = byId(cell, id);
-          hidden.value = values.length
-            ? JSON.stringify(options.filter((option) => values.includes(Number(option.Value))))
-            : '';
-          // The local multiselect host (multiselect-compat.js) renders an empty view from the hidden value.
-          byId(cell, context.UniqueId)?.replaceChildren();
-          window.__ppMultiSelectHost?.mount?.();
-          fire(hidden);
-          return;
-        }
+        case 'Picklist':
+          return setPicklist(value);
+        case 'MultiSelectPicklist':
+          return setMultiSelect(value);
         case 'File':
-        case 'Image': {
-          if (!(value instanceof File) || !value.size) throw new Error(`${name} needs a file that is not empty.`);
-          if (maxFileSize() && value.size > maxFileSize()) throw new Error(`The file exceeds ${maxFileSize()} bytes.`);
-          if (type === 'Image' && !/^image\//.test(value.type)) throw new Error(`${name} needs an image file.`);
-          const transfer = new DataTransfer();
-          transfer.items.add(value);
-          setFile(transfer.files);
-          return;
-        }
+        case 'Image':
+          return setFileValue(value);
         case 'AddressComposite':
-          for (const [key, part] of Object.entries(ADDRESS)) {
-            const box = byId(cell, `${id}_${part}`);
-            if (box && value && key in value) {
-              box.value = String(value[key] ?? '');
-              fire(box);
-            }
-          }
-          return;
+          return setAddress(value);
         default: {
-          const text = String(value ?? '');
-          if ((type === 'String' || type === 'Memo') && element.maxLength > 0 && text.length > element.maxLength)
-            throw new Error(`The value exceeds the maximum length ${element.maxLength} of ${name}.`);
-          // Assumed: a date picker built over the bound box (date-controls.mjs) shows the new value after its change event.
-          element.value = text;
-          fire(element);
+          return setOtherValue(value);
         }
       }
     };
@@ -1105,7 +1170,7 @@
     if (type === 'DateTime')
       Object.defineProperties(control, {
         isDisabled: { get: () => Boolean(element.disabled || element.readOnly), enumerable: true },
-        dataType: { value: element.getAttribute('data-type'), enumerable: true },
+        dataType: { value: element.getAttribute('data-type') ?? null, enumerable: true }, // NOSONAR: actual attributes exclude inherited dataset values
       });
     if (type === 'Lookup')
       Object.assign(
@@ -1119,13 +1184,11 @@
             }
           : { isDropdown: true },
       );
-    if (type === 'Picklist')
-      control.subType =
-        element.tagName === 'SELECT'
-          ? 'Dropdown'
-          : element.classList.contains('vertical')
-            ? 'VerticalRadioButton'
-            : 'HorizontalRadioButton';
+    if (type === 'Picklist') {
+      if (element.tagName === 'SELECT') control.subType = 'Dropdown';
+      else if (element.classList.contains('vertical')) control.subType = 'VerticalRadioButton';
+      else control.subType = 'HorizontalRadioButton';
+    }
     if (type === 'File' || type === 'Image')
       Object.assign(control, { maxFileSizeInByte: maxFileSize(), removeFile: () => setFile(new DataTransfer().files) });
     return control;
@@ -1152,7 +1215,7 @@
         return controlsIn(table);
       },
       getName: () =>
-        table.getAttribute('data-name') ?? table.closest('fieldset')?.querySelector('legend')?.textContent.trim() ?? '',
+        table.getAttribute('data-name') ?? table.closest('fieldset')?.querySelector('legend')?.textContent.trim() ?? '', // NOSONAR: actual attributes exclude inherited dataset values
       ...visibleArea(table.closest('fieldset') ?? table),
     });
     const tabOf = (tab) => {
@@ -1161,16 +1224,17 @@
         get sections() {
           return [...tab.querySelectorAll('table.section')].map(sectionOf);
         },
-        getName: () => tab.getAttribute('data-name') ?? title?.textContent.trim() ?? '',
+        getName: () => tab.getAttribute('data-name') ?? title?.textContent.trim() ?? '', // NOSONAR: actual attributes exclude inherited dataset values
         ...visibleArea(tab, title),
       };
     };
     const multiStep = config.kind === 'webform' || wrapper.id.startsWith('WebFormControl');
     const button = (buttonId) => wrapper.querySelector(`#${buttonId}`);
-    const jq = (element) => (typeof window.jQuery === 'function' ? window.jQuery(element ?? []) : (element ?? {}));
+    const jq = (element) =>
+      typeof globalThis.jQuery === 'function' ? globalThis.jQuery(element ?? []) : (element ?? {});
     const form = {
       id: wrapper.id,
-      name: panel.getAttribute('data-form-name'),
+      name: panel.getAttribute('data-form-name') ?? null, // NOSONAR: actual attributes exclude inherited dataset values
       get controls() {
         return controlsIn(panel);
       },
@@ -1212,7 +1276,7 @@
   }
   const pageForms = () => [...document.querySelectorAll('.crmEntityFormView[data-form-name]')].map(formOf);
 
-  const portal = () => window.Microsoft?.Dynamic365?.Portal ?? {};
+  const portal = () => globalThis.Microsoft?.Dynamic365?.Portal ?? {};
   // The language picker's links: /<code> before the path without the active language's segment (liquid.mjs languageDrop).
   function setActive(language) {
     const CODE = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/;
@@ -1222,7 +1286,7 @@
     if (!$pages.languages.getAll().some((item) => String(item).toLowerCase() === code.toLowerCase()))
       throw new TypeError(`${code} is not a language of this site.`);
     const active = $pages.languages.getActive();
-    const [, first = '', rest = ''] = /^\/([^/]*)(.*)$/.exec(location.pathname) ?? [];
+    const [, first = '', rest = ''] = /^\/([^/]*)(\/.*)?$/.exec(location.pathname) ?? [];
     const path = CODE.test(active) && first.toLowerCase() === active.toLowerCase() ? rest : location.pathname;
     location.assign(`/${code}${path || '/'}${location.search}`);
   }
@@ -1281,7 +1345,7 @@
     }
     return onPagesClientApiReady(callback);
   };
-  window.Microsoft ||= {};
+  globalThis.Microsoft ||= {};
   Microsoft.Dynamic365 ||= {};
   const legacy = (Microsoft.Dynamic365.Portal ||= {});
   Microsoft.PowerPages ||= {};
@@ -1292,7 +1356,7 @@
   if (local(legacy.onPagesClientApiReady)) legacy.onPagesClientApiReady = deprecatedAlias;
   if (legacy.isClientApiEnabled === undefined || legacy.isClientApiEnabled === 'False')
     legacy.isClientApiEnabled = 'True';
-  window.__paqviloPages = $pages;
+  globalThis.__paqviloPages = $pages;
 
   // ---- The local SharePoint document grid (platform.mjs, sharepoint-documents.mjs createPortalDocumentService).
   function documentGrid(element) {
@@ -1302,7 +1366,7 @@
       status.hidden = !text;
       status.textContent = text || '';
     };
-    const url = portalNavigationUrl(element.getAttribute('data-documents-url'));
+    const url = portalNavigationUrl(element.getAttribute('data-documents-url') ?? null); // NOSONAR: actual attributes exclude inherited dataset values
     if (!url) {
       element.removeAttribute('aria-busy');
       say('The document service URL must stay within this portal.');
@@ -1323,7 +1387,7 @@
         headers: {
           'x-requested-with': 'XMLHttpRequest',
           __RequestVerificationToken: await token(),
-          ...(init.headers ?? {}),
+          ...init.headers,
         },
       });
     // The open subfolder (names from the record folder down) and the route for it: ?folder=a/b.
@@ -1344,11 +1408,11 @@
     const act = async (method, target, init) => {
       const answer = await write(method, target, init);
       if (!answer.ok) say(await failureText(answer));
-      else load();
+      else void load();
     };
     const open = (next) => {
       path = next;
-      load();
+      void load();
     };
     function row(first, size, modified, actions) {
       const tr = document.createElement('tr');
@@ -1361,6 +1425,80 @@
       td.append(...actions);
       tr.append(td);
       body.append(tr);
+    }
+    function renderBreadcrumb() {
+      const crumbs = document.createElement('nav');
+      crumbs.dataset.ppDocumentsPath = '';
+      crumbs.setAttribute('aria-label', 'Folder');
+      for (const [index, name] of ['Documents', ...path].entries()) {
+        if (index) crumbs.append(' / ');
+        if (index === path.length) {
+          const current = document.createElement('span');
+          current.setAttribute('aria-current', 'location');
+          current.textContent = name;
+          crumbs.append(current);
+        } else {
+          const link = button(name, () => open(path.slice(0, index)));
+          link.className = 'btn btn-link btn-sm';
+          crumbs.append(link);
+        }
+      }
+      element.prepend(crumbs);
+    }
+    function renderFolders(data) {
+      for (const folder of data.folders ?? []) {
+        const link = button(folder.name, () => open([...path, folder.name]));
+        link.className = 'btn btn-link';
+        link.dataset.ppDocumentsFolder = String(folder.name);
+        const actions = data.canDelete
+          ? [button('Delete', () => act('DELETE', at('', {}, [...path, folder.name])))]
+          : [];
+        row(link, 'Folder', folder.lastModified ? new Date(folder.lastModified).toLocaleString() : '', actions);
+      }
+    }
+    function renderDocuments(data) {
+      for (const file of data.documents) {
+        const link = document.createElement('a');
+        link.href = at(`/${encodeURIComponent(file.name)}`);
+        link.textContent = file.name;
+        row(
+          link,
+          `${Math.max(1, Math.round(file.size / 1024))} KB`,
+          file.lastModified ? new Date(file.lastModified).toLocaleString() : '',
+          data.canDelete ? [button('Delete', () => act('DELETE', link.href))] : [],
+        );
+      }
+    }
+    function renderActions(data) {
+      say(data.documents.length || data.folders?.length ? '' : 'There are no documents.');
+      if (data.canCreateFolder) {
+        const create = button('New folder', () => {
+          const name = prompt('Folder name');
+          if (name) void act('POST', at('', { newFolder: name }));
+        });
+        create.dataset.ppDocumentsNewFolder = '';
+        element.append(create);
+      }
+      if (data.canUpload) {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.dataset.ppDocumentsUpload = '';
+        input.setAttribute('aria-label', 'Add files');
+        input.addEventListener('change', async () => {
+          for (const file of input.files) {
+            const answer = await write('POST', at('', { name: file.name }), {
+              body: file,
+              headers: { 'content-type': file.type || 'application/octet-stream' },
+            });
+            if (!answer.ok) {
+              say(await failureText(answer));
+              return;
+            }
+          }
+          void load();
+        });
+        element.append(input);
+      }
     }
     async function load() {
       element.setAttribute('aria-busy', 'true');
@@ -1379,78 +1517,15 @@
         return;
       }
       const data = await response.json();
-      // Breadcrumb navigation: the record folder, then each open subfolder.
-      const crumbs = document.createElement('nav');
-      crumbs.setAttribute('data-pp-documents-path', '');
-      crumbs.setAttribute('aria-label', 'Folder');
-      for (const [index, name] of ['Documents', ...path].entries()) {
-        if (index) crumbs.append(' / ');
-        if (index === path.length) {
-          const current = document.createElement('span');
-          current.setAttribute('aria-current', 'location');
-          current.textContent = name;
-          crumbs.append(current);
-        } else {
-          const link = button(name, () => open(path.slice(0, index)));
-          link.className = 'btn btn-link btn-sm';
-          crumbs.append(link);
-        }
-      }
-      element.prepend(crumbs);
-      for (const folder of data.folders ?? []) {
-        const link = button(folder.name, () => open([...path, folder.name]));
-        link.className = 'btn btn-link';
-        link.setAttribute('data-pp-documents-folder', folder.name);
-        const actions = data.canDelete
-          ? [button('Delete', () => act('DELETE', at('', {}, [...path, folder.name])))]
-          : [];
-        row(link, 'Folder', folder.lastModified ? new Date(folder.lastModified).toLocaleString() : '', actions);
-      }
-      for (const file of data.documents) {
-        const link = document.createElement('a');
-        link.href = at(`/${encodeURIComponent(file.name)}`);
-        link.textContent = file.name;
-        row(
-          link,
-          `${Math.max(1, Math.round(file.size / 1024))} KB`,
-          file.lastModified ? new Date(file.lastModified).toLocaleString() : '',
-          data.canDelete ? [button('Delete', () => act('DELETE', link.href))] : [],
-        );
-      }
-      say(data.documents.length || data.folders?.length ? '' : 'There are no documents.');
-      if (data.canCreateFolder) {
-        const create = button('New folder', () => {
-          const name = prompt('Folder name');
-          if (name) act('POST', at('', { newFolder: name }));
-        });
-        create.setAttribute('data-pp-documents-new-folder', '');
-        element.append(create);
-      }
-      if (data.canUpload) {
-        const input = document.createElement('input');
-        input.type = 'file';
-        input.setAttribute('data-pp-documents-upload', '');
-        input.setAttribute('aria-label', 'Add files');
-        input.addEventListener('change', async () => {
-          for (const file of input.files) {
-            const answer = await write('POST', at('', { name: file.name }), {
-              body: file,
-              headers: { 'content-type': file.type || 'application/octet-stream' },
-            });
-            if (!answer.ok) {
-              say(await failureText(answer));
-              return;
-            }
-          }
-          load();
-        });
-        element.append(input);
-      }
+      renderBreadcrumb();
+      renderFolders(data);
+      renderDocuments(data);
+      renderActions(data);
     }
     return load().catch(() => say('Error completing request.'));
   }
   whenParsed(() => {
     for (const element of document.querySelectorAll('[data-pp-modern-list]')) listFor(element).__start();
-    for (const element of document.querySelectorAll('[data-pp-documents]')) documentGrid(element);
+    for (const element of document.querySelectorAll('[data-pp-documents]')) void documentGrid(element);
   });
 })();

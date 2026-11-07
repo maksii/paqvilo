@@ -1,15 +1,17 @@
+// @test-kind unproven: local model of SDK response capture and isolation; CLR scenarios are marked not natively qualified
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import { createHash } from 'node:crypto';
-import { captureSdkResponse, handoffPluginResponse } from '../lib/plugin-response.mjs';
+import { captureSdkResponse, captureSdkResponseAsync, handoffPluginResponse } from '../lib/plugin-response.mjs';
 import { DataStore } from '../lib/data.mjs';
 import { dispatchSdkCall, prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 const user = '10000000-0000-0000-0000-000000000001',
   id = '20000000-0000-0000-0000-000000000001',
   changed = '20000000-0000-0000-0000-000000000002',
@@ -91,6 +93,54 @@ test('Failed and later asynchronous handoffs cannot contaminate another caller',
   });
   await queued;
   assert.equal(captureSdkResponse(store, 'create', 'widget', () => 2).results, undefined);
+});
+
+test('awaited SDK captures isolate concurrent and nested invocations and expire exact tokens', async () => {
+  const store = {},
+    other = {},
+    gates = [Promise.withResolvers(), Promise.withResolvers()];
+  let firstToken;
+  const first = captureSdkResponseAsync(store, 'create', 'widget', async (token) => {
+    firstToken = token;
+    await gates[0].promise;
+    handoffPluginResponse(other, 'create', 'widget', frame({ wrong: 'store' }), token);
+    handoffPluginResponse(store, 'update', 'widget', frame({ wrong: 'message' }), token);
+    handoffPluginResponse(store, 'create', 'elsewhere', frame({ wrong: 'table' }), token);
+    const sync = captureSdkResponse(store, 'create', 'widget', (inner) => {
+      handoffPluginResponse(store, 'create', 'widget', frame({ wrong: 'outer during nested SDK' }), token);
+      handoffPluginResponse(store, 'create', 'widget', frame({ id: 'sync' }), inner);
+    });
+    assert.equal(sync.results.id, 'sync');
+    const nested = await captureSdkResponseAsync(store, 'create', 'widget', async (inner) => {
+      await Promise.resolve();
+      handoffPluginResponse(store, 'create', 'widget', frame({ wrong: 'outer during nested await' }), token);
+      handoffPluginResponse(store, 'create', 'widget', frame({ id: 'nested' }), inner);
+    });
+    assert.equal(nested.results.id, 'nested');
+    const values = frame({ id: 'first' });
+    handoffPluginResponse(store, 'create', 'widget', values, token);
+    values.outputParameters.values.id = 'late mutation';
+    return 1;
+  });
+  const second = captureSdkResponseAsync(store, 'create', 'widget', async (token) => {
+    await gates[1].promise;
+    handoffPluginResponse(store, 'create', 'widget', frame({ wrong: 'cross request' }), firstToken);
+    handoffPluginResponse(store, 'create', 'widget', frame({ id: 'second' }), token);
+    return 2;
+  });
+  gates[1].resolve();
+  assert.deepEqual(await second, { value: 2, results: { id: 'second' } });
+  gates[0].resolve();
+  assert.deepEqual(await first, { value: 1, results: { id: 'first' } });
+  handoffPluginResponse(store, 'create', 'widget', frame({ id: 'expired' }), firstToken);
+  assert.equal((await captureSdkResponseAsync(store, 'create', 'widget', async () => 3)).results, undefined);
+  await assert.rejects(
+    captureSdkResponseAsync(store, 'create', 'widget', async (token) => {
+      handoffPluginResponse(store, 'create', 'widget', frame({ id: 'failed' }), token);
+      throw Error('Awaited failure');
+    }),
+    /Awaited failure/,
+  );
 });
 
 test('Without plugins SDK defaults, DataStore rows and backend bulk result shapes remain unchanged', async () => {
@@ -201,11 +251,11 @@ test('Cascaded same-table child Delete outputs do not become root SDK Delete Res
 
 test(
   'Original DLL SDK callers receive post-operation Results, deletions, typed custom values and isolated nested/failing responses',
-  { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
+  { skip: CLR_SKIP },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-original-response-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-original-response-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
-    const sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
+    const sdk = clrSdk(),
       source = path.join(root, 'ResponseOriginal.cs'),
       assembly = path.join(root, 'ResponseOriginal.dll');
     await fs.writeFile(
@@ -228,21 +278,7 @@ else if(c.MessageName=="CreateMultiple")output["Ids"]=new[]{new Guid("${changed}
 else{var e=c.MessageName=="Retrieve"?(Entity)output["BusinessEntity"]:((EntityCollection)output["BusinessEntityCollection"]).Entities[0];if(c.OwningExtension.Name=="Last observer"){if(e.GetAttributeValue<string>("title")!="Handler changed")throw new Exception("Ranked read became stale");output["last"]=new OptionSetValue(7);}else e["title"]="CLR changed";}}}
 }`,
     );
-    const compiler = path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
-      build = spawnSync(
-        compiler,
-        [
-          '/nologo',
-          '/target:library',
-          '/out:' + assembly,
-          '/reference:' + sdk,
-          '/reference:System.ServiceModel.dll',
-          '/reference:System.Runtime.Serialization.dll',
-          source,
-        ],
-        { shell: false, windowsHide: true, encoding: 'utf8', timeout: 20000 },
-      );
-    assert.equal(build.status, 0, build.stdout + build.stderr);
+    compileClr(source, assembly, { references: [sdk, 'System.ServiceModel.dll', 'System.Runtime.Serialization.dll'] });
     const descriptor = (typeName) => ({
       trust: 'execute-local-assembly',
       root,
@@ -336,6 +372,17 @@ else{var e=c.MessageName=="Retrieve"?(Entity)output["BusinessEntity"]:((EntityCo
         assert.deepEqual(store.snapshot(), before);
         continue;
       }
+      if (mode === 'child-failure') {
+        await assert.rejects(
+          store.create('widget', { title: mode }, { admin: true }),
+          (error) =>
+            error.code === 'PluginTransactionAborted' &&
+            error.status === 400 &&
+            error.details?.innerCode === '0x8009000c',
+        );
+        assert.deepEqual(store.snapshot(), before);
+        continue;
+      }
       let row;
       try {
         row = await store.create('widget', { title: mode }, { admin: true });
@@ -348,8 +395,6 @@ else{var e=c.MessageName=="Retrieve"?(Entity)output["BusinessEntity"]:((EntityCo
       assert.ok(!Object.hasOwn(row, 'results'));
       assert.ok(!store.snapshot().tables.secondary.some((record) => record.secondaryid === changed));
       if (mode === 'nested') assert.equal(store.snapshot().tables.audit.length, 1);
-      if (mode === 'child-failure')
-        assert.ok(!store.snapshot().tables.secondary.some((record) => record.title === 'reject'));
       if (mode === 'bulk') {
         assert.equal(store.snapshot().tables.bulkitem.length, 2);
         assert.ok(!store.snapshot().tables.bulkitem.some((record) => [changed, nestedId].includes(record.bulkitemid)));
@@ -357,7 +402,11 @@ else{var e=c.MessageName=="Retrieve"?(Entity)output["BusinessEntity"]:((EntityCo
       if (mode === 'read') assert.equal(store.snapshot().tables.secondary[0].title, 'Read stored');
     }
     const hosts = notes.filter((note) => note.code === 'PLUGIN_CLR_HOST_STOPPED');
-    assert.ok(hosts.length >= 20);
+    assert.equal(
+      hosts.length,
+      23,
+      'one owned host per CLR invocation; a poisoned caller cannot start its next SDK child',
+    );
     assert.ok(hosts.every((note) => note.absenceVerified));
     if (process.env.PAQ_TEST_CLR_EVIDENCE) {
       const hash = async (file) =>

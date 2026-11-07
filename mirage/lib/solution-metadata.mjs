@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { solutionContentFingerprint } from './solution-content-fingerprint.mjs';
+import { solutionContentFingerprint, solutionLayerFiles } from './solution-content-fingerprint.mjs';
+import { InvalidAssembly, inspectAssembly } from './clr-assembly-reader.mjs';
 import { decodeXml, portalField as field } from './importer.mjs';
 import {
   parseSolutionXml,
@@ -19,6 +20,10 @@ import { advancedFormGraph } from './advanced-form-graph.mjs';
 
 export { parseSolutionXml };
 
+const chooseLazily = (condition, yes, no) => {
+  if (condition()) return yes();
+  return no();
+};
 const norm = (value) =>
   String(value ?? '')
     .replace(/[{}]/g, '')
@@ -52,11 +57,11 @@ function parseFormDocument(xml, entity, file, lcid) {
     forms.push({
       id: norm(text(systemform, 'formid') ?? path.basename(file, '.xml')),
       entity,
-      ...(sourceTypes.has(systemform)
-        ? { formType: sourceTypes.get(systemform) }
-        : groupType
-          ? { formType: groupType }
-          : {}),
+      ...chooseLazily(
+        () => sourceTypes.has(systemform),
+        () => ({ formType: sourceTypes.get(systemform) }),
+        () => (groupType ? { formType: groupType } : {}),
+      ),
       ...(systemFormType !== undefined ? { systemFormType } : {}),
       name: label(child(systemform, 'LocalizedNames'), lcid) ?? '',
       xml: serialize(form),
@@ -66,7 +71,7 @@ function parseFormDocument(xml, entity, file, lcid) {
   }
   return {
     forms,
-    viewRefs: [...xml.matchAll(/<DefaultViewId>\s*([^<]+)<\/DefaultViewId>/gi)].map((m) => norm(m[1])),
+    viewRefs: [...xml.matchAll(/<DefaultViewId>\s*([^\s<][^<]*|\s)<\/DefaultViewId>/gi)].map((m) => norm(m[1])),
     entityRefs: [
       ...xml.matchAll(/QuickFormId\s+entityname=(?:"|&quot;)([^"&]+)|<TargetEntityType>([^<]+)<\/TargetEntityType>/gi),
     ].map((m) => norm(m[1] ?? m[2])),
@@ -134,12 +139,304 @@ export function portalMetadataEntities(portal) {
   ];
 }
 
+function notesCell(cell, control, lcid) {
+  return {
+    type: 'notes',
+    id: control.attrs.id,
+    label: label(child(cell, 'labels'), lcid) || 'Notes',
+    showLabel: cell.attrs.showlabel !== 'false',
+    hidden: cell.attrs.visible === 'false',
+    colspan: Number(cell.attrs.colspan) || 1,
+    rowspan: Number(cell.attrs.rowspan) || 1,
+  };
+}
+
+function webResourceCell(cell, control, parameters, lcid) {
+  return {
+    type: 'webresource',
+    id: control.attrs.id,
+    url: text(parameters, 'Url'),
+    scrolling: text(parameters, 'Scrolling') || 'auto',
+    border: text(parameters, 'Border') === 'true',
+    label: label(child(cell, 'labels'), lcid),
+    showLabel: cell.attrs.showlabel !== 'false',
+    colspan: Number(cell.attrs.colspan) || 1,
+    rowspan: Number(cell.attrs.rowspan) || 1,
+  };
+}
+
+function subgridCell(cell, control, parameters, context) {
+  const { metadata, lcid, componentBindings } = context;
+  const entity = norm(text(parameters, 'TargetEntityType'));
+  const viewId = norm(text(parameters, 'ViewId'));
+  const view = metadata.views.find((candidate) => candidate.entity === entity && candidate.id === viewId);
+  return {
+    type: 'subgrid',
+    id: control.attrs.id,
+    entity,
+    viewId,
+    relationship: text(parameters, 'RelationshipName'),
+    searchEnabled: text(parameters, 'EnableQuickFind') === 'true',
+    recordsPerPage: Number(text(parameters, 'RecordsPerPage')) || undefined,
+    ...componentBindings(control),
+    fields: (view?.fields ?? []).map((field) => ({
+      ...metadata.entities[entity]?.fields[field.name],
+      ...field,
+    })),
+    fetchXml: view?.fetchXml,
+    label: label(child(cell, 'labels'), lcid),
+    // A hidden label leaves the subgrid heading empty.
+    ...(cell.attrs.showlabel === 'false' ? { showLabel: false } : {}),
+    colspan: Number(cell.attrs.colspan) || 1,
+    rowspan: Number(cell.attrs.rowspan) || 1,
+  };
+}
+
+function quickFormCell(cell, control, quickForms, context) {
+  const { metadata, lcid, dependencyDepth } = context;
+  const reference = descendants(parseSolutionXml(quickForms), 'QuickFormId')[0];
+  const quickForm = metadata.forms.find(
+    (candidate) => candidate.id === norm(reference?.text) && candidate.entity === norm(reference?.attrs.entityname),
+  );
+  return {
+    type: 'quickform',
+    id: control.attrs.id,
+    lookup: norm(control.attrs.datafieldname),
+    entity: norm(reference?.attrs.entityname),
+    schema: quickForm
+      ? formSchema(
+          quickForm,
+          {
+            name: label(child(cell, 'labels'), lcid) ?? quickForm.name,
+            mode: 100000002,
+            metadata: {},
+          },
+          metadata,
+          dependencyDepth + 1,
+        )
+      : null,
+    label: label(child(cell, 'labels'), lcid),
+    colspan: Number(cell.attrs.colspan) || 1,
+  };
+}
+
+function fieldCell(cell, control, parameters, context, fields) {
+  const { metadata, lcid, componentBindings, richTextControls, known } = context;
+  const name = norm(control.attrs.datafieldname);
+  const lookupViewId = norm(text(parameters, 'DefaultViewId'));
+  const lookupView = metadata.views.find((view) => view.id === lookupViewId);
+  const controlDefinition = {
+    ...known[name],
+    name,
+    id: control.attrs.id ?? name,
+    label: label(child(cell, 'labels'), lcid) ?? known[name]?.label ?? name,
+    // Form XML read-only; column create/update validity (validForCreate/validForUpdate)
+    // applies to the mode the form renders in (an inactive record renders read-only).
+    readOnly: control.attrs.disabled === 'true',
+    hidden: cell.attrs.visible === 'false',
+    showLabel: cell.attrs.showlabel !== 'false',
+    controlClassId: norm(control.attrs.classid),
+    ...componentBindings(control),
+    ...(richTextControls.has(norm(control.attrs.uniqueid))
+      ? {
+          richText: richTextControls.get(norm(control.attrs.uniqueid)),
+        }
+      : {}),
+    lookupViewId,
+    ...(lookupView
+      ? {
+          lookupView: {
+            id: lookupView.id,
+            entity: lookupView.entity,
+            fetchXml: lookupView.fetchXml,
+            fields: lookupView.fields,
+            sourceFile: lookupView.file,
+          },
+        }
+      : {}),
+    colspan: Number(cell.attrs.colspan) || 1,
+    rowspan: Number(cell.attrs.rowspan) || 1,
+  };
+  fields.push(controlDefinition);
+  return controlDefinition;
+}
+
+function buildFormCell(cell, context, fields) {
+  const { lcid } = context;
+  const control = child(cell, 'control');
+  const parameters = child(control, 'parameters');
+  if (
+    norm(control?.attrs.classid) === '06375649-c143-495e-a496-c962e5b4488e' ||
+    control?.attrs.indicationOfNotes === 'true'
+  )
+    return notesCell(cell, control, lcid);
+  if (norm(control?.attrs.classid) === WEB_RESOURCE_CLASS) return webResourceCell(cell, control, parameters, lcid);
+  const datasetControl = Boolean(text(parameters, 'TargetEntityType') && text(parameters, 'ViewId'));
+  if (control?.attrs.indicationOfSubgrid === 'true' || norm(control?.attrs.classid) === SUBGRID_CLASS || datasetControl)
+    return subgridCell(cell, control, parameters, context);
+  const quickForms = text(parameters, 'QuickForms');
+  if (quickForms) return quickFormCell(cell, control, quickForms, context);
+  if (!control?.attrs.datafieldname)
+    return {
+      spacer: true,
+      colspan: Number(cell.attrs.colspan) || 1,
+      rowspan: Number(cell.attrs.rowspan) || 1,
+    };
+  return fieldCell(cell, control, parameters, context, fields);
+}
+
+function buildFormSection(section, context, fields) {
+  if (section.attrs.visible === 'false') return { name: section.attrs.name, hidden: true, rows: [] };
+  const rows = [];
+  for (const row of child(section, 'rows')?.children ?? []) {
+    const cells = [];
+    for (const cell of row.children) cells.push(buildFormCell(cell, context, fields));
+    rows.push(cells);
+  }
+  return {
+    name: section.attrs.name,
+    label: label(child(section, 'labels'), context.lcid),
+    showLabel: section.attrs.showlabel === 'true',
+    columnWidths: /^1{1,4}$/.test(section.attrs.columns ?? '')
+      ? [...section.attrs.columns].map(() => 100 / section.attrs.columns.length)
+      : undefined,
+    rows,
+  };
+}
+
+function buildFormTab(tab, context, fields) {
+  const columns = [];
+  for (const column of child(tab, 'columns')?.children ?? []) {
+    const sections = [];
+    for (const section of child(column, 'sections')?.children ?? [])
+      sections.push(buildFormSection(section, context, fields));
+    columns.push({ width: column.attrs.width, sections });
+  }
+  return {
+    name: tab.attrs.name,
+    label: label(child(tab, 'labels'), context.lcid),
+    showLabel: tab.attrs.showlabel === 'true',
+    columns,
+  };
+}
+
+function customControlBinding(parameter, value, type) {
+  if (parameter.name === 'data-set')
+    return {
+      kind: 'dataset',
+      viewId: norm(text(parameter, 'ViewId')) || null,
+      entity: norm(text(parameter, 'TargetEntityType')) || null,
+      xml: serialize(parameter),
+    };
+  if (parameter.attrs.static === 'true') return { kind: 'static', value, type };
+  if (!parameter.children.length && /^[a-z_][a-z\d_]*$/i.test(value))
+    return { kind: 'binding', column: norm(value), type };
+  return { kind: 'unresolved', value, type, xml: serialize(parameter) };
+}
+
+function customControlVariants(description, form) {
+  const variants = [];
+  for (const control of descendants(description, 'customControl')) {
+    if (!control.attrs.name) continue;
+    const parameters = Object.create(null);
+    for (const parameter of child(control, 'parameters')?.children ?? []) {
+      const key = parameter.name === 'data-set' ? parameter.attrs.name : parameter.name;
+      if (!key) continue;
+      const value = parameter.text.trim();
+      const type = parameter.attrs.type;
+      const binding = customControlBinding(parameter, value, type);
+      parameters[key] = Object.hasOwn(parameters, key)
+        ? { kind: 'unresolved', reason: 'Duplicate exported property binding' }
+        : binding;
+    }
+    variants.push({
+      name: control.attrs.name,
+      id: norm(control.attrs.id) || null,
+      formFactor: control.attrs.formFactor ?? null,
+      parameters,
+      boundAttributes: [
+        ...new Set(
+          Object.values(parameters)
+            .filter((value) => value.kind === 'binding')
+            .map((value) => value.column),
+        ),
+      ],
+      sourceFile: form.file,
+      controlId: norm(description.attrs.forControl),
+    });
+  }
+  return [norm(description.attrs.forControl), variants];
+}
+
+function componentBindingsFor(customControls, control) {
+  const variants = customControls.get(norm(control?.attrs.uniqueid)) ?? customControls.get(norm(control?.attrs.id));
+  if (!variants?.length) return {};
+  const codeComponent = variants.find(
+    (component) =>
+      component.formFactor === '0' && component.name !== 'MscrmControls.RichTextEditor.RichTextEditorControl',
+  );
+  return { codeComponents: variants, ...(codeComponent ? { codeComponent } : {}) };
+}
+
+function richTextControlsOf(tree) {
+  return new Map(
+    descendants(tree, 'controlDescription').flatMap((description) => {
+      const custom = descendants(description, 'customControl').find(
+        (control) => control.attrs.name === 'MscrmControls.RichTextEditor.RichTextEditorControl',
+      );
+      return custom
+        ? [
+            [
+              norm(description.attrs.forControl),
+              {
+                name: custom.attrs.name,
+                configUrl: text(child(custom, 'parameters'), 'configUrl') ?? null,
+              },
+            ],
+          ]
+        : [];
+    }),
+  );
+}
+
+function selectFormTabs(tree, definition, lcid) {
+  const selectedTab = norm(field(definition.metadata, 'tabname'));
+  const tabs = descendants(tree, 'tab');
+  // Legacy tab selection: no tab name renders
+  // every visible tab; otherwise the first tab whose name matches, else the first whose
+  // label matches, else the first visible tab.
+  const visibleTab = tabs.find((tab) => tab.attrs.visible === undefined || tab.attrs.visible === 'true');
+  let tabSelection = null;
+  let chosen = tabs;
+  if (selectedTab) {
+    const byName = tabs.find((tab) => norm(tab.attrs.name) === selectedTab || norm(tab.attrs.id) === selectedTab);
+    const byLabel = byName ? null : tabs.find((tab) => norm(label(child(tab, 'labels'), lcid)) === selectedTab);
+    const tab = byName ?? byLabel ?? visibleTab ?? null;
+    tabSelection = {
+      requested: field(definition.metadata, 'tabname'),
+      matched: chooseLazily(
+        () => byName,
+        () => 'name',
+        () =>
+          chooseLazily(
+            () => byLabel,
+            () => 'label',
+            () => (tab ? 'first-visible' : 'none'),
+          ),
+      ),
+      tab: tab?.attrs.name ?? null,
+    };
+    chosen = tab ? [tab] : [];
+  }
+  return { chosen, tabSelection };
+}
+
 /**
  * Discover unpacked solution forms/views and table columns for portal tables.
  * Roots may be repositories, solution trees or a common parent; the shared scan
  * orders layers and caches parsed files (see solution-schema.mjs).
  */
-export async function importSolutionMetadata(
+/* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ export async function importSolutionMetadata(
   roots,
   { entities, portal, lcid = 1033, scan, schema, cache, cacheFile, order = 'explicit', observed } = {},
 ) {
@@ -295,7 +592,13 @@ export async function importSolutionMetadata(
     return [...map.values()];
   };
   const plugins = await resolvePluginSourceFiles(
-    importSolutionPlugins(scan.layers, { sdkMessages: observed?.sdkMessages }),
+    attachSolutionAssemblyContent(
+      importSolutionPlugins(scan.layers, {
+        sdkMessages: observed?.sdkMessages,
+        businessLogicOwnership: observed?.businessLogicOwnership,
+      }),
+      scan.layers,
+    ),
     observed?.pluginSources,
     portal?.sourceDir,
   );
@@ -330,7 +633,7 @@ export async function importSolutionMetadata(
     diagnostics,
     filesRead: candidates.length,
     fingerprint: fingerprint.digest('hex'),
-    contentFingerprint: solutionContentFingerprint(scan.layers, { lcid, files: candidates }),
+    contentFingerprint: solutionContentFingerprint(scan.layers, { lcid, files: candidates, cache: scan.cache }),
   };
   if (portal) {
     const applied = applySolutionMetadata(portal, metadata);
@@ -358,276 +661,20 @@ function formSchema(form, definition, metadata, dependencyDepth = 0) {
   const tree = parseSolutionXml(form.xml),
     lcid = metadata.lcid ?? 1033;
   const customControls = new Map(
-    descendants(tree, 'controlDescription').map((description) => {
-      const variants = descendants(description, 'customControl')
-        .filter((control) => control.attrs.name)
-        .map((control) => {
-          const parameters = Object.create(null);
-          for (const parameter of child(control, 'parameters')?.children ?? []) {
-            const key = parameter.name === 'data-set' ? parameter.attrs.name : parameter.name;
-            if (!key) continue;
-            const value = parameter.text.trim(),
-              type = parameter.attrs.type;
-            let binding;
-            if (parameter.name === 'data-set')
-              binding = {
-                kind: 'dataset',
-                viewId: norm(text(parameter, 'ViewId')) || null,
-                entity: norm(text(parameter, 'TargetEntityType')) || null,
-                xml: serialize(parameter),
-              };
-            else if (parameter.attrs.static === 'true') binding = { kind: 'static', value, type };
-            else if (!parameter.children.length && /^[a-z_][a-z\d_]*$/i.test(value))
-              binding = { kind: 'binding', column: norm(value), type };
-            else binding = { kind: 'unresolved', value, type, xml: serialize(parameter) };
-            parameters[key] = Object.hasOwn(parameters, key)
-              ? { kind: 'unresolved', reason: 'Duplicate exported property binding' }
-              : binding;
-          }
-          return {
-            name: control.attrs.name,
-            id: norm(control.attrs.id) || null,
-            formFactor: control.attrs.formFactor ?? null,
-            parameters,
-            boundAttributes: [
-              ...new Set(
-                Object.values(parameters)
-                  .filter((value) => value.kind === 'binding')
-                  .map((value) => value.column),
-              ),
-            ],
-            sourceFile: form.file,
-            controlId: norm(description.attrs.forControl),
-          };
-        });
-      return [norm(description.attrs.forControl), variants];
-    }),
+    descendants(tree, 'controlDescription').map((description) => customControlVariants(description, form)),
   );
-  const componentBindings = (control) => {
-    const variants = customControls.get(norm(control?.attrs.uniqueid)) ?? customControls.get(norm(control?.attrs.id));
-    if (!variants?.length) return {};
-    const codeComponent = variants.find(
-      (component) =>
-        component.formFactor === '0' && component.name !== 'MscrmControls.RichTextEditor.RichTextEditorControl',
-    );
-    return { codeComponents: variants, ...(codeComponent ? { codeComponent } : {}) };
-  };
-  const richTextControls = new Map(
-    descendants(tree, 'controlDescription').flatMap((description) => {
-      const custom = descendants(description, 'customControl').find(
-        (control) => control.attrs.name === 'MscrmControls.RichTextEditor.RichTextEditorControl',
-      );
-      return custom
-        ? [
-            [
-              norm(description.attrs.forControl),
-              {
-                name: custom.attrs.name,
-                configUrl: text(child(custom, 'parameters'), 'configUrl') ?? null,
-              },
-            ],
-          ]
-        : [];
-    }),
-  );
-  const selectedTab = norm(field(definition.metadata, 'tabname'));
-  const tabs = descendants(tree, 'tab');
-  // Legacy tab selection: no tab name renders
-  // every visible tab; otherwise the first tab whose name matches, else the first whose
-  // label matches, else the first visible tab.
-  const visibleTabs = tabs.filter((t) => t.attrs.visible === undefined || t.attrs.visible === 'true');
-  let tabSelection = null;
-  let chosen = tabs;
-  if (selectedTab) {
-    const byName = tabs.find((t) => norm(t.attrs.name) === selectedTab || norm(t.attrs.id) === selectedTab);
-    const byLabel = byName ? null : tabs.find((t) => norm(label(child(t, 'labels'), lcid)) === selectedTab);
-    const tab = byName ?? byLabel ?? visibleTabs[0] ?? null;
-    tabSelection = {
-      requested: field(definition.metadata, 'tabname'),
-      matched: byName ? 'name' : byLabel ? 'label' : tab ? 'first-visible' : 'none',
-      tab: tab?.attrs.name ?? null,
-    };
-    chosen = tab ? [tab] : [];
-  }
+  const componentBindings = (control) => componentBindingsFor(customControls, control);
+  const richTextControls = richTextControlsOf(tree);
+  const { chosen, tabSelection } = selectFormTabs(tree, definition, lcid);
   const fields = [];
   const layout = [];
   const known = metadata.entities[form.entity]?.fields ?? {};
+  const context = { metadata, lcid, componentBindings, richTextControls, dependencyDepth, known };
   for (const tab of chosen) {
     // Native portal controls omit systemform tabs explicitly marked invisible.
     // Their repeated bindings must not become extra required browser controls.
     if (tab.attrs.visible === 'false') continue;
-    const columns = [];
-    for (const column of child(tab, 'columns')?.children ?? []) {
-      const sections = [];
-      for (const section of child(column, 'sections')?.children ?? []) {
-        // A hidden section keeps its (empty) place in the layout.
-        if (section.attrs.visible === 'false') {
-          sections.push({ name: section.attrs.name, hidden: true, rows: [] });
-          continue;
-        }
-        const rows = [];
-        for (const row of child(section, 'rows')?.children ?? []) {
-          const cells = [];
-          for (const cell of row.children) {
-            const control = child(cell, 'control');
-            const parameters = child(control, 'parameters');
-            if (
-              norm(control?.attrs.classid) === '06375649-c143-495e-a496-c962e5b4488e' ||
-              control?.attrs.indicationOfNotes === 'true'
-            ) {
-              cells.push({
-                type: 'notes',
-                id: control.attrs.id,
-                label: label(child(cell, 'labels'), lcid) || 'Notes',
-                showLabel: cell.attrs.showlabel !== 'false',
-                hidden: cell.attrs.visible === 'false',
-                colspan: Number(cell.attrs.colspan) || 1,
-                rowspan: Number(cell.attrs.rowspan) || 1,
-              });
-              continue;
-            }
-            // Web resource cells (the platform renders HTML and image web resources in an iframe).
-            if (norm(control?.attrs.classid) === WEB_RESOURCE_CLASS) {
-              cells.push({
-                type: 'webresource',
-                id: control.attrs.id,
-                url: text(parameters, 'Url'),
-                scrolling: text(parameters, 'Scrolling') || 'auto',
-                border: text(parameters, 'Border') === 'true',
-                label: label(child(cell, 'labels'), lcid),
-                showLabel: cell.attrs.showlabel !== 'false',
-                colspan: Number(cell.attrs.colspan) || 1,
-                rowspan: Number(cell.attrs.rowspan) || 1,
-              });
-              continue;
-            }
-            // A control naming a target table and a view is a dataset subgrid even without the subgrid
-            // class or flag (the platform Contact form's ActionCards control).
-            const datasetControl = Boolean(text(parameters, 'TargetEntityType') && text(parameters, 'ViewId'));
-            if (
-              control?.attrs.indicationOfSubgrid === 'true' ||
-              norm(control?.attrs.classid) === SUBGRID_CLASS ||
-              datasetControl
-            ) {
-              const entity = norm(text(parameters, 'TargetEntityType'));
-              const viewId = norm(text(parameters, 'ViewId'));
-              const view = metadata.views.find((v) => v.entity === entity && v.id === viewId);
-              cells.push({
-                type: 'subgrid',
-                id: control.attrs.id,
-                entity,
-                viewId,
-                relationship: text(parameters, 'RelationshipName'),
-                searchEnabled: text(parameters, 'EnableQuickFind') === 'true',
-                recordsPerPage: Number(text(parameters, 'RecordsPerPage')) || undefined,
-                ...componentBindings(control),
-                fields: (view?.fields ?? []).map((f) => ({
-                  ...metadata.entities[entity]?.fields[f.name],
-                  ...f,
-                })),
-                fetchXml: view?.fetchXml,
-                label: label(child(cell, 'labels'), lcid),
-                // A hidden label leaves the subgrid heading empty.
-                ...(cell.attrs.showlabel === 'false' ? { showLabel: false } : {}),
-                colspan: Number(cell.attrs.colspan) || 1,
-                rowspan: Number(cell.attrs.rowspan) || 1,
-              });
-              continue;
-            }
-            const quickForms = text(parameters, 'QuickForms');
-            if (quickForms) {
-              const reference = descendants(parseSolutionXml(quickForms), 'QuickFormId')[0];
-              const quickForm = metadata.forms.find(
-                (f) => f.id === norm(reference?.text) && f.entity === norm(reference?.attrs.entityname),
-              );
-              cells.push({
-                type: 'quickform',
-                id: control.attrs.id,
-                lookup: norm(control.attrs.datafieldname),
-                entity: norm(reference?.attrs.entityname),
-                schema: quickForm
-                  ? formSchema(
-                      quickForm,
-                      {
-                        name: label(child(cell, 'labels'), lcid) ?? quickForm.name,
-                        mode: 100000002,
-                        metadata: {},
-                      },
-                      metadata,
-                      dependencyDepth + 1,
-                    )
-                  : null,
-                label: label(child(cell, 'labels'), lcid),
-                colspan: Number(cell.attrs.colspan) || 1,
-              });
-              continue;
-            }
-            if (!control?.attrs.datafieldname) {
-              cells.push({
-                spacer: true,
-                colspan: Number(cell.attrs.colspan) || 1,
-                rowspan: Number(cell.attrs.rowspan) || 1,
-              });
-              continue;
-            }
-            const name = norm(control.attrs.datafieldname);
-            const lookupViewId = norm(text(parameters, 'DefaultViewId'));
-            const lookupView = metadata.views.find((view) => view.id === lookupViewId);
-            const controlDefinition = {
-              ...known[name],
-              name,
-              id: control.attrs.id ?? name,
-              label: label(child(cell, 'labels'), lcid) ?? known[name]?.label ?? name,
-              // Form XML read-only; column create/update validity (validForCreate/validForUpdate)
-              // applies to the mode the form renders in (an inactive record renders read-only).
-              readOnly: control.attrs.disabled === 'true',
-              hidden: cell.attrs.visible === 'false',
-              showLabel: cell.attrs.showlabel !== 'false',
-              controlClassId: norm(control.attrs.classid),
-              ...componentBindings(control),
-              ...(richTextControls.has(norm(control.attrs.uniqueid))
-                ? {
-                    richText: richTextControls.get(norm(control.attrs.uniqueid)),
-                  }
-                : {}),
-              lookupViewId,
-              ...(lookupView
-                ? {
-                    lookupView: {
-                      id: lookupView.id,
-                      entity: lookupView.entity,
-                      fetchXml: lookupView.fetchXml,
-                      fields: lookupView.fields,
-                      sourceFile: lookupView.file,
-                    },
-                  }
-                : {}),
-              colspan: Number(cell.attrs.colspan) || 1,
-              rowspan: Number(cell.attrs.rowspan) || 1,
-            };
-            fields.push(controlDefinition);
-            cells.push(controlDefinition);
-          }
-          rows.push(cells);
-        }
-        sections.push({
-          name: section.attrs.name,
-          label: label(child(section, 'labels'), lcid),
-          showLabel: section.attrs.showlabel === 'true',
-          columnWidths: /^1{1,4}$/.test(section.attrs.columns ?? '')
-            ? [...section.attrs.columns].map(() => 100 / section.attrs.columns.length)
-            : undefined,
-          rows,
-        });
-      }
-      columns.push({ width: column.attrs.width, sections });
-    }
-    layout.push({
-      name: tab.attrs.name,
-      label: label(child(tab, 'labels'), lcid),
-      showLabel: tab.attrs.showlabel === 'true',
-      columns,
-    });
+    layout.push(buildFormTab(tab, context, fields));
   }
   return {
     entity: form.entity,
@@ -655,91 +702,91 @@ export function systemFormSchemaFor(definition, metadata) {
   return choices.length ? formSchema(choices[0], definition, metadata) : null;
 }
 
-export function applySolutionMetadata(portal, metadata) {
-  const componentSchemas = {};
-  const diagnostics = [...metadata.diagnostics];
-  const withSaveFields = (schema, definition) => {
-    const onSaveFields = (portal.records ?? [])
-      .filter(
-        (row) =>
-          ['basicformmetadata', 'advancedformmetadata'].includes(row.kind) &&
-          field(row, 'setvalueonsave', false) === true &&
-          (norm(field(row, 'entityform')) === norm(definition.id) ||
-            norm(field(row, 'webformstep')) === norm(definition.id)),
-      )
-      .map((row) => {
-        const name = norm(field(row, 'attributelogicalname')),
-          attribute = metadata.entities[schema.entity]?.fields[name];
-        if (!attribute) throw new Error(`On-save attribute '${name}' is absent in the imported table metadata`);
-        return { ...attribute, name };
-      });
-    const associationName = norm(
-      field(
-        definition.metadata,
-        'targetentityportaluserlookupattribute',
-        field(definition.metadata, 'portaluserlookupattribute'),
-      ),
-    );
-    let currentUserAssociationField;
-    if (field(definition.metadata, 'associatecurrentportaluser', false) === true && associationName) {
-      const attribute = metadata.entities[schema.entity]?.fields[associationName];
-      if (!attribute)
-        throw new Error(
-          `Current-user association attribute '${associationName}' is absent in the imported table metadata`,
-        );
-      currentUserAssociationField = { ...attribute, name: associationName };
-    }
-    return {
-      ...schema,
-      onSaveFields,
-      ...(currentUserAssociationField ? { currentUserAssociationField } : {}),
-    };
+function withSaveFields(schema, definition, portal, metadata) {
+  const onSaveFields = (portal.records ?? [])
+    .filter(
+      (row) =>
+        ['basicformmetadata', 'advancedformmetadata'].includes(row.kind) &&
+        field(row, 'setvalueonsave', false) === true &&
+        (norm(field(row, 'entityform')) === norm(definition.id) ||
+          norm(field(row, 'webformstep')) === norm(definition.id)),
+    )
+    .map((row) => {
+      const name = norm(field(row, 'attributelogicalname')),
+        attribute = metadata.entities[schema.entity]?.fields[name];
+      if (!attribute) throw new Error(`On-save attribute '${name}' is absent in the imported table metadata`);
+      return { ...attribute, name };
+    });
+  const associationName = norm(
+    field(
+      definition.metadata,
+      'targetentityportaluserlookupattribute',
+      field(definition.metadata, 'portaluserlookupattribute'),
+    ),
+  );
+  let currentUserAssociationField;
+  if (field(definition.metadata, 'associatecurrentportaluser', false) === true && associationName) {
+    const attribute = metadata.entities[schema.entity]?.fields[associationName];
+    if (!attribute)
+      throw new Error(
+        `Current-user association attribute '${associationName}' is absent in the imported table metadata`,
+      );
+    currentUserAssociationField = { ...attribute, name: associationName };
+  }
+  return {
+    ...schema,
+    onSaveFields,
+    ...(currentUserAssociationField ? { currentUserAssociationField } : {}),
   };
-  const resolve = (definition) => {
-    const matches = matchingSystemForms(definition, metadata.forms);
-    const choices = matches.filter(portalFormEligible);
-    if (matches.length && !choices.length)
-      diagnostics.push({
-        code: 'SYSTEMFORM_INELIGIBLE_TYPE',
-        id: definition.id,
-        entity: definition.entityName,
-        candidates: matches.map(({ id, formType, systemFormType, file }) => ({
-          formId: id,
-          formType,
-          systemFormType,
-          sourceFile: file,
-        })),
-        message: 'Matching exported forms have a declared non-Main type; no portal form layout is selected.',
-      });
-    if (!choices.length) return null;
-    // Legacy form selection: the first systemform
-    // with the name. Dataverse retrieval order is not observable locally; layer and file
-    // order stand in for it and the other candidates are reported.
-    if (choices.length > 1)
-      diagnostics.push({
-        code: 'SYSTEMFORM_NAME_AMBIGUOUS',
-        id: definition.id,
-        entity: definition.entityName,
-        name: definition.formName,
-        formId: choices[0].id,
-        sourceFile: choices[0].file,
-        candidates: choices.map((choice) => ({ formId: choice.id, sourceFile: choice.file })),
-        message: `${choices.length} active systemforms are named ${definition.formName}; the first (${choices[0].id}) is used. Set the form ID on the basic form to choose another.`,
-      });
-    const schema = formSchema(choices[0], definition, metadata);
-    if (schema.tabSelection && !['name', 'label'].includes(schema.tabSelection.matched))
-      diagnostics.push({
-        code: 'SYSTEMFORM_TAB_FALLBACK',
-        id: definition.id,
-        formId: schema.formId,
-        requested: schema.tabSelection.requested,
-        tab: schema.tabSelection.tab,
-        message: schema.tabSelection.tab
-          ? `No tab of ${schema.formName} is named or labelled '${schema.tabSelection.requested}'; the first visible tab '${schema.tabSelection.tab}' is rendered.`
-          : `No tab of ${schema.formName} is named or labelled '${schema.tabSelection.requested}' and the form has no visible tab.`,
-      });
-    return withSaveFields(schema, definition);
-  };
+}
+
+function resolveSystemForm(definition, portal, metadata, diagnostics) {
+  const matches = matchingSystemForms(definition, metadata.forms);
+  const choices = matches.filter(portalFormEligible);
+  if (matches.length && !choices.length)
+    diagnostics.push({
+      code: 'SYSTEMFORM_INELIGIBLE_TYPE',
+      id: definition.id,
+      entity: definition.entityName,
+      candidates: matches.map(({ id, formType, systemFormType, file }) => ({
+        formId: id,
+        formType,
+        systemFormType,
+        sourceFile: file,
+      })),
+      message: 'Matching exported forms have a declared non-Main type; no portal form layout is selected.',
+    });
+  if (!choices.length) return null;
+  // Legacy form selection: the first systemform
+  // with the name. Dataverse retrieval order is not observable locally; layer and file
+  // order stand in for it and the other candidates are reported.
+  if (choices.length > 1)
+    diagnostics.push({
+      code: 'SYSTEMFORM_NAME_AMBIGUOUS',
+      id: definition.id,
+      entity: definition.entityName,
+      name: definition.formName,
+      formId: choices[0].id,
+      sourceFile: choices[0].file,
+      candidates: choices.map((choice) => ({ formId: choice.id, sourceFile: choice.file })),
+      message: `${choices.length} active systemforms are named ${definition.formName}; the first (${choices[0].id}) is used. Set the form ID on the basic form to choose another.`,
+    });
+  const schema = formSchema(choices[0], definition, metadata);
+  if (schema.tabSelection && !['name', 'label'].includes(schema.tabSelection.matched))
+    diagnostics.push({
+      code: 'SYSTEMFORM_TAB_FALLBACK',
+      id: definition.id,
+      formId: schema.formId,
+      requested: schema.tabSelection.requested,
+      tab: schema.tabSelection.tab,
+      message: schema.tabSelection.tab
+        ? `No tab of ${schema.formName} is named or labelled '${schema.tabSelection.requested}'; the first visible tab '${schema.tabSelection.tab}' is rendered.`
+        : `No tab of ${schema.formName} is named or labelled '${schema.tabSelection.requested}' and the form has no visible tab.`,
+    });
+  return withSaveFields(schema, definition, portal, metadata);
+}
+
+function mapPortalForms(portal, componentSchemas, diagnostics, resolve) {
   for (const definition of portal.forms) {
     try {
       const diagnosticStart = diagnostics.length;
@@ -756,25 +803,26 @@ export function applySolutionMetadata(portal, metadata) {
           message: 'No matching systemform exists in the selected solution sources',
         });
     } catch (error) {
-      diagnostics.push({
-        code: 'SYSTEMFORM_MAPPING_ERROR',
-        id: definition.id,
-        message: error.message,
-      });
+      diagnostics.push({ code: 'SYSTEMFORM_MAPPING_ERROR', id: definition.id, message: error.message });
     }
   }
+}
+
+function mapPortalLists(portal, metadata, componentSchemas, diagnostics) {
   for (const list of portal.lists) {
     const viewId = norm(field(list.metadata, 'view'));
-    const view = metadata.views.find((v) => v.entity === norm(list.entityName) && v.id === viewId);
+    const view = metadata.views.find(
+      (candidate) => candidate.entity === norm(list.entityName) && candidate.id === viewId,
+    );
     if (view) {
       const schema = {
         entity: view.entity,
         title: list.name,
         viewId: view.id,
         fetchXml: view.fetchXml,
-        fields: view.fields.map((f) => ({
-          ...metadata.entities[view.entity]?.fields[f.name],
-          ...f,
+        fields: view.fields.map((item) => ({
+          ...metadata.entities[view.entity]?.fields[item.name],
+          ...item,
         })),
         source: 'unpacked-savedquery',
         sourceFile: view.file,
@@ -790,83 +838,100 @@ export function applySolutionMetadata(portal, metadata) {
         message: 'No matching savedquery exists in the selected solution sources',
       });
   }
+}
+
+function conditionStep(step) {
+  return {
+    stepId: step.id,
+    type: 'condition',
+    condition: field(step, 'condition'),
+    nextStepId: norm(field(step, 'nextstep')),
+    conditionDefaultNextStepId: norm(field(step, 'conditiondefaultnextstep')),
+    js: step.customJavascript,
+    metadata: step,
+  };
+}
+
+function redirectStep(step, portal) {
+  const target = portal.pages.find((page) => page.id === norm(field(step, 'redirectwebpage')));
+  const redirectUrl = target?.url ?? field(step, 'redirecturl');
+  if (!redirectUrl) throw new Error('Redirect step has no resolvable exported target page or URL');
+  return {
+    stepId: step.id,
+    type: 'redirect',
+    redirectUrl,
+    appendRecordId: field(step, 'redirecturlappendentityidquerystring', false),
+    recordQueryName: field(step, 'redirecturlquerystringname'),
+    js: step.customJavascript,
+    metadata: step,
+  };
+}
+
+function loadFormStep(step, form, metadata, diagnostics, resolve) {
+  const definition = {
+    id: step.id,
+    name: step.name,
+    entityName: field(step, 'targetentitylogicalname', field(step, 'entityname')),
+    formName: field(step, 'formname'),
+    // PAC omits default-valued columns; the platform default is Insert.
+    mode: field(step, 'mode', 100000000),
+    metadata: step,
+  };
+  const diagnosticStart = diagnostics.length;
+  const schema = resolve(definition);
+  if (schema) {
+    schema.stepId = step.id;
+    schema.nextStepId = norm(field(step, 'nextstep'));
+    schema.js = step.customJavascript;
+    schema.metadata = step;
+    return schema;
+  }
+  if (!diagnostics.slice(diagnosticStart).some((item) => item.code === 'SYSTEMFORM_INELIGIBLE_TYPE'))
+    diagnostics.push({
+      code: 'ADVANCEDFORM_STEP_UNRESOLVED',
+      id: step.id,
+      form: form.id,
+      entity: definition.entityName,
+      formName: definition.formName,
+      message: 'The exported load step has no matching eligible Dataverse systemform layout.',
+    });
+  return null;
+}
+
+function mapAdvancedStep(step, form, portal, metadata, diagnostics, { componentSchemas, resolve, schemas }) {
+  try {
+    const type = Number(field(step, 'type', 100000001));
+    if (type === 100000000) {
+      const schema = conditionStep(step);
+      schemas.push(schema);
+      componentSchemas[step.id] = schema;
+      return;
+    }
+    if (type === 100000003) {
+      schemas.push(redirectStep(step, portal));
+      componentSchemas[step.id] = schemas.at(-1);
+      return;
+    }
+    if (![100000001, 100000002].includes(type))
+      throw new Error(`Exported multistep type '${type}' is unsupported; it is not a Load Form or Load Tab.`);
+    const schema = loadFormStep(step, form, metadata, diagnostics, resolve);
+    if (!schema) return;
+    schemas.push(schema);
+    componentSchemas[step.id] = schema;
+  } catch (error) {
+    diagnostics.push({ code: 'ADVANCEDFORM_STEP_MAPPING_ERROR', id: step.id, message: error.message });
+  }
+}
+
+function mapAdvancedForms(portal, metadata, componentSchemas, diagnostics, resolve) {
   for (const form of portal.advancedForms ?? []) {
     const graph = advancedFormGraph(form, portal.records);
-    const steps = graph.steps;
     diagnostics.push(...graph.diagnostics);
     const schemas = [];
-    for (const step of steps) {
-      try {
-        const type = Number(field(step, 'type', 100000001));
-        if (type === 100000000) {
-          const schema = {
-            stepId: step.id,
-            type: 'condition',
-            condition: field(step, 'condition'),
-            nextStepId: norm(field(step, 'nextstep')),
-            conditionDefaultNextStepId: norm(field(step, 'conditiondefaultnextstep')),
-            js: step.customJavascript,
-            metadata: step,
-          };
-          schemas.push(schema);
-          componentSchemas[step.id] = schema;
-          continue;
-        }
-        if (type === 100000003) {
-          const target = portal.pages.find((p) => p.id === norm(field(step, 'redirectwebpage')));
-          const redirectUrl = target?.url ?? field(step, 'redirecturl');
-          if (!redirectUrl) throw new Error('Redirect step has no resolvable exported target page or URL');
-          schemas.push({
-            stepId: step.id,
-            type: 'redirect',
-            redirectUrl,
-            appendRecordId: field(step, 'redirecturlappendentityidquerystring', false),
-            recordQueryName: field(step, 'redirecturlquerystringname'),
-            js: step.customJavascript,
-            metadata: step,
-          });
-          componentSchemas[step.id] = schemas.at(-1);
-          continue;
-        }
-        if (![100000001, 100000002].includes(type))
-          throw new Error(`Exported multistep type '${type}' is unsupported; it is not a Load Form or Load Tab.`);
-        const definition = {
-          id: step.id,
-          name: step.name,
-          entityName: field(step, 'targetentitylogicalname', field(step, 'entityname')),
-          formName: field(step, 'formname'),
-          // PAC omits default-valued columns; the platform default is Insert.
-          mode: field(step, 'mode', 100000000),
-          metadata: step,
-        };
-        const diagnosticStart = diagnostics.length;
-        const schema = resolve(definition);
-        if (schema) {
-          schema.stepId = step.id;
-          schema.nextStepId = norm(field(step, 'nextstep'));
-          schema.js = step.customJavascript;
-          schema.metadata = step;
-          schemas.push(schema);
-          componentSchemas[step.id] = schema;
-        } else if (!diagnostics.slice(diagnosticStart).some((item) => item.code === 'SYSTEMFORM_INELIGIBLE_TYPE'))
-          diagnostics.push({
-            code: 'ADVANCEDFORM_STEP_UNRESOLVED',
-            id: step.id,
-            form: form.id,
-            entity: definition.entityName,
-            formName: definition.formName,
-            message: 'The exported load step has no matching eligible Dataverse systemform layout.',
-          });
-      } catch (error) {
-        diagnostics.push({
-          code: 'ADVANCEDFORM_STEP_MAPPING_ERROR',
-          id: step.id,
-          message: error.message,
-        });
-      }
-    }
+    for (const step of graph.steps)
+      mapAdvancedStep(step, form, portal, metadata, diagnostics, { componentSchemas, resolve, schemas });
     const start = graph.initialStepId;
-    const schema = schemas.find((s) => norm(s.stepId) === start);
+    const schema = schemas.find((item) => norm(item.stepId) === start);
     if (schema)
       componentSchemas[form.id] = {
         ...schema,
@@ -883,6 +948,15 @@ export function applySolutionMetadata(portal, metadata) {
           'The declared initial step has no mapped layout in the selected solution sources; another step is not selected instead',
       });
   }
+}
+
+export function applySolutionMetadata(portal, metadata) {
+  const componentSchemas = {};
+  const diagnostics = [...metadata.diagnostics];
+  const resolve = (definition) => resolveSystemForm(definition, portal, metadata, diagnostics);
+  mapPortalForms(portal, componentSchemas, diagnostics, resolve);
+  mapPortalLists(portal, metadata, componentSchemas, diagnostics);
+  mapAdvancedForms(portal, metadata, componentSchemas, diagnostics, resolve);
   return {
     componentSchemas,
     diagnostics,
@@ -897,4 +971,66 @@ export function applySolutionMetadata(portal, metadata) {
       entities: Object.keys(metadata.entities).length,
     },
   };
+}
+
+// An exported plug-in assembly's bytes: the Solution's PluginAssemblies/<name>-<id>/<name>.dll (its FileName), read from the
+// layer that exports the registration (directory or ZIP), its identity checked against the exported name and version. The
+// bytes become the assembly row's content, so its steps run them like uploaded content (native n3-solution: an imported
+// Solution's steps run). An export without the file (a Power Pages export carries no .dll) or with other bytes is a
+// diagnostic and its steps stay placeholders. The side-file hashes of solutionContentFingerprint already cover the files.
+const ASSEMBLY_LIMIT = 16 * 1024 * 1024;
+function attachSolutionAssemblyContent(plugins, layers) {
+  const digest = createHash('sha256').update(plugins.fingerprint ?? '');
+  const filesOf = new Map();
+  const layerFiles = (layer) => {
+    if (!filesOf.has(layer))
+      filesOf.set(
+        layer,
+        new Map(solutionLayerFiles(layer, /^pluginassemblies$/i).map((entry) => [entry.name.toLowerCase(), entry])),
+      );
+    return filesOf.get(layer);
+  };
+  const report = (assembly, code, message) =>
+    plugins.diagnostics.push({ code, assemblyId: assembly.id, sourceFile: assembly.sourceFile ?? null, message });
+  for (const assembly of plugins.assemblies ?? []) {
+    const name = String(assembly.binaryPath ?? '')
+      .replaceAll('\\', '/')
+      .replace(/^\/+/, '');
+    if (!name) continue;
+    const key = name.toLowerCase();
+    const owner = layers.find((layer) => layer.documents?.some((document) => document.file === assembly.sourceFile));
+    const entry = (owner ? [owner] : [...layers].reverse()).map((layer) => layerFiles(layer).get(key)).find(Boolean);
+    if (!entry) {
+      report(
+        assembly,
+        'PLUGIN_ASSEMBLY_CONTENT_MISSING',
+        `The exported assembly file ${name} is not in the Solution source; its steps need uploaded content or a trusted descriptor to run.`,
+      );
+      continue;
+    }
+    let bytes, facts;
+    try {
+      bytes = entry.read(ASSEMBLY_LIMIT);
+      facts = inspectAssembly(bytes);
+    } catch (error) {
+      const reason = error instanceof InvalidAssembly ? 'is not a .NET assembly' : `cannot be read (${error.message})`;
+      report(assembly, 'PLUGIN_ASSEMBLY_CONTENT_INVALID', `The exported assembly file ${name} ${reason}.`);
+      continue;
+    }
+    if (
+      String(facts.name).toLowerCase() !== String(assembly.name).toLowerCase() ||
+      (assembly.version && facts.version !== assembly.version)
+    ) {
+      report(
+        assembly,
+        'PLUGIN_ASSEMBLY_CONTENT_INVALID',
+        `The exported assembly file ${name} is ${facts.name} ${facts.version}, not the registered ${assembly.name} ${assembly.version ?? ''}.`.trimEnd(),
+      );
+      continue;
+    }
+    assembly.content = Buffer.from(bytes).toString('base64');
+    digest.update(assembly.id).update(bytes);
+  }
+  plugins.fingerprint = digest.digest('hex');
+  return plugins;
 }

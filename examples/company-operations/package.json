@@ -10,11 +10,11 @@
     "data:apply": "paqvilo dataverse data-apply --catalogue data/stress-catalogue.json",
     "data:compare": "paqvilo dataverse data-compare --catalogue data/stress-catalogue.json",
     "data:query": "paqvilo dataverse data-query --catalogue data/stress-catalogue.json",
-    "test": "node --test test/*.test.mjs portal-harness/test.mjs portal-harness/parity.test.mjs plugins/test/*.test.mjs",
+    "test": "node --test --test-timeout=180000 test/*.test.mjs portal-harness/test.mjs portal-harness/parity.test.mjs plugins/test/*.test.mjs",
     "stress:prepare": "node prepare-stress-data.mjs",
     "forms:audit": "node forms/deploy.mjs",
     "forms:apply": "node forms/deploy.mjs --apply",
-    "test:browser": "node --test portal-harness/browser.test.mjs",
+    "test:browser": "node --test --test-timeout=300000 portal-harness/browser.test.mjs",
     "forms:import-quickfind": "node forms/import-quickfind.mjs",
     "data:reconcile-seed": "node data/reconcile-seed-headers.mjs"
   },

@@ -6,9 +6,10 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { importPortal } from '../lib/importer.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('a site setting with a lookup and no source keeps its static value', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'site-setting-source-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'site-setting-source-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   await fs.writeFile(path.join(dir, 'website.yml'), 'adx_websiteid: site\nadx_name: Source default');
   await fs.writeFile(

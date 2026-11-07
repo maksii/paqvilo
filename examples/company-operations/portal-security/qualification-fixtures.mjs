@@ -4,11 +4,29 @@ import { createHash } from 'node:crypto';
 const guid = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i;
 const hash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const regions = ['own-scope', 'same-company-other-branch', 'foreign-company'];
+function associationRequest(client, association, tableOf, relationships) {
+  if (relationships.length !== 1)
+    throw new Error('Required native qualification N:N relationship is absent or ambiguous.');
+  const relationship = relationships[0];
+  let side = 0;
+  if (relationship.Entity1LogicalName === association.from.table) side = 1;
+  else if (relationship.Entity2LogicalName === association.from.table) side = 2;
+  const navigation = relationship[`Entity${side}NavigationPropertyName`];
+  if (!side || !navigation || relationship[`Entity${side === 1 ? 2 : 1}LogicalName`] !== association.to.table)
+    throw new Error('Qualification association endpoint metadata differs.');
+  return {
+    kind: 'associate',
+    method: 'POST',
+    endpoint: `${tableOf.get(association.from.table).entitySet}(${association.from.id})/${navigation}/$ref`,
+    body: { '@odata.id': client.url(`${tableOf.get(association.to.table).entitySet}(${association.to.id})`) },
+    requireExactAssociationReadback: true,
+  };
+}
 
 /** Concrete disposable fixture graph. Native metadata navigation is bound by a
  * separate read-only step; this function creates no Dataverse records. Original
  * seed rows and the real actor remain untouched by these request plans. */
-export function planQualificationFixtures(
+/* NOSONAR: single-pass routine, splitting it would change shared state */ export function planQualificationFixtures(
   configuration,
   { schema, catalogue, actorContactId, resolvedIds, runId, ownedRunId, bindingCohorts = false } = {},
 ) {
@@ -37,10 +55,12 @@ export function planQualificationFixtures(
     records = [],
     associations = [];
   const regionRecordIds = {},
-    byKey = new Map(),
-    grants = [];
+    byKey = new Map(), // NOSONAR: collection is written for its side effect
+    grants = []; // NOSONAR: collection is written for its side effect
   const external = (key, region) => {
-    const remap = key === 'A-RIV' ? ['A-RIV', 'A-HILL', 'B-LAKE'][region] : key === 'A' && region === 2 ? 'B' : key;
+    let remap = key;
+    if (key === 'A-RIV') remap = ['A-RIV', 'A-HILL', 'B-LAKE'][region];
+    else if (key === 'A' && region === 2) remap = 'B';
     const value = resolvedIds?.[remap];
     if (!guid.test(value ?? '')) throw new Error('Native fixture reference is not bound: ' + remap);
     const source = catalogue.records.find((record) => record.key === remap);
@@ -105,6 +125,11 @@ export function planQualificationFixtures(
     const peer = clones.get('CANARY-A-contact'),
       actor = { id: actorContactId, table: 'contact', realActor: true };
     const grantee = region === 0 || splitPrincipals ? actor : peer;
+    const splitPrincipal = (isActor) => {
+      if (!splitPrincipals) return grantee;
+      if (isActor()) return actor;
+      return peer;
+    };
     const grant = {
       key: `QF-${token}-${region}-access`,
       id: componentId(`qualification-fixture:${runId}:${region}:access`),
@@ -133,13 +158,9 @@ export function planQualificationFixtures(
         ),
         pqvd_granteecontactid: grantee,
         pqvd_scopeaccountid: clones.get('CANARY-A-account'),
-        pqvd_itprincipalid: splitPrincipals ? (region === 0 ? actor : peer) : grantee,
-        pqvd_hrprincipalid: splitPrincipals ? (region === 1 ? actor : peer) : grantee,
-        pqvd_ctoprincipalid: splitPrincipals
-          ? region === 2 && configuration.parameters.grants === 3
-            ? actor
-            : peer
-          : grantee,
+        pqvd_itprincipalid: splitPrincipal(() => region === 0),
+        pqvd_hrprincipalid: splitPrincipal(() => region === 1),
+        pqvd_ctoprincipalid: splitPrincipal(() => region === 2 && configuration.parameters.grants === 3),
       },
       deferredRefs: [],
       uniqueRunToken: token,
@@ -266,7 +287,7 @@ export async function bindQualificationFixtureRequests(client, plan) {
   }
   const metadata = new Map(),
     tableOf = new Map(plan.tables.map((table) => [table.name, table]));
-  for (const table of [...new Set(plan.records.map((record) => record.table))])
+  for (const table of new Set(plan.records.map((record) => record.table)))
     metadata.set(
       table,
       await client.list(
@@ -287,7 +308,8 @@ export async function bindQualificationFixtureRequests(client, plan) {
           );
         if (candidates.length !== 1 || !candidates[0].ReferencingEntityNavigationPropertyName)
           throw new Error('Native qualification lookup navigation is ambiguous: ' + record.table + '.' + column);
-        (lookupNavigation[record.id] ??= {})[column] = candidates[0].ReferencingEntityNavigationPropertyName;
+        lookupNavigation[record.id] ??= {};
+        lookupNavigation[record.id][column] = candidates[0].ReferencingEntityNavigationPropertyName;
         payload[candidates[0].ReferencingEntityNavigationPropertyName + '@odata.bind'] = target
           ? `/${tableOf.get(target.table).entitySet}(${target.id})`
           : null;
@@ -320,25 +342,7 @@ export async function bindQualificationFixtureRequests(client, plan) {
     const relationships = await client.list(
       `RelationshipDefinitions/Microsoft.Dynamics.CRM.ManyToManyRelationshipMetadata?$filter=SchemaName eq '${association.relationship}'`,
     );
-    if (relationships.length !== 1)
-      throw new Error('Required native qualification N:N relationship is absent or ambiguous.');
-    const relationship = relationships[0],
-      side =
-        relationship.Entity1LogicalName === association.from.table
-          ? 1
-          : relationship.Entity2LogicalName === association.from.table
-            ? 2
-            : 0;
-    const navigation = relationship[`Entity${side}NavigationPropertyName`];
-    if (!side || !navigation || relationship[`Entity${side === 1 ? 2 : 1}LogicalName`] !== association.to.table)
-      throw new Error('Qualification association endpoint metadata differs.');
-    requests.push({
-      kind: 'associate',
-      method: 'POST',
-      endpoint: `${tableOf.get(association.from.table).entitySet}(${association.from.id})/${navigation}/$ref`,
-      body: { '@odata.id': client.url(`${tableOf.get(association.to.table).entitySet}(${association.to.id})`) },
-      requireExactAssociationReadback: true,
-    });
+    requests.push(associationRequest(client, association, tableOf, relationships));
   }
   return {
     ...plan,

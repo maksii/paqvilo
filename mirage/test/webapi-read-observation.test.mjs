@@ -5,9 +5,10 @@ import { DataError } from '../lib/data-error.mjs';
 import { handleWebApi, webApiErrorResponse } from '../lib/webapi-handler.mjs';
 import { observedConfig } from '../lib/project-config.mjs';
 import { dispatchSdkCall } from '../lib/plugin-clr.mjs';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const recordId = '10000000-0000-0000-0000-000000000001';
 function fixture() {
@@ -266,7 +267,7 @@ test('native empty FetchXML responses retain counts while omitting the selected-
 });
 
 test('HTTP read observer records through its own SDK grants, including a later failed read', async (t) => {
-  const directory = await mkdtemp(path.join(tmpdir(), 'paqvilo-read-observation-'));
+  const directory = await makeTemporaryDirectory(path.join(tmpdir(), 'paqvilo-read-observation-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   for (const failAfterRead of [false, true]) {
     const store = fixture();

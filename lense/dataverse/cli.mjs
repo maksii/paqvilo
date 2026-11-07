@@ -3,8 +3,10 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
+import { fileIdentity, sameFile } from '../file-identity.mjs';
 import {
   loadConnection,
+  environmentOrigin,
   publicConnection,
   registerApplication,
   connectExistingApplication,
@@ -41,7 +43,7 @@ const HELP = `paqvilo dataverse — provision schema through Dataverse, then exp
            Report asynchronous alternate-key activation; non-ready is not success.
   audit-lookups --manifest FILE --connection FILE
            Complete auditing on declared custom lookups after relationship creation.
-  scope-solutions --manifest FILE --connection FILE
+  scope-solutions --manifest FILE --connection FILE [--out JOURNAL]
            Narrow declared table roots to explicit subcomponents before exporting.
   export   --connection FILE --solution NAME --out ZIP [--unpack DIRECTORY]
            Export unmanaged solution from Dataverse; optionally unpack using PAC.
@@ -54,123 +56,131 @@ const HELP = `paqvilo dataverse — provision schema through Dataverse, then exp
   data-query   --catalogue FILE --connection FILE [--out REPORT]
                Run paged FetchXML and compare expected rows under this app identity.
 
+All commands accept --json for machine-readable errors. Plans and data reports
+print the full result alongside --out when --json is set.
 Credentials use Windows DPAPI CurrentUser, or an environment-secret reference in a
 connection file. PAC output/tokens are never printed. Registration is not retried
 after an uncertain or partial outcome. Lense/Mirage commands do not provision.
 `;
 
-const [command, ...args] = process.argv.slice(2);
-async function main() {
-  if (!command || ['--help', '-h'].includes(command) || args.some((a) => ['--help', '-h'].includes(a))) {
-    console.log(HELP);
-    return;
+async function validateFileSelections(command, values) {
+  if (command === 'connect') {
+    const [registration, secret] = await Promise.all([
+      fileIdentity(values.registration),
+      fileIdentity(values['secret-file']),
+    ]);
+    if (sameFile(registration, secret)) throw new Error('--registration and --secret-file must be different files');
   }
-  const { values } = parseArgs({
-    args,
-    options: {
-      connection: { type: 'string' },
-      manifest: { type: 'string' },
-      catalogue: { type: 'string' },
-      environment: { type: 'string' },
-      name: { type: 'string' },
-      role: { type: 'string' },
-      out: { type: 'string' },
-      solution: { type: 'string' },
-      unpack: { type: 'string' },
-      json: { type: 'boolean' },
-      registration: { type: 'string' },
-      'secret-file': { type: 'string' },
-      'consume-secret-file': { type: 'boolean' },
-    },
-  });
-  const output = (value) => console.log(JSON.stringify(value, null, 2));
+  if (values.out === undefined) return;
+  const output = await fileIdentity(values.out);
+  for (const key of ['manifest', 'catalogue', 'connection']) {
+    if (values[key] !== undefined && sameFile(output, await fileIdentity(values[key])))
+      throw new Error(`--out must not overwrite --${key}`);
+  }
+}
+
+/* NOSONAR */ function validateCommandValues(command, contract, values) {
+  for (const key of Object.keys(values)) {
+    if (key !== 'help' && key !== 'json' && !contract.allowed.includes(key))
+      throw new Error(`--${key} is not valid for dataverse ${command}`);
+  }
+  if (values.help) return;
+  for (const key of contract.required) {
+    if (!values[key]?.trim()) throw new Error(`--${key} required for dataverse ${command}`);
+  }
+  for (const key of contract.allowed) {
+    if (typeof values[key] === 'string' && !values[key].trim()) throw new Error(`--${key} must not be empty`);
+  }
+  // Match exportSolution's identifier contract before loading credentials or contacting Dataverse.
+  if (command === 'export' && !/^[a-z][a-z0-9_]*$/i.test(values.solution)) throw new Error('Invalid solution name.');
+  if (command === 'register' && values.environment !== undefined) {
+    try {
+      environmentOrigin(values.environment);
+    } catch {
+      throw new Error('--environment must be an HTTPS organisation origin without credentials, query or path');
+    }
+  }
+}
+
+function executeEarlyCommand(command, values, output) {
   if (command === 'register') {
-    output(
-      await registerApplication({
-        connectionFile: values.connection,
-        environment: values.environment,
-        applicationName: values.name,
-        role: values.role,
-      }),
-    );
-    return;
+    return registerApplication({
+      connectionFile: values.connection,
+      environment: values.environment,
+      applicationName: values.name,
+      role: values.role,
+    }).then(output);
   }
   if (command === 'connect') {
-    output(
-      await connectExistingApplication({
-        registrationFile: values.registration,
-        secretFile: values['secret-file'],
-        connectionFile: values.connection,
-        role: values.role,
-        consumeSecretFile: values['consume-secret-file'],
-      }),
-    );
-    return;
+    return connectExistingApplication({
+      registrationFile: values.registration,
+      secretFile: values['secret-file'],
+      connectionFile: values.connection,
+      role: values.role,
+      consumeSecretFile: values['consume-secret-file'],
+    }).then(output);
   }
-  if (command === 'inspect') {
-    if (!values.connection) throw new Error('--connection required');
-    output(publicConnection(JSON.parse(await fs.readFile(values.connection, 'utf8'))));
-    return;
-  }
-  let connection, client;
-  if (values.connection) {
-    connection = await loadConnection(values.connection);
-    client = connectedClient(connection);
-  }
-  if (command === 'verify') {
-    if (!client) throw new Error('--connection required');
-    output(await client.verify(connection.organisationId));
-    return;
-  }
-  if (['data-plan', 'data-apply', 'data-compare', 'data-query'].includes(command)) {
-    if (!values.catalogue) throw new Error('--catalogue required');
-    const catalogue = await readCatalogue(values.catalogue);
-    if (client) await client.verify(connection.organisationId);
-    if (command !== 'data-plan' && !client) throw new Error('--connection required');
-    if (command === 'data-apply') {
-      const journalFile = values.out ?? path.resolve('.paqvilo/dataverse', `data-apply-${randomUUID()}.json`);
-      const result = await applyData(catalogue, {
-        client,
-        expectedOrganisationId: connection.organisationId,
-        journalFile,
-      });
-      output({ state: result.state, steps: result.entries.length, journalFile: path.resolve(journalFile) });
-      return;
+  if (command !== 'inspect') return null;
+  return inspectDataverseConnection(values, output);
+}
+
+async function inspectDataverseConnection(values, output) {
+  if (!values.connection) throw new Error('--connection required');
+  const details = publicConnection(JSON.parse(await fs.readFile(values.connection, 'utf8')));
+  if (details.environmentUrl != null) {
+    try {
+      const url = new URL(details.environmentUrl);
+      if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Invalid environment URL protocol');
+      details.environmentUrl = `${url.origin}${url.pathname === '/' ? '' : url.pathname}${url.search ? '?[redacted]' : ''}`;
+    } catch {
+      throw new Error('Connection environmentUrl is invalid.');
     }
-    const result =
-      command === 'data-plan'
-        ? await planData(catalogue, { client })
-        : command === 'data-compare'
-          ? await compareData(catalogue, { client })
-          : await runDataQueries(catalogue, { client });
-    if (values.out) await privateJson(values.out, result);
-    output(
-      values.out && !values.json
-        ? {
-            datasetId: result.datasetId,
-            version: result.version,
-            mode: result.mode,
-            summary: result.summary,
-            passed: result.passed,
-            queries: result.results?.length,
-            savedTo: path.resolve(values.out),
-          }
-        : result,
-    );
-    if (result.passed === false) process.exitCode = 2;
+  }
+  output(details);
+}
+
+function executeDataCommand(command, values, connection, client, output) {
+  if (!['data-plan', 'data-apply', 'data-compare', 'data-query'].includes(command)) return null;
+  return executeDataCommandBody(command, values, connection, client, output);
+}
+
+async function executeDataCommandBody(command, values, connection, client, output) {
+  if (!values.catalogue) throw new Error('--catalogue required');
+  const catalogue = await readCatalogue(values.catalogue);
+  if (client) await client.verify(connection.organisationId);
+  if (command !== 'data-plan' && !client) throw new Error('--connection required');
+  if (command === 'data-apply') {
+    const journalFile = values.out ?? path.resolve('.paqvilo/dataverse', `data-apply-${randomUUID()}.json`);
+    const result = await applyData(catalogue, {
+      client,
+      expectedOrganisationId: connection.organisationId,
+      journalFile,
+    });
+    output({ state: result.state, steps: result.entries.length, journalFile: path.resolve(journalFile) });
     return;
   }
-  if (command === 'export') {
-    if (!client || !values.solution || !values.out)
-      throw new Error('Export requires --connection, --solution and --out.');
-    await client.verify(connection.organisationId);
-    output(
-      await exportSolution({ client, solutionName: values.solution, zipFile: values.out, unpackFolder: values.unpack }),
-    );
-    return;
-  }
-  if (!['plan', 'apply', 'publish', 'keys', 'audit-lookups', 'scope-solutions'].includes(command))
-    throw new Error('Unknown dataverse command; run paqvilo dataverse --help.');
+  let result;
+  if (command === 'data-plan') result = await planData(catalogue, { client });
+  else if (command === 'data-compare') result = await compareData(catalogue, { client });
+  else result = await runDataQueries(catalogue, { client });
+  if (values.out) await privateJson(values.out, result);
+  output(
+    values.out && !values.json
+      ? {
+          datasetId: result.datasetId,
+          version: result.version,
+          mode: result.mode,
+          summary: result.summary,
+          passed: result.passed,
+          queries: result.results?.length,
+          savedTo: path.resolve(values.out),
+        }
+      : result,
+  );
+  if (result.passed === false) process.exitCode = 2;
+}
+
+async function executeManifestCommand(command, values, connection, client, output) {
   if (!values.manifest) throw new Error('--manifest required');
   const manifest = await readManifest(path.resolve(values.manifest));
   if (command === 'plan') {
@@ -214,38 +224,135 @@ async function main() {
     return;
   }
   if (command === 'scope-solutions') {
-    const journalFile = values.out ?? path.resolve('.paqvilo/dataverse', `solution-scoping-${randomUUID()}.json`),
-      journal = { startedAt: new Date().toISOString(), state: 'Running', entries: [] };
-    await privateJson(journalFile, journal, true);
-    try {
-      const result = await scopeSolutionRoots(manifest, client, {
-        onProgress: async (event) => {
-          journal.entries.push(event);
-          await privateJson(journalFile, journal);
-        },
-      });
-      journal.state = 'Completed';
-      journal.result = result;
-      await privateJson(journalFile, journal);
-      output({ ...result, journalFile: path.resolve(journalFile) });
-    } catch (error) {
-      journal.state = 'Interrupted';
-      journal.error = { code: error.code ?? 'SCOPING_STOPPED', message: error.message };
-      await privateJson(journalFile, journal);
-      throw error;
-    }
+    await executeSolutionScoping(manifest, values, client, output);
     return;
   }
-  if (command === 'publish') output(await publishManifest(manifest, client));
-  else {
-    const result = await checkKeys(manifest, client);
+  return publishOrCheckKeys(command, manifest, client, output);
+}
+
+function publishOrCheckKeys(command, manifest, client, output) {
+  if (command === 'publish') return publishManifest(manifest, client).then(output);
+  return checkKeys(manifest, client).then((result) => {
     output(result);
     if (!result.ready) process.exitCode = 2;
+  });
+}
+
+async function executeSolutionScoping(manifest, values, client, output) {
+  const journalFile = values.out ?? path.resolve('.paqvilo/dataverse', `solution-scoping-${randomUUID()}.json`),
+    journal = { startedAt: new Date().toISOString(), state: 'Running', entries: [] };
+  await privateJson(journalFile, journal, true);
+  try {
+    const result = await scopeSolutionRoots(manifest, client, {
+      onProgress: async (event) => {
+        journal.entries.push(event);
+        await privateJson(journalFile, journal);
+      },
+    });
+    journal.state = 'Completed';
+    journal.result = result;
+    await privateJson(journalFile, journal);
+    output({ ...result, journalFile: path.resolve(journalFile) });
+  } catch (error) {
+    journal.state = 'Interrupted';
+    journal.error = { code: error.code ?? 'SCOPING_STOPPED', message: error.message };
+    await privateJson(journalFile, journal);
+    throw error;
   }
 }
-main().catch((error) => {
-  console.error(
-    JSON.stringify({ ok: false, error: { code: error.code ?? 'DATAVERSE_COMMAND_FAILED', message: error.message } }),
-  );
+
+const [command, ...args] = process.argv.slice(2);
+async function main() {
+  if (command === undefined || ['--help', '-h'].includes(command)) {
+    console.log(HELP);
+    return;
+  }
+  const commands = {
+    register: { allowed: ['connection', 'name', 'role', 'environment'], required: ['connection', 'name'] },
+    connect: {
+      allowed: ['registration', 'secret-file', 'connection', 'role', 'consume-secret-file'],
+      required: ['registration', 'secret-file', 'connection'],
+    },
+    inspect: { allowed: ['connection'], required: ['connection'] },
+    verify: { allowed: ['connection'], required: ['connection'] },
+    plan: { allowed: ['manifest', 'connection', 'out', 'json'], required: ['manifest'] },
+    apply: { allowed: ['manifest', 'connection', 'out'], required: ['manifest', 'connection'] },
+    publish: { allowed: ['manifest', 'connection'], required: ['manifest', 'connection'] },
+    keys: { allowed: ['manifest', 'connection'], required: ['manifest', 'connection'] },
+    'audit-lookups': { allowed: ['manifest', 'connection'], required: ['manifest', 'connection'] },
+    'scope-solutions': { allowed: ['manifest', 'connection', 'out'], required: ['manifest', 'connection'] },
+    export: { allowed: ['connection', 'solution', 'out', 'unpack'], required: ['connection', 'solution', 'out'] },
+    'data-plan': { allowed: ['catalogue', 'connection', 'out', 'json'], required: ['catalogue'] },
+    'data-apply': { allowed: ['catalogue', 'connection', 'out'], required: ['catalogue', 'connection'] },
+    'data-compare': { allowed: ['catalogue', 'connection', 'out', 'json'], required: ['catalogue', 'connection'] },
+    'data-query': { allowed: ['catalogue', 'connection', 'out', 'json'], required: ['catalogue', 'connection'] },
+  };
+  const contract = Object.hasOwn(commands, command) ? commands[command] : null;
+  if (!contract) throw new Error('Unknown dataverse command; run paqvilo dataverse --help.');
+  const { values } = parseArgs({
+    args,
+    options: {
+      connection: { type: 'string' },
+      manifest: { type: 'string' },
+      catalogue: { type: 'string' },
+      environment: { type: 'string' },
+      name: { type: 'string' },
+      role: { type: 'string' },
+      out: { type: 'string' },
+      solution: { type: 'string' },
+      unpack: { type: 'string' },
+      json: { type: 'boolean' },
+      registration: { type: 'string' },
+      'secret-file': { type: 'string' },
+      'consume-secret-file': { type: 'boolean' },
+      help: { type: 'boolean', short: 'h' },
+    },
+  });
+  validateCommandValues(command, contract, values);
+  if (values.help) {
+    console.log(HELP);
+    return;
+  }
+  await validateFileSelections(command, values);
+  const output = (value) => console.log(JSON.stringify(value, null, 2));
+  const earlyCommand = executeEarlyCommand(command, values, output);
+  /* NOSONAR: optional pending promise, awaited only when set */ if (earlyCommand) {
+    await earlyCommand;
+    return;
+  }
+  let connection, client;
+  if (values.connection) {
+    connection = await loadConnection(values.connection);
+    client = connectedClient(connection);
+  }
+  if (command === 'verify') {
+    if (!client) throw new Error('--connection required');
+    output(await client.verify(connection.organisationId));
+    return;
+  }
+  const dataCommand = executeDataCommand(command, values, connection, client, output);
+  /* NOSONAR: optional pending promise, awaited only when set */ if (dataCommand) {
+    await dataCommand;
+    return;
+  }
+  if (command === 'export') {
+    if (!client || !values.solution || !values.out)
+      throw new Error('Export requires --connection, --solution and --out.');
+    await client.verify(connection.organisationId);
+    output(
+      await exportSolution({ client, solutionName: values.solution, zipFile: values.out, unpackFolder: values.unpack }),
+    );
+    return;
+  }
+  await executeManifestCommand(command, values, connection, client, output);
+}
+/* NOSONAR: module-level promise chain must not block evaluation */ main().catch((error) => {
+  // JSON parser diagnostics can include credential-file contents.
+  const message = error instanceof SyntaxError ? 'Invalid JSON input.' : error.message.replace(/[\r\n]+/g, ' ');
+  const terminator = args.indexOf('--');
+  const json = args.slice(0, terminator < 0 ? args.length : terminator).includes('--json');
+  if (json)
+    console.log(JSON.stringify({ ok: false, error: { code: error.code ?? 'DATAVERSE_COMMAND_FAILED', message } }));
+  else console.error(`paqvilo dataverse: ${message}`);
   process.exitCode = 1;
 });

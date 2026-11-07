@@ -24,7 +24,7 @@ import { resolvePortalIdentity } from '../lib/permissions.mjs';
 import { importPortal } from '../lib/importer.mjs';
 import { serverLogicUnsupported } from '../lib/server-logic.mjs';
 import { buildSolutionSchema, scanSolutionSources } from '../lib/solution-schema.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const G = (n) => `00000000-0000-0000-0000-${String(n).padStart(12, '0')}`;
 const utc = (text) => Date.parse(`${text}T00:00:00Z`);
@@ -94,7 +94,7 @@ const fixture = (settings = {}) => ({
 });
 
 async function start(t, { settings = SETTINGS, state = fixture() } = {}) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-webapi-ecosystem-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-webapi-ecosystem-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(path.join(directory, 'website.yml'), 'adx_websiteid: site\nadx_name: Ecosystem\n');
   await fs.writeFile(path.join(directory, 'sitesetting.yml'), settingsYaml(settings));
@@ -512,7 +512,7 @@ test('@odata.bind accepts only the exact navigation property name', async (t) =>
 });
 
 test('role-less multi-table relationships get the documented <lookup>_<table> navigation names', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-solution-nav-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-solution-nav-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const relationship = (name, referencing, referenced, attribute) => `<EntityRelationship Name="${name}">
     <EntityRelationshipType>OneToMany</EntityRelationshipType>
@@ -609,7 +609,7 @@ test('platform change diagnostics name enhanced authorization, list feeds, unsec
 });
 
 test('exports surface the platform changes as portal diagnostics', async (t) => {
-  const standard = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-platform-changes-'));
+  const standard = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-platform-changes-'));
   t.after(() => fs.rm(standard, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_websiteid: 4f1d9b2a-7c3e-4a5b-9d6e-1a2b3c4d5e6f\nadx_name: Changes',
@@ -633,7 +633,7 @@ test('exports surface the platform changes as portal diagnostics', async (t) => 
     3,
   );
   // The enhanced site record carries enhancedauthorization (powerpagesite choices 0-3).
-  const enhanced = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-platform-changes-enhanced-'));
+  const enhanced = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-platform-changes-enhanced-'));
   t.after(() => fs.rm(enhanced, { recursive: true, force: true }));
   const site = (value) =>
     `<powerpagesites><powerpagesite powerpagesiteid="dddddddd-dddd-4ddd-8ddd-dddddddddddd"><content>{}</content><name>Enhanced</name>${value == null ? '' : `<enhancedauthorization>${value}</enhancedauthorization>`}<statecode>0</statecode></powerpagesite></powerpagesites>`;
@@ -696,7 +696,7 @@ test("web roles of the persona's parent account are reported, not applied", () =
 
 test('a list with Enable Table Permissions off still reads under table permissions', async (t) => {
   const SITE = '4f1d9b2a-7c3e-4a5b-9d6e-1a2b3c4d5e6f';
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-list-permissions-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-list-permissions-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
     'website.yml': `adx_websiteid: ${SITE}\nadx_name: Lists`,

@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own simulator administration, CLI, configuration and runtime behaviour
 // Request context (lib/request-context.mjs): one context per call in the organization ALS. The client correlation id of a
 // Web API call reaches the committed event and the asynchronous web hook payload; a child context goes one level deeper.
 import test from 'node:test';
@@ -10,19 +11,12 @@ import { DataStore, emptyState } from '../lib/data.mjs';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
-import { overlayRegisteredSteps } from '../lib/dataverse-plugin-registration.mjs';
 import { webhookDelivery } from '../lib/dataverse-webhooks.mjs';
-import { createAsyncPluginRunner } from '../lib/plugin-async.mjs';
-import {
-  pluginCatalogue,
-  pluginPhaseRequiresCheckpoint,
-  pluginStepMatchesEntity,
-  runPluginPhase,
-} from '../lib/exported-plugins.mjs';
+import { wireRegisteredSteps } from './support/service-endpoint-pipeline.mjs';
 import { createRequestContext, currentRequest, runWithRequest } from '../lib/request-context.mjs';
 import { ownsChange, runOwned } from '../lib/dataverse-transaction-context.mjs';
 import { fixedClock, sequentialIds } from '../testing.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const APP_ID = '77777777-7777-4777-8777-777777777771';
 const ENDPOINT = '77777777-7777-4777-8777-777777777772';
@@ -45,13 +39,18 @@ createServer((req, res) => {
 `;
 
 async function receiver(t) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'request-context-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'request-context-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   await fs.writeFile(path.join(dir, 'receiver.mjs'), RECEIVER);
   const child = childProcess.spawn(process.execPath, [path.join(dir, 'receiver.mjs')], {
     stdio: ['ignore', 'pipe', 'inherit'],
   });
-  ownedFixture(t).add(() => child.kill());
+  // Wait for the exit, so the directory removal that follows never races a still-running receiver.
+  const exited = new Promise((resolve) => child.once('exit', resolve));
+  ownedFixture(t).add(async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill();
+    await exited;
+  });
   const port = await new Promise((resolve, reject) => {
     let output = '';
     child.stdout.on('data', (chunk) => {
@@ -94,6 +93,7 @@ test('a child context keeps the correlation, records its parent and goes one lev
   });
 });
 
+// @test-kind unproven: local model of x-ms-correlation-request-id reaching the committed event and web hook CorrelationId; no native capture cited
 test('x-ms-correlation-request-id reaches the committed event and the asynchronous web hook payload', async (t) => {
   const hook = await receiver(t);
   const secretVar = `PAQVILO_REQUEST_CONTEXT_SECRET_${process.pid}`;
@@ -163,37 +163,7 @@ test('x-ms-correlation-request-id reaches the committed event and the asynchrono
   );
   const webhooks = webhookDelivery(store),
     diagnostics = [];
-  const steps = () =>
-    pluginCatalogue({
-      plugins: overlayRegisteredSteps({ steps: [], types: [], assemblies: [] }, store),
-      handlers: new Map(),
-    });
-  store.setPluginPipeline(
-    (context) =>
-      runPluginPhase({
-        ...context,
-        store,
-        items: steps(),
-        handlers: new Map(),
-        webhooks,
-        diagnostic: (entry) => diagnostics.push(entry),
-      }),
-    ({ entity, operation }) =>
-      steps().some(
-        (item) =>
-          item.enabled && pluginStepMatchesEntity(item, entity) && String(item.message).toLowerCase() === operation,
-      ),
-    (context) => pluginPhaseRequiresCheckpoint(steps(), context),
-  );
-  const runner = createAsyncPluginRunner({
-    store,
-    items: steps,
-    handlers: new Map(),
-    runtimes: new Map(),
-    webhooks,
-    diagnostic: (entry) => diagnostics.push(entry),
-    systemJobs: () => true,
-  });
+  const runner = wireRegisteredSteps(store, webhooks, (entry) => diagnostics.push(entry));
   t.after(async () => {
     await runner.close();
     await server.close();

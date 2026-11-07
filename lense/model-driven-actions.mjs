@@ -324,30 +324,50 @@ export function validateModelDrivenAction(id, params = {}) {
   for (const input of action.inputs) {
     const value = params[input.name] ?? input.default;
     if (value === undefined && !input.required) continue;
-    if (input.type === 'table') {
-      if (typeof value !== 'string' || !/^[a-z][a-z0-9_]{0,127}$/i.test(value))
-        throw new Error('Enter a table logical name.');
-      result[input.name] = value.toLowerCase();
-    } else if (input.type === 'guid') {
-      if (
-        typeof value !== 'string' ||
-        !/^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\})$/i.test(
-          value,
-        )
-      )
-        throw new Error('Enter a valid record GUID.');
-      result[input.name] = value.replace(/[{}]/g, '').toLowerCase();
-    } else if (input.type === 'boolean') {
-      if (typeof value !== 'boolean') throw new Error('Action switches must be Boolean values.');
-      result[input.name] = value;
-    } else if (input.type === 'text') {
-      // eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
-      if (typeof value !== 'string' || value.length > (input.maxLength ?? 200) || /[\x00-\x1f\x7f]/.test(value))
-        throw new Error('Enter a bounded text value without control characters.');
-      result[input.name] = value;
-    }
+    assignValidatedActionInput(result, input, value);
   }
   return { action: action.id, params: result };
+}
+
+function assignValidatedActionInput(result, input, value) {
+  if (input.type === 'table') {
+    result[input.name] = validateTableInput(value);
+  } else if (input.type === 'guid') {
+    result[input.name] = validateGuidInput(value);
+  } else if (input.type === 'boolean') {
+    result[input.name] = validateBooleanInput(value);
+  } else if (input.type === 'text') {
+    result[input.name] = validateTextInput(value, input.maxLength);
+  }
+}
+
+function validateTableInput(value) {
+  if (typeof value !== 'string' || !/^[a-z][a-z0-9_]{0,127}$/i.test(value))
+    throw new Error('Enter a table logical name.');
+  return value.toLowerCase();
+}
+
+function validateGuidInput(value) {
+  if (
+    typeof value !== 'string' ||
+    /* NOSONAR */ !/^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\})$/i.test(
+      value,
+    )
+  )
+    throw new Error('Enter a valid record GUID.');
+  return value.replace(/[{}]/g, '').toLowerCase();
+}
+
+function validateBooleanInput(value) {
+  if (typeof value !== 'boolean') throw new Error('Action switches must be Boolean values.');
+  return value;
+}
+
+function validateTextInput(value, maxLength) {
+  // eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
+  if (typeof value !== 'string' || value.length > (maxLength ?? 200) || /[\x00-\x1f\x7f]/.test(value))
+    throw new Error('Enter a bounded text value without control characters.');
+  return value;
 }
 
 export function modelDrivenDiagnosticUrl(value, action) {

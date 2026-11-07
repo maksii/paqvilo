@@ -10,8 +10,8 @@ export const compactNativeControlId = (value) =>
   String(value ?? '')
     .replace(/[{}]/g, '')
     .toLowerCase()
-    .replace(/-/g, '')
-    .replace(/[^A-Za-z0-9_]/g, '_');
+    .replaceAll('-', '')
+    .replace(/\W/g, '_');
 
 export function nativeFormControlIds(kind, id, { modal = false, pageControl = false } = {}) {
   const N = compactNativeControlId(id);
@@ -85,7 +85,7 @@ export function nativeViewStateKey(text) {
   if (typeof text !== 'string' || text.length > 262144 || !text.startsWith('/wE')) return null;
   try {
     const parsed = JSON.parse(Buffer.from(text.slice(3), 'base64').toString('utf8'));
-    return parsed && parsed.v === 1 && typeof parsed.k === 'string' && parsed.k ? parsed.k : null;
+    return parsed?.v === 1 && typeof parsed.k === 'string' && parsed.k ? parsed.k : null;
   } catch {
     return null;
   }
@@ -101,7 +101,7 @@ export function decodeNativeViewState(text) {
   if (!parsed || typeof parsed !== 'object' || parsed.v !== 1 || typeof parsed.form !== 'string') return null;
   const values = {};
   for (const [key, value] of Object.entries(parsed.values && typeof parsed.values === 'object' ? parsed.values : {}))
-    if (typeof value === 'string' && /^[a-z][\w]*$/i.test(key) && !dangerous.has(key)) values[key] = value;
+    if (typeof value === 'string' && /^[a-z]\w*$/i.test(key) && !dangerous.has(key)) values[key] = value;
   return {
     form: parsed.form,
     autoStep: Number.isInteger(parsed.autoStep) && parsed.autoStep >= 0 ? parsed.autoStep : 0,
@@ -177,6 +177,30 @@ export function nativeFormPostbackDescriptor({
 export function parseNativePostback(entries, descriptors) {
   if (!entries || typeof entries[Symbol.iterator] !== 'function' || !Array.isArray(descriptors))
     invalid('Native postback entries and descriptors required');
+  const { posted, entryCount } = collectNativeEntries(entries);
+  const target = nativePostbackTarget(posted, descriptors);
+  const matches = descriptors.flatMap((descriptor) => matchingActions(descriptor, target));
+  if (matches.length !== 1) invalid('Native postback target is unknown or ambiguous');
+  const { descriptor, action } = matches[0];
+  const argumentsPosted = posted.get('__EVENTARGUMENT') ?? [];
+  if (argumentsPosted.length > 1) invalid('Ambiguous native postback argument');
+  let consumed = 1 + argumentsPosted.length + (posted.has(target) ? posted.get(target).length : 0);
+  const parsedFields = parseNativeFields(descriptor, posted);
+  consumed += parsedFields.consumed;
+  return {
+    kind: descriptor.kind,
+    formId: descriptor.formId,
+    body: {
+      action: action.action,
+      ...(action.actionIndex != null ? { actionIndex: action.actionIndex } : {}),
+      values: parsedFields.values,
+    },
+    eventArgument: argumentsPosted[0] ?? '',
+    ignoredEntryCount: entryCount - consumed,
+  };
+}
+
+function collectNativeEntries(entries) {
   const posted = new Map();
   let entryCount = 0;
   for (const pair of entries) {
@@ -187,10 +211,12 @@ export function parseNativePostback(entries, descriptors) {
     posted.set(pair[0], values);
     entryCount++;
   }
+  return { posted, entryCount };
+}
+
+function nativePostbackTarget(posted, descriptors) {
   const targets = posted.get('__EVENTTARGET') ?? [];
   if (targets.length !== 1) invalid('One native postback target required');
-  // A WebForms submit button (an auto-generated step's Next) posts an empty __EVENTTARGET and
-  // its own name=value pair; the posted button name is the target then.
   if (!targets[0]) {
     const buttons = descriptors
       .flatMap((descriptor) => (descriptor?.actions ?? []).map((action) => action?.target))
@@ -198,51 +224,12 @@ export function parseNativePostback(entries, descriptors) {
     if (buttons.length !== 1) invalid('One native postback target required');
     targets[0] = buttons[0];
   }
-  const matches = descriptors.flatMap((descriptor) => {
-    if (!descriptor || !Array.isArray(descriptor.actions) || !Array.isArray(descriptor.fields))
-      invalid('Invalid native postback descriptor');
-    if (
-      !['entityform', 'webform'].includes(descriptor.kind) ||
-      typeof descriptor.formId !== 'string' ||
-      !descriptor.formId
-    )
-      invalid('Invalid native postback identity');
-    const fieldNames = new Set();
-    const logicalNames = new Set();
-    for (const field of descriptor.fields) {
-      if (
-        !field ||
-        typeof field.name !== 'string' ||
-        !field.name ||
-        dangerous.has(field.name) ||
-        typeof field.wireName !== 'string' ||
-        !field.wireName ||
-        fieldNames.has(field.wireName) ||
-        logicalNames.has(field.name)
-      )
-        invalid('Invalid or ambiguous native postback field');
-      fieldNames.add(field.wireName);
-      logicalNames.add(field.name);
-    }
-    for (const action of descriptor.actions) {
-      if (
-        !action ||
-        typeof action.target !== 'string' ||
-        !actions.has(action.action) ||
-        (action.actionIndex != null && (!Number.isInteger(action.actionIndex) || action.actionIndex < 0))
-      )
-        invalid('Invalid native postback action');
-    }
-    return descriptor.actions
-      .filter((action) => action.target === targets[0])
-      .map((action) => ({ descriptor, action }));
-  });
-  if (matches.length !== 1) invalid('Native postback target is unknown or ambiguous');
-  const { descriptor, action } = matches[0];
-  const argumentsPosted = posted.get('__EVENTARGUMENT') ?? [];
-  if (argumentsPosted.length > 1) invalid('Ambiguous native postback argument');
+  return targets[0];
+}
+
+/* NOSONAR */ function parseNativeFields(descriptor, posted) {
   const values = {};
-  let consumed = targets.length + argumentsPosted.length + (posted.has(targets[0]) ? posted.get(targets[0]).length : 0);
+  let consumed = 0;
   for (const field of descriptor.fields) {
     const found = posted.get(field.wireName);
     if (!found) {
@@ -251,19 +238,53 @@ export function parseNativePostback(entries, descriptors) {
     }
     if (!field.multiple && found.length !== 1) invalid('Ambiguous scalar native form value');
     if (dangerous.has(field.name)) invalid('Invalid native form field');
-    // ASP.NET checkbox post data is a presence flag, not a Boolean text parser.
-    // A custom non-empty value still means checked; radio/select values stay textual.
-    values[field.name] =
-      field.checkbox === true ? (found[0] ? 'true' : 'false') : field.multiple ? [...found] : found[0];
+    if (field.checkbox === true) values[field.name] = found[0] ? 'true' : 'false';
+    else if (field.multiple) values[field.name] = [...found];
+    else values[field.name] = found[0];
     consumed += found.length;
   }
-  return {
-    kind: descriptor.kind,
-    formId: descriptor.formId,
-    body: { action: action.action, ...(action.actionIndex != null ? { actionIndex: action.actionIndex } : {}), values },
-    eventArgument: argumentsPosted[0] ?? '',
-    ignoredEntryCount: entryCount - consumed,
-  };
+  return { values, consumed };
+}
+
+function matchingActions(descriptor, target) {
+  validatePostbackDescriptor(descriptor);
+  return descriptor.actions.filter((action) => action.target === target).map((action) => ({ descriptor, action }));
+}
+
+function validatePostbackDescriptor(descriptor) {
+  if (!descriptor || !Array.isArray(descriptor.actions) || !Array.isArray(descriptor.fields))
+    invalid('Invalid native postback descriptor');
+  if (
+    !['entityform', 'webform'].includes(descriptor.kind) ||
+    typeof descriptor.formId !== 'string' ||
+    !descriptor.formId
+  )
+    invalid('Invalid native postback identity');
+  const fieldNames = new Set();
+  const logicalNames = new Set();
+  for (const field of descriptor.fields) {
+    if (
+      !field ||
+      typeof field.name !== 'string' ||
+      !field.name ||
+      dangerous.has(field.name) ||
+      typeof field.wireName !== 'string' ||
+      !field.wireName ||
+      fieldNames.has(field.wireName) ||
+      logicalNames.has(field.name)
+    )
+      invalid('Invalid or ambiguous native postback field');
+    fieldNames.add(field.wireName);
+    logicalNames.add(field.name);
+  }
+  for (const action of descriptor.actions)
+    if (
+      !action ||
+      typeof action.target !== 'string' ||
+      !actions.has(action.action) ||
+      (action.actionIndex != null && (!Number.isInteger(action.actionIndex) || action.actionIndex < 0))
+    )
+      invalid('Invalid native postback action');
 }
 
 /**

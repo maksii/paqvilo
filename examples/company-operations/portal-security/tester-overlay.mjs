@@ -66,13 +66,29 @@ export function buildTesterOverlay(
   };
 }
 
-export function buildStressTesterOverlay(catalogue, baseline, { sourcePersona = 'P-STRESS' } = {}) {
-  const overlay = structuredClone(baseline),
-    actor = overlay.personas[0],
-    sourceActor = catalogue.personas.find((p) => p.key === sourcePersona),
-    rows = new Map(catalogue.records.map((r) => [r.key, r]));
-  if (!sourceActor?.stress) throw new Error('Source must be the authored stress persona');
-  overlay.temporaryStress = true;
+function copyStressRecord(source, actor, rows, replacements, overlay) {
+  const row = structuredClone(source);
+  row.key = replacements.get(source.key);
+  row.id = componentId('private-actual-stress:' + actor.contactId + ':' + row.key);
+  row.fields.pqvd_name = 'Authorized runtime stress ' + row.table + ' ' + row.key.split('-').at(-1);
+  for (const field of ['pqvd_number', 'pqvd_code', 'pqvd_contractreference'])
+    if (field in row.fields)
+      row.fields[field] =
+        'CO-T-' +
+        componentId(actor.contactId + ':' + row.key)
+          .replaceAll('-', '')
+          .slice(0, 28);
+  for (const [field, target] of Object.entries(row.refs))
+    if (replacements.has(target)) row.refs[field] = replacements.get(target);
+  if (row.table === 'pqvd_orgcontact') {
+    row.fields.pqvd_displayname = 'Authorized runtime tester';
+    row.fields.pqvd_workemail = 'runtime-tester@people.example.invalid';
+  }
+  rows.set(row.key, row);
+  overlay.records.push(row);
+}
+
+function copyStressRecords(catalogue, overlay, actor, sourceActor, rows) {
   const replacements = new Map([[sourceActor.key, actor.key]]),
     members = catalogue.records.filter(
       (r) => r.table === 'pqvd_orgcontact' && r.refs.pqvd_contactid === sourceActor.key,
@@ -85,27 +101,58 @@ export function buildStressTesterOverlay(catalogue, baseline, { sourcePersona = 
     ),
     copyRows = [...members, ...employment, ...terms];
   for (const row of copyRows) replacements.set(row.key, row.key.replaceAll(sourceActor.key, actor.key));
-  for (const source of copyRows) {
-    const row = structuredClone(source);
-    row.key = replacements.get(source.key);
-    row.id = componentId('private-actual-stress:' + actor.contactId + ':' + row.key);
-    row.fields.pqvd_name = 'Authorized runtime stress ' + row.table + ' ' + row.key.split('-').at(-1);
-    for (const field of ['pqvd_number', 'pqvd_code', 'pqvd_contractreference'])
-      if (field in row.fields)
-        row.fields[field] =
-          'CO-T-' +
-          componentId(actor.contactId + ':' + row.key)
-            .replaceAll('-', '')
-            .slice(0, 28);
-    for (const [field, target] of Object.entries(row.refs))
-      if (replacements.has(target)) row.refs[field] = replacements.get(target);
-    if (row.table === 'pqvd_orgcontact') {
-      row.fields.pqvd_displayname = 'Authorized runtime tester';
-      row.fields.pqvd_workemail = 'runtime-tester@people.example.invalid';
-    }
-    rows.set(row.key, row);
-    overlay.records.push(row);
+  for (const source of copyRows) copyStressRecord(source, actor, rows, replacements, overlay);
+  return { replacements, members, employment };
+}
+
+function copyStressGrantAssociations(catalogue, overlay, key, row, role, { replacements, members, employment }) {
+  for (const association of catalogue.associations.filter((a) => a.from === key)) {
+    const copy = structuredClone(association);
+    copy.from = row.key;
+    copy.to = copy.to.map((k) => replacements.get(k) ?? k);
+    if (copy.relationship === 'pqvd_access_orgcontacts' && ['EMPLOYEE', 'CONTRACTOR', 'TEAMLEADER'].includes(role))
+      copy.to = [...new Set([...association.to, ...members.map((m) => replacements.get(m.key))])];
+    if (copy.relationship === 'pqvd_access_employments' && role === 'TEAMLEADER')
+      copy.to = [...new Set([...association.to, ...employment.map((e) => replacements.get(e.key))])];
+    overlay.associations.push(copy);
   }
+}
+
+function copyStressGrant(
+  catalogue,
+  overlay,
+  source,
+  role,
+  { actor, rows, replacements, members, employment, grants, newGrantKeys },
+) {
+  const row = structuredClone(source);
+  row.key = `G-${actor.key}-STRESS-${role}`;
+  row.id = componentId('private-actual-stress:' + actor.contactId + ':' + row.key);
+  row.fields.pqvd_name = 'Authorized runtime stress ' + role;
+  row.fields.pqvd_number = `CO-T-${actor.contactId.replaceAll('-', '').slice(0, 16)}-${role}`;
+  row.fields.pqvd_reason = 'Temporary authorized runtime query-budget/collision persona; fixture original unchanged';
+  for (const [field, target] of Object.entries(row.refs))
+    if (replacements.has(target)) row.refs[field] = replacements.get(target);
+  if (source.fields.pqvd_scopekey.startsWith('ENG-'))
+    row.fields.pqvd_scopekey = 'ENG-' + rows.get(row.refs.pqvd_employmentid).id.replaceAll('-', '');
+  overlay.records.push(row);
+  grants.push(row.key);
+  newGrantKeys.push(row.key);
+  copyStressGrantAssociations(catalogue, overlay, source.key, row, role, { replacements, members, employment });
+}
+
+function temporaryStressRecordKeys(records, baselineRecords) {
+  return records.filter((r) => !baselineRecords.some((b) => b.key === r.key)).map((r) => r.key);
+}
+
+export function buildStressTesterOverlay(catalogue, baseline, { sourcePersona = 'P-STRESS' } = {}) {
+  const overlay = structuredClone(baseline),
+    actor = overlay.personas[0],
+    sourceActor = catalogue.personas.find((p) => p.key === sourcePersona),
+    rows = new Map(catalogue.records.map((r) => [r.key, r]));
+  if (!sourceActor?.stress) throw new Error('Source must be the authored stress persona');
+  overlay.temporaryStress = true;
+  const { replacements, members, employment } = copyStressRecords(catalogue, overlay, actor, sourceActor, rows);
   const newGrantKeys = [],
     grants = [];
   for (const key of sourceActor.grants) {
@@ -115,36 +162,20 @@ export function buildStressTesterOverlay(catalogue, baseline, { sourcePersona = 
       grants.push(baseline.records.find((r) => r.table === 'pqvd_accesspermission').key);
       continue;
     }
-    const row = structuredClone(source);
-    row.key = `G-${actor.key}-STRESS-${role}`;
-    row.id = componentId('private-actual-stress:' + actor.contactId + ':' + row.key);
-    row.fields.pqvd_name = 'Authorized runtime stress ' + role;
-    row.fields.pqvd_number = `CO-T-${actor.contactId.replaceAll('-', '').slice(0, 16)}-${role}`;
-    row.fields.pqvd_reason = 'Temporary authorized runtime query-budget/collision persona; fixture original unchanged';
-    for (const [field, target] of Object.entries(row.refs))
-      if (replacements.has(target)) row.refs[field] = replacements.get(target);
-    if (source.fields.pqvd_scopekey.startsWith('ENG-'))
-      row.fields.pqvd_scopekey = 'ENG-' + rows.get(row.refs.pqvd_employmentid).id.replaceAll('-', '');
-    overlay.records.push(row);
-    grants.push(row.key);
-    newGrantKeys.push(row.key);
-    for (const association of catalogue.associations.filter((a) => a.from === key)) {
-      const copy = structuredClone(association);
-      copy.from = row.key;
-      copy.to = copy.to.map((k) => replacements.get(k) ?? k);
-      if (copy.relationship === 'pqvd_access_orgcontacts' && ['EMPLOYEE', 'CONTRACTOR', 'TEAMLEADER'].includes(role))
-        copy.to = [...new Set([...association.to, ...members.map((m) => replacements.get(m.key))])];
-      if (copy.relationship === 'pqvd_access_employments' && role === 'TEAMLEADER')
-        copy.to = [...new Set([...association.to, ...employment.map((e) => replacements.get(e.key))])];
-      overlay.associations.push(copy);
-    }
+    copyStressGrant(catalogue, overlay, source, role, {
+      actor,
+      rows,
+      replacements,
+      members,
+      employment,
+      grants,
+      newGrantKeys,
+    });
   }
   actor.webRoles = [...sourceActor.webRoles];
   actor.grants = grants;
   actor.webRoleVariants = structuredClone(sourceActor.webRoleVariants);
   overlay.provenance.newGrantKeys = newGrantKeys;
-  overlay.provenance.temporaryRecordKeys = overlay.records
-    .filter((r) => !baseline.records.some((b) => b.key === r.key))
-    .map((r) => r.key);
+  overlay.provenance.temporaryRecordKeys = temporaryStressRecordKeys(overlay.records, baseline.records);
   return overlay;
 }

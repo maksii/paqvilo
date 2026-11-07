@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own simulator administration, CLI, configuration and runtime behaviour
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -11,6 +12,7 @@ import { TOOL_OPTIONS, parseToolArgs } from '../tool-options.mjs';
 import { MIRAGE_TOOLS } from '../tool-registry.mjs';
 import { assertProjectOutput } from '../lib/project-output.mjs';
 import { withProcessSlot } from './process-slots.mjs';
+import { settleFileTimes } from './support/file-times.mjs';
 
 const bin = fileURLToPath(new URL('../../bin/paqvilo.mjs', import.meta.url));
 // Resolves with the exit status instead of rejecting, so callers can assert failures too.
@@ -28,7 +30,8 @@ const runMirage = (args, timeout) =>
   );
 
 async function fixture(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-tool-project-'));
+  // The real path: reports name cache and state files as the OS resolves them (8.3 aliases expanded).
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-tool-project-')));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'portal/web-pages/home/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n',
@@ -48,6 +51,8 @@ async function fixture(t) {
 }
 
 test('catalogue reports reuse their project cache and sweep selects the same project state', async (t) => {
+  // The reuse assertions below concern files written moments ago.
+  settleFileTimes(t);
   const { root, config } = await fixture(t);
   const input = await resolveReportInputs({ config, site: 'synthetic' });
   assert.equal(input.cacheFile, path.join(root, '.paqvilo/simulator/synthetic/cache/solution-sources.json'));
@@ -64,6 +69,7 @@ test('catalogue reports reuse their project cache and sweep selects the same pro
   assert.equal(uncached.summary.timings.cache.hits, 0);
 });
 
+// @test-kind contract+security: generated output stays out of the installed package, also through a junction
 test('generated output rejects the installed package and a junction back into it', async (t) => {
   const { root } = await fixture(t);
   const installed = path.join(root, 'node_modules/paqvilo');
@@ -97,6 +103,9 @@ test('catalogue option tables produce registry help accepted by each parser and 
             : 'fixture';
       assert.doesNotThrow(() => parseToolArgs(name, [`--${key}`, ...(definition.type === 'string' ? [value] : [])]));
     }
+    // trace reads a running runtime's /_sim/api/trace, not the catalogue: its parser and help are checked above, and
+    // cli-contract.test.mjs covers its structured errors without a runtime.
+    if (name === 'trace') continue;
     const args = [name, '--config', config, '--json'];
     if (name !== 'portal-matrix') args.push('--site', 'synthetic');
     if (name === 'portal-matrix') args.push('--only', 'import,bootstrap,liquid,webapi');
@@ -131,9 +140,11 @@ test('parity and conformance help name their real required plan options', async 
       ['liquid-conformance', '--suite', missing, '--json'],
     ].map((args) => runMirage(args, 10000)),
   );
-  for (const result of results) {
+  for (const [index, result] of results.entries()) {
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /ENOENT/);
-    assert.doesNotMatch(result.stderr, /Unknown (?:argument|option)|ERR_PARSE_ARGS/);
+    const message = index === 1 ? JSON.parse(result.stdout).error.message : result.stderr;
+    if (index === 1) assert.equal(result.stderr, '');
+    assert.match(message, /ENOENT/);
+    assert.doesNotMatch(message, /Unknown (?:argument|option)|ERR_PARSE_ARGS/);
   }
 });

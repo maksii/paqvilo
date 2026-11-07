@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { readFile, mkdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { buildBlueprint } from '../portal-security/blueprint.mjs';
@@ -17,6 +17,7 @@ import {
   planQualificationFixtures,
   bindQualificationFixtureRequests,
 } from '../portal-security/qualification-fixtures.mjs';
+import { makeTemporaryDirectory } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 
 const schema = JSON.parse(await readFile(new URL('../dataverse/manifest.json', import.meta.url)));
 const catalogue = JSON.parse(await readFile(new URL('../data/stress-catalogue.json', import.meta.url)));
@@ -145,7 +146,7 @@ function fakeClient(plan, { failCommittedCreate = false } = {}) {
 
 async function withJournal(callback) {
   // The lease refuses journals outside an ignored .paqvilo directory.
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'qualification-lease-')),
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'qualification-lease-')),
     state = path.join(directory, '.paqvilo');
   await mkdir(state);
   try {

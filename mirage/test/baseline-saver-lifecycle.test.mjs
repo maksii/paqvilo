@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { once } from 'node:events';
 import { startSaver } from '../baseline-suite.mjs';
 
 const post = (saver, run, body) =>
@@ -30,23 +31,34 @@ function stream(saver, run) {
   void replied.catch(() => {});
   return { request, replied };
 }
-const allowHeaders = () => new Promise((resolve) => setTimeout(resolve, 50));
-
-test('streaming old headers cannot deliver their body to the next run', { timeout: 3000 }, async (t) => {
+// The receiver's server, captured as startSaver creates it. Its handler is the first 'request' listener, so a 'request'
+// listener added here runs after the receiver has admitted (or refused) the headers: the signal a streamed post waits for.
+async function observedSaver(t) {
+  let server;
+  const create = http.createServer;
+  const created = t.mock.method(http, 'createServer', (...args) => (server = create(...args)));
   const saver = await startSaver();
+  created.mock.restore();
+  return { saver, admitted: () => once(server, 'request') };
+}
+
+test('streaming old headers cannot deliver their body to the next run', async (t) => {
+  const { saver, admitted } = await observedSaver(t);
   t.after(() => saver.close());
   const first = saver.expect();
+  const headers = admitted();
   const pending = stream(saver, first.run);
-  await allowHeaders();
+  await headers;
   const next = saver.expect();
+  let settled = false;
+  next.received.then(
+    () => (settled = true),
+    () => (settled = true),
+  );
   pending.request.end('previous-run"}');
+  // The receiver settles a wait while it handles the body, before it sends the 409 the client reads here.
   assert.equal(await pending.replied, 409);
   await assert.rejects(first.received, /superseded/);
-  let settled = false;
-  void next.received.then(() => {
-    settled = true;
-  });
-  await new Promise((resolve) => setTimeout(resolve, 30));
   assert.equal(settled, false, 'the rejected old body must not resolve/reject the new promise');
   assert.equal((await post(saver, next.run, { fixture: 'next-run' })).status, 204);
   assert.deepEqual(await next.received, { fixture: 'next-run' });
@@ -78,37 +90,31 @@ test('a consumed run refuses duplicate posts without changing its result', async
   assert.deepEqual(await expected.received, { fixture: 'first' });
 });
 
-test(
-  'closing an incomplete owned request settles the wait and releases all receiver connections',
-  { timeout: 3000 },
-  async () => {
-    const saver = await startSaver();
-    const expected = saver.expect();
-    const pending = stream(saver, expected.run);
-    await allowHeaders();
-    const first = saver.close(),
-      second = saver.close();
-    assert.strictEqual(first, second);
-    await first;
-    await assert.rejects(expected.received, /receiver closed/);
-    assert.throws(() => saver.expect(), /receiver is closed/);
-    pending.request.destroy();
-  },
-);
+test('closing an incomplete owned request settles the wait and releases all receiver connections', async (t) => {
+  const { saver, admitted } = await observedSaver(t);
+  const expected = saver.expect();
+  const headers = admitted();
+  const pending = stream(saver, expected.run);
+  await headers;
+  const first = saver.close(),
+    second = saver.close();
+  assert.strictEqual(first, second);
+  await first;
+  await assert.rejects(expected.received, /receiver closed/);
+  assert.throws(() => saver.expect(), /receiver is closed/);
+  pending.request.destroy();
+});
 
-test(
-  'aborted evidence rejects only the corresponding wait and a later run still works',
-  { timeout: 3000 },
-  async (t) => {
-    const saver = await startSaver();
-    t.after(() => saver.close());
-    const expected = saver.expect();
-    const pending = stream(saver, expected.run);
-    await allowHeaders();
-    pending.request.destroy();
-    await assert.rejects(expected.received, /before its body completed|aborted/);
-    const next = saver.expect();
-    assert.equal((await post(saver, next.run, { fixture: 'recovered' })).status, 204);
-    assert.deepEqual(await next.received, { fixture: 'recovered' });
-  },
-);
+test('aborted evidence rejects only the corresponding wait and a later run still works', async (t) => {
+  const { saver, admitted } = await observedSaver(t);
+  t.after(() => saver.close());
+  const expected = saver.expect();
+  const headers = admitted();
+  const pending = stream(saver, expected.run);
+  await headers;
+  pending.request.destroy();
+  await assert.rejects(expected.received, /before its body completed|aborted/);
+  const next = saver.expect();
+  assert.equal((await post(saver, next.run, { fixture: 'recovered' })).status, 204);
+  assert.deepEqual(await next.received, { fixture: 'recovered' });
+});

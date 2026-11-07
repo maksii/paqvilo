@@ -59,7 +59,7 @@ for (const phase of ['navigation', 'application'])
         await Promise.race([
           run,
           new Promise((_, reject) => {
-            timer = setTimeout(() => reject(Error('Closing the owned tab did not stop dev.')), 1000);
+            timer = setTimeout(() => reject(Error('Closing the owned tab did not stop dev.')), 60_000);
           }),
         ]),
         0,

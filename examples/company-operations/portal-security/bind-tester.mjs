@@ -6,7 +6,129 @@ import { privateJson } from '../../../lense/dataverse/connection.mjs';
 import { buildTesterOverlay, buildStressTesterOverlay } from './tester-overlay.mjs';
 import { buildBlueprint, componentId } from './blueprint.mjs';
 
-export async function applyTesterRecords(
+function projectionSide(relation, table) {
+  if (relation.Entity1LogicalName === table) return 1;
+  return relation.Entity2LogicalName === table ? 2 : 0;
+}
+
+function testerValueEqual(a, b) {
+  if (a == null && b == null) return true;
+  if (typeof a === 'string' && typeof b === 'string') {
+    if (/^[0-9a-f-]{36}$/i.test(a) && /^[0-9a-f-]{36}$/i.test(b)) return a.toLowerCase() === b.toLowerCase();
+    if (/^\d{4}-\d\d-\d\d$/.test(b) && a.startsWith(b + 'T00:00:00')) return true;
+    if (/^\d{4}-\d\d-\d\dT/.test(a) && /^\d{4}-\d\d-\d\dT/.test(b)) return Date.parse(a) === Date.parse(b);
+  }
+  return a === b;
+}
+
+function managedResetIsAllowed(allowManagedReset, managedRevokedState, row, existing, drift) {
+  return (
+    allowManagedReset &&
+    Number.isInteger(managedRevokedState) &&
+    row.table === 'pqvd_accesspermission' &&
+    existing?.pqvd_accessstate === managedRevokedState &&
+    Object.keys(row.refs)
+      .filter((field) => field.endsWith('principalid'))
+      .every((field) => existing['_' + field + '_value'] == null) &&
+    drift.every((d) => d.field === 'pqvd_accessstate' || /^_pqvd_\w+principalid_value$/.test(d.field))
+  );
+}
+
+function privateRecordAction(existing, drift, resetAllowed) {
+  let action = 'create';
+  if (existing && !drift.length) action = 'exists';
+  else if (existing) action = resetAllowed ? 'managed-reset-transition' : 'drift';
+  return action;
+}
+
+function privateRecordBody(row, all, ids, navs, catalogue) {
+  const body = { ...row.fields };
+  for (const [field, key] of Object.entries(row.refs)) {
+    const target = key ? all.get(key) : null,
+      rel = navs
+        .get(row.table)
+        .find((r) => r.ReferencingAttribute === field && (!target || r.ReferencedEntity === target.table));
+    if (!rel) throw new Error('Missing verified lookup ' + row.table + '.' + field);
+    body[rel.ReferencingEntityNavigationPropertyName + '@odata.bind'] = target
+      ? `/${catalogue.tables.find((t) => t.name === target.table).entitySet}(${ids.get(key)})`
+      : null;
+  }
+  return body;
+}
+
+function privateRecordDetails({ row, all, ids, navs, catalogue, existing, allowManagedReset, managedRevokedState }) {
+  const body = privateRecordBody(row, all, ids, navs, catalogue);
+  const expected = {
+      ...row.fields,
+      ...Object.fromEntries(
+        Object.entries(row.refs).map(([field, key]) => ['_' + field + '_value', key ? ids.get(key) : null]),
+      ),
+    },
+    drift = existing
+      ? Object.entries(expected)
+          .filter(([field, value]) => !testerValueEqual(existing[field], value))
+          .map(([field, value]) => ({ field, expected: value, actual: existing[field] ?? null }))
+      : [];
+  const resetAllowed = managedResetIsAllowed(allowManagedReset, managedRevokedState, row, existing, drift);
+  const action = privateRecordAction(existing, drift, resetAllowed);
+  const entry = {
+    kind: 'private-record',
+    key: row.key,
+    id: row.id,
+    action,
+    before: existing,
+    etag: existing?.['@odata.etag'] ?? null,
+    drift,
+  };
+  return { body, drift, resetAllowed, entry };
+}
+
+function projectionNavigation(relations, source, catalogue) {
+  if (relations.length !== 1) throw new Error('Missing projection relationship');
+  const relation = relations[0],
+    side = projectionSide(relation, source.table);
+  if (!side) throw new Error('Projection source table mismatch');
+  const navigation = side === 1 ? relation.Entity1NavigationPropertyName : relation.Entity2NavigationPropertyName,
+    targetTable = side === 1 ? relation.Entity2LogicalName : relation.Entity1LogicalName,
+    target = catalogue.tables.find((t) => t.name === targetTable);
+  return { navigation, targetTable, target };
+}
+
+function projectionState(current, target, association, ids) {
+  const found = new Set(current.map((row) => row[target.primaryId]));
+  const expected = new Set(association.to.map((key) => ids.get(key)));
+  const extras = [...found].filter((id) => !expected.has(id));
+  return { found, extras };
+}
+
+function planProjectionTarget({
+  key,
+  targetTable,
+  found,
+  ids,
+  all,
+  source,
+  table,
+  navigation,
+  target,
+  relationship,
+  from,
+  projectionPlans,
+}) {
+  const row = all.get(key);
+  if (row?.table !== targetTable) throw new Error('Projection target type mismatch');
+  if (found.has(ids.get(key))) return null;
+  projectionPlans.push({ source, table, navigation, target, id: ids.get(key) });
+  return {
+    kind: 'projection',
+    relationship,
+    from,
+    to: key,
+    action: 'add',
+  };
+}
+
+/* NOSONAR: single-pass routine, splitting it would change shared state */ export async function applyTesterRecords(
   client,
   catalogue,
   overlay,
@@ -46,57 +168,18 @@ export async function applyTesterRecords(
           `EntityDefinitions(LogicalName='${row.table}')/ManyToOneRelationships?$select=ReferencingAttribute,ReferencedEntity,ReferencingEntityNavigationPropertyName`,
         ),
       );
-    const body = { ...row.fields };
-    for (const [field, key] of Object.entries(row.refs)) {
-      const target = key ? all.get(key) : null,
-        rel = navs
-          .get(row.table)
-          .find((r) => r.ReferencingAttribute === field && (!target || r.ReferencedEntity === target.table));
-      if (!rel) throw new Error('Missing verified lookup ' + row.table + '.' + field);
-      body[rel.ReferencingEntityNavigationPropertyName + '@odata.bind'] = target
-        ? `/${catalogue.tables.find((t) => t.name === target.table).entitySet}(${ids.get(key)})`
-        : null;
-    }
-    const expected = {
-        ...row.fields,
-        ...Object.fromEntries(
-          Object.entries(row.refs).map(([field, key]) => ['_' + field + '_value', key ? ids.get(key) : null]),
-        ),
-      },
-      equal = (a, b) => {
-        if (a == null && b == null) return true;
-        if (typeof a === 'string' && typeof b === 'string') {
-          if (/^[0-9a-f-]{36}$/i.test(a) && /^[0-9a-f-]{36}$/i.test(b)) return a.toLowerCase() === b.toLowerCase();
-          if (/^\d{4}-\d\d-\d\d$/.test(b) && a.startsWith(b + 'T00:00:00')) return true;
-          if (/^\d{4}-\d\d-\d\dT/.test(a) && /^\d{4}-\d\d-\d\dT/.test(b)) return Date.parse(a) === Date.parse(b);
-        }
-        return a === b;
-      },
-      drift = existing
-        ? Object.entries(expected)
-            .filter(([field, value]) => !equal(existing[field], value))
-            .map(([field, value]) => ({ field, expected: value, actual: existing[field] ?? null }))
-        : [];
-    const resetAllowed =
-      allowManagedReset &&
-      Number.isInteger(managedRevokedState) &&
-      row.table === 'pqvd_accesspermission' &&
-      existing?.pqvd_accessstate === managedRevokedState &&
-      Object.keys(row.refs)
-        .filter((field) => field.endsWith('principalid'))
-        .every((field) => existing['_' + field + '_value'] == null) &&
-      drift.every((d) => d.field === 'pqvd_accessstate' || /^_pqvd_\w+principalid_value$/.test(d.field));
-    const entry = {
-      kind: 'private-record',
-      key: row.key,
-      id: row.id,
-      action: existing ? (drift.length ? (resetAllowed ? 'managed-reset-transition' : 'drift') : 'exists') : 'create',
-      before: existing,
-      etag: existing?.['@odata.etag'] ?? null,
-      drift,
-    };
+    const { body, drift, resetAllowed, entry } = privateRecordDetails({
+      row,
+      all,
+      ids,
+      navs,
+      catalogue,
+      existing,
+      allowManagedReset,
+      managedRevokedState,
+    });
     entries.push(entry);
-    await onProgress(entry);
+    await onProgress(entry); // NOSONAR: await kept: the value may be a thenable and timing matters
     if (drift.length && !resetAllowed)
       throw new Error('Private record identity/value drift requires review: ' + row.key);
     if (existing && drift.length && !entry.etag) throw new Error('ETag required for private reset transition');
@@ -108,35 +191,31 @@ export async function applyTesterRecords(
       relations = await client.list(
         `RelationshipDefinitions/Microsoft.Dynamics.CRM.ManyToManyRelationshipMetadata?$filter=SchemaName eq '${association.relationship}'`,
       );
-    if (relations.length !== 1) throw new Error('Missing projection relationship');
-    const r = relations[0],
-      side = r.Entity1LogicalName === source.table ? 1 : r.Entity2LogicalName === source.table ? 2 : 0;
-    if (!side) throw new Error('Projection source table mismatch');
-    const navigation = side === 1 ? r.Entity1NavigationPropertyName : r.Entity2NavigationPropertyName,
-      targetTable = side === 1 ? r.Entity2LogicalName : r.Entity1LogicalName,
-      target = catalogue.tables.find((t) => t.name === targetTable),
-      current = present.has(source.key) ? await client.list(`${table.entitySet}(${source.id})/${navigation}`) : [],
-      found = new Set(current.map((row) => row[target.primaryId])),
-      expected = new Set(association.to.map((key) => ids.get(key))),
-      extras = [...found].filter((id) => !expected.has(id));
+    const { navigation, targetTable, target } = projectionNavigation(relations, source, catalogue);
+    const current = present.has(source.key) ? await client.list(`${table.entitySet}(${source.id})/${navigation}`) : [];
+    const { found, extras } = projectionState(current, target, association, ids);
     if (extras.length) {
-      await onProgress({ kind: 'projection-drift', relationship: association.relationship, from: source.key, extras });
+      await onProgress({ kind: 'projection-drift', relationship: association.relationship, from: source.key, extras }); // NOSONAR: await kept: the value may be a thenable and timing matters
       throw new Error('Unexpected private projection targets require review: ' + association.relationship);
     }
     for (const key of association.to) {
-      const row = all.get(key);
-      if (row?.table !== targetTable) throw new Error('Projection target type mismatch');
-      if (!found.has(ids.get(key))) {
-        projectionPlans.push({ source, table, navigation, target, id: ids.get(key) });
-        const entry = {
-          kind: 'projection',
-          relationship: association.relationship,
-          from: association.from,
-          to: key,
-          action: 'add',
-        };
+      const entry = planProjectionTarget({
+        key,
+        targetTable,
+        found,
+        ids,
+        all,
+        source,
+        table,
+        navigation,
+        target,
+        relationship: association.relationship,
+        from: association.from,
+        projectionPlans,
+      });
+      if (entry) {
         entries.push(entry);
-        await onProgress(entry);
+        await onProgress(entry); // NOSONAR: await kept: the value may be a thenable and timing matters
       }
     }
   }
@@ -168,7 +247,7 @@ export async function applyTesterRecords(
   return { entries, resolvedIds: Object.fromEntries(ids) };
 }
 
-export async function resetTesterRecords(
+/* NOSONAR: single-pass routine, splitting it would change shared state */ export async function resetTesterRecords(
   client,
   catalogue,
   overlay,
@@ -194,13 +273,7 @@ export async function resetTesterRecords(
       navs = await client.list(
         `EntityDefinitions(LogicalName='${row.table}')/ManyToOneRelationships?$select=ReferencingAttribute,ReferencedEntity,ReferencingEntityNavigationPropertyName`,
       ),
-      body = { pqvd_accessstate: managedRevokedState };
-    for (const field of Object.keys(row.refs).filter((f) => f.endsWith('principalid'))) {
-      const relation = navs.find((r) => r.ReferencingAttribute === field && r.ReferencedEntity === 'contact');
-      if (!relation?.ReferencingEntityNavigationPropertyName)
-        throw new Error('Reset principal lookup navigation unavailable');
-      body[relation.ReferencingEntityNavigationPropertyName + '@odata.bind'] = null;
-    }
+      body = resetPrincipalBody(row, navs, managedRevokedState);
     if (!before['@odata.etag']) throw new Error('ETag required for private grant reset');
     const links = [];
     for (const association of overlay.associations.filter((a) => a.from === key)) {
@@ -209,23 +282,14 @@ export async function resetTesterRecords(
       );
       if (relations.length !== 1) throw new Error('Missing reset projection relationship');
       const relation = relations[0],
-        side = relation.Entity1LogicalName === row.table ? 1 : relation.Entity2LogicalName === row.table ? 2 : 0;
+        side = projectionSide(relation, row.table);
       if (!side) throw new Error('Reset projection source table mismatch');
       const navigation = side === 1 ? relation.Entity1NavigationPropertyName : relation.Entity2NavigationPropertyName,
         target = catalogue.tables.find(
           (t) => t.name === (side === 1 ? relation.Entity2LogicalName : relation.Entity1LogicalName),
         ),
-        current = await client.list(`${table.entitySet}(${row.id})/${navigation}`),
-        expected = new Set(association.to.map((k) => audit.resolvedIds[k]));
-      if (current.some((t) => !expected.has(t[target.primaryId])))
-        throw new Error('Unexpected private reset projection targets require review');
-      for (const targetRow of current)
-        links.push({
-          relationship: association.relationship,
-          navigation,
-          targetId: targetRow[target.primaryId],
-          before: targetRow,
-        });
+        current = await client.list(`${table.entitySet}(${row.id})/${navigation}`);
+      appendResetLinks(association, navigation, target, current, audit, links);
     }
     const entry = {
       kind: 'reset-grant',
@@ -239,7 +303,7 @@ export async function resetTesterRecords(
       action: 'revoke-and-unlink',
     };
     plans.push(entry);
-    await onProgress(entry);
+    await onProgress(entry); // NOSONAR: await kept: the value may be a thenable and timing matters
   }
   if (apply)
     for (const plan of plans) {
@@ -250,12 +314,11 @@ export async function resetTesterRecords(
         });
       const after = await client.get(`${plan.entitySet}(${plan.id})`),
         principals = Object.keys(byKey.get(plan.key).refs).filter((f) => f.endsWith('principalid'));
-      if (after.pqvd_accessstate !== managedRevokedState || principals.some((f) => after['_' + f + '_value'] != null))
-        throw new Error('Private grant revocation verification failed');
+      verifyRevokedGrant(after, managedRevokedState, principals);
       for (const navigation of new Set(plan.links.map((l) => l.navigation)))
         if ((await client.list(`${plan.entitySet}(${plan.id})/${navigation}`)).length)
           throw new Error('Private reset projection unlink verification failed');
-      await onProgress({
+      /* NOSONAR: await kept: the value may be a thenable and timing matters */ await onProgress({
         kind: 'reset-grant-verified',
         key: plan.key,
         id: plan.id,
@@ -264,6 +327,120 @@ export async function resetTesterRecords(
       });
     }
   return { plans, applied: apply };
+}
+
+function hasUnrelatedGlobalGrant(components, schema, ids) {
+  return components.some((c) => {
+    if (c.powerpagecomponenttype !== 18 || c.statecode !== 0) return false;
+    const p = JSON.parse(c.content ?? '{}');
+    return (
+      p.scope === 756150000 &&
+      schema.tables.some((t) => t.name === p.entitylogicalname) &&
+      p.adx_entitypermission_webrole?.some((id) => ids.has(id))
+    );
+  });
+}
+
+function hasUnregisteredBusinessGrant(components, schema, ids, registered) {
+  return components.some((c) => {
+    if (c.powerpagecomponenttype !== 18 || c.statecode !== 0 || registered.has(c.powerpagecomponentid)) return false;
+    const p = JSON.parse(c.content ?? '{}');
+    return (
+      schema.tables.some((t) => t.name === p.entitylogicalname) &&
+      p.adx_entitypermission_webrole?.some((id) => ids.has(id))
+    );
+  });
+}
+
+function roleMutationVerified(wanted, current, own, found) {
+  return (
+    [...wanted].some((id) => !found.has(id)) ||
+    current.filter((r) => !own.has(r.powerpagecomponentid)).some((r) => !found.has(r.powerpagecomponentid)) ||
+    [...found].some((id) => own.has(id) && !wanted.has(id))
+  );
+}
+
+function addExistingSystemRoles(components, ids) {
+  for (const role of components.filter(
+    (c) =>
+      c.powerpagecomponenttype === 11 &&
+      c.statecode === 0 &&
+      (JSON.parse(c.content ?? '{}').authenticatedusersrole || JSON.parse(c.content ?? '{}').anonymoususersrole),
+  ))
+    ids.add(role.powerpagecomponentid);
+}
+
+function assertNoUnrelatedGlobalGrant(components, schema, ids) {
+  if (hasUnrelatedGlobalGrant(components, schema, ids))
+    throw new Error('Actual tester has an unrelated Global business grant');
+}
+
+function assertNoUnregisteredBusinessGrant(components, schema, ids, registered) {
+  if (hasUnregisteredBusinessGrant(components, schema, ids, registered))
+    throw new Error('Unrelated active business permission makes the configured fixture oracle incomplete');
+}
+
+function roleNeedsRemoval(id, own, wanted) {
+  return own.has(id) && !wanted.has(id);
+}
+
+function roleNeedsAddition(id, actual) {
+  return !actual.has(id);
+}
+
+function* roleIdsToRemove(actual, own, wanted) {
+  for (const id of actual) if (roleNeedsRemoval(id, own, wanted)) yield id;
+}
+
+function* roleIdsToAdd(wanted, actual) {
+  for (const id of wanted) if (roleNeedsAddition(id, actual)) yield id;
+}
+
+function chooseRoleVariant(overlay, selected) {
+  return selected === 'baseline'
+    ? ['IT']
+    : overlay.personas[0].webRoleVariants?.find((v) => v.roles.length === Number(selected))?.roles;
+}
+
+function validateRoleVariant(chosen, selected) {
+  if (!chosen || !['baseline', '0', '1', '2', '4', '8', '12'].includes(String(selected)))
+    throw new Error('Unknown authored role variant');
+}
+
+function hasDeployedWebRole(components, id) {
+  return components.some((c) => c.powerpagecomponentid === id && c.powerpagecomponenttype === 11 && c.statecode === 0);
+}
+
+function resetPrincipalBody(row, navs, managedRevokedState) {
+  const body = { pqvd_accessstate: managedRevokedState };
+  for (const field of Object.keys(row.refs).filter((f) => f.endsWith('principalid'))) {
+    const relation = navs.find((r) => r.ReferencingAttribute === field && r.ReferencedEntity === 'contact');
+    if (!relation?.ReferencingEntityNavigationPropertyName)
+      throw new Error('Reset principal lookup navigation unavailable');
+    body[relation.ReferencingEntityNavigationPropertyName + '@odata.bind'] = null;
+  }
+  return body;
+}
+
+function appendResetLinks(association, navigation, target, current, audit, links) {
+  const expected = new Set(association.to.map((key) => audit.resolvedIds[key]));
+  if (current.some((item) => !expected.has(item[target.primaryId])))
+    throw new Error('Unexpected private reset projection targets require review');
+  for (const targetRow of current)
+    links.push({
+      relationship: association.relationship,
+      navigation,
+      targetId: targetRow[target.primaryId],
+      before: targetRow,
+    });
+}
+
+function verifyRevokedGrant(after, managedRevokedState, principals) {
+  if (
+    after.pqvd_accessstate !== managedRevokedState ||
+    principals.some((field) => after['_' + field + '_value'] != null)
+  )
+    throw new Error('Private grant revocation verification failed');
 }
 
 export async function setTesterRoles(
@@ -284,83 +461,42 @@ export async function setTesterRoles(
   const site = await client.get(`powerpagesites(${siteId})`);
   if (site.datamodelversion !== '2.0' || site.enhancedauthorization !== 0)
     throw new Error('Requires enhanced model with traditional authorization');
-  for (const role of components.filter(
-    (c) =>
-      c.powerpagecomponenttype === 11 &&
-      c.statecode === 0 &&
-      (JSON.parse(c.content ?? '{}').authenticatedusersrole || JSON.parse(c.content ?? '{}').anonymoususersrole),
-  ))
-    ids.add(role.powerpagecomponentid);
-  if (
-    components.some((c) => {
-      if (c.powerpagecomponenttype !== 18 || c.statecode !== 0) return false;
-      const p = JSON.parse(c.content ?? '{}');
-      return (
-        p.scope === 756150000 &&
-        schema.tables.some((t) => t.name === p.entitylogicalname) &&
-        p.adx_entitypermission_webrole?.some((id) => ids.has(id))
-      );
-    })
-  )
-    throw new Error('Actual tester has an unrelated Global business grant');
+  addExistingSystemRoles(components, ids);
+  assertNoUnrelatedGlobalGrant(components, schema, ids);
   const registered = new Set(b.nodes.map((n) => n.id));
-  if (
-    components.some((c) => {
-      if (c.powerpagecomponenttype !== 18 || c.statecode !== 0 || registered.has(c.powerpagecomponentid)) return false;
-      const p = JSON.parse(c.content ?? '{}');
-      return (
-        schema.tables.some((t) => t.name === p.entitylogicalname) &&
-        p.adx_entitypermission_webrole?.some((id) => ids.has(id))
-      );
-    })
-  )
-    throw new Error('Unrelated active business permission makes the configured fixture oracle incomplete');
-  const chosen =
-    selected === 'baseline'
-      ? ['IT']
-      : overlay.personas[0].webRoleVariants?.find((v) => v.roles.length === Number(selected))?.roles;
-  if (!chosen || !['baseline', '0', '1', '2', '4', '8', '12'].includes(String(selected)))
-    throw new Error('Unknown authored role variant');
+  assertNoUnregisteredBusinessGrant(components, schema, ids, registered);
+  const chosen = chooseRoleVariant(overlay, selected);
+  validateRoleVariant(chosen, selected);
   const wanted = new Set([...chosen, 'TESTRUNNER'].map((code) => componentId('role:' + code))),
     own = new Set(b.roles.map((r) => r.id)),
     actual = new Set(current.map((r) => r.powerpagecomponentid)),
     entries = [];
-  for (const id of actual)
-    if (own.has(id) && !wanted.has(id)) {
-      if (apply)
-        await client.request(`contacts(${actor.contactId})/powerpagecomponent_mspp_webrole_contact(${id})/$ref`, {
-          method: 'DELETE',
-        });
-      const entry = { kind: 'role', id, action: 'remove' };
-      entries.push(entry);
-      await onProgress(entry);
-    }
-  for (const id of wanted)
-    if (!actual.has(id)) {
-      if (
-        !components.some((c) => c.powerpagecomponentid === id && c.powerpagecomponenttype === 11 && c.statecode === 0)
-      )
-        throw new Error('Required web role not deployed to this site');
-      if (apply)
-        await client.request(`contacts(${actor.contactId})/powerpagecomponent_mspp_webrole_contact/$ref`, {
-          method: 'POST',
-          body: { '@odata.id': client.url(`powerpagecomponents(${id})`) },
-        });
-      const entry = { kind: 'role', id, action: 'add' };
-      entries.push(entry);
-      await onProgress(entry);
-    }
+  for (const id of roleIdsToRemove(actual, own, wanted)) {
+    if (apply)
+      await client.request(`contacts(${actor.contactId})/powerpagecomponent_mspp_webrole_contact(${id})/$ref`, {
+        method: 'DELETE',
+      });
+    const entry = { kind: 'role', id, action: 'remove' };
+    entries.push(entry);
+    await onProgress(entry); // NOSONAR: await kept: the value may be a thenable and timing matters
+  }
+  for (const id of roleIdsToAdd(wanted, actual)) {
+    if (!hasDeployedWebRole(components, id)) throw new Error('Required web role not deployed to this site');
+    if (apply)
+      await client.request(`contacts(${actor.contactId})/powerpagecomponent_mspp_webrole_contact/$ref`, {
+        method: 'POST',
+        body: { '@odata.id': client.url(`powerpagecomponents(${id})`) },
+      });
+    const entry = { kind: 'role', id, action: 'add' };
+    entries.push(entry);
+    await onProgress(entry); // NOSONAR: await kept: the value may be a thenable and timing matters
+  }
   if (apply) {
     const after = await client.list(
         `contacts(${actor.contactId})/powerpagecomponent_mspp_webrole_contact?$select=powerpagecomponentid`,
       ),
       found = new Set(after.map((r) => r.powerpagecomponentid));
-    if (
-      [...wanted].some((id) => !found.has(id)) ||
-      current.filter((r) => !own.has(r.powerpagecomponentid)).some((r) => !found.has(r.powerpagecomponentid)) ||
-      [...found].some((id) => own.has(id) && !wanted.has(id))
-    )
-      throw new Error('Tester role mutation verification failed');
+    if (roleMutationVerified(wanted, current, own, found)) throw new Error('Tester role mutation verification failed');
   }
   return {
     selected,
@@ -400,12 +536,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     connection = await loadConnection(arg('--connection') ?? '.paqvilo/dataverse/provisioning.connection.json'),
     client = connectedClient(connection);
   await client.verify(connection.organisationId);
-  const baseline = buildTesterOverlay(catalogue, contactId),
-    overlay = arg('--overlay')
-      ? JSON.parse(await fs.readFile(arg('--overlay')))
-      : mode === 'baseline'
-        ? baseline
-        : buildStressTesterOverlay(catalogue, baseline);
+  const baseline = buildTesterOverlay(catalogue, contactId);
+  let overlay = baseline;
+  if (arg('--overlay')) overlay = JSON.parse(await fs.readFile(arg('--overlay')));
+  else if (mode !== 'baseline') overlay = buildStressTesterOverlay(catalogue, baseline);
   if (overlay.personas?.[0]?.contactId !== contactId || !overlay.private)
     throw new Error('Private overlay identity mismatch');
   const before = await client.list(

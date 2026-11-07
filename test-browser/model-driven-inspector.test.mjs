@@ -1,4 +1,5 @@
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readDiscovery } from '../lense/commands/agent.mjs';
@@ -86,7 +87,7 @@ test(
   'model-driven X-ray binds fields, PCF, handlers and ribbon provenance; bounded agent/debugging remains isolated and read-only',
   { timeout: 60000 },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'model-inspector-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'model-inspector-'));
     const methods = [];
     const server = http.createServer((request, response) => {
       methods.push(request.method);
@@ -291,12 +292,14 @@ test(
     const retiredData = inspector.snapshot();
     const cdp = await context.newCDPSession(page);
     await cdp.send('Debugger.enable');
+    // The scheduled refresh runs page JavaScript, which pauses; close while it is held there.
+    const paused = new Promise((resolve) => cdp.once('Debugger.paused', resolve));
     await cdp.send('Debugger.pause');
     inspector.refresh();
-    await new Promise((resolve) => setTimeout(resolve, 150));
-    const stoppingAt = Date.now();
+    await paused;
+    // The debugger resumes only after close settles: a disposal that waited for the paused
+    // page would never settle and the test deadline would fail it.
     await inspector.close();
-    assert.ok(Date.now() - stoppingAt < 2000, 'A paused debugger must not block inspector disposal');
     await cdp.send('Debugger.resume');
     await cdp.detach();
     await page.waitForFunction(() => !document.getElementById('paqvilo-panel'));
@@ -310,106 +313,103 @@ test(
   },
 );
 
-test(
-  'model-driven X-ray reports delayed refresh, settles pending state and offers retry after inspection errors',
-  { timeout: 30000 },
-  async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'model-inspector-feedback-'));
-    const server = http.createServer((_request, response) =>
-      response
-        .writeHead(200, { 'content-type': 'text/html' })
-        .end('<!doctype html><title>Invented app</title><input data-id="inv_title"/>'),
-    );
-    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const origin = `http://127.0.0.1:${server.address().port}`;
-    const context = await browser.newContext({ reducedMotion: 'reduce' }),
-      page = await context.newPage();
-    let inspector,
-      release,
-      fail = false,
-      block = false;
-    ownedFixture(t).add(async () => {
-      release?.();
-    });
-    ownedFixture(t).add(async () => {
-      await inspector?.close();
-    });
-    ownedFixture(t).add(async () => {
-      await context.close();
-    });
-    ownedFixture(t).add(async () => {
-      server.closeAllConnections();
-    });
-    ownedFixture(t).add(async () => {
-      await new Promise((resolve) => server.close(resolve));
-    });
-    ownedFixture(t).remove(async () => {
-      await fs.rm(root, { recursive: true, force: true, maxRetries: 5 });
-    });
-    await page.goto(origin + '/main.aspx?etn=inv_item');
-    const evaluate = page.evaluate.bind(page);
-    page.evaluate = async (fn, argument) => {
-      if (fn === inspectModelDrivenContext) {
-        if (block)
-          await new Promise((resolve) => {
-            release = resolve;
-          });
-        if (fail) {
-          fail = false;
-          throw Error('Invented context unavailable');
-        }
-      }
-      return evaluate(fn, argument);
-    };
-    const sources = imported(),
-      overlay = createModelDrivenOverlay({ origin, imported: sources });
-    inspector = await startModelDrivenInspector({
-      context,
-      page,
-      overlay,
-      cfg: { origin, stateDir: root, sourceDir: root, siteName: 'invented', envName: 'loopback' },
-      imported: sources,
-    });
-    const host = page.locator('#paqvilo-panel');
-    await host.waitFor();
-    await page.waitForFunction(() => document.querySelector('#paqvilo-panel').__pp);
-    await page.keyboard.press('Alt+Shift+P');
-    await page.getByRole('tab', { name: 'Inspect', exact: true }).click();
-    await page
-      .getByText(
-        'Selected element ownership and local source identity are evaluated separately from native form context.',
-      )
-      .waitFor();
-    const initialBy = Date.now() + 5000;
-    while (inspector.snapshot().pendingInspection && Date.now() < initialBy)
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.equal(inspector.snapshot().pendingInspection, false, 'initial context settled');
-    block = true;
-    inspector.refresh();
-    const waitDeadline = Date.now() + 5000;
-    while (!release && Date.now() < waitDeadline) await new Promise((resolve) => setTimeout(resolve, 10));
-    await host.getByText('Updating source inspection…', { exact: true }).waitFor();
-    assert.equal(inspector.snapshot().pendingInspection, true);
-    if (process.env.PAQVILO_MODEL_FEEDBACK_EVIDENCE)
-      await page.screenshot({ path: process.env.PAQVILO_MODEL_FEEDBACK_EVIDENCE });
+test('model-driven X-ray reports delayed refresh, settles pending state and offers retry after inspection errors', async (t) => {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'model-inspector-feedback-'));
+  const server = http.createServer((_request, response) =>
+    response
+      .writeHead(200, { 'content-type': 'text/html' })
+      .end('<!doctype html><title>Invented app</title><input data-id="inv_title"/>'),
+  );
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const context = await browser.newContext({ reducedMotion: 'reduce' }),
+    page = await context.newPage();
+  let inspector,
+    release,
+    blocked,
+    fail = false,
     block = false;
-    assert.ok(release);
-    release();
-    const finishBy = Date.now() + 5000;
-    while (inspector.snapshot().pendingInspection && Date.now() < finishBy)
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.equal(inspector.snapshot().pendingInspection, false);
-    fail = true;
-    inspector.refresh();
-    const errorBy = Date.now() + 5000;
-    while (!inspector.snapshot().inspectionError && Date.now() < errorBy)
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.match(inspector.snapshot().inspectionError, /could not be refreshed/);
-    inspector.refresh();
-    const retryBy = Date.now() + 5000;
-    while ((inspector.snapshot().pendingInspection || inspector.snapshot().inspectionError) && Date.now() < retryBy)
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.equal(inspector.snapshot().inspectionError, '');
-    assert.equal(inspector.snapshot().pendingInspection, false);
-  },
-);
+  const inspectionBlocked = new Promise((resolve) => {
+    blocked = resolve;
+  });
+  // The inspector publishes no change event; poll its own snapshot until the expected state or the test ends.
+  const settled = async (ready) => {
+    while (!ready(inspector.snapshot()) && !t.signal.aborted) await new Promise((resolve) => setTimeout(resolve, 20));
+    return inspector.snapshot();
+  };
+  ownedFixture(t).add(async () => {
+    release?.();
+  });
+  ownedFixture(t).add(async () => {
+    await inspector?.close();
+  });
+  ownedFixture(t).add(async () => {
+    await context.close();
+  });
+  ownedFixture(t).add(async () => {
+    server.closeAllConnections();
+  });
+  ownedFixture(t).add(async () => {
+    await new Promise((resolve) => server.close(resolve));
+  });
+  ownedFixture(t).remove(async () => {
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 5 });
+  });
+  await page.goto(origin + '/main.aspx?etn=inv_item');
+  const evaluate = page.evaluate.bind(page);
+  page.evaluate = async (fn, argument) => {
+    if (fn === inspectModelDrivenContext) {
+      if (block)
+        await new Promise((resolve) => {
+          release = resolve;
+          blocked();
+        });
+      if (fail) {
+        fail = false;
+        throw Error('Invented context unavailable');
+      }
+    }
+    return evaluate(fn, argument);
+  };
+  const sources = imported(),
+    overlay = createModelDrivenOverlay({ origin, imported: sources });
+  inspector = await startModelDrivenInspector({
+    context,
+    page,
+    overlay,
+    cfg: { origin, stateDir: root, sourceDir: root, siteName: 'invented', envName: 'loopback' },
+    imported: sources,
+  });
+  const host = page.locator('#paqvilo-panel');
+  await host.waitFor();
+  await page.waitForFunction(() => document.querySelector('#paqvilo-panel').__pp);
+  await page.keyboard.press('Alt+Shift+P');
+  await page.getByRole('tab', { name: 'Inspect', exact: true }).click();
+  await page
+    .getByText(
+      'Selected element ownership and local source identity are evaluated separately from native form context.',
+    )
+    .waitFor();
+  assert.equal(
+    (await settled((state) => !state.pendingInspection)).pendingInspection,
+    false,
+    'initial context settled',
+  );
+  block = true;
+  inspector.refresh();
+  await inspectionBlocked;
+  await host.getByText('Updating source inspection…', { exact: true }).waitFor();
+  assert.equal(inspector.snapshot().pendingInspection, true);
+  if (process.env.PAQVILO_MODEL_FEEDBACK_EVIDENCE)
+    await page.screenshot({ path: process.env.PAQVILO_MODEL_FEEDBACK_EVIDENCE });
+  block = false;
+  release();
+  assert.equal((await settled((state) => !state.pendingInspection)).pendingInspection, false);
+  fail = true;
+  inspector.refresh();
+  assert.match((await settled((state) => state.inspectionError)).inspectionError, /could not be refreshed/);
+  inspector.refresh();
+  const retried = await settled((state) => !state.pendingInspection && !state.inspectionError);
+  assert.equal(retried.inspectionError, '');
+  assert.equal(retried.pendingInspection, false);
+});

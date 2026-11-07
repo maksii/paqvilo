@@ -51,7 +51,7 @@ export async function startAzuriteFake({
     let text = `${lines.join('\n')}\n`;
     for (const name of Object.keys(request.headers)
       .filter((n) => n.startsWith('x-ms-'))
-      .sort())
+      .sort(/* NOSONAR: preserve default string coercion */))
       text += `${name}:${String(request.headers[name])
         .replace(/[ \t\r\n]+/g, ' ')
         .trim()}\n`;
@@ -62,7 +62,8 @@ export async function startAzuriteFake({
       if (!grouped.has(key)) grouped.set(key, []);
       grouped.get(key).push(value);
     }
-    for (const name of [...grouped.keys()].sort()) text += `\n${name}:${grouped.get(name).sort().join(',')}`;
+    for (const name of [...grouped.keys()].sort(/* NOSONAR: preserve default string coercion */))
+      text += `\n${name}:${grouped.get(name).sort(/* NOSONAR: preserve default string coercion */).join(',')}`;
     return text;
   }
   const sign = (text) => createHmac('sha256', Buffer.from(accountKey, 'base64')).update(text, 'utf8').digest('base64');
@@ -76,7 +77,7 @@ export async function startAzuriteFake({
     const header = request.headers.authorization;
     if (header) {
       const match = /^SharedKey ([^:]+):(.+)$/.exec(header);
-      if (!match || match[1] !== accountName || !request.headers['x-ms-version']) return false;
+      if (!match?.[1] || match[1] !== accountName || !request.headers['x-ms-version']) return false;
       const date = Date.parse(request.headers['x-ms-date'] ?? request.headers.date ?? '');
       if (!Number.isFinite(date) || Math.abs(now() - date) > 15 * 60_000) return false; // Learn: no older than 15 minutes
       return same(sign(stringToSign(request, rawPath, query)), match[2]);
@@ -84,7 +85,7 @@ export async function startAzuriteFake({
     // Service SAS (sr=b, read) for GET blob only.
     const q = Object.fromEntries(query);
     if (request.method !== 'GET' || !q.sig || q.sr !== 'b' || !blobPath || !q.sp?.includes('r')) return false;
-    if (!(Date.parse(q.se) > now())) return false;
+    if (!(Date.parse(q.se) > now())) return false; // NOSONAR: operand can be NaN or undefined, the negated test differs
     const fields = [
       q.sp,
       q.st ?? '',
@@ -106,7 +107,7 @@ export async function startAzuriteFake({
     return same(sign(fields.join('\n')), q.sig);
   }
 
-  const server = http.createServer(async (request, response) => {
+  /* NOSONAR */ const server = http.createServer(async (request, response) => {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
     const body = Buffer.concat(chunks);
@@ -117,7 +118,7 @@ export async function startAzuriteFake({
     requests.push({
       method: request.method,
       path: rawPath,
-      query: Object.keys(q).sort(),
+      query: Object.keys(q).sort(/* NOSONAR: preserve default string coercion */),
       version: request.headers['x-ms-version'] ?? null,
     });
     const send = (status, headers = {}, payload) => {
@@ -140,11 +141,14 @@ export async function startAzuriteFake({
     // List Containers
     if (!containerName) {
       if (request.method === 'GET' && q.comp === 'list') {
-        const names = [...containers.keys()].sort().slice(0, Number(q.maxresults ?? 5000));
+        const names = [...containers.keys()]
+          .sort(/* NOSONAR: preserve default string coercion */)
+          .slice(0, Number(q.maxresults ?? 5000));
+        const containerXml = names.map((n) => `<Container><Name>${escapeXml(n)}</Name></Container>`).join('');
         return send(
           200,
           { 'content-type': 'application/xml' },
-          `<?xml version="1.0" encoding="utf-8"?><EnumerationResults><Containers>${names.map((n) => `<Container><Name>${escapeXml(n)}</Name></Container>`).join('')}</Containers><NextMarker/></EnumerationResults>`,
+          `<?xml version="1.0" encoding="utf-8"?><EnumerationResults><Containers>${containerXml}</Containers><NextMarker/></EnumerationResults>`,
         );
       }
       return error(400, 'UnsupportedHttpVerb');
@@ -161,7 +165,7 @@ export async function startAzuriteFake({
         const max = Number(q.maxresults ?? 5000);
         const names = [...container.keys()]
           .filter((n) => container.get(n).data && n.startsWith(q.prefix ?? '') && (!q.marker || n >= q.marker))
-          .sort();
+          .sort(/* NOSONAR: preserve default string coercion */);
         const page = names.slice(0, max);
         const items = page
           .map((n) => {

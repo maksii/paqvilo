@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -10,7 +10,7 @@ import { createManagedIdentityEndpoints, seedManagedIdentityRows } from '../lib/
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { createSimulator } from '../server.mjs';
 import { uuidV5 } from '../lib/dataverse-security.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectorySync } from '../testing/owned-fixture.mjs';
 
 const ORIGIN = 'https://127.0.0.1:9443';
 const TENANT = '7e1a2b3c-4d5e-4f60-8a71-92b3c4d5e6f7';
@@ -129,7 +129,7 @@ test('IMDS: a missing resource is invalid_request', () => {
 });
 
 test('Arc: the first call is challenged with a single-use secret file; the re-call with its contents succeeds once', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'paqvilo-mi-'));
+  const dir = makeTemporaryDirectorySync(join(tmpdir(), 'paqvilo-mi-'));
   try {
     const endpoints = createManagedIdentityEndpoints({
       authority: authority(),
@@ -172,7 +172,7 @@ test('handle() returns null for other paths and other verbs; env() publishes the
 });
 
 test('IMDS and App Service refuse a request without api-version before any side effect', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'paqvilo-mi-'));
+  const dir = makeTemporaryDirectorySync(join(tmpdir(), 'paqvilo-mi-'));
   try {
     const endpoints = createManagedIdentityEndpoints({
       authority: authority(),
@@ -201,7 +201,7 @@ test('IMDS and App Service refuse a request without api-version before any side 
 });
 
 test('unauthenticated Arc calls keep at most 16 unused challenge files; the oldest is removed and the newest still redeems', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'paqvilo-mi-'));
+  const dir = makeTemporaryDirectorySync(join(tmpdir(), 'paqvilo-mi-'));
   try {
     const endpoints = createManagedIdentityEndpoints({
       authority: authority(),
@@ -303,7 +303,7 @@ test('seedManagedIdentityRows upserts by clientId and drops rows of identities n
 });
 
 test('an identity added through the runtime route gets a managedidentity row and its token passes WhoAmI', async (t) => {
-  const directory = mkdtempSync(join(tmpdir(), 'pp-runtime-mi-'));
+  const directory = makeTemporaryDirectorySync(join(tmpdir(), 'pp-runtime-mi-'));
   ownedFixture(t).remove(() => rmSync(directory, { recursive: true, force: true }));
   writeFileSync(join(directory, 'website.yml'), 'adx_websiteid: site\nadx_name: Runtime identity\n');
   const app = await createSimulator({ sourceDir: directory, watch: false, dataverse: { enabled: true } });

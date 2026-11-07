@@ -10,13 +10,13 @@ import { createSimulator } from '../api.mjs';
 import { INTERNAL_TABLES } from '../lib/dataverse-organization.mjs';
 import { QUEUE_MESSAGE_TABLE } from '../lib/message-bus.mjs';
 import { OUTBOX_TABLE } from '../lib/outbox.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const ENTITY =
   '<Entity><Name>x_item</Name><EntityInfo><entity Name="x_item"><EntitySetName>x_items</EntitySetName><PrimaryIdAttribute>x_itemid</PrimaryIdAttribute><PrimaryNameAttribute>x_name</PrimaryNameAttribute><attributes><attribute PhysicalName="x_itemid"><Name>x_itemid</Name><Type>primarykey</Type></attribute><attribute PhysicalName="x_name"><Name>x_name</Name><Type>nvarchar</Type></attribute></attributes></entity></EntityInfo></Entity>';
 
 test('a standalone runtime at level simulation sends one message and captures one outbox entry without a schema diagnostic', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'internal-tables-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'internal-tables-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'solution/Other/Solution.xml':
@@ -66,7 +66,6 @@ test('a standalone runtime at level simulation sends one message and captures on
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.csrf },
     body: JSON.stringify({ appId, displayName: 'Invented internal table test', roles: ['System Administrator'] }),
-    signal: AbortSignal.timeout(10000),
   });
   assert.equal(registered.status, 201);
   const { secret } = await registered.json();
@@ -79,14 +78,12 @@ test('a standalone runtime at level simulation sends one message and captures on
       client_secret: secret,
       scope: `${sim.dataverse.origin}/.default`,
     }),
-    signal: AbortSignal.timeout(10000),
   });
   assert.equal(issued.status, 200);
   const { access_token: accessToken } = await issued.json();
   const get = (suffix) =>
     fetch(`${sim.dataverse.origin}/api/data/v9.2/${suffix}`, {
       headers: { authorization: `Bearer ${accessToken}` },
-      signal: AbortSignal.timeout(10000),
     });
   const service = await get('');
   assert.equal(service.status, 200);

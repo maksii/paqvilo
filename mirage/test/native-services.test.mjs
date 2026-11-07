@@ -13,7 +13,7 @@ import {
 } from '../lib/native-services.mjs';
 import { notesFilter } from '../lib/form-service.mjs';
 import { signInHeaders } from '../testing/session.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('native grids preserve zone-less DateOnly and independent dates across host time zones', () => {
   const previous = process.env.TZ;
@@ -131,7 +131,7 @@ const NOTE = 'e0000000-0000-4000-8000-000000000001';
 const INTERNAL_NOTE = 'e0000000-0000-4000-8000-000000000002';
 
 async function fixture(t, { roles = ['Editor'] } = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'native-services-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'native-services-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
     'website.yml': `adx_websiteid: ${SITE}\nadx_name: Native`,

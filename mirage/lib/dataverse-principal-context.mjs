@@ -3,12 +3,12 @@ import { dataverseIdentity } from './dataverse-security.mjs';
 
 /** Organization authorization remains with principals/FLS; admin only bypasses
  * the separate Power Pages visitor permission model in the shared row store. */
-export function organizationPrincipalContext(store, user, { caller = user, appId } = {}) {
+export function organizationPrincipalContext(store, user, { caller = user, appId, userAgent, acceptLanguage } = {}) {
   if (!user || user.isdisabled === true)
     throw new DataError('The selected staff user is unavailable or disabled.', 401, 'StaffPrincipalUnavailable');
   const { hierarchy, userHierarchy, ...facts } = dataverseIdentity(store, user);
   const dataverse = Object.defineProperties(
-    { appId, ...facts, callerId: caller.systemuserid, accessMode: user.accessmode },
+    { appId, ...facts, callerId: caller.systemuserid, accessMode: user.accessmode, userAgent, acceptLanguage },
     {
       // The organization's hierarchy module (api.hierarchy.resolve: metadata and pack-declared hierarchies) answers first.
       hierarchy: {

@@ -1,12 +1,97 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DataStore, DataError, compileFilter, parseFetchXml } from '../lib/data.mjs';
 import { initialState } from '../lib/bootstrap.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const user = { contactId: 'c1', accountId: 'a1', roles: ['Member'] };
+test('permission memoization cannot grant another row with a duplicate identifier', () => {
+  for (const reversed of [false, true]) {
+    const rows = [
+      { id: 'duplicate', contactid: 'c1' },
+      { id: 'duplicate', contactid: 'c2' },
+    ];
+    if (reversed) rows.reverse();
+    const store = new DataStore({
+      state: {
+        mappings: { item: { idColumn: 'id' } },
+        tables: { item: rows },
+        permissions: [{ entity: 'item', roles: ['Member'], scope: 'contact' }],
+      },
+    });
+    assert.deepEqual(
+      store.rows('item', user).map((row) => row.contactid),
+      ['c1'],
+    );
+    assert.equal(store.rowCount('item', user), 1);
+  }
+});
+test('unconditional permission counts avoid reading record values and preserve authorization overrides', () => {
+  const store = new DataStore({
+    state: {
+      mappings: { sample: { idColumn: 'id' } },
+      tables: { sample: [{ id: 'one' }] },
+    },
+  });
+  const subset = new Array(100000);
+  Object.defineProperty(subset, 99999, {
+    configurable: true,
+    get() {
+      throw Error('Record materialization');
+    },
+  });
+  assert.equal(store.rowCount('sample', user, subset), 0);
+  store.state.permissions = [{ entity: 'sample', scope: 'global' }];
+  assert.equal(store.rowCount('sample', user, subset), 1);
+  store.state.permissions.unshift({ entity: 'sample', scope: 'parent' });
+  assert.throws(() => store.rowCount('sample', user), /Parent permission requires/);
+  assert.equal(store.rowCount('sample', user, new Array(100)), 0);
+  store.state.permissions = [{ entity: 'sample', scope: 'global' }];
+  let calls = 0;
+  store.allowed = () => {
+    calls++;
+    return false;
+  };
+  assert.equal(store.rowCount('sample', user), 0);
+  assert.equal(calls, 1);
+});
+test('permission counts preserve row filtering, aliases, sparse subsets and errors without a visible-row array', () => {
+  const store = new DataStore({
+    state: {
+      mappings: { sample: { idColumn: 'id', entitySet: 'samples' } },
+      tables: {
+        sample: [
+          { id: 'one', owner: 'c1' },
+          { id: 'two', owner: 'c2' },
+        ],
+      },
+      permissions: [{ entity: 'sample', roles: ['Member'], operations: ['read'], scope: 'contact', field: 'owner' }],
+    },
+  });
+  const rows = store.state.tables.sample;
+  const subset = new Array(4);
+  subset[1] = rows[0];
+  subset[3] = rows[1];
+  for (const identity of [user, {}, { admin: true }]) {
+    const expected = store.rows('samples', identity).length;
+    Object.defineProperty(rows, 'filter', {
+      configurable: true,
+      value() {
+        throw Error('Visible row allocation');
+      },
+    });
+    assert.equal(store.rowCount('samples', identity), expected);
+    delete rows.filter;
+    assert.equal(store.rowCount('sample', identity, subset), expected);
+  }
+  store.state.settings.permissionMode = 'permissive';
+  delete subset[3];
+  assert.equal(store.rowCount('sample', {}, subset), 1);
+  assert.throws(() => store.rowCount('missing'), /No mapping or local table/);
+});
 test('enforced unknown navigation bindings reject create and plugin updates atomically', async () => {
   const initial = state();
   initial.settings = { ...initial.settings, associationPermissions: 'enforce' };
@@ -619,7 +704,7 @@ const state = () => ({
 });
 
 test('persistent CRUD with atomic rollback and declarative plugin secondary effects', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'pp-mirage-data-'));
+  const dir = await makeTemporaryDirectory(join(tmpdir(), 'pp-mirage-data-'));
   try {
     const initial = state();
     initial.plugins = [

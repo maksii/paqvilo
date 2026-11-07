@@ -101,3 +101,26 @@ test('a preset replacing a plug-in table keeps the steps the Solution seeded und
     ['Solution step', 'preset step'],
   );
 });
+
+test('preserving exported rows detaches mutable data without serializing source XML again', () => {
+  const xml = '<form>' + 'Invented text \u0394 '.repeat(10000) + '</form>';
+  const previous = {
+    mappings: { systemform: { modelDrivenSource: true } },
+    tables: { systemform: [{ formxml: xml, options: { active: true } }] },
+  };
+  const native = globalThis.structuredClone;
+  let next;
+  try {
+    globalThis.structuredClone = (value) => {
+      if (Array.isArray(value) && value[0]?.formxml === xml) throw new Error('Source XML serialization copy');
+      return native(value);
+    };
+    next = preserveOrganizationPresetSections(previous, {}, {});
+  } finally {
+    globalThis.structuredClone = native;
+  }
+  assert.equal(next.tables.systemform[0].formxml, xml);
+  next.tables.systemform[0].options.active = false;
+  assert.equal(previous.tables.systemform[0].options.active, true);
+  assert.notEqual(next.mappings.systemform, previous.mappings.systemform);
+});

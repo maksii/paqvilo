@@ -6,6 +6,7 @@ import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
 import { canvasInventoryRecord, readCanvasSource, readCanvasSources } from '../lib/canvas-source.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const APP = [
   'App:',
@@ -109,7 +110,7 @@ test('configured canvas imports retain directory and archive inventories and dia
 });
 
 async function dirOf(t, entries) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'canvas-source-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'canvas-source-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(entries)) {
     await fs.mkdir(path.dirname(path.join(root, name)), { recursive: true });
@@ -358,5 +359,256 @@ test('canvas source inventories an msapp without inflating its large media entri
   ]);
   // A flipped media byte fails any inflate/CRC of that entry; the inventory still succeeds because it is never read.
   zipped[zipped.indexOf(Buffer.from(media)) + media.length + 2048] ^= 0xff;
-  assertInventory(await readCanvasSource({ msapp: zipped, name: 'InventedCanvas' }));
+  const source = await readCanvasSource({ msapp: zipped, name: 'InventedCanvas' });
+  assertInventory(source);
+  assert.equal(source.assetDiagnostics[0].code, 'CANVAS_ASSET_UNAVAILABLE');
+  const { canvasMsappRecord } = await import('../lib/solution-inventory.mjs');
+  const record = await canvasMsappRecord(zipped, { name: 'InventedCanvas' });
+  assert.equal(record.canvas.assetDiagnostics[0].code, 'CANVAS_ASSET_UNAVAILABLE');
+});
+
+test('partial canvas source cannot claim complete app or rendering coverage', async () => {
+  const { canvasRequirementRows } = await import('../lib/source-graph.mjs');
+  for (const broken of [
+    'Screens: [',
+    '# $schema=https://powerapps.com/schemas/pa-yaml/v9.1/pa.schema.json\nApp: {}\n',
+  ]) {
+    const source = await readCanvasSource({
+      msapp: msappOf({ 'Src/HomeScreen.pa.yaml': HOME, 'Src/App.pa.yaml': broken }),
+      name: 'partial',
+    });
+    assert.equal(source.screens.length, 1);
+    const record = canvasInventoryRecord(source);
+    assert.equal(record.level, 'behaviour'); // Parsed screens remain available for inspection.
+    assert.equal(record.sourceDiagnostics.length, 1);
+    const rows = canvasRequirementRows([record]);
+    assert.equal(rows.find((row) => row.id === 'canvas:app/partial').status, 'unsupported');
+    assert.equal(rows.find((row) => row.id === 'canvas:app/partial').reason, record.sourceDiagnostics[0].code);
+    assert.equal(rows.find((row) => row.id === 'canvas:rendering').status, 'unsupported');
+  }
+  const unreadable = canvasInventoryRecord(
+    await readCanvasSource({ msapp: Buffer.from('invalid'), name: 'unreadable' }),
+  );
+  const row = canvasRequirementRows([unreadable]).find((item) => item.id === 'canvas:app/unreadable');
+  assert.equal(row.status, 'unsupported');
+  assert.equal(row.reason, 'CANVAS_SOURCE_ARCHIVE_INVALID');
+});
+
+test('Solution canvas inventory retains partial source coverage diagnostics', async () => {
+  const { canvasMsappRecord } = await import('../lib/solution-inventory.mjs');
+  const { canvasRequirementRows } = await import('../lib/source-graph.mjs');
+  const record = await canvasMsappRecord(msappOf({ 'Src/HomeScreen.pa.yaml': HOME, 'Src/App.pa.yaml': 'App: [' }), {
+    name: 'partial',
+  });
+  assert.equal(record.sourceDiagnostics[0].code, 'CANVAS_SOURCE_YAML_INVALID');
+  assert.equal(canvasRequirementRows([record]).find((row) => row.id === 'canvas:rendering').status, 'unsupported');
+});
+
+test('malformed canvas structures and duplicate screen definitions cannot claim complete coverage', async () => {
+  const { canvasRequirementRows } = await import('../lib/source-graph.mjs');
+  for (const [extra, code] of [
+    [{ 'Src/Broken.pa.yaml': 'Screens:\n  Other:\n    Children: not-a-sequence\n' }, 'CANVAS_SOURCE_STRUCTURE_INVALID'],
+    [{ 'Src/Other.pa.yaml': 'Screens:\n  HomeScreen:\n    Children: []\n' }, 'CANVAS_SOURCE_STRUCTURE_INVALID'],
+    [{ 'Src/Broken.pa.yaml': 'App:\n  Properties: not-a-map\n' }, 'CANVAS_SOURCE_STRUCTURE_INVALID'],
+    [{ 'Src/Broken.pa.yaml': 'ComponentDefinitions:\n  Widget: invalid\n' }, 'CANVAS_SOURCE_STRUCTURE_INVALID'],
+    [{ 'Src/Broken.pa.yaml': 'Screens:\n  Other:\n    Children: [invalid]\n' }, 'CANVAS_SOURCE_STRUCTURE_INVALID'],
+    [
+      {
+        'Src/Broken.pa.yaml':
+          'Screens:\n  Other:\n    Children:\n      - Same: { Control: Label }\n      - same: { Control: Label }\n',
+      },
+      'CANVAS_SOURCE_STRUCTURE_INVALID',
+    ],
+    [
+      { 'Src/Broken.pa.yaml': 'Screens:\n  Other:\n    Children:\n      - WidgetTitle: { Control: Label }\n' },
+      'CANVAS_SOURCE_NAME_COLLISION',
+    ],
+    [
+      { 'Src/Broken.pa.yaml': 'Screens:\n  Other:\n    Children:\n      - HomeScreen: { Control: Label }\n' },
+      'CANVAS_SOURCE_NAME_COLLISION',
+    ],
+  ]) {
+    const source = await readCanvasSource({
+      msapp: msappOf({ 'Src/HomeScreen.pa.yaml': HOME, ...extra }),
+      name: 'partial',
+    });
+    const record = canvasInventoryRecord(source);
+    assert.ok(record.sourceDiagnostics?.some((diagnostic) => diagnostic.code === code));
+    const rows = canvasRequirementRows([record]);
+    assert.equal(rows.find((row) => row.id === 'canvas:app/partial').status, 'unsupported');
+    assert.equal(rows.find((row) => row.id === 'canvas:rendering').status, 'unsupported');
+  }
+});
+
+test('component-local controls may reuse app and other component names', async () => {
+  const source = await readCanvasSource({
+    msapp: msappOf({
+      'Src/HomeScreen.pa.yaml': HOME,
+      'Src/Component/Widget.pa.yaml':
+        'ComponentDefinitions:\n  Widget:\n    DefinitionType: CanvasComponent\n    Children:\n      - WidgetTitle: { Control: Label }\n',
+    }),
+  });
+  assert.ok(!source.diagnostics.some((item) => item.code === 'CANVAS_SOURCE_NAME_COLLISION'));
+  assert.equal(source.components[0].controls[0].name, 'WidgetTitle');
+});
+
+test('normal data source and component mappings remain readable', async () => {
+  const source = await readCanvasSource({ msapp: msappOf(files) });
+  assert.ok(!source.diagnostics.some((item) => item.code === 'CANVAS_SOURCE_STRUCTURE_INVALID'));
+  assert.deepEqual(
+    source.dataSources.map((item) => item.name),
+    ['Widgets', 'InventedService'],
+  );
+  assert.deepEqual(
+    source.components.map((item) => item.name),
+    ['FxHeader'],
+  );
+});
+
+test('legacy cross-screen name collisions refuse a cyclic runtime before starting', async () => {
+  const source = await readCanvasSource({
+    msapp: msappOf({
+      'Src/App.fx.yaml': 'App As appinfo:\n  OnStart: =Set(started, true)\n',
+      'Src/One.fx.yaml': 'One As screen:\n  A As groupContainer:\n    B As label:\n      Text: ="one"\n',
+      'Src/Two.fx.yaml': 'Two As screen:\n  B As groupContainer:\n    A As label:\n      Text: ="two"\n',
+    }),
+    name: 'legacy',
+  });
+  assert.ok(source.diagnostics.some((item) => item.code === 'CANVAS_SOURCE_NAME_COLLISION'));
+  const { createCanvasApp } = await import('../lib/canvas-runtime.mjs');
+  const { createPowerFxEvaluator } = await import('../lib/canvas-power-fx.mjs');
+  assert.throws(() => createCanvasApp({ app: { uniqueName: 'legacy', source }, evaluator: createPowerFxEvaluator() }), {
+    code: 'CanvasSourceNameCollision',
+    status: 501,
+  });
+});
+
+test('legacy CanvasComponent definitions and instances retain unknown custom property direction', async () => {
+  const source = await readCanvasSource({
+    msapp: msappOf({
+      'Src/Home.fx.yaml': 'Home As screen:\n  First As Widget:\n    Value: =1\n',
+      'Src/Components/Widget.fx.yaml':
+        'Widget As CanvasComponent:\n  Value: =0\n  Label1 As label:\n    Text: =Widget.Value\n',
+      'Src/Components/Widget.json': JSON.stringify({
+        ComponentManifest: { AllowAccessToGlobals: true },
+        CustomProperties: [
+          { Name: 'Value', Category: 0, PropertyDataTypeKey: 'Number' },
+          { Name: 'Call', PropertyScopeKey: {}, PropertyDataTypeKey: 'Number' },
+        ],
+      }),
+    }),
+  });
+  assert.equal(source.components[0].accessAppScope, true);
+  assert.deepEqual(source.components[0].customProperties.Value, {
+    kind: 'LegacyUnknown',
+    directionKnown: false,
+    functionScope: false,
+    dataType: 'Number',
+  });
+  assert.equal(source.components[0].customProperties.Call.functionScope, true);
+  assert.equal(source.screens[0].controls[0].componentName, 'Widget');
+  assert.equal(source.screens[0].controls[0].control, 'CanvasComponent');
+  assert.ok(
+    canvasInventoryRecord(source).sourceDiagnostics.some(
+      (item) => item.code === 'CANVAS_COMPONENT_LEGACY_PROPERTY_UNKNOWN',
+    ),
+  );
+  assert.ok(!source.diagnostics.some((item) => item.code === 'CANVAS_SOURCE_SCHEMA_UNKNOWN'));
+});
+
+test('legacy option sets expose only exact unambiguous exported display names and labels', async () => {
+  const source = await readCanvasSource({
+    msapp: msappOf({
+      'Src/Home.fx.yaml': 'Home As screen:\n  Title As label:\n    Text: ="x"\n',
+      'DataSources/items.json': JSON.stringify([
+        {
+          Name: 'x_state',
+          Type: 'OptionSetInfo',
+          DisplayName: 'Status (Items)',
+          OptionSetInfoNameMapping: { 0: 'Active', 1: 'Inactive' },
+        },
+        {
+          Name: 'x_bad',
+          Type: 'OptionSetInfo',
+          DisplayName: 'Ambiguous',
+          OptionSetInfoNameMapping: { 1: 'Same', 2: 'same' },
+        },
+        { Name: 'x_dup1', Type: 'OptionSetInfo', DisplayName: 'Duplicate', OptionSetInfoNameMapping: { 1: 'A' } },
+        { Name: 'x_dup2', Type: 'OptionSetInfo', DisplayName: 'duplicate', OptionSetInfoNameMapping: { 2: 'B' } },
+      ]),
+    }),
+  });
+  assert.deepEqual(source.enums, { 'Status (Items)': { Active: 0, Inactive: 1 } });
+  assert.equal(source.diagnostics.filter((item) => item.code === 'CANVAS_SOURCE_OPTIONSET_INVALID').length, 2);
+  assert.ok(
+    canvasInventoryRecord(source).sourceDiagnostics.some((item) => item.code === 'CANVAS_SOURCE_OPTIONSET_INVALID'),
+  );
+  const { canvasMsappRecord } = await import('../lib/solution-inventory.mjs');
+  const solution = await canvasMsappRecord(
+    msappOf({
+      'Src/Home.fx.yaml': 'Home As screen:\n  Title As label:\n    Text: ="x"\n',
+      'DataSources/item.json': JSON.stringify([
+        {
+          Name: 'x_state',
+          Type: 'OptionSetInfo',
+          DisplayName: 'Status (Items)',
+          OptionSetInfoNameMapping: { 0: 'Active', 1: 'Inactive' },
+        },
+      ]),
+    }),
+    { name: 'example' },
+  );
+  assert.deepEqual(solution.canvas.enums, { 'Status (Items)': { Active: 0, Inactive: 1 } });
+});
+
+test('legacy quoted control variants remain controls with formulas and component scope', async () => {
+  const source = await readCanvasSource({
+    msapp: msappOf({
+      'Src/Home.fx.yaml': 'Home As screen:\n  First As Widget: {}\n',
+      'Src/Components/Widget.fx.yaml':
+        'Widget As CanvasComponent:\n  "Icon1 As icon.\'3DPrinting\'":\n    Width: =20\n  Label1 As label:\n    Width: =Icon1.Width\n',
+    }),
+  });
+  const icon = source.components[0].controls.find((control) => control.name === 'Icon1');
+  assert.equal(icon.control, "icon.'3DPrinting'");
+  assert.ok(
+    source.formulas.some((row) => row.owner === 'Widget.Icon1' && row.property === 'Width' && row.text === '=20'),
+  );
+  assert.ok(!source.formulas.some((row) => row.property.includes('Icon1 As')));
+});
+
+test('pa.yaml preserves explicit RaiseOnReset without inventing a value when omitted', async () => {
+  const source = await readCanvasSource({
+    msapp: msappOf({
+      'Src/Component/Widget.pa.yaml':
+        'ComponentDefinitions:\n  Widget:\n    DefinitionType: CanvasComponent\n    CustomProperties:\n      A:\n        PropertyKind: Input\n        DataType: Text\n        RaiseOnReset: true\n      B:\n        PropertyKind: Input\n        DataType: Text\n',
+    }),
+  });
+  assert.equal(source.components[0].customProperties.A.raiseOnReset, true);
+  assert.equal(Object.hasOwn(source.components[0].customProperties.B, 'raiseOnReset'), false);
+});
+
+test('legacy table aliases preserve exported names and reject ambiguous aliases', async () => {
+  const files = {
+    'Src/Home.fx.yaml': 'Home As screen:\n  Label1 As label:\n    Text: ="x"\n',
+    'DataSources/item.json': JSON.stringify([
+      {
+        Name: 'Items',
+        Type: 'NativeCDSDataSourceInfo',
+        LogicalName: 'x_item',
+        NativeCDSDataSourceInfoNameMapping: {
+          x_itemid: 'Item (x_itemid)',
+          x_name: 'Name',
+          x_a: 'Shared',
+          x_b: 'shared',
+        },
+      },
+    ]),
+  };
+  const source = await readCanvasSource({ msapp: msappOf(files) });
+  assert.deepEqual(source.dataSources[0].fieldAliases, { x_itemid: 'Item (x_itemid)', x_name: 'Name' });
+  assert.ok(source.diagnostics.some((item) => item.code === 'CANVAS_SOURCE_DATASOURCE_ALIAS_INVALID'));
+  const { canvasMsappRecord } = await import('../lib/solution-inventory.mjs');
+  const record = await canvasMsappRecord(msappOf(files), { name: 'example' });
+  assert.deepEqual(record.canvas.dataSources[0].fieldAliases, source.dataSources[0].fieldAliases);
 });

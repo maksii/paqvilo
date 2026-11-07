@@ -40,6 +40,63 @@ test('attachment setup runs before Fetch and disposes its own hooks on target re
   assert.equal(tab.cdp.listenerCount('Runtime.executionContextCreated'), 0);
 });
 
+test('draft tracking survives a document replaced while its initialization is registered', async () => {
+  const fake = fakeBrowser(),
+    tab = fake.openTab();
+  const registered = Promise.withResolvers(),
+    navigation = Promise.withResolvers();
+  const send = tab.cdp.send;
+  let replaced = false,
+    registration;
+  tab.cdp.send = async (method, params) => {
+    if (method === 'Page.addScriptToEvaluateOnNewDocument') {
+      registration = params;
+      registered.resolve();
+      await navigation.promise;
+      replaced = true;
+      return { identifier: 'navigation-safe-draft' };
+    }
+    if (method === 'Runtime.evaluate' && replaced && params.expression.includes('installLateDraftTracker'))
+      throw new Error('Protocol error (Runtime.evaluate): Inspected target navigated or closed');
+    return send(method, params);
+  };
+  const opening = interceptOrigin(fake.context, ORIGIN, (route) => route.fallback());
+  await registered.promise;
+  navigation.resolve();
+  const detach = await opening;
+  assert.equal(registration.runImmediately, true, 'the existing document receives the tracker during registration');
+  assert.ok(
+    fake.sent.some(({ method }) => method === 'Fetch.enable'),
+    'the new document retains interception',
+  );
+  await detach();
+  assert.ok(
+    fake.sent.some(
+      (item) =>
+        item.method === 'Page.removeScriptToEvaluateOnNewDocument' && item.identifier === 'navigation-safe-draft',
+    ),
+  );
+  assert.ok(fake.sent.some((item) => item.method === 'Runtime.removeBinding'));
+  assert.equal(tab.cdp.listenerCount('Runtime.bindingCalled'), 0);
+});
+
+test('a failed draft registration on a live target still fails interception and releases its binding', async () => {
+  const fake = fakeBrowser(),
+    tab = fake.openTab();
+  const send = tab.cdp.send;
+  tab.cdp.send = async (method, params) => {
+    if (method === 'Page.addScriptToEvaluateOnNewDocument') throw new Error('fixture target registration rejected');
+    return send(method, params);
+  };
+  await assert.rejects(
+    interceptOrigin(fake.context, ORIGIN, (route) => route.fallback()),
+    /fixture target registration rejected/,
+  );
+  assert.ok(fake.sent.some(({ method }) => method === 'Runtime.removeBinding'));
+  assert.equal(tab.cdp.listenerCount('Runtime.bindingCalled'), 0);
+  assert.equal(tab.page.listenerCount('close'), 0);
+});
+
 test('an initial blank DOMContentLoaded leaves late admission available for an escaped portal document', async () => {
   const fake = fakeBrowser(),
     tab = fake.openTab();

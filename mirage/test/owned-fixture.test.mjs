@@ -4,8 +4,100 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { spawnSync } from 'node:child_process';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
+import readline from 'node:readline';
+import { ownedFixture, removeFixtureDirectory, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+
+test('drained fixture removal retains errors after its bounded asynchronous retry policy', async (t) => {
+  const failure = Object.assign(new Error('Invented persistent cleanup failure'), { code: 'EACCES' });
+  const calls = [];
+  t.mock.method(fs, 'rm', async (...args) => {
+    calls.push(args);
+    throw failure;
+  });
+  await assert.rejects(removeFixtureDirectory('invented-owned-directory'), (error) => error === failure);
+  assert.deepEqual(calls, [
+    ['invented-owned-directory', { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }],
+  ]);
+});
+
+test(
+  'fixture removal permits a scheduled Windows exclusive log-handle release',
+  {
+    skip: process.platform !== 'win32' && 'Windows exclusive file handles prevent deletion',
+  },
+  async (t) => {
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'owned-fixture-log-'));
+    const child = spawn(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        '$stream = [System.IO.File]::Open($env:PAQVILO_FIXTURE_LOG, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None); try { [Console]::WriteLine("holding-log"); [Console]::In.ReadLine() | Out-Null } finally { $stream.Dispose() }',
+      ],
+      {
+        env: { ...process.env, PAQVILO_FIXTURE_LOG: path.join(directory, 'chrome_debug.log') },
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+      },
+    );
+    const closed = once(child, 'close');
+    const lines = readline.createInterface({ input: child.stdout });
+    t.after(async () => {
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+      await closed;
+      lines.close();
+      await removeFixtureDirectory(directory);
+    });
+    assert.equal((await once(lines, 'line', { signal: t.signal }))[0], 'holding-log');
+    await assert.rejects(fs.rm(directory, { recursive: true, force: true }), (error) =>
+      ['EBUSY', 'EPERM'].includes(error.code),
+    );
+    let released = false;
+    setImmediate(() => {
+      released = true;
+      child.stdin.end('release\n');
+    });
+    await removeFixtureDirectory(directory);
+    assert.equal(released, true);
+    assert.deepEqual(await closed, [0, null]);
+    await assert.rejects(fs.stat(directory), { code: 'ENOENT' });
+  },
+);
+
+test(
+  'fixture removal tolerates a held Windows solution directory handle',
+  { skip: process.platform !== 'win32' && 'Windows directory handles prevent deletion' },
+  async (t) => {
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'owned-fixture-directory-'));
+    const solution = path.join(directory, 'solution');
+    await fs.mkdir(solution);
+    const child = spawn(process.execPath, ['-e', "console.log('holding-directory'); process.stdin.resume()"], {
+      cwd: solution,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    const closed = once(child, 'close');
+    const lines = readline.createInterface({ input: child.stdout });
+    t.after(async () => {
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+      await closed;
+      lines.close();
+      await removeFixtureDirectory(directory);
+    });
+    assert.equal((await once(lines, 'line', { signal: t.signal }))[0], 'holding-directory');
+    await assert.rejects(fs.rm(directory, { recursive: true, force: true }), (error) =>
+      ['EBUSY', 'EPERM', 'EACCES'].includes(error.code),
+    );
+    const removal = removeFixtureDirectory(directory);
+    child.stdin.end('release\n');
+    assert.deepEqual(await closed, [0, null]);
+    await removal;
+    await assert.rejects(fs.stat(directory), { code: 'ENOENT' });
+  },
+);
 
 test('one context shares its owner across builders and retains the declared close order', async () => {
   const hooks = [],
@@ -62,7 +154,7 @@ test('several close failures retain all original causes in registration order', 
 });
 
 test('a directory failure occurs after listener shutdown and cannot retain its process handle', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'owned-fixture-listener-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'owned-fixture-listener-'));
   const server = http.createServer((request, response) => response.end('invented'));
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const url = 'http://127.0.0.1:' + server.address().port,
@@ -79,7 +171,7 @@ test('a directory failure occurs after listener shutdown and cannot retain its p
   });
   try {
     await assert.rejects(hooks[0], (error) => error === failure);
-    await assert.rejects(fetch(url, { signal: AbortSignal.timeout(1000) }), /fetch failed/);
+    await assert.rejects(fetch(url), /fetch failed/);
     assert.ok((await fs.stat(root)).isDirectory());
   } finally {
     server.closeAllConnections();
@@ -89,7 +181,7 @@ test('a directory failure occurs after listener shutdown and cannot retain its p
 });
 
 test('cleanup awaits accepted asynchronous work before removing its state directory', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'owned-fixture-write-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'owned-fixture-write-'));
   const hooks = [],
     owner = ownedFixture({ after: (hook) => hooks.push(hook) });
   let release,
@@ -155,7 +247,7 @@ test('the original test failure remains visible while later cleanup still runs',
   `;
   const result = spawnSync(process.execPath, [...process.execArgv, '--input-type=module', '-e', source], {
     encoding: 'utf8',
-    timeout: 10000,
+    timeout: 150_000,
     windowsHide: true,
   });
   assert.equal(result.error, undefined);

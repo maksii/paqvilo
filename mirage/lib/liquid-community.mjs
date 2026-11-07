@@ -28,10 +28,18 @@ const displayOrder = (record) => {
   return fieldOf(record, 'displayorder') == null || Number.isNaN(value) ? Number.MAX_SAFE_INTEGER : value;
 };
 const dateOf = (value) => (value == null || value === '' ? null : (parseNetDate(value) ?? null));
-const idList = (value) => (Array.isArray(value) ? value : value == null ? [] : [value]).map(guidOf).filter(Boolean);
+const idList = (value) => {
+  let list = [value];
+  if (Array.isArray(value)) list = value;
+  else if (value == null) list = [];
+  return list.map(guidOf).filter(Boolean);
+};
 /** Text attributes exported as YAML booleans/numbers keep their Dataverse string form. */
-const text = (value) =>
-  value == null ? null : typeof value === 'boolean' ? (value ? 'True' : 'False') : String(value);
+const text = (value) => {
+  if (value == null) return null;
+  if (typeof value === 'boolean') return value ? 'True' : 'False';
+  return String(value);
+};
 /** VirtualPathUtility.ToAbsolute for app-relative (~/) values on a root-hosted site. */
 const absolute = (value) => {
   const url = text(value);

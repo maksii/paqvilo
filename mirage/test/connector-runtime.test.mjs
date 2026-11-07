@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's connector runtime design: connection resolution, provider dispatch, pack providers and diagnostics
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -111,6 +112,7 @@ test('unbound references answer ConnectionNotBound; a Dataverse flow override st
   assert.equal(createConnectorRuntime().resolve({ connectorId: 'shared_commondataserviceforapps' }).bound, false);
 });
 
+// @test-kind contract+security: diagnostics name the operation and never carry parameter values
 test('provider dispatch passes the caller context and maps errors to documented codes without values in diagnostics', async () => {
   const notes = [],
     seen = [];
@@ -164,12 +166,17 @@ test('provider dispatch passes the caller context and maps errors to documented 
     'connectorId',
     'correlationId',
     'durationMs',
+    'entity',
+    'message',
+    'name',
     'operationId',
     'principalId',
     'provider',
     'reference',
     'status',
   ]);
+  // The human facts (D-M-2 Findings) name the operation, never a parameter value.
+  assert.equal(invokes[0].name, invokes[0].operationId);
   assert.equal(invokes[0].principalId, USER);
   assert.equal(invokes[1].error, 'ProviderFailed');
   assert.doesNotMatch(JSON.stringify(notes), /x-hidden-value/);
@@ -213,6 +220,7 @@ test('pagination follows nextLink only when asked and stops at maxPages with a t
   assert.equal(notes.filter((n) => n.code === 'CONNECTOR_PAGINATION_TRUNCATED').length, 1);
 });
 
+// @test-kind contract+security: the http provider reaches loopback services only and refuses redirects
 test('http provider applies rewrites to loopback, refuses other hosts and refuses loopback redirects', async (t) => {
   const escaped = [];
   const other = await listen(t, (req, res) => {
@@ -368,6 +376,7 @@ test('approvals and memory-queue providers support their documented operations a
     );
 });
 
+// @test-kind contract+security: connection settings and connector pack exports never hold credentials
 test('connection settings and connector pack exports reject credentials and malformed entries', () => {
   const valid = {
     'conn-1': {

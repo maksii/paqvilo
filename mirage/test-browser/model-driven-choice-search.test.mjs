@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
 import { sharedBrowser, fileScope } from './shared-browser.mjs';
+import { prepareNativeControls } from './native-controls-fixture.mjs';
 
 const chrome = sharedBrowser();
 // Tests that only render controls or read records share one simulator; tests that write own theirs.
@@ -12,9 +13,9 @@ const readOnlyApp = () => (sharedApp ??= modelDrivenFixture(scope));
 test('multiselect search preserves typed terms and keyboard selection cannot toggle hidden choices', async (t) => {
   const { origin } = await readOnlyApp();
   const page = await chrome.page(t);
-  await page.goto(origin + '/main.aspx');
+  await prepareNativeControls(page, origin);
   await page.evaluate(async () => {
-    const { renderControl } = await import('/_apps/assets/controls.mjs');
+    const renderControl = window.renderFixtureControl;
     window.control = renderControl(
       {
         name: 'x_tags',
@@ -68,9 +69,9 @@ test('multiselect search preserves typed terms and keyboard selection cannot tog
 test('choice lists stay inside the form viewport and keyboard navigation scrolls only their options', async (t) => {
   const { origin } = await readOnlyApp();
   const page = await chrome.page(t, { viewport: { width: 1000, height: 700 } });
-  await page.goto(origin + '/main.aspx');
+  await prepareNativeControls(page, origin);
   await page.evaluate(async () => {
-    const { renderControl } = await import('/_apps/assets/controls.mjs');
+    const renderControl = window.renderFixtureControl;
     document.body.replaceChildren();
     const root = document.createElement('div');
     root.className = 'record-content';

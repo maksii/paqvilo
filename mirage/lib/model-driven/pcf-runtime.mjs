@@ -12,7 +12,7 @@ const unsupported = (name) => {
   throw new Error(`PCF ${name} is not supported by the local standard field host.`);
 };
 const scalarType = (type) =>
-  /^(?:SingleLine\.(?:Text|TextArea|Email|Phone|URL|Ticker)|Multiple|Whole\.(?:None|Duration|TimeZone|Language)|Decimal|FP|Currency|Enum|OptionSet|TwoOptions|DateAndTime\.(?:DateAndTime|DateOnly))$/i.test(
+  /* NOSONAR */ /^(?:SingleLine\.(?:Text|TextArea|Email|Phone|URL|Ticker)|Multiple|Whole\.(?:None|Duration|TimeZone|Language)|Decimal|FP|Currency|Enum|OptionSet|TwoOptions|DateAndTime\.(?:DateAndTime|DateOnly))$/i.test(
     type ?? '',
   );
 const dateOnly = (field) =>
@@ -66,7 +66,9 @@ function timeZoneOffsetMinutes(iana = 'UTC', date = new Date()) {
       .formatToParts(date)
       .find((part) => part.type === 'timeZoneName')?.value ?? 'GMT';
   const match = /GMT([+-])(\d{2}):(\d{2})/.exec(name);
-  return match ? (match[1] === '-' ? -1 : 1) * (Number(match[2]) * 60 + Number(match[3])) : 0;
+  if (!match) return 0;
+  const sign = match[1] === '-' ? -1 : 1;
+  return sign * (Number(match[2]) * 60 + Number(match[3]));
 }
 
 /** PCF context.formatting over the staff context: its locale, currency and time zone. */
@@ -150,38 +152,54 @@ function resource(url, kind) {
   return loaded.get(key);
 }
 
-function typed(value, property, field) {
+/* NOSONAR: mixed return values are part of the contract */ function typed(value, property, field) {
   if (value == null) return null;
   const type = String(property.ofType ?? property['of-type'] ?? '');
   if (/^(Whole|Decimal|FP|Currency|Enum|OptionSet)/i.test(type) || field?.type === 'number') {
-    if (typeof value !== 'number' || !Number.isFinite(value))
-      throw new Error(`PCF output ${property.name} must be a finite number.`);
-    if (
-      (/Whole|Enum|OptionSet/i.test(type) || /^(int|integer|bigint)$/.test(field?.dataverseType)) &&
-      !Number.isInteger(value)
-    )
-      throw new Error(`PCF output ${property.name} must be an integer.`);
-    if (
-      (field?.minValue !== undefined && value < field.minValue) ||
-      (field?.maxValue !== undefined && value > field.maxValue)
-    )
-      throw new Error(`PCF output ${property.name} is outside the column range.`);
-    return value;
+    return typedNumber(value, property, field, type);
   }
   if (/TwoOptions/i.test(type) || field?.type === 'boolean') {
-    if (typeof value !== 'boolean') throw new Error(`PCF output ${property.name} must be a boolean.`);
-    return value;
+    return typedBoolean(value, property);
   }
   if (/DateAndTime/i.test(type) || field?.type === 'date') {
-    const date = value instanceof Date ? value : new Date(value);
-    if (!Number.isFinite(date.getTime())) throw new Error(`PCF output ${property.name} must be a valid date.`);
-    if (dateOnly(field)) return value instanceof Date ? wallDate(date) : String(value).slice(0, 10);
-    if (field?.dateTimeBehavior === 'TimeZoneIndependent' && value instanceof Date)
-      return `${wallDate(date)}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${String(date.getMilliseconds()).padStart(3, '0')}Z`;
-    return date.toISOString();
+    return typedDate(value, property, field);
   }
   if (/Lookup|MultiSelectOptionSet|Object/i.test(type) || ['lookup', 'json'].includes(field?.type))
     unsupported(`property type ${type || field.type}`);
+  return typedText(value, property, field);
+}
+
+function typedNumber(value, property, field, type) {
+  if (typeof value !== 'number' || !Number.isFinite(value))
+    throw new Error(`PCF output ${property.name} must be a finite number.`);
+  if (
+    (/Whole|Enum|OptionSet/i.test(type) || /^(int|integer|bigint)$/.test(field?.dataverseType)) &&
+    !Number.isInteger(value)
+  )
+    throw new Error(`PCF output ${property.name} must be an integer.`);
+  if (
+    (field?.minValue !== undefined && value < field.minValue) ||
+    (field?.maxValue !== undefined && value > field.maxValue)
+  )
+    throw new Error(`PCF output ${property.name} is outside the column range.`);
+  return value;
+}
+
+function typedBoolean(value, property) {
+  if (typeof value !== 'boolean') throw new Error(`PCF output ${property.name} must be a boolean.`);
+  return value;
+}
+
+function typedDate(value, property, field) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) throw new Error(`PCF output ${property.name} must be a valid date.`);
+  if (dateOnly(field)) return value instanceof Date ? wallDate(date) : String(value).slice(0, 10);
+  if (field?.dateTimeBehavior === 'TimeZoneIndependent' && value instanceof Date)
+    return `${wallDate(date)}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${String(date.getMilliseconds()).padStart(3, '0')}Z`;
+  return date.toISOString();
+}
+
+function typedText(value, property, field) {
   if (typeof value !== 'string') throw new Error(`PCF output ${property.name} must be text.`);
   if (field?.maxLength && value.length > field.maxLength)
     throw new Error(`PCF output ${property.name} exceeds the column length.`);
@@ -218,17 +236,27 @@ export function pcfAdmission(control, { platformLibraries = [] } = {}) {
   const missing = needed.filter((library) => !supplied(library));
   if ((type === 'virtual' && !react) || missing.length) {
     const list = declared.map((library) => `${library.name} ${library.version}`).join(', ') || 'none declared';
+    let requirement;
+    if (type === 'virtual' && !react) requirement = 'A virtual component must declare its React platform library.';
+    else {
+      const missingLibraries = missing.map((library) => `${library.name}@${library.version}.js`).join(', ');
+      requirement = `Supply ${missingLibraries} as project files in modelDriven.clientSources.`;
+    }
     return {
       admitted: false,
       kind: type,
       code: 'PCF_VIRTUAL_UNSUPPORTED',
       missing: missing.map((library) => `${library.name}@${library.version}`),
-      reason: `Code component ${name} requires platform libraries (${list}). ${type === 'virtual' && !react ? 'A virtual component must declare its React platform library.' : `Supply ${missing.map((library) => `${library.name}@${library.version}.js`).join(', ')} as project files in modelDriven.clientSources.`}`,
+      reason: `Code component ${name} requires platform libraries (${list}). ${requirement}`,
     };
   }
+  let admittedKind;
+  if (type === 'virtual') admittedKind = 'virtual';
+  else if (dataset) admittedKind = 'dataset';
+  else admittedKind = 'standard';
   return {
     admitted: true,
-    kind: type === 'virtual' ? 'virtual' : dataset ? 'dataset' : 'standard',
+    kind: admittedKind,
     dataset,
     libraries: needed.map(supplied),
   };
@@ -285,12 +313,17 @@ const columnSecurity = (name, rights, disabled) => {
   const right = name ? rights?.[name] : undefined;
   return { editable: !disabled, readable: right?.read !== false, secured: right?.secured === true };
 };
+function pcfLifecycleState(destroyed, failed, element) {
+  if (destroyed) return 'destroyed';
+  if (failed) return 'failed';
+  return element.dataset.pcfState ?? 'loading';
+}
 
 // Loads the admitted platform libraries, then the component's declared CSS and code, and resolves its constructor.
-async function loadComponent(definition, admission, gone) {
+/* NOSONAR */ async function loadComponent(definition, admission, gone) {
   if (!registrationInstalled) {
     registrationInstalled = true;
-    const framework = (window.ComponentFramework = window.ComponentFramework ?? {}),
+    const framework = (globalThis.ComponentFramework = globalThis.ComponentFramework ?? {}),
       prior = framework.registerControl;
     framework.registerControl = function (name, Constructor) {
       if (safeName(name) && typeof Constructor === 'function') constructors.set(name, Constructor);
@@ -312,21 +345,9 @@ async function loadComponent(definition, admission, gone) {
     await resource(url, 'script');
   }
   if (gone()) return null;
-  let Constructor =
-    constructors.get(constructorName) ??
-    constructorName
-      .split('.')
-      .reduce((owner, key) => (owner && Object.hasOwn(owner, key) ? owner[key] : undefined), window);
+  let Constructor = findComponentConstructor(constructorName);
   if (!Constructor) {
-    const exportName = constructorName.split('.').at(-1);
-    const candidates = [
-      ...new Set(
-        (definition.resources?.exports ?? [])
-          .filter(safeName)
-          .map((name) => Object.getOwnPropertyDescriptor(window, name)?.value?.[exportName])
-          .filter((value) => typeof value === 'function'),
-      ),
-    ];
+    const candidates = componentExportCandidates(definition, constructorName);
     if (candidates.length > 1) throw new Error('The declared PCF resources expose ambiguous constructor exports.');
     Constructor = candidates[0];
   }
@@ -334,9 +355,30 @@ async function loadComponent(definition, admission, gone) {
   return { Constructor, constructorName };
 }
 
+function findComponentConstructor(constructorName) {
+  return (
+    constructors.get(constructorName) ??
+    constructorName
+      .split('.')
+      .reduce((owner, key) => (owner && Object.hasOwn(owner, key) ? owner[key] : undefined), globalThis)
+  );
+}
+
+function componentExportCandidates(definition, constructorName) {
+  const exportName = constructorName.split('.').at(-1);
+  return [
+    ...new Set(
+      (definition.resources?.exports ?? [])
+        .filter(safeName)
+        .map((name) => Object.getOwnPropertyDescriptor(globalThis, name)?.value?.[exportName])
+        .filter((value) => typeof value === 'function'),
+    ),
+  ];
+}
+
 // A virtual component returns a React element from updateView; the supplied ReactDOM renders it into the host element.
 function virtualView(element) {
-  const ReactDOM = window.ReactDOM;
+  const ReactDOM = globalThis.ReactDOM;
   if (!ReactDOM || (typeof ReactDOM.render !== 'function' && typeof ReactDOM.createRoot !== 'function'))
     throw new Error('The supplied ReactDOM platform library did not define window.ReactDOM.');
   const root = typeof ReactDOM.createRoot === 'function' ? ReactDOM.createRoot(element) : null;
@@ -411,6 +453,64 @@ function pcfError(element, status, error) {
   element.dataset.pcfState = 'unsupported';
 }
 
+function refreshPcfParameter(context, property, bindings, field, value, options, disabled) {
+  const link = bindings[property.name];
+  let source;
+  if (link?.field === field.name) source = value;
+  else if (link?.field) source = options.record?.[link.field];
+  else source = link?.value ?? property.defaultValue ?? property['default-value'] ?? null;
+  const propertyType = property.ofType ?? property['of-type'] ?? '';
+  source = normalizePcfInput(source, link, property, propertyType);
+  const raw = /DateAndTime/i.test(propertyType) && source != null ? rawDate(source, field) : source;
+  context.parameters[property.name] = {
+    raw,
+    formatted: formatPcfInput(source, propertyType, field),
+    error: false,
+    errorMessage: '',
+    attributes: pcfParameterAttributes(property, link, field),
+    security: columnSecurity(link?.field, options.fieldRights, disabled),
+    type: property.ofType ?? property['of-type'],
+  };
+}
+
+function normalizePcfInput(source, link, property, propertyType) {
+  if (!link?.field && source != null) {
+    if (/^(Whole|Decimal|FP|Currency|Enum|OptionSet)/i.test(propertyType)) source = Number(source);
+    if (/TwoOptions/i.test(propertyType)) {
+      if (![true, false, 'true', 'false', '1', '0'].includes(source))
+        throw new Error(`PCF input ${property.name} must be a boolean.`);
+      source = source === true || source === 'true' || source === '1';
+    }
+  }
+  return source;
+}
+
+function formatPcfInput(source, propertyType, field) {
+  if (source == null) return '';
+  if (/OptionSet|TwoOptions/i.test(propertyType))
+    return (
+      field.options?.find(
+        (option) => String(option.value) === String(typeof source === 'boolean' ? Number(source) : source),
+      )?.label ?? String(source)
+    );
+  return String(source);
+}
+
+function pcfParameterAttributes(property, link, field) {
+  return {
+    LogicalName: link?.field ?? '',
+    DisplayName: link?.field === field.name ? (field.label ?? field.name) : (link?.field ?? property.name),
+    RequiredLevel:
+      { none: 0, systemrequired: 1, applicationrequired: 2, required: 2, recommended: 3 }[
+        String(field.requiredLevel ?? '').toLowerCase()
+      ] ?? (field.required ? 2 : 0),
+    ...(field.maxLength ? { MaxLength: field.maxLength } : {}),
+    ...(field.options
+      ? { Options: field.options.map((option) => ({ Value: option.value, Label: option.label })) }
+      : {}),
+  };
+}
+
 export function renderPcfControl(field, initialValue, options = {}) {
   const element = document.createElement('div');
   element.className = 'model-driven-pcf';
@@ -478,16 +578,15 @@ export function renderPcfControl(field, initialValue, options = {}) {
     (property) =>
       property.usage === 'bound' && bindings[property.name]?.field && bindings[property.name].field !== field.name,
   );
-  const compatible = (property) =>
-    field.type === 'text' || field.type === 'textarea'
-      ? /^(?:SingleLine\.|Multiple$)/i.test(property.ofType ?? property['of-type'])
-      : field.type === 'number'
-        ? /^(?:Whole\.|Decimal$|FP$|Currency$|Enum$|OptionSet$)/i.test(property.ofType ?? property['of-type'])
-        : field.type === 'boolean'
-          ? /^TwoOptions$/i.test(property.ofType ?? property['of-type'])
-          : field.type === 'date'
-            ? /^DateAndTime\./i.test(property.ofType ?? property['of-type'])
-            : false;
+  const compatible = (property) => {
+    if (field.type === 'text' || field.type === 'textarea')
+      return /^(?:SingleLine\.|Multiple$)/i.test(property.ofType ?? property['of-type']);
+    if (field.type === 'number')
+      return /^(?:Whole\.|Decimal$|FP$|Currency$|Enum$|OptionSet$)/i.test(property.ofType ?? property['of-type']);
+    if (field.type === 'boolean') return /^TwoOptions$/i.test(property.ofType ?? property['of-type']);
+    if (field.type === 'date') return /^DateAndTime\./i.test(property.ofType ?? property['of-type']);
+    return false;
+  };
   const context = {
     parameters: {},
     updatedProperties: [],
@@ -522,50 +621,8 @@ export function renderPcfControl(field, initialValue, options = {}) {
     context.mode.allocatedWidth = element.clientWidth;
     context.mode.allocatedHeight = element.clientHeight;
     context.updatedProperties = changed;
-    for (const property of properties) {
-      const link = bindings[property.name];
-      let source =
-        link?.field === field.name
-          ? value
-          : link?.field
-            ? options.record?.[link.field]
-            : (link?.value ?? property.defaultValue ?? property['default-value'] ?? null);
-      const propertyType = property.ofType ?? property['of-type'] ?? '';
-      if (!link?.field && source != null) {
-        if (/^(Whole|Decimal|FP|Currency|Enum|OptionSet)/i.test(propertyType)) source = Number(source);
-        if (/TwoOptions/i.test(propertyType)) {
-          if (![true, false, 'true', 'false', '1', '0'].includes(source))
-            throw new Error(`PCF input ${property.name} must be a boolean.`);
-          source = source === true || source === 'true' || source === '1';
-        }
-      }
-      const raw = /DateAndTime/i.test(propertyType) && source != null ? rawDate(source, field) : source;
-      const formatted =
-        source == null
-          ? ''
-          : /OptionSet|TwoOptions/i.test(propertyType)
-            ? (field.options?.find(
-                (option) => String(option.value) === String(typeof source === 'boolean' ? Number(source) : source),
-              )?.label ?? String(source))
-            : String(source);
-      context.parameters[property.name] = {
-        raw,
-        formatted,
-        error: false,
-        errorMessage: '',
-        attributes: {
-          LogicalName: link?.field ?? '',
-          DisplayName: link?.field === field.name ? (field.label ?? field.name) : (link?.field ?? property.name),
-          RequiredLevel: field.required ? 2 : 0,
-          ...(field.maxLength ? { MaxLength: field.maxLength } : {}),
-          ...(field.options
-            ? { Options: field.options.map((option) => ({ Value: option.value, Label: option.label })) }
-            : {}),
-        },
-        security: columnSecurity(link?.field, options.fieldRights, disabled),
-        type: property.ofType ?? property['of-type'],
-      };
-    }
+    for (const property of properties)
+      refreshPcfParameter(context, property, bindings, field, value, options, disabled);
   }
   function schedule(changed) {
     if (destroyed || failed || updateQueued) return;
@@ -691,19 +748,211 @@ const DATA_TYPES = {
   lookup: 'Lookup.Simple',
   multiselect: 'MultiSelectPicklist',
 };
-const dataTypeOf = (field) =>
-  !field
-    ? 'unknown'
-    : field.type === 'number'
-      ? field.options?.length
-        ? 'OptionSet'
-        : ({ decimal: 'Decimal', money: 'Currency', double: 'FP', float: 'FP' }[field.dataverseType] ?? 'Whole.None')
-      : (DATA_TYPES[field.type] ?? 'SingleLine.Text');
+const dataTypeOf = (field) => {
+  if (!field) return 'unknown';
+  if (field.type !== 'number') return DATA_TYPES[field.type] ?? 'SingleLine.Text';
+  if (field.options?.length) return 'OptionSet';
+  return { decimal: 'Decimal', money: 'Currency', double: 'FP', float: 'FP' }[field.dataverseType] ?? 'Whole.None';
+};
 const linkName = /^[a-z_][a-z\d_]*$/i;
 
 /** A PCF DataSet over the model-driven view query engine.
  * query(input) runs the view query ({ view, page, pageSize, sort, direction, filters, columns, links }) and answers
  * { rows, total, more }. baseFilters narrow it (a related subgrid's parent); openRecord(entity, id) navigates. */
+/** Canvas scalar PCF lifecycle: every manifest property binds to an app value, without a Dataverse field facade. */
+export function renderCanvasPcfControl(definition, initialProperties, options = {}) {
+  const element = document.createElement('div');
+  element.className = 'canvas-pcf';
+  const status = document.createElement('span');
+  const history = [];
+  let values = { ...initialProperties },
+    instance,
+    observer,
+    view,
+    destroyed = false,
+    failed = false,
+    queued = false;
+  let state = {};
+  const trace = (stage) => {
+    history.push(stage);
+    if (history.length > 100) history.shift();
+  };
+  const admission = pcfAdmission(definition, { platformLibraries: definition.platformLibraries });
+  const properties = definition.properties ?? [];
+  const clean = () => {
+    observer?.disconnect();
+    observer = undefined;
+    const old = instance,
+      oldView = view;
+    instance = undefined;
+    view = undefined;
+    releasePcf(old, oldView);
+  };
+  const fail = (error) => {
+    failed = true;
+    clean();
+    trace('failed');
+    pcfError(element, status, error);
+  };
+  const services = pcfServices(definition, options, staffOf(options), () => !destroyed && !failed);
+  // These APIs are unavailable to native Canvas code components, even when other local hosts supply them.
+  delete services.webAPI;
+  const context = {
+    ...services,
+    events: Object.fromEntries(
+      (definition.events ?? []).map((name) => [
+        name,
+        () => {
+          if (!destroyed && !failed && !context.mode.isControlDisabled) {
+            trace(`event:${name}`);
+            options.onEvent?.(name);
+          }
+        },
+      ]),
+    ),
+    parameters: Object.create(null),
+    updatedProperties: [],
+    mode: {
+      allocatedWidth: 0,
+      allocatedHeight: 0,
+      isControlDisabled: false,
+      isVisible: true,
+      trackContainerResize(track) {
+        observer?.disconnect();
+        observer = undefined;
+        if (track && !destroyed && typeof ResizeObserver !== 'undefined') {
+          observer = new ResizeObserver(() => schedule(['layout']));
+          observer.observe(element);
+        }
+      },
+      setControlState(next) {
+        state = structuredClone(next);
+      },
+      setFullScreen() {
+        unsupported('canvas fullscreen');
+      },
+    },
+  };
+  const fieldFor = (property) => {
+    let type;
+    if (/^(Whole|Decimal|FP|Currency|Enum|OptionSet)/i.test(property.ofType)) type = 'number';
+    else if (/^TwoOptions/i.test(property.ofType)) type = 'boolean';
+    else if (/^DateAndTime/i.test(property.ofType)) type = 'date';
+    else type = 'text';
+    return { type, format: /DateOnly/i.test(property.ofType) ? 'DateOnly' : undefined };
+  };
+  function refresh(changed) {
+    const disabled = /disabled|view/i.test(String(values.DisplayMode ?? ''));
+    element.inert = disabled;
+    element.setAttribute('aria-disabled', String(disabled));
+    context.mode.isControlDisabled = disabled;
+    context.mode.isVisible = values.Visible !== false;
+    context.mode.allocatedWidth = element.clientWidth;
+    context.mode.allocatedHeight = element.clientHeight;
+    context.updatedProperties = changed;
+    const next = Object.create(null);
+    for (const property of properties) {
+      const field = fieldFor(property);
+      let value = values[property.name] ?? property.defaultValue ?? null;
+      if (value != null && field.type === 'number' && typeof value === 'string' && value.trim() !== '')
+        value = Number(value);
+      if (field.type === 'boolean' && ['true', 'false', '0', '1'].includes(value))
+        value = value === 'true' || value === '1';
+      value = typed(value, property, field);
+      const raw = value != null && field.type === 'date' ? rawDate(value, field) : value;
+      next[property.name] = {
+        raw,
+        formatted: value == null ? '' : String(value),
+        type: property.ofType,
+        error: false,
+        errorMessage: '',
+        attributes: {
+          LogicalName: property.name,
+          DisplayName: property.name,
+          RequiredLevel: property.required ? 1 : 0,
+        },
+        security: { editable: !disabled && property.usage !== 'input', readable: true, secured: false },
+      };
+    }
+    context.parameters = next;
+  }
+  function schedule(changed) {
+    if (queued || destroyed || failed) return;
+    queued = true;
+    queueMicrotask(() => {
+      queued = false;
+      if (!instance || destroyed || failed) return;
+      try {
+        refresh(changed);
+        trace('updateView');
+        const result = instance.updateView(context);
+        view?.render(result);
+      } catch (error) {
+        fail(error);
+      }
+    });
+  }
+  const notify = () => {
+    if (!instance || destroyed || failed || context.mode.isControlDisabled) return;
+    try {
+      const outputs = instance.getOutputs?.() ?? {};
+      if (!outputs || typeof outputs !== 'object' || Array.isArray(outputs))
+        throw new Error('Canvas PCF outputs must be a record.');
+      const next = Object.create(null);
+      for (const property of properties)
+        if (['bound', 'output'].includes(property.usage) && Object.hasOwn(outputs, property.name))
+          next[property.name] = typed(outputs[property.name], property, fieldFor(property));
+      if (Object.keys(next).length) {
+        trace('getOutputs');
+        options.onOutputs?.(next);
+      }
+    } catch (error) {
+      fail(error);
+    }
+  };
+  const ready = Promise.resolve().then(async () => {
+    try {
+      if (!definition.admitted || !admission.admitted || admission.dataset)
+        throw new Error(definition.reason ?? admission.reason ?? 'Canvas PCF requires an admitted scalar manifest.');
+      if (properties.some((property) => !scalarType(property.ofType)))
+        throw new Error('Canvas PCF property type is not supported.');
+      const loaded = await loadComponent(definition, admission, () => destroyed);
+      if (!loaded || destroyed) return;
+      const virtual = admission.kind === 'virtual';
+      if (virtual) view = virtualView(element);
+      instance = new loaded.Constructor();
+      refresh(properties.map((property) => property.name));
+      trace('init');
+      instance.init(context, notify, state, ...(virtual ? [] : [element]));
+      trace('updateView');
+      const result = instance.updateView(context);
+      view?.render(result);
+      element.dataset.pcfState = 'ready';
+    } catch (error) {
+      if (!destroyed) fail(error);
+    }
+  });
+  return {
+    element,
+    ready,
+    update(next) {
+      const changed = Object.keys(next).filter((key) => !Object.is(values[key], next[key]));
+      values = { ...next };
+      if (changed.length) schedule(changed);
+    },
+    inspect: () => ({
+      state: pcfLifecycleState(destroyed, failed, element),
+      lifecycle: [...history],
+    }),
+    destroy() {
+      if (destroyed) return;
+      destroyed = true;
+      trace('destroy');
+      clean();
+    },
+  };
+}
+
 export function createDatasetHost({
   table,
   tables = {},
@@ -848,8 +1097,10 @@ export function createDatasetHost({
     refresh: () => dataset.paging.reset(),
     addColumn: (name, entityAlias) => {
       const link = entityAlias && linked.find((entry) => entry.alias === entityAlias);
-      if (entityAlias ? !link || !tables[link.name].fields?.[name] : !table.fields[name])
-        fail(`PCF dataset column ${entityAlias ? `${entityAlias}.` : ''}${name} is not an imported column.`);
+      if (entityAlias ? !link || !tables[link.name].fields?.[name] : !table.fields[name]) {
+        const qualifiedName = entityAlias ? `${entityAlias}.` : '';
+        fail(`PCF dataset column ${qualifiedName}${name} is not an imported column.`);
+      }
       if (link) {
         linkedColumns.push({ alias: entityAlias, name });
         dataset.columns.push(
@@ -883,11 +1134,7 @@ export function createDatasetHost({
     dataset.errorMessage = '';
     updated();
     try {
-      if (dataset.sorting.length > 1)
-        fail('PCF dataset sorting supports one column locally (the view query engine sorts by one column).');
-      const sort = dataset.sorting[0];
-      if (sort && (!table.fields[sort.name] || ![0, 1].includes(sort.sortDirection)))
-        fail('PCF dataset sorting needs an imported column and an ascending or descending direction.');
+      const sort = assertDatasetSorting(dataset, table, fail);
       const result = await query({
         ...(view?.id ? { view: view.id } : {}),
         page,
@@ -905,22 +1152,7 @@ export function createDatasetHost({
           : {}),
       });
       if (revision !== generation) return;
-      const records = {},
-        ids = [];
-      for (const row of result.rows ?? []) {
-        const id = String(row[table.idColumn]);
-        ids.push(id);
-        records[id] = {
-          getRecordId: () => id,
-          getNamedReference: () => ({ id: { guid: id }, name: row[table.nameColumn] ?? '', etn: table.entity }),
-          getValue: (name) => valueOf(row, name),
-          getFormattedValue: (name) =>
-            String(
-              row[`${name}@OData.Community.Display.V1.FormattedValue`] ??
-                (typeof row[name] === 'object' && row[name] ? (row[name].name ?? '') : (row[name] ?? '')),
-            ),
-        };
-      }
+      const { records, ids } = datasetRecords(result.rows, table, valueOf);
       dataset.records = records;
       dataset.sortedRecordIds = ids;
       selected = selected.filter((id) => Object.hasOwn(records, id));
@@ -951,6 +1183,35 @@ export function createDatasetHost({
   return { dataset, load };
 }
 
+function assertDatasetSorting(dataset, table, fail) {
+  if (dataset.sorting.length > 1)
+    fail('PCF dataset sorting supports one column locally (the view query engine sorts by one column).');
+  const sort = dataset.sorting[0];
+  if (sort && (!table.fields[sort.name] || ![0, 1].includes(sort.sortDirection)))
+    fail('PCF dataset sorting needs an imported column and an ascending or descending direction.');
+  return sort;
+}
+
+function datasetRecords(rows, table, valueOf) {
+  const records = {},
+    ids = [];
+  for (const row of rows ?? []) {
+    const id = String(row[table.idColumn]);
+    ids.push(id);
+    records[id] = {
+      getRecordId: () => id,
+      getNamedReference: () => ({ id: { guid: id }, name: row[table.nameColumn] ?? '', etn: table.entity }),
+      getValue: (name) => valueOf(row, name),
+      getFormattedValue: (name) =>
+        String(
+          row[`${name}@OData.Community.Display.V1.FormattedValue`] ??
+            (typeof row[name] === 'object' && row[name] ? (row[name].name ?? '') : (row[name] ?? '')),
+        ),
+    };
+  }
+  return { records, ids };
+}
+
 /** A trusted dataset PCF on a form subgrid: the shared admission rule, the same staff context and formatting as field
  * components, and a DataSet over the subgrid's view (its rows narrowed to the parent record). */
 export function renderPcfDataset(cell, options) {
@@ -966,10 +1227,15 @@ export function renderPcfDataset(cell, options) {
     view,
     destroyed = false,
     failed = false,
+    observer,
+    trackingResize = false,
     state = {},
     queued = false;
+  const pendingChanges = new Set();
   const virtual = admission.admission?.kind === 'virtual';
-  const cleanup = () => {
+  /* NOSONAR: identical bodies capture different state */ const cleanup = () => {
+    observer?.disconnect();
+    observer = undefined;
     const current = instance,
       mounted = view;
     instance = undefined;
@@ -1004,7 +1270,20 @@ export function renderPcfDataset(cell, options) {
       isVisible: true,
       allocatedWidth: -1,
       allocatedHeight: -1,
-      trackContainerResize() {},
+      trackContainerResize(track) {
+        const next = Boolean(track);
+        if (destroyed || failed || next === trackingResize) return;
+        observer?.disconnect();
+        observer = undefined;
+        trackingResize = next;
+        if (trackingResize && typeof ResizeObserver !== 'undefined') {
+          observer = new ResizeObserver(() => {
+            if (trackingResize && context.mode.allocatedWidth !== element.clientWidth) rerender(['layout']);
+          });
+          observer.observe(element);
+        }
+        rerender(['layout']);
+      },
       setControlState(next) {
         state = structuredClone(next);
       },
@@ -1014,13 +1293,17 @@ export function renderPcfDataset(cell, options) {
     },
     ...pcfServices(definition, options, staff, () => !destroyed && !failed),
   };
-  const rerender = () => {
-    if (!instance || destroyed || failed || queued) return;
+  const rerender = (changed = ['dataset', datasetName]) => {
+    if (!instance || destroyed || failed) return;
+    for (const property of changed) pendingChanges.add(property);
+    if (queued) return;
     queued = true;
     queueMicrotask(() => {
       queued = false;
       if (!instance || destroyed || failed) return;
-      context.updatedProperties = ['dataset', datasetName];
+      context.updatedProperties = [...pendingChanges];
+      pendingChanges.clear();
+      context.mode.allocatedWidth = trackingResize ? element.clientWidth : -1;
       try {
         const result = instance.updateView(context);
         if (view) view.render(result);

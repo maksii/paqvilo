@@ -6,11 +6,12 @@ import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { model, parentId } from './fixtures/subgrid.mjs';
 import { signInHeaders } from '../testing/session.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // Downloads take page 1 of up to Grid/Download/MaximumResults records (default 5000),
 // whatever page and pageSize the request carries.
 async function downloadFixture(t, { rows, maximumResults } = {}) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'grid-download-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'grid-download-'));
   const { state, settings } = model();
   for (let index = 0; index < rows; index++)
     state.tables.child.push({

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
 import { sharedBrowser, fileScope } from './shared-browser.mjs';
+import { prepareNativeControls } from './native-controls-fixture.mjs';
 
 // Every test renders controls into a blank page, so one simulator serves the file.
 const chrome = sharedBrowser(),
@@ -11,10 +12,9 @@ let sharedApp;
 async function fixture(t) {
   const { origin } = await (sharedApp ??= modelDrivenFixture(scope));
   const page = await chrome.page(t);
-  await page.goto(origin + '/main.aspx');
-  await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready');
+  await prepareNativeControls(page, origin);
   await page.evaluate(async () => {
-    window.render = (await import('/_apps/assets/controls.mjs')).renderControl;
+    window.render = window.renderFixtureControl;
     document.body.replaceChildren();
   });
   return page;

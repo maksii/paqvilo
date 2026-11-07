@@ -1,3 +1,4 @@
+// @test-kind contract: invented local activity, email and queue message routes preserve observable API behavior
 // Activity, email and queue messages (dataverse-activity-messages.mjs) through the full Dataverse API: the Web API routes,
 // the Basic User privilege denial and one SOAP call through the generic OrganizationRequest dispatch.
 // Each message has a happy path (its effect read back from the store) and one refused call.
@@ -162,7 +163,7 @@ describe('activity, email and queue messages', () => {
 
   // ---- Activities
 
-  it('lists every message in $metadata', async () => {
+  it('lists representative activity, email and queue messages in $metadata', async () => {
     const metadata = await request('GET', '$metadata', appToken);
     assert.equal(metadata.status, 200);
     for (const name of [

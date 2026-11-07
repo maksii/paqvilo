@@ -1,12 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { MIRAGE_COMMANDS, MIRAGE_TOOLS } from '../mirage/tool-registry.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
+import { tempDirSync } from './fixture.mjs';
 
 const bin = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_')));
@@ -46,7 +45,7 @@ test('public tool registry routes each tool-specific help and prints the package
 });
 
 test('unknown Mirage commands reject before project and source resolution in an empty directory', async (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-unknown-mirage-'));
+  const root = tempDirSync('paqvilo-unknown-mirage-');
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const unknown = [
     ['mirage', 'nosuchcommand'],

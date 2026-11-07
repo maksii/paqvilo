@@ -7,6 +7,7 @@ import { createScheduler, fixedClock, sequentialIds } from '../lib/runtime-clock
 import { createConnectorRuntime } from '../lib/connector-runtime.mjs';
 import { createHostFlowRuns } from '../lib/flow-runs.mjs';
 import { executeFlowDefinition, runTrackedFlow } from '../lib/flow-runtime.mjs';
+import { whenScheduled } from './support/scheduler-gates.mjs';
 
 const FLOW = '77777777-7777-4777-8777-0000000000c1';
 const manual = { manual: { type: 'Request', kind: 'Button', inputs: { schema: { type: 'object' } } } };
@@ -39,6 +40,7 @@ async function unit(t, definition, operations) {
   });
   return {
     runs,
+    scheduler,
     start: (context) =>
       runTrackedFlow({ runs, processId: FLOW, trigger: 'Test', definition, input: {}, store, connectors, context }),
   };
@@ -48,11 +50,13 @@ test('a cancel during provider 1 means provider 2 never runs and the run ends Ca
   let release,
     second = 0,
     signalled = null;
+  const inFlight = Promise.withResolvers();
   const operations = {
     One: (request, context) =>
       new Promise((resolve) => {
         signalled = context.signal;
         release = () => resolve({ statusCode: 200, body: {} });
+        inFlight.resolve();
       }),
     Two: () => {
       second++;
@@ -65,7 +69,7 @@ test('a cancel during provider 1 means provider 2 never runs and the run ends Ca
     operations,
   );
   const pending = start({ background: true });
-  for (let i = 0; i < 20 && !release; i++) await new Promise((resolve) => setImmediate(resolve));
+  await inFlight.promise;
   const [run] = runs.list();
   assert.equal(run.status, 'Running');
   assert.equal(await runs.cancel(run.id), true);
@@ -88,19 +92,26 @@ test('a retry wait is cut short by the cancellation', async (t) => {
       },
     },
   };
-  const { runs, start } = await unit(t, definition, {
+  const { runs, scheduler, start } = await unit(t, definition, {
     Flaky: () => {
       calls++;
       return { statusCode: 503, body: {} };
     },
   });
+  const retry = whenScheduled(scheduler, 'connector-retry');
   const pending = start({ background: true });
-  for (let i = 0; i < 20 && !calls; i++) await new Promise((resolve) => setImmediate(resolve));
+  // Cancel while the PT1H retry pause is queued on the manual scheduler (it never comes due here).
+  await retry;
   await runs.cancel(runs.list()[0].id);
   const answer = await pending;
   assert.equal(answer.status, 'Cancelled');
   assert.equal(calls, 1, 'no retry after the cancellation');
   assert.equal(answer.actions.flaky.status, 'Cancelled');
+  assert.deepEqual(
+    scheduler.pending().filter((task) => task.name === 'connector-retry'),
+    [],
+    'the cancellation removed the retry pause',
+  );
 });
 
 test('Terminate with runStatus Cancelled ends the run Cancelled, distinct from Failed and Succeeded', async (t) => {

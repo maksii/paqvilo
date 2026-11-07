@@ -5,10 +5,10 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test("a two-language site lists both languages in the client object's activeLanguages", async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pages-languages-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pages-languages-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
     'website.yml':

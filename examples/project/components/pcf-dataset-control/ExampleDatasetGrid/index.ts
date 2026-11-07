@@ -1,7 +1,7 @@
 import { IInputs, IOutputs } from './generated/ManifestTypes';
 
 export class ExampleDatasetGrid implements ComponentFramework.StandardControl<IInputs, IOutputs> {
-  private _root: HTMLDivElement;
+  private readonly _root: HTMLDivElement;
 
   constructor() {
     this._root = document.createElement('div');

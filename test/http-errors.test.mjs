@@ -1,7 +1,8 @@
+// @test-kind contract: Paqvilo's own simulator administration, CLI, configuration and runtime behaviour
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { observeHttpErrors } from '../lense/http-errors.mjs';
+import { boundedJsonBody, observeHttpErrors } from '../lense/http-errors.mjs';
 
 test('HTTP capture sets protocol byte bounds and stops reading oversized chunked responses without cancelling them', async () => {
   const client = new EventEmitter(),
@@ -90,23 +91,28 @@ test('stalled observer attach, enable and detach cannot hold startup or shutdown
   assert.equal(detached.length, 1, 'a late connection is still released');
 });
 
-test('unfinished small JSON errors still produce an HTTP row within the body deadline', async () => {
+test('unfinished small JSON errors still produce an HTTP row within the body deadline', async (t) => {
   const client = new EventEmitter(),
-    rows = [];
+    rows = [],
+    timeoutMs = 25;
   client.send = async () => ({});
   client.detach = async () => {};
   const capture = observeHttpErrors(
     { newCDPSession: async () => client },
     {},
-    { origin: 'http://127.0.0.1:1234', response: (entry) => (body) => rows.push({ entry, body }), timeoutMs: 25 },
+    { origin: 'http://127.0.0.1:1234', response: (entry) => (body) => rows.push({ entry, body }), timeoutMs },
   );
   await capture.ready;
+  // The body deadline is a timer: advance it instead of sleeping past it.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   client.emit('Network.responseReceived', {
     requestId: 'unfinished',
     response: { status: 400, url: 'http://127.0.0.1:1234/_api/items', mimeType: 'application/json', headers: {} },
   });
   client.emit('Network.dataReceived', { requestId: 'unfinished', dataLength: 10 });
-  await new Promise((r) => setTimeout(r, 40));
+  t.mock.timers.tick(timeoutMs - 1);
+  assert.equal(rows.length, 0, 'the row waits for the body until the deadline');
+  t.mock.timers.tick(1);
   assert.equal(rows.length, 1);
   assert.equal(rows[0].entry.status, 400);
   assert.equal(rows[0].body, null);
@@ -114,4 +120,51 @@ test('unfinished small JSON errors still produce an HTTP row within the body dea
   await new Promise((r) => setImmediate(r));
   assert.equal(rows.length, 1, 'late completion must not duplicate an expired row');
   await capture.close();
+});
+
+test('only target-origin error responses are observed and pending bodies are bounded', async () => {
+  const client = new EventEmitter(),
+    rows = [];
+  client.send = async () => ({});
+  client.detach = async () => {};
+  const capture = observeHttpErrors(
+    { newCDPSession: async () => client },
+    {},
+    { origin: 'http://127.0.0.1:1234', response: (entry) => (body) => rows.push({ entry, body }) },
+  );
+  await capture.ready;
+  const respond = (requestId, status, url) =>
+    client.emit('Network.responseReceived', {
+      requestId,
+      response: { status, url, mimeType: 'application/json', headers: {} },
+    });
+  respond('other-origin', 500, 'http://127.0.0.1:4321/_api/items');
+  respond('redirect', 302, 'http://127.0.0.1:1234/_api/items');
+  respond('malformed', 500, 'not a URL');
+  assert.deepEqual(rows, [], 'other origins, non-error statuses and unparsable URLs are ignored');
+  // The 129th unfinished body is not buffered: its row is reported at once without a body.
+  for (let index = 0; index < 129; index++) respond(`pending-${index}`, 400, 'http://127.0.0.1:1234/_api/items');
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].body, null);
+  await capture.close();
+});
+
+test('the fallback body reader reads only small, declared-size, unencoded JSON bodies', async () => {
+  const body = JSON.stringify({ error: { message: 'Invented failure' } });
+  const response = (headers, bytes = Buffer.from(body)) => ({
+    allHeaders: async () => headers,
+    body: async () => bytes,
+  });
+  const sized = {
+    'content-type': 'application/json; charset=utf-8',
+    'content-length': String(Buffer.byteLength(body)),
+  };
+  assert.deepEqual(await boundedJsonBody(response(sized)), { error: { message: 'Invented failure' } });
+  assert.equal(await boundedJsonBody(response({ 'content-type': 'application/json' })), null, 'chunked: no size');
+  assert.equal(await boundedJsonBody(response({ ...sized, 'content-length': '40000' })), null, 'over the bound');
+  assert.equal(await boundedJsonBody(response({ ...sized, 'content-type': 'text/html' })), null, 'not JSON');
+  assert.equal(await boundedJsonBody(response({ ...sized, 'content-encoding': 'gzip' })), null, 'encoded');
+  assert.equal(await boundedJsonBody(response(sized, Buffer.from('{'))), null, 'malformed');
+  const stalled = { allHeaders: async () => sized, body: () => new Promise(() => {}) };
+  assert.equal(await boundedJsonBody(stalled, { timeoutMs: 20 }), null, 'a stalled body is not awaited forever');
 });

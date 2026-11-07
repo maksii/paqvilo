@@ -15,6 +15,7 @@ import { DataStore } from '../lib/data.mjs';
 import { csvCell } from '../lib/csv.mjs';
 import { derivePersona, __testing, HOSTED_RESOURCES, loadSourceCorpus } from '../parity-suite.mjs';
 import { businessRuleClientData } from '../../examples/project/baseline/business-rules.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('generated business rule strings survive script embedding without becoming HTML or code', () => {
   const hostile = '</script><img src=x onerror="globalThis.injected=true">\\\'\n]]>';
@@ -153,25 +154,35 @@ test('hosted-resource classification parses actual hosts rather than hostname te
     assert.equal(hosted(value), false, value);
 });
 
+// Linear handling of these inputs needs milliseconds of CPU; super-linear backtracking on 50,000-200,000 repeats needs
+// seconds to hours. The budget bounds the child's CPU time for the adversarial work only, so module loading and a busy
+// machine do not count; the wall-clock limit only stops a runaway child.
+const ADVERSARIAL_CPU_BUDGET_MS = 1000;
+const RUNAWAY_LIMIT_MS = 60000;
 test('adversarial XML and dependency filenames complete within a bounded worker process', () => {
   const xmlModule = new URL('../lib/fetchxml-engine.mjs', import.meta.url).href;
   const dependencyModule = new URL('../lib/source-dependencies.mjs', import.meta.url).href;
   const script = `import {parseXmlDocument} from ${JSON.stringify(xmlModule)};
     import {JQUERY_CORE_SCRIPT,BOOTSTRAP_CORE_SCRIPT} from ${JSON.stringify(dependencyModule)};
+    const started=process.cpuUsage();
     for(const source of ['<!--'.repeat(50000), '<?'.repeat(50000), '<'.repeat(200000), '<fetch '+ '-="a'.repeat(50000)+'>']) {
       let rejected=false;try{parseXmlDocument(source);}catch{rejected=true;}if(!rejected)throw Error('Malformed XML accepted');
     }
     for(const [matcher,prefix] of [[JQUERY_CORE_SCRIPT,'jquery'],[BOOTSTRAP_CORE_SCRIPT,'bootstrap']]) {
       if(matcher.test('/'+prefix+'-0'+'.0'.repeat(50000)+'!'))throw Error('Invalid filename accepted');
       if(matcher.test('/'+prefix+'.min'.repeat(50000)+'!'))throw Error('Invalid filename accepted');
-    }`;
+    }
+    const used=process.cpuUsage(started);
+    process.stdout.write(String((used.user+used.system)/1000));`;
   const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
-    timeout: 5000,
+    timeout: RUNAWAY_LIMIT_MS,
     encoding: 'utf8',
     windowsHide: true,
   });
   assert.equal(result.error, undefined, result.error?.message);
   assert.equal(result.status, 0, result.stderr);
+  const cpuMs = Number(result.stdout);
+  assert.ok(cpuMs >= 0 && cpuMs < ADVERSARIAL_CPU_BUDGET_MS, `${result.stdout} ms CPU for the adversarial inputs`);
 });
 
 test('cookie and selected-column names cannot change object prototypes', () => {
@@ -209,7 +220,7 @@ test('native CSV exports neutralize spreadsheet formulas while preserving signed
 });
 
 test('source-corpus entity decoding never promotes double-encoded markup into source-derived reveal matches', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-corpus-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-corpus-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await fs.writeFile(path.join(root, 'page.html'), '&amp;lt;Double encoded&amp;gt; &lt;Once encoded&gt;');
   const corpus = await loadSourceCorpus(root);

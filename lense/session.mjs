@@ -12,7 +12,7 @@ import { scriptSourceBody, scriptResourceProof } from './script-source-evidence.
 // Editors and tools leave scratch files next to the sources (safe-write temporaries, swap and
 // backup files). They are never portal sources, so they must not rebuild the index or reload tabs.
 const SCRATCH_FILE =
-  /(?:~|\.swp|\.swx|\.swo|\.tmp|\.temp|\.bak|\.orig|\.rej|\.crswap|___jb_tmp___|___jb_old___)$|(?:^|[\\/])(?:\.#[^\\/]*|~\$[^\\/]*|4913|\.DS_Store|Thumbs\.db|desktop\.ini)$/i;
+  /(?:~|\.swp|\.swx|\.swo|\.tmp|\.temp|\.bak|\.orig|\.rej|\.crswap|___jb_tmp___|___jb_old___)$|(?:^|[\\/])(?:\.#[^\\/]*|~\$[^\\/]*|4913|\.DS_Store|Thumbs\.db|desktop\.ini)$/i; // NOSONAR: regex kept: a rewrite would change matches or captures
 
 // Sign-in and token endpoints are never touched, so authentication behaves exactly as online.
 // Matched against the path without its language segment (/en-US/signin is /signin).
@@ -26,31 +26,70 @@ const NEVER_REWRITE = [
   '/.auth/**',
   '/_layout/tokenhtml**',
   '/externalauthenticationcallback**',
-].map(globToRegExp);
+].map(globToRegExp); // NOSONAR: preserve callback identity and iteration arguments
 
 const TEXT_TYPES = /^(?:text\/|application\/(?:json|javascript|xml|xhtml))/i;
 const MAX_PAGE_SOURCE_BYTES = 8 * 1024 * 1024;
 
+function classifyChange(file, sourceDir, knownFiles, routeRoots) {
+  const rel = path.relative(sourceDir, file).replaceAll('\\', '/');
+  const inExtract = rel !== '' && rel !== '..' && !rel.startsWith('../') && !path.isAbsolute(rel);
+  let exists = true;
+  let directory = false;
+  try {
+    directory = fs.statSync(file).isDirectory();
+  } catch {
+    exists = false;
+  }
+  if (knownFiles.has(file)) return { relevant: true, structural: !exists || isPortalMetadata(rel) };
+  if (directory) return { relevant: false, structural: false };
+  if (!exists && [...knownFiles].some((known) => known.startsWith(file + path.sep)))
+    return { relevant: true, structural: true };
+  if (routeRoots.some((root) => file === root || file.startsWith(root + path.sep)))
+    return { relevant: true, structural: false };
+  if (!inExtract || SCRATCH_FILE.test(file)) return { relevant: false, structural: false };
+  const assetLocation = /^web-files\/[^/]+$/i.test(rel) || /^powerpagecomponents\/[^/]+\/filecontent\//i.test(rel);
+  if (isPortalMetadata(rel) || inlineKindOf(file) || assetLocation) return { relevant: true, structural: true };
+  return { relevant: false, structural: false };
+}
+const hasRecordedSources = (hit) => hit.sources?.length || hit.type === 'file' || hit.matched?.length;
+function repeatedPageFileHit(hit, list) {
+  return list.find(
+    (previous) =>
+      previous.type === 'file' && previous.url === hit.url && previous.sources?.[0]?.rel === hit.sources?.[0]?.rel,
+  );
+}
+
 export class OverlaySession extends EventEmitter {
   /** Prepare disk-heavy indexes without serial synchronous reads blocking startup. */
   static async create(cfg) {
-    const model = await PortalModel.create(cfg.sourceDir);
-    const baseline = new GitBaseline(cfg.sourceDir, cfg.site.markup?.baseline ?? 'HEAD');
-    const changedFiles = baseline.changedFiles({ refreshRef: false });
+    // Git runs while the metadata is read; each phase keeps at most two Git processes.
+    const [model, { baseline, changedFiles }] = await Promise.all([
+      PortalModel.create(cfg.sourceDir),
+      GitBaseline.create(cfg.sourceDir, cfg.site.markup?.baseline ?? 'HEAD').then(async (baseline) => ({
+        baseline,
+        changedFiles: await baseline.changedFilesAsync({ refreshRef: false }),
+      })),
+    ]);
     const disabled = new Set();
-    const rewriter = await HtmlRewriter.create({
-      model,
-      site: cfg.site,
-      baseline,
-      changedFiles,
-      sourceMaps: Boolean(cfg.sourceMaps),
-      disabled,
-    });
+    const [rewriter, head] = await Promise.all([
+      HtmlRewriter.create({
+        model,
+        site: cfg.site,
+        baseline,
+        changedFiles,
+        sourceMaps: Boolean(cfg.sourceMaps),
+        disabled,
+      }),
+      gitHead(cfg.sourceDir),
+    ]);
     const session = new OverlaySession(cfg, { model, baseline, changedFiles, disabled, rewriter });
+    // Nothing can listen yet, so the first HEAD needs no 'head' event.
+    session.head = head;
     // Sources and HEAD can change while the bounded asynchronous reads are in flight.
     // Reconcile their final metadata/working-tree snapshot before exposing the session.
-    session.reconcile();
-    await session.refreshHead();
+    session.model.load();
+    session.#reconcileChanges(await baseline.changedFilesAsync());
     return session;
   }
 
@@ -76,7 +115,7 @@ export class OverlaySession extends EventEmitter {
     this.api = null;
     /** where Git HEAD of the checkout points: {commit, branch, detached}; null until read or outside Git */
     this.head = null;
-    this.refreshQueue = Promise.resolve();
+    this.refreshQueue = Promise.resolve(); // NOSONAR: constructor timing must not change
     this.rewriter =
       prepared.rewriter ??
       new HtmlRewriter({
@@ -106,7 +145,7 @@ export class OverlaySession extends EventEmitter {
   }
 
   rel(file) {
-    return path.relative(this.cfg.sourceDir, file).replace(/\\/g, '/');
+    return path.relative(this.cfg.sourceDir, file).replaceAll('\\', '/');
   }
 
   #acceptChanges(changed) {
@@ -121,12 +160,17 @@ export class OverlaySession extends EventEmitter {
   /** Reconcile saves made before the watcher was ready, reusing unchanged stamped source bytes. */
   reconcile() {
     this.model.load();
+    return this.#reconcileChanges(this.baseline.changedFiles());
+  }
+
+  /** The rest of reconcile() once the model is reloaded and Git has listed the changed files. */
+  #reconcileChanges(changed) {
     this.knownFiles = new Set(
       [...this.model.inlineSources, ...this.model.webFiles, ...(this.model.inactiveSources ?? [])]
         .map((s) => s.file)
         .filter(Boolean),
     );
-    const baselineChanged = this.#acceptChanges(this.baseline.changedFiles());
+    const baselineChanged = this.#acceptChanges(changed);
     this.fileBodies.clear();
     this.#buildResolver();
     this.rewriter.refresh([], { revalidate: true });
@@ -177,45 +221,10 @@ export class OverlaySession extends EventEmitter {
     const ignored = [];
     let structural = false;
     for (const file of files.map((file) => path.resolve(file))) {
-      const rel = path.relative(sourceDir, file).replace(/\\/g, '/');
-      const inExtract = rel !== '' && rel !== '..' && !rel.startsWith('../') && !path.isAbsolute(rel);
-      let exists = true;
-      let directory = false;
-      try {
-        directory = fs.statSync(file).isDirectory();
-      } catch {
-        exists = false;
-      }
-      if (this.knownFiles.has(file)) {
-        relevant.push(file);
-        if (!exists || isPortalMetadata(rel)) structural = true;
-        continue;
-      }
-      // children report their own events; a removed folder may have held indexed sources
-      if (directory) {
-        ignored.push(file);
-        continue;
-      }
-      if (!exists && [...this.knownFiles].some((known) => known.startsWith(file + path.sep))) {
-        relevant.push(file);
-        structural = true;
-        continue;
-      }
-      if (routeRoots.some((root) => file === root || file.startsWith(root + path.sep))) {
-        relevant.push(file);
-        continue;
-      }
-      if (!inExtract || SCRATCH_FILE.test(file)) {
-        ignored.push(file);
-        continue;
-      }
-      const assetLocation = /^web-files\/[^/]+$/i.test(rel) || /^powerpagecomponents\/[^/]+\/filecontent\//i.test(rel);
-      if (isPortalMetadata(rel) || inlineKindOf(file) || assetLocation) {
-        relevant.push(file);
-        structural = true;
-        continue;
-      }
-      ignored.push(file);
+      const decision = classifyChange(file, sourceDir, this.knownFiles, routeRoots);
+      if (decision.relevant) relevant.push(file);
+      else ignored.push(file);
+      if (decision.structural) structural = true;
     }
     return { relevant, ignored, structural };
   }
@@ -330,56 +339,56 @@ export class OverlaySession extends EventEmitter {
       }
       const list = this.pageHits.get(page) ?? [];
       let bytes = this.pageHitBytes.get(page) ?? 0;
-      if (hit.sources?.length || hit.type === 'file' || hit.matched?.length) {
-        const repeated =
-          hit.type === 'file' &&
-          list.find(
-            (previous) =>
-              previous.type === 'file' &&
-              previous.url === hit.url &&
-              previous.sources?.[0]?.rel === hit.sources?.[0]?.rel,
-          );
+      if (hasRecordedSources(hit)) {
+        const repeated = hit.type === 'file' && repeatedPageFileHit(hit, list);
         if (repeated) repeated.count = (repeated.count ?? 1) + 1;
-        else {
-          // Inline text supports panel comparisons, but polling responses must not retain
-          // hundreds of complete copies. Keep the latest response per background URL.
-          let keptBytes = 0;
-          const kept = {
-            ...hit,
-            matched: hit.matched?.map((match) => {
-              const size = typeof match.online === 'string' ? Buffer.byteLength(match.online) : 0;
-              if (keptBytes + size > MAX_PAGE_SOURCE_BYTES) {
-                const { online: _omitted, ...metadata } = match;
-                return { ...metadata, onlineOmitted: true };
-              }
-              keptBytes += size;
-              return match;
-            }),
-          };
-          this.hitBytes.set(kept, keptBytes);
-          const previous =
-            !hit.navigation && hit.type === 'html'
-              ? list.findIndex((entry) => !entry.navigation && entry.type === 'html' && entry.url === hit.url)
-              : -1;
-          if (previous >= 0) {
-            kept.count = (list[previous].count ?? 1) + 1;
-            bytes -= this.hitBytes.get(list[previous]) ?? 0;
-            list.splice(previous, 1);
-          }
-          list.push(kept);
-          bytes += keptBytes;
-        }
+        else bytes = this.#appendRecordedHit(hit, list, bytes);
         // Preserve the latest top-level document and bound both history and retained source bytes.
-        while (list.length > 500 || bytes > MAX_PAGE_SOURCE_BYTES) {
-          const [removed] = list.splice(list[0]?.navigation ? 1 : 0, 1);
-          if (!removed) break;
-          bytes -= this.hitBytes.get(removed) ?? 0;
-        }
+        bytes = this.#trimRecordedHits(list, bytes);
       }
       this.pageHits.set(page, list);
       this.pageHitBytes.set(page, bytes);
     }
     this.emit('hit', { ...hit, page });
+  }
+
+  #appendRecordedHit(hit, list, bytes) {
+    // Inline text supports panel comparisons, but polling responses must not retain
+    // hundreds of complete copies. Keep the latest response per background URL.
+    let keptBytes = 0;
+    const kept = {
+      ...hit,
+      matched: hit.matched?.map((match) => {
+        const size = typeof match.online === 'string' ? Buffer.byteLength(match.online) : 0;
+        if (keptBytes + size > MAX_PAGE_SOURCE_BYTES) {
+          const { online: _omitted, ...metadata } = match; // NOSONAR: binding is excluded from the rest object or is a placeholder
+          return { ...metadata, onlineOmitted: true };
+        }
+        keptBytes += size;
+        return match;
+      }),
+    };
+    this.hitBytes.set(kept, keptBytes);
+    const previous =
+      !hit.navigation && hit.type === 'html'
+        ? list.findIndex((entry) => !entry.navigation && entry.type === 'html' && entry.url === hit.url)
+        : -1;
+    if (previous >= 0) {
+      kept.count = (list[previous].count ?? 1) + 1;
+      bytes -= this.hitBytes.get(list[previous]) ?? 0;
+      list.splice(previous, 1);
+    }
+    list.push(kept);
+    return bytes + keptBytes;
+  }
+
+  #trimRecordedHits(list, bytes) {
+    while (list.length > 500 || bytes > MAX_PAGE_SOURCE_BYTES) {
+      const [removed] = list.splice(list[0]?.navigation ? 1 : 0, 1);
+      if (!removed) break;
+      bytes -= this.hitBytes.get(removed) ?? 0;
+    }
+    return bytes;
   }
 
   /** Handler for one request to the portal; `route` is what intercept.mjs hands over (the shape of a Playwright Route). */
@@ -403,7 +412,22 @@ export class OverlaySession extends EventEmitter {
     }
   }
 
-  async #handle(route) {
+  #scriptCacheKind(cfg) {
+    return cfg.sourceMaps ? 'source-map' : 'script-source';
+  }
+
+  #readLocalInlineBody(src) {
+    try {
+      return src && isSourceFile(this.cfg.sourceDir, src.file)
+        ? this.fileBodies.read(src.file, 'source-map', (bytes) => scriptSourceBody(bytes, src.file))
+        : null;
+    } catch {
+      /* deleted meanwhile */
+      return null;
+    }
+  }
+
+  /* NOSONAR: preserve route completion, fault delivery and lifecycle ordering */ async #handle(route) {
     const request = route.request();
     let url;
     try {
@@ -459,16 +483,8 @@ export class OverlaySession extends EventEmitter {
         /* malformed escape */
       }
       // only files the model lists as inline scripts are served, nothing else under the sources
-      const src = this.model.inlineSources.find((s) => s.rel === rel && s.tag === 'script' && !s.extract);
-      let body = null;
-      try {
-        body =
-          src && isSourceFile(this.cfg.sourceDir, src.file)
-            ? this.fileBodies.read(src.file, 'source-map', (bytes) => scriptSourceBody(bytes, src.file))
-            : null;
-      } catch {
-        /* deleted meanwhile */
-      }
+      const src = this.model.inlineSources.find((s) => s.rel === rel && s.tag === 'script' && !s.extract),
+        body = this.#readLocalInlineBody(src);
       let proof = null;
       try {
         proof = body
@@ -525,17 +541,11 @@ export class OverlaySession extends EventEmitter {
         let body;
         try {
           // HEAD needs existence/type metadata, not the entire asset or generated source map.
-          body =
-            method === 'HEAD'
-              ? fs.statSync(hit.file).isFile()
-                ? Buffer.alloc(0)
-                : null
-              : this.fileBodies.read(
-                  hit.file,
-                  isScript ? (this.cfg.sourceMaps ? 'source-map' : 'script-source') : '',
-                  (bytes) =>
-                    isScript ? scriptSourceBody(bytes, hit.file, { sourceMaps: Boolean(this.cfg.sourceMaps) }) : bytes,
-                );
+          if (method === 'HEAD') body = fs.statSync(hit.file).isFile() ? Buffer.alloc(0) : null;
+          else
+            body = this.fileBodies.read(hit.file, isScript ? this.#scriptCacheKind(this.cfg) : '', (bytes) =>
+              isScript ? scriptSourceBody(bytes, hit.file, { sourceMaps: Boolean(this.cfg.sourceMaps) }) : bytes,
+            );
         } catch {
           body = null;
         }

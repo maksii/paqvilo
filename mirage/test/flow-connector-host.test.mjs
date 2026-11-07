@@ -8,7 +8,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const ROLE = '77777777-7777-4777-8777-0000000000a1';
 const PORTAL_FLOW = '77777777-7777-4777-8777-0000000000a2';
@@ -40,7 +40,7 @@ async function fixture(t) {
   });
   await new Promise((resolve) => local.listen(0, '127.0.0.1', resolve));
   ownedFixture(t).add(() => new Promise((resolve) => local.close(resolve)));
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'flow-connector-host-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'flow-connector-host-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const call = (uri) => ({ type: 'Http', inputs: { method: 'GET', uri } });
   const portalFlow = {

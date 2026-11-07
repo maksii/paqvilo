@@ -10,6 +10,7 @@ import { dispatchSdkCall } from '../lib/plugin-clr.mjs';
 import { applyPortalOverrides } from '../lib/portal-overrides.mjs';
 import { applyExperiment, validateExperimentPresets } from '../lib/experiment-presets.mjs';
 import { id, xml, initial, fixture } from './fixtures/platform-experiments.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('platform budgets are per-store, preserve aggregate semantics and validate values', async () => {
   const a = new DataStore({ state: initial() }),
@@ -135,7 +136,7 @@ test('organization attachment policies enforce base64 size, extensions and MIME 
   assert.equal(store.tableRows('annotation').length, 2);
 });
 test('two runtimes share sources but isolate configuration, presets, reload, restart and invalid imports', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-experiments-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-experiments-'));
   await fixture(root);
   let a, b;
   t.after(async () => {

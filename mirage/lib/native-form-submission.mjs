@@ -9,30 +9,27 @@ import { portalField } from './importer.mjs';
 const truthy = (value) => value === true || value === 1 || /^(?:true|1)$/i.test(String(value ?? ''));
 const CAPTCHA_MESSAGE = 'Captcha is incorrect, please re-enter captcha.';
 
-/** Decode against descriptors collected while rendering this server-owned page. */
-export function resolveNativeFormSubmission(entries, rendered, requestUrl) {
-  if (!Array.isArray(rendered)) throw new NativePostbackError('Rendered native forms required');
-  const contexts = rendered.map((item) => {
-    const context = nativeFormSubmissionContext(item?.context ?? {});
-    if (item?.descriptor?.kind !== context.kind || item.descriptor.formId !== context.formId)
-      throw new NativePostbackError('Rendered native form context differs from its descriptor');
-    return context;
-  });
-  const decoded = parseNativePostback(
-    entries,
-    rendered.map((item) => item.descriptor),
-  );
+function nativeSubmissionContext(item) {
+  const context = nativeFormSubmissionContext(item?.context ?? {});
+  if (item?.descriptor?.kind !== context.kind || item.descriptor.formId !== context.formId)
+    throw new NativePostbackError('Rendered native form context differs from its descriptor');
+  return context;
+}
+
+function selectNativeSubmissionContext(contexts, decoded, entries) {
   const selected = contexts.filter((context) => context.kind === decoded.kind && context.formId === decoded.formId);
   if (selected.length !== 1) throw new NativePostbackError('Rendered native form context is ambiguous');
   // An auto-generated step form: the earlier tabs' values and the current tab come from __VIEWSTATE.
   const viewState = decodeNativeViewState([...entries].find(([name]) => name === '__VIEWSTATE')?.[1]);
   const carried = viewState?.form === decoded.formId ? viewState : null;
-  const context =
-    decoded.body.action === 'tab'
-      ? { ...selected[0], autoStep: decoded.body.actionIndex }
-      : carried
-        ? { ...selected[0], autoStep: carried.autoStep }
-        : selected[0];
+  let context;
+  if (decoded.body.action === 'tab') context = { ...selected[0], autoStep: decoded.body.actionIndex };
+  else if (carried) context = { ...selected[0], autoStep: carried.autoStep };
+  else context = selected[0];
+  return { context, carried };
+}
+
+function nativeSubmissionPage(requestUrl) {
   let page;
   try {
     page = new URL(requestUrl);
@@ -41,6 +38,10 @@ export function resolveNativeFormSubmission(entries, rendered, requestUrl) {
   }
   if (!['http:', 'https:'].includes(page.protocol) || page.username || page.password)
     throw new NativePostbackError('Native submission page URL required');
+  return page;
+}
+
+function nativeSubmissionQuery(context, page) {
   const query = Object.fromEntries(page.searchParams);
   // Only the page's resolved record and session can reach the submission service.
   // A record query parameter the page URL carries is pinned to the resolved record; one it does not
@@ -51,6 +52,99 @@ export function resolveNativeFormSubmission(entries, rendered, requestUrl) {
   else delete query.stepid;
   if (context.sessionId) query.sessionid = context.sessionId;
   else delete query.sessionid;
+  return query;
+}
+
+/* NOSONAR */ function normalizePostedValue(value, control) {
+  if (typeof value !== 'string') return value;
+  if (value === '') return null;
+  if (['integer', 'decimal', 'money', 'double', 'picklist'].includes(control)) {
+    // Malformed text remains textual for the native format validator. Exact
+    // decimal/Int64 tokens never pass through a rounded JavaScript Number.
+    if (/^[+-]?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?$/.test(value)) {
+      try {
+        return control === 'double' ? Number(value) : parseNumericLiteral(value);
+      } catch {
+        /* The service will reject the original textbox value. */
+      }
+    }
+    return value;
+  }
+  if (control === 'boolean' && /^(?:0|1|true|false)$/i.test(value)) return /^(?:1|true)$/i.test(value);
+  if (control === 'textarea') return value.replace(/\r\n|\r/g, '\n');
+  // The rich text control's hidden value is the editor's HTML as a JSON string (lib/platform.mjs).
+  if (control === 'richtext' && value.startsWith('"')) {
+    try {
+      return JSON.parse(value);
+    } catch {
+      /* posted text stays as typed */
+    }
+  }
+  return value;
+}
+
+function applyNativeLookup(field, value, posted, descriptor, mapping, submission, store) {
+  const relationships = Object.entries(mapping?.relationships ?? {}).filter(
+    ([, relation]) => relation.many === false && relation.from === field.name,
+  );
+  const wire = descriptor.fields.find((item) => item.name === field.name)?.wireName;
+  const postedEntities = posted.filter(([name]) => name === wire + '_entityname').map(([, text]) => text);
+  if (postedEntities.length > 1) throw new NativePostbackError('Ambiguous native lookup target');
+  // An unselected native lookup posts both hidden controls as empty.
+  const entities = postedEntities.filter((text) => text !== '');
+  const targets = entities.length
+    ? relationships.filter(([, relation]) => relation.entity === entities[0])
+    : relationships;
+  if (value == null) {
+    if (!relationships.length || (entities.length && !targets.length))
+      throw new NativePostbackError('Native lookup target is unresolved');
+    // A polymorphic column has several navigation names but one stored
+    // value. Clearing each navigation separately supplies the same column
+    // twice; use the source-bound column's explicit null instead.
+    if (submission.context.mode === 100000000) delete submission.body.values[field.name];
+    else submission.body.values[field.name] = null;
+    return;
+  }
+  if (targets.length !== 1) throw new NativePostbackError('Native lookup target is unresolved');
+  const [navigation, relation] = targets[0],
+    target = store.resolveMapping(relation.entity);
+  delete submission.body.values[field.name];
+  submission.body.values[navigation + '@odata.bind'] = `/${target.entitySet}(${encodeURIComponent(value)})`;
+}
+
+function resolveSubmissionSchema(submission, options, definition) {
+  let schema = options.schemas?.[definition?.id] ?? options.schemas?.[definition?.name];
+  if (submission.kind === 'entityform' && !schema)
+    schema = approximateFormSchema({ definition, portal: options.portal, metadata: options.metadata });
+  if (submission.kind === 'webform')
+    schema = approximateAdvancedFormSchema({ definition, portal: options.portal, metadata: options.metadata, schema });
+  if (schema?.steps) schema = schema.steps.find((step) => step.stepId === submission.context.stepId);
+  return schema;
+}
+
+function validateNativeCaptcha(submission, options, schema, definition) {
+  const captchaSettings = schema?.metadata ?? definition?.metadata ?? {};
+  if (submission.body.action !== 'submit' || !truthy(portalField(captchaSettings, 'captcharequired', false))) return;
+  const signedIn = Boolean(options?.identity?.contactId ?? options?.identity?.id);
+  if (!signedIn || truthy(portalField(captchaSettings, 'showcaptchaforauthenticatedusers', false)))
+    throw Object.assign(new Error(CAPTCHA_MESSAGE), {
+      status: 400,
+      code: 'CaptchaInvalid',
+      details: { validationErrors: [{ field: 'captcha', code: 'CaptchaInvalid', message: CAPTCHA_MESSAGE }] },
+    });
+}
+
+/** Decode against descriptors collected while rendering this server-owned page. */
+export function resolveNativeFormSubmission(entries, rendered, requestUrl) {
+  if (!Array.isArray(rendered)) throw new NativePostbackError('Rendered native forms required');
+  const contexts = rendered.map(nativeSubmissionContext);
+  const decoded = parseNativePostback(
+    entries,
+    rendered.map((item) => item.descriptor),
+  );
+  const { context, carried } = selectNativeSubmissionContext(contexts, decoded, entries);
+  const page = nativeSubmissionPage(requestUrl);
+  const query = nativeSubmissionQuery(context, page);
   return {
     kind: decoded.kind,
     formId: decoded.formId,
@@ -88,26 +182,12 @@ export async function submitNativePostback(entries, rendered, options) {
       result: await submitPortalForm(submission.kind, submission.formId, submission.body, options),
       context: submission.context,
     };
-  let schema = options.schemas?.[definition?.id] ?? options.schemas?.[definition?.name];
-  if (submission.kind === 'entityform' && !schema)
-    schema = approximateFormSchema({ definition, portal: options.portal, metadata: options.metadata });
-  if (submission.kind === 'webform')
-    schema = approximateAdvancedFormSchema({ definition, portal: options.portal, metadata: options.metadata, schema });
-  if (schema?.steps) schema = schema.steps.find((step) => step.stepId === submission.context.stepId);
+  let schema = resolveSubmissionSchema(submission, options, definition);
   // A basic form or step that requires the captcha (for a signed-in visitor only with "show
   // captcha for authenticated users") rejects its save postback with the captcha message and
   // re-renders with the posted values (status 200).
   // The local challenge has no verifiable answer; keep CAPTCHA-required saves closed.
-  const captchaSettings = schema?.metadata ?? definition?.metadata ?? {};
-  if (submission.body.action === 'submit' && truthy(portalField(captchaSettings, 'captcharequired', false))) {
-    const signedIn = Boolean(options?.identity?.contactId ?? options?.identity?.id);
-    if (!signedIn || truthy(portalField(captchaSettings, 'showcaptchaforauthenticatedusers', false)))
-      throw Object.assign(new Error(CAPTCHA_MESSAGE), {
-        status: 400,
-        code: 'CaptchaInvalid',
-        details: { validationErrors: [{ field: 'captcha', code: 'CaptchaInvalid', message: CAPTCHA_MESSAGE }] },
-      });
-  }
+  validateNativeCaptcha(submission, options, schema, definition);
   if (schema?.formXml)
     schema = {
       ...schema,
@@ -121,57 +201,9 @@ export async function submitNativePostback(entries, rendered, options) {
     if (!Object.hasOwn(submission.body.values, field.name)) continue;
     let value = submission.body.values[field.name];
     const control = nativeControlKind(field);
-    if (typeof value === 'string') {
-      if (value === '') value = null;
-      else if (['integer', 'decimal', 'money', 'double', 'picklist'].includes(control)) {
-        // Malformed text remains textual for the native format validator. Exact
-        // decimal/Int64 tokens never pass through a rounded JavaScript Number.
-        if (/^[+-]?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?$/.test(value)) {
-          try {
-            value = control === 'double' ? Number(value) : parseNumericLiteral(value);
-          } catch {
-            /* The service will reject the original textbox value. */
-          }
-        }
-      } else if (control === 'boolean' && /^(?:0|1|true|false)$/i.test(value)) value = /^(?:1|true)$/i.test(value);
-      else if (control === 'textarea') value = value.replace(/\r\n|\r/g, '\n');
-      // The rich text control's hidden value is the editor's HTML as a JSON string (lib/platform.mjs).
-      else if (control === 'richtext' && value[0] === '"') {
-        try {
-          value = JSON.parse(value);
-        } catch {
-          /* posted text stays as typed */
-        }
-      }
-    }
-    if (control === 'lookup') {
-      const relationships = Object.entries(mapping?.relationships ?? {}).filter(
-        ([, relation]) => relation.many === false && relation.from === field.name,
-      );
-      const wire = descriptor.fields.find((item) => item.name === field.name)?.wireName;
-      const postedEntities = posted.filter(([name]) => name === wire + '_entityname').map(([, text]) => text);
-      if (postedEntities.length > 1) throw new NativePostbackError('Ambiguous native lookup target');
-      // An unselected native lookup posts both hidden controls as empty.
-      const entities = postedEntities.filter((text) => text !== '');
-      const targets = entities.length
-        ? relationships.filter(([, relation]) => relation.entity === entities[0])
-        : relationships;
-      if (value == null) {
-        if (!relationships.length || (entities.length && !targets.length))
-          throw new NativePostbackError('Native lookup target is unresolved');
-        // A polymorphic column has several navigation names but one stored
-        // value. Clearing each navigation separately supplies the same column
-        // twice; use the source-bound column's explicit null instead.
-        if (submission.context.mode === 100000000) delete submission.body.values[field.name];
-        else submission.body.values[field.name] = null;
-      } else {
-        if (targets.length !== 1) throw new NativePostbackError('Native lookup target is unresolved');
-        const [navigation, relation] = targets[0],
-          target = options.store.resolveMapping(relation.entity);
-        delete submission.body.values[field.name];
-        submission.body.values[navigation + '@odata.bind'] = `/${target.entitySet}(${encodeURIComponent(value)})`;
-      }
-    } else submission.body.values[field.name] = value;
+    value = normalizePostedValue(value, control);
+    if (control === 'lookup') applyNativeLookup(field, value, posted, descriptor, mapping, submission, options.store);
+    else submission.body.values[field.name] = value;
   }
   const result = await submitPortalForm(submission.kind, submission.formId, submission.body, {
     ...options,

@@ -301,6 +301,37 @@ test('Basic User has Global read on organization-owned tables and no create ther
   );
 });
 
+test('missing-privilege diagnostics retain exact counts without copying every grant per refusal', async () => {
+  const store = await seeded();
+  const principals = createPrincipals(store, SETTINGS);
+  const basic = principals.resolve({ oid: BASIC_OID }).user;
+  const expected = principals.privileges(basic).size;
+  assert.ok(expected > 0);
+  const iterate = Map.prototype[Symbol.iterator];
+  let copied = 0;
+  try {
+    Map.prototype[Symbol.iterator] = function () {
+      const first = this.entries().next();
+      if (
+        !first.done &&
+        typeof first.value[0] === 'string' &&
+        first.value[0].startsWith('prv') &&
+        typeof first.value[1] === 'number'
+      )
+        copied++;
+      return iterate.call(this);
+    };
+    for (let i = 0; i < 20; i++)
+      assert.throws(
+        () => principals.authorize({ user: basic, entity: 'region', operation: 'create' }),
+        (error) => error.code === 'PrivilegeDenied' && error.message.includes(`privilegeCount=${expected},`),
+      );
+  } finally {
+    Map.prototype[Symbol.iterator] = iterate;
+  }
+  assert.equal(copied, 0, 'A boolean capability refusal does not need a new complete privilege map.');
+});
+
 test('a role without the privilege denies with 0x80040220', async () => {
   const store = await seeded();
   const p = createPrincipals(store, SETTINGS);

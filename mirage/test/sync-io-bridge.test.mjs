@@ -199,7 +199,7 @@ test('the bridge gives up at its deadline with 504 SyncIoTimeout, and the next c
   const server = http.createServer((req, res) => res.end());
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  const started = Date.now();
+  // The message names the deadline that ended the call, so the 10 s default cannot pass for the requested 300 ms.
   assert.throws(
     () =>
       syncIo(
@@ -207,9 +207,8 @@ test('the bridge gives up at its deadline with 504 SyncIoTimeout, and the next c
         { url: `http://127.0.0.1:${server.address().port}/hang`, headers: {}, body: '{}' },
         { timeoutMs: 300 },
       ),
-    (error) => error.status === 504 && error.code === 'SyncIoTimeout',
+    (error) => error.status === 504 && error.code === 'SyncIoTimeout' && /within 300 ms/.test(error.message),
   );
-  assert.ok(Date.now() - started < 5000);
   const receiver = await threadReceiver(t);
   assert.equal(syncIo('http-post', { url: `${receiver.origin}/status/204`, headers: {}, body: '{}' }), 204);
 });

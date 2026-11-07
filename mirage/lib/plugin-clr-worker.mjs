@@ -1,13 +1,11 @@
-import { clrOutputFailure, decodeClrMessage } from './plugin-clr-protocol.mjs';
+import { decodeClrMessage } from './plugin-clr-protocol.mjs';
+import { SANDBOX_WORKER_CRASH } from './plugin-fault.mjs';
 import { workerData } from 'node:worker_threads';
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
 const { port, signal, executable, input, timeout, parentProcessId, parentStartTicks } = workerData,
   flags = new Int32Array(signal);
-let complete = false,
-  pending = false,
-  bytes = 0,
-  stderr = 0;
+let complete = false;
 const child = spawn(executable, ['--parent', String(parentProcessId), '--parent-start', String(parentStartTicks)], {
   shell: false,
   windowsHide: true,
@@ -37,39 +35,28 @@ child.on('exit', (code) => {
     finish({
       kind: 'failure',
       code: 'LocalPluginHostExited',
-      message: 'CLR host stopped without a result (' + code + ').',
+      message: SANDBOX_WORKER_CRASH.message,
+      hostExitCode: code,
     });
 });
-child.stderr.on('data', (chunk) => {
-  stderr += chunk.length;
-  const error = clrOutputFailure('stderr', stderr);
-  if (error) finish(error);
-});
-child.stdout.on('data', (chunk) => {
-  bytes += chunk.length;
-  const error = clrOutputFailure('stdout', bytes);
-  if (error) finish(error);
-});
+// The host discards plug-in console output; anything else on stderr is drained, never a failure.
+child.stderr.resume();
 child.stdin.on('error', () =>
   finish({ kind: 'failure', code: 'LocalPluginProtocol', message: 'CLR host input channel closed unexpectedly.' }),
 );
 readline.createInterface({ input: child.stdout, crlfDelay: Infinity }).on('line', (line) => {
   if (complete) return;
-  const { message, error } = decodeClrMessage(line, { pending });
+  const { message, error } = decodeClrMessage(line);
   if (error) return finish(error);
-  if (message.kind === 'rpc') {
-    pending = true;
-    send(message);
-  } else if (message.kind === 'trace') send(message);
-  else if (['result', 'failure'].includes(message.kind)) {
-    finish(message);
-  }
+  if (['result', 'failure'].includes(message.kind)) finish(message);
+  else send(message);
 });
 port.on('message', (message) => {
-  if (message.kind === 'rpc-answer' && pending && !complete) {
-    pending = false;
-    child.stdin.write(JSON.stringify(message) + '\n');
-  } else if (message.kind === 'cancel')
+  if (message.kind === 'rpc-answer' && !complete)
+    child.stdin.write(
+      JSON.stringify({ kind: 'rpc-answer', call: message.call, value: message.value, error: message.error }) + '\n',
+    );
+  else if (message.kind === 'cancel')
     finish({ kind: 'failure', code: 'LocalPluginCancelled', message: 'CLR execution was cancelled.' });
 });
 child.stdin.write(JSON.stringify(input) + '\n');

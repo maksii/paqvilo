@@ -4,10 +4,10 @@ import fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('portal round trips preserve five date behaviors and per-request formatted timezone rules', async (t) => {
-  const source = await fs.mkdtemp(join(tmpdir(), 'invented-date-behaviors-'));
+  const source = await makeTemporaryDirectory(join(tmpdir(), 'invented-date-behaviors-'));
   ownedFixture(t).remove(() => fs.rm(source, { recursive: true, force: true }));
   await fs.writeFile(join(source, 'website.yml'), 'adx_name: Invented date site\nadx_websiteid: site\n');
   await fs.writeFile(
@@ -95,7 +95,7 @@ test('portal round trips preserve five date behaviors and per-request formatted 
 });
 
 test('month-first range errors preserve submitted text and the configured native minimum-date message', async (t) => {
-  const source = await fs.mkdtemp(join(tmpdir(), 'invented-date-boundaries-'));
+  const source = await makeTemporaryDirectory(join(tmpdir(), 'invented-date-boundaries-'));
   ownedFixture(t).remove(() => fs.rm(source, { recursive: true, force: true }));
   await fs.writeFile(join(source, 'website.yml'), 'adx_name: Invented date site\nadx_websiteid: site\n');
   await fs.writeFile(

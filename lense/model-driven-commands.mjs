@@ -7,7 +7,7 @@ export function installModelDrivenCommands({ origin, token }) {
     location.origin === origin &&
     host?.isConnected &&
     host.__paqModelInspector?.token === token &&
-    !window.__paqviloRetiredModelInspectors?.includes(token);
+    !globalThis.__paqviloRetiredModelInspectors?.includes(token);
   if (!live() || host.__paqModelCommands?.token === token) return;
   host.__paqModelCommands?.dispose();
   let disposed = false;
@@ -22,8 +22,8 @@ export function installModelDrivenCommands({ origin, token }) {
     };
     return JSON.stringify([
       location.href,
-      read(() => window.Xrm?.Page?.data?.entity?.getId()),
-      read(() => window.Xrm?.Page?.ui?.formSelector?.getCurrentItem()?.getId()),
+      read(() => globalThis.Xrm?.Page?.data?.entity?.getId()),
+      read(() => globalThis.Xrm?.Page?.ui?.formSelector?.getCurrentItem()?.getId()),
     ]);
   };
   const cancelPending = () => {
@@ -105,11 +105,12 @@ export function installModelDrivenCommands({ origin, token }) {
     }, 250);
     Promise.resolve()
       .then(async () => {
-        if (disposed || !live() || target() !== route) throw Error('The app changed before this command could run.');
+        if (disposed || !live() || target() !== route)
+          throw new Error('The app changed before this command could run.');
         // This is a user-authored developer command, never an action received from
         // the agent API, imported automatically, or used for built-in operations.
         const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-        return await new AsyncFunction('Xrm', 'signal', '"use strict";\n' + code)(window.Xrm, controller.signal);
+        return await new AsyncFunction('Xrm', 'signal', '"use strict";\n' + code)(globalThis.Xrm, controller.signal);
       })
       .then(
         (value) => finish({ status: 'ok', title: 'Command completed', message: summary(value) }),

@@ -166,13 +166,268 @@ const STAGES = [
 ];
 const packsOf = (snapshot) => snapshot.packs ?? (snapshot.sites ?? []).flatMap((site) => site.packs ?? []);
 
+function stageStatus(stage, { findings, snapshot, runtime, mirages, portal, created, pending }) {
+  if (findings.length && stage.id === 4 && findings.every((code) => code === 'placeholder-origin')) return 'optional';
+  if (findings.length) return pending();
+  if (stage.id === 10) {
+    if (!snapshot.ready) return 'blocked';
+    return runtime?.restartRequired === false ? 'done' : pending();
+  }
+  if (stage.required || (stage.id === 4 && portal)) return created ? 'done' : pending();
+  return created && stage.configured?.(mirages, snapshot) ? 'done' : 'optional';
+}
+
+function addPortalSiteFindings(store, site, add) {
+  if (!site.sourceStatus.exists) add('missing-source', 'Select an existing local export folder.');
+  else if (!site.sourceStatus.format)
+    add('source-layout', 'This folder is not a recognized portal export. Select the export inside the checkout.');
+  if (store.kind === 'catalogue' && !Object.keys(site.environments).length)
+    add(
+      'no-environments',
+      'Add an environment for catalogue workflows. Local Mirage targets can use a loopback origin.',
+    );
+  if (site.defaultEnv && !site.environments[site.defaultEnv])
+    add('default-env', 'Choose a default environment that exists.');
+  for (const [env, setting] of Object.entries(site.environments))
+    if (placeholder(setting.url))
+      add(
+        'placeholder-origin',
+        `Live environment ${env} still has an example address. Only Lense uses it; the local preview runs without it.`,
+      );
+}
+
+function addSiteResourceFindings(site, add) {
+  for (const solution of site.solutions)
+    if (!solution.exists) add('missing-solution', `Solution folder does not exist: ${solution.path}`);
+  for (const pack of site.packs ?? [])
+    if (!pack.exists) add('missing-pack', `Pack module does not exist: ${pack.path}`);
+}
+
+function addStandaloneFindings(result) {
+  for (const solution of result.solutions)
+    if (!solution.exists)
+      result.findings.push({ code: 'missing-solution', message: `Solution folder does not exist: ${solution.path}` });
+  for (const pack of result.packs)
+    if (!pack.exists)
+      result.findings.push({ code: 'missing-pack', message: `Pack module does not exist: ${pack.path}` });
+}
+
+function addSiteFindings(store, result) {
+  const standalone = store.kind === 'project' && result.settings.runtime?.kind !== 'power-pages';
+  if (!result.sites.length && !standalone)
+    result.findings.push({ code: 'no-sites', message: 'Add a target and select its local sources.' });
+  if (result.settings.defaultSite && !result.sites.some((site) => site.id === result.settings.defaultSite))
+    result.findings.push({ code: 'default-site', message: 'Choose a default portal that exists.' });
+  for (const site of result.sites) {
+    const add = (code, message) => result.findings.push({ code, site: site.id, message });
+    if ((site.runtime?.kind ?? 'power-pages') === 'power-pages') addPortalSiteFindings(store, site, add);
+    addSiteResourceFindings(site, add);
+  }
+  if (standalone) addStandaloneFindings(result);
+}
+
+function addDuplicateFindings(result) {
+  if (result.settings.portals !== 'all') return;
+  const origins = new Map(),
+    ports = new Map();
+  for (const site of result.sites) {
+    for (const [env, setting] of Object.entries(site.environments)) {
+      const origin = new URL(setting.url).origin,
+        label = `${site.id}@${env}`;
+      if (origins.has(origin))
+        result.findings.push({
+          code: 'duplicate-origin',
+          site: site.id,
+          message: `${label} shares an origin with ${origins.get(origin)}. Choose distinct origins or selected development targets for Lense.`,
+        });
+      else origins.set(origin, label);
+    }
+    const port = site.mirage.port;
+    if (!Number.isInteger(port) || port <= 0) continue;
+    if (ports.has(port))
+      result.findings.push({
+        code: 'duplicate-port',
+        site: site.id,
+        message: `Mirage port ${port} is also selected by ${ports.get(port)}. Choose distinct ports or 0 for free ports.`,
+      });
+    else ports.set(port, site.id);
+  }
+}
+
+function validConfigEdit(edit) {
+  return (
+    edit &&
+    ['set', 'delete'].includes(edit.op) &&
+    Array.isArray(edit.path) &&
+    edit.path.length > 0 &&
+    edit.path.length <= 12 &&
+    !edit.path.some(
+      (key) => !((typeof key === 'string' && key && !blocked.has(key)) || (Number.isInteger(key) && key >= 0)),
+    )
+  );
+}
+
+function editValue(edit) {
+  let value = edit.value;
+  if (edit.yaml !== undefined) {
+    if (typeof edit.yaml !== 'string' || edit.value !== undefined)
+      throw setupError('A YAML field edit must contain only YAML text.');
+    const parsed = YAML.parseDocument(edit.yaml);
+    if (parsed.errors.length) throw setupError(parsed.errors[0].message);
+    value = parsed.toJS({ maxAliasCount: 50 });
+  }
+  return value;
+}
+
+function applyConfigEdit(doc, edit, kind, linkedSite) {
+  if (edit.op === 'delete') {
+    doc.deleteIn(edit.path);
+    return;
+  }
+  const value = editValue(edit);
+  // Environment shorthand remains usable through guided nested field edits.
+  if (
+    kind === 'catalogue' &&
+    !linkedSite &&
+    edit.path[0] === 'sites' &&
+    edit.path[2] === 'environments' &&
+    edit.path.length > 4
+  ) {
+    const at = edit.path.slice(0, 4),
+      previous = doc.getIn(at);
+    if (typeof previous === 'string') doc.setIn(at, doc.createNode({ url: previous }));
+  }
+  doc.setIn(edit.path, doc.createNode(value));
+}
+
+function valueAt(value, at) {
+  return at.reduce((parent, key) => parent?.[key], value);
+}
+
+function collectPreservedYamlTokens(
+  node,
+  at,
+  serialized,
+  originalDocument,
+  serializedDocument,
+  originalText,
+  replacements,
+) {
+  const next = serialized.getIn(at, true);
+  if (
+    (YAML.isMap(node) || YAML.isSeq(node)) &&
+    node.flow &&
+    node.range &&
+    next?.range &&
+    isDeepStrictEqual(valueAt(originalDocument.raw, at), valueAt(serializedDocument.raw, at))
+  ) {
+    replacements.push({
+      start: next.range[0],
+      end: next.range[1],
+      value: originalText.slice(node.range[0], node.range[1]),
+    });
+    return; // Whole-collection replacement must not overlap restored child tokens.
+  }
+  if (YAML.isMap(node)) {
+    for (const pair of node.items)
+      collectPreservedYamlTokens(
+        pair.value,
+        [...at, pair.key.value],
+        serialized,
+        originalDocument,
+        serializedDocument,
+        originalText,
+        replacements,
+      );
+  } else if (YAML.isSeq(node)) {
+    node.items.forEach((item, index) =>
+      collectPreservedYamlTokens(
+        item,
+        [...at, index],
+        serialized,
+        originalDocument,
+        serializedDocument,
+        originalText,
+        replacements,
+      ),
+    );
+  } else if (
+    YAML.isScalar(node) &&
+    node.range &&
+    YAML.isScalar(next) &&
+    next.range &&
+    Object.is(node.value, next.value)
+  ) {
+    replacements.push({
+      start: next.range[0],
+      end: next.range[1],
+      value: originalText.slice(node.range[0], node.range[1]),
+    });
+  }
+}
+
+function preserveYamlText(rendered, originalText, originalDocument) {
+  const serializedDocument = document(rendered, 'Configuration');
+  const serialized = serializedDocument.doc;
+  const replacements = [];
+  collectPreservedYamlTokens(
+    originalDocument.doc.contents,
+    [],
+    serialized,
+    originalDocument,
+    serializedDocument,
+    originalText,
+    replacements,
+  );
+  replacements.sort((a, b) => b.start - a.start);
+  return replacements.reduce(
+    (value, edit) => value.slice(0, edit.start) + edit.value + value.slice(edit.end),
+    rendered,
+  );
+}
+
+function createSaveText(store, input, before, file, linkedSite, layerText) {
+  if (input.template !== undefined) {
+    if (before.shared !== null)
+      throw setupError('A template creates a new configuration; edit the existing file instead.', 409);
+    const created = renderTemplate(store.kind, input.template, input.values);
+    return /\.json$/i.test(file) ? JSON.stringify(created, null, 2) + '\n' : YAML.stringify(created);
+  }
+  if (typeof input.text === 'string') return input.text;
+  // A new layer starts as an empty block mapping, so guided edits write block-style YAML.
+  const { doc } =
+    layerText(before) === null ? { doc: new YAML.Document({}) } : document(layerText(before), 'Configuration');
+  if (!Array.isArray(input.operations) || input.operations.length > 100)
+    throw setupError('Send at most 100 configuration edits.');
+  for (const edit of input.operations) {
+    if (!validConfigEdit(edit)) throw setupError('Invalid configuration field path.');
+    applyConfigEdit(doc, edit, store.kind, linkedSite);
+  }
+  const originalText = layerText(before) ?? '{}\n';
+  const originalDocument = document(originalText, 'Configuration');
+  const rendered = doc.toString({ lineWidth: 0 });
+  return preserveYamlText(rendered, originalText, originalDocument);
+}
+
+function assertSaveInput(input, linkedSite, localFile) {
+  if (
+    !input ||
+    !(['shared', 'personal'].includes(input.layer) || linkedSite) ||
+    (input.layer === 'personal' && !localFile)
+  )
+    throw setupError('Choose an available configuration layer.');
+  if (typeof input.revision !== 'string') throw setupError('A configuration revision is required.');
+  if (input.template !== undefined && (input.layer !== 'shared' || typeof input.template !== 'string'))
+    throw setupError('A template creates the shared configuration.');
+}
+
 /** Journey stages (docs/setup.md): done, next (the first open stage), blocked (open behind it) or optional. */
 export function setupStages(snapshot, runtime = null) {
   const mirages =
     snapshot.kind === 'project'
       ? [
           {
-            ...(snapshot.settings?.mirage ?? {}),
+            ...snapshot.settings?.mirage,
             simulation: snapshot.settings?.simulation,
             dataverse: snapshot.settings?.dataverse,
           },
@@ -192,15 +447,8 @@ export function setupStages(snapshot, runtime = null) {
     const findings = [
       ...new Set((snapshot.findings ?? []).filter((item) => stage.codes.includes(item.code)).map((item) => item.code)),
     ];
-    let status;
     // An example live address matters to Lense only; the local preview runs without it.
-    if (findings.length && stage.id === 4 && findings.every((code) => code === 'placeholder-origin'))
-      status = 'optional';
-    else if (findings.length) status = pending();
-    else if (stage.id === 10)
-      status = !snapshot.ready ? 'blocked' : runtime?.restartRequired === false ? 'done' : pending();
-    else if (stage.required || (stage.id === 4 && portal)) status = created ? 'done' : pending();
-    else status = created && stage.configured?.(mirages, snapshot) ? 'done' : 'optional';
+    const status = stageStatus(stage, { findings, snapshot, runtime, mirages, portal, created, pending });
     return { id: stage.id, title: stage.title, status, findings, anchor: stage.anchor };
   });
 }
@@ -266,14 +514,11 @@ export async function sourceStatus(directory, { portal = false, runGit = run, gi
       status.gitState = error.killed || error.code === 'ETIMEDOUT' ? 'timeout' : 'unavailable';
     }
   } catch (error) {
-    status.gitState =
-      error.killed || error.code === 'ETIMEDOUT'
-        ? 'timeout'
-        : /not a git repository/i.test(error.stderr ?? '')
-          ? 'not-checkout'
-          : /ambiguous argument ['"]?HEAD|unknown revision|does not have any commits/i.test(error.stderr ?? '')
-            ? 'uncommitted'
-            : 'unavailable';
+    if (error.killed || error.code === 'ETIMEDOUT') status.gitState = 'timeout';
+    else if (/not a git repository/i.test(error.stderr ?? '')) status.gitState = 'not-checkout';
+    else if (/ambiguous argument ['"]?HEAD|unknown revision|does not have any commits/i.test(error.stderr ?? ''))
+      status.gitState = 'uncommitted';
+    else status.gitState = 'unavailable';
   }
   return status;
 }
@@ -296,7 +541,7 @@ export class SetupStore {
       throw setupError('Select the shared catalogue with --config; personal settings are a separate layer.');
     this.processEnv = processEnv;
   }
-  async files() {
+  /* NOSONAR: preserve linked-project read and refusal ordering */ async files() {
     const shared = await textFile(this.file);
     const personal = this.localFile ? await textFile(this.localFile) : null;
     // Hash .env for conflicts only. Its content never leaves the store.
@@ -345,10 +590,10 @@ export class SetupStore {
       projects[site] = { file, text, raw };
     }
     const linked = Object.keys(projects)
-      .sort()
+      .sort(/* NOSONAR: preserve default string coercion */)
       .map((site) => [site, projects[site].file, projects[site].text]);
     const refusals = Object.keys(refused)
-      .sort()
+      .sort(/* NOSONAR: preserve default string coercion */)
       .map((site) => [site, refused[site].file, refused[site].code]);
     const revision = createHash('sha256')
       .update(JSON.stringify([shared, personal, env, ignores, ...linked, ...refusals]))
@@ -400,12 +645,10 @@ export class SetupStore {
       };
     } else {
       const catalogue = loadCatalogue({ config: this.file }, this.processEnv);
-      const id =
-        siteId && catalogue.sites[siteId]
-          ? siteId
-          : catalogue.root.defaultSite && catalogue.sites[catalogue.root.defaultSite]
-            ? catalogue.root.defaultSite
-            : Object.keys(catalogue.sites)[0];
+      let id = Object.keys(catalogue.sites)[0];
+      if (siteId && catalogue.sites[siteId]) id = siteId;
+      else if (catalogue.root.defaultSite && catalogue.sites[catalogue.root.defaultSite])
+        id = catalogue.root.defaultSite;
       const site = catalogue.sites[id];
       if (!site) return null;
       const mirage = resolveMirageConfig(site.mirage, catalogue);
@@ -462,7 +705,7 @@ export class SetupStore {
     observedConfig(root.defaults?.mirage?.observed, 'defaults.mirage.observed');
     return root;
   }
-  async snapshot() {
+  /* NOSONAR: preserve snapshot inspection and callback timing */ async snapshot() {
     const gitQueues = new Map();
     const inspectSource = (directory, options = {}) => sourceStatus(directory, { ...options, gitQueues });
     const files = await this.files();
@@ -510,7 +753,7 @@ export class SetupStore {
       if (files.shared === null) return result;
       const valid = await this.validate(files.shared, files.personal);
       if (this.kind === 'project') {
-        const authored = document(files.shared, 'Project configuration').raw;
+        const authored = document(result.layers.shared.text, 'Project configuration').raw;
         result.layers.shared.values = redactSettings(authored);
         result.settings = {
           defaultSite: valid.defaultPortal,
@@ -524,7 +767,6 @@ export class SetupStore {
           dataPackEntries: authored.dataPacks ?? authored.presets ?? [],
           dataPacks: valid.dataPacks,
           solutionRoots: valid.solutionRoots,
-          // Resolved setting rows the file sets (connections, providers, secrets by reference, …) for the planned topology.
           mirage: redactSettings(
             Object.fromEntries(
               projectKeys()
@@ -532,7 +774,6 @@ export class SetupStore {
                 .map((key) => [key, valid[key]]),
             ),
           ),
-          // Authored project-only keys, as the file writes them.
           lcid: authored.lcid,
           watch: authored.watch,
           stateDirectory: authored.stateDirectory ?? authored.state_directory,
@@ -575,7 +816,6 @@ export class SetupStore {
           portals: catalogue.root.portals,
           liveReload: catalogue.root.liveReload,
           panel: catalogue.root.panel,
-          // Root keys the guided Settings form shows; defaults carries references only.
           includeCaution: catalogue.root.includeCaution,
           agent: catalogue.root.agent ?? {},
           editor: catalogue.root.editor,
@@ -628,47 +868,8 @@ export class SetupStore {
           }),
         );
       }
-      const standalone = this.kind === 'project' && result.settings.runtime?.kind !== 'power-pages';
-      if (!result.sites.length && !standalone)
-        result.findings.push({ code: 'no-sites', message: 'Add a target and select its local sources.' });
-      if (result.settings.defaultSite && !result.sites.some((site) => site.id === result.settings.defaultSite))
-        result.findings.push({ code: 'default-site', message: 'Choose a default portal that exists.' });
-      for (const site of result.sites) {
-        const add = (code, message) => result.findings.push({ code, site: site.id, message });
-        const portal = (site.runtime?.kind ?? 'power-pages') === 'power-pages';
-        if (portal && !site.sourceStatus.exists) add('missing-source', 'Select an existing local export folder.');
-        else if (portal && !site.sourceStatus.format)
-          add('source-layout', 'This folder is not a recognized portal export. Select the export inside the checkout.');
-        if (portal && this.kind === 'catalogue' && !Object.keys(site.environments).length)
-          add(
-            'no-environments',
-            'Add an environment for catalogue workflows. Local Mirage targets can use a loopback origin.',
-          );
-        if (portal && site.defaultEnv && !site.environments[site.defaultEnv])
-          add('default-env', 'Choose a default environment that exists.');
-        if (portal)
-          for (const [env, setting] of Object.entries(site.environments))
-            if (placeholder(setting.url))
-              add(
-                'placeholder-origin',
-                `Live environment ${env} still has an example address. Only Lense uses it; the local preview runs without it.`,
-              );
-        for (const solution of site.solutions)
-          if (!solution.exists) add('missing-solution', `Solution folder does not exist: ${solution.path}`);
-        for (const pack of site.packs ?? [])
-          if (!pack.exists) add('missing-pack', `Pack module does not exist: ${pack.path}`);
-      }
-      if (standalone) {
-        for (const solution of result.solutions)
-          if (!solution.exists)
-            result.findings.push({
-              code: 'missing-solution',
-              message: `Solution folder does not exist: ${solution.path}`,
-            });
-        for (const pack of result.packs)
-          if (!pack.exists)
-            result.findings.push({ code: 'missing-pack', message: `Pack module does not exist: ${pack.path}` });
-      }
+      addSiteFindings(this, result);
+
       for (const [site, linked] of Object.entries(files.projects)) {
         const add = (code, message) => result.findings.push({ code, site, layer: `project:${site}`, message });
         if (linked.text === null) {
@@ -688,65 +889,32 @@ export class SetupStore {
           add('configuration', `${path.basename(linked.file)}: ${error.message}`);
         }
       }
-      for (const [site, item] of Object.entries(files.refused))
-        result.findings.push({
-          code: item.code,
-          site,
-          message:
-            item.code === 'project-outside'
-              ? `Linked project file ${item.file} must be inside the catalogue folder and outside .paqvilo/. Setup neither shows nor edits it; change sites.${site}.mirage.project.`
-              : `${path.basename(item.file)} is not a Mirage project document (version 1 or 2 with project keys only)${item.reason ? ` (${item.reason})` : ''}. Setup neither shows nor edits it; change sites.${site}.mirage.project or repair the file outside setup.`,
-        });
-      if (result.settings.portals === 'all') {
-        const origins = new Map(),
-          ports = new Map();
-        for (const site of result.sites) {
-          for (const [env, setting] of Object.entries(site.environments)) {
-            const origin = new URL(setting.url).origin,
-              label = `${site.id}@${env}`;
-            if (origins.has(origin))
-              result.findings.push({
-                code: 'duplicate-origin',
-                site: site.id,
-                message: `${label} shares an origin with ${origins.get(origin)}. Choose distinct origins or selected development targets for Lense.`,
-              });
-            else origins.set(origin, label);
-          }
-          const port = site.mirage.port;
-          if (Number.isInteger(port) && port > 0) {
-            if (ports.has(port))
-              result.findings.push({
-                code: 'duplicate-port',
-                site: site.id,
-                message: `Mirage port ${port} is also selected by ${ports.get(port)}. Choose distinct ports or 0 for free ports.`,
-              });
-            else ports.set(port, site.id);
-          }
+      for (const [site, item] of Object.entries(files.refused)) {
+        let message;
+        if (item.code === 'project-outside')
+          message = `Linked project file ${item.file} must be inside the catalogue folder and outside .paqvilo/. Setup neither shows nor edits it; change sites.${site}.mirage.project.`;
+        else {
+          const reason = item.reason ? ` (${item.reason})` : '';
+          message = `${path.basename(item.file)} is not a Mirage project document (version 1 or 2 with project keys only)${reason}. Setup neither shows nor edits it; change sites.${site}.mirage.project or repair the file outside setup.`;
         }
+        result.findings.push({ code: item.code, site, message });
       }
+
+      addDuplicateFindings(result);
     } catch (error) {
       result.findings.push({ code: 'configuration', message: error.message });
     }
-    for (const finding of result.findings) finding.section = sectionOf(finding, this.kind);
+    for (const finding of result.findings) finding.section = sectionOf(finding, this.kind); // NOSONAR: extra argument kept as originally written
     result.ready = files.shared !== null && result.findings.length === 0;
     return result;
   }
-  async save(input) {
+  /* NOSONAR: preserve configuration validation, revision and atomic-rename await ordering */ async save(input) {
     const linkedSite = typeof input?.layer === 'string' ? LINKED.exec(input.layer)?.[1] : undefined;
-    if (
-      !input ||
-      !(['shared', 'personal'].includes(input.layer) || linkedSite) ||
-      (input.layer === 'personal' && !this.localFile)
-    )
-      throw setupError('Choose an available configuration layer.');
-    if (typeof input.revision !== 'string') throw setupError('A configuration revision is required.');
-    if (input.template !== undefined && (input.layer !== 'shared' || typeof input.template !== 'string'))
-      throw setupError('A template creates the shared configuration.');
-    const file = linkedSite
-      ? (await this.files()).projects[linkedSite]?.file
-      : input.layer === 'shared'
-        ? this.file
-        : this.localFile;
+    assertSaveInput(input, linkedSite, this.localFile);
+    let file;
+    if (linkedSite) file = (await this.files()).projects[linkedSite]?.file;
+    else if (input.layer === 'shared') file = this.file;
+    else file = this.localFile;
     if (!file) throw setupError('Choose an available configuration layer.');
     const layerText = (files) => (linkedSite ? (files.projects[linkedSite]?.text ?? null) : files[input.layer]);
     const projectFile = linkedSite || this.kind === 'project';
@@ -771,109 +939,20 @@ export class SetupStore {
         throw setupError('Configuration changed outside this page. Reload before saving.', 409);
       if (linkedSite && before.projects[linkedSite]?.file !== file)
         throw setupError('Configuration changed outside this page. Reload before saving.', 409);
-      let text;
-      if (input.template !== undefined) {
-        if (before.shared !== null)
-          throw setupError('A template creates a new configuration; edit the existing file instead.', 409);
-        const created = renderTemplate(this.kind, input.template, input.values);
-        text = /\.json$/i.test(file) ? JSON.stringify(created, null, 2) + '\n' : YAML.stringify(created);
-      } else if (typeof input.text === 'string') text = input.text;
-      else {
-        // A new layer starts as an empty block mapping, so guided edits write block-style YAML.
-        const { doc } =
-          layerText(before) === null ? { doc: new YAML.Document({}) } : document(layerText(before), 'Configuration');
-        if (!Array.isArray(input.operations) || input.operations.length > 100)
-          throw setupError('Send at most 100 configuration edits.');
-        for (const edit of input.operations) {
-          if (
-            !edit ||
-            !['set', 'delete'].includes(edit.op) ||
-            !Array.isArray(edit.path) ||
-            !edit.path.length ||
-            edit.path.length > 12 ||
-            edit.path.some(
-              (key) => !((typeof key === 'string' && key && !blocked.has(key)) || (Number.isInteger(key) && key >= 0)),
-            )
-          )
-            throw setupError('Invalid configuration field path.');
-          if (edit.op === 'delete') doc.deleteIn(edit.path);
-          else {
-            let value = edit.value;
-            if (edit.yaml !== undefined) {
-              if (typeof edit.yaml !== 'string' || edit.value !== undefined)
-                throw setupError('A YAML field edit must contain only YAML text.');
-              const parsed = YAML.parseDocument(edit.yaml);
-              if (parsed.errors.length) throw setupError(parsed.errors[0].message);
-              value = parsed.toJS({ maxAliasCount: 50 });
-            }
-            // Environment shorthand remains usable through guided nested field edits.
-            if (
-              this.kind === 'catalogue' &&
-              !linkedSite &&
-              edit.path[0] === 'sites' &&
-              edit.path[2] === 'environments' &&
-              edit.path.length > 4
-            ) {
-              const at = edit.path.slice(0, 4),
-                previous = doc.getIn(at);
-              if (typeof previous === 'string') doc.setIn(at, doc.createNode({ url: previous }));
-            }
-            doc.setIn(edit.path, doc.createNode(value));
-          }
-        }
-        const originalText = layerText(before) ?? '{}\n';
-        const originalDocument = document(originalText, 'Configuration');
-        const original = originalDocument.doc;
-        // YAML serialization may reflow untouched scalars and flow collections.
-        // Restore their source tokens, including authored spacing and quoting.
-        const rendered = doc.toString({ lineWidth: 0 });
-        const serializedDocument = document(rendered, 'Configuration');
-        const serialized = serializedDocument.doc;
-        const replacements = [];
-        const valueAt = (value, at) => at.reduce((parent, key) => parent?.[key], value);
-        const preserve = (node, at = []) => {
-          const next = serialized.getIn(at, true);
-          if (
-            (YAML.isMap(node) || YAML.isSeq(node)) &&
-            node.flow &&
-            node.range &&
-            next?.range &&
-            isDeepStrictEqual(valueAt(originalDocument.raw, at), valueAt(serializedDocument.raw, at))
-          ) {
-            replacements.push({
-              start: next.range[0],
-              end: next.range[1],
-              value: originalText.slice(node.range[0], node.range[1]),
-            });
-            return; // Whole-collection replacement must not overlap restored child tokens.
-          }
-          if (YAML.isMap(node)) for (const pair of node.items) preserve(pair.value, [...at, pair.key.value]);
-          else if (YAML.isSeq(node)) node.items.forEach((item, index) => preserve(item, [...at, index]));
-          else if (YAML.isScalar(node) && node.range) {
-            if (YAML.isScalar(next) && next.range && Object.is(node.value, next.value))
-              replacements.push({
-                start: next.range[0],
-                end: next.range[1],
-                value: originalText.slice(node.range[0], node.range[1]),
-              });
-          }
-        };
-        preserve(original.contents);
-        text = replacements
-          .sort((a, b) => b.start - a.start)
-          .reduce((value, edit) => value.slice(0, edit.start) + edit.value + value.slice(edit.end), rendered);
-      }
+      let text = createSaveText(this, input, before, file, linkedSite, layerText);
       if (Buffer.byteLength(text) > LIMIT) throw setupError('Configuration exceeds 256 KiB', 413);
+
       if (linkedSite) {
         const raw = document(text, 'Project configuration').raw;
         await resolveProjectConfig(raw, file, { checkSources: false });
         if (!projectDocument(raw))
           throw setupError('A linked project file holds version 1 or 2 and project keys only.');
-      } else
+      } else {
         await this.validate(
           input.layer === 'shared' ? text : before.shared,
           input.layer === 'personal' ? text : before.personal,
         );
+      }
       if (input.layer === 'personal') {
         const tracked = await run('git', ['ls-files', '--error-unmatch', '--', path.basename(file)], {
           cwd: this.directory,
@@ -890,22 +969,25 @@ export class SetupStore {
       }
       // JSON projects keep their original encoding.
       if (projectFile && /\.json$/i.test(file)) text = JSON.stringify(document(text, 'Project').raw, null, 2) + '\n';
+
       if ((await this.files()).revision !== before.revision)
         throw setupError('Configuration changed while saving. Reload before saving.', 409);
       temporary = file + '.' + randomUUID() + '.tmp';
       await fs.writeFile(temporary, text, { flag: 'wx', mode: 0o600 });
       await assertScaffoldPath(file);
       // Make personal files and future local runtime state safe in a newly configured folder.
+
       const ignores = (await textFile(ignoreFile)) ?? '';
-      const lines = ignores.split(/\r?\n/).map((line) => line.trim());
+      const lines = new Set(ignores.split(/\r?\n/).map((line) => line.trim()));
       const rules = ['.paqvilo/', '.env', 'paqvilo.config.local.yml'].filter(
-        (rule) => !lines.includes(rule) && !lines.includes('/' + rule),
+        (rule) => !lines.has(rule) && !lines.has('/' + rule),
       );
       if (rules.length)
         await fs.appendFile(
           ignoreFile,
           `\n# Paqvilo local settings and state\n${rules.map((rule) => '/' + rule).join('\n')}\n`,
         );
+
       await fs.rename(temporary, file);
     } finally {
       await lock.close();

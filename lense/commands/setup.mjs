@@ -2,6 +2,19 @@ import { parseArgs } from 'node:util';
 import { spawn } from 'node:child_process';
 import { startSetupServer } from '../setup/server.mjs';
 
+function openSetupUrl(url) {
+  let command;
+  if (process.platform === 'win32')
+    command = [
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', `Start-Process '${url}' -WindowStyle Hidden`],
+    ];
+  else if (process.platform === 'darwin') command = ['open', [url]];
+  else command = ['xdg-open', [url]];
+  const child = spawn(command[0], command[1], { windowsHide: true, stdio: 'ignore' });
+  child.on('error', (error) => console.error(`Open ${url} in your browser (${error.message}).`));
+}
+
 export const SETUP_HELP = `Usage: paqvilo setup [--config FILE | --project FILE] [--port N] [--open] [--json]
 
 Serve the local /_setup/ configuration workspace, including incomplete projects.
@@ -29,8 +42,14 @@ export async function runSetup(args) {
     console.log(SETUP_HELP);
     return 0;
   }
+  for (const [key, value] of Object.entries(values)) {
+    const entries = Array.isArray(value) ? value : [value];
+    if (entries.some((item) => typeof item === 'string' && !item.trim()))
+      throw new Error(`--${key} must not be empty or whitespace`);
+  }
   if (values.config && values.project) throw new Error('Select --config or --project.');
-  if (values.port && !/^\d+$/.test(values.port)) throw new Error('--port must be an integer.');
+  if (values.port !== undefined && (!/^\d+$/.test(values.port) || Number(values.port) > 65535))
+    throw new Error('--port must be an integer between 0 and 65535');
   const server = await startSetupServer({
     config: values.config,
     project: values.project,
@@ -52,19 +71,7 @@ export async function runSetup(args) {
           })
         : `setup       ${server.url}\nLocal project configuration. Ctrl+C to stop.`,
     );
-    if (values.open) {
-      const command =
-        process.platform === 'win32'
-          ? [
-              'powershell.exe',
-              ['-NoProfile', '-NonInteractive', '-Command', `Start-Process '${server.url}' -WindowStyle Hidden`],
-            ]
-          : process.platform === 'darwin'
-            ? ['open', [server.url]]
-            : ['xdg-open', [server.url]];
-      const child = spawn(command[0], command[1], { windowsHide: true, stdio: 'ignore' });
-      child.on('error', (error) => console.error(`Open ${server.url} in your browser (${error.message}).`));
-    }
+    if (values.open) openSetupUrl(server.url);
     await stopped;
   } finally {
     process.off('SIGINT', stop);

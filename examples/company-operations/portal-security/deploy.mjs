@@ -104,7 +104,11 @@ export async function inspectSecurity(client, siteId, blueprint) {
       id: w.id,
       name: w.name,
       kind: w.type === 11 ? 'role' : 'permission',
-      action: !byId.has(w.id) ? 'create' : differences(byId.get(w.id), w).length ? 'update' : 'exists',
+      action: (() => {
+        if (!byId.has(w.id)) return 'create';
+        if (differences(byId.get(w.id), w).length) return 'update';
+        return 'exists';
+      })(),
       differences: byId.has(w.id) ? differences(byId.get(w.id), w) : [],
     }));
   const defaultRoles = components
@@ -197,70 +201,12 @@ export async function deploySecurity(
     throw new Error(
       'Active native orphan permissions require recovery before deployment; automatic parent reconciliation is unsafe.',
     );
-  for (const wanted of plan.desired) {
-    const existing = plan.byId.get(wanted.id),
-      action = !existing ? 'create' : differences(existing, wanted).length ? 'update' : 'exists';
-    if (existing && (existing.name !== wanted.name || existing.powerpagecomponenttype !== wanted.type))
-      throw new Error('Component GUID collision ' + wanted.id);
-    if (apply && action !== 'exists') {
-      const body = {
-        name: wanted.name,
-        content: JSON.stringify(wanted.content),
-        statecode: wanted.state,
-        statuscode: wanted.state === 0 ? 1 : 2,
-      };
-      if (!existing) {
-        body.powerpagecomponentid = wanted.id;
-        body.powerpagecomponenttype = wanted.type;
-        body['powerpagesiteid@odata.bind'] = `/powerpagesites(${siteId})`;
-      }
-      await client.request(existing ? `powerpagecomponents(${wanted.id})` : 'powerpagecomponents', {
-        method: existing ? 'PATCH' : 'POST',
-        body,
-      });
-    }
-    journal.entries.push({
-      id: wanted.id,
-      name: wanted.name,
-      kind: wanted.type === 11 ? 'role' : 'permission',
-      action,
-    });
-    await save();
-    onProgress(journal.entries.at(-1));
-  }
-  for (const a of plan.associations) {
-    if (apply && a.action === 'create')
-      await client.request(`contacts(${a.contactId})/powerpagecomponent_mspp_webrole_contact/$ref`, {
-        method: 'POST',
-        body: { '@odata.id': client.url(`powerpagecomponents(${a.roleId})`) },
-      });
-    journal.entries.push({ kind: 'assignment', ...a });
-    await save();
-    onProgress(journal.entries.at(-1));
-  }
+  await deployWantedComponents(plan, apply, client, siteId, journal, save, onProgress);
+  await deployAssignments(plan, apply, client, journal, save, onProgress);
   journal.finishedAt = new Date().toISOString();
   journal.state = apply ? 'Applied' : 'Planned';
   await save();
-  if (apply) {
-    const after = await inspectSecurity(client, siteId, blueprint);
-    await fs.writeFile(path.join(evidenceDirectory, `after-${stamp}.json`), JSON.stringify(after.components, null, 2), {
-      flag: 'wx',
-    });
-    journal.verification = {
-      remainingChanges: after.actions.filter((a) => a.action !== 'exists'),
-      missingAssignments: after.associations.filter((a) => a.action !== 'exists'),
-      contaminations: after.contaminations,
-      activeOrphans: after.activeOrphans,
-    };
-    await save();
-    if (
-      journal.verification.remainingChanges.length ||
-      journal.verification.missingAssignments.length ||
-      journal.verification.contaminations.length ||
-      journal.verification.activeOrphans.length
-    )
-      throw new Error('Security verification has unresolved changes.');
-  }
+  if (apply) await verifySecurityDeployment(client, siteId, blueprint, evidenceDirectory, stamp, journal, save);
   return {
     journal: target,
     site: plan.site,
@@ -272,6 +218,82 @@ export async function deploySecurity(
     state: journal.state,
     verification: journal.verification,
   };
+}
+
+async function deployWantedComponents(plan, apply, client, siteId, journal, save, onProgress) {
+  for (const wanted of plan.desired) {
+    const existing = plan.byId.get(wanted.id),
+      action = componentAction(existing, wanted);
+    if (existing && (existing.name !== wanted.name || existing.powerpagecomponenttype !== wanted.type))
+      throw new Error('Component GUID collision ' + wanted.id);
+    if (apply && action !== 'exists') await writeWantedComponent(client, siteId, wanted, existing);
+    journal.entries.push({
+      id: wanted.id,
+      name: wanted.name,
+      kind: wanted.type === 11 ? 'role' : 'permission',
+      action,
+    });
+    await save();
+    onProgress(journal.entries.at(-1));
+  }
+}
+
+function componentAction(existing, wanted) {
+  if (!existing) return 'create';
+  if (differences(existing, wanted).length) return 'update';
+  return 'exists';
+}
+
+async function writeWantedComponent(client, siteId, wanted, existing) {
+  const body = {
+    name: wanted.name,
+    content: JSON.stringify(wanted.content),
+    statecode: wanted.state,
+    statuscode: wanted.state === 0 ? 1 : 2,
+  };
+  if (!existing) {
+    body.powerpagecomponentid = wanted.id;
+    body.powerpagecomponenttype = wanted.type;
+    body['powerpagesiteid@odata.bind'] = `/powerpagesites(${siteId})`;
+  }
+  await client.request(existing ? `powerpagecomponents(${wanted.id})` : 'powerpagecomponents', {
+    method: existing ? 'PATCH' : 'POST',
+    body,
+  });
+}
+
+async function deployAssignments(plan, apply, client, journal, save, onProgress) {
+  for (const assignment of plan.associations) {
+    if (apply && assignment.action === 'create')
+      await client.request(`contacts(${assignment.contactId})/powerpagecomponent_mspp_webrole_contact/$ref`, {
+        method: 'POST',
+        body: { '@odata.id': client.url(`powerpagecomponents(${assignment.roleId})`) },
+      });
+    journal.entries.push({ kind: 'assignment', ...assignment });
+    await save();
+    onProgress(journal.entries.at(-1));
+  }
+}
+
+async function verifySecurityDeployment(client, siteId, blueprint, evidenceDirectory, stamp, journal, save) {
+  const after = await inspectSecurity(client, siteId, blueprint);
+  await fs.writeFile(path.join(evidenceDirectory, `after-${stamp}.json`), JSON.stringify(after.components, null, 2), {
+    flag: 'wx',
+  });
+  journal.verification = {
+    remainingChanges: after.actions.filter((a) => a.action !== 'exists'),
+    missingAssignments: after.associations.filter((a) => a.action !== 'exists'),
+    contaminations: after.contaminations,
+    activeOrphans: after.activeOrphans,
+  };
+  await save();
+  if (
+    journal.verification.remainingChanges.length ||
+    journal.verification.missingAssignments.length ||
+    journal.verification.contaminations.length ||
+    journal.verification.activeOrphans.length
+  )
+    throw new Error('Security verification has unresolved changes.');
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

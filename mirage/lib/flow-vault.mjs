@@ -19,7 +19,7 @@ const aclError = (message) =>
   });
 // Use an exact private DACL rather than preserving explicit grants inherited from a
 // runner's process defaults. One native ACL update publishes the new DACL atomically.
-const restrictScript = String.raw`$ErrorActionPreference = 'Stop'
+const restrictScript = `$ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 $acl = New-Object System.Security.AccessControl.FileSecurity
@@ -35,7 +35,7 @@ Write-Output ('private-acl-verified:' + [System.Security.Principal.WindowsIdenti
 /** Windows: replace all inherited and explicit entries with one verified current-user grant. */
 export function restrictToCurrentUser(file) {
   const executable = path.join(
-    process.env.SystemRoot ?? 'C:\\Windows',
+    process.env.SystemRoot ?? String.raw`C:\Windows`,
     'System32',
     'WindowsPowerShell',
     'v1.0',
@@ -114,7 +114,7 @@ export function flowVault(stateDirectory = null) {
     },
     /** The value of a sealed record, or undefined when it cannot be opened (another key, tampered, absent). */
     open(sealed) {
-      if (!sealed || sealed.alg !== 'A256GCM') return undefined;
+      if (sealed?.alg !== 'A256GCM') return undefined;
       try {
         const decipher = createDecipheriv('aes-256-gcm', keyOf(), Buffer.from(sealed.iv, 'base64'));
         decipher.setAuthTag(Buffer.from(sealed.tag, 'base64'));

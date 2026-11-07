@@ -8,7 +8,8 @@ import { codeAppSettings, readCodeAppConfig, loadCodeApps, codeAppInventoryRecor
 const APP = '77777777-7777-4777-8777-777777777777';
 
 async function tempDir(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'code-apps-config-'));
+  // The real path: loaded apps report their folder as the OS resolves it (8.3 aliases expanded).
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'code-apps-config-')));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   return root;
 }
@@ -73,7 +74,9 @@ test('readCodeAppConfig parses power.config.json read-only with diagnostics', as
   const text = '\uFEFF' + JSON.stringify(document, null, 2);
   const file = path.join(root, 'power.config.json');
   await fs.writeFile(file, text);
-  const config = readCodeAppConfig(root, 'power.config.json', { bindings: { 'ref-one': 'local-connection' } });
+  const config = readCodeAppConfig(root, 'power.config.json', {
+    bindings: { 'ref-one': { connector: 'shared_fx_invented' } },
+  });
   assert.equal(config.appId, APP);
   assert.equal(config.environmentId, 'env-invented');
   assert.equal(config.localAppUrl, 'http://localhost:3000/');
@@ -126,4 +129,176 @@ test('loadCodeApps prefers the project localAppUrl and codeAppInventoryRecord is
     { component: 'connectionreference', name: 'ref-one', apiId: 'shared_fx_invented' },
   ]);
   assert.deepEqual(record.diagnostics, ['CODEAPP_CONNECTION_UNBOUND']);
+});
+
+test('validates reference maps and binding values without losing valid siblings', async (t) => {
+  const root = await tempDir(t);
+  const file = path.join(root, 'power.config.json');
+  await fs.writeFile(
+    file,
+    JSON.stringify({
+      localAppUrl: '',
+      connectionReferences: {
+        broken: null,
+        invalid: { id: 5, displayName: 7, dataSources: ['Good', 4] },
+        valid: { id: '/providers/Microsoft.PowerApps/apis/shared_invented', dataSources: ['Invented'] },
+      },
+      databaseReferences: {
+        'default.cds': {
+          dataSources: {
+            invented: { entitySetName: 'inventeds', logicalName: 'invented', isHidden: false },
+            bad: { entitySetName: 3, isHidden: 'no' },
+          },
+        },
+        broken: [],
+      },
+    }),
+  );
+  const config = readCodeAppConfig(root, 'power.config.json', {
+    bindings: { invalid: null, valid: { connector: 'shared_invented' } },
+  });
+  assert.equal(config.localAppUrl, null);
+  assert.deepEqual(
+    config.connectionReferences.map((r) => r.key),
+    ['valid'],
+  );
+  assert.deepEqual(
+    config.diagnostics.filter((d) => d.code === 'CODEAPP_CONNECTION_UNBOUND'),
+    [],
+  );
+  assert.equal(config.diagnostics.filter((d) => d.code === 'CODEAPP_CONFIG_INVALID').length, 8);
+  assert.equal(config.databaseReferences['default.cds'].dataSources.invented.entitySetName, 'inventeds');
+  await fs.writeFile(file, JSON.stringify({ connectionReferences: [], databaseReferences: [] }));
+  assert.equal(readCodeAppConfig(root).diagnostics.filter((d) => d.code === 'CODEAPP_CONFIG_INVALID').length, 2);
+});
+
+test('loadCodeApps reports a missing local URL only after applying the project override', async (t) => {
+  const root = await tempDir(t);
+  await fs.writeFile(path.join(root, 'power.config.json'), JSON.stringify({ environmentId: 'invented' }));
+  const [missing] = loadCodeApps(codeAppSettings([{ name: 'a', dir: '.' }]), root);
+  assert.deepEqual(
+    missing.diagnostics.map((d) => d.code),
+    ['CODEAPP_LOCAL_URL_MISSING'],
+  );
+  const [override] = loadCodeApps(
+    codeAppSettings([{ name: 'a', dir: '.', localAppUrl: 'http://localhost:3000/' }]),
+    root,
+  );
+  assert.deepEqual(override.diagnostics, []);
+});
+
+test('binding diagnostics reflect project connection objects and connector identity', async (t) => {
+  const root = await tempDir(t);
+  await fs.writeFile(
+    path.join(root, 'power.config.json'),
+    JSON.stringify({
+      connectionReferences: {
+        missing: { id: '/providers/Microsoft.PowerApps/apis/x_invented' },
+        wrong: { id: '/providers/Microsoft.PowerApps/apis/x_invented' },
+        good: { id: '/providers/Microsoft.PowerApps/apis/x_invented' },
+      },
+    }),
+  );
+  const config = readCodeAppConfig(root, 'power.config.json', {
+    bindings: { missing: 'not-an-object', wrong: { connector: 'x_other' }, good: { connector: 'x_invented' } },
+  });
+  const unbound = config.diagnostics.filter((d) => d.code === 'CODEAPP_CONNECTION_UNBOUND');
+  assert.equal(unbound.length, 2);
+  assert.match(unbound[0].message, /missing/);
+  assert.match(unbound[1].message, /wrong/);
+});
+
+test('binding diagnostics use the reference key when no connector id is declared', async (t) => {
+  const root = await tempDir(t);
+  await fs.writeFile(
+    path.join(root, 'power.config.json'),
+    JSON.stringify({ connectionReferences: { x_invented: {} } }),
+  );
+  const config = readCodeAppConfig(root, 'power.config.json', {
+    bindings: { x_invented: { connector: 'x_invented' } },
+  });
+  assert.deepEqual(config.diagnostics, []);
+});
+
+test('binding diagnostics recognize connector-id fallback when reference key differs', async (t) => {
+  const root = await tempDir(t);
+  await fs.writeFile(
+    path.join(root, 'power.config.json'),
+    JSON.stringify({ connectionReferences: { ref: { id: '/providers/Microsoft.PowerApps/apis/x_invented' } } }),
+  );
+  const config = readCodeAppConfig(root, 'power.config.json', {
+    bindings: { x_invented: { connector: 'x_invented' } },
+  });
+  assert.deepEqual(config.diagnostics, []);
+});
+
+test('inherited binding properties do not satisfy a declared connection reference', async (t) => {
+  const root = await tempDir(t);
+  await fs.writeFile(
+    path.join(root, 'power.config.json'),
+    JSON.stringify({ connectionReferences: { reference: { apiName: '__proto__' } } }),
+  );
+  const config = readCodeAppConfig(root, 'power.config.json', { bindings: {} });
+  assert.deepEqual(
+    config.diagnostics.map((diagnostic) => diagnostic.code),
+    ['CODEAPP_CONNECTION_UNBOUND'],
+  );
+});
+
+test('invalid JSON diagnostics do not expose source contents', async (t) => {
+  const root = await tempDir(t);
+  await fs.writeFile(path.join(root, 'power.config.json'), '{"secret":"invented-sensitive-marker", bad}');
+  const config = readCodeAppConfig(root);
+  assert.equal(config.diagnostics[0].code, 'CODEAPP_CONFIG_INVALID');
+  assert.doesNotMatch(JSON.stringify(config.diagnostics), /invented-sensitive-marker/);
+});
+
+test('dev server settings validate explicit argv, cwd, environment and bounded timeout', () => {
+  const entry = {
+    name: 'local',
+    dir: 'apps/one',
+    localAppUrl: 'http://localhost:3000',
+    devServer: { command: ['node', 'server.js', ''], cwd: 'web', env: { MODE: 'local' }, timeoutMs: 5000 },
+  };
+  assert.deepEqual(codeAppSettings([entry])[0].devServer, entry.devServer);
+  for (const devServer of [
+    { command: [] },
+    { command: [''] },
+    { command: ['node'], cwd: '../other' },
+    { command: ['node'], env: { MODE: 1 } },
+    { command: ['node'], timeoutMs: 999 },
+    { command: ['node'], timeoutMs: 300001 },
+  ])
+    assert.throws(() => codeAppSettings([{ name: 'local', dir: 'a', devServer }]));
+});
+
+test('config reads app settings and derives unambiguous entity sets from data sources', async (t) => {
+  const root = await tempDir(t);
+  await fs.writeFile(
+    path.join(root, 'power.config.json'),
+    JSON.stringify({
+      appSettings: { showHeader: true },
+      databaseReferences: {
+        one: {
+          dataSources: {
+            Items: { logicalName: 'x_item', entitySetName: 'x_items' },
+            Shared: { logicalName: 'x_a', entitySetName: 'x_as' },
+          },
+        },
+        two: { dataSources: { Shared: { logicalName: 'x_b', entitySetName: 'x_bs' } } },
+      },
+    }),
+  );
+  const config = readCodeAppConfig(root);
+  assert.deepEqual(config.appSettings, { showHeader: true });
+  assert.deepEqual(config.entitySets, { Items: 'x_items', x_item: 'x_items', x_a: 'x_as', x_b: 'x_bs' });
+  assert.deepEqual(
+    config.diagnostics.map((d) => d.code),
+    ['CODEAPP_DATASOURCE_AMBIGUOUS'],
+  );
+  const [app] = loadCodeApps(
+    codeAppSettings([{ name: 'a', dir: '.', devServer: { command: ['node', 'app.js'] } }]),
+    root,
+  );
+  assert.deepEqual(app.devServer, { command: ['node', 'app.js'] });
 });

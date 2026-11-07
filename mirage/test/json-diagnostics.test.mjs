@@ -6,6 +6,7 @@ import path from 'node:path';
 import { jsonErrorLocation } from '../lib/json-diagnostics.mjs';
 import { loadDeploymentProfiles, resolveDeploymentProfiles } from '../lib/deployment-profiles.mjs';
 import { inspectExportProfiles } from '../../lense/commands/doctor.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const malformed = [
   { name: 'missing-value', source: '{\n "name":\n}', line: 3, column: 1 },
@@ -43,7 +44,7 @@ test('malformed JSON syntax locations do not depend on Node error-message wordin
 });
 
 test('export-wide lint and selected profile loading agree on JSON syntax locations without echoing values', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'profile-json-locations-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'profile-json-locations-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const profiles = path.join(root, 'deployment-profiles');
   await fs.mkdir(profiles);

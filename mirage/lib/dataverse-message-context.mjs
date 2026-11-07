@@ -5,7 +5,7 @@ const GUID = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-
 
 export function idOf(value) {
   if (value == null) return null;
-  if (typeof value === 'string') return value.match(GUID)?.[0] ?? null;
+  if (typeof value === 'string') return GUID.exec(value)?.[0] ?? null;
   if (typeof value !== 'object') return null;
   const direct = value.id ?? value['@odata.id'];
   if (direct != null) return idOf(direct);
@@ -14,14 +14,17 @@ export function idOf(value) {
 
 const bodyOf = (context) =>
   typeof context.body === 'string' ? JSON.parse(context.body || '{}') : (context.body ?? {});
-export const argsOf = (context) => ({ ...bodyOf(context), ...(context.params ?? {}) });
+export const argsOf = (context) => ({ ...bodyOf(context), ...context.params });
 
 export function rowOf(store, logical, primaryKey, id) {
   if (id == null) return null;
   const key = String(id).toLowerCase();
-  return (
-    (store.state.tables[logical] ??= []).find((row) => String(row[primaryKey] ?? '').toLowerCase() === key) ?? null
-  );
+  let rows = store.state.tables[logical];
+  if (rows === null || rows === undefined) {
+    rows = [];
+    store.state.tables[logical] = rows;
+  }
+  return rows.find((row) => String(row[primaryKey] ?? '').toLowerCase() === key) ?? null;
 }
 
 /** Read through the records adapter, preserving caller context even when an operation explicitly chooses SYSTEM. */

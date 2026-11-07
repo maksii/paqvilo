@@ -61,7 +61,7 @@ const isActivity = (mapping) => standardTableDef(mapping.logicalName)?.isActivit
 // Arguments: an action's body (JSON, or the SOAP values) and a function's URL parameters, which the router passes as params.
 const argsOf = (c) => ({
   ...(typeof c.body === 'string' ? JSON.parse(c.body || '{}') : (c.body ?? {})),
-  ...(c.params ?? {}),
+  ...c.params,
 });
 const requiredOf = (args, name) => {
   const value = args[name];
@@ -166,7 +166,7 @@ async function formatted(api, ctx, logical, id) {
 }
 
 // Creates one email row owned by the caller and returns its id. Outgoing mail starts as a Draft; the caller sets the state
-// that follows. The id is left to the store: an explicit activityid trips the activitypointer lookup in validateBindings.
+// that follows. The organization allocates the activity's primary identity.
 async function newEmail(api, ctx, fields) {
   const owner = ownerColumns(api.store, { id: ctx.user.systemuserid, logical_name: 'systemuser' });
   return (
@@ -187,7 +187,9 @@ function fill(text, row, logical) {
   return text.replace(PLACEHOLDER, (whole, table, column) => {
     if ((table && table.toLowerCase() !== logical) || !Object.hasOwn(row, column)) return whole;
     const value = row[column];
-    return value == null ? '' : typeof value === 'object' ? String(value.name ?? value.id ?? '') : String(value);
+    if (value == null) return '';
+    if (typeof value === 'object') return String(value.name ?? value.id ?? '');
+    return String(value);
   });
 }
 
@@ -224,7 +226,7 @@ function senderOf(api, from) {
   throw invalid('The From parameter must be the email address of a user or queue.');
 }
 
-const hashOf = (text) => [...text].reduce((h, ch) => (h * 33 + ch.charCodeAt(0)) >>> 0, 5381);
+const hashOf = (text) => [...text].reduce((h, ch) => (h * 33 + ch.charCodeAt(0)) >>> 0, 5381); // NOSONAR: UTF-16 code unit semantics are required
 
 // Shared by CheckIncomingEmail and CheckPromoteEmail: a message is new unless a stored email carries its MessageId.
 // ReasonCode values are a guess; the docs name the field and give no values.
@@ -483,6 +485,11 @@ async function retrieveMailboxTrackingFolders(api, ctx) {
 // The outbox entry of one email: addresses from its text columns and its activityparty rows (1 from, 2 to, 3 cc, 4 bcc), and
 // its attachments by name, size and type only (the bytes stay with the activitymimeattachment row's storage).
 const PARTY_MASKS = { from: 1, to: 2, cc: 3, bcc: 4 };
+function attachmentSize(row) {
+  if (row.filesize != null && Number.isSafeInteger(Number(row.filesize))) return Number(row.filesize);
+  return typeof row.body === 'string' ? Buffer.byteLength(row.body, 'base64') : null;
+}
+
 function outboxEntry(api, ctx, email, state) {
   const id = idText(email.activityid);
   const parties = api.store.tableRows('activityparty').filter((row) => idText(refId(row.activityid)) === id);
@@ -503,12 +510,7 @@ function outboxEntry(api, ctx, email, state) {
     .map((row) => ({
       name: row.filename ?? null,
       contentType: row.mimetype ?? null,
-      size:
-        row.filesize != null && Number.isSafeInteger(Number(row.filesize))
-          ? Number(row.filesize)
-          : typeof row.body === 'string'
-            ? Buffer.byteLength(row.body, 'base64')
-            : null,
+      size: attachmentSize(row),
     }));
   return {
     channel: 'email',
@@ -799,15 +801,16 @@ async function routeTo(api, ctx) {
 
 // ---- Registration
 
+function boundParameterType(bound) {
+  return bound.includes('(') ? bound : `mscrm.${bound}`;
+}
+
 // CSDL per operation: the bound parameter (entity, or the full collection type), parameters and return type. A response is a ComplexType.
 function csdlOf(kind, name, { bound = null, params = [], returns = null, response = null }) {
   const tag = kind === 'action' ? 'Action' : 'Function';
-  const complex = response
-    ? `<ComplexType Name="${name}Response">${response.map(([p, t]) => `<Property Name="${p}" Type="${t}" />`).join('')}</ComplexType>`
-    : null;
-  const parts = bound
-    ? [`<Parameter Name="entity" Type="${bound.includes('(') ? bound : `mscrm.${bound}`}" Nullable="false" />`]
-    : [];
+  const properties = response ? response.map(([p, t]) => `<Property Name="${p}" Type="${t}" />`).join('') : '';
+  const complex = response ? `<ComplexType Name="${name}Response">${properties}</ComplexType>` : null;
+  const parts = bound ? [`<Parameter Name="entity" Type="${boundParameterType(bound)}" Nullable="false" />`] : [];
   for (const [param, type] of params) parts.push(`<Parameter Name="${param}" Type="${type}" />`);
   if (response) returns = `mscrm.${name}Response`;
   if (returns) parts.push(`<ReturnType Type="${returns}" Nullable="false" />`);

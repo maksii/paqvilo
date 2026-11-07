@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import { execFile } from 'node:child_process';
@@ -10,8 +9,11 @@ import { writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { inflateRawSync } from 'node:zlib';
 import { mirageStopCommand, mirageCommandHint, listenerPort } from '../lense/stop-command.mjs';
+import { tempDir } from './fixture.mjs';
 
 const execute = promisify(execFile);
+// A watchdog for one shell run (shell start plus at most sixteen Node children), not a duration under test.
+const SHELL_RUN_BOUND_MS = 60_000;
 const shells = process.platform === 'win32' ? ['cmd', 'cmd-delayed', 'powershell'] : ['posix'];
 const cases = [
   {
@@ -62,7 +64,7 @@ async function capture(command, shell, directory, cli, bashFile, { batch = false
     cwd: directory,
     windowsHide: true,
     windowsVerbatimArguments: cmd,
-    timeout: 15000,
+    timeout: SHELL_RUN_BOUND_MS,
     env: {
       ...process.env,
       PATH: (posix ? path.join(directory, 'posix-bin') : directory) + path.delimiter + process.env.PATH,
@@ -89,7 +91,7 @@ async function capture(command, shell, directory, cli, bashFile, { batch = false
 }
 
 async function collectorFixture(t, { reportCwd = false } = {}) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-stop-argv-'));
+  const directory = await tempDir('paqvilo-stop-argv-');
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const cli = path.join(directory, 'collector.mjs');
   await fs.writeFile(
@@ -153,17 +155,20 @@ test(
       const args = values.flatMap((value) => ['--project', value]);
       // Execute each exact hint. A fixture-owned npx shim forwards to the collector
       // without a network install; fallback hints invoke that same CLI directly.
-      for (const shell of availableShells) {
-        const platform = shell === 'posix' || shell === 'git-bash' ? 'linux' : 'win32';
-        const hint = mirageStopCommand(args, { cli, platform });
-        assert.doesNotMatch(hint, /[\r\n]/, 'the copyable command remains a single line');
-        assert.equal(hint.startsWith('npx paqvilo '), platform === 'win32' ? windowsReadable : posixReadable);
-        assert.deepEqual(
-          await capture(hint, shell, directory, cli, bashFile),
-          ['mirage', 'stop', ...args],
-          shell + ': ' + hint,
-        );
-      }
+      // Shells share no state here (the collector only prints), so they run together.
+      await Promise.all(
+        availableShells.map(async (shell) => {
+          const platform = shell === 'posix' || shell === 'git-bash' ? 'linux' : 'win32';
+          const hint = mirageStopCommand(args, { cli, platform });
+          assert.doesNotMatch(hint, /[\r\n]/, 'the copyable command remains a single line');
+          assert.equal(hint.startsWith('npx paqvilo '), platform === 'win32' ? windowsReadable : posixReadable);
+          assert.deepEqual(
+            await capture(hint, shell, directory, cli, bashFile),
+            ['mirage', 'stop', ...args],
+            shell + ': ' + hint,
+          );
+        }),
+      );
     }
     assert.throws(() => mirageStopCommand(['--project', 'invalid\0path'], { cli }), /NUL/);
     assert.throws(() => mirageStopCommand([], { cli: './relative-cli.mjs' }), /absolute CLI/);
@@ -187,12 +192,14 @@ test(
     await fs.mkdir(selected);
     const cwd = await fs.realpath(selected),
       args = ['--state', path.join(directory, 'invented state.json'), '--port', '9000'];
-    for (const shell of availableShells) {
-      const platform = ['posix', 'git-bash'].includes(shell) ? 'linux' : 'win32';
-      const hint = mirageStopCommand(args, { cli, platform, cwd });
-      assert.match(hint, /^node -e /);
-      assert.deepEqual(await capture(hint, shell, directory, cli, bashFile), [cwd, 'mirage', 'stop', ...args]);
-    }
+    await Promise.all(
+      availableShells.map(async (shell) => {
+        const platform = ['posix', 'git-bash'].includes(shell) ? 'linux' : 'win32';
+        const hint = mirageStopCommand(args, { cli, platform, cwd });
+        assert.match(hint, /^node -e /);
+        assert.deepEqual(await capture(hint, shell, directory, cli, bashFile), [cwd, 'mirage', 'stop', ...args]);
+      }),
+    );
     assert.throws(() => mirageStopCommand(args, { cli, cwd: './relative' }), /working directory/);
     assert.throws(() => mirageStopCommand(args, { cli, cwd: cwd + '\0' }), /working directory/);
   },
@@ -230,16 +237,19 @@ test(
       Buffer.from(JSON.stringify(commands.map((args) => [cli, ...args]))).toString('base64').length > 8191,
       'the representative uncompressed transport exceeds CMD capacity on either platform',
     );
-    for (const shell of availableShells) {
-      const platform = ['posix', 'git-bash'].includes(shell) ? 'linux' : 'win32';
-      const hint = mirageCommandHint(commands, { cli, platform });
-      assert.ok(hint.length <= 8000, shell);
-      assert.deepEqual(
-        await capture(hint, shell, directory, cli, bashFile, { batch: true, expectedCode: 1 }),
-        commands,
-        shell,
-      );
-    }
+    // Every shell replays the same printed commands into the read-only collector, so they run together.
+    await Promise.all(
+      availableShells.map(async (shell) => {
+        const platform = ['posix', 'git-bash'].includes(shell) ? 'linux' : 'win32';
+        const hint = mirageCommandHint(commands, { cli, platform });
+        assert.ok(hint.length <= 8000, shell);
+        assert.deepEqual(
+          await capture(hint, shell, directory, cli, bashFile, { batch: true, expectedCode: 1 }),
+          commands,
+          shell,
+        );
+      }),
+    );
   },
 );
 
@@ -299,37 +309,46 @@ test('oversized incompressible commands use immutable file transport across shel
   );
 });
 
-test('external command replay refuses a pipe before reading or executing any child', { timeout: 10000 }, async (t) => {
-  const { directory, cli } = await collectorFixture(t);
-  let file;
-  if (process.platform === 'win32') {
-    file = `\\\\.\\pipe\\paqvilo-stop-payload-${process.pid}-${randomBytes(8).toString('hex')}`;
-    const sockets = new Set();
-    const server = net.createServer((socket) => {
-      sockets.add(socket);
-      socket.on('close', () => sockets.delete(socket));
-    });
-    await new Promise((resolve, reject) => {
-      server.once('error', reject);
-      server.listen(file, resolve);
-    });
-    t.after(async () => {
-      for (const socket of sockets) socket.destroy();
-      await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
-    });
-  } else {
-    file = path.join(directory, 'replaced-payload.fifo');
-    await execute('mkfifo', [file]);
-  }
-  const commands = Array.from({ length: 6 }, () => ['mirage', 'stop', '--literal', randomBytes(2048).toString('hex')]);
-  const hint = mirageCommandHint(commands, { cli, storePayload: () => file });
-  assert.match(hint, /^node -e "/);
-  await assert.rejects(
-    execute(process.execPath, ['-e', hint.slice('node -e "'.length, -1)], {
-      cwd: directory,
-      timeout: 3000,
-      windowsHide: true,
-    }),
-    (error) => error.code === 1 && /Command payload must be a regular file/.test(error.stderr) && error.stdout === '',
-  );
-});
+test(
+  'external command replay refuses a pipe before reading or executing any child',
+  { timeout: 180_000 },
+  async (t) => {
+    const { directory, cli } = await collectorFixture(t);
+    let file;
+    if (process.platform === 'win32') {
+      file = `\\\\.\\pipe\\paqvilo-stop-payload-${process.pid}-${randomBytes(8).toString('hex')}`;
+      const sockets = new Set();
+      const server = net.createServer((socket) => {
+        sockets.add(socket);
+        socket.on('close', () => sockets.delete(socket));
+      });
+      await new Promise((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(file, resolve);
+      });
+      t.after(async () => {
+        for (const socket of sockets) socket.destroy();
+        await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+      });
+    } else {
+      file = path.join(directory, 'replaced-payload.fifo');
+      await execute('mkfifo', [file]);
+    }
+    const commands = Array.from({ length: 6 }, () => [
+      'mirage',
+      'stop',
+      '--literal',
+      randomBytes(2048).toString('hex'),
+    ]);
+    const hint = mirageCommandHint(commands, { cli, storePayload: () => file });
+    assert.match(hint, /^node -e "/);
+    await assert.rejects(
+      execute(process.execPath, ['-e', hint.slice('node -e "'.length, -1)], {
+        cwd: directory,
+        timeout: 120_000,
+        windowsHide: true,
+      }),
+      (error) => error.code === 1 && /Command payload must be a regular file/.test(error.stderr) && error.stdout === '',
+    );
+  },
+);

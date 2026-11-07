@@ -6,7 +6,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const SOLUTION = {
   'Other/Solution.xml':
@@ -23,7 +23,7 @@ const write = async (dir, entries) => {
 const apis = (sim) => (sim.store.state.tables.customapi ?? []).map((row) => row.uniquename);
 
 async function renameBetweenReloads(t, portal) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'source-reload-rejected-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'source-reload-rejected-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'solution');
   await write(solution, SOLUTION);
@@ -64,10 +64,11 @@ async function renameBetweenReloads(t, portal) {
 test('a deployment profile change with a renamed Solution root is rejected and keeps the definitions (Power Pages host)', async (t) => {
   const { createSimulator: createPowerPages } = await import('../server.mjs');
   const { profileFixture } = await import('./fixtures/deployment-profiles.mjs');
-  const fixture = await profileFixture({ after: (fn) => t.after(fn) });
+  // The profile fixture removes its directory only after the runtime below has closed.
+  const fixture = await profileFixture({ after: (fn) => ownedFixture(t).remove(fn) });
   const solution = fixture.solutionRoots[0];
   const app = await createPowerPages({ ...fixture, watch: false });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const definitions = () => (app.state().data.environmentvariabledefinition ?? []).map((row) => row.schemaname).sort();
   const before = definitions();
   assert.ok(before.length);

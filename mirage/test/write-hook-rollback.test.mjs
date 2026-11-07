@@ -11,6 +11,8 @@ import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
 import { workflowExtension, workflowHandlers } from '../lib/dataverse-workflows.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { clientCredentialsCall } from './support/web-api.mjs';
 
 const APP_ID = '77777777-7777-4777-8777-777777777701';
 const SECRET_VAR = 'PAQVILO_WRITE_HOOK_ROLLBACK_SECRET';
@@ -143,38 +145,19 @@ async function fixture(t, file = null) {
     log: () => {},
     extensions: [...EXTENSIONS, workflowExtension({ facts: FACTS, handlers: HANDLERS, diagnostic: () => {} })],
   });
-  t.after(() => api.close());
+  // Closed before the state directory is removed (t.after hooks run in registration order).
+  ownedFixture(t).add(() => api.close());
   await store.transact(() => {
     store.state.tables.organization[0].isauditenabled = true;
   });
-  const token = await (
-    await fetch(`${api.origin}/${api.tenantId}/oauth2/v2.0/token`, {
-      method: 'POST',
-      body: new URLSearchParams({
-        grant_type: 'client_credentials',
-        client_id: APP_ID,
-        client_secret: process.env[SECRET_VAR],
-        scope: `${api.origin}/.default`,
-      }),
-    })
-  ).json();
-  const call = (method, suffix, body) =>
-    fetch(`${api.origin}/api/data/v9.2/${suffix}`, {
-      method,
-      signal: AbortSignal.timeout(10_000),
-      headers: {
-        authorization: `Bearer ${token.access_token}`,
-        ...(body ? { 'content-type': 'application/json' } : {}),
-      },
-      ...(body ? { body: JSON.stringify(body) } : {}),
-    });
+  const call = await clientCredentialsCall(api, APP_ID, process.env[SECRET_VAR]);
   const reload = async () => new DataStore({ file, persistence }).init();
   return { store, api, call, reload, persistence };
 }
 
 async function workspace(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'write-hook-rollback-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'write-hook-rollback-'));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   return path.join(root, 'state.json');
 }
 

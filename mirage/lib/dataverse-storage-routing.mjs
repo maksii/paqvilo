@@ -223,7 +223,7 @@ function released(api, state, keys) {
 }
 
 // Moves inline legacy bytes to the providers once; a second load finds nothing inline. One STORAGE_MIGRATED diagnostic.
-async function migrate(api, state) {
+/* NOSONAR: preserve migration await boundaries */ async function migrate(api, state) {
   const { store } = api;
   const files = store.state.dataverse?.files ?? {};
   const fileMoves = [],
@@ -288,7 +288,7 @@ async function migrate(api, state) {
 // Objects are listed first and judged in one transaction afterwards: an in-flight key (bytes put before their row commits) is
 // skipped, and a delete is conditional on the listed ETag, so bytes put again under a listed key are kept.
 // With an outbox provider (api.providers.outbox) its sweep runs too; its counts are `outbox`.
-async function sweep(api, state) {
+/* NOSONAR: preserve sweep await boundaries */ async function sweep(api, state) {
   const { store } = api;
   const outboxSweep = api.providers?.outbox?.sweep ? () => api.providers.outbox.sweep() : null;
   const outbox = async (result) => (outboxSweep ? { ...result, outbox: await outboxSweep() } : result);
@@ -347,18 +347,7 @@ async function sweep(api, state) {
 // DATA file committed without its private <stateDir>/blobs, a cleaned state directory). One summarised STORAGE_OBJECTS_MISSING
 // with the count and the first keys; a provider that cannot answer is not judged here.
 async function verifyReferenced(api, state) {
-  const { store } = api;
-  const keys = new Set(
-    Object.values(store.state.dataverse?.files ?? {})
-      .filter((entry) => entry?.key && entry.data == null)
-      .map((entry) => entry.key),
-  );
-  for (const logical of Object.keys(ATTACHMENT_COLUMNS)) {
-    for (const row of [...store.tableRows(logical), ...binRows(store, logical)]) {
-      const key = blobKeyOf(logical, row);
-      if (key) keys.add(key);
-    }
-  }
+  const keys = referencedStorageKeys(api.store);
   const missing = [];
   for (const key of keys) {
     const provider = key.startsWith('files/') ? state.files : state.annotations;
@@ -376,6 +365,19 @@ async function verifyReferenced(api, state) {
       message: `${missing.length} referenced storage object(s) are missing from their provider (first: ${missing.slice(0, 5).join(', ')}); those rows read with a null body.`,
     });
   return missing.length;
+}
+function referencedStorageKeys(store) {
+  const keys = new Set(
+    Object.values(store.state.dataverse?.files ?? {})
+      .filter((entry) => entry?.key && entry.data == null)
+      .map((entry) => entry.key),
+  );
+  for (const logical of Object.keys(ATTACHMENT_COLUMNS))
+    for (const row of [...store.tableRows(logical), ...binRows(store, logical)]) {
+      const key = blobKeyOf(logical, row);
+      if (key) keys.add(key);
+    }
+  return keys;
 }
 
 /** install(api, { storage, diagnostic }): storage is a storage router (forRoute) or one provider; default api.providers.storage. */
@@ -504,7 +506,7 @@ function hydrate(api, c, mapping, formatted) {
       );
     return cache.get(logical);
   };
-  for (const row of [].concat(formatted ?? [])) {
+  for (const row of [].concat(formatted ?? []) /* NOSONAR: preserve concat spreadability semantics */) {
     if (!row || typeof row !== 'object') continue;
     delete row.__blobkey;
     if (!Object.hasOwn(row, column) || row[column] != null) continue;

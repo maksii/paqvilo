@@ -1,6 +1,6 @@
 /* Reversible local repair for controls actually occluded by an overlay footer. */
 (() => {
-  const compat = (window.__ppSimCompat ||= {});
+  const compat = (globalThis.__ppSimCompat ||= {});
   if (compat.footerSpacing) return;
   compat.footerSpacing = true;
   let repaired = null,
@@ -98,10 +98,7 @@
     forceCheck = false;
     const movedFixed =
       sourcePosition === 'fixed' && lastScroll && (lastScroll[0] !== scrollX || lastScroll[1] !== scrollY);
-    if (repaired?.isConnected && !forced && !movedFixed && visual) {
-      const current = visualState();
-      if (current.length === visual.length && current.every((value, index) => value === visual[index])) return;
-    }
+    if (repaired?.isConnected && !forced && !movedFixed && visual && visualIsUnchanged()) return;
     // Source-position measurements must not change the browser's scroll anchor.
     // Otherwise restoring/reapplying an identical repair can move the pointer
     // away from its hovered control and close that control's tooltip.
@@ -112,60 +109,67 @@
       restore();
       const footer = document.querySelector("[data-sim-footer-spacing],footer[role='contentinfo'],footer");
       sourcePosition = footer && getComputedStyle(footer).position;
-      let covered = null;
-      if (footer && ['absolute', 'fixed'].includes(getComputedStyle(footer).position)) {
-        const f = footer.getBoundingClientRect();
-        covered = [...document.querySelectorAll('button,input[type="button"],input[type="submit"],a[href]')].find(
-          (element) => {
-            if (footer.contains(element)) return false;
-            const rect = visibleRect(element);
-            if (!rect) return false;
-            const left = Math.max(rect.left, f.left),
-              right = Math.min(rect.right, f.right);
-            const top = Math.max(rect.top, f.top),
-              bottom = Math.min(rect.bottom, f.bottom);
-            if (right - left < 1 || bottom - top < 1) return false;
-            const point = [(left + right) / 2, (top + bottom) / 2];
-            const hit = document.elementFromPoint(...point);
-            if (hit === footer || footer.contains(hit)) {
-              coveredPoint = [point[0] + scrollX, point[1] + scrollY];
-              return true;
-            }
-            return false;
-          },
-        );
-      }
-      const state = ((globalThis.__portalSimulation ||= {}).compatibility ||= {});
-      if (covered) {
-        if (repaired !== footer)
-          original = properties.map((name) => [
-            name,
-            footer.style.getPropertyValue(name),
-            footer.style.getPropertyPriority(name),
-          ]);
-        const wasActive = repaired === footer;
-        repaired = footer;
-        footer.style.position = 'static';
-        footer.style.top = 'auto';
-        footer.style.bottom = 'auto';
-        footer.style.marginTop = '24px';
-        state.footerSpacingMode = 'local-overlap-repair';
-        state.footerSpacingControl = covered.id || covered.tagName.toLowerCase();
-        if (!wasActive) console.info('Local footer overlap repair:', covered);
-        visual = visualState();
-        lastScroll = [scrollX, scrollY];
-      } else {
-        repaired = original = null;
-        visual = coveredPoint = null;
-        lastScroll = null;
-        state.footerSpacingMode = 'source';
-        delete state.footerSpacingControl;
-      }
+      const covered = findCoveredControl(footer);
+      globalThis.__portalSimulation ||= {};
+      const state = (globalThis.__portalSimulation.compatibility ||= {});
+      applyFooterRepair(covered, footer, state);
     } finally {
       if (anchorStyle == null) root.removeAttribute('style');
       else root.setAttribute('style', anchorStyle);
       observer?.takeRecords();
     }
+  }
+  function visualIsUnchanged() {
+    const current = visualState();
+    return current.length === visual.length && current.every((value, index) => value === visual[index]);
+  }
+  function findCoveredControl(footer) {
+    if (!footer || !['absolute', 'fixed'].includes(getComputedStyle(footer).position)) return null;
+    const f = footer.getBoundingClientRect();
+    return [...document.querySelectorAll('button,input[type="button"],input[type="submit"],a[href]')].find(
+      (element) => {
+        if (footer.contains(element)) return false;
+        const rect = visibleRect(element);
+        if (!rect) return false;
+        const left = Math.max(rect.left, f.left),
+          right = Math.min(rect.right, f.right);
+        const top = Math.max(rect.top, f.top),
+          bottom = Math.min(rect.bottom, f.bottom);
+        if (right - left < 1 || bottom - top < 1) return false;
+        const point = [(left + right) / 2, (top + bottom) / 2];
+        const hit = document.elementFromPoint(...point);
+        if (hit !== footer && !footer.contains(hit)) return false;
+        coveredPoint = [point[0] + scrollX, point[1] + scrollY];
+        return true;
+      },
+    );
+  }
+  function applyFooterRepair(covered, footer, state) {
+    if (!covered) {
+      repaired = original = null;
+      visual = coveredPoint = null;
+      lastScroll = null;
+      state.footerSpacingMode = 'source';
+      delete state.footerSpacingControl;
+      return;
+    }
+    if (repaired !== footer)
+      original = properties.map((name) => [
+        name,
+        footer.style.getPropertyValue(name),
+        footer.style.getPropertyPriority(name),
+      ]);
+    const wasActive = repaired === footer;
+    repaired = footer;
+    footer.style.position = 'static';
+    footer.style.top = 'auto';
+    footer.style.bottom = 'auto';
+    footer.style.marginTop = '24px';
+    state.footerSpacingMode = 'local-overlap-repair';
+    state.footerSpacingControl = covered.id || covered.tagName.toLowerCase();
+    if (!wasActive) console.info('Local footer overlap repair:', covered);
+    visual = visualState();
+    lastScroll = [scrollX, scrollY];
   }
   const schedule = (force = false) => {
     forceCheck ||= force;

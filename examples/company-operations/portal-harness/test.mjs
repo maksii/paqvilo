@@ -1,8 +1,9 @@
+// @test-kind tooling: invented-schema harness generation, plan execution and evidence bookkeeping contracts.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
-import { compilePlans, caseTemplate, dispatcher } from './compile.mjs';
+import { compilePlans, caseTemplate, dispatcher, hasSelfClosingTag } from './compile.mjs';
 import {
   authoredQuery,
   canonicalRows,
@@ -155,7 +156,8 @@ test('P10 saves reconciled packets before cleanup and marks failed reconciliatio
     const calls = [],
       operations = new Map(),
       queryCache = new Map();
-    let eventReads = 0;
+    let eventReads = 0,
+      elapsed = 0;
     const packet = {
       pqvd_plugineventid: 'event',
       pqvd_spanid: 'span',
@@ -183,12 +185,12 @@ test('P10 saves reconciled packets before cleanup and marks failed reconciliatio
       if (args.url.startsWith('/_api/pqvd_pluginevents?')) {
         eventReads++;
         if (fail) return { ok: false, status: 403, text: 'denied' };
-        if (eventReads > 3) throw Error('Cached query never exposed the late event.');
+        if (eventReads > 3) throw new Error('Cached query never exposed the late event.');
         const xml = new URL(args.url, 'http://127.0.0.1').searchParams.get('fetchXml'),
-          operationId = xml.match(/attribute="pqvd_operationid" operator="eq" value="([a-f0-9-]+)"/)?.[1];
+          operationId = /attribute="pqvd_operationid" operator="eq" value="([a-f0-9-]+)"/.exec(xml)?.[1];
         assert.equal(operations.get(operationId)?.pqvd_caseid, 'P10');
-        const equality = xml.match(/attribute="pqvd_plugineventid" operator="eq" value="([a-f0-9-]+)"/)?.[1],
-          inequality = xml.match(/attribute="pqvd_plugineventid" operator="ne" value="([a-f0-9-]+)"/)?.[1];
+        const equality = /attribute="pqvd_plugineventid" operator="eq" value="([a-f0-9-]+)"/.exec(xml)?.[1],
+          inequality = /attribute="pqvd_plugineventid" operator="ne" value="([a-f0-9-]+)"/.exec(xml)?.[1];
         assert.ok(equality);
         assert.equal(equality, inequality);
         assert.match(xml, /<filter type="or">/);
@@ -208,6 +210,13 @@ test('P10 saves reconciled packets before cleanup and marks failed reconciliatio
       },
       context: { contactId: '11111111-1111-4111-8111-111111111111', roles: ['CO Test Runner'] },
       request,
+      // Virtual time: the late packet arrives on the third poll without two real one-second intervals.
+      clock: {
+        now: () => elapsed,
+        sleep: async (ms) => {
+          elapsed += ms;
+        },
+      },
     });
     const result = await runner.run({ selectedCases: [], pluginProfile: 'P10' }),
       profile = result.evidence.find((e) => e.profile === 'P10' && !e.kind),
@@ -220,6 +229,7 @@ test('P10 saves reconciled packets before cleanup and marks failed reconciliatio
       );
     assert.equal(profile.backendReconciliation.state, fail ? 'read-failed' : 'observed');
     assert.equal(eventReads, fail ? 1 : 3);
+    assert.equal(elapsed, fail ? 0 : 2000, 'two default one-second polling intervals separate the three reads');
     assert.equal(queryCache.size, fail ? 0 : 3);
     assert.deepEqual(result.residuals, []);
     assert.ok(cleanup > calls.findLastIndex((c) => c.url.startsWith('/_api/pqvd_pluginevents?')));
@@ -230,13 +240,14 @@ test('P10 saves reconciled packets before cleanup and marks failed reconciliatio
   }
 });
 
+// @test-kind contract: generated typed plans retain their explicit-tag and oracle-isolation guarantees.
 test('all36 cases plus inner/outer variant share typed plans without administrator oracle leakage', () => {
   assert.equal(manifest.cases.length, 37);
   assert.equal(new Set(manifest.cases.map((c) => c.id.slice(0, 3))).size, 36);
   for (const c of manifest.cases) {
     assert.ok(!c.expected);
     assert.ok(!c.fetchXml.includes('{{ref:'));
-    assert.ok(!/<[^>]*\/>/.test(c.fetchXml));
+    assert.ok(!hasSelfClosingTag(c.fetchXml));
     assert.match(c.fetchXml, /<filter type="or"><condition attribute="[^"]+" operator="null">/);
     assert.equal((c.fetchXml.match(/\{\{markerUtc\}\}/g) || []).length, 1);
     assert.equal((c.fetchXml.match(/\{\{markerOperation\}\}/g) || []).length, 1);
@@ -407,7 +418,7 @@ test('templates escape XML, use immutable operation intent, and hide no failed o
   const module = /<script type="module">([\s\S]*?)<\/script>/.exec(shell)?.[1];
   assert.ok(module, 'the shell includes its browser module');
   assert.doesNotThrow(
-    () => new vm.Script(module, { filename: 'bundled-portal-shell.js' }),
+    () => new vm.Script(module, { filename: 'bundled-portal-shell.js' }), // NOSONAR: intentional local script execution or generated handler
     'the browser bundle has no unresolved module imports or exports',
   );
   assert.match(shell, /pre.textContent/);

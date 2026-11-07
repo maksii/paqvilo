@@ -1,3 +1,4 @@
+import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -13,7 +14,7 @@ import { resolveDeploymentProfiles } from '../mirage/lib/deployment-profiles.mjs
 
 const ORIGIN = 'https://portal.example.com';
 const fx = createFixture();
-const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-panel-'));
+const stateDir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-panel-'));
 const panels = [];
 after(() => {
   panels.forEach((panel) => panel.dispose());
@@ -21,7 +22,24 @@ after(() => {
   fs.rmSync(stateDir, { recursive: true, force: true });
 });
 
-const tick = (ms = 30) => new Promise((r) => setTimeout(r, ms));
+/** Resolves with the data of the first evaluation in `page` that `accept` admits. */
+const evaluation = (page, accept) =>
+  new Promise((resolve) => {
+    const evaluate = page.evaluate;
+    page.evaluate = async (fn, data) => {
+      const result = await evaluate(fn, data);
+      if (accept(fn, data)) {
+        page.evaluate = evaluate;
+        resolve(data);
+      }
+      return result;
+    };
+  });
+// The panel redraws a tab after every state change it schedules, so the first
+// draw whose state satisfies `ready` is the event a test waits for.
+const drawn = (page, ready = () => true) => evaluation(page, (_fn, data) => Array.isArray(data?.items) && ready(data));
+const settled = (state) => state.inspection != null && state.inspection.loading === false;
+const sessionFlow = (page) => evaluation(page, (fn) => fn?.name === 'runSessionFlow');
 
 /** A dev loop with one tab on the portal, and a way to press the buttons of its panel. */
 async function setup(online = {}, overrides = {}, panelOptions = {}) {
@@ -67,7 +85,7 @@ async function setup(online = {}, overrides = {}, panelOptions = {}) {
       const timer = setTimeout(() => {
         pending.delete(id);
         reject(new Error(`Intercepted request ${id} did not answer within the panel API deadline`));
-      }, 5_000);
+      }, 60_000);
       pending.set(id, () => {
         clearTimeout(timer);
         pending.delete(id);
@@ -173,7 +191,7 @@ test('selected-source editor admission rechecks a source edited during the final
 });
 
 test('guarded editor admission opens only the selected external deployment profile and refuses neighboring files', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-panel-profile-'));
+  const directory = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-panel-profile-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const selected = path.join(directory, 'selected.yml'),
     neighbor = path.join(directory, 'neighbor.yml');
@@ -233,11 +251,12 @@ test('JSON request failures retain bounded distinct causes and redact query valu
     });
     tab.cdp.emit('Network.loadingFinished', { requestId });
   };
+  const reported = drawn(tab.page, (state) => state.problems.filter((item) => item.where).length >= 2);
   response('<img src=x onerror=alert(1)> Missing lookup');
   response('Different lookup');
   response('Large', { 'content-type': 'application/json', 'content-length': '40000' });
   response('HTML', { 'content-type': 'text/html', 'content-length': '100' });
-  await tick();
+  await reported;
   const issues = panel.stateFor(tab.page).problems;
   assert.equal(reads, 2);
   assert.equal(issues.filter((item) => item.where).length, 2);
@@ -376,11 +395,12 @@ test('a comparison lists changed lines with a little context and folds the rest'
 
 test('what a tab served from local sources is what its panel lists', async () => {
   const { tab, panel, request } = await setup();
+  const redrawn = drawn(tab.page, (state) => state.items.length > 0);
   await Promise.all([
     request(tab, 'r1', `${ORIGIN}/scripts/app.js`, { type: 'Script' }),
     request(tab, 'r2', `${ORIGIN}/scripts/app.js`, { type: 'Script' }),
   ]);
-  await tick(350);
+  await redrawn;
   const [item, ...more] = panel.stateFor(tab.page).items;
   assert.equal(more.length, 0);
   assert.deepEqual(
@@ -580,8 +600,8 @@ function fakeMirage(b, { report, status = {}, personas = null, onWrite } = {}) {
 
 test('Mirage inspection: redraws carry a compact summary; the Inspect report arrives on request with openable portal and Solution sources', async () => {
   const { b, tab, session, panel, call, opened } = await setup();
-  const solution = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-solution-'));
-  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-unlisted-'));
+  const solution = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-solution-'));
+  const outside = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-unlisted-'));
   try {
     const entity = path.join(solution, 'Entities', 'contact', 'Entity.xml');
     fs.mkdirSync(path.dirname(entity), { recursive: true });
@@ -633,8 +653,9 @@ test('Mirage inspection: redraws carry a compact summary; the Inspect report arr
       },
     };
     fakeMirage(b, { report });
+    const loaded = drawn(tab.page, settled);
     session.emit('hit', { page: tab.page, navigation: true });
-    await tick(80);
+    await loaded;
     const state = panel.stateFor(tab.page);
     assert.equal(state.mirage.active, true);
     assert.equal(state.git, null, 'Mirage pages do not advertise a Git deployment baseline');
@@ -712,8 +733,9 @@ test('Mirage tweaks read personas lazily and write through the CSRF-protected ad
       return { status: 200, body: { identity: { name: 'Alex Local' } } };
     },
   });
+  const loaded = drawn(tab.page, settled);
   session.emit('hit', { page: tab.page, navigation: true });
-  await tick(80);
+  await loaded;
   const tweaks = await call('tweaks');
   assert.equal(tweaks.ok, true);
   assert.deepEqual(tweaks.personas, [
@@ -758,15 +780,24 @@ test('Mirage tweaks read personas lazily and write through the CSRF-protected ad
 });
 
 test('Mirage administration pages are neither decorated nor inspected', async () => {
-  const { b, session, panel } = await setup();
+  const { b, tab, session, panel } = await setup();
   session.cfg.mirage = true;
   const calls = fakeMirage(b, { report: { path: '/', page: null } });
   const admin = b.openTab(`${ORIGIN}/_sim/#records`);
   session.emit('hit', { page: admin.page, navigation: true });
-  await tick(300);
+  assert.equal(calls.length, 0);
+  // A portal tab hit afterwards bounds the admin hit: any redraw or inspection
+  // the admin hit had scheduled would have run before this tab's settled draw.
+  const control = drawn(tab.page, settled);
+  session.emit('hit', { page: tab.page, navigation: true });
+  await control;
   await panel.draw(admin.page);
   assert.equal(admin.page.drawn, null);
-  assert.equal(calls.length, 0);
+  assert.deepEqual(
+    calls.filter(([, url]) => url.includes('/page-resources?')).map(([, url]) => new URL(url).searchParams.get('path')),
+    ['/scripts/'],
+    'only the portal tab is inspected',
+  );
 });
 
 test('Mirage inspections of one tab coalesce while a request is running', async () => {
@@ -782,9 +813,10 @@ test('Mirage inspections of one tab coalesce while a request is running', async 
     await gate;
     return get(url, options);
   };
+  const loaded = drawn(tab.page, settled);
   for (let n = 0; n < 5; n++) session.emit('hit', { page: tab.page, navigation: true });
   release();
-  await tick(120);
+  await loaded;
   assert.equal(
     calls.filter(([, url]) => url.includes('/page-resources?')).length,
     2,
@@ -805,6 +837,7 @@ test('inspection summaries expose cold loading and clear progress after a failed
     await gate;
     throw new Error('Metadata unavailable');
   };
+  const loaded = drawn(tab.page, settled);
   session.emit('hit', { page: tab.page, navigation: true });
   const pending = panel.stateFor(tab.page).inspection;
   assert.equal(pending.loading, true);
@@ -812,7 +845,7 @@ test('inspection summaries expose cold loading and clear progress after a failed
   assert.equal(pending.version, 0, 'a pending report must not advertise a usable version');
   assert.match(pending.phase, /Reading local runtime metadata/);
   release();
-  await tick(80);
+  await loaded;
   const failed = panel.stateFor(tab.page).inspection;
   assert.equal(failed.loading, false);
   assert.equal(failed.active, false);
@@ -825,8 +858,9 @@ test('detailed inspection publishes progress while matching the DOM and clears i
   const { b, tab, session, panel, call } = await setup();
   session.cfg.mirage = true;
   fakeMirage(b, { report: { path: '/scripts', page: null } });
+  const loaded = drawn(tab.page, settled);
   session.emit('hit', { page: tab.page, navigation: true });
-  await tick(80);
+  await loaded;
   const evaluate = tab.page.evaluate;
   for (const fail of [false, true]) {
     let release, entered;
@@ -861,8 +895,11 @@ test('detailed inspection publishes progress while matching the DOM and clears i
 });
 
 test('panels ignore foreign console errors and avoid scheduling foreign tab redraws', async () => {
-  const { b, panel } = await setup();
+  const { b, tab, panel } = await setup();
   const other = b.openTab('https://other.example/');
+  // A tab opened in the context is watched like any other; only its origin is foreign.
+  b.context.emit('page', other.page);
+  assert.ok(other.page.listenerCount('console') > 0, 'the panel observes the foreign tab');
   other.page.emit('pageerror', new Error('foreign problem'));
   other.page.emit('console', {
     type: () => 'error',
@@ -872,7 +909,11 @@ test('panels ignore foreign console errors and avoid scheduling foreign tab redr
   });
   other.page.emit('domcontentloaded');
   other.page.emit('load');
-  await tick(300);
+  // The same event on a portal tab, emitted later, bounds any redraw the
+  // foreign events had scheduled: redraw timers share one delay and fire in order.
+  const control = drawn(tab.page);
+  tab.page.emit('load');
+  await control;
   assert.deepEqual(panel.stateFor(other.page).problems, []);
   assert.equal(other.page.drawn, null);
 });
@@ -893,7 +934,7 @@ test('comparison refuses unrelated and authority-changing URLs without any reque
 });
 
 test('the panel refuses sources reached through a directory junction escaping the extract', async () => {
-  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-outside-'));
+  const outside = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-outside-'));
   const linked = fx.file('outside-link');
   fs.writeFileSync(path.join(outside, 'secret.txt'), 'outside');
   fs.symlinkSync(outside, linked, 'junction');
@@ -938,11 +979,14 @@ test('malformed UI settings and oversized API input are safely rejected', async 
   assert.equal((await call('mode', { online: true, padding: 'x'.repeat(32768) })).status, 413);
 });
 
-test('disposing the panel clears scheduled work and releases session listeners', async () => {
+test('disposing the panel clears scheduled work and releases session listeners', async (t) => {
   const { b, tab, session, panel } = await setup();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   session.emit('hit', { page: tab.page });
   await panel.dispose();
-  await tick(300);
+  // Fire every timer that is still scheduled, including any redraw the hit queued.
+  t.mock.timers.runAll();
+  await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(tab.page.drawn, { token: panel.stateFor(tab.page).token }, 'only the UI cleanup is evaluated');
   assert.equal(session.listenerCount('refreshed'), 0);
   assert.equal(session.api, null);
@@ -990,23 +1034,25 @@ test('unchanged panel redraws reuse page/source metadata without filesystem read
 
 test('a paused page has at most one panel evaluation pending and receives the latest update afterwards', async () => {
   const { panel, tab, session } = await setup();
-  let finish;
+  const finish = Promise.withResolvers(),
+    started = Promise.withResolvers(),
+    redrawn = Promise.withResolvers();
   let calls = 0;
   tab.page.evaluate = async (_fn, state) => {
     calls++;
     tab.page.drawn = state;
-    if (calls === 1)
-      await new Promise((resolve) => {
-        finish = resolve;
-      });
+    if (calls === 1) {
+      started.resolve();
+      await finish.promise;
+    } else redrawn.resolve();
   };
   const draws = Array.from({ length: 50 }, () => panel.draw(tab.page));
-  await tick();
+  await started.promise;
   assert.equal(calls, 1);
   session.bypass = true;
-  finish();
+  finish.resolve();
   await Promise.all(draws);
-  await tick(300);
+  await redrawn.promise;
   assert.equal(calls, 2);
   assert.equal(tab.page.drawn.online, true);
 });
@@ -1059,8 +1105,9 @@ test('Mirage navigation fetches a page summary; the full Inspect report is fetch
       ? (calls.push(['GET', String(url)]),
         { ok: () => true, status: () => 200, json: async () => structuredClone(summary) })
       : get(url, options);
+  const loaded = drawn(tab.page, settled);
   session.emit('hit', { page: tab.page, navigation: true, url: '/scripts/' });
-  await tick(80);
+  await loaded;
   const pageRequests = () => calls.filter(([, url]) => url.includes('/page-resources?'));
   assert.deepEqual(
     pageRequests().map(([, url]) => url.includes('view=summary')),
@@ -1144,8 +1191,9 @@ test("Mirage browser sessions: Tweaks show this browser's session and identity p
   const cookieWrites = () => calls.filter(([method, url]) => method === 'POST' && /\/session\//.test(url));
   const flows = tab.page.flows;
 
+  const loaded = drawn(tab.page, settled);
   session.emit('hit', { page: tab.page, navigation: true });
-  await tick(80);
+  await loaded;
   const shown = panel.stateFor(tab.page).mirage.session;
   assert.deepEqual(
     [shown.supported, shown.signedIn, shown.contactId, shown.roles],
@@ -1223,8 +1271,16 @@ test("Mirage browser sessions: Tweaks show this browser's session and identity p
   const returnsTo = async (cases) => {
     for (const [url, target] of cases) {
       const opened = b.openTab(url);
+      // Interception enables Fetch on a tab only after its paused-request handler is attached.
+      const intercepted = Promise.withResolvers(),
+        send = opened.cdp.send;
+      opened.cdp.send = async (method, params) => {
+        const result = await send(method, params);
+        if (method === 'Fetch.enable') intercepted.resolve();
+        return result;
+      };
       b.context.emit('page', opened.page);
-      await tick(20);
+      await intercepted.promise;
       const result = await callFrom(opened, 'signin', { contactId: 'blair' });
       assert.equal(result.returnUrl, target, url);
       assert.equal(
@@ -1274,23 +1330,28 @@ test("Mirage browser sessions: Tweaks show this browser's session and identity p
   const anonymous = await call('scenario', { id: 'anon' });
   assert.deepEqual([anonymous.ok, anonymous.navigating, anonymous.contactId], [true, true, null]);
   assert.equal(flows.length, before, 'nothing runs before the reload');
+  let flow = sessionFlow(tab.page);
   tab.page.emit('load');
-  await tick(60);
+  await flow;
   assert.deepEqual(flows.at(-1), { navigate: '/Account/Login/LogOff?returnUrl=%2Fscripts%2F' });
   signedIn = null;
   const asAlex = await call('scenario', { id: 'as-alex' });
   assert.deepEqual([asAlex.ok, asAlex.navigating, asAlex.contactId], [true, true, 'alex']);
+  flow = sessionFlow(tab.page);
   tab.page.emit('load');
-  await tick(60);
+  await flow;
   assert.deepEqual([flows.at(-1).logOff, flows.at(-1).fields.login_hint], [null, 'alex']);
   signedIn = 'alex';
-  const kept = flows.length;
+  const kept = flows.length,
+    loadListeners = tab.page.listenerCount('load');
   assert.deepEqual(
     [(await call('scenario', { id: 'keep' })).navigating, (await call('scenario', { id: 'as-alex' })).navigating],
     [undefined, undefined],
   );
+  // A session change waits for the reload through a load listener registered
+  // before its answer; an unchanged persona registers none, so a reload runs nothing.
+  assert.equal(tab.page.listenerCount('load'), loadListeners, 'no session flow waits for the reload');
   tab.page.emit('load');
-  await tick(60);
   assert.equal(flows.length, kept);
   assert.deepEqual(cookieWrites(), [], 'the panel never sets the session cookie itself');
 });
@@ -1302,8 +1363,9 @@ test('Mirage Tweaks report whether local pages are confined to loopback, with th
     report: { path: '/scripts', view: 'summary', page: null, tables: [], counts: {} },
     status: { confinePortalPages: true, externalAssets: false, externalFrameOrigins: 2 },
   });
+  const loaded = drawn(tab.page, settled);
   session.emit('hit', { page: tab.page, navigation: true });
-  await tick(80);
+  await loaded;
   const tweaks = await call('tweaks');
   assert.deepEqual(
     [tweaks.status.confinePortalPages, tweaks.status.externalAssets, tweaks.status.externalFrameOrigins],

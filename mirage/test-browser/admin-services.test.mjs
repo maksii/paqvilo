@@ -5,6 +5,7 @@ import fs from 'node:fs/promises';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { ADMIN_CSP } from '../lib/runtime-admin.mjs';
+import { closeServer } from './shared-browser.mjs';
 
 // The four view modules run in a minimal harness page (app.mjs wiring is separate): the harness builds the ctx,
 // renders a module into #content, delegates click/submit/change/input to handle(), keeps section open state from
@@ -237,13 +238,12 @@ test(
       }
     });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-    t.after(() => server.close());
+    t.after(() => closeServer(server));
     const origin = `http://127.0.0.1:${server.address().port}`;
     const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
     t.after(() => browser.close());
     const context = await browser.newContext({ serviceWorkers: 'block', viewport: { width: 390, height: 900 } });
     const page = await context.newPage();
-    page.setDefaultTimeout(10_000);
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
     const noOverflow = async () =>

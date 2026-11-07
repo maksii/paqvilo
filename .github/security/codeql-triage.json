@@ -1845,6 +1845,22 @@
       "evidence": "The handler records every message into a temporary test-page array solely to assert native modal postback communication. It never authorizes an action, inserts markup or executes received data. The actual entity-grid runtime message handler separately checks event.origin === location.origin and data === Success before refreshing grids.",
       "verification": "mirage/test-browser/solution-form.test.mjs: passive message assertion; mirage/lib/entity-grid-compat.js: actual modal completion origin gate",
       "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/115"
+    },
+    {
+      "number": 360,
+      "rule": "js/file-access-to-http",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "mirage/test/plugin-uploaded-assembly.test.mjs",
+        "start_line": 77,
+        "end_line": 77,
+        "start_column": 13,
+        "end_column": 66
+      },
+      "disposition": "false-positive",
+      "evidence": "Test-only. The test compiles invented plug-in assemblies with csc into its own temporary directory and uploads those bytes as pluginassembly content to the Mirage Web API it started on loopback, to prove uploaded plug-in bytes run (user decision C08). The request origin is the local test server; no repository, user or system file reaches a remote origin.",
+      "verification": "mirage/test/plugin-uploaded-assembly.test.mjs: call() targets the started startDataverseApi origin on 127.0.0.1; inputs are compileClr outputs of the test sources",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/360"
     }
   ],
   "followUpReview": {
@@ -2195,6 +2211,27 @@
         "evidence": "The standalone Arc regression intentionally reads the one-time proof file created by its owned simulator and sends that exact proof as Basic Authorization to the same owned identity listener. The original candidate lacked explicit read confinement and redirect rejection in this test, so the fixture was hardened before proposing triage. It now accepts only an anchored Basic realm header naming identity-<12 lowercase hex>.key directly inside the test's mkdtemp project .paqvilo/mirage directory; canonical root, directory and file checks reject prefix siblings and symlink/junction escapes. readLocalFile confines the descriptor to that canonical directory, caps the read at 64 bytes and checks file identity; the proof must contain exactly 64 lowercase hexadecimal characters. The request URL is constructed from literal http://127.0.0.1 plus the port of the test's actual listening server, uses the fixed identity route and refuses redirects. No arbitrary local file, external URL, reference origin or production credential is selected. The file-to-header flow remains visible because it is the protocol under test; production runtime code and its options are unchanged.",
         "verification": "From the mirage working directory, eight focused identity/guard regressions passed and the complete standalone-runtime.test.mjs suite passed 19/19. All six API/model-driven managed-identity mode cases retain real Arc challenge-file redemption, token-authenticated reads, single-use proof removal and shutdown cleanup. Dedicated negative regressions reject outside/prefix-sibling/malformed/oversized/linked proof files, remote and unowned destinations, and credential-bearing redirects. The complete staged gate (npm run validate and the repository commit-hook validation on its isolated staged snapshot) must still pass before triage; this record does not claim that unrun outcome.",
         "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/219"
+      }
+    ]
+  },
+  "testPerformanceAuditReview": {
+    "reviewedAt": "2026-10-26",
+    "sourceHead": "05fb8f31317e4ed6425cc8c89a4038077a27e70e",
+    "reviewStatus": "Review of the CodeQL findings raised on PR #22 (test suite audit). Three js/file-system-race findings in mirage/test/state-storage-windows.test.mjs were fixed in code by performing every stat, read and write of the edited state file through one descriptor. One js/disabling-certificate-validation finding is a reviewed test-only loopback observation recorded below.",
+    "entries": [
+      {
+        "number": 325,
+        "rule": "js/disabling-certificate-validation",
+        "originalLocation": {
+          "path": "mirage/test/dataverse-tds-generated-certificate.test.mjs",
+          "start_line": 13,
+          "end_line": 13
+        },
+        "disposition": "false-positive",
+        "dismissalReason": "used in tests",
+        "evidence": "The regression connects only to host 127.0.0.1 on the TDS port of the simulator it started in the same test, sends no data and reads the presented certificate with getPeerCertificate(). The endpoint generates its self-signed certificate in memory at the first handshake (mirage/lib/dataverse-tds.mjs) and exposes no trust anchor, so the observed certificate cannot be pinned in advance; with validation enabled Node rejects with DEPTH_ZERO_SELF_SIGNED_CERT before the certificate is observable. This matches the documented client setting for this loopback endpoint (trustServerCertificate in mirage/test/dataverse-tds-integration.test.mjs, dataverse-tds-protocol.test.mjs and mirage/test-sdk/tds/gate.test.mjs). No production code disables certificate validation.",
+        "verification": "mirage/test/dataverse-tds-generated-certificate.test.mjs asserts a SHA-256 fingerprint, identical certificates across connections and the 127.0.0.1 subjectAltName; mirage/lib/dataverse-tds.mjs createSelfSignedCertificate on first handshake.",
+        "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/325"
       }
     ]
   }

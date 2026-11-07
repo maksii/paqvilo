@@ -1,8 +1,10 @@
 // Operation registry for extension-defined Web API functions and actions. Pure: it stores and finds definitions;
 // the router in dataverse-api.mjs calls handle(ctx) for the one it finds.
 import { PLATFORM_OPERATIONS, platformOperationCsdl, platformCsdl } from './dataverse-operation-contracts.mjs';
+import { entryMessageActive, entryParameters, runEntryMessage } from './plugin-platform-messages.mjs';
+import { requestMessage } from './dataverse-sdk-message-catalogue.mjs';
 
-const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const NAME = /^[A-Za-z_]\w*$/;
 const KINDS = new Set(['function', 'action']);
 const BINDINGS = new Set(['unbound', 'entity', 'collection']);
 const ENTITY_RESPONSE_TYPES = new Set([
@@ -24,7 +26,9 @@ function declarationOf(op) {
   const tag = op.kind === 'action' ? 'Action' : 'Function';
   const sig = op.signature ?? {};
   const table = op.entity === '*' ? 'mscrm.crmbaseentity' : `mscrm.${op.entity}`;
-  const bound = op.binding === 'collection' ? `Collection(${table})` : op.binding === 'entity' ? table : null;
+  let bound = null;
+  if (op.binding === 'collection') bound = `Collection(${table})`;
+  else if (op.binding === 'entity') bound = table;
   const returns = sig.response ? `mscrm.${op.name}Response` : (sig.returns ?? null);
   const complex = sig.response
     ? `<ComplexType Name="${op.name}Response">${sig.response.map(responseMember).join('')}</ComplexType>`
@@ -37,7 +41,51 @@ function declarationOf(op) {
   return [complex, `${head}\n${body}\n</${tag}>`].filter(Boolean).join('\n');
 }
 
-export function createOperationRegistry() {
+// A registered operation's message runs its plug-in pipeline around the operation (Web API actions and functions, and the
+// SOAP requests relayed to them): Target is the bound row, the other inputs the request's values, the outputs the
+// response's properties. An operation that runs its own pipeline (ownPipeline: Merge) and custom APIs (their own steps)
+// call the handler directly, as does a message without a registered step for the request table.
+async function runOperationMessage(store, op, context) {
+  const bound = context.target?.mapping,
+    boundId = context.target?.id;
+  const inputs = {
+    ...(boundId
+      ? {
+          Target: {
+            $type: 'EntityReference',
+            logicalName: bound.logicalName,
+            id: boundId,
+            name: null,
+            ...(context.target.keyAttributes ? { keyAttributes: { ...context.target.keyAttributes } } : {}),
+          },
+        }
+      : {}),
+    ...entryParameters(store, op.kind === 'action' ? context.body : context.params),
+  };
+  // The message's primary row is its Target (a record message's Target, also of an unbound one, natively: GrantAccess,
+  // RetrieveSharedPrincipalsAndAccess, Merge), else the bound table, else none.
+  const subject = inputs.Target?.$type === 'EntityReference' ? inputs.Target : null;
+  let response;
+  await runEntryMessage(store, {
+    // The request's sdkmessage (AddMembersTeam runs AddMembers, SendEmail runs Send: dataverse-sdk-message-catalogue.mjs).
+    message: requestMessage(op.name),
+    entity: subject?.logicalName ?? bound?.logicalName ?? 'none',
+    id: subject?.id ?? boundId,
+    inputs,
+    context,
+    main: async () => {
+      response = await op.handle(context);
+      const body = response?.body;
+      if (!body || typeof body !== 'object' || Buffer.isBuffer(body)) return {};
+      // An operation with structured outputs gives its steps the SDK's typed values (op.pluginOutputs); the HTTP body
+      // stays as it is.
+      return op.pluginOutputs ? op.pluginOutputs(body, context) : entryParameters(store, body);
+    },
+  });
+  return response;
+}
+
+export function createOperationRegistry({ store } = {}) {
   const operations = [];
   const providers = new Map();
   const normalize = (op) => {
@@ -58,9 +106,19 @@ export function createOperationRegistry() {
       kind: op.kind,
       binding: op.binding,
       entity,
-      handle: op.handle,
+      handle: store
+        ? (context) =>
+            !op.ownPipeline &&
+            entryMessageActive(store, requestMessage(op.name), context.target?.mapping?.logicalName, context)
+              ? runOperationMessage(store, op, context)
+              : op.handle(context)
+        : op.handle,
+      // The operation's own handler (or its synchronous sdk variant), without the entry pipeline: a plug-in's SDK Execute
+      // runs that pipeline itself (plugin-platform-messages.mjs executeOperationSdkMessage).
+      main: op.sdk ?? op.handle,
       csdl,
       ...(op.soapResult ? { soapResult: op.soapResult } : {}),
+      ...(op.ownPipeline ? { ownPipeline: true } : {}),
     };
   };
   const current = () => {

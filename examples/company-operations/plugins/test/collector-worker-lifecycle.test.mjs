@@ -1,3 +1,4 @@
+// @test-kind contract: the collector resumes evidence delivery with the complete ordered multipart receipt
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -8,6 +9,7 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ownedFixture } from '../../../../mirage/testing/owned-fixture.mjs';
+import { makeTemporaryDirectory } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 
 const worker = fileURLToPath(new URL('../collector/worker.mjs', import.meta.url));
 const operation = '10000000-0000-4000-8000-000000000001';
@@ -19,7 +21,7 @@ test(
   'actual worker reports a denied evidence write safely, retains its receipt and resumes in a new process',
   { timeout: 15000 },
   async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-collector-worker-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-collector-worker-'));
     ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
     const payload = JSON.stringify({
       schemaVersion: 1,
@@ -172,6 +174,10 @@ test(
       parts: 2,
     });
     const rows = [...events.values()].sort((a, b) => a.pqvd_partnumber - b.pqvd_partnumber);
+    assert.deepEqual(
+      rows.map((row) => row.pqvd_partnumber).sort((left, right) => left - right),
+      [1, 2],
+    );
     assert.equal(rows.map((row) => row.pqvd_payloadtext).join(''), payload);
     assert.ok(rows.every((row) => row.pqvd_payloadhash === sha(payload) && row.pqvd_partcount === 2));
     assert.equal(JSON.parse(summary.pqvd_serversummary).complete, false);

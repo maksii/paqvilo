@@ -19,23 +19,7 @@ function localPath(value, origin) {
   return value;
 }
 
-/** Only explicit modelDriven.targets opt cross-product references into this runner. */
-export function modelDrivenTargets(project, args = {}) {
-  if (args.env && args.url) throw new Error('Choose --env or --url, not both.');
-  const targets = (project.modelDriven?.targets ?? []).map((target) => {
-    const reference = project.references.find((item) => item.id === target.reference);
-    if (!reference) throw new Error(`Unknown model-driven reference '${target.reference}'.`);
-    const origin = modelDrivenOrigin(reference.origin);
-    return {
-      id: reference.id,
-      origin,
-      siteName: reference.name ?? reference.id,
-      envName: reference.environment ?? reference.id,
-      startPath: localPath(target.startPath, origin),
-      mapFile: target.resourceMap ?? null,
-      caution: target.caution === true,
-    };
-  });
+function selectModelDrivenTarget(project, args, targets) {
   let selected;
   if (args.env) {
     selected = targets.find((target) => target.id === args.env);
@@ -62,6 +46,27 @@ export function modelDrivenTargets(project, args = {}) {
     if (!selected)
       throw new Error('Select --env, provide --url, or mark a declared model-driven reference as default.');
   }
+  return selected;
+}
+
+/** Only explicit modelDriven.targets opt cross-product references into this runner. */
+export function modelDrivenTargets(project, args = {}) {
+  if (args.env && args.url) throw new Error('Choose --env or --url, not both.');
+  const targets = (project.modelDriven?.targets ?? []).map((target) => {
+    const reference = project.references.find((item) => item.id === target.reference);
+    if (!reference) throw new Error(`Unknown model-driven reference '${target.reference}'.`);
+    const origin = modelDrivenOrigin(reference.origin);
+    return {
+      id: reference.id,
+      origin,
+      siteName: reference.name ?? reference.id,
+      envName: reference.environment ?? reference.id,
+      startPath: localPath(target.startPath, origin),
+      mapFile: target.resourceMap ?? null,
+      caution: target.caution === true,
+    };
+  });
+  const selected = selectModelDrivenTarget(project, args, targets);
   if (args.path !== undefined) selected.startPath = localPath(args.path, selected.origin);
   if (args['resource-map'] !== undefined) selected.mapFile = path.resolve(args['resource-map']);
   if (new Set(targets.map((target) => target.origin)).size !== targets.length)

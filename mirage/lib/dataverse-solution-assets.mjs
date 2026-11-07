@@ -26,7 +26,11 @@ const identity = (value) =>
   String(value ?? '')
     .replace(/[{}]/g, '')
     .toLowerCase();
-const compare = (left, right) => (left < right ? -1 : left > right ? 1 : 0);
+const compare = (left, right) => {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+};
 const limitsOf = (options = {}) =>
   Object.fromEntries(
     Object.entries(SOLUTION_ASSET_LIMITS).map(([name, ceiling]) => {
@@ -101,6 +105,98 @@ function checkedEntries(input, limits) {
   });
 }
 
+function directoryEntryInfo(bytes, cursor, end, limits, total) {
+  bounds(bytes, cursor, 46, end);
+  if (uint32(bytes, cursor) !== 0x02014b50) fail('Invalid solution ZIP directory entry.');
+  const flags = uint16(bytes, cursor + 8),
+    method = uint16(bytes, cursor + 10),
+    crc = uint32(bytes, cursor + 16);
+  const packed = uint32(bytes, cursor + 20),
+    unpacked = uint32(bytes, cursor + 24),
+    nameLength = uint16(bytes, cursor + 28);
+  const extraLength = uint16(bytes, cursor + 30),
+    commentLength = uint16(bytes, cursor + 32),
+    local = uint32(bytes, cursor + 42);
+  if (flags & 0x41) fail('Encrypted solution archives are unsupported.', 'UnsupportedArchive');
+  if (![0, 8].includes(method)) fail('Unsupported solution ZIP compression method.', 'UnsupportedArchive');
+  if (packed === 0xffffffff || unpacked === 0xffffffff || local === 0xffffffff || uint16(bytes, cursor + 34))
+    fail('ZIP64 or split solution entries are unsupported.', 'UnsupportedArchive');
+  total += unpacked;
+  if (unpacked > limits.entryBytes || total > limits.totalBytes)
+    fail('Solution assets exceed the uncompressed size limit.', 'ArchiveLimit');
+  bounds(bytes, cursor + 46, nameLength + extraLength + commentLength, end);
+  return { flags, method, crc, packed, unpacked, nameLength, extraLength, commentLength, local, total };
+}
+
+function directoryEntryName(bytes, cursor, info, names) {
+  const name = solutionAssetName(decodeName(bytes.subarray(cursor + 46, cursor + 46 + info.nameLength))),
+    key = nameKey(name);
+  if (names.has(key)) fail('Duplicate solution asset path.', 'EntryPath');
+  names.add(key);
+  const mode = uint32(bytes, cursor + 38) >>> 16;
+  if ((mode & 0xf000) === 0xa000) fail('Solution archives cannot contain symbolic links.', 'EntryPath');
+  return name;
+}
+
+function localEntryRange(bytes, info, name, start) {
+  bounds(bytes, info.local, 30, start);
+  if (
+    uint32(bytes, info.local) !== 0x04034b50 ||
+    uint16(bytes, info.local + 6) !== info.flags ||
+    uint16(bytes, info.local + 8) !== info.method
+  )
+    fail('Solution ZIP local header disagrees with its directory.');
+  const localNameLength = uint16(bytes, info.local + 26),
+    localExtraLength = uint16(bytes, info.local + 28);
+  bounds(bytes, info.local + 30, localNameLength + localExtraLength, start);
+  if (solutionAssetName(decodeName(bytes.subarray(info.local + 30, info.local + 30 + localNameLength))) !== name)
+    fail('Solution ZIP local filename disagrees with its directory.');
+  if (
+    !(info.flags & 8) &&
+    (uint32(bytes, info.local + 14) !== info.crc ||
+      uint32(bytes, info.local + 18) !== info.packed ||
+      uint32(bytes, info.local + 22) !== info.unpacked)
+  )
+    fail('Solution ZIP local sizes disagree with its directory.');
+  const body = info.local + 30 + localNameLength + localExtraLength;
+  bounds(bytes, body, info.packed, start);
+  return { body, rangeEnd: body + info.packed };
+}
+
+function appendInflatedEntry(bytes, info, name, body, rangeEnd, limits, entries) {
+  const compressed = bytes.subarray(body, rangeEnd);
+  let data;
+  try {
+    data =
+      info.method === 0
+        ? Buffer.from(compressed)
+        : inflateRawSync(compressed, {
+            maxOutputLength: Math.max(1, Math.min(limits.entryBytes, info.unpacked)),
+          });
+  } catch {
+    fail('Invalid or oversized compressed solution asset.');
+  }
+  if (data.length !== info.unpacked || crc32(data) !== info.crc)
+    fail('Solution asset size or CRC does not match its directory.');
+  if (!name.endsWith('/')) entries.push({ name, data });
+  else if (data.length) fail('A solution directory entry contains file data.');
+}
+
+function findDirectoryEnd(bytes) {
+  let end = -1;
+  for (let offset = bytes.length - 22; offset >= Math.max(0, bytes.length - 65557); offset--) {
+    if (uint32(bytes, offset) === 0x06054b50 && offset + 22 + uint16(bytes, offset + 20) === bytes.length) {
+      end = offset;
+      break;
+    }
+  }
+  return end;
+}
+
+function hasOverlappingRange(ranges, local, rangeEnd) {
+  return ranges.some(([left, right]) => local < right && rangeEnd > left);
+}
+
 /**
  * Stored/deflated single-disk ZIP, including data descriptors. Symlinks, encryption and ZIP64 fail explicitly.
  * `include(name)` selects the files to return: every directory and local header is still validated, but only selected
@@ -112,13 +208,7 @@ export function readSolutionAssetEntries(input, options = {}) {
   if (!Buffer.isBuffer(input) && !(input instanceof Uint8Array)) fail('Solution archive must be bytes.');
   const bytes = Buffer.from(input);
   if (bytes.length > limits.archiveBytes) fail('Solution archive exceeds the compressed size limit.', 'ArchiveLimit');
-  let end = -1;
-  for (let offset = bytes.length - 22; offset >= Math.max(0, bytes.length - 65557); offset--) {
-    if (uint32(bytes, offset) === 0x06054b50 && offset + 22 + uint16(bytes, offset + 20) === bytes.length) {
-      end = offset;
-      break;
-    }
-  }
+  const end = findDirectoryEnd(bytes);
   if (end < 0) fail('The solution archive has no ZIP directory.');
   const count = uint16(bytes, end + 10),
     size = uint32(bytes, end + 12),
@@ -136,70 +226,17 @@ export function readSolutionAssetEntries(input, options = {}) {
   let cursor = start,
     total = 0;
   for (let index = 0; index < count; index++) {
-    bounds(bytes, cursor, 46, end);
-    if (uint32(bytes, cursor) !== 0x02014b50) fail('Invalid solution ZIP directory entry.');
-    const flags = uint16(bytes, cursor + 8),
-      method = uint16(bytes, cursor + 10),
-      crc = uint32(bytes, cursor + 16);
-    const packed = uint32(bytes, cursor + 20),
-      unpacked = uint32(bytes, cursor + 24),
-      nameLength = uint16(bytes, cursor + 28);
-    const extraLength = uint16(bytes, cursor + 30),
-      commentLength = uint16(bytes, cursor + 32),
-      local = uint32(bytes, cursor + 42);
-    if (flags & 0x41) fail('Encrypted solution archives are unsupported.', 'UnsupportedArchive');
-    if (![0, 8].includes(method)) fail('Unsupported solution ZIP compression method.', 'UnsupportedArchive');
-    if (packed === 0xffffffff || unpacked === 0xffffffff || local === 0xffffffff || uint16(bytes, cursor + 34))
-      fail('ZIP64 or split solution entries are unsupported.', 'UnsupportedArchive');
-    if (unpacked > limits.entryBytes || (total += unpacked) > limits.totalBytes)
-      fail('Solution assets exceed the uncompressed size limit.', 'ArchiveLimit');
-    bounds(bytes, cursor + 46, nameLength + extraLength + commentLength, end);
-    const name = solutionAssetName(decodeName(bytes.subarray(cursor + 46, cursor + 46 + nameLength))),
-      key = nameKey(name);
-    if (names.has(key)) fail('Duplicate solution asset path.', 'EntryPath');
-    names.add(key);
-    const mode = uint32(bytes, cursor + 38) >>> 16;
-    if ((mode & 0xf000) === 0xa000) fail('Solution archives cannot contain symbolic links.', 'EntryPath');
-    bounds(bytes, local, 30, start);
-    if (
-      uint32(bytes, local) !== 0x04034b50 ||
-      uint16(bytes, local + 6) !== flags ||
-      uint16(bytes, local + 8) !== method
-    )
-      fail('Solution ZIP local header disagrees with its directory.');
-    const localNameLength = uint16(bytes, local + 26),
-      localExtraLength = uint16(bytes, local + 28);
-    bounds(bytes, local + 30, localNameLength + localExtraLength, start);
-    if (solutionAssetName(decodeName(bytes.subarray(local + 30, local + 30 + localNameLength))) !== name)
-      fail('Solution ZIP local filename disagrees with its directory.');
-    if (
-      !(flags & 8) &&
-      (uint32(bytes, local + 14) !== crc ||
-        uint32(bytes, local + 18) !== packed ||
-        uint32(bytes, local + 22) !== unpacked)
-    )
-      fail('Solution ZIP local sizes disagree with its directory.');
-    const body = local + 30 + localNameLength + localExtraLength;
-    bounds(bytes, body, packed, start);
-    const rangeEnd = body + packed;
-    if (ranges.some(([left, right]) => local < right && rangeEnd > left)) fail('Overlapping solution ZIP entries.');
-    ranges.push([local, rangeEnd]);
-    cursor += 46 + nameLength + extraLength + commentLength;
+    const info = directoryEntryInfo(bytes, cursor, end, limits, total),
+      name = directoryEntryName(bytes, cursor, info, names),
+      { body, rangeEnd } = localEntryRange(bytes, info, name, start);
+    total = info.total;
+    if (hasOverlappingRange(ranges, info.local, rangeEnd)) fail('Overlapping solution ZIP entries.');
+    ranges.push([info.local, rangeEnd]);
+    cursor += 46 + info.nameLength + info.extraLength + info.commentLength;
+    // Inventory callers account every validated member, including directories and excluded payloads.
+    options.onEntry?.(name);
     if (!name.endsWith('/') && !include(name)) continue;
-    const compressed = bytes.subarray(body, rangeEnd);
-    let data;
-    try {
-      data =
-        method === 0
-          ? Buffer.from(compressed)
-          : inflateRawSync(compressed, { maxOutputLength: Math.max(1, Math.min(limits.entryBytes, unpacked)) });
-    } catch {
-      fail('Invalid or oversized compressed solution asset.');
-    }
-    if (data.length !== unpacked || crc32(data) !== crc)
-      fail('Solution asset size or CRC does not match its directory.');
-    if (!name.endsWith('/')) entries.push({ name, data });
-    else if (data.length) fail('A solution directory entry contains file data.');
+    appendInflatedEntry(bytes, info, name, body, rangeEnd, limits, entries);
   }
   if (cursor !== end) fail('Trailing or missing solution ZIP directory entries.');
   return entries;
@@ -305,7 +342,8 @@ export function appendSolutionAssetLayer(state, solutionId, input, metadata = {}
     entries,
   };
   // No state change occurs until all names, sizes and content have passed validation.
-  (state.dataverse ??= {}).solutionAssets = { version: 1, sequence, layers: [...assets.layers, layer] };
+  state.dataverse ??= {};
+  state.dataverse.solutionAssets = { version: 1, sequence, layers: [...assets.layers, layer] };
   return layer.id;
 }
 
@@ -324,7 +362,8 @@ export function reassignSolutionAssetLayers(state, sourceIds, targetId) {
   const target = ownerId(targetId),
     sources = new Set(sourceIds.map(ownerId)),
     assets = checkedState(state);
-  (state.dataverse ??= {}).solutionAssets = {
+  state.dataverse ??= {};
+  state.dataverse.solutionAssets = {
     ...assets,
     layers: assets.layers.map((layer) =>
       sources.has(layer.ownerSolutionId) ? { ...layer, ownerSolutionId: target } : layer,
@@ -335,7 +374,8 @@ export function reassignSolutionAssetLayers(state, sourceIds, targetId) {
 export function removeSolutionAssetLayers(state, solutionIds) {
   const owners = new Set(solutionIds.map(ownerId)),
     assets = checkedState(state);
-  (state.dataverse ??= {}).solutionAssets = {
+  state.dataverse ??= {};
+  state.dataverse.solutionAssets = {
     ...assets,
     layers: assets.layers.filter((layer) => !owners.has(layer.ownerSolutionId)),
   };

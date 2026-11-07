@@ -1,14 +1,16 @@
+// @test-kind compatibility: Learn SDK lookup columns are EntityReference values; polymorphic inference unqualified; nativeQualified false
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
+import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { DataStore } from '../lib/data.mjs';
 import { prepareClrRuntime, recordToSdkEntity } from '../lib/plugin-clr.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 const user = '10000000-0000-0000-0000-000000000001',
   id = '20000000-0000-0000-0000-000000000001',
   parent = '20000000-0000-0000-0000-000000000002',
@@ -71,7 +73,21 @@ test('Monomorphic source-declared lookup GUIDs retain SDK EntityReference; ambig
     name: 'Parent',
   });
   assert.deepEqual(recordToSdkEntity(store, 'widget', { widgetid: id, title: parent }).attributes.title, parent);
-  for (const targets of [undefined, [], ['widget', 'other'], ['invalid name']]) {
+  store.state.mappings.widget.fields.parentid.targets = undefined;
+  assert.deepEqual(convert(parent), {
+    $type: 'EntityReference',
+    logicalName: 'widget',
+    id: parent,
+    name: null,
+  });
+  const sourceParent = store.state.mappings.widget.relationships.parent;
+  delete store.state.mappings.widget.relationships.parent;
+  try {
+    assert.throws(() => convert(parent), /one exact source-declared target/);
+  } finally {
+    store.state.mappings.widget.relationships.parent = sourceParent;
+  }
+  for (const targets of [[], ['widget', 'other'], ['invalid name']]) {
     store.state.mappings.widget.fields.parentid.targets = targets;
     assert.throws(() => convert(parent), /one exact source-declared target/);
   }
@@ -80,11 +96,11 @@ test('Monomorphic source-declared lookup GUIDs retain SDK EntityReference; ambig
 });
 test(
   'Actual original DLL casts raw lookup GUID Target/postimage/SDK Retrieve and source self-association bind/clear',
-  { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
+  { skip: CLR_SKIP },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-lookup-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-lookup-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
-    const sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
+    const sdk = clrSdk(),
       source = path.join(root, 'LookupValues.cs'),
       assembly = path.join(root, 'LookupValues.dll');
     await fs.writeFile(
@@ -92,12 +108,7 @@ test(
       `using System;using Microsoft.Xrm.Sdk;using Microsoft.Xrm.Sdk.Messages;using Microsoft.Xrm.Sdk.Query;
 namespace Invented {public sealed class LookupValues:IPlugin {static void Check(Entity e){var r=e.GetAttributeValue<EntityReference>("parentid");if(r==null||r.Id!=new Guid("${parent}")||r.LogicalName!="widget"||e.GetAttributeValue<EntityReference>("empty")!=null)throw new Exception("Source lookup type lost");}public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));Check((Entity)c.InputParameters["Target"]);var s=((IOrganizationServiceFactory)services.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);if(c.Stage==20){var relationship=new Relationship("widget_parent"){PrimaryEntityRole=EntityRole.Referencing};var references=new EntityReferenceCollection{new EntityReference("widget",new Guid("${parent}"))};var added=(AssociateResponse)s.Execute(new AssociateRequest{Target=new EntityReference("widget",new Guid("${child}")),Relationship=relationship,RelatedEntities=references});Check(s.Retrieve("widget",new Guid("${child}"),new ColumnSet("parentid","empty")));var gone=(DisassociateResponse)s.Execute(new DisassociateRequest{Target=new EntityReference("widget",new Guid("${child}")),Relationship=relationship,RelatedEntities=references});if(s.Retrieve("widget",new Guid("${child}"),new ColumnSet("parentid")).GetAttributeValue<EntityReference>("parentid")!=null)throw new Exception("Source lookup clear lost");}else{Check(c.PostEntityImages["after"]);Check(s.Retrieve("widget",c.PrimaryEntityId,new ColumnSet("parentid","empty")));}((ITracingService)services.GetService(typeof(ITracingService))).Trace("Original lookup casts stage {0}",c.Stage);}}}`,
     );
-    const build = spawnSync(
-      path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
-      ['/nologo', '/target:library', '/out:' + assembly, '/reference:' + sdk, source],
-      { shell: false, windowsHide: true, encoding: 'utf8', timeout: 20000 },
-    );
-    assert.equal(build.status, 0, build.stdout + build.stderr);
+    compileClr(source, assembly, { references: [sdk] });
     const runtime = await prepareClrRuntime({
         trust: 'execute-local-assembly',
         root,

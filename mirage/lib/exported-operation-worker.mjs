@@ -17,7 +17,11 @@ const rpc = (kind, args) => {
   return JSON.stringify(answer.value);
 };
 const connectorCall = (kind, entitySet, id, options, payload) => rpc(kind, { entitySet, id, options, payload });
-const text = (value) => (value == null ? null : typeof value === 'string' ? value : JSON.stringify(value));
+const text = (value) => {
+  if (value == null) return null;
+  if (typeof value === 'string') return value;
+  return JSON.stringify(value);
+};
 const connector = {
   RetrieveMultipleRecords: (entitySet, options = '') => connectorCall('query', entitySet, null, options),
   RetrieveRecord: (entitySet, id, options = '') => connectorCall('get', entitySet, id, options),
@@ -101,10 +105,10 @@ try {
   );
   const name = workerData.operation;
   if (!/^[A-Za-z_$][\w$]*$/.test(name)) throw new Error('Invalid server-logic operation');
-  new vm.Script(workerData.code, { filename: 'exported-server-logic.js' }).runInContext(context, {
+  /* NOSONAR */ new vm.Script(workerData.code, { filename: 'exported-server-logic.js' }).runInContext(context, {
     timeout: workerData.timeout,
   });
-  const result = await new vm.Script(
+  /* NOSONAR: intentional local script execution or generated handler */ const result = await new vm.Script(
     `if(typeof ${name} !== 'function') throw new Error('The exported operation is not defined'); ${name}();`,
   ).runInContext(context, { timeout: workerData.timeout });
   const raw = typeof result === 'string' ? result : JSON.stringify(result ?? null);

@@ -34,12 +34,27 @@ const PROPERTIES = {
 const DEFAULTS = { DatacenterName: null, IsUserSysAdmin: false, State: 0, StatusMessage: 6, OrganizationType: 0 };
 // Id is the key; these are the alternate keys that Instances(name=value) accepts.
 const ALTERNATE_KEYS = ['UniqueName', 'Region', 'State', 'Version'];
-const FUNCTIONS = ['contains', 'startswith', 'endswith'];
-const COMPARISONS = ['eq', 'ne', 'gt', 'ge', 'lt', 'le'];
-const KEYWORDS = ['and', 'or', 'not', ...COMPARISONS];
+const FUNCTIONS = new Set(['contains', 'startswith', 'endswith']);
+const COMPARISONS = new Set(['eq', 'ne', 'gt', 'ge', 'lt', 'le']);
+const KEYWORDS = new Set(['and', 'or', 'not', ...COMPARISONS]);
 // Unquoted DateTimeOffset literals (2022-07-14T00:00:00Z) are matched before numbers, which would take their year.
-const TOKEN =
-  /(\{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}?)|(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2}))|'((?:[^']|'')*)'|(-?\d+(?:\.\d+)?)|([A-Za-z_]\w*)|([(),=])/iy;
+const GUID_TOKEN = /(\{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}?)/;
+const DATETIME_TOKEN = /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2}))/;
+const STRING_TOKEN = /'((?:[^']|'')*)'/;
+const NUMBER_TOKEN = /(-?\d+(?:\.\d+)?)/;
+const WORD_TOKEN = /([a-z_]\w*)/;
+const PUNCT_TOKEN = /([(),=])/;
+const TOKEN = new RegExp(
+  [
+    GUID_TOKEN.source,
+    DATETIME_TOKEN.source,
+    STRING_TOKEN.source,
+    NUMBER_TOKEN.source,
+    WORD_TOKEN.source,
+    PUNCT_TOKEN.source,
+  ].join('|'),
+  'iy',
+);
 // $filter nesting (parentheses, function arguments and `not`) past this answers 400 instead of overflowing the stack.
 const MAX_NESTING = 100;
 
@@ -53,6 +68,19 @@ const instant = (value) => {
   return Number.isNaN(ms) ? null : ms;
 };
 
+function appendToken(tokens, match) {
+  const [source, guid, dateTime, string, number, word] = match;
+  if (guid) tokens.push({ kind: 'lit', guid: true, value: guid.replace(/[{}]/g, '').toLowerCase(), text: source });
+  else if (dateTime) {
+    const ms = Date.parse(dateTime);
+    if (Number.isNaN(ms)) throw invalid(`Invalid query expression near '${source}'.`);
+    tokens.push({ kind: 'lit', date: true, value: ms, text: source });
+  } else if (string !== undefined) tokens.push({ kind: 'lit', value: string.replaceAll("''", "'"), text: source });
+  else if (number) tokens.push({ kind: 'lit', value: Number(number), text: source });
+  else if (word) tokens.push({ kind: 'word', value: word, text: source });
+  else tokens.push({ kind: 'punct', value: source, text: source });
+}
+
 function tokenize(text) {
   const tokens = [];
   let index = 0;
@@ -62,17 +90,8 @@ function tokenize(text) {
     TOKEN.lastIndex = index;
     const match = TOKEN.exec(text);
     if (!match) throw invalid(`Invalid query expression near '${text.slice(index, index + 20)}'.`);
-    const [source, guid, dateTime, string, number, word] = match;
     index = TOKEN.lastIndex;
-    if (guid) tokens.push({ kind: 'lit', guid: true, value: guid.replace(/[{}]/g, '').toLowerCase(), text: source });
-    else if (dateTime) {
-      const ms = Date.parse(dateTime);
-      if (Number.isNaN(ms)) throw invalid(`Invalid query expression near '${source}'.`);
-      tokens.push({ kind: 'lit', date: true, value: ms, text: source });
-    } else if (string !== undefined) tokens.push({ kind: 'lit', value: string.replace(/''/g, "'"), text: source });
-    else if (number) tokens.push({ kind: 'lit', value: Number(number), text: source });
-    else if (word) tokens.push({ kind: 'word', value: word, text: source });
-    else tokens.push({ kind: 'punct', value: source, text: source });
+    appendToken(tokens, match);
   }
 }
 
@@ -153,7 +172,7 @@ function parseFilter(text) {
   function comparisonExpr() {
     const left = primary();
     const op = peek()?.kind === 'word' ? peek().value.toLowerCase() : null;
-    if (!COMPARISONS.includes(op)) return left;
+    if (!COMPARISONS.has(op)) return left;
     take();
     return comparison(op, left, primary());
   }
@@ -171,7 +190,7 @@ function parseFilter(text) {
     const word = token.value.toLowerCase();
     if (word === 'true' || word === 'false') return { kind: 'lit', value: word === 'true' };
     if (word === 'null') return { kind: 'lit', value: null };
-    if (FUNCTIONS.includes(word) && peek()?.value === '(') {
+    if (FUNCTIONS.has(word) && peek()?.value === '(') {
       take();
       const subject = orExpr();
       expectPunct(',');
@@ -179,7 +198,7 @@ function parseFilter(text) {
       expectPunct(')');
       return { kind: 'fn', name: word, args: [subject, argument] };
     }
-    if (KEYWORDS.includes(word)) throw fail(token);
+    if (KEYWORDS.has(word)) throw fail(token);
     if (!Object.hasOwn(PROPERTIES, token.value))
       throw invalid(`Could not find a property named '${token.value}' on type 'Instance'.`);
     return { kind: 'prop', name: token.value };
@@ -188,6 +207,33 @@ function parseFilter(text) {
   const ast = orExpr();
   if (pos < tokens.length) throw fail(tokens[pos]);
   return ast;
+}
+
+function evaluateFunction(node, row) {
+  const [subject, argument] = node.args.map((arg) => evaluate(arg, row));
+  if (typeof subject !== 'string' || typeof argument !== 'string') return false;
+  // String comparison is case-sensitive here, unlike Dataverse.
+  if (node.name === 'contains') return subject.includes(argument);
+  return node.name === 'startswith' ? subject.startsWith(argument) : subject.endsWith(argument);
+}
+
+function evaluateComparison(node, row) {
+  let left = evaluate(node.left, row);
+  let right = evaluate(node.right, row);
+  if (node.left.date || node.right.date) {
+    // A stored value and a literal can differ in offset or fraction text, so dates compare as instants.
+    left = instant(left);
+    right = instant(right);
+    if (left == null || right == null) return false;
+  }
+  if (node.op === 'eq') return left === right;
+  if (node.op === 'ne') return left !== right;
+  if (left == null || right == null) return false;
+  // Strings order ordinally and case-sensitively (a guess).
+  if (node.op === 'gt') return left > right;
+  if (node.op === 'ge') return left >= right;
+  if (node.op === 'lt') return left < right;
+  return left <= right;
 }
 
 function evaluate(node, row) {
@@ -202,31 +248,10 @@ function evaluate(node, row) {
       return Boolean(evaluate(node.left, row) && evaluate(node.right, row));
     case 'or':
       return Boolean(evaluate(node.left, row) || evaluate(node.right, row));
-    case 'fn': {
-      const [subject, argument] = node.args.map((arg) => evaluate(arg, row));
-      if (typeof subject !== 'string' || typeof argument !== 'string') return false;
-      // String comparison is case-sensitive here, unlike Dataverse.
-      if (node.name === 'contains') return subject.includes(argument);
-      return node.name === 'startswith' ? subject.startsWith(argument) : subject.endsWith(argument);
-    }
-    case 'cmp': {
-      let left = evaluate(node.left, row);
-      let right = evaluate(node.right, row);
-      if (node.left.date || node.right.date) {
-        // A stored value and a literal can differ in offset or fraction text, so dates compare as instants.
-        left = instant(left);
-        right = instant(right);
-        if (left == null || right == null) return false;
-      }
-      if (node.op === 'eq') return left === right;
-      if (node.op === 'ne') return left !== right;
-      if (left == null || right == null) return false;
-      // Strings order ordinally and case-sensitively (a guess).
-      if (node.op === 'gt') return left > right;
-      if (node.op === 'ge') return left >= right;
-      if (node.op === 'lt') return left < right;
-      return left <= right;
-    }
+    case 'fn':
+      return evaluateFunction(node, row);
+    case 'cmp':
+      return evaluateComparison(node, row);
     default:
       throw new Error(`Unknown filter node ${node.kind}`);
   }
@@ -287,7 +312,7 @@ export function createDiscovery({ instance }) {
     const path = String(pathname ?? '');
     const match = PATH.exec(path);
     if (!match) {
-      const segment = path.split('/').filter(Boolean).at(-1) ?? '';
+      const segment = path.split('/').findLast(Boolean) ?? '';
       throw new DataError(`Resource not found for the segment '${segment}'.`, 404, 'UnknownResource', { segment });
     }
     const [, version, target, keyText] = match;
@@ -324,7 +349,8 @@ export function createDiscovery({ instance }) {
     const select = parseSelect(searchParams?.get('$select'));
     const names = select ?? Object.keys(PROPERTIES);
     const value = rows.map((row) => Object.fromEntries(names.map((name) => [name, row[name]])));
-    const context = `${base}/$metadata#Instances${select ? `(${select.join(',')})` : ''}`;
+    const selection = select ? `(${select.join(',')})` : '';
+    const context = `${base}/$metadata#Instances${selection}`;
     return { status: 200, body: { '@odata.context': context, value } };
   }
 

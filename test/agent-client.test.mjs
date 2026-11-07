@@ -1,14 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { once } from 'node:events';
 import agent, { agentRequest, listAgentSessions, readDiscovery } from '../lense/commands/agent.mjs';
+import { tempDir } from './fixture.mjs';
 
 async function fixture(t, handler) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-agent-client-'));
+  const dir = await tempDir('pp-agent-client-');
   const server = http.createServer(handler);
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -164,6 +164,8 @@ test('agent minimum deadline leaves a fixed response margin and missing sessions
     req.on('end', () => {
       const value = JSON.parse(body);
       assert.equal(value.timeoutMs, 1000);
+      // Answer just after the 1000 ms action deadline the client derived from --timeout 2000: only a client that
+      // keeps its fixed 1000 ms response margin (AbortSignal.timeout, not mockable) still receives the 504.
       setTimeout(
         () =>
           res

@@ -17,9 +17,10 @@ import {
   parseArgs,
   portalMatrix,
 } from '../portal-matrix.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 async function tree(t, files) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'portal-matrix-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'portal-matrix-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   for (const [name, content] of Object.entries(files)) {
     const file = path.join(dir, name);

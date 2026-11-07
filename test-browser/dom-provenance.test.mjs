@@ -37,7 +37,12 @@ async function fixture(
   } = {},
 ) {
   const context = await browser.newContext();
-  t.after(() => context.close());
+  let writer;
+  // t.after hooks run in registration order: release the claimed writer before its context.
+  t.after(async () => {
+    await writer?.dispose();
+    await context.close();
+  });
   const page = await context.newPage();
   const origin = 'http://127.0.0.1:11883',
     packets = [],
@@ -70,8 +75,7 @@ async function fixture(
     });
   });
   await page.goto(origin);
-  const writer = await page.evaluateHandle(({ slot, secret }) => window[slot].claim(secret), options);
-  t.after(() => writer.dispose());
+  writer = await page.evaluateHandle(({ slot, secret }) => window[slot].claim(secret), options);
   const script = async (body, name = '/application.js') => {
     const url = new URL(name, origin);
     scripts.set(url.pathname, body);

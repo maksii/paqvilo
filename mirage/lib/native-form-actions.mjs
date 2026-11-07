@@ -40,11 +40,8 @@ export function nativeActionStateValues(entity, action, { metadata, store, schem
   const statuses = (statusField?.statuses ?? statusField?.options ?? []).filter(
     (option) => Number(option.state) === state,
   );
-  const status =
-    selected?.defaultStatus == null
-      ? statuses.length === 1
-        ? statuses[0]
-        : null
-      : statuses.find((option) => Number(option.value) === Number(selected.defaultStatus));
+  let status;
+  if (selected?.defaultStatus == null) status = statuses.length === 1 ? statuses[0] : null;
+  else status = statuses.find((option) => Number(option.value) === Number(selected.defaultStatus));
   return selected && status ? { statecode: state, statuscode: Number(status.value) } : null;
 }

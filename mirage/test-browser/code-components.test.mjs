@@ -7,7 +7,7 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import http from 'node:http';
-import { ownedFixture, drainFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, drainFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 let browser;
 before(async () => {
@@ -15,8 +15,25 @@ before(async () => {
 });
 after(() => browser?.close());
 
+/** Opens the simulator's page in a fresh context once its code components are ready, recording errors and non-local requests. */
+async function openPortal(t, app) {
+  ownedFixture(t).add(() => app.close());
+  const context = await browser.newContext();
+  ownedFixture(t).add(() => context.close());
+  const page = await context.newPage(),
+    errors = [],
+    external = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('request', (request) => {
+    if (!request.url().startsWith(app.url)) external.push(request.url());
+  });
+  await page.goto(app.url);
+  await page.locator('[data-pcf-ready=true]').waitFor();
+  return { page, errors, external };
+}
+
 test('standard PCF host loads only declared local resources and preserves lifecycle, bound output and disabled context', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-pcf-browser-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-pcf-browser-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const id = 'd0000000-0000-4000-8000-000000000001';
   const portal = path.join(root, 'portal'),
@@ -52,18 +69,7 @@ test('standard PCF host loads only declared local resources and preserves lifecy
       evidence: 'Invented fixture manifest and literal tag',
     },
   });
-  ownedFixture(t).add(() => app.close());
-  const context = await browser.newContext();
-  ownedFixture(t).add(() => context.close());
-  const page = await context.newPage(),
-    errors = [],
-    external = [];
-  page.on('pageerror', (error) => errors.push(error.message));
-  page.on('request', (request) => {
-    if (!request.url().startsWith(app.url)) external.push(request.url());
-  });
-  await page.goto(app.url);
-  await page.locator('[data-pcf-ready=true]').waitFor();
+  const { page, errors, external } = await openPortal(t, app);
   assert.equal(await page.locator('input').inputValue(), 'Initial');
   assert.ok(await page.locator('input').isDisabled());
   assert.equal(
@@ -75,7 +81,8 @@ test('standard PCF host loads only declared local resources and preserves lifecy
     node.dispatchEvent(new Event('input', { bubbles: true }));
   });
   assert.deepEqual(await page.evaluate(() => window.output), { value: 'Output' });
-  assert.ok((await page.evaluate(() => window.lifecycle)).includes('update'));
+  // Mount runs init and updateView; the output's updateView follows in a microtask of the same dispatch.
+  assert.deepEqual(await page.evaluate(() => window.lifecycle), ['init', 'update', 'update']);
   const catalogPath = await page.locator('script[src*="/__sim-static/pcf/"]').getAttribute('src');
   assert.equal((await fetch(app.url + catalogPath.replace('bundle.js', 'secret.js'))).status, 404);
   assert.deepEqual(errors, []);
@@ -126,14 +133,15 @@ async function hostFixture(t) {
         }),
     ]),
   );
-  context = await browser.newContext();
+  // Date outputs render in the browser's local zone; pin it so a host west of UTC sees the same calendar date.
+  context = await browser.newContext({ timezoneId: 'UTC' });
   const page = await context.newPage();
   await page.goto('http://127.0.0.1:' + server.address().port);
   return { page, requests };
 }
 
 test('PCF classic SDK bundle resolves its declared export after repeated whitespace and block comments', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-pcf-classic-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-pcf-classic-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const portal = path.join(root, 'portal'),
     solution = path.join(root, 'solution');
@@ -160,18 +168,7 @@ test('PCF classic SDK bundle resolves its declared export after repeated whitesp
     await fs.writeFile(file, body);
   }
   const app = await createSimulator({ sourceDir: portal, solutionRoots: [solution], port: 0, watch: false });
-  ownedFixture(t).add(() => app.close());
-  const context = await browser.newContext();
-  ownedFixture(t).add(() => context.close());
-  const page = await context.newPage(),
-    errors = [],
-    external = [];
-  page.on('pageerror', (error) => errors.push(error.message));
-  page.on('request', (request) => {
-    if (!request.url().startsWith(app.url)) external.push(request.url());
-  });
-  await page.goto(app.url);
-  await page.locator('[data-pcf-ready=true]').waitFor();
+  const { page, errors, external } = await openPortal(t, app);
   assert.equal(await page.locator('input').inputValue(), 'Classic value');
   assert.equal(await page.evaluate(() => window.classicInit), 1);
   assert.deepEqual(errors, []);
@@ -367,7 +364,13 @@ test('PCF Web API honors entity mappings, CSRF, page size and native create IDs 
     }
     return failures;
   });
-  assert.equal(rejected.length, 5);
+  assert.deepEqual(rejected, [
+    'PCF Web API queries cannot target a different URL',
+    'PCF Web API requires a record GUID',
+    'PCF Web API table has no imported mapping: missing',
+    'PCF Web API options must be an OData or FetchXML query',
+    'PCF Web API maxPageSize must be between 1 and 5000',
+  ]);
   assert.equal(requests.length, before);
   assert.deepEqual(
     await page.evaluate(async () => {
@@ -645,7 +648,8 @@ test('native form scripts update PCF context without feedback recursion, removed
 });
 
 test('exported dataset PCF renders real local rows with paging, sorting, filtering, selection and explicit unsupported-filter errors', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-pcf-dataset-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-pcf-dataset-'));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const viewId = 'd0000000-0000-4000-8000-000000000003';
   const portal = path.join(root, 'portal'),
     solution = path.join(root, 'solution');
@@ -692,21 +696,7 @@ test('exported dataset PCF renders real local rows with paging, sorting, filteri
       settings: { permissionMode: 'permissive' },
     },
   });
-  const context = await browser.newContext();
-  t.after(async () => {
-    await context.close();
-    await app.close();
-    await fs.rm(root, { recursive: true, force: true });
-  });
-  const page = await context.newPage(),
-    errors = [],
-    external = [];
-  page.on('pageerror', (error) => errors.push(error.message));
-  page.on('request', (request) => {
-    if (!request.url().startsWith(app.url)) external.push(request.url());
-  });
-  await page.goto(app.url);
-  await page.locator('[data-pcf-ready=true]').waitFor();
+  const { page, errors, external } = await openPortal(t, app);
   assert.equal(await page.locator('.grid-title').textContent(), 'Visible Rows');
   assert.equal(await page.locator('.grid-rows').textContent(), 'Alpha,Beta');
   assert.equal(await page.evaluate(() => window.dataset.paging.totalResultCount), 5);

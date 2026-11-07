@@ -5,10 +5,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
-import { createFixture } from './fixture.mjs';
+import { createFixture, tempDirSync, withoutToolkitEnvironment } from './fixture.mjs';
 import { loadConfig } from '../lense/config.mjs';
 import { toolkitCommandHint, runToolkit as run } from './toolkit-cli.mjs';
 // Reads of one catalogue state run concurrently: each CLI process costs a quarter of a second to start.
@@ -25,7 +24,7 @@ const solutionXml = (name) =>
 /** A synthetic portal, one Solution root and a catalogue writer for sites with the given mirage settings. */
 function workspace(t) {
   const portal = createFixture();
-  const work = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-observed-')));
+  const work = tempDirSync('paqvilo-observed-');
   t.after(() => {
     portal.cleanup();
     fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
@@ -55,6 +54,7 @@ function workspace(t) {
 }
 
 test('mirage.observed passes through the catalogue to list and doctor; a malformed block is reported', async (t) => {
+  withoutToolkitEnvironment(t);
   const { config, write } = workspace(t);
   write({ site: { observed: OBSERVED }, plain: {} });
   assert.deepEqual((await loadConfig({ config, site: 'site', env: 'dev' })).mirageConfig.observed, OBSERVED);

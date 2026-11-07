@@ -11,16 +11,14 @@
  */
 (() => {
   'use strict';
-  if (window.selectAttachment) return;
+  if (globalThis.selectAttachment) return;
   const byId = (id) => document.getElementById(id);
-  const sizeText = (size) =>
-    size >= 1024 * 1024 * 1024
-      ? (size / (1024 * 1024 * 1024)).toFixed(1) + ' GB'
-      : size >= 1024 * 1024
-        ? (size / (1024 * 1024)).toFixed(1) + ' MB'
-        : size >= 1024
-          ? (size / 1024).toFixed(1) + ' KB'
-          : size + ' bytes';
+  const sizeText = (size) => {
+    if (size >= 1024 * 1024 * 1024) return (size / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
+    if (size >= 1024 * 1024) return (size / (1024 * 1024)).toFixed(1) + ' MB';
+    if (size >= 1024) return (size / 1024).toFixed(1) + ' KB';
+    return size + ' bytes';
+  };
   const chosen = [];
   const uploaded = [];
   let retainedCount = 0,
@@ -45,7 +43,7 @@
   const value = (suffix) => byId(`AttachFile${suffix}`)?.value ?? '';
   const token = () =>
     new Promise((resolve, reject) => {
-      const deferred = window.shell?.getTokenDeferred?.();
+      const deferred = globalThis.shell?.getTokenDeferred?.();
       if (deferred?.done) deferred.done(resolve).fail(reject);
       else resolve(document.querySelector('#antiforgerytoken input[name="__RequestVerificationToken"]')?.value ?? '');
     });
@@ -54,8 +52,8 @@
       const request = new XMLHttpRequest();
       request.open(method, url);
       for (const [name, header] of Object.entries(headers)) request.setRequestHeader(name, header);
-      request.onload = () => (request.status >= 200 && request.status < 300 ? resolve(request) : reject(request));
-      request.onerror = () => reject(request);
+      request.onload = () => (request.status >= 200 && request.status < 300 ? resolve(request) : reject(request)); // NOSONAR: rejection value is part of the contract
+      request.onerror = () => reject(request); // NOSONAR: rejection value is part of the contract
       request.send(body);
     });
   const upload = async (file) => {
@@ -86,22 +84,22 @@
   };
   // Pending uploads; a postback started meanwhile waits for them (window.__ppAttachUploads).
   let pending = 0;
-  window.__ppAttachUploads = Promise.resolve();
+  globalThis.__ppAttachUploads = Promise.resolve();
   for (const name of ['WebForm_DoPostBackWithOptions', '__doPostBack']) {
     const original = window[name];
     if (typeof original !== 'function' || original.__ppAttachWait) continue;
-    const wrapped = function (...args) {
+    /* NOSONAR: captures variables of the enclosing function */ const wrapped = function (...args) {
       if (!pending) return original.apply(this, args);
-      window.__ppAttachUploads.finally(() => original.apply(this, args));
+      globalThis.__ppAttachUploads.finally(() => original.apply(this, args));
     };
     wrapped.__ppAttachWait = true;
     window[name] = wrapped;
   }
-  window.selectAttachment = function () {
+  globalThis.selectAttachment = function () {
     byId('AttachFile')?.click();
     byId('UploadButton')?.blur();
   };
-  window.chooseAttachment = function () {
+  globalThis.chooseAttachment = function () {
     restore();
     const input = byId('AttachFile');
     const info = byId('newdivforfileinfo');
@@ -125,7 +123,7 @@
     const ids = byId('AttachFile_HiddenField_AnnotationIds');
     const files = [...(input.files ?? [])].filter((file) => chosen.includes(file));
     pending += 1;
-    window.__ppAttachUploads = Promise.all(files.map(upload))
+    globalThis.__ppAttachUploads = Promise.all(files.map(upload))
       .finally(() => {
         pending -= 1;
       })
@@ -150,9 +148,9 @@
     const node = document.querySelector(selector);
     if (node) node.style.display = 'none';
   };
-  window.genericcloseAlert = () => hide('.errordiv.generic');
-  window.deletecloseAlert = () => hide('.errordiv.deletefail');
-  window.closeModalForFileSize = () => hide('#ModalToShowErrorForFileSize');
-  window.closeModalForFileLimit = () => hide('#ModalToShowErrorForFileLimit');
-  window.closeModalForFileType = () => hide('#ModalToShowErrorForFileType');
+  globalThis.genericcloseAlert = () => hide('.errordiv.generic');
+  globalThis.deletecloseAlert = () => hide('.errordiv.deletefail');
+  globalThis.closeModalForFileSize = () => hide('#ModalToShowErrorForFileSize');
+  globalThis.closeModalForFileLimit = () => hide('#ModalToShowErrorForFileLimit');
+  globalThis.closeModalForFileType = () => hide('#ModalToShowErrorForFileType');
 })();

@@ -174,6 +174,34 @@ function bool(value, name) {
   throw new Error(`${name} must be true or false, not "${value}"`);
 }
 
+function siteFromSettings(sites, siteName) {
+  let site = sites[siteName];
+  if (site == null) {
+    site = {};
+    sites[siteName] = site;
+  }
+  return site;
+}
+
+function addEnvironmentSetting(sites, key, value) {
+  const match = /^PAQVILO_([A-Z0-9]+)_ENV_([A-Z0-9_]+)$/.exec(key);
+  if (!match) return false;
+  const siteName = match[1].toLowerCase(),
+    site = siteFromSettings(sites, siteName);
+  if (site.environments == null) site.environments = {};
+  site.environments[match[2].toLowerCase().replaceAll('_', '-')] = { url: value };
+  return true;
+}
+
+function addSourceSetting(sites, key, value) {
+  const match = /^PAQVILO_([A-Z0-9]+)_SOURCE$/.exec(key);
+  if (!match) return false;
+  const siteName = match[1].toLowerCase(),
+    site = siteFromSettings(sites, siteName);
+  site.source = value;
+  return true;
+}
+
 /**
  * Sites and environments declared through variables, so a developer can add a sandbox or point a
  * site at another checkout without touching the shared catalogue:
@@ -184,19 +212,65 @@ function sitesFromEnv(values) {
   const known = new Set(Object.keys(ENV_SETTINGS));
   for (const [key, value] of Object.entries(values)) {
     if (known.has(key)) continue;
-    let m;
-    if ((m = /^PAQVILO_([A-Z0-9]+)_ENV_([A-Z0-9_]+)$/.exec(key))) {
-      const site = (sites[m[1].toLowerCase()] ??= {});
-      (site.environments ??= {})[m[2].toLowerCase().replace(/_/g, '-')] = { url: value };
-    } else if ((m = /^PAQVILO_([A-Z0-9]+)_SOURCE$/.exec(key))) {
-      (sites[m[1].toLowerCase()] ??= {}).source = value;
-    } else {
-      throw new Error(
-        `Unknown setting ${key}. Known: ${[...known].join(', ')}, PAQVILO_<SITE>_SOURCE, PAQVILO_<SITE>_ENV_<NAME>`,
-      );
-    }
+    if (addEnvironmentSetting(sites, key, value) || addSourceSetting(sites, key, value)) continue;
+    throw new Error(
+      `Unknown setting ${key}. Known: ${[...known].join(', ')}, PAQVILO_<SITE>_SOURCE, PAQVILO_<SITE>_ENV_<NAME>`,
+    );
   }
   return sites;
+}
+
+function resolvedCatalogueSite(name, raw, root, settings, sourceRoot, configDir) {
+  if (!isPlainObject(raw)) return null;
+  const site = deepMerge(deepMerge(SITE_DEFAULTS, root.defaults ?? {}), raw);
+  site.environments = Object.fromEntries(
+    Object.entries(site.environments ?? {})
+      // "example-site: https://..." is short for "example-site: { url: https://... }"
+      .map(([env, value]) => [env, typeof value === 'string' ? { url: value } : value])
+      .filter(([, value]) => isPlainObject(value) && value.url),
+  );
+  // Named personal overrides retain their existing catalogue-relative path semantics.
+  const personalSource = settings.values[`PAQVILO_${name.toUpperCase()}_SOURCE`];
+  if (site.source) {
+    const sourceBase = personalSource ? configDir : sourceRoot;
+    site.sourceDir = path.resolve(sourceBase, site.source);
+  } else site.sourceDir = null;
+  return site;
+}
+
+function catalogueFieldOrigin(name, field, local) {
+  return local?.sites?.[name]?.mirage?.[field] !== undefined || local?.defaults?.mirage?.[field] !== undefined
+    ? 'local config'
+    : 'catalogue';
+}
+
+function catalogueSiteSourceOrigin(name, settings, local) {
+  if (settings.values[`PAQVILO_${name.toUpperCase()}_SOURCE`])
+    return settings.origin[`PAQVILO_${name.toUpperCase()}_SOURCE`];
+  if (local?.sites?.[name]?.source !== undefined) return 'local config';
+  return 'catalogue';
+}
+
+function catalogueProvenance(sites, opts, settings, local) {
+  let sourceRootOrigin;
+  if (opts.repo !== undefined) sourceRootOrigin = 'command line';
+  else if (settings.values.PAQVILO_REPO) sourceRootOrigin = settings.origin.PAQVILO_REPO;
+  else if (local?.sourceRoot !== undefined) sourceRootOrigin = 'local config';
+  else sourceRootOrigin = 'catalogue';
+  return {
+    sourceRoot: sourceRootOrigin,
+    sites: Object.fromEntries(
+      Object.keys(sites).map((name) => [
+        name,
+        {
+          sourceDir: catalogueSiteSourceOrigin(name, settings, local),
+          solutionRoots: catalogueFieldOrigin(name, 'solutionRoots', local),
+          port: catalogueFieldOrigin(name, 'port', local),
+          stateFile: catalogueFieldOrigin(name, 'project', local),
+        },
+      ]),
+    ),
+  };
 }
 
 /**
@@ -223,48 +297,10 @@ export function loadCatalogue(opts = {}, processEnv = process.env) {
 
   const sites = {};
   for (const [name, raw] of Object.entries(root.sites ?? {})) {
-    if (!isPlainObject(raw)) continue;
-    const site = deepMerge(deepMerge(SITE_DEFAULTS, root.defaults ?? {}), raw);
-    site.environments = Object.fromEntries(
-      Object.entries(site.environments ?? {})
-        // "example-site: https://..." is short for "example-site: { url: https://... }"
-        .map(([env, value]) => [env, typeof value === 'string' ? { url: value } : value])
-        .filter(([, value]) => isPlainObject(value) && value.url),
-    );
-    // Named personal overrides retain their existing catalogue-relative path semantics.
-    const personalSource = settings.values[`PAQVILO_${name.toUpperCase()}_SOURCE`];
-    site.sourceDir = site.source ? path.resolve(personalSource ? configDir : sourceRoot, site.source) : null;
-    sites[name] = site;
+    const site = resolvedCatalogueSite(name, raw, root, settings, sourceRoot, configDir);
+    if (site) sites[name] = site;
   }
-  const fieldOrigin = (name, field) =>
-    local?.sites?.[name]?.mirage?.[field] !== undefined || local?.defaults?.mirage?.[field] !== undefined
-      ? 'local config'
-      : 'catalogue';
-  const provenance = {
-    sourceRoot:
-      opts.repo !== undefined
-        ? 'command line'
-        : settings.values.PAQVILO_REPO
-          ? settings.origin.PAQVILO_REPO
-          : local?.sourceRoot !== undefined
-            ? 'local config'
-            : 'catalogue',
-    sites: Object.fromEntries(
-      Object.keys(sites).map((name) => [
-        name,
-        {
-          sourceDir: settings.values[`PAQVILO_${name.toUpperCase()}_SOURCE`]
-            ? settings.origin[`PAQVILO_${name.toUpperCase()}_SOURCE`]
-            : local?.sites?.[name]?.source !== undefined
-              ? 'local config'
-              : 'catalogue',
-          solutionRoots: fieldOrigin(name, 'solutionRoots'),
-          port: fieldOrigin(name, 'port'),
-          stateFile: fieldOrigin(name, 'project'),
-        },
-      ]),
-    ),
-  };
+  const provenance = catalogueProvenance(sites, opts, settings, local);
   return { configFile, configDir, sourceRoot, root, sites, settings, provenance };
 }
 
@@ -326,15 +362,13 @@ export async function loadConfig(opts = {}, processEnv = process.env, { checkSou
   return resolveConfig(loadCatalogue(opts, processEnv), opts, { checkSource });
 }
 
-function resolveConfig(catalogue, opts, { initial = true, validSources = new Set(), checkSource = true } = {}) {
-  const { configFile, configDir, root, sites, settings } = catalogue;
-  const s = settings.values;
+function selectedConfigSite(catalogue, opts, initial) {
+  const { configFile, root, sites, settings } = catalogue,
+    s = settings.values;
   const portals = opts.portals ?? s.PAQVILO_PORTALS ?? root.portals;
   if (!['selected', 'all'].includes(portals)) throw new Error(`portals must be 'selected' or 'all', not "${portals}"`);
   const names = Object.keys(sites);
   if (!names.length) throw new Error(`No sites in ${path.basename(configFile)}. Add one under "sites:".`);
-
-  // --- which site
   const siteName = opts.site ?? s.PAQVILO_SITE ?? root.defaultSite ?? names[0];
   const site = Object.hasOwn(sites, siteName) ? sites[siteName] : null;
   if (!site)
@@ -342,11 +376,10 @@ function resolveConfig(catalogue, opts, { initial = true, validSources = new Set
       new Error(`Unknown site "${siteName}". Known sites: ${names.join(', ')}. Run "npm run list" to see them.`),
       { code: initial && opts.site !== undefined ? 'invalid_argument' : 'configuration_error' },
     );
-  const siteFrom = opts.site
-    ? 'command line'
-    : s.PAQVILO_SITE
-      ? settings.origin.PAQVILO_SITE
-      : path.basename(configFile);
+  let siteFrom;
+  if (opts.site) siteFrom = 'command line';
+  else if (s.PAQVILO_SITE) siteFrom = settings.origin.PAQVILO_SITE;
+  else siteFrom = path.basename(configFile);
   if (mirageOnlySite(site))
     throw Object.assign(
       new Error(
@@ -354,13 +387,16 @@ function resolveConfig(catalogue, opts, { initial = true, validSources = new Set
       ),
       { code: 'mirage_only_site' },
     );
+  return { portals, siteName, site, siteFrom };
+}
 
-  // --- which environment
-  const envNames = Object.keys(site.environments);
-  const url = opts.url ?? (!opts.site && !opts.env ? s.PAQVILO_URL : undefined);
+function chooseConfigEnvironment(siteName, site, opts, settings, configFile, root) {
+  const s = settings.values,
+    envNames = Object.keys(site.environments),
+    url = opts.url ?? (!opts.site && !opts.env ? s.PAQVILO_URL : undefined),
+    notes = [];
   let envName;
   let envFrom;
-  const notes = [];
   if (s.PAQVILO_URL && !url)
     notes.push('PAQVILO_URL is ignored because --site or --env explicitly selects a catalogue environment');
   if (url) {
@@ -382,27 +418,46 @@ function resolveConfig(catalogue, opts, { initial = true, validSources = new Set
         `PAQVILO_ENV=${s.PAQVILO_ENV} was chosen for site "${s.PAQVILO_SITE ?? root.defaultSite}"; for "${siteName}" its default "${envName}" is used (add --env to choose)`,
       );
   }
-  const env = url ? { url } : Object.hasOwn(site.environments, envName) ? site.environments[envName] : null;
-  if (!env?.url) {
+  return { envNames, url, envName, envFrom, notes };
+}
+
+function selectedConfigEnvironment(siteName, site, opts, settings, configFile, root, initial) {
+  const { envNames, url, envName, envFrom, notes } = chooseConfigEnvironment(
+    siteName,
+    site,
+    opts,
+    settings,
+    configFile,
+    root,
+  );
+  let env;
+  if (url) env = { url };
+  else if (Object.hasOwn(site.environments, envName)) env = site.environments[envName];
+  else env = null;
+  if (!env?.url)
     throw Object.assign(
       new Error(
         `Unknown environment "${envName}" for site "${siteName}". Known: ${envNames.join(', ') || '(none)'}. Run "npm run list" to see them.`,
       ),
       { code: initial && opts.env !== undefined ? 'invalid_argument' : 'configuration_error' },
     );
-  }
-  const origin = httpUrl(env.url, `URL for site "${siteName}", environment "${envName}"`).origin;
+  return { envName, env, envFrom, notes };
+}
 
-  // --- where the sources are
-  const sourceSetting = opts.source ?? (!opts.site ? s.PAQVILO_SOURCE : undefined);
+function selectedConfigSource(siteName, site, opts, settings, configDir, { validSources, checkSource, notes }) {
+  const s = settings.values,
+    sourceSetting = opts.source ?? (!opts.site ? s.PAQVILO_SOURCE : undefined);
   if (s.PAQVILO_SOURCE && !sourceSetting)
     notes.push(
       'PAQVILO_SOURCE is ignored because --site explicitly selects the catalogue source (use --source to override it)',
     );
   // A code-site project folder is read through its .powerpages-site/ folder (short-key YAML).
-  const sourceDir = portalSourceDir(
-    sourceSetting ? path.resolve(opts.source ? process.cwd() : configDir, sourceSetting) : site.sourceDir,
-  );
+  let configuredSourceDir;
+  if (sourceSetting) {
+    const baseDirectory = opts.source ? process.cwd() : configDir;
+    configuredSourceDir = path.resolve(baseDirectory, sourceSetting);
+  } else configuredSourceDir = site.sourceDir;
+  const sourceDir = portalSourceDir(configuredSourceDir);
   if (!sourceDir) throw new Error(`Site "${siteName}" has no "source" folder configured`);
   if (checkSource && !validSources.has(sourceDir) && !isExtract(sourceDir)) {
     // A layout the toolkit cannot read is named, so it is never treated as an empty portal.
@@ -416,9 +471,12 @@ function resolveConfig(catalogue, opts, { initial = true, validSources = new Set
     );
   }
   if (checkSource) validSources.add(sourceDir);
+  return sourceDir;
+}
 
-  // --- how to overlay: site settings, then the environment's own, then personal ones
-  const scope = opts.scope ?? s.PAQVILO_SCOPE ?? env.scope ?? site.scope;
+function resolvedConfigSite(site, opts, settings, env, initial) {
+  const s = settings.values,
+    scope = opts.scope ?? s.PAQVILO_SCOPE ?? env.scope ?? site.scope;
   if (!['all', 'changed'].includes(scope)) throw new Error(`scope must be 'all' or 'changed', not "${scope}"`);
   const resolvedSite = {
     ...structuredClone(site),
@@ -434,6 +492,29 @@ function resolveConfig(catalogue, opts, { initial = true, validSources = new Set
     /[\x00-\x1f]/.test(resolvedSite.markup.baseline)
   )
     throw new Error('baseline must be a non-empty git ref');
+  return resolvedSite;
+}
+
+function resolveConfig(catalogue, opts, { initial = true, validSources = new Set(), checkSource = true } = {}) {
+  const { configFile, configDir, root, settings } = catalogue;
+  const s = settings.values;
+  const { portals, siteName, site, siteFrom } = selectedConfigSite(catalogue, opts, initial);
+  const { envName, env, envFrom, notes } = selectedConfigEnvironment(
+    siteName,
+    site,
+    opts,
+    settings,
+    configFile,
+    root,
+    initial,
+  );
+  const origin = httpUrl(env.url, `URL for site "${siteName}", environment "${envName}"`).origin;
+  const sourceDir = selectedConfigSource(siteName, site, opts, settings, configDir, {
+    validSources,
+    checkSource,
+    notes,
+  });
+  const resolvedSite = resolvedConfigSite(site, opts, settings, env, initial);
 
   const browser = browserSettings({ browser: root.browser, options: opts, settings: s, configDir });
 
@@ -464,26 +545,24 @@ function resolveConfig(catalogue, opts, { initial = true, validSources = new Set
   };
 }
 
-/** Resolve all dev origins once, before any browser or source model is created. */
-export async function loadDevTargets(opts = {}, processEnv = process.env) {
-  const catalogue = loadCatalogue(opts, processEnv);
-  if ((opts.portals ?? catalogue.settings.values.PAQVILO_PORTALS ?? catalogue.root.portals) === 'all') {
-    const s = catalogue.settings.values;
-    const conflicts = [
-      opts.url !== undefined && '--url',
-      opts.source !== undefined && '--source',
-      s.PAQVILO_URL && 'PAQVILO_URL',
-      s.PAQVILO_SOURCE && 'PAQVILO_SOURCE',
-    ].filter(Boolean);
-    if (conflicts.length)
-      throw new Error(
-        `portals=all cannot be combined with ${conflicts.join(', ')}. Configure each portal with sites or PAQVILO_<SITE>_SOURCE / PAQVILO_<SITE>_ENV_<NAME>, or use --portals selected.`,
-      );
-  }
-  const validSources = new Set();
-  let initial;
+function validatePortalsAllOptions(opts, catalogue) {
+  if ((opts.portals ?? catalogue.settings.values.PAQVILO_PORTALS ?? catalogue.root.portals) !== 'all') return;
+  const s = catalogue.settings.values;
+  const conflicts = [
+    opts.url !== undefined && '--url',
+    opts.source !== undefined && '--source',
+    s.PAQVILO_URL && 'PAQVILO_URL',
+    s.PAQVILO_SOURCE && 'PAQVILO_SOURCE',
+  ].filter(Boolean);
+  if (conflicts.length)
+    throw new Error(
+      `portals=all cannot be combined with ${conflicts.join(', ')}. Configure each portal with sites or PAQVILO_<SITE>_SOURCE / PAQVILO_<SITE>_ENV_<NAME>, or use --portals selected.`,
+    );
+}
+
+function resolveInitialDevTarget(catalogue, opts, validSources) {
   try {
-    initial = resolveConfig(catalogue, opts, { validSources });
+    return resolveConfig(catalogue, opts, { validSources });
   } catch (error) {
     // portals=all covers the portal sites; a Mirage-only default site does not select a Lense target.
     if (
@@ -492,32 +571,40 @@ export async function loadDevTargets(opts = {}, processEnv = process.env) {
       (opts.portals ?? catalogue.settings.values.PAQVILO_PORTALS ?? catalogue.root.portals) !== 'all'
     )
       throw error;
-    initial = null;
+    return null;
   }
-  if (initial?.portals === 'selected') return { mode: 'selected', initial, targets: [initial] };
-  const targets = [];
-  const byOrigin = new Map();
+}
+
+function addEnvironmentTarget(catalogue, opts, initial, validSources, targets, byOrigin, { site, env }) {
+  const target =
+    site === initial?.siteName && env === initial?.envName
+      ? initial
+      : resolveConfig(catalogue, { ...opts, site, env }, { initial: false, validSources, checkSource: false });
+  if (target.caution && !catalogue.root.includeCaution && !(site === initial?.siteName && opts.env === env)) return;
+  if (target !== initial) target.chosen = { site: 'configured portal coverage', env: 'configured portal coverage' };
+  const previous = byOrigin.get(target.origin);
+  if (previous)
+    throw new Error(
+      `Duplicate portal origin ${target.origin}: "${previous.siteName} @ ${previous.envName}" and "${site} @ ${env}". Each origin must identify exactly one portal/environment in portals=all.`,
+    );
+  byOrigin.set(target.origin, target);
+  targets.push(target);
+}
+
+function collectAllDevTargets(catalogue, opts, initial, validSources) {
+  const targets = [],
+    byOrigin = new Map();
   for (const [site, entry] of Object.entries(catalogue.sites)) {
     if (mirageOnlySite(entry)) continue;
     const environments = Object.keys(entry.environments);
     if (!environments.length) throw new Error(`Site "${site}" has no environments configured for portals=all`);
-    for (const env of environments) {
-      const target =
-        site === initial?.siteName && env === initial?.envName
-          ? initial
-          : resolveConfig(catalogue, { ...opts, site, env }, { initial: false, validSources, checkSource: false });
-      if (target.caution && !catalogue.root.includeCaution && !(site === initial?.siteName && opts.env === env))
-        continue;
-      if (target !== initial) target.chosen = { site: 'configured portal coverage', env: 'configured portal coverage' };
-      const previous = byOrigin.get(target.origin);
-      if (previous)
-        throw new Error(
-          `Duplicate portal origin ${target.origin}: "${previous.siteName} @ ${previous.envName}" and "${site} @ ${env}". Each origin must identify exactly one portal/environment in portals=all.`,
-        );
-      byOrigin.set(target.origin, target);
-      targets.push(target);
-    }
+    for (const env of environments)
+      addEnvironmentTarget(catalogue, opts, initial, validSources, targets, byOrigin, { site, env });
   }
+  return targets;
+}
+
+function chooseAllDevInitial(catalogue, initial, targets) {
   if (!targets.includes(initial)) initial = targets[0];
   // Every site is a Mirage-only site: a valid catalogue with no Lense target (list succeeds and names them; dev refuses).
   const mirageOnly = Object.entries(catalogue.sites)
@@ -534,30 +621,22 @@ export async function loadDevTargets(opts = {}, processEnv = process.env) {
     throw new Error(
       'No non-caution targets are configured; select an environment explicitly or set includeCaution: true.',
     );
+  return initial;
+}
+
+/** Resolve all dev origins once, before any browser or source model is created. */
+export async function loadDevTargets(opts = {}, processEnv = process.env) {
+  const catalogue = loadCatalogue(opts, processEnv);
+  validatePortalsAllOptions(opts, catalogue);
+  const validSources = new Set();
+  let initial = resolveInitialDevTarget(catalogue, opts, validSources);
+  if (initial?.portals === 'selected') return { mode: 'selected', initial, targets: [initial] };
+  const targets = collectAllDevTargets(catalogue, opts, initial, validSources);
+  initial = chooseAllDevInitial(catalogue, initial, targets);
   return { mode: 'all', initial, targets };
 }
 
-/** Browser selection independent of a portal/site catalogue, shared by standalone Mirage. */
-export function browserSettings({
-  browser: input,
-  options: opts = {},
-  settings: s = {},
-  configDir = process.cwd(),
-} = {}) {
-  const browser = { ...(input ?? ROOT_DEFAULTS.browser) };
-  browser.channel = opts.browser ?? s.PAQVILO_BROWSER ?? browser.channel;
-  if (!['msedge', 'chrome', 'chromium'].includes(browser.channel))
-    throw new Error(`browser must be 'msedge', 'chrome' or 'chromium', not "${browser.channel}"`);
-  if (s.PAQVILO_HEADLESS) browser.headless = bool(s.PAQVILO_HEADLESS, 'PAQVILO_HEADLESS');
-  if (opts.headless) browser.headless = true;
-  if (opts.headed) browser.headless = false;
-  if (opts.headless && opts.headed) throw new Error('--headless and --headed cannot be used together');
-  browser.cdpUrl = opts['cdp-url'] ?? s.PAQVILO_CDP_URL ?? browser.cdpUrl;
-  if (s.PAQVILO_BYPASS_CSP) browser.bypassCSP = bool(s.PAQVILO_BYPASS_CSP, 'PAQVILO_BYPASS_CSP');
-  if (s.PAQVILO_PROFILE_DIR) browser.profileDir = s.PAQVILO_PROFILE_DIR;
-  browser.profile = opts.profile ?? s.PAQVILO_PROFILE ?? browser.profile;
-  browser.userDataDir = opts['user-data-dir'] ?? s.PAQVILO_USER_DATA_DIR ?? browser.userDataDir;
-  browser.profileDirectory = opts['profile-directory'] ?? s.PAQVILO_PROFILE_DIRECTORY ?? browser.profileDirectory;
+function resolveBrowserProfilePaths(browser, opts, configDir) {
   if (browser.profile !== null) {
     browserProfile(browser.profile);
     browser.profile = browser.profile.toLowerCase();
@@ -570,6 +649,22 @@ export function browserSettings({
     );
   }
   if (browser.profileDirectory !== null) browserProfileDirectory(browser.profileDirectory);
+}
+
+function setBrowserChannel(browser, opts, settings) {
+  browser.channel = opts.browser ?? settings.PAQVILO_BROWSER ?? browser.channel;
+  if (!['msedge', 'chrome', 'chromium'].includes(browser.channel))
+    throw new Error(`browser must be 'msedge', 'chrome' or 'chromium', not "${browser.channel}"`);
+}
+
+function setBrowserMode(browser, opts, settings) {
+  if (settings.PAQVILO_HEADLESS) browser.headless = bool(settings.PAQVILO_HEADLESS, 'PAQVILO_HEADLESS');
+  if (opts.headless) browser.headless = true;
+  if (opts.headed) browser.headless = false;
+  if (opts.headless && opts.headed) throw new Error('--headless and --headed cannot be used together');
+}
+
+function validateBrowserProfileCombination(browser) {
   if (browser.profile !== null && browser.userDataDir !== null)
     throw new Error(
       'browser.profile (--profile / PAQVILO_PROFILE) cannot be combined with browser.userDataDir (--user-data-dir / PAQVILO_USER_DATA_DIR); choose a named toolkit profile or an existing browser root',
@@ -585,12 +680,36 @@ export function browserSettings({
     throw new Error(
       'browser.cdpUrl (--cdp-url / PAQVILO_CDP_URL) cannot be combined with browser.profile, browser.userDataDir or browser.profileDirectory; an attached browser already owns its profile',
     );
-  const port = opts['debug-port'] ?? s.PAQVILO_DEBUG_PORT;
+}
+
+function resolveBrowserDebugPort(browser, opts, settings) {
+  const port = opts['debug-port'] ?? settings.PAQVILO_DEBUG_PORT;
   if (port != null) {
     if (!/^\d+$/.test(String(port))) throw new Error(`debug port must be a number, not "${port}"`);
     browser.debugPort = Number(port) || null;
   }
   browser.debugPort = debugPort(browser.debugPort);
+}
+
+/** Browser selection independent of a portal/site catalogue, shared by standalone Mirage. */
+export function browserSettings({
+  browser: input,
+  options: opts = {},
+  settings: s = {},
+  configDir = process.cwd(),
+} = {}) {
+  const browser = { ...(input ?? ROOT_DEFAULTS.browser) };
+  setBrowserChannel(browser, opts, s);
+  setBrowserMode(browser, opts, s);
+  browser.cdpUrl = opts['cdp-url'] ?? s.PAQVILO_CDP_URL ?? browser.cdpUrl;
+  if (s.PAQVILO_BYPASS_CSP) browser.bypassCSP = bool(s.PAQVILO_BYPASS_CSP, 'PAQVILO_BYPASS_CSP');
+  if (s.PAQVILO_PROFILE_DIR) browser.profileDir = s.PAQVILO_PROFILE_DIR;
+  browser.profile = opts.profile ?? s.PAQVILO_PROFILE ?? browser.profile;
+  browser.userDataDir = opts['user-data-dir'] ?? s.PAQVILO_USER_DATA_DIR ?? browser.userDataDir;
+  browser.profileDirectory = opts['profile-directory'] ?? s.PAQVILO_PROFILE_DIRECTORY ?? browser.profileDirectory;
+  resolveBrowserProfilePaths(browser, opts, configDir);
+  validateBrowserProfileCombination(browser);
+  resolveBrowserDebugPort(browser, opts, s);
   if (browser.cdpUrl) httpUrl(browser.cdpUrl, 'browser.cdpUrl', ['http:', 'https:', 'ws:', 'wss:']);
   validateDebuggerMode(browser.cdpUrl, browser.debugPort);
   return browser;

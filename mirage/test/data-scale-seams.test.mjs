@@ -10,6 +10,7 @@ import { DataStore, emptyState, keysetPage } from '../lib/data.mjs';
 import { createPrincipals, ensureSecurityModel, grantAccess, revokeAccess } from '../lib/dataverse-security.mjs';
 import { createServiceProtection } from '../lib/dataverse-limits.mjs';
 import { createWebApiFormatter } from '../lib/webapi-format.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const ADMIN = { admin: true };
 const gid = (n) => `77777777-7777-4777-8777-${String(n).padStart(12, '0')}`;
@@ -48,6 +49,34 @@ function store(rows = [], options = {}) {
   return new DataStore({ state, ...options });
 }
 
+test('unique row-key indexes avoid one retained array per key and retain duplicate/wild mutation ordering', () => {
+  const s = store(Array.from({ length: 10000 }, (_, i) => ({ x_itemid: gid(i), x_code: 'code' + i })));
+  const rows = s.state.tables.x_item;
+  const entry = s.rowKeyIndex(rows, 'invented-codes', (row) => row.x_code, { wild: true });
+  assert.equal(
+    [...entry.map.values()].filter(Array.isArray).length,
+    0,
+    'Unique keys need no retained position arrays.',
+  );
+  assert.deepEqual(entry.get('code0'), [0]);
+  s.mutateRow('x_item', rows, 0, { x_code: 'code1' });
+  assert.deepEqual(entry.get('code1'), [0, 1]);
+  assert.deepEqual(entry.get('code0'), []);
+  s.removeRow('x_item', rows, 0);
+  assert.deepEqual(entry.get('code1'), [0]);
+  assert.deepEqual(entry.get('code9999'), [9998]);
+  s.insertRow('x_item', rows, { x_itemid: gid(10001) });
+  assert.deepEqual(entry.wild, [9999]);
+  s.mutateRow('x_item', rows, 9999, { x_code: 'code1' });
+  assert.deepEqual(entry.get('code1'), [0, 9999]);
+  assert.deepEqual(entry.wild, []);
+  s.writeRow('x_item', rows, 0, { x_itemid: gid(10002), x_code: null });
+  assert.deepEqual(entry.get('code1'), [9999]);
+  s.removeRow('x_item', rows, 9999);
+  assert.deepEqual(entry.get('code1'), []);
+  assert.equal([...entry.map.values()].filter(Array.isArray).length, 0);
+});
+
 test('the primary-key index answers through a validity check after an edit outside the row operations', async () => {
   const s = store([
     { x_itemid: gid(1), x_name: 'one' },
@@ -81,50 +110,94 @@ test('the primary-key index answers through a validity check after an edit outsi
   );
 });
 
-test('bulk creates and key upserts check alternate keys and primary keys through per-transaction indexes', async () => {
-  const s = store();
+for (const collation of ['CI_AI', 'CI_AS'])
+  test(`bulk creates and key upserts check alternate keys and primary keys through per-transaction indexes (${collation})`, async () => {
+    const s = store();
+    s.state.settings.collation = collation;
+    await s.transact(
+      () => {
+        for (let i = 0; i < 200; i++)
+          s.createRecord('x_item', { x_itemid: gid(i), x_name: `n${i}`, x_code: `K${i}` }, ADMIN);
+        assert.throws(() => s.createRecord('x_item', { x_name: 'dupe', x_code: 'k7' }, ADMIN), {
+          code: 'DuplicateRecord',
+        });
+        assert.throws(
+          () => s.createRecord('x_item', { x_itemid: `{${gid(9).toUpperCase()}}`, x_name: 'dupe id' }, ADMIN),
+          { code: 'DuplicateRecord' },
+        );
+        // Key lookup and query folding both follow the explicit environment collation; GUID identities remain insensitive.
+        assert.equal(s.findByKey(s.resolveMapping('x_item'), "x_code='k12'")?.x_itemid, gid(12));
+        s.updateRecord('x_item', gid(12), { x_code: 'Ké-12' }, ADMIN);
+        assert.equal(
+          s.findByKey(s.resolveMapping('x_item'), "x_code='KE-12'")?.x_itemid,
+          collation === 'CI_AI' ? gid(12) : undefined,
+        );
+        assert.equal(s.findByKey(s.resolveMapping('x_item'), "x_code='K\u00c9-12'")?.x_itemid, gid(12));
+        assert.equal(s.findByKey(s.resolveMapping('x_item'), "x_code='K12'"), undefined);
+        // Both collations reject a case-only duplicate; only the accent-sensitive environment accepts the plain variant.
+        assert.throws(() => s.updateRecord('x_item', gid(13), { x_code: 'KÉ-12' }, ADMIN), { code: 'DuplicateRecord' });
+        if (collation === 'CI_AS') s.updateRecord('x_item', gid(13), { x_code: 'ke-12' }, ADMIN);
+        else
+          assert.throws(() => s.updateRecord('x_item', gid(13), { x_code: 'ke-12' }, ADMIN), {
+            code: 'DuplicateRecord',
+          });
+        const matches = s.query('x_item', { $filter: "x_code eq 'KE-12'" }, ADMIN).value;
+        assert.deepEqual(
+          matches.map((row) => row.x_itemid),
+          [gid(collation === 'CI_AI' ? 12 : 13)],
+        );
+      },
+      { incremental: true },
+    );
+    // A direct edit between transactions is seen: the key indexes live for one transaction only.
+    s.state.tables.x_item[3].x_code = 'DIRECT';
+    await s.transact(
+      () => {
+        assert.equal(s.findByKey(s.resolveMapping('x_item'), "x_code='direct'")?.x_itemid, gid(3));
+        assert.throws(() => s.createRecord('x_item', { x_name: 'clash', x_code: 'Direct' }, ADMIN), {
+          code: 'DuplicateRecord',
+        });
+      },
+      { incremental: true },
+    );
+    // Without field metadata, date-shaped values retain the legacy always-scanned coercion path.
+    delete s.state.mappings.x_item.fields.x_code;
+    s.state.tables.x_item.push({ x_itemid: gid(500), x_name: 'dated', x_code: '2024-01-02' });
+    await s.transact(
+      () => {
+        assert.equal(s.findByKey(s.resolveMapping('x_item'), "x_code='K40'")?.x_itemid, gid(40));
+        assert.equal(s.findByKey(s.resolveMapping('x_item'), "x_code='2024-01-02T00:00:00Z'")?.x_itemid, gid(500));
+      },
+      { incremental: true },
+    );
+  });
+
+test('accent-sensitive alternate-key lookup and upsert select the exact row before and inside the transaction index', async () => {
+  const s = store([
+    { x_itemid: gid(1), x_name: 'accented', x_code: 'caf\u00e9' },
+    { x_itemid: gid(2), x_name: 'plain', x_code: 'cafe' },
+  ]);
+  s.state.settings.collation = 'CI_AS';
+  const mapping = s.resolveMapping('x_item');
+  assert.equal(s.findByKey(mapping, "x_code='CAFE'")?.x_itemid, gid(2));
   await s.transact(
     () => {
-      for (let i = 0; i < 200; i++)
-        s.createRecord('x_item', { x_itemid: gid(i), x_name: `n${i}`, x_code: `K${i}` }, ADMIN);
-      assert.throws(() => s.createRecord('x_item', { x_name: 'dupe', x_code: 'k7' }, ADMIN), {
-        code: 'DuplicateRecord',
-      });
-      assert.throws(
-        () => s.createRecord('x_item', { x_itemid: `{${gid(9).toUpperCase()}}`, x_name: 'dupe id' }, ADMIN),
-        { code: 'DuplicateRecord' },
+      assert.equal(s.findByKey(mapping, "x_code='CAF\u00c9'")?.x_itemid, gid(1));
+      assert.equal(s.findByKey(mapping, "x_code='CAFE'")?.x_itemid, gid(2));
+      s.upsertRecord('x_item', s.findByKey(mapping, "x_code='CAFE'").x_itemid, { x_name: 'changed plain' }, ADMIN);
+      s.upsertRecord(
+        'x_item',
+        s.findByKey(mapping, "x_code='cafe'").x_itemid,
+        { x_name: 'changed plain again' },
+        ADMIN,
       );
-      // The key-segment lookup keeps valuesEqual semantics: case and accent folding, braces on GUID keys.
-      assert.equal(s.findByKey(s.resolveMapping('x_item'), "x_code='k12'")?.x_itemid, gid(12));
-      s.updateRecord('x_item', gid(12), { x_code: 'Ké-12' }, ADMIN);
-      assert.equal(s.findByKey(s.resolveMapping('x_item'), "x_code='KE-12'")?.x_itemid, gid(12));
-      assert.equal(s.findByKey(s.resolveMapping('x_item'), "x_code='K12'"), undefined);
-      // Uniqueness keeps the store's equality: case-insensitive, accent-sensitive.
-      assert.throws(() => s.updateRecord('x_item', gid(13), { x_code: 'KÉ-12' }, ADMIN), { code: 'DuplicateRecord' });
-      s.updateRecord('x_item', gid(13), { x_code: 'ke-12' }, ADMIN);
+      assert.equal(s.findByKey(mapping, `x_itemid='{${gid(2).toUpperCase()}}'`)?.x_itemid, gid(2));
     },
     { incremental: true },
   );
-  // A direct edit between transactions is seen: the key indexes live for one transaction only.
-  s.state.tables.x_item[3].x_code = 'DIRECT';
-  await s.transact(
-    () => {
-      assert.equal(s.findByKey(s.resolveMapping('x_item'), "x_code='direct'")?.x_itemid, gid(3));
-      assert.throws(() => s.createRecord('x_item', { x_name: 'clash', x_code: 'Direct' }, ADMIN), {
-        code: 'DuplicateRecord',
-      });
-    },
-    { incremental: true },
-  );
-  // Rows whose key column is not a plain string stay searchable (always-scanned list).
-  s.state.tables.x_item.push({ x_itemid: gid(500), x_name: 'dated', x_code: '2024-01-02' });
-  await s.transact(
-    () => {
-      assert.equal(s.findByKey(s.resolveMapping('x_item'), "x_code='K40'")?.x_itemid, gid(40));
-      assert.equal(s.findByKey(s.resolveMapping('x_item'), "x_code='2024-01-02T00:00:00Z'")?.x_itemid, gid(500));
-    },
-    { incremental: true },
-  );
+  assert.equal(s.state.tables.x_item.length, 2);
+  assert.equal(s.state.tables.x_item[0].x_name, 'accented');
+  assert.equal(s.state.tables.x_item[1].x_name, 'changed plain again');
 });
 
 test('a cascade delete walks the relationship graph once per table, not once per deleted row', async () => {
@@ -315,7 +388,7 @@ test('a failed SDK call inside a pipeline undoes its rows through a savepoint an
 });
 
 test('journaled row transactions reuse the section copy the previous commit proved unchanged', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'data-scale-seams-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'data-scale-seams-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'state.json');
   const s = await store([{ x_itemid: gid(1), x_name: 'one' }], {
@@ -427,4 +500,81 @@ test('single-record formatting finds its stored row through the primary-key inde
   const request = createWebApiFormatter({ store: s, metadata: () => undefined });
   assert.equal(request.storedRow(item, gid(9999)), null);
   assert.equal(request.storedRow(item, `{${gid(42).toUpperCase()}}`), rows[41]);
+});
+
+test('composite key lookup uses unambiguous buckets without rebuilding an unchanged index for delimiter-bearing values', async () => {
+  const s = store([
+    { x_itemid: gid(1), x_code: 'a\0tb', x_name: 'c' },
+    { x_itemid: gid(2), x_code: 'a', x_name: 'b\0tc' },
+  ]);
+  s.state.mappings.x_item.alternateKeys = [{ name: 'composite', attributes: ['x_code', 'x_name'] }];
+  let invalidations = 0;
+  const drop = s.dropRowKeyIndex.bind(s);
+  s.dropRowKeyIndex = (...args) => {
+    invalidations++;
+    return drop(...args);
+  };
+  await s.transact(
+    () => {
+      const mapping = s.resolveMapping('x_item');
+      for (let index = 0; index < 10; index++) {
+        assert.equal(s.findByKey(mapping, "x_code='a',x_name='b\0tc'")?.x_itemid, gid(2));
+        assert.equal(s.findByKey(mapping, "x_name='c',x_code='a\0tb'")?.x_itemid, gid(1));
+      }
+    },
+    { incremental: true },
+  );
+  assert.equal(invalidations, 0, 'distinct tuples never invalidate each other despite embedded delimiters');
+});
+
+test('key indexes keep the configured collation in their identity and avoid per-lookup row scans', async () => {
+  const s = store(Array.from({ length: 500 }, (_, index) => ({ x_itemid: gid(index), x_code: `Code-${index}` })));
+  const rows = s.state.tables.x_item;
+  let reads = 0;
+  for (const row of rows) {
+    const code = row.x_code;
+    Object.defineProperty(row, 'x_code', {
+      enumerable: true,
+      get() {
+        reads++;
+        return code;
+      },
+    });
+  }
+  await s.transact(() => {
+    reads = 0;
+    for (let index = 0; index < 100; index++)
+      assert.equal(s.findByKey(s.resolveMapping('x_item'), `x_code='CODE-${index}'`)?.x_itemid, gid(index));
+    assert.ok(reads >= 500 && reads < 1000, `bounded index checks read ${reads} key fields`);
+  });
+  const variants = store([{ x_itemid: gid(1), x_code: 'caf\u00e9' }]);
+  await variants.transact(() => {
+    const mapping = variants.resolveMapping('x_item');
+    variants.state.settings.collation = 'CI_AI';
+    assert.equal(variants.findByKey(mapping, "x_code='CAFE'")?.x_itemid, gid(1));
+    variants.state.settings.collation = 'CI_AS';
+    assert.equal(variants.findByKey(mapping, "x_code='CAFE'"), undefined);
+    assert.equal(variants.findByKey(mapping, "x_code='CAF\u00c9'")?.x_itemid, gid(1));
+  });
+});
+
+test('known text alternate keys retain distinct date-shaped strings while unknown and datetime fields keep date semantics', async () => {
+  const s = store([
+    { x_itemid: gid(1), x_code: '2026-01-01' },
+    { x_itemid: gid(2), x_code: '2026-01-01T00:00:00Z' },
+  ]);
+  const mapping = s.resolveMapping('x_item');
+  for (const indexed of [false, true]) {
+    const check = () => {
+      assert.equal(s.findByKey(mapping, "x_code='2026-01-01'")?.x_itemid, gid(1));
+      assert.equal(s.findByKey(mapping, "x_code='2026-01-01T00:00:00Z'")?.x_itemid, gid(2));
+    };
+    if (indexed) await s.transact(check);
+    else check();
+  }
+  await s.transact(() => {
+    assert.equal(s.findByKey(mapping, "x_code='2026-01-01T00:00:00Z'")?.x_itemid, gid(2));
+    mapping.fields.x_code.dataverseType = 'datetime';
+    assert.equal(s.findByKey(mapping, "x_code='2026-01-01T00:00:00Z'")?.x_itemid, gid(1));
+  });
 });

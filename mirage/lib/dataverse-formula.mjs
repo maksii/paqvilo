@@ -1,3 +1,4 @@
+import { cloneStateData } from './state-clone.mjs';
 import { validateDerivedColumns, derivedColumnsOf } from './derived-columns.mjs';
 // Formula columns (Power Fx) in the Dataverse API: computed on read by a Power Fx evaluator, refused on write.
 //
@@ -33,7 +34,7 @@ import { parse } from './power-fx.mjs';
 const FORMULA = 3;
 const OPERATIONS = ['FormulaColumn', 'FormulaWriteRefused'];
 
-const facts = (definition) => ({ ...definition, ...(definition?.columnMetadata ?? {}) });
+const facts = (definition) => ({ ...definition, ...definition?.columnMetadata });
 const isThenable = (value) => value !== null && typeof value === 'object' && typeof value.then === 'function';
 
 // Per-API state: one WeakMap entry per installed API. Never module-global mutable state.
@@ -137,7 +138,7 @@ function evaluateFormula(state, c, mapping, row, column, formula) {
     const host = dataverseHost(state.api, { c: null });
     const result = engine.evaluateSync(expression, {
       symbols: { table, columns: Object.keys(mapping.fields ?? {}) },
-      values: structuredClone(row),
+      values: cloneStateData(row),
       principal: null, // computed as the system user, not as the caller
       host: { ...host, scope: scopeOf(state, host, mapping, row, column) },
     });
@@ -175,7 +176,7 @@ function computeColumn(state, c, mapping, row, column, formula) {
   const table = mapping.logicalName;
   const override = state.overrides[`${table}.${column}`];
   if (override) {
-    const value = override(structuredClone(row), { table, column, user: c.user ?? null });
+    const value = override(cloneStateData(row), { table, column, user: c.user ?? null });
     if (!isThenable(value)) return value ?? null;
     return unevaluated(
       state,
@@ -253,7 +254,7 @@ function securedInputs(api, table, formula) {
     Object.values(node).forEach((value) => walk(value?.node ?? value));
   };
   walk(ast);
-  return [...found].sort();
+  return [...found].sort(/* NOSONAR: preserve default string coercion */);
 }
 function reportSecuredInputs(api, state) {
   for (const [table, column] of allFormulaColumns(api)) {
@@ -289,9 +290,11 @@ function describe(api = null) {
     engine
       ?.describe?.()
       .operations?.some((operation) => operation.name === 'evaluateSync' && operation.level === 'behaviour') === true;
-  const columns = api ? allFormulaColumns(api) : [];
-  const overridesCover =
-    columns.length > 0 && columns.every(([table, column]) => `${table}.${column}` in (state?.overrides ?? {}));
+  const overrides = state?.overrides ?? {};
+  // An answering evaluator already establishes the level. With no evaluator
+  // and no overrides, no column scan can promote it to behaviour either.
+  const columns = api && !engineAnswers && Object.keys(overrides).length ? allFormulaColumns(api) : [];
+  const overridesCover = columns.length > 0 && columns.every(([table, column]) => `${table}.${column}` in overrides);
   return {
     name: 'dataverse-formula',
     version: 1,

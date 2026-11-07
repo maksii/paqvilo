@@ -1,6 +1,7 @@
 // Elastic tables over HTTP and SOAP: TableType on create and read back, the documented restrictions, the built-in key and
 // system columns, and time-to-live expiry.
-// The store stamps modifiedon with Date.now, so the TTL cases replace Date.now for their duration and restore it.
+// The organization runs on the suite's clock: wall time, or the instant the TTL cases pin (the store stamps modifiedon and
+// the expiry filter reads the time through it).
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -82,6 +83,9 @@ describe('elastic tables over HTTP and SOAP', () => {
   let customizer;
   let basic;
   let admin;
+  // null follows wall time; the time-to-live cases pin an instant and move it.
+  let clockAt = null;
+  const clock = () => clockAt ?? Date.now();
 
   before(async () => {
     store = await new DataStore({ state: emptyState() }).init();
@@ -106,7 +110,7 @@ describe('elastic tables over HTTP and SOAP', () => {
         internal = value;
       },
     };
-    api = await startDataverseApi({ store, settings, log: () => {}, extensions: [...EXTENSIONS, capture] });
+    api = await startDataverseApi({ store, settings, log: () => {}, extensions: [...EXTENSIONS, capture], clock });
     origin = api.origin;
     tenantId = api.tenantId;
     const organizationId = api.organizationId;
@@ -159,7 +163,6 @@ describe('elastic tables over HTTP and SOAP', () => {
   const call = (path, { token = customizer, method = 'GET', body, headers = {} } = {}) =>
     fetch(`${origin}${path}`, {
       method,
-      signal: AbortSignal.timeout(10_000),
       headers: {
         ...(token ? { authorization: `Bearer ${token}` } : {}),
         ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
@@ -728,8 +731,6 @@ describe('elastic tables over HTTP and SOAP', () => {
   });
 
   describe('time to live', () => {
-    let realNow;
-    let clockAt;
     let internalApi;
     const rowsOf = () => store.tableRows(ELASTIC);
     const idOf = (row) => row.new_sensorreadingid;
@@ -746,17 +747,15 @@ describe('elastic tables over HTTP and SOAP', () => {
       (await call(webApi(`new_sensorreadings(${id})?$select=new_sensortype`), { token: admin })).status;
 
     before(() => {
-      realNow = Date.now;
-      clockAt = Math.floor(realNow() / 1000) * 1000;
-      Date.now = () => clockAt;
+      clockAt = Math.floor(Date.now() / 1000) * 1000;
       internalApi = internal;
     });
     after(() => {
-      Date.now = realNow;
+      clockAt = null;
     });
 
     it('hides a row at the second its time to live runs out, and purges it into the change log', async () => {
-      clockAt = Math.floor(realNow() / 1000) * 1000;
+      clockAt = Math.floor(Date.now() / 1000) * 1000;
       const row = await create({ ttlinseconds: 60 });
       const id = idOf(row);
       assert.equal(expiresAt(row), clockAt + 60_000);
@@ -785,7 +784,7 @@ describe('elastic tables over HTTP and SOAP', () => {
     });
 
     it('restarts the countdown when the row is modified', async () => {
-      clockAt = realNow();
+      clockAt = Date.now();
       const row = await create({ ttlinseconds: 60 });
       const id = idOf(row);
       clockAt += 50_000;
@@ -803,7 +802,7 @@ describe('elastic tables over HTTP and SOAP', () => {
     });
 
     it('keeps a row with no time to live indefinitely', async () => {
-      clockAt = realNow();
+      clockAt = Date.now();
       const row = await create({});
       clockAt += 86_400_000;
       // Advancing the clock a day also expires the original one-hour bearer.

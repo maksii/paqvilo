@@ -34,6 +34,7 @@ export async function loadOrganizationSources({
   metadata.modelDrivenRibbonDocuments = clientResources.ribbonDocuments;
   metadata.modelDrivenAppActions = clientResources.appActions;
   await scan.cache?.save();
+  scan.cache?.release();
   // inventory: listed Solution components (solution-inventory.mjs); graph: read-only index over these results (source-graph.mjs).
   const graph = buildSourceGraph({ scan, metadata, solutionData, workflows });
   return {

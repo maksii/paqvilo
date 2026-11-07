@@ -31,6 +31,9 @@ async function formOptions() {
     identity: { roles: [] },
   };
 }
+// Linear scans of these inputs take milliseconds; a quadratic rescan of 10^5 characters (10^10 steps) takes tens of
+// seconds. The bound sits far from both, so machine speed does not decide the outcome.
+const LINEAR_BOUND_MS = 5000;
 const submit = (value, options) => submitPortalForm('entityform', 'create', { values: { narrative: value } }, options);
 
 test('required rich text keeps lexical comment, tag, image and malformed-input semantics', async () => {
@@ -75,7 +78,7 @@ test('required rich text handles repeated unterminated tags and comments with bo
     if (requiredEmpty) await assert.rejects(submit(value, options), (error) => error.code === 'FormFieldRequired');
     else assert.equal((await submit(value, options)).record.narrative, value);
     assert.ok(
-      performance.now() - started < 5000,
+      performance.now() - started < LINEAR_BOUND_MS,
       `required text validation exceeded its 5 s bound for ${value.length} characters`,
     );
   }
@@ -125,7 +128,7 @@ test('observed page copy rejects repeated unclosed Liquid comments with bounded 
     const started = performance.now();
     assert.equal(capture(source), undefined);
     assert.ok(
-      performance.now() - started < 5000,
+      performance.now() - started < LINEAR_BOUND_MS,
       `page-copy comment validation exceeded its 5 s bound for ${source.length} characters`,
     );
   }

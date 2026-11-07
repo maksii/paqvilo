@@ -39,7 +39,8 @@ function runPreflight(ctx, button, { requires = [], strict = false, scenario = n
     for (const item of requires) query.append('requires', item);
     if (strict) query.set('strict', 'true');
     if (scenario) query.set('scenario', scenario);
-    d.result = await ctx.request(`/preflight${query.size ? `?${query}` : ''}`);
+    const search = query.size ? `?${query}` : '';
+    d.result = await ctx.request(`/preflight${search}`);
     d.ran = { requires, strict, scenario };
     await ctx.refresh();
   });
@@ -50,15 +51,17 @@ function results(ctx, d) {
   if (!report) return '<p class="ui-help">No preflight has run in this session.</p>';
   const summary = report.summary ?? {},
     rows = report.requirements ?? [];
-  const scope = d.ran?.scenario
-    ? kit.notice(
-        `Scenario ${d.ran.scenario}: saved scenarios carry no requirement list, so the report covers ${d.ran.requires.length ? d.ran.requires.join(', ') : 'every requirement'} with strict blocking.`,
-        'info',
-      )
-    : kit.notice(
-        `Scope: ${d.ran?.requires?.length ? d.ran.requires.join(', ') : 'every requirement'}${d.ran?.strict ? ' · strict' : ''}.`,
-        'info',
-      );
+  let scope;
+  if (d.ran?.scenario)
+    scope = kit.notice(
+      `Scenario ${d.ran.scenario}: saved scenarios carry no requirement list, so the report covers ${d.ran.requires.length ? d.ran.requires.join(', ') : 'every requirement'} with strict blocking.`,
+      'info',
+    );
+  else
+    scope = kit.notice(
+      `Scope: ${d.ran?.requires?.length ? d.ran.requires.join(', ') : 'every requirement'}${d.ran?.strict ? ' · strict' : ''}.`,
+      'info',
+    );
   const tiles = kit.tiles([
     { label: 'Requirements', value: summary.total ?? rows.length },
     { label: 'Blocking', value: summary.blocking ?? 0, tone: summary.blocking ? 'bad' : 'ok' },
@@ -149,7 +152,10 @@ export const view = {
     const report = state.capabilityReport ?? state.status?.capabilityReport;
     const inventory = state.inventory ?? state.status?.inventory;
     const modules = (report?.modules ?? []).filter((item) => !d.level || item.level === d.level);
-    const levelFilter = `<p><label for="cap-level">Level</label> <select id="cap-level" data-cap-level aria-describedby="cap-level-help"><option value="">Every level</option>${LEVELS.map((level) => `<option value="${level}"${d.level === level ? ' selected' : ''}>${level}</option>`).join('')}</select> ${fieldHelp(ctx, 'cap-level', 'capabilities.report', 'level')}</p>`;
+    const levelOptions = LEVELS.map(
+      (level) => `<option value="${level}"${d.level === level ? ' selected' : ''}>${level}</option>`,
+    ).join('');
+    const levelFilter = `<p><label for="cap-level">Level</label> <select id="cap-level" data-cap-level aria-describedby="cap-level-help"><option value="">Every level</option>${levelOptions}</select> ${fieldHelp(ctx, 'cap-level', 'capabilities.report', 'level')}</p>`;
     const reportBody = report
       ? levelFilter +
         list(
@@ -231,54 +237,46 @@ export const view = {
       : kit.notice('This host sent no source inventory in its state.', 'info');
     // GET /__sim/api/model-driven/offline on request: each staff session's mobile offline summary (counts only).
     const offlineButton = `<p><button type="button" class="ui-button ui-small" data-cap-offline>${d.offline ? 'Reload sessions' : 'Show sessions'}</button></p>`;
-    const offlineBody =
-      offlineButton +
-      (!d.offline
-        ? '<p class="ui-help">Sessions load on request.</p>'
-        : !Array.isArray(d.offline)
-          ? kit.notice(failed(d.offline), 'warn')
-          : list(
-              ctx,
-              'cap-offline',
-              d.offline,
-              [
-                {
-                  label: 'Staff user',
-                  render: (item) =>
-                    `<code>${e(item.kind === 'local-admin' ? 'local administrator' : item.principalId)}</code>`,
-                },
-                { label: 'App', render: (item) => `<code>${e(item.app)}</code>` },
-                { label: 'Profile', render: (item) => e(item.profile ?? '—') },
-                { label: 'Mode', render: (item) => kit.badge(item.mode, item.mode === 'offline' ? 'warn' : 'ok') },
-                { label: 'Last sync', render: (item) => e(item.lastSync ?? 'never') },
-                { label: 'Tables', render: (item) => e(item.tables) },
-                { label: 'Pending', render: (item) => e(item.queue) },
-                {
-                  label: 'Conflicts',
-                  render: (item) => (item.conflicts ? kit.badge(String(item.conflicts), 'bad') : '0'),
-                },
-                { label: 'Errors', render: (item) => (item.errors ? kit.badge(String(item.errors), 'bad') : '0') },
-              ],
-              'No staff session has used mobile offline.',
-              'Mobile offline sessions',
-            ));
+    let offlineContent;
+    if (!d.offline) offlineContent = '<p class="ui-help">Sessions load on request.</p>';
+    else if (!Array.isArray(d.offline)) offlineContent = kit.notice(failed(d.offline), 'warn');
+    else
+      offlineContent = list(
+        ctx,
+        'cap-offline',
+        d.offline,
+        [
+          {
+            label: 'Staff user',
+            render: (item) =>
+              `<code>${e(item.kind === 'local-admin' ? 'local administrator' : item.principalId)}</code>`,
+          },
+          { label: 'App', render: (item) => `<code>${e(item.app)}</code>` },
+          { label: 'Profile', render: (item) => e(item.profile ?? '—') },
+          { label: 'Mode', render: (item) => kit.badge(item.mode, item.mode === 'offline' ? 'warn' : 'ok') },
+          { label: 'Last sync', render: (item) => e(item.lastSync ?? 'never') },
+          { label: 'Tables', render: (item) => e(item.tables) },
+          { label: 'Pending', render: (item) => e(item.queue) },
+          {
+            label: 'Conflicts',
+            render: (item) => (item.conflicts ? kit.badge(String(item.conflicts), 'bad') : '0'),
+          },
+          { label: 'Errors', render: (item) => (item.errors ? kit.badge(String(item.errors), 'bad') : '0') },
+        ],
+        'No staff session has used mobile offline.',
+        'Mobile offline sessions',
+      );
+    const offlineBody = offlineButton + offlineContent;
+    let offlineStatus = 'not loaded';
+    if (Array.isArray(d.offline))
+      offlineStatus = `${d.offline.filter((item) => item.mode === 'offline').length} offline`;
+    else if (d.offline) offlineStatus = 'unavailable';
     return (
       heading(ctx) +
       panel(ctx, 'report', 'Capability report', `${report?.modules?.length ?? 0} records`, reportBody, true) +
       panel(ctx, 'missing', 'Missing prerequisites', `${report?.missing?.length ?? 0}`, missing) +
       panel(ctx, 'unsupported', 'Below behaviour level', `${report?.unsupported?.length ?? 0}`, unsupported) +
-      panel(
-        ctx,
-        'offline',
-        'Mobile offline sessions',
-        Array.isArray(d.offline)
-          ? `${d.offline.filter((item) => item.mode === 'offline').length} offline`
-          : d.offline
-            ? 'unavailable'
-            : 'not loaded',
-        offlineBody,
-        Boolean(d.offline),
-      ) +
+      panel(ctx, 'offline', 'Mobile offline sessions', offlineStatus, offlineBody, Boolean(d.offline)) +
       panel(ctx, 'inventory', 'Source inventory', `${inventory?.total ?? 0} components`, inventoryBody) +
       panel(
         ctx,

@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of the portal client API and injected runtime; no reproduced native capture cited.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -72,6 +73,8 @@ function browser({ withApi = true, requests = [] } = {}) {
   return { window, logs, requests };
 }
 
+// Readiness settles from a zero-delay timer (pages-client-api.js whenParsed), which always fires before this longer
+// one, so the race only turns a hang into a named failure.
 const within = (promise, ms = 500) =>
   Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error('still pending')), ms))]);
 
@@ -252,7 +255,7 @@ test('injected pages load the client API right after the runtime; a page with th
   );
   assert.match(
     bundled,
-    /<script data-paqvilo-mirage-runtime>[\s\S]*window\.__paqviloPages = \$pages[\s\S]*?<\/script><title>/,
+    /<script data-paqvilo-mirage-runtime>[\s\S]*(?:window|globalThis)\.__paqviloPages = \$pages[\s\S]*?<\/script><title>/,
   );
   assert.doesNotMatch(bundled, /__sim-static/);
 });

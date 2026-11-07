@@ -9,14 +9,14 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const require = createRequire(import.meta.url);
 
 // A Bootstrap 5 site (Site/BootstrapV5Enabled) with one insert form: a required name,
 // an empty read-only code, an option set and a modal lookup.
 test('Bootstrap 5 forms: the runtime adopts its form marker, dashes empty read-only boxes and renders Bootstrap 5 lookup grids and success panels', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'bootstrap5-form-browser-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'bootstrap5-form-browser-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const jquery = await fs.readFile(
     path.join(path.dirname(require.resolve('jquery/package.json')), 'dist', 'jquery.min.js'),

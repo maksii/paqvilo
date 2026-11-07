@@ -49,8 +49,9 @@ export function serializePermissionFetchXml(element, depth = 0, pretty = true) {
     .join('');
   const pad = pretty ? '  '.repeat(depth) : '',
     opening = `${pad}<${element.name}${attrs}`;
-  const text =
-    element.name === 'value' ? escapeText(element.text ?? '') : element.text?.trim() ? escapeText(element.text) : '';
+  let text = '';
+  if (element.name === 'value') text = escapeText(element.text ?? '');
+  else if (element.text?.trim()) text = escapeText(element.text);
   if (!element.children.length) return text ? `${opening}>${text}</${element.name}>` : `${opening} />`;
   const newline = pretty ? '\r\n' : '';
   return `${opening}>${text}${newline}${element.children.map((child) => serializePermissionFetchXml(child, depth + 1, pretty)).join(newline)}${newline}${pad}</${element.name}>`;
@@ -59,16 +60,16 @@ const walk = function* (element) {
   yield element;
   for (const child of element.children) yield* walk(child);
 };
-const canonical = (value) =>
-  Array.isArray(value)
-    ? value.map(canonical)
-    : value && typeof value === 'object'
-      ? Object.fromEntries(
-          Object.entries(value)
-            .sort(([a], [b]) => a.localeCompare(b))
-            .map(([name, item]) => [name, canonical(item)]),
-        )
-      : value;
+const canonical = (value) => {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === 'object')
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([name, item]) => [name, canonical(item)]),
+    );
+  return value;
+};
 export function permissionOrderGraphFingerprint(permissions) {
   const graph = permissions
     .map((permission) => ({
@@ -77,8 +78,8 @@ export function permissionOrderGraphFingerprint(permissions) {
       entity: permission.entity,
       scope: permission.scope ?? 'global',
       enabled: permission.enabled !== false,
-      operations: [...(permission.operations ?? ['read'])].sort(),
-      roles: [...(permission.roles ?? [])].sort(),
+      operations: [...(permission.operations ?? ['read'])].sort(), // NOSONAR: preserve default string coercion in fingerprints
+      roles: [...(permission.roles ?? [])].sort(), // NOSONAR: preserve default string coercion in fingerprints
       roleIds: (permission.roleIds ?? []).map(key).sort(),
       imported: Boolean(permission.imported),
       field: permission.field ?? null,
@@ -122,68 +123,31 @@ export function compilePermissionFetchXml(
   const tree = parseXmlDocument(xml, { root: 'fetch' });
   const root = tree.children.find((element) => element.name === 'entity');
   if (!root?.attrs.name) throw new DataError('FetchXML entity is required.', 400, 'InvalidFetchXml');
-  const authoredLinkCount = [...walk(tree)].filter((element) => element.name === 'link-entity').length;
-  const authoredLinks = [...walk(tree)].filter((element) => element.name === 'link-entity');
-  const generatedNodes = new Set();
-  const diagnostics = [];
-  const grantPaths = [];
-  let normalizeQuery = false;
-  const finish = (permissionGranted, permissionLinkCount = 0, grantIds = []) => {
-    if (
-      normalizeQuery &&
-      permissionGranted &&
-      !grantIds.some((grant) => (grant.scope ?? 'global') === 'global') &&
-      !forceScopedDistinct &&
-      /^(?:false|0)$/i.test(String(tree.attrs.distinct ?? ''))
-    )
-      diagnostics.push({
-        code: 'PERMISSION_QUERY_DISTINCT_FALSE_UNQUALIFIED',
-        message:
-          'Captured scoped queries qualify the default distinct=true shape; explicit distinct=false remains authored and unqualified.',
-      });
-    const finalLinks = [...walk(tree)].filter((element) => element.name === 'link-entity');
-    permissionLinkCount = generatedNodes.size;
-    if (normalizeQuery && permissionGranted && !(unscopedCreate && operation === 'create')) {
-      if (forceScopedDistinct && !grantIds.some((grant) => (grant.scope ?? 'global') === 'global')) {
-        if (tree.attrs.distinct !== 'true')
-          diagnostics.push({
-            code: 'PERMISSION_QUERY_DISTINCT_FORCED',
-            message: 'The qualified scoped portal permission compiler selects DISTINCT for the secured query.',
-          });
-        tree.attrs.distinct = 'true';
-      } else if (
-        defaultDistinct &&
-        (defaultGlobalDistinct || !grantIds.some((grant) => (grant.scope ?? 'global') === 'global'))
-      )
-        tree.attrs.distinct ??= 'true';
-    }
-    return {
-      xml: normalizeQuery ? serializePermissionFetchXml(tree) : xml,
-      authoredXml: xml,
-      authoredLinkCount,
-      permissionLinkCount,
-      totalLinkCount: authoredLinkCount + permissionLinkCount,
-      generatedLinkOrdinals: finalLinks.flatMap((element, index) => (generatedNodes.has(element) ? [index] : [])),
-      generatedLinkAliases: finalLinks
-        .filter((element) => generatedNodes.has(element))
-        .map((element) => element.attrs.alias)
-        .filter(Boolean),
-      generatedTerminalConditions: root.children
-        .filter((element) => element.permissionFilter)
-        .flatMap((element) =>
-          [...walk(element)].filter((child) => child.name === 'condition').map((child) => ({ ...child.attrs })),
-        ),
-      permissionGranted,
-      globalPermissionGranted: permissionGranted && grantIds.some((grant) => (grant.scope ?? 'global') === 'global'),
-      grantIds: grantIds.map((grant) => grant.id),
-      qualification: 'modeled',
-      diagnostics,
-      grantPaths,
-      multiplicativePaths: grantPaths.filter((path) => path.multiplicative),
-    };
+  const context = {
+    xml,
+    tree,
+    root,
+    permissions,
+    identity,
+    mappings,
+    operation,
+    rules,
+    grantOrder,
+    unscopedCreate,
+    defaultDistinct,
+    defaultGlobalDistinct,
+    forceScopedDistinct,
+    seedAliasesFromAuthoredLinks,
+    maxPathDepth,
+    authoredLinkCount: [...walk(tree)].filter((element) => element.name === 'link-entity').length,
+    authoredLinks: [...walk(tree)].filter((element) => element.name === 'link-entity'),
+    generatedNodes: new Set(),
+    diagnostics: [],
+    grantPaths: [],
+    normalizeQuery: false,
   };
-  if (bypass || identity.admin) return finish(true);
-  normalizeQuery = true;
+  if (bypass || identity.admin) return finishPermissionQuery(context, true);
+  context.normalizeQuery = true;
   // Native scoped FetchExpression serialization supplies these defaults and
   // writes order nodes before filters. Explicit DISTINCT is retained unless
   // the caller selects the scoped portal contract.
@@ -191,21 +155,9 @@ export function compilePermissionFetchXml(
 
   const rank = { attribute: 0, 'all-attributes': 0, order: 1, filter: 2, 'link-entity': 3 };
   root.children.sort((left, right) => (rank[left.name] ?? 4) - (rank[right.name] ?? 4));
-  const availableRoles = new Set(identity.roles ?? []);
-  const availableIds = new Set((identity.roleIds ?? []).map(key));
-  const selected = (entity, right) =>
-    rules
-      ? rules(entity, right, identity)
-      : permissions.filter(
-          (grant) =>
-            grant.enabled !== false &&
-            (grant.entity === entity || grant.entity === '*') &&
-            (grant.operations ?? ['read']).includes(right) &&
-            (identity.roleSource === 'memberships' && (grant.imported || grant.roleIds?.length)
-              ? (grant.roleIds ?? []).some((role) => availableIds.has(key(role)))
-              : !grant.roles?.length || grant.roles.some((role) => availableRoles.has(role))),
-        );
-  let grants = selected(root.attrs.name, operation);
+  context.availableRoles = new Set(identity.roles ?? []);
+  context.availableIds = new Set((identity.roleIds ?? []).map(key));
+  let grants = selectPermissionGrants(context, root.attrs.name, operation);
   // The Liquid Create right asserts table creation
   // eligibility and executes the authored read without scoped permission joins.
   // The caller opts into this contract only for its Liquid lane.
@@ -216,28 +168,8 @@ export function compilePermissionFetchXml(
         501,
         'PermissionGrantOrderUnqualified',
       );
-    return finish(grants.length > 0, 0, grants);
+    return finishPermissionQuery(context, grants.length > 0, grants);
   }
-  const orderedGrants = (entity, selectedGrants) => {
-    if (!grantOrder) return selectedGrants;
-    const groups = grantOrder.tables?.[entity];
-    if (groups) {
-      const ranks = new Map(groups.flatMap((group, index) => group.map((id) => [key(id), index])));
-      if (selectedGrants.some((grant) => !ranks.has(key(grant.id))))
-        throw new DataError(
-          'Observed permission order does not cover a selected source grant.',
-          501,
-          'PermissionGrantOrderUnqualified',
-        );
-      return [...selectedGrants].sort((a, b) => ranks.get(key(a.id)) - ranks.get(key(b.id)));
-    } else if (selectedGrants.length > 1 && !selectedGrants.some((grant) => (grant.scope ?? 'global') === 'global'))
-      throw new DataError(
-        'Multiple grants have no observed order for this table.',
-        501,
-        'PermissionGrantOrderUnqualified',
-      );
-    return selectedGrants;
-  };
   if (grantOrder) {
     if (grantOrder.normalizedGraphHash !== permissionOrderGraphFingerprint(permissions))
       throw new DataError(
@@ -245,281 +177,441 @@ export function compilePermissionFetchXml(
         501,
         'PermissionGrantOrderUnqualified',
       );
-    grants = orderedGrants(root.attrs.name, grants);
+    grants = orderPermissionGrants(context, root.attrs.name, grants);
   }
   // The classic API lane constrains each authored linked table using
   // existential paths to its principal. Liquid only expands the root grants.
   // These paths come from source permissions, never a recorded query template.
-  for (const ordinal of linkedPermissionOrdinals) {
-    const link = authoredLinks[ordinal];
-    if (!link) throw new DataError('Authored permission link ordinal is invalid.', 400, 'InvalidPermission');
-    const linkedGrants = orderedGrants(link.attrs.name, selected(link.attrs.name, 'read'));
-    if (linkedGrants.some((grant) => (grant.scope ?? 'global') === 'global')) continue;
-    const alternatives = [],
-      seen = new Set();
-    for (const grant of linkedGrants) {
-      let firstSelection = true;
-      const single = compilePermissionFetchXml(
-        `<fetch><entity name="${xmlEscapeAttribute(link.attrs.name)}" /></fetch>`,
-        {
-          permissions,
-          identity,
-          mappings,
-          maxPathDepth,
-          rules: (entity, right) => {
-            if (firstSelection) {
-              firstSelection = false;
-              return [grant];
-            }
-            return selected(entity, right);
-          },
-        },
-      );
-      if (!single.permissionGranted) continue;
-      const singleRoot = parseXmlDocument(single.xml, { root: 'fetch' }).children.find(
-        (element) => element.name === 'entity',
-      );
-      const terminal = [...walk(singleRoot)].find((element) => element.name === 'condition');
-      const path = singleRoot.children.find((element) => element.name === 'link-entity');
-      let ancestor = grant;
-      const visited = new Set();
-      while (ancestor?.scope === 'parent' && !ancestor.observedOrphanParent) {
-        if (visited.has(key(ancestor.id))) break;
-        visited.add(key(ancestor.id));
-        ancestor = permissions.find(
-          (candidate) => key(candidate.id) === key(ancestor.parentPermissionId ?? ancestor.parentId),
-        );
-      }
-      if (!terminal || !ancestor) continue;
-      let last = path;
-      if (path)
-        for (;;) {
-          delete last.attrs.alias;
-          last.attrs['link-type'] = last === path ? 'any' : 'inner';
-          const next = last.children.find((element) => element.name === 'link-entity');
-          if (!next) break;
-          last = next;
-        }
-      const condition = node(
-        'condition',
-        Object.fromEntries(Object.entries(terminal.attrs).filter(([name]) => name !== 'entityname')),
-        structuredClone(terminal.children),
-      );
-      let alternative = path;
-      if (
-        ancestor.identityRelationship ||
-        ancestor.scope === 'self' ||
-        ancestor.observedOrphanParent ||
-        (ancestor.scope ?? 'global') === 'global'
-      ) {
-        const filter = node('filter', {}, [condition]);
-        if (last) last.children.push(filter);
-        else alternative = condition;
-      } else {
-        const principal = ancestor.scope === 'account' ? 'account' : 'contact';
-        const principalKey = mappings[principal]?.idColumn ?? `${principal}id`;
-        const principalLink = node(
-          'link-entity',
-          { name: principal, from: principalKey, to: terminal.attrs.attribute, 'link-type': path ? 'inner' : 'any' },
-          [
-            node('filter', {}, [
-              node(
-                'condition',
-                {
-                  attribute: principalKey,
-                  operator: terminal.attrs.operator,
-                  ...(terminal.attrs.value != null ? { value: terminal.attrs.value } : {}),
-                },
-                structuredClone(terminal.children),
-              ),
-            ]),
-          ],
-        );
-        if (last) last.children.push(principalLink);
-        else alternative = principalLink;
-      }
-      const signature = JSON.stringify(alternative);
-      if (seen.has(signature)) continue;
-      seen.add(signature);
-      alternatives.push(alternative);
-      grantPaths.push(
-        ...single.grantPaths.map((path) => ({ ...path, authoredTable: link.attrs.name, multiplicative: false })),
-      );
-      for (const element of walk(alternative)) if (element.name === 'link-entity') generatedNodes.add(element);
-    }
-    if (!alternatives.length)
-      throw new DataError('Table permission denies the authored linked table.', 403, 'PermissionDenied', {
-        operation: 'read',
-        table: link.attrs.name,
-      });
-    link.children.push(node('filter', { type: 'and' }, [node('filter', { type: 'or' }, alternatives)]));
-  }
-  if (grants.some((grant) => (grant.scope ?? 'global') === 'global')) return finish(true, 0, grants);
-  const byId = new Map(permissions.map((grant) => [key(grant.id), grant]));
-  const aliases = new Set([...walk(tree)].map((element) => element.attrs.alias).filter(Boolean));
-  const sequence = new Map();
-  if (seedAliasesFromAuthoredLinks)
-    for (const link of authoredLinks.filter((link) => link.attrs.alias))
-      sequence.set(link.attrs.name, (sequence.get(link.attrs.name) ?? 0) + 1);
-  const alias = (entity) => {
-    let index = sequence.get(entity) ?? 0,
-      result;
-    do {
-      result = `generated_alias_${entity}_${index++}`;
-    } while (aliases.has(result));
-    sequence.set(entity, index);
-    aliases.add(result);
-    return result;
-  };
-  const primary = (entity) => mappings[entity]?.idColumn ?? `${entity}id`;
-  let permissionLinkCount = 0;
-  const links = [],
-    conditions = [],
-    seenPaths = new Set(),
-    accepted = [];
-  // Every alternative gets its full path. Sharing a role between two grants
-  // must not turn their two different principal/relationship paths into AND.
-  for (const grant of grants) {
-    const descriptors = [],
-      seen = new Set();
-    let current = grant,
-      terminal;
-    while (current) {
-      const currentKey = key(current.id);
-      if (seen.has(currentKey) || descriptors.length > maxPathDepth)
-        throw new DataError('Cyclic or excessive parent table permission path.', 400, 'InvalidPermission');
-      seen.add(currentKey);
-      const scope = current.scope ?? 'global';
-      if (current.observedOrphanParent?.field) {
-        terminal = { attribute: current.observedOrphanParent.field, operator: 'not-null' };
-        diagnostics.push({
-          code: 'PERMISSION_OBSERVED_ORPHAN_UNRESTRICTED',
-          permissionId: current.id,
-          message:
-            'An explicitly observed inactive-parent profile replaced the missing identity path with a not-null parent lookup.',
+  for (const ordinal of linkedPermissionOrdinals)
+    compileLinkedPermission(context, ordinal, (entity, selected) => orderPermissionGrants(context, entity, selected));
+  if (grants.some((grant) => (grant.scope ?? 'global') === 'global'))
+    return finishPermissionQuery(context, true, grants);
+  return compileScopedPermissionPaths(context, grants, rank);
+}
+
+function finishPermissionQuery(context, permissionGranted, grantIds = []) {
+  const { tree, root, forceScopedDistinct, operation, unscopedCreate, defaultDistinct, defaultGlobalDistinct } =
+    context;
+  if (
+    context.normalizeQuery &&
+    permissionGranted &&
+    !grantIds.some((grant) => (grant.scope ?? 'global') === 'global') &&
+    !forceScopedDistinct &&
+    /^(?:false|0)$/i.test(String(tree.attrs.distinct ?? ''))
+  )
+    context.diagnostics.push({
+      code: 'PERMISSION_QUERY_DISTINCT_FALSE_UNQUALIFIED',
+      message:
+        'Captured scoped queries qualify the default distinct=true shape; explicit distinct=false remains authored and unqualified.',
+    });
+  const finalLinks = [...walk(tree)].filter((element) => element.name === 'link-entity');
+  const permissionLinkCount = context.generatedNodes.size;
+  if (context.normalizeQuery && permissionGranted && !(unscopedCreate && operation === 'create')) {
+    if (forceScopedDistinct && !grantIds.some((grant) => (grant.scope ?? 'global') === 'global')) {
+      if (tree.attrs.distinct !== 'true')
+        context.diagnostics.push({
+          code: 'PERMISSION_QUERY_DISTINCT_FORCED',
+          message: 'The qualified scoped portal permission compiler selects DISTINCT for the secured query.',
         });
-        break;
+      tree.attrs.distinct = 'true';
+    } else if (
+      defaultDistinct &&
+      (defaultGlobalDistinct || !grantIds.some((grant) => (grant.scope ?? 'global') === 'global'))
+    )
+      tree.attrs.distinct ??= 'true';
+  }
+  return {
+    xml: context.normalizeQuery ? serializePermissionFetchXml(tree) : context.xml,
+    authoredXml: context.xml,
+    authoredLinkCount: context.authoredLinkCount,
+    permissionLinkCount,
+    totalLinkCount: context.authoredLinkCount + permissionLinkCount,
+    generatedLinkOrdinals: finalLinks.flatMap((element, index) => (context.generatedNodes.has(element) ? [index] : [])),
+    generatedLinkAliases: finalLinks
+      .filter((element) => context.generatedNodes.has(element))
+      .map((element) => element.attrs.alias)
+      .filter(Boolean),
+    generatedTerminalConditions: root.children
+      .filter((element) => element.permissionFilter)
+      .flatMap((element) =>
+        [...walk(element)].filter((child) => child.name === 'condition').map((child) => ({ ...child.attrs })),
+      ),
+    permissionGranted,
+    globalPermissionGranted: permissionGranted && grantIds.some((grant) => (grant.scope ?? 'global') === 'global'),
+    grantIds: grantIds.map((grant) => grant.id),
+    qualification: 'modeled',
+    diagnostics: context.diagnostics,
+    grantPaths: context.grantPaths,
+    multiplicativePaths: context.grantPaths.filter((path) => path.multiplicative),
+  };
+}
+
+function selectPermissionGrants(context, entity, right) {
+  const { rules, identity, permissions } = context;
+  if (rules) return rules(entity, right, identity);
+  return permissions.filter((grant) =>
+    isSelectedGrant(grant, entity, right, identity, context.availableRoles, context.availableIds),
+  );
+}
+
+function isSelectedGrant(grant, entity, right, identity, availableRoles, availableIds) {
+  return (
+    grant.enabled !== false &&
+    (grant.entity === entity || grant.entity === '*') &&
+    (grant.operations ?? ['read']).includes(right) &&
+    (identity.roleSource === 'memberships' && (grant.imported || grant.roleIds?.length)
+      ? (grant.roleIds ?? []).some((role) => availableIds.has(key(role)))
+      : !grant.roles?.length || grant.roles.some((role) => availableRoles.has(role)))
+  );
+}
+
+function orderPermissionGrants(context, entity, selectedGrants) {
+  const { grantOrder } = context;
+  if (!grantOrder) return selectedGrants;
+  const groups = grantOrder.tables?.[entity];
+  if (groups) {
+    const ranks = new Map(groups.flatMap((group, index) => group.map((id) => [key(id), index])));
+    if (selectedGrants.some((grant) => !ranks.has(key(grant.id))))
+      throw new DataError(
+        'Observed permission order does not cover a selected source grant.',
+        501,
+        'PermissionGrantOrderUnqualified',
+      );
+    return [...selectedGrants].sort((a, b) => ranks.get(key(a.id)) - ranks.get(key(b.id)));
+  }
+  if (selectedGrants.length > 1 && !selectedGrants.some((grant) => (grant.scope ?? 'global') === 'global'))
+    throw new DataError(
+      'Multiple grants have no observed order for this table.',
+      501,
+      'PermissionGrantOrderUnqualified',
+    );
+  return selectedGrants;
+}
+
+function compileLinkedPermission(context, ordinal, orderedGrants) {
+  const link = context.authoredLinks[ordinal];
+  if (!link) throw new DataError('Authored permission link ordinal is invalid.', 400, 'InvalidPermission');
+  const linkedGrants = orderedGrants(link.attrs.name, selectPermissionGrants(context, link.attrs.name, 'read'));
+  if (linkedGrants.some((grant) => (grant.scope ?? 'global') === 'global')) return;
+  const alternatives = [],
+    seen = new Set();
+  for (const grant of linkedGrants) {
+    const result = linkedAlternative(context, link, grant);
+    if (!result) continue;
+    const signature = JSON.stringify(result.alternative);
+    if (seen.has(signature)) continue;
+    seen.add(signature);
+    alternatives.push(result.alternative);
+    context.grantPaths.push(...result.grantPaths);
+    for (const element of walk(result.alternative))
+      if (element.name === 'link-entity') context.generatedNodes.add(element);
+  }
+  if (!alternatives.length)
+    throw new DataError('Table permission denies the authored linked table.', 403, 'PermissionDenied', {
+      operation: 'read',
+      table: link.attrs.name,
+    });
+  link.children.push(node('filter', { type: 'and' }, [node('filter', { type: 'or' }, alternatives)]));
+}
+
+function linkedAlternative(context, link, grant) {
+  let firstSelection = true;
+  const single = compilePermissionFetchXml(`<fetch><entity name="${xmlEscapeAttribute(link.attrs.name)}" /></fetch>`, {
+    permissions: context.permissions,
+    identity: context.identity,
+    mappings: context.mappings,
+    maxPathDepth: context.maxPathDepth,
+    rules: (entity, right) => {
+      if (firstSelection) {
+        firstSelection = false;
+        return [grant];
       }
-      if (scope === 'parent') {
-        const relationship = current.relationship;
-        const parent = byId.get(key(current.parentPermissionId ?? current.parentId));
-        if (
-          !parent ||
-          parent.enabled === false ||
-          !relationship?.entity ||
-          !relationship.from ||
-          !relationship.to ||
-          relationship.entity !== parent.entity ||
-          !selected(parent.entity, 'read').some((candidate) => key(candidate.id) === key(parent.id))
-        )
-          break;
-        descriptors.push(relationship);
-        current = parent;
-        continue;
-      }
-      if (scope === 'global') {
-        // A child of a global parent still needs an existing parent row.
-        terminal = { attribute: primary(current.entity), operator: 'not-null' };
-        break;
-      }
-      if (!['contact', 'account', 'self'].includes(scope)) break;
-      const value = scope === 'account' ? identity.accountId : (identity.contactId ?? identity.id);
-      if (!value) break;
-      if (current.identityRelationship) {
-        descriptors.push(current.identityRelationship);
-        terminal = { attribute: primary(current.identityRelationship.entity), operator: 'eq', value };
-      } else
-        terminal = {
-          attribute:
-            current.field ??
-            (scope === 'self' ? primary(current.entity) : scope === 'account' ? 'parentcustomerid' : 'contactid'),
-          operator: 'eq',
-          value,
-        };
+      return selectPermissionGrants(context, entity, right);
+    },
+  });
+  if (!single.permissionGranted) return null;
+  const singleRoot = parseXmlDocument(single.xml, { root: 'fetch' }).children.find(
+    (element) => element.name === 'entity',
+  );
+  const terminal = [...walk(singleRoot)].find((element) => element.name === 'condition');
+  const path = singleRoot.children.find((element) => element.name === 'link-entity');
+  const ancestor = linkedGrantAncestor(grant, context.permissions);
+  if (!terminal || !ancestor) return null;
+  const last = normalizeLinkedPath(path);
+  const condition = node(
+    'condition',
+    Object.fromEntries(Object.entries(terminal.attrs).filter(([name]) => name !== 'entityname')),
+    structuredClone(terminal.children),
+  );
+  return {
+    alternative: makeLinkedAlternative(path, last, terminal, ancestor, condition, context.mappings),
+    grantPaths: single.grantPaths.map((item) => ({ ...item, authoredTable: link.attrs.name, multiplicative: false })),
+  };
+}
+
+function linkedGrantAncestor(grant, permissions) {
+  let ancestor = grant;
+  const visited = new Set();
+  while (ancestor?.scope === 'parent' && !ancestor.observedOrphanParent) {
+    if (visited.has(key(ancestor.id))) break;
+    visited.add(key(ancestor.id));
+    ancestor = permissions.find(
+      (candidate) => key(candidate.id) === key(ancestor.parentPermissionId ?? ancestor.parentId),
+    );
+  }
+  return ancestor;
+}
+
+function normalizeLinkedPath(path) {
+  let last = path;
+  if (!path) return last;
+  for (;;) {
+    delete last.attrs.alias;
+    last.attrs['link-type'] = last === path ? 'any' : 'inner';
+    const next = last.children.find((element) => element.name === 'link-entity');
+    if (!next) break;
+    last = next;
+  }
+  return last;
+}
+
+function makeLinkedAlternative(path, last, terminal, ancestor, condition, mappings) {
+  let alternative = path;
+  if (
+    ancestor.identityRelationship ||
+    ancestor.scope === 'self' ||
+    ancestor.observedOrphanParent ||
+    (ancestor.scope ?? 'global') === 'global'
+  ) {
+    const filter = node('filter', {}, [condition]);
+    if (last) last.children.push(filter);
+    else alternative = condition;
+    return alternative;
+  }
+  const principal = ancestor.scope === 'account' ? 'account' : 'contact';
+  const principalKey = mappings[principal]?.idColumn ?? `${principal}id`;
+  const principalLink = node(
+    'link-entity',
+    { name: principal, from: principalKey, to: terminal.attrs.attribute, 'link-type': path ? 'inner' : 'any' },
+    [
+      node('filter', {}, [
+        node(
+          'condition',
+          {
+            attribute: principalKey,
+            operator: terminal.attrs.operator,
+            ...(terminal.attrs.value != null ? { value: terminal.attrs.value } : {}),
+          },
+          structuredClone(terminal.children),
+        ),
+      ]),
+    ],
+  );
+  if (last) last.children.push(principalLink);
+  else alternative = principalLink;
+  return alternative;
+}
+
+function compileScopedPermissionPaths(context, grants, rank) {
+  const byId = new Map(context.permissions.map((grant) => [key(grant.id), grant]));
+  const aliases = new Set([...walk(context.tree)].map((element) => element.attrs.alias).filter(Boolean));
+  const sequence = new Map();
+  if (context.seedAliasesFromAuthoredLinks)
+    for (const link of context.authoredLinks.filter((link) => link.attrs.alias))
+      sequence.set(link.attrs.name, (sequence.get(link.attrs.name) ?? 0) + 1);
+  const state = { aliases, sequence, byId, links: [], conditions: [], seenPaths: new Set(), accepted: [] };
+  for (const grant of grants) addScopedGrantPath(context, state, grant);
+  if (!state.conditions.length) return finishPermissionQuery(context, false);
+  const permissionFilter = node('filter', { type: 'and' }, [
+    node('filter', { type: 'or', hint: 'union' }, state.conditions),
+  ]);
+  permissionFilter.permissionFilter = true;
+  const firstLink = context.root.children.findIndex((element) => element.name === 'link-entity');
+  if (firstLink < 0) context.root.children.push(permissionFilter);
+  else context.root.children.splice(firstLink, 0, permissionFilter);
+  context.root.children.push(...state.links);
+  context.root.children.sort((left, right) => (rank[left.name] ?? 4) - (rank[right.name] ?? 4));
+  return finishPermissionQuery(context, true, state.accepted);
+}
+
+function addScopedGrantPath(context, state, grant) {
+  const path = permissionGrantPath(context, state, grant);
+  if (!path) return;
+  const signature = JSON.stringify(path);
+  if (state.seenPaths.has(signature)) return;
+  state.seenPaths.add(signature);
+  state.accepted.push(grant);
+  context.grantPaths.push(describeGrantPath(grant, path.descriptors));
+  const joins = buildPermissionJoins(context, state, path.descriptors);
+  state.conditions.push(
+    node('condition', { ...(joins.terminalAlias ? { entityname: joins.terminalAlias } : {}), ...path.terminal }),
+  );
+  if (joins.first) state.links.push(joins.first);
+}
+
+function permissionGrantPath(context, state, grant) {
+  const descriptors = [],
+    seen = new Set();
+  let current = grant,
+    terminal;
+  while (current) {
+    const currentKey = key(current.id);
+    if (seen.has(currentKey) || descriptors.length > context.maxPathDepth)
+      throw new DataError('Cyclic or excessive parent table permission path.', 400, 'InvalidPermission');
+    seen.add(currentKey);
+    const step = permissionPathStep(context, state, current, descriptors);
+    if (step.terminal) {
+      terminal = step.terminal;
       break;
     }
-    if (!terminal) {
-      diagnostics.push({
-        code: 'PERMISSION_QUERY_PATH_UNRESOLVED',
-        permissionId: grant.id,
-        message: 'This grant has no complete enabled path to an applicable identity or global ancestor.',
-      });
+    if (step.next) {
+      current = step.next;
       continue;
     }
-    const signature = JSON.stringify({ descriptors, terminal });
-    if (seenPaths.has(signature)) continue;
-    seenPaths.add(signature);
-    accepted.push(grant);
-    grantPaths.push({
-      grantId: grant.id,
-      tables: [grant.entity, ...descriptors.map((relation) => relation.entity)],
-      links: descriptors.map(({ entity, from, to, many, intersect }) => ({
-        entity,
-        from,
-        to,
-        many: many === true,
-        ...(intersect ? { intersect: { entity: intersect.entity, from: intersect.from, to: intersect.to } } : {}),
-      })),
-      multiplicative: descriptors.some((relation) => relation.many === true || Boolean(relation.intersect)),
-    });
-    let first, last, terminalAlias;
-    for (const relationship of descriptors) {
-      let join;
-      if (relationship.intersect) {
-        const edge = relationship.intersect;
-        if (!edge.entity || !edge.from || !edge.to)
-          throw new DataError('Permission intersect relationship is incomplete.', 400, 'InvalidPermission');
-        const intersection = node('link-entity', {
-          name: edge.entity,
-          from: edge.from,
-          to: relationship.from,
-          'link-type': 'outer',
-          visible: 'false',
-          intersect: 'true',
-        });
-        terminalAlias = alias(relationship.entity);
-        join = node('link-entity', {
-          name: relationship.entity,
-          from: relationship.to,
-          to: edge.to,
-          alias: terminalAlias,
-          'link-type': 'outer',
-        });
-        intersection.children.push(join);
-        generatedNodes.add(intersection);
-        generatedNodes.add(join);
-        if (last) last.children.push(intersection);
-        else first = intersection;
-        last = join;
-        permissionLinkCount += 2;
-      } else {
-        terminalAlias = alias(relationship.entity);
-        join = node('link-entity', {
-          name: relationship.entity,
-          from: relationship.to,
-          to: relationship.from,
-          alias: terminalAlias,
-          'link-type': 'outer',
-        });
-        if (last) last.children.push(join);
-        else first = join;
-        generatedNodes.add(join);
-        last = join;
-        permissionLinkCount++;
-      }
-    }
-    conditions.push(node('condition', { ...(terminalAlias ? { entityname: terminalAlias } : {}), ...terminal }));
-    if (first) links.push(first);
+    break;
   }
-  if (!conditions.length) return finish(false);
-  const permissionFilter = node('filter', { type: 'and' }, [node('filter', { type: 'or', hint: 'union' }, conditions)]);
-  permissionFilter.permissionFilter = true;
-  // Native scoped serialization places the permission filter with the filters,
-  // before authored joins. Generated paths follow all authored joins.
-  const firstLink = root.children.findIndex((element) => element.name === 'link-entity');
-  if (firstLink < 0) root.children.push(permissionFilter);
-  else root.children.splice(firstLink, 0, permissionFilter);
-  root.children.push(...links);
-  root.children.sort((left, right) => (rank[left.name] ?? 4) - (rank[right.name] ?? 4));
-  return finish(true, permissionLinkCount, accepted);
+  if (terminal) return { descriptors, terminal };
+  context.diagnostics.push({
+    code: 'PERMISSION_QUERY_PATH_UNRESOLVED',
+    permissionId: grant.id,
+    message: 'This grant has no complete enabled path to an applicable identity or global ancestor.',
+  });
+  return null;
+}
+
+function permissionPathStep(context, state, current, descriptors) {
+  const scope = current.scope ?? 'global';
+  if (current.observedOrphanParent?.field) {
+    context.diagnostics.push({
+      code: 'PERMISSION_OBSERVED_ORPHAN_UNRESTRICTED',
+      permissionId: current.id,
+      message:
+        'An explicitly observed inactive-parent profile replaced the missing identity path with a not-null parent lookup.',
+    });
+    return { terminal: { attribute: current.observedOrphanParent.field, operator: 'not-null' } };
+  }
+  if (scope === 'parent') return parentPermissionStep(context, state, current, descriptors);
+  if (scope === 'global')
+    return { terminal: { attribute: primaryPermissionKey(context, current.entity), operator: 'not-null' } };
+  if (!['contact', 'account', 'self'].includes(scope)) return {};
+  const value = scope === 'account' ? context.identity.accountId : (context.identity.contactId ?? context.identity.id);
+  if (!value) return {};
+  return { terminal: identityPermissionTerminal(context, current, scope, value, descriptors) };
+}
+
+function parentPermissionStep(context, state, current, descriptors) {
+  const relationship = current.relationship;
+  const parent = state.byId.get(key(current.parentPermissionId ?? current.parentId));
+  if (
+    !parent ||
+    parent.enabled === false ||
+    !relationship?.entity ||
+    !relationship.from ||
+    !relationship.to ||
+    relationship.entity !== parent.entity ||
+    !selectPermissionGrants(context, parent.entity, 'read').some((candidate) => key(candidate.id) === key(parent.id))
+  )
+    return {};
+  descriptors.push(relationship);
+  return { next: parent };
+}
+
+function identityPermissionTerminal(context, current, scope, value, descriptors) {
+  if (current.identityRelationship) {
+    descriptors.push(current.identityRelationship);
+    return { attribute: primaryPermissionKey(context, current.identityRelationship.entity), operator: 'eq', value };
+  }
+  let attribute = current.field;
+  if (attribute == null) attribute = defaultIdentityPermissionField(context, current, scope);
+  return { attribute, operator: 'eq', value };
+}
+
+function defaultIdentityPermissionField(context, current, scope) {
+  if (scope === 'self') return primaryPermissionKey(context, current.entity);
+  if (scope === 'account') return 'parentcustomerid';
+  return 'contactid';
+}
+
+function primaryPermissionKey(context, entity) {
+  return context.mappings[entity]?.idColumn ?? `${entity}id`;
+}
+
+function describeGrantPath(grant, descriptors) {
+  return {
+    grantId: grant.id,
+    tables: [grant.entity, ...descriptors.map((relation) => relation.entity)],
+    links: descriptors.map(({ entity, from, to, many, intersect }) => ({
+      entity,
+      from,
+      to,
+      many: many === true,
+      ...(intersect ? { intersect: { entity: intersect.entity, from: intersect.from, to: intersect.to } } : {}),
+    })),
+    multiplicative: descriptors.some((relation) => relation.many === true || Boolean(relation.intersect)),
+  };
+}
+
+function buildPermissionJoins(context, state, descriptors) {
+  let first, last, terminalAlias;
+  for (const relationship of descriptors) {
+    const result = permissionJoin(context, state, relationship);
+    if (last) last.children.push(result.first);
+    else first = result.first;
+    last = result.last;
+    terminalAlias = result.terminalAlias;
+  }
+  return { first, terminalAlias };
+}
+
+function permissionJoin(context, state, relationship) {
+  if (!relationship.intersect) {
+    const terminalAlias = nextPermissionAlias(state, relationship.entity);
+    const join = node('link-entity', {
+      name: relationship.entity,
+      from: relationship.to,
+      to: relationship.from,
+      alias: terminalAlias,
+      'link-type': 'outer',
+    });
+    context.generatedNodes.add(join);
+    return { first: join, last: join, terminalAlias };
+  }
+  return permissionIntersectJoin(context, state, relationship);
+}
+
+function permissionIntersectJoin(context, state, relationship) {
+  const edge = relationship.intersect;
+  if (!edge.entity || !edge.from || !edge.to)
+    throw new DataError('Permission intersect relationship is incomplete.', 400, 'InvalidPermission');
+  const intersection = node('link-entity', {
+    name: edge.entity,
+    from: edge.from,
+    to: relationship.from,
+    'link-type': 'outer',
+    visible: 'false',
+    intersect: 'true',
+  });
+  const terminalAlias = nextPermissionAlias(state, relationship.entity);
+  const join = node('link-entity', {
+    name: relationship.entity,
+    from: relationship.to,
+    to: edge.to,
+    alias: terminalAlias,
+    'link-type': 'outer',
+  });
+  intersection.children.push(join);
+  context.generatedNodes.add(intersection);
+  context.generatedNodes.add(join);
+  return { first: intersection, last: join, terminalAlias };
+}
+
+function nextPermissionAlias(state, entity) {
+  let index = state.sequence.get(entity) ?? 0,
+    result;
+  do {
+    result = `generated_alias_${entity}_${index++}`;
+  } while (state.aliases.has(result));
+  state.sequence.set(entity, index);
+  state.aliases.add(result);
+  return result;
 }

@@ -160,19 +160,17 @@ const JOIN =
 test('joins stop early when the order allows it; the work stays bounded (performance)', () => {
   // 2,000 accounts with 50 contacts each: a full join is 100,000 rows.
   const big = store({ complete: false, accounts: 2000, contactsPerAccount: 50 });
-  const started = performance.now();
+  // The bound is the work done (stats.joinedRows), not a wall-clock budget that depends on the machine.
   const top = big.fetchXml(
     `<fetch top="5"><entity name="account"><attribute name="name"/><order attribute="name"/>${JOIN}</entity></fetch>`,
     { admin: true },
   );
-  const elapsed = performance.now() - started;
   assert.deepEqual(
     top.entities.map((row) => [row.name, row['c.fullname']]),
     [0, 1, 2, 3, 4].map((c) => ['Account 0000', `Contact 0-${c}`]),
   );
   assert.equal(top.stats.earlyLimit, 5);
   assert.equal(top.stats.joinedRows, 50, 'only the first account was joined');
-  assert.ok(elapsed < 2000, `top 5 of a 100,000-row join took ${Math.round(elapsed)} ms`);
   // A later page needs the rows up to its end plus one to know whether more exist
   // (Liquid requests the total by default; this query declines it).
   const page = big.fetchXml(

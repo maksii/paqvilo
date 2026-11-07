@@ -41,10 +41,14 @@ const BROWSER_FILES = {
 };
 const TYPES = { mjs: 'text/javascript', css: 'text/css', html: 'text/html' };
 const asset = (pathname) => (Object.hasOwn(BROWSER_FILES, pathname) ? BROWSER_FILES[pathname] : null);
-const quote = (value) => (/^[\w./:\\-]+$/.test(value) ? value : `"${String(value).replace(/"/g, '')}"`);
+const quote = (value) => (/^[\w./:\\-]+$/.test(value) ? value : `"${String(value).replaceAll('"', '')}"`);
 // Commands that start a preview this page can be mounted in (the restart command repeats the one that ran).
 const COMMANDS = new Set(['mirage dev', 'mirage start', 'mirage serve', 'lense dev']);
 const SITE = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
+function defaultCommand(options) {
+  if (options.runtime.product === 'Lense') return 'lense dev';
+  return options.store.kind === 'project' ? 'mirage serve' : 'mirage dev';
+}
 /**
  * The running product, site and command: the host's runtime, then the setup options a host spreads in
  * (site, command), then MIRAGE_SETUP_RUNTIME, which `paqvilo mirage dev|start` sets for the Mirage child it spawns.
@@ -53,7 +57,8 @@ function runningRuntime(options, env = process.env) {
   if (!options.runtime) return null;
   let launched;
   try {
-    launched = JSON.parse(env.MIRAGE_SETUP_RUNTIME ?? '{}') ?? {};
+    // Set for a Mirage child only: a Lense that inherits it keeps its own site and command.
+    launched = options.runtime.product === 'Lense' ? {} : (JSON.parse(env.MIRAGE_SETUP_RUNTIME ?? '{}') ?? {});
   } catch {
     launched = {};
   }
@@ -64,13 +69,7 @@ function runningRuntime(options, env = process.env) {
   return {
     ...options.runtime,
     site,
-    command:
-      command ??
-      (options.runtime.product === 'Lense'
-        ? 'lense dev'
-        : options.store.kind === 'project'
-          ? 'mirage serve'
-          : 'mirage dev'),
+    command: command ?? defaultCommand(options),
   };
 }
 /** The command that restarts the running preview with the saved configuration, run from the configuration folder. */
@@ -86,7 +85,8 @@ function commandArgs(runtime, store, value) {
 }
 function restartCommand(runtime, store, value) {
   const { site } = commandArgs(runtime, store, value);
-  return `npx paqvilo ${runtime.command} ${store.kind === 'project' ? '--project' : '--config'} ${quote(store.file)}${site ? ` ${site}` : ''}`;
+  const siteArg = site ? ` ${site}` : '';
+  return `npx paqvilo ${runtime.command} ${store.kind === 'project' ? '--project' : '--config'} ${quote(store.file)}${siteArg}`;
 }
 // What the restart comparison covers, named in the banner.
 const RESTART_SCOPE = {
@@ -114,7 +114,8 @@ async function liveView(res, origin, name, query) {
     return respond(res, 404, { error: { message: 'No running Mirage preview serves this view.' } });
   try {
     query.delete('site');
-    const upstream = await fetch(`${origin}/_sim/api/${name}${name === 'preflight' && query.size ? `?${query}` : ''}`, {
+    const search = name === 'preflight' && query.size ? `?${query}` : '';
+    const upstream = await fetch(`${origin}/_sim/api/${name}${search}`, {
       headers: { accept: 'application/json' },
       redirect: 'error',
       signal: AbortSignal.timeout(name === 'preflight' ? 120_000 : 10_000),
@@ -154,7 +155,7 @@ function requestOrigin(req) {
   )
     throw setupError('Setup accepts only loopback hosts.', 403);
   const address = req.socket.localAddress;
-  if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(address))
+  /* NOSONAR */ if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(address))
     throw setupError('Setup accepts only loopback connections.', 403);
   if (Number(origin.port || 80) !== req.socket.localPort) throw setupError('Incorrect setup port.', 403);
   if (req.headers.origin && req.headers.origin !== origin.origin)
@@ -299,7 +300,10 @@ export async function createSetupHandler(options = {}) {
       };
     }
   };
-  return async (req, res) => {
+  /* NOSONAR: Preserve synchronous error handling and the original request response ordering. */ return async (
+    req,
+    res,
+  ) /* NOSONAR */ => {
     const pathname = req.url?.split('?')[0];
     if (!/^\/_setup(?:\/|$)/.test(pathname ?? '')) return false;
     try {

@@ -73,7 +73,7 @@ export function modelDrivenComparisonAdmission(response, { page, overlay, origin
     )
       return null;
     const length = headers['content-length'];
-    if (!/^(?:0|[1-9][0-9]{0,7})$/.test(length ?? '') || Number(length) > 3 * 1024 * 1024) return null;
+    if (!/^(?:0|[1-9]\d{0,7})$/.test(length ?? '') || Number(length) > 3 * 1024 * 1024) return null;
     const name = overlay.resourceForUrl(response.url());
     return name && overlay.isTextResource(name) ? { name, length: Number(length) } : null;
   } catch {
@@ -98,11 +98,11 @@ function installModelDrivenContextWatch({ origin, token }) {
   };
   const key = () =>
     JSON.stringify([
-      Boolean(window.Xrm),
-      safe(() => window.Xrm?.Page?.data?.entity?.getEntityName()),
-      safe(() => window.Xrm?.Page?.ui?.formSelector?.getCurrentItem()?.getId()),
-      safe(() => window.Xrm?.Page?.ui?.getFormType()),
-      safe(() => window.Xrm?.Utility?.getPageContext?.()?.input?.viewId),
+      Boolean(globalThis.Xrm),
+      safe(() => globalThis.Xrm?.Page?.data?.entity?.getEntityName()),
+      safe(() => globalThis.Xrm?.Page?.ui?.formSelector?.getCurrentItem()?.getId()),
+      safe(() => globalThis.Xrm?.Page?.ui?.getFormType()),
+      safe(() => globalThis.Xrm?.Utility?.getPageContext?.()?.input?.viewId),
     ]);
   let previous = key();
   const timer = setInterval(() => {
@@ -114,7 +114,7 @@ function installModelDrivenContextWatch({ origin, token }) {
     if (next === previous) return;
     previous = next;
     host.__paqModelActions?.contextChanged?.();
-    Promise.resolve(window.__paqviloModelInspectorRefresh?.()).catch(() => {});
+    Promise.resolve(globalThis.__paqviloModelInspectorRefresh?.()).catch(() => {});
   }, 500);
   Object.defineProperty(host, '__paqModelWatch', {
     configurable: true,
@@ -139,7 +139,7 @@ export async function startModelDrivenInspector({
   runtime = {},
   savedState = null,
 }) {
-  const session = Object.assign(new EventEmitter(), { cfg, rel: (file) => String(file) });
+  const session = Object.assign(new EventEmitter(), { cfg, rel: String });
   const token = randomBytes(12).toString('hex');
   const identity = createModelDrivenIdentity({ origin: cfg.origin, page });
   let sourceRevision = 1;
@@ -309,7 +309,7 @@ export async function startModelDrivenInspector({
       }
       let observed = await page.evaluate(inspectModelDrivenContext, cfg.origin);
       if (overlay.report().localSimulation) {
-        const known = await page.evaluate(() => window.__paqviloMirageProvenance?.context?.());
+        const known = await page.evaluate(() => globalThis.__paqviloMirageProvenance?.context?.());
         if (known)
           observed = {
             ...observed,
@@ -334,7 +334,7 @@ export async function startModelDrivenInspector({
             const tools = document.getElementById('paqvilo-xray')?.__px;
             const scope = tools?.getSelectionScope(document.documentElement);
             return scope
-              ? window.__paqviloModelDrivenProvider?.observe({
+              ? globalThis.__paqviloModelDrivenProvider?.observe({
                   scope,
                   anchorGeneration: 0,
                   budget: { items: 128, bytes: 64 * 1024 },
@@ -409,7 +409,7 @@ export async function startModelDrivenInspector({
   });
   on(page, 'console', (message) => {
     if (!['error', 'warning', 'warn'].includes(message.type())) return;
-    if (/^Failed to load resource/.test(message.text())) return;
+    if (message.text().startsWith('Failed to load resource')) return;
     const location = message.location?.() ?? {};
     problem({
       type: message.type(),
@@ -465,7 +465,7 @@ export async function startModelDrivenInspector({
   on(page, 'domcontentloaded', () => refresh());
   try {
     const bindings = {};
-    bindings.__paqviloModelPanelApi = async (source, input) => {
+    /* NOSONAR */ bindings.__paqviloModelPanelApi = async (source, input) => {
       if (
         cfg.panel === false ||
         source.page !== page ||
@@ -785,7 +785,7 @@ export async function startModelDrivenInspector({
           };
         },
         pageState: () => {
-          const { token: _token, ...state } = snapshot();
+          const { token: _token, ...state } = snapshot(); // NOSONAR: binding is excluded from the rest object or is a placeholder
           return { kind: 'model-driven', ...state };
         },
       },
@@ -834,10 +834,10 @@ export async function startModelDrivenInspector({
             await within(
               page
                 .evaluate((retired) => {
-                  const retiredSessions = (window.__paqviloRetiredModelInspectors ??= []);
+                  const retiredSessions = (globalThis.__paqviloRetiredModelInspectors ??= []);
                   retiredSessions.push(retired);
                   if (retiredSessions.length > 64) retiredSessions.shift();
-                  const canonicalRetired = (window.__paqviloRetiredSessions ??= []);
+                  const canonicalRetired = (globalThis.__paqviloRetiredSessions ??= []);
                   canonicalRetired.push(retired);
                   if (canonicalRetired.length > 64) canonicalRetired.shift();
                   const inspector = document.getElementById('paqvilo-panel')?.__paqModelInspector;

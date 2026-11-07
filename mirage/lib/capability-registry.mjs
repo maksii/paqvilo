@@ -33,6 +33,12 @@ const MODE_LEVELS = Object.freeze({
   clr: 'behaviour',
   webhook: 'behaviour',
 });
+const operationReason = (item) => {
+  if (item.unsupported) return { reason: String(item.unsupported) };
+  if (item.mode in MODE_LEVELS) return {};
+  return { reason: `Unknown operation mode ${item.mode}` };
+};
+const gapMessage = (gap) => (gap.name ? gap.name + ' is ' + gap.level : gap.requirement + ' is not registered');
 // Optional record fields kept by the normaliser; everything else (functions, fidelity notes, settings) is dropped.
 const KEPT = [
   'principal',
@@ -62,6 +68,46 @@ function levelOf(value, label) {
   return level;
 }
 
+function normalizeOperations(record, label, stated, overrides) {
+  const operations = new Map();
+  const put = (operation, fallback) => {
+    const entry = typeof operation === 'string' ? { name: operation } : operation;
+    if (!isMap(entry) || typeof entry.name !== 'string' || !entry.name)
+      throw new TypeError(`${label}: operations are names or { name, level }`);
+    const given = overrides[entry.name] ?? entry.level ?? fallback;
+    if (given == null) throw new TypeError(`${label}: operation ${entry.name} has no level and the record states none`);
+    operations.set(entry.name, {
+      name: entry.name,
+      level: levelOf(given, `${label}: operation ${entry.name} level`),
+      ...(entry.reason != null ? { reason: String(entry.reason) } : {}),
+    });
+  };
+  if (record.operations !== undefined && !Array.isArray(record.operations))
+    throw new TypeError(`${label}: operations must be an array`);
+  for (const operation of record.operations ?? []) put(operation, stated);
+  if (record.contractOperations !== undefined && !Array.isArray(record.contractOperations))
+    throw new TypeError(`${label}: contractOperations must be an array of names`);
+  for (const operation of record.contractOperations ?? []) put(operation, 'contract');
+  for (const operation of Object.keys(overrides)) if (!operations.has(operation)) put(operation, null);
+  return [...operations.values()];
+}
+
+function validateCapabilityEvidence(level, operations, evidence, label) {
+  if (!Array.isArray(evidence)) throw new TypeError(`${label}: evidence must be an array`);
+  if (
+    (level === 'native-qualified' || operations.some((operation) => operation.level === 'native-qualified')) &&
+    !evidence.some((entry) => typeof entry?.scenario === 'string' && entry.scenario.trim())
+  )
+    throw new TypeError(
+      `${label}: native-qualified requires evidence with at least one compared scenario id ({ scenario: '<id>' })`,
+    );
+}
+
+function validateCapabilityRequires(requires, label) {
+  if (!Array.isArray(requires) || requires.some((entry) => typeof entry !== 'string' || !entry))
+    throw new TypeError(`${label}: requires must be an array of names`);
+}
+
 /** Glob over capability and requirement ids: `*` matches any run of characters; case-insensitive. */
 export function globMatcher(pattern) {
   if (typeof pattern !== 'string' || !pattern.trim())
@@ -69,7 +115,7 @@ export function globMatcher(pattern) {
   const source = pattern
     .trim()
     .split('*')
-    .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
+    .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, String.raw`\$&`))
     .join('.*');
   const expression = new RegExp(`^${source}$`, 'i');
   return (value) => expression.test(String(value));
@@ -98,42 +144,14 @@ export function normalizeCapabilityRecord(record) {
   const stated = record.level === undefined ? null : levelOf(record.level, `${label}: level`);
   const overrides = record.operationLevels ?? {};
   if (!isMap(overrides)) throw new TypeError(`${label}: operationLevels must map operation names to levels`);
-  const operations = new Map();
-  const put = (operation, fallback) => {
-    const entry = typeof operation === 'string' ? { name: operation } : operation;
-    if (!isMap(entry) || typeof entry.name !== 'string' || !entry.name)
-      throw new TypeError(`${label}: operations are names or { name, level }`);
-    const given = overrides[entry.name] ?? entry.level ?? fallback;
-    if (given == null) throw new TypeError(`${label}: operation ${entry.name} has no level and the record states none`);
-    operations.set(entry.name, {
-      name: entry.name,
-      level: levelOf(given, `${label}: operation ${entry.name} level`),
-      ...(entry.reason != null ? { reason: String(entry.reason) } : {}),
-    });
-  };
-  if (record.operations !== undefined && !Array.isArray(record.operations))
-    throw new TypeError(`${label}: operations must be an array`);
-  for (const operation of record.operations ?? []) put(operation, stated);
-  if (record.contractOperations !== undefined && !Array.isArray(record.contractOperations))
-    throw new TypeError(`${label}: contractOperations must be an array of names`);
-  for (const operation of record.contractOperations ?? []) put(operation, 'contract');
-  for (const operation of Object.keys(overrides)) if (!operations.has(operation)) put(operation, null);
-  const list = [...operations.values()];
+  const list = normalizeOperations(record, label, stated, overrides);
   const low = list.length ? lowest(list.map((operation) => operation.level)) : null;
   const level = stated && (!low || rank(low) >= rank(stated)) ? stated : low;
   if (!level) throw new TypeError(`${label}: level is required (one of ${CAPABILITY_LEVELS.join(', ')})`);
   const evidence = record.evidence ?? [];
-  if (!Array.isArray(evidence)) throw new TypeError(`${label}: evidence must be an array`);
-  if (
-    (level === 'native-qualified' || list.some((operation) => operation.level === 'native-qualified')) &&
-    !evidence.some((entry) => typeof entry?.scenario === 'string' && entry.scenario.trim())
-  )
-    throw new TypeError(
-      `${label}: native-qualified requires evidence with at least one compared scenario id ({ scenario: '<id>' })`,
-    );
+  validateCapabilityEvidence(level, list, evidence, label);
   const requires = record.requires ?? [];
-  if (!Array.isArray(requires) || requires.some((entry) => typeof entry !== 'string' || !entry))
-    throw new TypeError(`${label}: requires must be an array of names`);
+  validateCapabilityRequires(requires, label);
   const result = {
     name,
     version: String(record.version ?? defaultVersion()),
@@ -208,11 +226,7 @@ export function createCapabilityRegistry({ runtime } = {}) {
           kind: 'operation',
           mode: item.mode,
           level: item.unsupported ? 'inventory' : (MODE_LEVELS[item.mode] ?? 'inventory'),
-          ...(item.unsupported
-            ? { reason: String(item.unsupported) }
-            : item.mode in MODE_LEVELS
-              ? {}
-              : { reason: `Unknown operation mode ${item.mode}` }),
+          ...operationReason(item),
         }),
       );
     },
@@ -288,7 +302,7 @@ export function createCapabilityRegistry({ runtime } = {}) {
       }
       if (gaps.length)
         throw new DataError(
-          `Capabilities unavailable: ${gaps.map((gap) => (gap.name ? `${gap.name} is ${gap.level}` : `${gap.requirement} is not registered`)).join('; ')}`,
+          `Capabilities unavailable: ${gaps.map(gapMessage).join('; ')}`,
           501,
           'CapabilityUnavailable',
           { gaps },

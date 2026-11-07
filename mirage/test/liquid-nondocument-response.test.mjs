@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { injectRuntimeCompatibility, injectRuntimeDependencies } from '../lib/source-dependencies.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // Power Pages serves the output of a page template that does not use the website
 // header/footer verbatim: ExampleApp "fetch" pages return JSON or HTML fragments that
@@ -13,8 +13,8 @@ import { ownedFixture } from '../testing/owned-fixture.mjs';
 const json = `{"rows":[{% for i in (1..2) %}{"n":{{ i }}}{% unless forloop.last %},{% endunless %}{% endfor %}],"total":2}`;
 const fragment = `<div class="fragment">{{ "a & b" | escape }}</div>`;
 async function portalSource(t, authoredScript) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'liquid-nondocument-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'liquid-nondocument-'));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_websiteid: site\nadx_name: Test',
     'web-pages/home/Home.webpage.yml':
@@ -59,7 +59,7 @@ for (const [label, script] of [
       watch: false,
       initial: { settings: { permissionMode: 'permissive' }, simulator: { identity: { id: null, roles: [] } } },
     });
-    t.after(() => app.close());
+    ownedFixture(t).add(() => app.close());
     const rows = await fetch(new URL('/rows/', app.url));
     assert.equal(rows.status, 200);
     assert.match(rows.headers.get('content-type'), /^application\/json/);
@@ -101,7 +101,7 @@ test('runtime injectors leave non-document output untouched and are idempotent o
 });
 
 test('documents report local compatibility adapters in a response header, not as html or body attributes', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'liquid-compat-header-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'liquid-compat-header-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_websiteid: site\nadx_name: Test\nadx_footerwebtemplateid: footer',

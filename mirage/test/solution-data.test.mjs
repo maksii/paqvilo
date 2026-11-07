@@ -6,6 +6,31 @@ import { tmpdir } from 'node:os';
 import { deflateRawSync } from 'node:zlib';
 import { importSolutionData, applySolutionData, readSolutionZip } from '../lib/solution-data.mjs';
 import { DataStore } from '../lib/data.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+
+test('Solution refresh detaches bulk business data without a whole-state native serialization buffer', async () => {
+  const metadata = await importSolutionData([]);
+  const state = new DataStore().state;
+  state.tables.widget = Array.from({ length: 100000 }, (_, i) => ({ widgetid: String(i), name: 'Invented ' + i }));
+  state.tables.other = [state.tables.widget[0]];
+  const native = globalThis.structuredClone;
+  let result;
+  try {
+    globalThis.structuredClone = (value, ...options) => {
+      if (value?.tables?.widget?.length >= 100000) throw new Error('Whole-state native serialization is unavailable');
+      return native(value, ...options);
+    };
+    result = applySolutionData(state, metadata);
+  } finally {
+    globalThis.structuredClone = native;
+  }
+  assert.equal(result.tables.widget.length, 100000);
+  assert.equal(result.tables.widget.at(-1).widgetid, '99999');
+  assert.equal(result.tables.other[0], result.tables.widget[0]);
+  assert.notEqual(result.tables.widget[0], state.tables.widget[0]);
+  result.tables.other[0].name = 'Changed';
+  assert.equal(state.tables.widget[0].name, 'Invented 0');
+});
 
 const entity = (name, set = name + 's') =>
   `<Entity><Name>${name}</Name><EntityInfo><entity Name="${name}"><attributes><attribute PhysicalName="${name}Id"><Type>primarykey</Type><LogicalName>${name}id</LogicalName></attribute><attribute PhysicalName="name"><Type>nvarchar</Type><LogicalName>name</LogicalName><DisplayMask>PrimaryName|ValidForForm</DisplayMask></attribute></attributes><EntitySetName>${set}</EntitySetName></entity></EntityInfo></Entity>`;
@@ -42,7 +67,7 @@ function zipXml(name, xml) {
 }
 
 test('solution XML imports exact sets, primary columns, navigation names and layered partial patches', async () => {
-  const root = await fs.mkdtemp(join(tmpdir(), 'pp-solutions-'));
+  const root = await makeTemporaryDirectory(join(tmpdir(), 'pp-solutions-'));
   try {
     const base = join(root, 'base.xml'),
       patch = join(root, 'patch.xml');
@@ -73,7 +98,7 @@ test('solution XML imports exact sets, primary columns, navigation names and lay
 });
 
 test('permission relationship metadata resolves scoped access, inherits parent roles and preserves manual mapping choices', async () => {
-  const root = await fs.mkdtemp(join(tmpdir(), 'pp-solution-perm-'));
+  const root = await makeTemporaryDirectory(join(tmpdir(), 'pp-solution-perm-'));
   try {
     const file = join(root, 'customizations.xml');
     await fs.writeFile(
@@ -220,7 +245,7 @@ test('replacing imported permissions with a mock preset clears obsolete permissi
 });
 
 test('standard reverse contact/customer scope follows only the selected identity record', async () => {
-  const root = await fs.mkdtemp(join(tmpdir(), 'pp-solution-reverse-'));
+  const root = await makeTemporaryDirectory(join(tmpdir(), 'pp-solution-reverse-'));
   try {
     const file = join(root, 'customizations.xml');
     await fs.writeFile(file, `<ImportExportXml>${entity('account')}${entity('contact')}</ImportExportXml>`);
@@ -275,7 +300,7 @@ test('solution ZIP is parsed in memory and rejects traversal or invalid archives
   assert.equal(readSolutionZip(archive)[0].name, 'customizations.xml');
   assert.throws(() => readSolutionZip(zipXml('../customizations.xml', '<root/>')), /traversal/);
   assert.throws(() => readSolutionZip(Buffer.from('not a zip')), /end directory is missing/);
-  const root = await fs.mkdtemp(join(tmpdir(), 'pp-solution-zip-'));
+  const root = await makeTemporaryDirectory(join(tmpdir(), 'pp-solution-zip-'));
   try {
     const file = join(root, 'solution.zip');
     await fs.writeFile(file, archive);
@@ -288,7 +313,7 @@ test('solution ZIP is parsed in memory and rejects traversal or invalid archives
 });
 
 test('Self-referencing many-to-many XML retains distinct structural sides and first association direction', async () => {
-  const root = await fs.mkdtemp(join(tmpdir(), 'pp-self-many-'));
+  const root = await makeTemporaryDirectory(join(tmpdir(), 'pp-self-many-'));
   try {
     const file = join(root, 'Relationships.xml');
     await fs.writeFile(
@@ -322,7 +347,7 @@ test('Self-referencing many-to-many XML retains distinct structural sides and fi
 });
 
 test('many-to-many exports produce usable intersection relationship mappings and scoped expansions', async () => {
-  const root = await fs.mkdtemp(join(tmpdir(), 'pp-solution-many-'));
+  const root = await makeTemporaryDirectory(join(tmpdir(), 'pp-solution-many-'));
   try {
     const file = join(root, 'Relationships.xml');
     await fs.writeFile(
@@ -375,7 +400,7 @@ test('many-to-many exports produce usable intersection relationship mappings and
 
 test('exported account, contact (many-to-many) and parent grants resolve through solution and documented relationships', async () => {
   const { buildPermissionModel } = await import('../lib/permissions.mjs');
-  const root = await fs.mkdtemp(join(tmpdir(), 'pp-solution-scopes-'));
+  const root = await makeTemporaryDirectory(join(tmpdir(), 'pp-solution-scopes-'));
   try {
     const file = join(root, 'customizations.xml');
     const many = (schema, first, second) =>
@@ -467,7 +492,7 @@ test('exported account, contact (many-to-many) and parent grants resolve through
 });
 
 test("configured mappings keep the Solution's relationships and primary name unless they declare their own", async () => {
-  const root = await fs.mkdtemp(join(tmpdir(), 'pp-solution-configured-'));
+  const root = await makeTemporaryDirectory(join(tmpdir(), 'pp-solution-configured-'));
   try {
     const file = join(root, 'customizations.xml');
     await fs.writeFile(
@@ -500,7 +525,7 @@ test("configured mappings keep the Solution's relationships and primary name unl
 });
 
 test('a Solution table replaces a Dataverse-seeded mapping on reload, and keeps metadata-API tables, user mappings and rows', async () => {
-  const root = await fs.mkdtemp(join(tmpdir(), 'pp-solution-seeded-'));
+  const root = await makeTemporaryDirectory(join(tmpdir(), 'pp-solution-seeded-'));
   try {
     const file = join(root, 'customizations.xml');
     await fs.writeFile(

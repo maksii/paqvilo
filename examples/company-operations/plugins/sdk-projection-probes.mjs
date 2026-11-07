@@ -57,7 +57,7 @@ export async function executeSdkProjectionProbes({
     plan.probes.length < 1 ||
     plan.probes.length > 32 ||
     typeof client?.token !== 'function' ||
-    !/^https:\/\//.test(client.origin ?? '') ||
+    !(client.origin ?? '').startsWith('https://') ||
     !path.isAbsolute(executable ?? '') ||
     !/^[a-f\d]{64}$/.test(expectedDriverSha256 ?? '') ||
     !path.isAbsolute(outputRoot ?? '') ||
@@ -79,7 +79,7 @@ export async function executeSdkProjectionProbes({
   if (files[0].sha256 !== expectedDriverSha256)
     throw new Error('Native SDK driver does not match its compiled source receipt.');
   await fs.mkdir(outputRoot, { recursive: true });
-  const directory = await fs.mkdtemp(path.join(outputRoot, 'execution-')),
+  const directory = await fs.realpath(await fs.mkdtemp(path.join(outputRoot, 'execution-'))),
     journalFile = path.join(directory, 'journal.json'),
     receipt = {
       schemaVersion: 1,
@@ -96,7 +96,7 @@ export async function executeSdkProjectionProbes({
   if (typeof token !== 'string' || token.length > 65536 || /\s/.test(token))
     throw new Error('Native token provider returned an invalid private token.');
   const endpoint = new URL('/XRMServices/2011/Organization.svc/web', client.origin);
-  endpoint.searchParams.set('SdkClientVersion', '9.0.0.0');
+  endpoint.searchParams.set('SdkClientVersion', '9.0.0.0'); // NOSONAR: version string or loopback address, not a network target
   receipt.state = 'pending';
   await savePrivateJson(journalFile, receipt);
   try {

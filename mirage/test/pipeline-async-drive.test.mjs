@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's asynchronous record pipeline drive and synchronous I/O bridge design
 // The asynchronous drive for every write that is not a plug-in's own SDK call (a synchronous web hook
 // runs inside its operation): a flow Dataverse action, the Assign cascade and CalculateRollupField post a synchronous web
 // hook step in process, so Mirage keeps serving while the step waits and a receiver in Mirage's own process answers. The
@@ -19,6 +20,8 @@ import { closeSyncIoBridge, syncIo, syncIoWorker } from '../lib/sync-io-bridge.m
 import { EXTENSION as CASCADE } from '../lib/dataverse-cascade.mjs';
 import { EXTENSION as ROLLUP, recalculate } from '../lib/dataverse-rollup.mjs';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
+import { cascadeMappings } from './support/parent-child-tables.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const ENDPOINT = '77777777-7777-4777-8777-777777777b01',
   STEP = '77777777-7777-4777-8777-777777777b02';
@@ -34,29 +37,27 @@ const profile = {
 };
 test.after(() => closeSyncIoBridge());
 
-// A receiver in this process that answers after `delayMs`; ticks() counts timer callbacks that ran meanwhile.
-async function inProcessReceiver(t, { delayMs = 300 } = {}) {
+// A receiver in this process that answers only after this process's timers have fired `ticks` more times. The step's
+// caller is still waiting then, so an answer proves Mirage kept running timers; a frozen loop never answers.
+async function inProcessReceiver(t, { ticks = 5 } = {}) {
   const received = [];
   const server = http.createServer((req, res) => {
     req.resume();
     req.on('end', () => {
       received.push(req.url);
-      setTimeout(() => res.writeHead(200).end(), delayMs);
+      let fired = 0;
+      const timer = setInterval(() => {
+        if (++fired < ticks) return;
+        clearInterval(timer);
+        res.writeHead(200).end();
+      }, 10);
     });
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
   return { url: `http://127.0.0.1:${server.address().port}/hook`, received };
 }
-const ticking = () => {
-  let ticks = 0;
-  const timer = setInterval(() => ticks++, 25);
-  return () => {
-    clearInterval(timer);
-    return ticks;
-  };
-};
-// A loopback receiver on its own thread: /drop reads the request and drops the connection; /slow answers after 3 s; any
+// A loopback receiver on its own thread: /drop reads the request and drops the connection; /hang never answers; any
 // other path answers 200. log() lists [path, header x-invented-key] it received.
 async function threadReceiver(t) {
   const worker = new Worker(
@@ -68,8 +69,7 @@ async function threadReceiver(t) {
       req.on('end', () => {
         log.push([req.url.split('?')[0], req.headers['x-invented-key'] ?? null, new URL(req.url, 'http://x').searchParams.get('key')]);
         if (req.url.startsWith('/drop')) req.socket.destroy();
-        else if (req.url.startsWith('/slow')) setTimeout(() => res.writeHead(200).end(), 3000);
-        else res.writeHead(200).end();
+        else if (!req.url.startsWith('/hang')) res.writeHead(200).end();
       });
     });
     server.listen(0, '127.0.0.1', () => parentPort.postMessage({ port: server.address().port }));
@@ -144,170 +144,127 @@ function wire(store, diagnostics, table, message) {
   );
 }
 
-test(
-  'a flow Dataverse CreateRecord whose synchronous web hook receiver runs in this process commits without freezing Mirage',
-  { timeout: 30_000 },
-  async (t) => {
-    const receiver = await inProcessReceiver(t);
-    const { store } = await widgetWorld({ url: receiver.url });
-    const stop = ticking();
-    const answer = await createConnectorRuntime({ store }).invoke({
-      connectorId: 'shared_commondataserviceforapps',
-      operationId: 'CreateRecord',
-      parameters: { entityName: 'x_widgets', 'item/x_name': 'from a flow' },
-      context: { principal: profile },
-    });
-    const ticks = stop();
-    assert.equal(answer.statusCode, 201);
-    assert.deepEqual([store.tableRows('x_widget').length, receiver.received], [1, ['/hook']]);
-    assert.ok(ticks >= 5, `timers kept running while the step waited (${ticks} ticks)`);
-  },
-);
+test('a flow Dataverse CreateRecord whose synchronous web hook receiver runs in this process commits without freezing Mirage', async (t) => {
+  const receiver = await inProcessReceiver(t);
+  const { store } = await widgetWorld({ url: receiver.url });
+  const answer = await createConnectorRuntime({ store }).invoke({
+    connectorId: 'shared_commondataserviceforapps',
+    operationId: 'CreateRecord',
+    parameters: { entityName: 'x_widgets', 'item/x_name': 'from a flow' },
+    context: { principal: profile },
+  });
+  assert.equal(answer.statusCode, 201);
+  assert.deepEqual([store.tableRows('x_widget').length, receiver.received], [1, ['/hook']]);
+});
 
-test(
-  'the Assign cascade updates each child on the asynchronous drive: an in-process synchronous web hook on the child answers',
-  { timeout: 30_000 },
-  async (t) => {
-    const receiver = await inProcessReceiver(t, { delayMs: 100 });
-    const owner = (id) => ({ id, logical_name: 'systemuser', name: 'Invented user' });
-    const link = { from: 'x_parentid', to: 'x_parentid', cascade: { assign: 'Cascade' } };
-    const { request, json, store } = await contractModuleFixture(t, {
-      extension: CASCADE,
-      mappings: {
-        x_parent: {
-          logicalName: 'x_parent',
-          entitySet: 'x_parents',
-          idColumn: 'x_parentid',
-          nameColumn: 'x_name',
-          relationships: { children: { entity: 'x_child', many: true, ...link } },
-          fields: { x_name: { dataverseType: 'nvarchar' }, ownerid: { dataverseType: 'owner' } },
+test('the Assign cascade updates each child on the asynchronous drive: an in-process synchronous web hook on the child answers', async (t) => {
+  const receiver = await inProcessReceiver(t);
+  const owner = (id) => ({ id, logical_name: 'systemuser', name: 'Invented user' });
+  const { request, json, store } = await contractModuleFixture(t, {
+    extension: CASCADE,
+    mappings: cascadeMappings({ assign: 'Cascade' }),
+    tables: {
+      systemuser: [
+        { systemuserid: USER_ONE, fullname: 'Invented one', statecode: 0 },
+        { systemuserid: USER_TWO, fullname: 'Invented two', statecode: 0 },
+      ],
+      x_parent: [{ x_parentid: PARENT, x_name: 'Invented parent', ownerid: owner(USER_ONE), statecode: 0 }],
+      x_child: [
+        {
+          x_childid: CHILD,
+          x_name: 'Invented child',
+          x_parentid: { id: PARENT, logical_name: 'x_parent', name: 'Invented parent' },
+          ownerid: owner(USER_ONE),
+          statecode: 0,
         },
-        x_child: {
-          logicalName: 'x_child',
-          entitySet: 'x_children',
-          idColumn: 'x_childid',
-          nameColumn: 'x_name',
-          relationships: { parent: { entity: 'x_parent', many: false, ...link } },
-          fields: {
-            x_name: { dataverseType: 'nvarchar' },
-            x_parentid: { dataverseType: 'lookup' },
-            ownerid: { dataverseType: 'owner' },
-          },
+      ],
+      serviceendpoint: [
+        {
+          serviceendpointid: ENDPOINT,
+          name: 'Invented hook',
+          contract: 8,
+          authtype: 5,
+          authvalue: '',
+          url: receiver.url,
         },
-      },
-      tables: {
-        systemuser: [
-          { systemuserid: USER_ONE, fullname: 'Invented one', statecode: 0 },
-          { systemuserid: USER_TWO, fullname: 'Invented two', statecode: 0 },
-        ],
-        x_parent: [{ x_parentid: PARENT, x_name: 'Invented parent', ownerid: owner(USER_ONE), statecode: 0 }],
-        x_child: [
-          {
-            x_childid: CHILD,
-            x_name: 'Invented child',
-            x_parentid: { id: PARENT, logical_name: 'x_parent', name: 'Invented parent' },
-            ownerid: owner(USER_ONE),
-            statecode: 0,
-          },
-        ],
-        serviceendpoint: [
-          {
-            serviceendpointid: ENDPOINT,
-            name: 'Invented hook',
-            contract: 8,
-            authtype: 5,
-            authvalue: '',
-            url: receiver.url,
-          },
-        ],
-      },
-    });
-    wire(store, [], 'x_child', 'Update');
-    const stop = ticking();
-    await json(
-      await request('PATCH', `/x_parents(${PARENT})`, { 'ownerid@odata.bind': `/systemusers(${USER_TWO})` }),
-      200,
-    );
-    const ticks = stop();
-    assert.equal(store.tableRows('x_child')[0].ownerid.id, USER_TWO);
-    assert.deepEqual(receiver.received, ['/hook']);
-    assert.ok(ticks >= 2, `timers kept running while the child's step waited (${ticks} ticks)`);
-  },
-);
+      ],
+    },
+  });
+  wire(store, [], 'x_child', 'Update');
+  await json(
+    await request('PATCH', `/x_parents(${PARENT})`, { 'ownerid@odata.bind': `/systemusers(${USER_TWO})` }),
+    200,
+  );
+  assert.equal(store.tableRows('x_child')[0].ownerid.id, USER_TWO);
+  assert.deepEqual(receiver.received, ['/hook']);
+});
 
-test(
-  'CalculateRollupField writes on the asynchronous drive: an in-process synchronous web hook on the row answers',
-  { timeout: 30_000 },
-  async (t) => {
-    const receiver = await inProcessReceiver(t, { delayMs: 100 });
-    let internal = null;
-    const extension = {
-      ...ROLLUP,
-      install: (api, options) => {
-        internal = api;
-        return ROLLUP.install(api, options);
-      },
-    };
-    const formula =
-      '<fetch aggregate="true"><entity name="x_child"><attribute name="x_childid" aggregate="count" alias="c"/><filter><condition attribute="x_parentid" operator="eq" value="{id}"/></filter></entity></fetch>';
-    const { store } = await contractModuleFixture(t, {
-      extension,
-      mappings: {
-        x_parent: {
-          logicalName: 'x_parent',
-          entitySet: 'x_parents',
-          idColumn: 'x_parentid',
-          nameColumn: 'x_name',
-          fields: {
-            x_name: { dataverseType: 'nvarchar' },
-            x_count: { dataverseType: 'decimal', columnMetadata: { sourceType: 2, formulaDefinition: formula } },
-            x_count_state: { dataverseType: 'int' },
-            x_count_date: { dataverseType: 'datetime' },
-          },
-        },
-        x_child: {
-          logicalName: 'x_child',
-          entitySet: 'x_children',
-          idColumn: 'x_childid',
-          nameColumn: 'x_name',
-          relationships: { x_parentid: { entity: 'x_parent', from: 'x_parentid', to: 'x_parentid', many: false } },
-          fields: {
-            x_name: { dataverseType: 'nvarchar' },
-            x_parentid: { dataverseType: 'lookup', targets: ['x_parent'] },
-          },
+test('CalculateRollupField writes on the asynchronous drive: an in-process synchronous web hook on the row answers', async (t) => {
+  const receiver = await inProcessReceiver(t);
+  let internal = null;
+  const extension = {
+    ...ROLLUP,
+    install: (api, options) => {
+      internal = api;
+      return ROLLUP.install(api, options);
+    },
+  };
+  const formula =
+    '<fetch aggregate="true"><entity name="x_child"><attribute name="x_childid" aggregate="count" alias="c"/><filter><condition attribute="x_parentid" operator="eq" value="{id}"/></filter></entity></fetch>';
+  const { store } = await contractModuleFixture(t, {
+    extension,
+    mappings: {
+      x_parent: {
+        logicalName: 'x_parent',
+        entitySet: 'x_parents',
+        idColumn: 'x_parentid',
+        nameColumn: 'x_name',
+        fields: {
+          x_name: { dataverseType: 'nvarchar' },
+          x_count: { dataverseType: 'decimal', columnMetadata: { sourceType: 2, formulaDefinition: formula } },
+          x_count_state: { dataverseType: 'int' },
+          x_count_date: { dataverseType: 'datetime' },
         },
       },
-      tables: {
-        x_parent: [{ x_parentid: PARENT, x_name: 'Invented parent', x_count_state: 0, statecode: 0 }],
-        x_child: [
-          {
-            x_childid: CHILD,
-            x_name: 'Invented child',
-            x_parentid: { id: PARENT, logical_name: 'x_parent', name: 'Invented parent' },
-            statecode: 0,
-          },
-        ],
-        serviceendpoint: [
-          {
-            serviceendpointid: ENDPOINT,
-            name: 'Invented hook',
-            contract: 8,
-            authtype: 5,
-            authvalue: '',
-            url: receiver.url,
-          },
-        ],
+      x_child: {
+        logicalName: 'x_child',
+        entitySet: 'x_children',
+        idColumn: 'x_childid',
+        nameColumn: 'x_name',
+        relationships: { x_parentid: { entity: 'x_parent', from: 'x_parentid', to: 'x_parentid', many: false } },
+        fields: {
+          x_name: { dataverseType: 'nvarchar' },
+          x_parentid: { dataverseType: 'lookup', targets: ['x_parent'] },
+        },
       },
-    });
-    wire(store, [], 'x_parent', 'Update');
-    const stop = ticking();
-    const result = await recalculate(internal, 'x_parent', PARENT, 'x_count');
-    const ticks = stop();
-    assert.deepEqual([result.value, result.state, store.tableRows('x_parent')[0].x_count], [1, 1, 1]);
-    assert.deepEqual(receiver.received, ['/hook']);
-    assert.ok(ticks >= 2, `timers kept running while the step waited (${ticks} ticks)`);
-  },
-);
+    },
+    tables: {
+      x_parent: [{ x_parentid: PARENT, x_name: 'Invented parent', x_count_state: 0, statecode: 0 }],
+      x_child: [
+        {
+          x_childid: CHILD,
+          x_name: 'Invented child',
+          x_parentid: { id: PARENT, logical_name: 'x_parent', name: 'Invented parent' },
+          statecode: 0,
+        },
+      ],
+      serviceendpoint: [
+        {
+          serviceendpointid: ENDPOINT,
+          name: 'Invented hook',
+          contract: 8,
+          authtype: 5,
+          authvalue: '',
+          url: receiver.url,
+        },
+      ],
+    },
+  });
+  wire(store, [], 'x_parent', 'Update');
+  const result = await recalculate(internal, 'x_parent', PARENT, 'x_count');
+  assert.deepEqual([result.value, result.state, store.tableRows('x_parent')[0].x_count], [1, 1, 1]);
+  assert.deepEqual(receiver.received, ['/hook']);
+});
 
 test('a bridge post that may have been delivered (the connection dropped after the request) notes SERVICE_ENDPOINT_SEND_INDETERMINATE when the operation rolls back', async (t) => {
   const receiver = await threadReceiver(t);
@@ -333,6 +290,7 @@ test('a bridge post that may have been delivered (the connection dropped after t
   );
 });
 
+// @test-kind contract+security: web hook authentication values never cross the worker bridge
 test('a web hook authentication value never crosses the bridge: the worker resolves its env: reference', async (t) => {
   const receiver = await threadReceiver(t);
   const posted = [],
@@ -371,7 +329,7 @@ test('a web hook authentication value never crosses the bridge: the worker resol
 
 test('a worker crash is reported to the waiting caller within the call, and the next call gets a new worker', async (t) => {
   const receiver = await threadReceiver(t);
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-sync-io-crash-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-sync-io-crash-'));
   const crashing = path.join(dir, 'crashing-worker.mjs');
   const real = syncIoWorker.url;
   await fs.writeFile(
@@ -385,12 +343,12 @@ test('a worker crash is reported to the waiting caller within the call, and the 
   });
   await closeSyncIoBridge();
   syncIoWorker.url = new URL(`file:///${crashing.replaceAll('\\', '/').replace(/^\//, '')}`);
-  const started = Date.now();
+  // The post never gets an answer, so only the crash report can end the call before its deadline, which would fail
+  // with a timeout code instead.
   assert.throws(
-    () => syncIo('http-post', { url: `${receiver.origin}/slow`, headers: {}, body: '{}' }, { timeoutMs: 20_000 }),
+    () => syncIo('http-post', { url: `${receiver.origin}/hang`, headers: {}, body: '{}' }, { timeoutMs: 20_000 }),
     (error) => error.code === 'SyncIoWorkerFailed' && /invented worker crash/.test(error.message),
   );
-  assert.ok(Date.now() - started < 2500, `answered within the call (${Date.now() - started} ms), not at the deadline`);
   syncIoWorker.url = real;
   assert.equal(syncIo('http-post', { url: `${receiver.origin}/ok`, headers: {}, body: '{}' }), 200);
 });

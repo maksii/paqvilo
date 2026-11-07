@@ -1,10 +1,9 @@
-import { connectionPath, localAssemblyIdentity } from './registration.mjs';
+import { connectionPath, localAssemblyIdentity, id, assemblies } from './registration.mjs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { loadConnection, connectedClient } from '../../../lense/dataverse/index.mjs';
-import { id, assemblies } from './registration.mjs';
 const connection = await loadConnection(connectionPath());
 const root = dirname(fileURLToPath(import.meta.url));
 const c = connectedClient(connection);

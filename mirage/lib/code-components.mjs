@@ -18,7 +18,7 @@ const canonical = (value) =>
   String(value ?? '')
     .replace(/[{}]/g, '')
     .toLowerCase();
-const json = (value) => JSON.stringify(value).replace(/</g, '\\u003c');
+const json = (value) => JSON.stringify(value).replaceAll('<', String.raw`\u003c`);
 const contained = (root, file) => {
   const rel = path.relative(root, file);
   return Boolean(rel) && rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel);
@@ -81,28 +81,72 @@ function featureEligibility(features = []) {
       typeof feature.name === 'string' &&
       Boolean(feature.name.trim()) &&
       ['true', 'false', '1', '0'].includes(requiredValue);
-    const hostApiAvailable =
-      feature.name === 'WebAPI'
-        ? true
-        : feature.name === 'Utility' || /^(?:Device|device)\./.test(feature.name ?? '')
-          ? false
-          : null;
+    let hostApiAvailable;
+    if (feature.name === 'WebAPI') hostApiAvailable = true;
+    else if (feature.name === 'Utility' || /^(?:Device|device)\./.test(feature.name ?? '')) hostApiAvailable = false;
+    else hostApiAvailable = null;
+    let reason = {};
+    if (!valid) reason = { reason: 'PCF_FEATURE_DECLARATION_INVALID' };
+    else if (required) reason = { reason: 'PCF_PORTAL_REQUIRED_FEATURE_UNSUPPORTED' };
     return {
       ...feature,
       hostApiAvailable,
       eligible: valid && !required,
-      ...(!valid
-        ? { reason: 'PCF_FEATURE_DECLARATION_INVALID' }
-        : required
-          ? { reason: 'PCF_PORTAL_REQUIRED_FEATURE_UNSUPPORTED' }
-          : {}),
+      ...reason,
     };
   });
 }
 
-function languageLcid(language) {
+/* NOSONAR: mixed return values are part of the contract */ function languageLcid(language) {
   if (Number.isInteger(Number(language?.lcid)) && Number(language.lcid) > 0) return Number(language.lcid);
   return portalLanguage({ name: language?.code })?.lcid ?? null;
+}
+
+function localizedResourceGroups(resources) {
+  const groups = new Map();
+  for (const resource of resources) {
+    if (!resource.lcid) continue;
+    if (!groups.has(resource.group)) groups.set(resource.group, []);
+    groups.get(resource.group).push(resource);
+  }
+  return groups;
+}
+
+function localizedResourceCandidate(group, variants, selectedLcid, defaultLcid, diagnostic) {
+  let candidates = variants.filter((resource) => resource.lcid === selectedLcid);
+  let selection = 'selected-language';
+  if (!candidates.length && defaultLcid) {
+    candidates = variants.filter((resource) => resource.lcid === defaultLcid);
+    selection = 'website-default-language';
+  }
+  if (candidates.length !== 1) {
+    diagnostic?.({
+      code: candidates.length ? 'PCF_RESOURCE_LANGUAGE_AMBIGUOUS' : 'PCF_RESOURCE_LANGUAGE_UNRESOLVED',
+      group,
+      selectedLcid,
+      defaultLcid,
+      paths: candidates.map((resource) => resource.path),
+    });
+    return null;
+  }
+  const resource = candidates[0];
+  if (selection === 'website-default-language')
+    diagnostic?.({
+      code: 'PCF_RESOURCE_LANGUAGE_FALLBACK',
+      group,
+      selectedLcid,
+      selectedResourceLcid: resource.lcid,
+      policy: 'exported-website-default',
+      nativeQualified: false,
+    });
+  return { resource, selection };
+}
+
+function mergeLocalizedEntries(strings, ambiguousKeys, resource) {
+  for (const [key, value] of Object.entries(resource.strings)) {
+    if (Object.hasOwn(strings, key)) ambiguousKeys.add(key);
+    else strings[key] = value;
+  }
 }
 
 function localizedStrings(control, selectedLanguage, defaultLanguage, diagnostic) {
@@ -112,44 +156,13 @@ function localizedStrings(control, selectedLanguage, defaultLanguage, diagnostic
   const strings = Object.create(null),
     selectedResources = [],
     ambiguousKeys = new Set();
-  const groups = new Map();
-  for (const resource of control.stringResources) {
-    if (!resource.lcid) continue;
-    if (!groups.has(resource.group)) groups.set(resource.group, []);
-    groups.get(resource.group).push(resource);
-  }
+  const groups = localizedResourceGroups(control.stringResources);
   for (const [group, variants] of groups) {
-    let candidates = variants.filter((resource) => resource.lcid === selectedLcid);
-    let selection = 'selected-language';
-    if (!candidates.length && defaultLcid) {
-      candidates = variants.filter((resource) => resource.lcid === defaultLcid);
-      selection = 'website-default-language';
-    }
-    if (candidates.length !== 1) {
-      diagnostic?.({
-        code: candidates.length ? 'PCF_RESOURCE_LANGUAGE_AMBIGUOUS' : 'PCF_RESOURCE_LANGUAGE_UNRESOLVED',
-        group,
-        selectedLcid,
-        defaultLcid,
-        paths: candidates.map((resource) => resource.path),
-      });
-      continue;
-    }
-    const resource = candidates[0];
-    if (selection === 'website-default-language')
-      diagnostic?.({
-        code: 'PCF_RESOURCE_LANGUAGE_FALLBACK',
-        group,
-        selectedLcid,
-        selectedResourceLcid: resource.lcid,
-        policy: 'exported-website-default',
-        nativeQualified: false,
-      });
+    const selected = localizedResourceCandidate(group, variants, selectedLcid, defaultLcid, diagnostic);
+    if (!selected) continue;
+    const { resource, selection } = selected;
     selectedResources.push({ path: resource.path, lcid: resource.lcid, selection, attributes: resource.attributes });
-    for (const [key, value] of Object.entries(resource.strings)) {
-      if (Object.hasOwn(strings, key)) ambiguousKeys.add(key);
-      else strings[key] = value;
-    }
+    mergeLocalizedEntries(strings, ambiguousKeys, resource);
   }
   for (const key of ambiguousKeys) {
     delete strings[key];
@@ -158,8 +171,109 @@ function localizedStrings(control, selectedLanguage, defaultLanguage, diagnostic
   return { strings, localization: { selectedLcid, defaultLcid, resources: selectedResources } };
 }
 
+function componentDatasetView(dataset, binding, metadata) {
+  const candidates = (metadata.views ?? []).filter(
+    (view) => canonical(view.id) === canonical(binding) || canonical(view.name) === canonical(binding),
+  );
+  if (candidates.length > 1)
+    return { error: `Dataset ${dataset.name} matches multiple exported views. Bind its exported view ID.` };
+  const view = candidates[0];
+  return { view, entity: view?.entity ?? canonical(binding) };
+}
+
+function componentDatasetColumns(dataset, view, fields, mapping) {
+  const names = view?.fields?.length
+    ? view.fields.map((field) => field.name)
+    : Object.keys(fields).filter((name) => fields[name].validForRead !== false);
+  if (!names.includes(mapping.idColumn)) names.unshift(mapping.idColumn);
+  if (
+    !names.length ||
+    !names.every((name) => /^[a-z_][a-z\d_]*$/i.test(name) && (fields[name] || name === mapping.idColumn))
+  )
+    return {
+      error: `Dataset ${dataset.name} has an aliased or unresolved column binding. Only exported columns of its primary table are supported.`,
+    };
+  return { names };
+}
+
+function componentDatasetFetchError(dataset, view) {
+  if (!view?.fetchXml) return null;
+  try {
+    const fetch = parseSolutionXml(view.fetchXml);
+    if (
+      fetch.attrs.aggregate === 'true' ||
+      fetch.attrs.top != null ||
+      descendants(fetch, 'attribute').some((node) => node.attrs.alias)
+    )
+      return `Dataset ${dataset.name} requires unsupported aggregate, top-limited, or aliased view semantics.`;
+  } catch {
+    return `Dataset ${dataset.name} has malformed exported FetchXML.`;
+  }
+  return null;
+}
+
+function resolveComponentDataset(dataset, { args, metadata, mappings, schema }) {
+  const failure = (error) => ({ error });
+  const binding = args[dataset.name] ?? args[dataset.name.toLowerCase()];
+  if (typeof binding !== 'string' || !binding.trim())
+    return failure(
+      `Code component ${schema} requires a dataset binding to an exported table and view: set the ${dataset.name} tag argument to an exported view ID or table logical name.`,
+    );
+  const selectedView = componentDatasetView(dataset, binding, metadata);
+  if (selectedView.error) return failure(selectedView.error);
+  const { view, entity } = selectedView;
+  const table = metadata.entities?.[entity],
+    mapping = mappings[entity];
+  if (!table || !mapping?.entitySet || !mapping?.idColumn)
+    return failure(`Dataset ${dataset.name} has no exported table definition and exact Web API mapping for ${entity}.`);
+  const fields = table.fields ?? {};
+  const selectedColumns = componentDatasetColumns(dataset, view, fields, mapping);
+  if (selectedColumns.error) return failure(selectedColumns.error);
+  const { names } = selectedColumns;
+  const fetchError = componentDatasetFetchError(dataset, view);
+  if (fetchError) return failure(fetchError);
+  const columns = names.map((name, order) => ({
+    name,
+    displayName: fields[name]?.label ?? name,
+    dataType: pcfTypes[fields[name]?.dataverseType] ?? 'unknown',
+    order,
+    visualSizeFactor: view?.fields?.find((field) => field.name === name)?.width ?? 100,
+    targets: fields[name]?.targets,
+  }));
+  const attributeXml = (name) => `<attribute name="${escape(name)}"/>`;
+  const fetchXmlFor = (entityName) =>
+    `<fetch><entity name="${escape(entityName)}">${names.map(attributeXml).join('')}</entity></fetch>`;
+  return {
+    dataset: {
+      name: dataset.name,
+      entity,
+      entitySet: mapping.entitySet,
+      idColumn: mapping.idColumn,
+      nameColumn: mapping.nameColumn ?? table.primaryNameAttribute,
+      viewId: view?.id ?? null,
+      viewName: view?.name ?? entity,
+      columns,
+      fields: Object.fromEntries(
+        Object.entries(fields).map(([name, field]) => [
+          name,
+          {
+            label: field.label,
+            dataverseType: field.dataverseType,
+            dataType: pcfTypes[field.dataverseType],
+            targets: field.targets,
+          },
+        ]),
+      ),
+      fetchXml: view?.fetchXml || fetchXmlFor(entity),
+    },
+  };
+}
+
 /** Import standard controls and serve only resource paths explicitly declared in the manifest. */
-export async function importCodeComponents(layers = [], { readFile = readLocalFile } = {}) {
+/* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ export async function importCodeComponents(
+  layers = [],
+  { readFile = readLocalFile } = {},
+) {
   const controls = new Map(),
     assets = new Map(),
     diagnostics = [];
@@ -308,9 +422,10 @@ export async function importCodeComponents(layers = [], { readFile = readLocalFi
             ...property.attrs,
             types: typeGroups[property.attrs['of-type-group']],
           })),
+          events: (control.children ?? []).filter((node) => node.name === 'event').map((node) => ({ ...node.attrs })),
           features,
           libraries,
-          resources: resources.sort((a, b) => a.order - b.order),
+          resources: resources.sort((a, b) => a.order - b.order), // NOSONAR: retain in-place receiver mutation and ordering
           strings: {},
           stringResources,
           file: manifestFile,
@@ -366,7 +481,7 @@ export function renderCodeComponent({
   };
   if (!schema)
     return unsupported(
-      /^[{]?[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}[}]?$/i.test(String(name))
+      /^\{?[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\}?$/i.test(String(name))
         ? `Code component ${name} requires an observed GUID-to-control mapping and solution sources.`
         : `Code component ${name} was not found in the selected solution sources.`,
     );
@@ -398,83 +513,9 @@ export function renderCodeComponent({
   }
   const datasets = [];
   for (const dataset of control.datasets ?? []) {
-    const binding = args[dataset.name] ?? args[dataset.name.toLowerCase()];
-    if (typeof binding !== 'string' || !binding.trim())
-      return unsupported(
-        `Code component ${schema} requires a dataset binding to an exported table and view: set the ${dataset.name} tag argument to an exported view ID or table logical name.`,
-      );
-    const candidates = (metadata.views ?? []).filter(
-      (view) => canonical(view.id) === canonical(binding) || canonical(view.name) === canonical(binding),
-    );
-    if (candidates.length > 1)
-      return unsupported(`Dataset ${dataset.name} matches multiple exported views. Bind its exported view ID.`);
-    const view = candidates[0],
-      entity = view?.entity ?? canonical(binding);
-    const table = metadata.entities?.[entity],
-      mapping = mappings[entity];
-    if (!table || !mapping?.entitySet || !mapping?.idColumn)
-      return unsupported(
-        `Dataset ${dataset.name} has no exported table definition and exact Web API mapping for ${entity}.`,
-      );
-    const fields = table.fields ?? {};
-    const names = view?.fields?.length
-      ? view.fields.map((field) => field.name)
-      : Object.keys(fields).filter((name) => fields[name].validForRead !== false);
-    if (!names.includes(mapping.idColumn)) names.unshift(mapping.idColumn);
-    if (
-      !names.length ||
-      !names.every((name) => /^[a-z_][a-z\d_]*$/i.test(name) && (fields[name] || name === mapping.idColumn))
-    )
-      return unsupported(
-        `Dataset ${dataset.name} has an aliased or unresolved column binding. Only exported columns of its primary table are supported.`,
-      );
-    if (view?.fetchXml) {
-      try {
-        const fetch = parseSolutionXml(view.fetchXml);
-        if (
-          fetch.attrs.aggregate === 'true' ||
-          fetch.attrs.top != null ||
-          descendants(fetch, 'attribute').some((node) => node.attrs.alias)
-        )
-          return unsupported(
-            `Dataset ${dataset.name} requires unsupported aggregate, top-limited, or aliased view semantics.`,
-          );
-      } catch {
-        return unsupported(`Dataset ${dataset.name} has malformed exported FetchXML.`);
-      }
-    }
-    const columns = names.map((name, order) => ({
-      name,
-      displayName: fields[name]?.label ?? name,
-      dataType: pcfTypes[fields[name]?.dataverseType] ?? 'unknown',
-      order,
-      visualSizeFactor: view?.fields?.find((field) => field.name === name)?.width ?? 100,
-      targets: fields[name]?.targets,
-    }));
-    datasets.push({
-      name: dataset.name,
-      entity,
-      entitySet: mapping.entitySet,
-      idColumn: mapping.idColumn,
-      nameColumn: mapping.nameColumn ?? table.primaryNameAttribute,
-      viewId: view?.id ?? null,
-      viewName: view?.name ?? entity,
-      columns,
-      fields: Object.fromEntries(
-        Object.entries(fields).map(([name, field]) => [
-          name,
-          {
-            label: field.label,
-            dataverseType: field.dataverseType,
-            dataType: pcfTypes[field.dataverseType],
-            targets: field.targets,
-          },
-        ]),
-      ),
-      fetchXml:
-        view?.fetchXml ||
-        `<fetch><entity name="${escape(entity)}">${names.map((name) => `<attribute name="${escape(name)}"/>`).join('')}</entity></fetch>`,
-    });
+    const result = resolveComponentDataset(dataset, { args, metadata, mappings, schema });
+    if (result.error) return unsupported(result.error);
+    datasets.push(result.dataset);
   }
   const id = `pcf-${createHash('sha256').update(schema).update(json(args)).digest('hex').slice(0, 16)}`;
   const defaultLanguage = (portal.websiteLanguages ?? []).find((language) => language.isDefault);

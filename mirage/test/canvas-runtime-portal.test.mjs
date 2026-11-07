@@ -9,7 +9,7 @@ import path from 'node:path';
 import { stringify } from 'yaml';
 import { createSimulator } from '../api.mjs';
 import { signInHeaders } from '../testing.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const MEMBER = '77777777-7777-4777-8777-777777777701';
 const files = (state) => ({
@@ -73,7 +73,7 @@ const initial = () => ({
 });
 
 async function site(t, state) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'canvas-portal-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'canvas-portal-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(files(state))) {
     await fs.mkdir(path.dirname(path.join(root, name)), { recursive: true });

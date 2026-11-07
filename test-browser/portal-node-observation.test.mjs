@@ -90,6 +90,39 @@ test('actual portal node joins use rendered component scope and never navigation
   );
   await page
     .locator('#EntityFormControl_forma_EntityFormView > [data-form-layout]')
+    .evaluate((node) =>
+      node.setAttribute(
+        'data-form-layout',
+        JSON.stringify({ Id: '00000000-0000-0000-0000-000000000000', EntityName: 'sample_entry' }),
+      ),
+    );
+  assert.equal(
+    (await inspect('#native-title')).owner.status,
+    'exact',
+    'a native empty layout ID cannot erase the independently observed basic-form wrapper',
+  );
+  await page
+    .locator('#EntityFormControl_forma_EntityFormView')
+    .evaluate((node) => node.setAttribute('data-formid', '00000000-0000-0000-0000-000000000000'));
+  assert.equal(
+    (await inspect('#native-title')).owner.status,
+    'unavailable',
+    'an explicit unknown component ID remains a boundary',
+  );
+  await page.locator('#EntityFormControl_forma_EntityFormView').evaluate((node) => {
+    node.removeAttribute('data-formid');
+    node.id = 'EntityFormControl_EntityFormView';
+  });
+  assert.equal(
+    (await inspect('#native-title')).owner.status,
+    'unavailable',
+    'a generic wrapper and empty layout ID cannot invent a basic-form identity',
+  );
+  await page.locator('#EntityFormControl_EntityFormView').evaluate((node) => {
+    node.id = 'EntityFormControl_forma_EntityFormView';
+  });
+  await page
+    .locator('#EntityFormControl_forma_EntityFormView > [data-form-layout]')
     .evaluate((node) => node.setAttribute('data-form-layout', JSON.stringify({ Id: 'form-b' })));
   assert.equal(
     (await inspect('#native-title')).owner.status,

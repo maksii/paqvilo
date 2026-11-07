@@ -14,7 +14,7 @@ const catalogue = await readCatalogue(
     args.schema ? path.resolve(args.schema) : new URL('./dataverse/manifest.json', import.meta.url),
   );
 const guid = (key) => {
-  const b = createHash('sha1')
+  const b = createHash('sha1') // NOSONAR: non-security hash used for identity or checksums
     .update('paqvilo-company-operations-fixtures-v1:' + key)
     .digest()
     .subarray(0, 16);
@@ -89,12 +89,16 @@ for (const [kind, suffix, fraction] of [
       ...(kind === 'External contractor' ? { pqvd_supplieraccountid: 'V-STAFF' } : {}),
     },
   );
+  const annualSalaryOf = (kind) => {
+    if (kind === 'External contractor') return null;
+    return kind === 'Permanent employee' ? 36000 : 18000;
+  };
   add(
     'TERM-' + key,
     'pqvd_employmentterms',
     'Maxwell private ' + suffix,
     {
-      pqvd_annualsalary: kind === 'External contractor' ? null : kind === 'Permanent employee' ? 36000 : 18000,
+      pqvd_annualsalary: annualSalaryOf(kind),
       pqvd_dayrate: kind === 'External contractor' ? 450 : null,
       pqvd_weeklyhours: 40 * fraction,
       pqvd_noticeperioddays: 30,
@@ -132,25 +136,27 @@ const row = (key) => catalogue.records.find((r) => r.key === key),
           })(),
       )
       .map((r) => r.key);
+const engagementOfRole = (role) => {
+  if (role === 'EMPLOYEE') return engagements['Permanent employee'];
+  return role === 'CONTRACTOR' ? engagements['External contractor'] : null;
+};
+const scopeOf = (engagement, department) => {
+  if (engagement) return 'Engagement';
+  return department ? 'Department' : 'Organisation';
+};
+const scopeKeyOf = (engagement, department, tree) => {
+  if (engagement) return 'ENG-' + guid(engagement).replaceAll('-', '');
+  if (department) return 'DEPT-' + row(department).id.replaceAll('-', '');
+  return tree ? 'ORG-TREE' : 'ORG-SELF';
+};
 for (const role of roles) {
   const key = 'G-P-STRESS-' + role,
-    engagement =
-      role === 'EMPLOYEE'
-        ? engagements['Permanent employee']
-        : role === 'CONTRACTOR'
-          ? engagements['External contractor']
-          : null,
+    engagement = engagementOfRole(role),
     department = role === 'TEAMLEADER' ? 'DEPT-A-RIV-2' : null,
     tree = ['COMPANYMANAGER', 'BRANCHMANAGER', 'AUDITOR'].includes(role),
     account = ['COMPANYMANAGER', 'AUDITOR'].includes(role) ? 'A' : 'A-RIV',
-    scope = engagement ? 'Engagement' : department ? 'Department' : 'Organisation',
-    scopeKey = engagement
-      ? 'ENG-' + guid(engagement).replaceAll('-', '')
-      : department
-        ? 'DEPT-' + row(department).id.replaceAll('-', '')
-        : tree
-          ? 'ORG-TREE'
-          : 'ORG-SELF';
+    scope = scopeOf(engagement, department),
+    scopeKey = scopeKeyOf(engagement, department, tree);
   const principals = Object.fromEntries(
     roles.map((code) => ['pqvd_' + code.toLowerCase() + 'principalid', code === role ? person : null]),
   );
@@ -287,7 +293,7 @@ const rebind = (q, keys) => {
   const pk = catalogue.tables.find((t) => t.name === q.table).primaryId;
   if (keys.length)
     q.fetchXml = q.fetchXml.replace(
-      new RegExp(`<condition attribute="${pk}" operator="(?:in|eq)"[^>]*(?:/>|>[\\s\\S]*?</condition>)`),
+      new RegExp(String.raw`<condition attribute="${pk}" operator="(?:in|eq)"[^>]*(?:/>|>[\s\S]*?</condition>)`),
       `<condition attribute="${pk}" operator="in">${keys.map((key) => '<value>{{ref:' + key + '}}</value>').join('')}</condition>`,
     );
 };

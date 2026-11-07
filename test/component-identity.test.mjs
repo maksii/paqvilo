@@ -162,6 +162,7 @@ test(
       `
     const { parentPort, workerData } = require('node:worker_threads');
     import(workerData.module).then(({ componentIdentity }) => {
+      parentPort.postMessage('imported');
       const text = '<powerpagecomponent' + ' \t'.repeat(500000) + 'invalid/>';
       parentPort.postMessage([componentIdentity(text), componentIdentity('<a '.repeat(500000))]);
     }).catch(error => { throw error; });
@@ -171,8 +172,11 @@ test(
     let timer;
     try {
       const result = await new Promise((resolve, reject) => {
-        timer = setTimeout(() => reject(new Error('Component identity exceeded its worker deadline.')), 5000);
-        worker.once('message', resolve);
+        worker.on('message', (message) => {
+          if (message !== 'imported') return resolve(message);
+          // The scans take milliseconds; a nonlinear scan of these megabyte inputs would take hours.
+          timer = setTimeout(() => reject(new Error('Component identity exceeded its worker deadline.')), 5000);
+        });
         worker.once('error', reject);
         worker.once('exit', (code) => {
           if (code) reject(new Error('Component identity worker exited early.'));

@@ -65,7 +65,7 @@ import { packCheck, registerPackExport } from './pack-exports.mjs';
 import { onceReporter, packOverrides } from './dataverse-addon-common.mjs';
 
 const TRANSACTION_OPERATIONS = ['begin', 'commit', 'rollback'];
-const PROVIDER_OPERATIONS = [
+const PROVIDER_OPERATIONS = new Set([
   'retrieve',
   'retrieveMultiple',
   'retrieveSync',
@@ -78,7 +78,7 @@ const PROVIDER_OPERATIONS = [
   'deleteSync',
   'describe',
   ...TRANSACTION_OPERATIONS,
-];
+]);
 // Capability operation name -> the provider operation that answers it.
 const OPERATIONS = [
   ['Create', 'create'],
@@ -117,20 +117,24 @@ export function validateVirtualTableProviders(map) {
     if (!name) throw new TypeError('virtualTableProviders keys must name a data source or a table.');
     if (!isRow(provider))
       throw new TypeError(`virtualTableProviders['${key}'] must be an object of provider operations.`);
-    for (const [operation, fn] of Object.entries(provider)) {
-      if (!PROVIDER_OPERATIONS.includes(operation))
-        throw new TypeError(`virtualTableProviders['${key}'] has an unknown operation '${operation}'.`);
-      if (typeof fn !== 'function')
-        throw new TypeError(`virtualTableProviders['${key}'].${operation} must be a function.`);
-    }
-    const declared = TRANSACTION_OPERATIONS.filter((operation) => operation in provider);
-    if (declared.length && declared.length !== TRANSACTION_OPERATIONS.length)
-      throw new TypeError(
-        `virtualTableProviders['${key}'] declares ${declared.join(', ')}; a transaction contract needs begin, commit and rollback.`,
-      );
+    validateProviderOperations(key, provider);
     result[name] = { ...provider };
   }
   return result;
+}
+
+function validateProviderOperations(key, provider) {
+  for (const [operation, fn] of Object.entries(provider)) {
+    if (!PROVIDER_OPERATIONS.has(operation))
+      throw new TypeError(`virtualTableProviders['${key}'] has an unknown operation '${operation}'.`);
+    if (typeof fn !== 'function')
+      throw new TypeError(`virtualTableProviders['${key}'].${operation} must be a function.`);
+  }
+  const declared = TRANSACTION_OPERATIONS.filter((operation) => operation in provider);
+  if (declared.length && declared.length !== TRANSACTION_OPERATIONS.length)
+    throw new TypeError(
+      `virtualTableProviders['${key}'] declares ${declared.join(', ')}; a transaction contract needs begin, commit and rollback.`,
+    );
 }
 
 /** Validates virtualTables declarations (install option or pack export): { '<table>': { dataSourceId?: string, fallback?: 'local' } }. */
@@ -247,14 +251,10 @@ const pendingWrites = new WeakMap();
 function writeThrough(state, c, mapping, { operation, data, existing, deep = false }) {
   const resolved = resolveTable(state, mapping);
   if (!resolved.virtual) return undefined;
-  const kind =
-    operation === 'delete'
-      ? 'delete'
-      : operation === 'create' || (operation === 'upsert' && !existing)
-        ? 'create'
-        : operation === 'update' || operation === 'upsert'
-          ? 'update'
-          : null;
+  let kind = null;
+  if (operation === 'delete') kind = 'delete';
+  else if (operation === 'create' || (operation === 'upsert' && !existing)) kind = 'create';
+  else if (operation === 'update' || operation === 'upsert') kind = 'update';
   if (!kind || !assertProvider(state, resolved)) return undefined;
   if (typeof (resolved.provider[kind] ?? resolved.provider[`${kind}Sync`]) !== 'function')
     throw missingOperation(state, resolved, kind);
@@ -308,7 +308,9 @@ function sendExternal(state, api, c, mapping, info) {
   const write = () => {
     let answer;
     try {
-      answer = kind === 'create' ? fn(payload, ctx) : kind === 'update' ? fn(id, payload, ctx) : fn(id, ctx);
+      if (kind === 'create') answer = fn(payload, ctx);
+      else if (kind === 'update') answer = fn(id, payload, ctx);
+      else answer = fn(id, ctx);
     } catch (error) {
       throw failed(state, resolved, kind, messageOf(error));
     }
@@ -322,7 +324,7 @@ function sendExternal(state, api, c, mapping, info) {
           'its provider declares no transaction contract (begin, commit, rollback)',
         ),
       );
-    const done = (returned) => mirrorWrite(state, api, resolved, mapping, kind, returned, info, callerKeyed);
+    const done = (returned) => mirrorWrite(state, api, resolved, mapping, { kind, returned, info, callerKeyed });
     if (typeof answer?.then !== 'function') return done(answer);
     if (info.sync) {
       answer.then(undefined, () => {});
@@ -345,7 +347,7 @@ function createPayload(api, mapping, data, id) {
   );
   for (const [key, value] of Object.entries(data)) {
     const rel = mapping.relationships?.[key];
-    if (!rel || rel.many !== false || !isRow(value) || ('id' in value && 'logical_name' in value)) continue;
+    if (rel?.many !== false || !isRow(value) || ('id' in value && 'logical_name' in value)) continue;
     delete payload[key];
     payload[rel.from] = row?.[rel.from] ?? null;
   }
@@ -431,7 +433,7 @@ function uncompensated(state, resolved, kind, id, reason) {
 // ponytail: the provider's columns (and a create's provider-assigned primary key) are merged into the stored row in place,
 // after the store's own post-operation plug-ins saw the local row; the afterWrite hooks see the merged row and info.id.
 // A caller-keyed create keeps the caller's key.
-function mirrorWrite(state, api, resolved, mapping, kind, returned, info, callerKeyed = false) {
+function mirrorWrite(state, api, resolved, mapping, { kind, returned, info, callerKeyed = false }) {
   if (kind === 'delete') return undefined;
   if (returned === undefined || returned === null) {
     if (kind === 'create') throw failed(state, resolved, kind, 'it returned no row');
@@ -491,9 +493,7 @@ async function mirror(api, mapping, rows, { id = null } = {}) {
     api.store.transact(() => {
       const current = api.store.state.tables[logical] ?? [];
       const byId = new Map(current.map((row) => [keyOf(row), row]));
-      const merged = rows
-        .filter((row) => row[idColumn] != null)
-        .map((row) => ({ ...(byId.get(keyOf(row)) ?? {}), ...row }));
+      const merged = rows.filter((row) => row[idColumn] != null).map((row) => ({ ...byId.get(keyOf(row)), ...row }));
       api.store.state.tables[logical] =
         id == null ? merged : [...current.filter((row) => keyOf(row) !== normalKey(id)), ...merged];
     }),
@@ -528,13 +528,7 @@ function readSync(state, resolved, c, { single = false, id = null, request = nul
   if (!resolved.virtual || !assertProvider(state, resolved)) return null;
   const kind = single ? 'retrieveSync' : 'retrieveMultipleSync';
   const fn = fetchXml ? null : resolved.provider[kind];
-  if (typeof fn !== 'function') {
-    throw new DataError(
-      `Virtual table '${resolved.table}' is read through its provider; a synchronous SDK ${fetchXml ? 'FetchXML read' : single ? 'Retrieve' : 'RetrieveMultiple'} needs the provider's ${fetchXml ? 'Web API route' : kind} operation.`,
-      501,
-      'SdkVirtualReadUnsupported',
-    );
-  }
+  if (typeof fn !== 'function') throw synchronousReadUnsupported(resolved, kind, single, fetchXml);
   let answer;
   try {
     answer = single
@@ -557,10 +551,30 @@ function readSync(state, resolved, c, { single = false, id = null, request = nul
       'SdkVirtualReadUnsupported',
     );
   }
-  const rows = single ? (answer == null ? [] : [answer]) : answer;
+  let rows = answer;
+  if (single) rows = answer == null ? [] : [answer];
   if (!Array.isArray(rows) || !rows.every(isRow))
     throw failed(state, resolved, kind, single ? 'it did not return a row' : 'it did not return an array of rows');
   return { rows: structuredClone(rows) };
+}
+
+function synchronousReadUnsupported(resolved, kind, single, fetchXml) {
+  let readOperation, providerOperation;
+  if (fetchXml) {
+    readOperation = 'FetchXML read';
+    providerOperation = 'Web API route';
+  } else if (single) {
+    readOperation = 'Retrieve';
+    providerOperation = kind;
+  } else {
+    readOperation = 'RetrieveMultiple';
+    providerOperation = kind;
+  }
+  return new DataError(
+    `Virtual table '${resolved.table}' is read through its provider; a synchronous SDK ${readOperation} needs the provider's ${providerOperation} operation.`,
+    501,
+    'SdkVirtualReadUnsupported',
+  );
 }
 
 // api.virtualProviders.query: the provider's rows for a request { select, filter, orderby, top }, or null without a provider

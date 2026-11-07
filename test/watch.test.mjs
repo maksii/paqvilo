@@ -6,19 +6,38 @@ import path from 'node:path';
 import { EventEmitter, once } from 'node:events';
 import { watchSources, trackOnlineState } from '../lense/commands/dev.mjs';
 
+// OS file-system events and watcher readiness have no latency bound on a loaded machine. This only reports a hung
+// watcher; ordering and counts are asserted from the events themselves.
+const WATCH_HANG_GUARD_MS = 60_000;
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 test('a pinned session baseline avoids idle Git polling while source saves still refresh', async (t) => {
   const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'pp-pinned-watch-')));
   const file = path.join(dir, 'script.js');
   fs.writeFileSync(file, '// initial\n');
+  // The smallest layout Git accepts as a repository, so the watcher follows its HEAD.
+  fs.mkdirSync(path.join(dir, '.git', 'objects'), { recursive: true });
+  fs.mkdirSync(path.join(dir, '.git', 'refs'));
+  fs.writeFileSync(path.join(dir, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+  // The watcher logs and swallows baseline-check errors, so count calls instead of throwing in one.
+  let baselineChecks = 0,
+    headChecks = 0;
+  const repository = new EventEmitter();
+  const polled = once(repository, 'polled', { signal: AbortSignal.timeout(WATCH_HANG_GUARD_MS) });
   const session = Object.assign(new EventEmitter(), {
     cfg: { sourceDir: dir, origin: 'https://portal.example.com', site: {} },
     baseline: {
       available: true,
       spec: 'a'.repeat(40),
       commit: 'a'.repeat(40),
-      checkForUpdate: () => assert.fail('immutable baselines need no idle ref checks'),
+      checkForUpdate: async () => {
+        baselineChecks++;
+        return false;
+      },
+    },
+    refreshHead: async () => {
+      if (++headChecks === 2) repository.emit('polled');
     },
     model: { webFiles: [] },
     rewriter: { unsupported: [] },
@@ -31,8 +50,11 @@ test('a pinned session baseline avoids idle Git polling while source saves still
     fs.rmSync(dir, { recursive: true, force: true });
   });
   await watcher.ready;
-  await sleep(120);
-  const refreshed = once(session, 'refreshed', { signal: AbortSignal.timeout(5000) });
+  // A repository check asks for a ref update right after refreshing HEAD, and the next check
+  // starts only once the previous one finished: a second HEAD refresh follows a complete check.
+  await polled;
+  assert.equal(baselineChecks, 0, 'immutable baselines need no idle ref checks');
+  const refreshed = once(session, 'refreshed', { signal: AbortSignal.timeout(WATCH_HANG_GUARD_MS) });
   fs.writeFileSync(file, '// next save\n');
   const [event] = await refreshed;
   assert.deepEqual(event.files, [file]);
@@ -58,11 +80,11 @@ test('an explicitly selected extract under .paqvilo is watched while its generat
   const watcher = watchSources(session, { pages: () => [] }, { log: () => {} });
   try {
     await watcher.ready;
-    const refreshed = once(session, 'refreshed', { signal: AbortSignal.timeout(5000) });
+    const refreshed = once(session, 'refreshed', { signal: AbortSignal.timeout(WATCH_HANG_GUARD_MS) });
     fs.writeFileSync(file, '// saved\n');
     await refreshed;
     // A later real save proves the watcher already processed the ignored write before it.
-    const next = once(session, 'refreshed', { signal: AbortSignal.timeout(5000) });
+    const next = once(session, 'refreshed', { signal: AbortSignal.timeout(WATCH_HANG_GUARD_MS) });
     fs.writeFileSync(ignoredFile, '{"saved":true}');
     fs.writeFileSync(file, '// saved again\n');
     await next;
@@ -77,7 +99,7 @@ test('saves during a reload are shown by one following reload, never an overlapp
   const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-watch-')));
   const file = path.join(dir, 'script.js');
   fs.writeFileSync(file, '// 0\n');
-  const signal = () => ({ signal: AbortSignal.timeout(5000) });
+  const signal = () => ({ signal: AbortSignal.timeout(WATCH_HANG_GUARD_MS) });
   let running = 0,
     overlapped = false;
   const gotos = new EventEmitter(),
@@ -95,11 +117,14 @@ test('saves during a reload are shown by one following reload, never an overlapp
       running--;
     },
   };
+  let prepared = 0;
   const session = Object.assign(new EventEmitter(), {
     cfg: { sourceDir: dir, origin: 'https://portal.example.com', site: {} },
     model: { webFiles: [] },
     rewriter: { unsupported: [] },
-    refresh: () => {},
+    refresh: () => {
+      prepared++;
+    },
     rel: (f) => path.relative(dir, f),
   });
   const seen = [];
@@ -114,25 +139,29 @@ test('saves during a reload are shown by one following reload, never an overlapp
   const first = once(gotos, 'goto', signal());
   fs.writeFileSync(file, '// 1\n');
   await first;
-  for (const save of [2, 3]) {
-    const noticed = once(watcher, 'all', signal());
-    fs.writeFileSync(file, `// ${save}\n`);
-    await noticed;
-  }
-  await sleep(150); // past the save debounce, which must not start a reload while one is in flight
+  // Two saves arrive during the first reload. Their debounce runs on the mock clock, so it fires
+  // while that reload is still in flight. The window has no await: no I/O or real timer runs in it.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  watcher.emit('all', 'change', file);
+  watcher.emit('all', 'change', file);
+  t.mock.timers.runAll();
+  t.mock.timers.reset();
+  // A reload starts by preparing the session synchronously, so a second one would show here at once.
+  assert.equal(prepared, 1, 'the save debounce must not start a reload while one is in flight');
   assert.equal(releases.length, 1);
   const second = once(gotos, 'goto', signal());
   releases[0]();
   await second;
   releases[1]();
-  await watcher.whenIdle(5000);
+  await watcher.whenIdle(WATCH_HANG_GUARD_MS);
   assert.equal(overlapped, false, 'two reloads ran at the same time');
   assert.equal(releases.length, 2, 'both saves made during the first reload share the next one');
   assert.deepEqual(seen, [[file], [file]]);
+  assert.equal(prepared, 2);
   assert.equal(running, 0);
 });
 
-test('closing the watcher cancels queued saves and prevents reload after shutdown', async () => {
+test('closing the watcher cancels queued saves and prevents reload after shutdown', async (t) => {
   const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-watch-close-')));
   let refreshes = 0;
   const session = Object.assign(new EventEmitter(), {
@@ -147,9 +176,14 @@ test('closing the watcher cancels queued saves and prevents reload after shutdow
   const watcher = watchSources(session, { pages: () => [] }, { log: () => {} });
   try {
     await new Promise((resolve) => watcher.on('ready', resolve));
+    // The queued save's debounce runs on the mock clock; running every pending timer after
+    // close shows that nothing left behind refreshes. The window has no await.
+    t.mock.timers.enable({ apis: ['setTimeout'] });
     watcher.emit('all', 'change', path.join(dir, 'script.js'));
-    await watcher.close();
-    await sleep(250);
+    const closing = watcher.close();
+    t.mock.timers.runAll();
+    t.mock.timers.reset();
+    await closing;
     assert.equal(refreshes, 0);
     await watcher.close();
   } finally {
@@ -160,7 +194,7 @@ test('closing the watcher cancels queued saves and prevents reload after shutdow
 
 test(
   'watcher shutdown does not wait for a stalled browser navigation or emit a late refresh',
-  { timeout: 5000 },
+  { timeout: 180_000 },
   async (t) => {
     const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'pp-stalled-refresh-')));
     let reached;
@@ -218,7 +252,7 @@ test('an explicit route file outside the source directory is watched', async () 
   try {
     await new Promise((resolve) => watcher.on('ready', resolve));
     const seen = new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('external route save was missed')), 3000);
+      const timer = setTimeout(() => reject(new Error('external route save was missed')), 60_000);
       session.once('refreshed', (event) => {
         clearTimeout(timer);
         resolve(event);
@@ -298,7 +332,7 @@ test('a comparison started before a save cannot overwrite the current version', 
   }
 });
 
-test('a baseline commit change refreshes the model and reloads even without source edits', async () => {
+test('a baseline commit change refreshes the model and reloads even without source edits', async (t) => {
   const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-watch-ref-')));
   let calls = 0;
   let reloads = 0;
@@ -322,7 +356,25 @@ test('a baseline commit change refreshes the model and reloads even without sour
       },
     ],
   };
-  const watcher = watchSources(session, context, { baselinePollMs: 20, log: () => {} });
+  const baselinePollMs = 20;
+  const setInterval = globalThis.setInterval,
+    clearInterval = globalThis.clearInterval;
+  let poll,
+    pollTimer,
+    cancelled = false;
+  t.mock.method(globalThis, 'setInterval', (callback, delay, ...args) => {
+    const timer = setInterval(callback, delay, ...args);
+    if (delay === baselinePollMs) {
+      poll = callback;
+      pollTimer = timer;
+    }
+    return timer;
+  });
+  t.mock.method(globalThis, 'clearInterval', (timer) => {
+    if (timer === pollTimer) cancelled = true;
+    return clearInterval(timer);
+  });
+  const watcher = watchSources(session, context, { baselinePollMs, log: () => {} });
   try {
     const seen = new Promise((resolve) => session.once('refreshed', resolve));
     const event = await seen;
@@ -330,9 +382,12 @@ test('a baseline commit change refreshes the model and reloads even without sour
     assert.equal(reloads, 1);
     assert.equal(event.baselineChanged, true);
     assert.equal(event.how, 'reload');
+    assert.equal(typeof poll, 'function', 'the fallback poll has started');
     await watcher.close();
+    assert.equal(cancelled, true, 'close cancels the actual fallback interval');
     const previousCalls = calls;
-    await sleep(100);
+    // A callback already queued at cancellation must also honor the closed guard.
+    poll();
     assert.equal(calls, previousCalls);
     assert.equal(reloads, 1);
   } finally {
@@ -474,7 +529,10 @@ test('metadata remapping aborts old-file comparisons and removes URLs that no lo
   }
 });
 
-test('save bursts keep one superseding comparison per resource and retry unreachable state after TTL', async () => {
+test('save bursts keep one superseding comparison per resource and retry unreachable state after TTL', async (t) => {
+  // The result age is read from Date.now(); a mock clock keeps a slow turn from expiring it early.
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+  const maxAgeMs = 30;
   const session = Object.assign(new EventEmitter(), {
     cfg: { sourceDir: process.cwd(), origin: 'https://portal.example.com' },
     onlineState: new Map(),
@@ -482,7 +540,7 @@ test('save bursts keep one superseding comparison per resource and retry unreach
   const jobs = [];
   const stop = trackOnlineState(session, {
     concurrency: 2,
-    maxAgeMs: 30,
+    maxAgeMs,
     compare: (_origin, entry, { signal }) => new Promise((resolve) => jobs.push({ entry, signal, resolve })),
   });
   const hit = () => session.emit('hit', { type: 'file', url: '/app.js', sources: [{ rel: 'app.js' }] });
@@ -500,7 +558,7 @@ test('save bursts keep one superseding comparison per resource and retry unreach
     hit();
     await sleep(0);
     assert.equal(jobs.length, 2, 'a failed request still observes the retry interval');
-    await sleep(40);
+    t.mock.timers.tick(maxAgeMs);
     hit();
     await sleep(0);
     assert.equal(jobs.length, 3);

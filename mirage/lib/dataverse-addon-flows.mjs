@@ -14,7 +14,9 @@ import {
   registerInternalMessage,
   respond,
 } from './dataverse-addon-common.mjs';
+import { defaultSchedule, runJob, stageJob } from './dataverse-async.mjs';
 import { isLoopbackUrl, loopbackFetch } from './dataverse-webhooks.mjs';
+import { tracedFetch } from './trace-hosts.mjs';
 
 const key = (value) => String(value ?? '').toLowerCase();
 const sameId = (a, b) => key(a) === key(b);
@@ -387,10 +389,13 @@ function operations(api) {
 
   // RunDesktopFlow: a session row (Running), then the pack's handler on a later tick, then Succeeded (4) or Failed (8).
   // registerAddon would answer the pack's raw result, so RunDesktopFlow is registered by runDesktopFlow below.
-  const runSession = async (c, packed, workflow, sessionId) => {
+  // Tracing: the run is a job span (dataverse-async.mjs runJob) staged by the RunDesktopFlow request, with the pack's result
+  // as output (or its failure) and the callback as an http-out span.
+  const runSession = async (c, packed, workflow, sessionId, span = null) => {
     const args = argsOf(c);
     let statuscode = 4;
     let outputs = null;
+    let failure = null;
     try {
       const result = await packed.handler({
         name: 'RunDesktopFlow',
@@ -404,8 +409,9 @@ function operations(api) {
       });
       outputs = result?.outputs ?? null;
       if (result?.status === 'Failed') statuscode = 8;
-    } catch {
+    } catch (error) {
       statuscode = 8;
+      failure = error;
     }
     await write(() =>
       Object.assign(rowOf('flowsession', sessionId), {
@@ -416,13 +422,26 @@ function operations(api) {
     );
     // The callback is posted to loopback only (dataverse-webhooks.mjs isLoopbackUrl); a failed post changes nothing.
     if (args.callbackUrl && isLoopbackUrl(args.callbackUrl)) {
-      await loopbackFetch(args.callbackUrl, {
-        method: 'POST',
-        signal: AbortSignal.timeout(5000),
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ flowsessionId: sessionId, statuscode }),
+      await tracedFetch(api.store.traces, {
+        module: 'jobs',
+        operation: 'callback',
+        url: args.callbackUrl,
+        fetch: loopbackFetch,
+        init: {
+          method: 'POST',
+          signal: AbortSignal.timeout(5000),
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ flowsessionId: sessionId, statuscode }),
+        },
       }).catch(() => {});
     }
+    span?.set({ statuscode });
+    span?.output(() => ({ statuscode, outputs }));
+    if (statuscode === 8)
+      span?.end({
+        status: 'error',
+        error: failure ?? { code: 'DesktopFlowFailed', message: 'The desktop flow run failed.' },
+      });
   };
 
   const handlers = {
@@ -512,7 +531,23 @@ function registerRunDesktopFlow(api, spec, { boundRow, tableOf, write, stamp, ru
           outputs: null,
         }),
       );
-      setImmediate(() => runSession(c, packed, workflow, sessionId).catch(() => {}));
+      // On the API scheduler, so the run is tracked (drain), cancelled when the API closes and never starts after it.
+      const key = `job:${sessionId}`;
+      stageJob(api.store, key, { kind: 'desktop-flow', flowSessionId: sessionId });
+      defaultSchedule(api, () =>
+        runJob(
+          api.store,
+          {
+            key,
+            name: workflow.name ?? 'RunDesktopFlow',
+            kind: 'desktop-flow',
+            entity: 'workflow',
+            recordId: workflow.workflowid,
+            attributes: { flowSessionId: sessionId, processId: workflow.workflowid },
+          },
+          (span) => runSession(c, packed, workflow, sessionId, span),
+        ).catch(() => {}),
+      );
       return respond(c, name, {
         flowsessionId: sessionId,
         licenseCheck: { code: 'ValidLicenseCoverage', message: 'Valid License Coverage' },

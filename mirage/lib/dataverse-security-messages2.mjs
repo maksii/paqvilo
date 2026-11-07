@@ -62,7 +62,8 @@ const CONSENT_PROPERTIES = [
   'firstPartyLoginUri',
   'customParameters',
 ];
-const CONSENT_COMPLEX = `<ComplexType Name="GetConsentLinkResponse">\n  ${CONSENT_PROPERTIES.map((p) => `<Property Name="${p}" Type="Edm.String" />`).join('\n  ')}\n</ComplexType>`;
+const consentProperties = CONSENT_PROPERTIES.map((p) => `<Property Name="${p}" Type="Edm.String" />`).join('\n  ');
+const CONSENT_COMPLEX = `<ComplexType Name="GetConsentLinkResponse">\n  ${consentProperties}\n</ComplexType>`;
 const lookup = (logical, id) => (id == null ? null : { id, logical_name: logical, name: '' });
 const teamOf = (store, id) => {
   const found = tableOf(store, 'team').find((t) => sameId(t.teamid, id));
@@ -141,7 +142,7 @@ export function install(api) {
   const { store } = api;
   const write = (fn) => api.change(() => store.transact(fn, { isolated: true }));
   const need = (c, privilege, entity) => {
-    if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, entity);
+    if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, entity); // NOSONAR: operand can be NaN or undefined, the negated test differs
   };
   const respond = (c, name, payload) => ({
     status: 200,
@@ -325,8 +326,8 @@ export function install(api) {
         // The refusal for a query on another table is a guess.
         if (!/<entity\s+name=['"]principalobjectaccess['"]/i.test(fetchXml))
           throw invalid('The FetchXml query must select principalobjectaccess.');
-        // ponytail: every share row is reset and the FetchXml filter is not applied. Mirage never writes inherited rights (grantAccess
-        // stores 0), so the reset changes nothing observable. The refusal sentence and the privilege gate are guesses.
+        // ponytail: every share row's inherited rights (cascaded shares and reparenting, dataverse-security.mjs) are reset and the
+        // FetchXml filter is not applied. The refusal sentence and the privilege gate are guesses.
         await write(() => {
           for (const share of tableOf(store, 'principalobjectaccess')) share.inheritedaccessrightsmask = 0;
         });
@@ -452,8 +453,8 @@ export function install(api) {
       kind: 'function',
       binding: 'unbound',
       handle: async (c) => {
-        const ids = listOf(c.params?.PrivilegeIds).map(key);
-        return aadPrivileges(c, 'RetrieveAadUserSetOfPrivilegesByIds', (p) => ids.includes(key(p.PrivilegeId)));
+        const ids = new Set(listOf(c.params?.PrivilegeIds).map(key));
+        return aadPrivileges(c, 'RetrieveAadUserSetOfPrivilegesByIds', (p) => ids.has(key(p.PrivilegeId)));
       },
       csdl: csdlOf('function', 'RetrieveAadUserSetOfPrivilegesByIds', {
         params: [

@@ -45,8 +45,7 @@ export function webApiReaderTemplateKey(descriptor) {
 /** Trusted pack templates are explicit response emulation, never CLR execution. */
 export function validateWebApiErrorTemplates(value) {
   if (
-    !value ||
-    value.version !== 1 ||
+    value?.version !== 1 ||
     typeof value.evidence !== 'string' ||
     !value.evidence.trim() ||
     !Array.isArray(value.templates) ||

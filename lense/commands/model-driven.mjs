@@ -13,6 +13,7 @@ import { createModelDrivenOverlay, importModelDrivenProject } from '../model-dri
 import { modelDrivenTargets, readTargetMappings, modelDrivenTargetSessions } from '../model-driven-targets.mjs';
 import { startupProgress, waitForStartupPage } from '../startup-progress.mjs';
 import { startupDeadline } from '../startup-deadline.mjs';
+import { createModelDrivenMetadataIndex } from '../model-driven-metadata.mjs';
 
 const cleanError = (error) =>
   String(error.message).replace(/https?:\/\/[^\s<>"']+/g, (value) => {
@@ -33,16 +34,17 @@ export function modelDrivenReloadQueue(task) {
     request() {
       if (stopped) return Promise.resolve();
       requested = true;
-      return (pending ??= Promise.resolve()
+      pending ??= Promise.resolve()
         .then(async () => {
           do {
             requested = false;
             await task();
-          } while (requested && !stopped);
+          } while (requested && !stopped); // NOSONAR: loop flag is changed asynchronously
         })
         .finally(() => {
           pending = null;
-        }));
+        });
+      return pending;
     },
     async close() {
       stopped = true;
@@ -79,7 +81,81 @@ export function publishModelDrivenReload(overlay, next, mappings) {
   overlay.replace(next, mappings);
 }
 
+function validateInspectOptions(args) {
+  const allowed = new Set([
+    'config',
+    'project',
+    'env',
+    'url',
+    'path',
+    'resource-map',
+    'local-simulation',
+    'json',
+    'event-cursor',
+    'include-event-parameters',
+  ]);
+  for (const option of Object.keys(args))
+    if (!allowed.has(option))
+      throw Object.assign(new Error(`--${option} is not supported by model-driven inspect`), {
+        code: 'unsupported_option',
+      });
+}
+
+function validateStartupTimeout(args) {
+  if (args['startup-timeout'] === undefined) return;
+  const timeout = Number(args['startup-timeout']);
+  if (!/^\d+$/.test(args['startup-timeout']) || !Number.isSafeInteger(timeout) || timeout < 1000 || timeout > 600000)
+    throw new Error('--startup-timeout must be an integer from 1000 to 600000 milliseconds');
+}
+
+function validateRunTimeout(args) {
+  if (
+    args.timeout !== undefined &&
+    (!/^\d+$/.test(args.timeout) ||
+      !Number.isSafeInteger(Number(args.timeout)) ||
+      Number(args.timeout) < 1 ||
+      Number(args.timeout) > 3600000)
+  )
+    throw new Error('--timeout must be 1..3600000 milliseconds.');
+}
+
+export function validateModelDrivenArguments(args, action = 'dev') {
+  if (!['inspect', 'dev'].includes(action)) throw new Error('model-driven accepts inspect or dev.');
+  if (action === 'inspect') validateInspectOptions(args);
+  if (!args.project) throw new Error('model-driven requires --project with selected Solution sources.');
+  if (args.env && args.url) throw new Error('Choose --env or --url, not both.');
+  if (action === 'dev') validateStartupTimeout(args);
+  if (action === 'dev') validateRunTimeout(args);
+  if (args.json && action !== 'inspect')
+    throw new Error('--json is supported by model-driven inspect. Use --output for a dev session report.');
+  if (action !== 'inspect' && (args['event-cursor'] !== undefined || args['include-event-parameters'] !== undefined))
+    throw new Error('Event report options are supported by model-driven inspect only.');
+}
+
+export function modelDrivenEventPage(imported, args = {}) {
+  let cursor;
+  if (args['event-cursor'] !== undefined) {
+    const text = args['event-cursor'];
+    if (typeof text !== 'string' || !/^[A-Za-z0-9_-]{1,4096}$/.test(text)) throw new Error('Invalid --event-cursor.');
+    try {
+      cursor = JSON.parse(Buffer.from(text, 'base64url').toString('utf8'));
+    } catch {
+      throw new Error('Invalid --event-cursor.');
+    }
+    if (!cursor || typeof cursor !== 'object' || Array.isArray(cursor)) throw new Error('Invalid --event-cursor.');
+  }
+  const page = createModelDrivenMetadataIndex(imported).eventRegistrations({
+    cursor,
+    includeParameters: Boolean(args['include-event-parameters']),
+  });
+  return {
+    ...page,
+    ...(page.nextCursor ? { nextCursorToken: Buffer.from(JSON.stringify(page.nextCursor)).toString('base64url') } : {}),
+  };
+}
+
 export default async function run(_cfg, args, [action = 'dev'] = []) {
+  validateModelDrivenArguments(args, action);
   const originalProgress = action === 'dev' ? (args.startup ?? startupProgress()) : null;
   const deadline = action === 'dev' ? startupDeadline(args['startup-timeout']) : null;
   const progress = originalProgress && {
@@ -108,16 +184,8 @@ export default async function run(_cfg, args, [action = 'dev'] = []) {
   }
 }
 
-async function runModelDriven(args, action, progress, deadline) {
+/* NOSONAR */ async function runModelDriven(args, action, progress, deadline) {
   const startupWait = (work, disposeLate) => (deadline ? deadline.wait(work, disposeLate) : work);
-  if (!['inspect', 'dev'].includes(action)) throw new Error('model-driven accepts inspect or dev.');
-  if (action !== 'dev' && args['startup-timeout'] !== undefined)
-    throw Object.assign(new Error('--startup-timeout is supported only by model-driven dev.'), {
-      code: 'unsupported_option',
-    });
-  if (!args.project) throw new Error('model-driven requires --project with selected Solution sources.');
-  if (args.json && action !== 'inspect')
-    throw new Error('--json is supported by model-driven inspect. Use --output for a dev session report.');
   progress?.phase('configuration');
   const project = await startupWait(loadProjectConfig(args.project));
   const selection = modelDrivenTargets(project, args),
@@ -154,6 +222,7 @@ async function runModelDriven(args, action, progress, deadline) {
       targets: targets.map(({ id, origin }) => ({ id, origin })),
       trustedExtensions: project.modelDriven?.trustedExtensions ?? false,
       localSimulation: Boolean(args['local-simulation']),
+      clientEvents: modelDrivenEventPage(imported, args),
     };
     if (args.json) console.log(JSON.stringify(report));
     else

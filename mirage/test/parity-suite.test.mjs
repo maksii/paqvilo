@@ -43,6 +43,7 @@ import {
   tagShape,
   __testing,
 } from '../parity-suite.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const GUID_A = '3f2504e0-4f89-11d3-9a0c-0305e82c3301';
 const GUID_B = 'c6d9e2d4-1c73-e811-a844-000d3a2a3148';
@@ -56,7 +57,7 @@ const element = (tag, attributes = {}, children = [], extra = {}) => ({
 const text = (value) => ({ t: value });
 
 test('isolated baseline identity imports stay on the owned loopback runtime regardless of reference origin', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'baseline-owned-import-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'baseline-owned-import-'));
   let owned;
   t.after(async () => {
     await owned?.app.close();
@@ -502,7 +503,7 @@ test('classification rules match scenario, kind, path and field criteria in orde
 });
 
 test('runner compares synthetic loopback sides, classifies deltas, redacts values and never writes', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'parity-suite-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'parity-suite-'));
   const writes = { live: 0, local: 0 };
   const signIns = [];
   const localCookies = [];
@@ -784,7 +785,7 @@ test("scenario sources combine the core set with matching data-pack plans and sc
   );
 
   // A temporary packs root with one pack that matches only its own portal.
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'parity-packs-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'parity-packs-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await fs.mkdir(path.join(root, 'demo-parity', 'fixtures'), { recursive: true });
   await fs.writeFile(
@@ -1175,7 +1176,7 @@ test('captures that never settled, or anonymous ones naming a portal user, are b
 });
 
 test('shell and client probes both block inadmissible captures and retain status diagnostics', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'parity-probe-admission-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'parity-probe-admission-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const server = http.createServer((_req, res) => res.end(JSON.stringify({ data: {}, config: {}, status: {} })));
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -1311,7 +1312,7 @@ test("a plan denies its own routes, a matching pack's denied routes guard every 
   );
 
   // A pack's denied routes apply to runs against the portal it matches, whatever scenarios run.
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'parity-denied-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'parity-denied-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await fs.mkdir(path.join(root, 'denied-pack', 'fixtures'), { recursive: true });
   await fs.writeFile(

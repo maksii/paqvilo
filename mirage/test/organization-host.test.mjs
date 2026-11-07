@@ -13,12 +13,13 @@ import { loadOrganizationSources } from '../lib/solution-runtime-source.mjs';
 import { composeOrganizationHost } from '../lib/organization-host.mjs';
 import { assemblyXml, stepXml, pluginId } from './plugin-fixture.mjs';
 import { fixedClock, sequentialIds } from '../testing.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { statusResponseChunks } from '../lib/status-response.mjs';
 
 const GUID = (n) => `77777777-7777-4777-8777-${String(n).padStart(12, '0')}`;
 
 test('a standalone runtime switch to clr prepares the CLR runtime and stores nothing when preparation fails', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'organization-host-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'organization-host-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'solution/Other/Solution.xml':
@@ -95,6 +96,40 @@ async function composed(t) {
   return { store, host, notes };
 }
 
+test('HTTP capability status reuses private snapshots and bytes, with fresh public and exposed registry reads', async (t) => {
+  const { host, store } = await composed(t);
+  const first = host.capabilityStatus({ reuse: true });
+  assert.equal(host.capabilityStatus({ reuse: true }), first);
+  assert.ok(Object.isFrozen(first.capabilityReport.modules[0].operations));
+  const bytes = (value) => statusResponseChunks(value, { encoded: () => undefined }).filter(Buffer.isBuffer);
+  const initialBytes = bytes(first);
+  assert.equal(initialBytes.length, 2);
+  assert.deepEqual(bytes(host.capabilityStatus({ reuse: true })), initialBytes);
+  assert.equal(bytes(first)[1], initialBytes[1], 'The large report buffer is reused.');
+  const publicValue = host.capabilityStatus();
+  const capabilityName = Object.keys(first.capabilities)[0];
+  publicValue.capabilities[capabilityName] = 'edited';
+  publicValue.capabilityReport.modules.length = 0;
+  assert.equal(host.capabilityStatus().capabilities[capabilityName], first.capabilities[capabilityName]);
+  assert.ok(host.capabilityStatus().capabilityReport.modules.length);
+  store.revision++;
+  const revised = host.capabilityStatus({ reuse: true });
+  assert.notEqual(revised, first);
+  assert.deepEqual(revised, first);
+  const registry = host.capabilities();
+  const added = registry.add({ name: 'invented-late', kind: 'provider', level: 'contract' });
+  assert.ok(host.capabilityStatus({ reuse: true }).capabilityReport.modules.some((row) => row.name === added.name));
+  added.reason = 'Edited without a store revision';
+  assert.equal(
+    host.capabilityStatus({ reuse: true }).capabilityReport.modules.find((row) => row.name === added.name).reason,
+    added.reason,
+  );
+  assert.equal(
+    first.capabilityReport.modules.some((row) => row.name === added.name),
+    false,
+  );
+});
+
 test('close runs backend, organization, Dataverse API and managed identity in that order', async (t) => {
   const { host } = await composed(t);
   await host.createBackend();
@@ -138,7 +173,7 @@ test('the operation catalogue is memoised on an unchanged store revision and reb
 });
 
 test('host clock and ids reach the store and the organization in the standalone host', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'organization-host-clock-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'organization-host-clock-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   await fs.mkdir(path.join(root, 'solution', 'Other'), { recursive: true });
   await fs.writeFile(

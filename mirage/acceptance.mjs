@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { createCapabilityRegistry } from './lib/capability-registry.mjs';
 import { chromium } from 'playwright-core';
+import { windowsLaunchOptions } from './lib/browser-launch.mjs';
 import { editRichText, assertRichText } from './lib/richtext-actions.mjs';
 import { reconcileSupersededRead, correlateNetworkConsole } from './lib/request-evidence.mjs';
 import { auditQuery } from './lib/audit-log.mjs';
@@ -50,32 +51,28 @@ const loopback = (value) => {
     throw new Error('Local simulator and browser debugging addresses must use loopback without credentials.');
   return url;
 };
-const expand = (value, variables) =>
-  Array.isArray(value)
-    ? value.map((item) => expand(item, variables))
-    : value && typeof value === 'object'
-      ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, expand(item, variables)]))
-      : typeof value === 'string'
-        ? value.replace(/\{\{([\w]+)\}\}/g, (_all, name) => {
-            if (variables[name] === undefined) throw new Error(`Unknown flow variable ${name}`);
-            return String(variables[name]);
-          })
-        : value;
-const locate = (page, target) =>
-  target.selector
-    ? page.locator(target.selector)
-    : target.role
-      ? page.getByRole(target.role, {
-          name: target.name,
-          exact: target.exact !== false,
-        })
-      : target.label
-        ? page.getByLabel(target.label, { exact: target.exact !== false })
-        : target.text
-          ? page.getByText(target.text, { exact: target.exact !== false })
-          : (() => {
-              throw new Error('A flow action requires selector, role, label, or text.');
-            })();
+const expand = (value, variables) => {
+  if (Array.isArray(value)) return value.map((item) => expand(item, variables));
+  if (value && typeof value === 'object')
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, expand(item, variables)]));
+  if (typeof value === 'string')
+    return value.replace(/\{\{(\w+)\}\}/g, (_all, name) => {
+      if (variables[name] === undefined) throw new Error(`Unknown flow variable ${name}`);
+      return String(variables[name]);
+    });
+  return value;
+};
+const locate = (page, target) => {
+  if (target.selector) return page.locator(target.selector);
+  if (target.role)
+    return page.getByRole(target.role, {
+      name: target.name,
+      exact: target.exact !== false,
+    });
+  if (target.label) return page.getByLabel(target.label, { exact: target.exact !== false });
+  if (target.text) return page.getByText(target.text, { exact: target.exact !== false });
+  throw new Error('A flow action requires selector, role, label, or text.');
+};
 const expectedFields = (record, fields, contains) =>
   Object.entries(fields ?? {}).every(([name, value]) => JSON.stringify(record[name]) === JSON.stringify(value)) &&
   Object.entries(contains ?? {}).every(
@@ -98,7 +95,7 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
 }
 
 /** Run explicit actions against exported portal UI; record failures rather than converting partial flows into passes. */
-export async function runAcceptance({
+/* NOSONAR: single-pass routine, splitting it would change shared state */ export async function runAcceptance({
   localUrl,
   liveOrigin,
   cdpUrl,
@@ -174,15 +171,17 @@ export async function runAcceptance({
     // synchronous requests (lib/navigation-settle.mjs).
     blockingProxy = net.createServer((socket) => socket.destroy());
     await new Promise((resolve) => blockingProxy.listen(0, '127.0.0.1', resolve));
-    ownedBrowser = await chromium.launch({
-      channel: channel === 'chromium' ? undefined : channel,
-      headless: true,
-      args: ['--disable-background-networking', '--disable-component-update', '--disable-sync'],
-      proxy: {
-        server: `http://127.0.0.1:${blockingProxy.address().port}`,
-        bypass: LOOPBACK_HOSTS.join(','),
-      },
-    });
+    ownedBrowser = await chromium.launch(
+      windowsLaunchOptions({
+        channel: channel === 'chromium' ? undefined : channel,
+        headless: true,
+        args: ['--disable-background-networking', '--disable-component-update', '--disable-sync'],
+        proxy: {
+          server: `http://127.0.0.1:${blockingProxy.address().port}`,
+          bypass: LOOPBACK_HOSTS.join(','),
+        },
+      }),
+    );
     const localContext = await ownedBrowser.newContext({
       viewport: result.viewport,
       serviceWorkers: 'block',
@@ -258,7 +257,9 @@ export async function runAcceptance({
         navigationHolds = new Set(),
         navigationBudgets = new Map();
       let settlementDeadline = Infinity,
-        actionDeadline = Infinity;
+        actionDeadline = Infinity,
+        // The current step's own deadline: a step's `timeout` overrides the flow's for that step only.
+        actionTimeout = timeout;
       const navigationTimings = new Map();
       const navigationKey = (method, value) => method + ' ' + new URL(value).href;
       const requestFrame = (request) => {
@@ -271,7 +272,8 @@ export async function runAcceptance({
       const cancelRequests = (requests, reason) => {
         const cancelled = cancelNavigationRequests(requests, pending, requestRecords, { reason });
         if (cancelled.length) {
-          (observation.navigationCancelledRequests ??= []).push(...cancelled);
+          observation.navigationCancelledRequests ??= [];
+          observation.navigationCancelledRequests.push(...cancelled);
           lastRequestActivity = Date.now();
         }
       };
@@ -326,7 +328,7 @@ export async function runAcceptance({
           // Chromium reuses the network id across redirects; all hops share the first
           // hold's budget and leave time for the action's navigation to commit.
           const now = Date.now();
-          const remaining = Math.min(timeout, Math.max(0, actionDeadline - now));
+          const remaining = Math.min(actionTimeout, Math.max(0, actionDeadline - now));
           const key = navigationKey(event.request.method, event.request.url);
           const comparableMs = navigationTimings.get(key);
           const { reserveMs, policy: reservePolicy } = navigationCommitBudget(remaining, {
@@ -355,8 +357,9 @@ export async function runAcceptance({
             frames: () => frameState(frameEvents),
           })
             .then((wait) => {
-              if (wait)
-                (observation.navigationWaits ??= []).push({
+              if (wait) {
+                observation.navigationWaits ??= [];
+                observation.navigationWaits.push({
                   navigation: safeUrl(event.request.url),
                   ...wait,
                   commitReserveMs: reserve,
@@ -365,6 +368,7 @@ export async function runAcceptance({
                   writeHoldAllowanceMs: Math.max(0, remaining - reserve),
                   actionRemainingMs: Number.isFinite(actionDeadline) ? Math.max(0, actionDeadline - Date.now()) : null,
                 });
+              }
             })
             .catch(() => {})
             .finally(() => cdp.send('Fetch.continueRequest', { requestId: event.requestId }).catch(() => {}));
@@ -373,6 +377,14 @@ export async function runAcceptance({
         });
         await cdp.send('Fetch.enable', { patterns: [DOCUMENT_REQUEST_PATTERN] });
       }
+      // Edge isolates a cross-origin loopback child into its own renderer: this session sees its document
+      // request, then a "swap" detach, and the request's end reaches only the child's own target.
+      cdp.on('Page.frameDetached', ({ frameId, reason }) => {
+        if (reason !== 'swap') return;
+        for (const record of cdpRecords.values())
+          if (record.frameId === frameId && record.type === 'Document' && record.finishedTimestamp === undefined)
+            record.handedOff = true;
+      });
       for (const event of ['frameAttached', 'frameDetached', 'frameNavigated'])
         cdp.on('Page.' + event, (value) =>
           frameEvents.push({
@@ -456,7 +468,8 @@ export async function runAcceptance({
       page.on('console', (message) => {
         if (message.type() === 'error') {
           observation.consoleErrors.push(safeMessage(message.text()));
-          (observation.consoleMessages ??= []).push({
+          observation.consoleMessages ??= [];
+          observation.consoleMessages.push({
             text: safeMessage(message.text()),
             argumentCount: message.args().length,
             url: message.location().url ? failureUrl(message.location().url) : null,
@@ -519,7 +532,8 @@ export async function runAcceptance({
         // requestfinished depending on timing, so it is classified here, once, from its status.
         if (response.request().isNavigationRequest() && [204, 205].includes(response.status())) {
           noContentRequests.add(response.request());
-          (observation.noContentNavigations ??= []).push({
+          observation.noContentNavigations ??= [];
+          observation.noContentNavigations.push({
             method: response.request().method(),
             url: failureUrl(response.url()),
             status: response.status(),
@@ -619,21 +633,22 @@ export async function runAcceptance({
       const loadQuiet = async () => {
         const quiet = await awaitNetworkQuiet(() => [...cdpRecords.values()], {
           frames: () => frameState(frameEvents),
-          timeout,
+          timeout: actionTimeout,
           ignore: (row) => simulatorBackgroundRequest(row.url ?? row.path, origin),
         });
-        (observation.loadWaits ??= []).push({ url: safeUrl(page.url()), ...quiet });
+        observation.loadWaits ??= [];
+        observation.loadWaits.push({ url: safeUrl(page.url()), ...quiet });
       };
       const settle = async () => {
         // Document holds have their own bounded write wait. Start the settle
         // deadline after releasing an existing hold, so it cannot expire while
         // the runner itself prevents the replacement document from committing.
-        await Promise.allSettled([...navigationHolds]);
+        await Promise.allSettled(navigationHolds);
         const active = () =>
           [...pending.values()].filter(
             (record) => record.type !== 'eventsource' && !simulatorBackgroundRequest(record.url, origin),
           );
-        const deadline = Date.now() + timeout;
+        const deadline = Date.now() + actionTimeout;
         settlementDeadline = deadline;
         try {
           let lastProofCheck = 0;
@@ -649,39 +664,28 @@ export async function runAcceptance({
               if (response.ok) {
                 const audit = await response.json();
                 const frameTree = await cdp.send('Page.getFrameTree');
-                const flatten = (node) => [node.frame, ...(node.childFrames ?? []).flatMap(flatten)];
-                const currentFrames = flatten(frameTree.frameTree);
+                const currentFrames = flattenFrameTree(frameTree.frameTree);
                 observation.finalFrameTree = currentFrames.map(({ id, parentId, loaderId }) => ({
                   id,
                   parentId,
                   loaderId,
                 }));
-                for (const [request, record] of pending) {
-                  const proof = reconcileSupersededRead(proofInputs.get(request), {
-                    cdpRecords: [...cdpRecords.values()],
-                    audit,
-                    origin: local.origin,
-                    identity: observedIdentity,
-                    frameEvents,
-                    currentFrames,
-                  });
-                  if (proof) {
-                    record.navigationObservation = proof;
-                    (observation.supersededReads ??= []).push(proof);
-                    pending.delete(request);
-                  }
-                }
+                reconcilePendingFrames({
+                  observation,
+                  pending,
+                  proofInputs,
+                  cdpRecords,
+                  audit,
+                  localOrigin: local.origin,
+                  observedIdentity,
+                  frameEvents,
+                  currentFrames,
+                });
               }
             }
           }
           await Promise.allSettled(responseObservations);
-          if (active().length)
-            throw new Error(
-              'Portal requests did not settle: ' +
-                active()
-                  .map((record) => record.method + ' ' + record.url)
-                  .join(', '),
-            );
+          throwIfActiveRequests(active);
         } finally {
           settlementDeadline = Infinity;
         }
@@ -698,19 +702,28 @@ export async function runAcceptance({
             passed: false,
           };
           observation.steps.push(entry);
+          actionTimeout = step.timeout ?? timeout;
+          if (
+            !Number.isFinite(actionTimeout) ||
+            actionTimeout <= 0 ||
+            (navigationCommitReserveMs !== undefined && navigationCommitReserveMs >= actionTimeout)
+          )
+            throw new Error('A step timeout must be a positive finite number larger than navigationCommitReserveMs.');
+          if (step.timeout !== undefined) entry.timeout = actionTimeout;
+          page.setDefaultTimeout(actionTimeout);
+          page.setDefaultNavigationTimeout(actionTimeout);
           if (
             isLive &&
             (step.mutation ||
               ['identity', 'preset', 'record', 'rememberRecord', 'waitRecord', 'richtext'].includes(step.action))
           )
             throw new Error('A local mutation/state assertion cannot execute in a live observation flow.');
-          actionDeadline = Date.now() + timeout;
-          const surface = step.frame
-            ? (Array.isArray(step.frame) ? step.frame : [step.frame]).reduce(
-                (surface, selector) => surface.frameLocator(selector),
-                page,
-              )
-            : page;
+          actionDeadline = Date.now() + actionTimeout;
+          let surface;
+          if (step.frame) {
+            const selectors = Array.isArray(step.frame) ? step.frame : [step.frame];
+            surface = selectors.reduce((current, selector) => current.frameLocator(selector), page);
+          } else surface = page;
           const target = () => locate(surface, step);
           if (step.action === 'navigate') {
             await settle();
@@ -718,7 +731,7 @@ export async function runAcceptance({
               throw new Error('Navigation must use a portal-relative path.');
             if (step.waitUntil && !['load', 'domcontentloaded'].includes(step.waitUntil))
               throw new Error('Navigation readiness must be load or domcontentloaded.');
-            actionDeadline = Date.now() + timeout;
+            actionDeadline = Date.now() + actionTimeout;
             const response = await page.goto(origin + step.path, {
               // Exported pages may leave asynchronous data requests open while
               // their document and controls are already usable. Navigation
@@ -738,7 +751,7 @@ export async function runAcceptance({
             await control.waitFor({ state: 'attached' });
             entry.alreadyVisible = await control.isVisible();
             if (!entry.alreadyVisible) {
-              actionDeadline = Date.now() + timeout;
+              actionDeadline = Date.now() + actionTimeout;
               await locate(surface, step.trigger).click();
             }
             await control.waitFor({ state: 'visible' });
@@ -766,7 +779,7 @@ export async function runAcceptance({
           } else if (step.action === 'value') {
             // Authored modal scripts can initialize defaults after the control
             // is attached. Assert the resulting value within the action deadline.
-            const deadline = Date.now() + timeout;
+            const deadline = Date.now() + actionTimeout;
             let matched = false;
             let observed = false;
             while (Date.now() < deadline) {
@@ -839,7 +852,7 @@ export async function runAcceptance({
             await page.locator('#confirm').waitFor({ state: 'hidden' });
           } else if (['record', 'rememberRecord', 'waitRecord'].includes(step.action)) {
             let current, matches;
-            const deadline = Date.now() + (step.action === 'waitRecord' ? timeout : 0);
+            const deadline = Date.now() + (step.action === 'waitRecord' ? actionTimeout : 0);
             for (;;) {
               current = await readState(true);
               requireLocal(current);
@@ -863,6 +876,9 @@ export async function runAcceptance({
           actionDeadline = Infinity;
           entry.passed = true;
         }
+        actionTimeout = timeout;
+        page.setDefaultTimeout(timeout);
+        page.setDefaultNavigationTimeout(timeout);
         await page.waitForTimeout(300);
         await settle();
         await capture('final');
@@ -931,8 +947,10 @@ export async function runAcceptance({
                 return false;
               }
             });
-          if (own) (observation.browserRequestConsole ??= []).push({ console: message, path: own.path, status });
-          else observation.unexpectedConsoleErrors.push(message);
+          if (own) {
+            observation.browserRequestConsole ??= [];
+            observation.browserRequestConsole.push({ console: message, path: own.path, status });
+          } else observation.unexpectedConsoleErrors.push(message);
         }
         const failures = ['pageErrors', 'blockedRequests'].filter((key) => observation[key].length);
         if (observation.unexpectedConsoleErrors.length) failures.push('consoleErrors');
@@ -992,6 +1010,49 @@ export async function runAcceptance({
     await fs.writeFile(result.report, JSON.stringify(result, null, 2));
   }
   return result;
+}
+
+function reconcilePendingFrames({
+  observation,
+  pending,
+  proofInputs,
+  cdpRecords,
+  audit,
+  localOrigin,
+  observedIdentity,
+  frameEvents,
+  currentFrames,
+}) {
+  for (const [request, record] of pending) {
+    const proof = reconcileSupersededRead(proofInputs.get(request), {
+      cdpRecords: [...cdpRecords.values()],
+      audit,
+      origin: localOrigin,
+      identity: observedIdentity,
+      frameEvents,
+      currentFrames,
+    });
+    if (proof) {
+      record.navigationObservation = proof;
+      observation.supersededReads ??= [];
+      observation.supersededReads.push(proof);
+      pending.delete(request);
+    }
+  }
+}
+
+function flattenFrameTree(node) {
+  return [node.frame, ...(node.childFrames ?? []).flatMap(flattenFrameTree)];
+}
+
+function throwIfActiveRequests(active) {
+  if (active().length)
+    throw new Error(
+      'Portal requests did not settle: ' +
+        active()
+          .map((record) => record.method + ' ' + record.url)
+          .join(', '),
+    );
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

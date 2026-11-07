@@ -1,6 +1,6 @@
 // Simulated Dataverse file and image columns through the stream hook, the block actions
 // and the record hooks.
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { DataError } from '../lib/data-error.mjs';
@@ -503,23 +503,31 @@ test('DELETE on the property clears the column; other columns and routes pass th
 const NEW_ID = '6f1d7c1e-0000-4000-8000-000000000002';
 const FIFTEEN_MINUTES = 15 * 60 * 1000;
 
+// A write that waits for open() and then throws, so the store rolls it back; failed settles once the transaction
+// rejected with that error (the cases below depend on the rollback having happened).
+function rolledBackWrite(store) {
+  let open;
+  const gate = new Promise((resolve) => {
+    open = resolve;
+  });
+  const failed = assert.rejects(
+    store.transact(async () => {
+      await gate;
+      throw new Error('boom');
+    }),
+    /boom/,
+  );
+  return { open, failed };
+}
+
 test('DELETE after a rolled-back write clears the live row, not a detached copy', async () => {
   const h = harness();
   await h.hooks.stream(request('PATCH', { headers: { 'x-ms-file-name': 'a.txt' }, bodyBuffer: Buffer.from('x') }));
   const fileId = h.row().attachment;
-  let openGate;
-  const gate = new Promise((resolve) => {
-    openGate = resolve;
-  });
-  const failing = h.store
-    .transact(async () => {
-      await gate;
-      throw new Error('boom');
-    })
-    .catch(() => {});
+  const write = rolledBackWrite(h.store);
   const cleared = h.hooks.stream(request('DELETE'));
-  openGate();
-  await failing;
+  write.open();
+  await write.failed;
   assert.equal((await cleared).status, 204);
   assert.equal(h.row().attachment, null);
   assert.equal(h.row().attachment_name, null);
@@ -530,19 +538,10 @@ test('DeleteFile after a rolled-back write clears the live column, not a detache
   const h = harness();
   await h.hooks.stream(request('PATCH', { headers: { 'x-ms-file-name': 'a.txt' }, bodyBuffer: Buffer.from('x') }));
   const fileId = h.row().attachment;
-  let openGate;
-  const gate = new Promise((resolve) => {
-    openGate = resolve;
-  });
-  const failing = h.store
-    .transact(async () => {
-      await gate;
-      throw new Error('boom');
-    })
-    .catch(() => {});
+  const write = rolledBackWrite(h.store);
   const deleted = h.handle('DeleteFile')(action({ FileId: fileId }));
-  openGate();
-  await failing;
+  write.open();
+  await write.failed;
   assert.equal((await deleted).status, 204);
   assert.equal(h.row().attachment, null);
   assert.equal(h.row().attachment_name, null);
@@ -815,9 +814,18 @@ test('the file download route answers its own errors as plain application/json',
   );
 });
 
+// The HTTP cases below that add rows of their own and change no metadata share one API (each is a whole Dataverse
+// API); the alternate-key case declares a key before start-up and has its own.
+const cleanups = [];
+let shared = null;
+const sharedApi = () => (shared ??= attachmentApi({ after: (fn) => cleanups.push(fn) }));
+after(async () => {
+  for (const cleanup of cleanups.reverse()) await cleanup();
+});
+
 // Rows a message creates go through the records create rules, including the regarding row's appendTo.
 test('a block-committed note needs appendTo on the regarding row', async (t) => {
-  const h = await attachmentApi(t);
+  const h = await sharedApi();
   const principals = h.server.organization.api.principals,
     authorize = principals.authorize;
   const seen = [];
@@ -836,8 +844,8 @@ test('a block-committed note needs appendTo on the regarding row', async (t) => 
   assert.equal(h.store.tableRows('annotation').length, 0, 'no note is stored');
 });
 
-test("a delivered email attachment row is created with the caller's audit columns and a numeric filesize", async (t) => {
-  const h = await attachmentApi(t);
+test("a delivered email attachment row is created with the caller's audit columns and a numeric filesize", async () => {
+  const h = await sharedApi();
   const response = await h.send('emails/Microsoft.Dynamics.CRM.DeliverIncomingEmail', {
     MessageId: 'msg-f13',
     From: 'pat@sender.example.test',
@@ -856,8 +864,8 @@ test("a delivered email attachment row is created with the caller's audit column
 });
 
 // createThroughPipeline is the records layer's createInternal, so admin rows and key violations follow the Web API rules.
-test("an admin pipeline row with no caller gets the organization SYSTEM user's audit columns", async (t) => {
-  const h = await attachmentApi(t);
+test("an admin pipeline row with no caller gets the organization SYSTEM user's audit columns", async () => {
+  const h = await sharedApi();
   const api = h.server.organization.api;
   const id = '77777777-7777-4777-8777-777777777773';
   const row = await api.change(() =>

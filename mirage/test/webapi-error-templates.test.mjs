@@ -15,7 +15,8 @@ import { observedConfig } from '../lib/project-config.mjs';
 import { attachODataReaderDetails, odataConversionDetails } from '../lib/webapi-error-details.mjs';
 import { DataError } from '../lib/data.mjs';
 import { webApiErrorResponse } from '../lib/webapi-handler.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+
 const sha = (value) => createHash('sha256').update(value).digest('hex'),
   id = '00000000-0000-4000-8000-000000000001';
 const suffix = '\r\n   at Invented.Reader.Convert()\r\n   at Invented.Reader.Read()',
@@ -197,7 +198,7 @@ test('POST and PATCH use independently evidenced suffixes without cross-method f
 });
 
 async function fixture(t, { mode = 'response-template', match = true, inner = true, register = true } = {}) {
-  const source = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-response-template-'));
+  const source = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-response-template-'));
   ownedFixture(t).remove(() => fs.rm(source, { recursive: true, force: true }));
   await fs.writeFile(
     path.join(source, 'website.yml'),

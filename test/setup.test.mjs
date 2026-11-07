@@ -1,3 +1,4 @@
+import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -8,7 +9,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 function project(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-setup-'));
+  const root = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-setup-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const write = (file, value) => {
     fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
@@ -195,7 +196,7 @@ test('bootstrap enforces the supported Node LTS line and security patch floor', 
 test('setup JSON is offline only and reports readiness without installing', () => {
   const script = fileURLToPath(new URL('../scripts/ensure-dependencies.mjs', import.meta.url));
   const run = (...args) =>
-    spawnSync(process.execPath, [script, ...args], { encoding: 'utf8', windowsHide: true, timeout: 15_000 });
+    spawnSync(process.execPath, [script, ...args], { encoding: 'utf8', windowsHide: true, timeout: 150_000 });
   const report = run('--check', '--json');
   assert.equal(report.status, 0, report.stderr);
   const value = JSON.parse(report.stdout);

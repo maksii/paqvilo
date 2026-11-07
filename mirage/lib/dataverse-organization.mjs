@@ -5,6 +5,7 @@ import { createMetadataService, objectTypeCode as typeCodeOf } from './dataverse
 import { createChangeLog } from './dataverse-changes.mjs';
 import { hashSecret, verifySecret } from './dataverse-auth.mjs';
 import { seedManagedIdentityRows } from './dataverse-managed-identity.mjs';
+import { pagedRecordsOf } from './record-tables.mjs';
 import { createOperationRegistry } from './dataverse-operations.mjs';
 import { createServiceProtection } from './dataverse-limits.mjs';
 import { standardGlobalOptionSets, fieldsWithStandard } from './dataverse-standard.mjs';
@@ -107,7 +108,7 @@ const providersOf = (providers = {}) =>
 function extensionDiagnostics(forward) {
   let held = null;
   const sink = (entry) => {
-    if (held && /_NOT_SIMULATED$/.test(String(entry?.code ?? ''))) {
+    if (held && String(entry?.code ?? '').endsWith('_NOT_SIMULATED')) {
       held.set(entry.code, [...(held.get(entry.code) ?? []), entry]);
       return;
     }
@@ -126,13 +127,14 @@ function extensionDiagnostics(forward) {
       }
       const tables = [
         ...new Set(entries.map((entry) => entry.table ?? entry.entity ?? entry.logicalName).filter(Boolean)),
-      ].sort();
+      ].sort(/* NOSONAR: preserve default string coercion */);
+      const tableScope = tables.length ? ` for ${tables.length} tables` : '';
       forward({
         code,
         severity: entries[0].severity ?? 'info',
         count: entries.length,
         tables,
-        message: `${entries.length} ${code} diagnostics${tables.length ? ` for ${tables.length} tables` : ''}; the first: ${entries[0].message ?? code}`,
+        message: `${entries.length} ${code} diagnostics${tableScope}; the first: ${entries[0].message ?? code}`,
       });
     }
   };
@@ -142,6 +144,11 @@ function extensionDiagnostics(forward) {
 function maxRowVersion(state) {
   let max = 0;
   for (const rows of Object.values(state.tables ?? {})) {
+    const stored = pagedRecordsOf(rows);
+    if (stored) {
+      max = Math.max(max, stored.maximumVersion());
+      continue;
+    }
     for (const row of Array.isArray(rows) ? rows : []) {
       const version = Number(row?.versionnumber);
       if (Number.isSafeInteger(version) && version > max) max = version;
@@ -157,7 +164,9 @@ export async function createOrganizationRuntime(options) {
     // transaction. Otherwise each installer clones and checkpoints the complete
     // business dataset, even during an unchanged-state restart. No listener is
     // published until this commits; failed composition restores the old state.
-    return await options.store.transact(async () => (organization = await composeOrganizationRuntime(options)), {
+    const compose = async () => (organization = await composeOrganizationRuntime(options));
+    if (options.initializing) return await options.store.initialize(compose);
+    return await options.store.transact(compose, {
       isolated: true,
       cloneResult: false,
       skipSaveIfUnchanged: true,
@@ -189,6 +198,7 @@ async function composeOrganizationRuntime({
   change = (fn) => fn(),
   schema = () => null,
   metadataFields = () => undefined,
+  metadataSnapshot,
   readMetadata = (fn) => fn(),
   clock: clockOption,
   ids: idsOption,
@@ -203,59 +213,20 @@ async function composeOrganizationRuntime({
 }) {
   // One clock, id and scheduler source (runtime-clock.mjs) for the store and the API: an option replaces the store's default,
   // otherwise the store's own drives the API too.
-  if (clockOption && (!store.clock || store.clock === systemClock))
-    store.clock = typeof clockOption === 'function' ? { now: clockOption } : clockOption;
-  const clock = clockOption ? clockFunction(clockOption) : () => (store.clock ?? systemClock).now();
-  if (idsOption && (!store.ids || store.ids === systemIds)) store.ids = idsOption;
-  const ids = idsOption ?? store.ids ?? systemIds;
-  // Organizations own the scheduler only when one of them opened it (no backend or caller supplied one): the last of them
-  // closes it, so organizations hosted without a backend leave no timers. A backend-owned scheduler stays open for the backend.
-  const previousScheduler = store.scheduler;
-  const scheduler = storeScheduler(store, schedulerOption ?? null, { reopen: true });
-  // Activity counters (runtime-counters.mjs) for the /_sim/ dashboard: one set per store, kept across organization restarts.
-  store.counters ??= createCounters();
-  if (!schedulerOption && scheduler !== previousScheduler) organizationSchedulers.set(scheduler, 0);
-  const ownsScheduler = organizationSchedulers.has(scheduler);
-  if (ownsScheduler) {
-    organizationSchedulers.set(scheduler, organizationSchedulers.get(scheduler) + 1);
-    pendingSchedulers.set(store, scheduler);
-  }
+  const { clock, ids, scheduler, ownsScheduler } = configureOrganizationRuntime(
+    store,
+    clockOption,
+    idsOption,
+    schedulerOption,
+  );
   // Standard table columns under the Solution's own fields; the records and TDS layers both read this.
   const solutionFields = metadataFields;
   metadataFields = (logical) => fieldsWithStandard(store, logical, solutionFields(logical));
   const tenantId = (settings.tenantId ?? uuidV5(DATAVERSE_NAMESPACE, `${settings.uniqueName}:tenant`)).toLowerCase();
   const organizationId = dataverseOrganizationId(settings);
   const environmentId = `Default-${tenantId}`;
-  const applications = settings.applications ?? [];
 
-  const securitySettings = {
-    organizationId,
-    tenantId,
-    uniqueName: settings.uniqueName,
-    friendlyName: settings.friendlyName,
-    version: settings.version,
-    auditing: settings.auditing,
-    duplicateDetection: settings.duplicateDetection,
-    currencyCode: settings.currencyCode,
-    currencySymbol: settings.currencySymbol,
-    localeId: settings.localeId,
-    // A managed identity is an application user too: its token's appid is the clientId, and its roles are the user's roles.
-    applications: [
-      ...applications.map((app) => ({ appId: app.appId, displayName: app.displayName, roles: app.roles ?? [] })),
-      ...(settings.managedIdentities ?? []).map((identity) => ({
-        appId: identity.clientId,
-        displayName: identity.displayName,
-        roles: identity.roles ?? [],
-      })),
-    ],
-    // Settings rows use domainname/fullname; the security model reads upn/displayName.
-    users: (settings.users ?? []).map((user) => ({
-      objectId: user.objectId,
-      upn: user.domainname,
-      displayName: user.fullname,
-      roles: user.roles,
-    })),
-  };
+  const securitySettings = organizationSecuritySettings(settings, organizationId, tenantId);
   const registerApplications = () =>
     store.transact(() => {
       seedRegistrations(store, settings, { tenantId, organizationId, environmentId }, clock);
@@ -272,7 +243,7 @@ async function composeOrganizationRuntime({
 
   const principals = createPrincipals(store, { organizationId, tenantId, objectTypeCode: typeCodeOf, schema });
   // Extension operations (dataverse-operations.mjs) answer before the built-in functions and actions.
-  const operations = createOperationRegistry();
+  const operations = createOperationRegistry({ store });
   const metadata = createMetadataService({
     organizationId,
     lcid: settings.localeId,
@@ -285,8 +256,12 @@ async function composeOrganizationRuntime({
           ([name]) => !(Object.hasOwn(INTERNAL_TABLE_MAPPINGS, name) && INTERNAL_TABLE_MAPPINGS[name]),
         ),
       ),
+    mapping: (logical) => {
+      if (Object.hasOwn(INTERNAL_TABLE_MAPPINGS, logical) && INTERNAL_TABLE_MAPPINGS[logical]) return null;
+      return Object.hasOwn(store.state.mappings, logical) ? store.state.mappings[logical] : null;
+    },
     virtualTables: () => store.virtualTables?.() ?? {},
-    globalOptionSets: () => ({ ...standardGlobalOptionSets(), ...(store.state.dataverse?.globalOptionSets ?? {}) }),
+    globalOptionSets: () => ({ ...standardGlobalOptionSets(), ...store.state.dataverse?.globalOptionSets }),
     changeLog: () => store.state.dataverse?.metadataLog ?? [],
     extraCsdl: () => operations.csdlFragments(),
     // Commits advance dataRevision; a replaced state or a table added outside a commit changes the other parts.
@@ -316,7 +291,7 @@ async function composeOrganizationRuntime({
   // they seed get privileges and role grants (seedSecurity is idempotent).
   const routes = [];
   // Shared by the HTTP router and the TDS endpoint, so both admit requests against the same windows.
-  const limits = createServiceProtection({ ...(settings.serviceProtection ?? {}), clock });
+  const limits = createServiceProtection({ ...settings.serviceProtection, clock });
   const api = {
     store,
     change: recordChange,
@@ -324,6 +299,7 @@ async function composeOrganizationRuntime({
     principals,
     metadata,
     metadataFields,
+    metadataSnapshot,
     readMetadata,
     records: recordHandlers,
     recordHooks,
@@ -340,7 +316,7 @@ async function composeOrganizationRuntime({
       routes.push({ match, handler, anonymous });
     },
     // A changeset or a SOAP transaction runs fn as one unit against this api's store and change log (see runAtomic).
-    runAtomic: (fn) => runAtomic(api, fn),
+    runAtomic: (fn, options) => runAtomic(api, fn, options),
     dataRevision: () => store.dataRevision?.(),
     // Host providers (organization-host.mjs) and the runtime's packs, set before any extension installs.
     // An explicit `secrets` resolver option wins over providers.secrets; api.secrets stays its alias for the message handlers.
@@ -350,6 +326,9 @@ async function composeOrganizationRuntime({
     diagnostic: extensionDiagnostics(diagnostic),
   };
   api.secrets = api.providers.secrets;
+  // The plug-in SDK bridge holds only the store; it reaches the organization's message services (metadata, version) through
+  // the store's record entries (plugin-sdk-messages.mjs organizationApiOf).
+  Object.defineProperty(recordHandlers, 'organizationApi', { value: api, configurable: true });
   // Metadata functions over the metadata service's response builders.
   const metadataFunction = (name, respond, csdl) =>
     operations.register({
@@ -439,7 +418,7 @@ async function composeOrganizationRuntime({
     api.diagnostic.flush();
     if (extensions.length) await change(seedSecurity);
   } catch (error) {
-    await close().catch((cleanup) => log('organization-cleanup', cleanup));
+    await close().catch((error_) => log('organization-cleanup', error_));
     throw error;
   }
   // The organization the seeded organization row carries (settings.organizationId is null at runtime).
@@ -454,6 +433,9 @@ async function composeOrganizationRuntime({
     store.hierarchyResolver = (table, id, mode) => api.hierarchy.resolve(table, id, mode);
     api.hierarchyQueryWired = true;
   }
+  // Plug-in SDK values type the platform columns a Solution export omits (createdon, transactioncurrencyid,
+  // exchangerate, <money>_base) from the organization's attribute metadata.
+  store.platformFields = (logical) => metadata.recordFields(logical, { includeNonOData: true });
   // The organization's row-version counter starts above every stored row version, so the first write through the pipeline
   // (nextRowVersion) never stamps a row with a version at or below the one it carries (a seeded or restored state).
   store.state.rowVersion = Math.max(Number(store.state.rowVersion ?? 0), maxRowVersion(store.state));
@@ -484,7 +466,7 @@ async function composeOrganizationRuntime({
     environmentId,
     requests: () => [],
     runOwned,
-    runAtomic: (fn) => runAtomic(api, fn),
+    runAtomic: (fn, options) => runAtomic(api, fn, options),
     read: (fn) =>
       store.transact(fn, { nested: true, skipSaveIfUnchanged: true, cloneResult: false, lazyReadSnapshot: true }),
     reseed: async () => {
@@ -504,5 +486,58 @@ async function composeOrganizationRuntime({
       changes.reset();
     },
     close,
+  };
+}
+
+function configureOrganizationRuntime(store, clockOption, idsOption, schedulerOption) {
+  if (clockOption && (!store.clock || store.clock === systemClock))
+    store.clock = typeof clockOption === 'function' ? { now: clockOption } : clockOption;
+  const clock = clockOption ? clockFunction(clockOption) : () => (store.clock ?? systemClock).now();
+  if (idsOption && (!store.ids || store.ids === systemIds)) store.ids = idsOption;
+  const ids = idsOption ?? store.ids ?? systemIds;
+  // Organizations own the scheduler only when one of them opened it (no backend or caller supplied one): the last of them
+  // closes it, so organizations hosted without a backend leave no timers. A backend-owned scheduler stays open for the backend.
+  const previousScheduler = store.scheduler;
+  const scheduler = storeScheduler(store, schedulerOption ?? null, { reopen: true });
+  // Activity counters (runtime-counters.mjs) for the /_sim/ dashboard: one set per store, kept across organization restarts.
+  store.counters ??= createCounters();
+  if (!schedulerOption && scheduler !== previousScheduler) organizationSchedulers.set(scheduler, 0);
+  const ownsScheduler = organizationSchedulers.has(scheduler);
+  if (ownsScheduler) {
+    organizationSchedulers.set(scheduler, organizationSchedulers.get(scheduler) + 1);
+    pendingSchedulers.set(store, scheduler);
+  }
+  return { clock, ids, scheduler, ownsScheduler };
+}
+
+function organizationSecuritySettings(settings, organizationId, tenantId) {
+  const applications = settings.applications ?? [];
+  return {
+    organizationId,
+    tenantId,
+    uniqueName: settings.uniqueName,
+    friendlyName: settings.friendlyName,
+    version: settings.version,
+    auditing: settings.auditing,
+    duplicateDetection: settings.duplicateDetection,
+    currencyCode: settings.currencyCode,
+    currencySymbol: settings.currencySymbol,
+    localeId: settings.localeId,
+    // A managed identity is an application user too: its token's appid is the clientId, and its roles are the user's roles.
+    applications: [
+      ...applications.map((app) => ({ appId: app.appId, displayName: app.displayName, roles: app.roles ?? [] })),
+      ...(settings.managedIdentities ?? []).map((identity) => ({
+        appId: identity.clientId,
+        displayName: identity.displayName,
+        roles: identity.roles ?? [],
+      })),
+    ],
+    // Settings rows use domainname/fullname; the security model reads upn/displayName.
+    users: (settings.users ?? []).map((user) => ({
+      objectId: user.objectId,
+      upn: user.domainname,
+      displayName: user.fullname,
+      roles: user.roles,
+    })),
   };
 }

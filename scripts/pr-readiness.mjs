@@ -12,13 +12,26 @@ export function qualifyPullRequest(pr, expectedHead) {
   if (pr.isDraft) reasons.push('The PR is a draft.');
   if (pr.mergeable !== 'MERGEABLE') reasons.push(`Mergeability is ${pr.mergeable ?? 'UNKNOWN'}.`);
   if (pr.mergeStateStatus !== 'CLEAN') reasons.push(`GitHub merge state is ${pr.mergeStateStatus ?? 'UNKNOWN'}.`);
-  for (const gate of gates)
-    if (!checks.some((check) => check.name === gate && check.status === 'COMPLETED' && check.conclusion === 'SUCCESS'))
-      reasons.push(`${gate} has no successful result for this PR head.`);
+  for (const gate of gates) {
+    const results = checks.filter((check) => check.name === gate);
+    if (!results.length || results.some((check) => check.status !== 'COMPLETED' || check.conclusion !== 'SUCCESS'))
+      reasons.push(`${gate} has no unambiguous successful result for this PR head.`);
+  }
   const pending = checks.filter((check) =>
-    check.__typename === 'StatusContext' ? check.state === 'PENDING' : check.status !== 'COMPLETED',
+    check.__typename === 'StatusContext'
+      ? !['SUCCESS', 'FAILURE', 'ERROR'].includes(check.state)
+      : check.status !== 'COMPLETED',
   );
   if (pending.length) reasons.push(`${pending.length} checks have not completed.`);
+  const failed = checks.filter((check) =>
+    check.__typename === 'StatusContext'
+      ? ['FAILURE', 'ERROR'].includes(check.state)
+      : check.status === 'COMPLETED' && !['SUCCESS', 'NEUTRAL', 'SKIPPED'].includes(check.conclusion),
+  );
+  if (failed.length)
+    reasons.push(
+      `${failed.length} checks are unsuccessful: ${failed.map((check) => check.name ?? check.context ?? 'unnamed check').join(', ')}.`,
+    );
   return {
     schemaVersion: 1,
     ok: reasons.length === 0,

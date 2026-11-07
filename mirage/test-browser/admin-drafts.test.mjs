@@ -1,3 +1,4 @@
+// @test-kind contract: admin drafts persist through refresh and reset when selecting a different contact
 // Unsaved admin form input must survive asynchronous re-renders (lazy contact loading,
 // workspace refreshes).
 import test, { before, after } from 'node:test';
@@ -8,6 +9,8 @@ import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
+import { adminPage } from './shared-browser.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 let browser;
 before(async () => {
@@ -16,7 +19,7 @@ before(async () => {
 after(() => browser?.close());
 
 async function fixture(t) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-admin-drafts-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-admin-drafts-'));
   await fs.writeFile(
     path.join(directory, 'Home.webpage.yml'),
     'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n',
@@ -33,7 +36,12 @@ async function fixture(t) {
     initial: {
       version: 1,
       mappings: { contact: { entitySet: 'contacts', idColumn: 'contactid' } },
-      tables: { contact: [{ contactid: 'alex', fullname: 'Alex Local' }] },
+      tables: {
+        contact: [
+          { contactid: 'alex', fullname: 'Alex Local' },
+          { contactid: 'blair', fullname: 'Blair Local' },
+        ],
+      },
       permissions: [],
       plugins: [],
       presets: {},
@@ -41,17 +49,7 @@ async function fixture(t) {
       simulator: { mode: 'local', pageMode: 'local', identity: { roles: [] }, live: {}, endpoints: [] },
     },
   });
-  const context = await browser.newContext({ serviceWorkers: 'block' });
-  t.after(async () => {
-    await context.close();
-    await app.close();
-    await fs.rm(directory, { recursive: true, force: true });
-  });
-  const page = await context.newPage();
-  page.setDefaultTimeout(10_000);
-  const errors = [];
-  page.on('pageerror', (error) => errors.push(error.message));
-  return { app, page, errors };
+  return { app, ...(await adminPage(t, browser, app, directory)) };
 }
 
 test(
@@ -114,6 +112,17 @@ test(
     assert.deepEqual(app.state().config.contactRoles, [{ contactId: 'alex', roleId: 'editor' }]);
     assert.equal(await memberships.getByLabel('Editor', { exact: true }).isChecked(), true);
     assert.equal(await memberships.getByLabel('Reviewer', { exact: true }).isChecked(), false);
+    await memberships.getByLabel('Reviewer', { exact: true }).check();
+    await page.getByLabel('Local contact', { exact: true }).selectOption('blair');
+    assert.equal(await memberships.getByLabel('Editor', { exact: true }).isChecked(), false);
+    assert.equal(await memberships.getByLabel('Reviewer', { exact: true }).isChecked(), false);
+    await page.getByLabel('Local contact', { exact: true }).selectOption('alex');
+    assert.equal(await memberships.getByLabel('Editor', { exact: true }).isChecked(), true);
+    assert.equal(
+      await memberships.getByLabel('Reviewer', { exact: true }).isChecked(),
+      false,
+      'unsaved choice was discarded',
+    );
     await memberships.getByLabel('Reviewer', { exact: true }).check();
     await page.getByRole('button', { name: 'Save contact roles', exact: true }).click();
     await page.getByText('Configuration saved.', { exact: true }).waitFor();

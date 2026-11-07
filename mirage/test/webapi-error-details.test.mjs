@@ -8,13 +8,13 @@ import { DataError } from '../lib/data.mjs';
 import { observedConfig } from '../lib/project-config.mjs';
 import { webApiErrorResponse } from '../lib/webapi-handler.mjs';
 import { attachODataReaderDetails, odataConversionDetails } from '../lib/webapi-error-details.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const id = '00000000-0000-4000-8000-000000000001';
 const prefix =
   "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : ";
 async function fixture(t, mode) {
-  const source = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-reader-error-'));
+  const source = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-reader-error-'));
   ownedFixture(t).remove(() => fs.rm(source, { recursive: true, force: true }));
   await fs.writeFile(
     path.join(source, 'website.yml'),

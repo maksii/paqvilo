@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of service endpoint (web hook) delivery; no native capture cited
 // Service endpoint contracts 2 (Queue), 5 (Topic) and 6 (Queue Persistent) delivered to the local message bus.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -5,24 +6,22 @@ import { DataStore, emptyState } from '../lib/data.mjs';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
-import { install as installRegistration, overlayRegisteredSteps } from '../lib/dataverse-plugin-registration.mjs';
+import { install as installRegistration } from '../lib/dataverse-plugin-registration.mjs';
 import { serviceEndpointDelivery, webhookDelivery } from '../lib/dataverse-webhooks.mjs';
 import { createLocalMessageBus, messagingSettings } from '../lib/message-bus.mjs';
-import { createAsyncPluginRunner } from '../lib/plugin-async.mjs';
-import {
-  pluginCatalogue,
-  pluginPhaseRequiresCheckpoint,
-  pluginStepMatchesEntity,
-  runPluginPhase,
-} from '../lib/exported-plugins.mjs';
+import { wireRegisteredSteps } from './support/service-endpoint-pipeline.mjs';
 
 const WIDGET = '77777777-7777-4777-8777-777777777701';
 const ENDPOINT = '77777777-7777-4777-8777-777777777702';
 const STEP = '77777777-7777-4777-8777-777777777703';
+// The 30 RemoteExecutionContext properties of a native asynchronous record web hook payload (dataverse-recorder crud,
+// async and upsert captures), including the caller's Entra object ids and user agent.
 const PROPERTIES = [
   'BusinessUnitId',
   'CorrelationId',
   'Depth',
+  'InitiatingUserAgent',
+  'InitiatingUserAzureActiveDirectoryObjectId',
   'InitiatingUserId',
   'InputParameters',
   'IsExecutingOffline',
@@ -46,6 +45,7 @@ const PROPERTIES = [
   'SecondaryEntityName',
   'SharedVariables',
   'Stage',
+  'UserAzureActiveDirectoryObjectId',
   'UserId',
 ];
 
@@ -117,29 +117,7 @@ async function world(
     organizationUri: 'https://invented.example.test',
   };
   const webhooks = withBus ? serviceEndpointDelivery(store, { messaging }) : webhookDelivery(store);
-  const steps = () =>
-    pluginCatalogue({
-      plugins: overlayRegisteredSteps({ steps: [], types: [], assemblies: [] }, store),
-      handlers: new Map(),
-    });
-  store.setPluginPipeline(
-    (context) => runPluginPhase({ ...context, store, items: steps(), handlers: new Map(), webhooks, diagnostic }),
-    ({ entity, operation }) =>
-      steps().some(
-        (item) =>
-          item.enabled && pluginStepMatchesEntity(item, entity) && String(item.message).toLowerCase() === operation,
-      ),
-    (context) => pluginPhaseRequiresCheckpoint(steps(), context),
-  );
-  const runner = createAsyncPluginRunner({
-    store,
-    items: steps,
-    handlers: new Map(),
-    runtimes: new Map(),
-    webhooks,
-    diagnostic,
-    systemJobs: () => true,
-  });
+  const runner = wireRegisteredSteps(store, webhooks, diagnostic);
   t.after(async () => {
     await runner.close();
     await api.close();
@@ -204,6 +182,7 @@ test('a sync contract 5 step sends inside the transaction: a commit keeps the me
   assert.equal(bus.peek('x-topic').length, 1);
 });
 
+// @test-kind contract+security: Paqvilo reports an unmapped endpoint and keeps its authentication value out of diagnostics
 test('an unmapped endpoint is reported and its System Job Failed, never dropped silently', async (t) => {
   const { store, bus, runner, diagnostics, job } = await world(t, { endpoints: {} });
   await create(store);
@@ -216,12 +195,14 @@ test('an unmapped endpoint is reported and its System Job Failed, never dropped 
   assert.ok(!JSON.stringify(diagnostics).includes('invented-sas-key'), 'no authvalue in diagnostics');
 });
 
+// @test-kind contract: Paqvilo's providers.messaging.endpoints mapping
 test('an unmapped sync step fails the operation and rolls it back', async (t) => {
   const { store } = await world(t, { mode: 0, endpoints: {} });
   await assert.rejects(create(store), /no providers\.messaging\.endpoints mapping/);
   assert.equal(store.tableRows('x_widget').length, 0);
 });
 
+// @test-kind contract: Paqvilo does not simulate a contract 2 job without a messaging provider
 test('without a messaging provider a contract 2 job is Canceled as before', async (t) => {
   const { store, runner, diagnostics, job } = await world(t, { bus: false });
   await create(store);

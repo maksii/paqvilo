@@ -2,16 +2,40 @@ import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 
 const secret = /(?:password|passwd|secret|token|authorization|cookie|credential|api[_-]?key|signature)/i;
+// URL query parameters that carry a credential on their own (Azure Functions keys, SAS signatures, OAuth codes).
+const queryCredential = /^(?:code|sig)$/i;
+const secretQueryKey = (key) => secret.test(key) || queryCredential.test(key);
 const limitText = (value, limit = 12000) => String(value ?? '').slice(0, limit);
+
+// The variable-length prefix of secret/token names is scanned backwards only after a
+// complete key/value match. This keeps malformed long identifiers linear.
+const secretAssignment =
+  /((password|passwd|secret|token|authorization|cookie|credential|api[_-]?key|signature)["']?\s*(?:=|:|\beq\b)\s*)(?:"[^"]*"|'[^']*'|[^\s&<>;,]+)/gi; // NOSONAR: preserve the exact grammar and captured values
+
+function redactSecretAssignments(text) {
+  let cursor = 0;
+  let result = '';
+  for (const match of text.matchAll(secretAssignment)) {
+    let start = match.index;
+    if (/^(?:secret|token)$/i.test(match[2])) {
+      while (start > cursor && /[\w-]/.test(text[start - 1])) start--;
+    }
+    result += text.slice(cursor, start) + text.slice(start, match.index) + match[1] + '[redacted]';
+    cursor = match.index + match[0].length;
+  }
+  return result + text.slice(cursor);
+}
 
 /** Keep query structure useful while excluding credential values and headers. */
 export function auditText(value, limit = 12000) {
-  return String(value ?? '')
+  const prefix = String(value ?? '')
     .replace(/Bearer\s+[^\s"'<>]+/gi, 'Bearer [redacted]')
-    .replace(
-      /((?:password|passwd|[\w-]*secret|[\w-]*token|authorization|cookie|credential|api[_-]?key|signature)["']?\s*(?:=|:|\beq\b)\s*)(?:"[^"]*"|'[^']*'|[^\s&<>;,]+)/gi,
-      '$1[redacted]',
-    )
+    .replace(/\bSharedAccessSignature\s+[^\s"'<>]+/gi, 'SharedAccessSignature [redacted]')
+    // A Basic credential is base64: a token holding a digit, + or / or ending in = (so "Basic plan" stays readable).
+    .replace(/\bBasic\s+(?=[a-z0-9+/]*[0-9+/=])[a-z0-9+/]{4,}={0,2}/gi, 'Basic [redacted]')
+    .replace(/\bDigest\s+[\w-]+=[^\r\n<>]*/gi, 'Digest [redacted]')
+    .replace(/([?&](?:code|sig)=)[^&#\s"'<>]*/gi, '$1[redacted]');
+  return redactSecretAssignments(prefix)
     .replace(/<condition\b[^>]*(?:\/>|>[\s\S]*?<\/condition>)/gi, (tag) => {
       const attribute = /\battribute\s*=\s*(["'])(.*?)\1/i.exec(tag)?.[2];
       return secret.test(attribute ?? '')
@@ -23,41 +47,47 @@ export function auditText(value, limit = 12000) {
     .slice(0, limit);
 }
 
-export function auditQuery(value) {
+/* NOSONAR: mixed return values are part of the contract */ export function auditQuery(value) {
   if (value instanceof URLSearchParams)
     return Object.fromEntries(
-      [...value].map(([key, item]) => [key, secret.test(key) ? '[redacted]' : auditText(item)]),
+      [...value].map(([key, item]) => [key, secretQueryKey(key) ? '[redacted]' : auditText(item)]),
     );
   if (typeof value === 'string') return auditText(value);
   if (!value || typeof value !== 'object') return undefined;
   return Object.fromEntries(
     Object.entries(value)
       .slice(0, 40)
-      .map(([key, item]) => [
-        key,
-        secret.test(key)
-          ? '[redacted]'
-          : typeof item === 'string'
-            ? auditText(item)
-            : typeof item === 'number' || typeof item === 'boolean'
-              ? item
-              : '[structured value]',
-      ]),
+      .map(([key, item]) => [key, secretQueryKey(key) ? '[redacted]' : auditStructuredItem(item)]),
   );
 }
 
+/* NOSONAR: mixed return values are part of the contract */ function auditStructuredItem(item) {
+  if (typeof item === 'string') return auditText(item);
+  if (typeof item === 'number' || typeof item === 'boolean') return item;
+  return '[structured value]';
+}
+
+// An id filter of at least 8 hexadecimal characters (after an optional kind: prefix, as in visitor:ad87d220) also
+// matches every id it begins (DV-N4-3); an ambiguous prefix matches all of them. The trace store re-exports it.
+const ID_PREFIX = /^(?:[a-z]+:)?[0-9a-f]{8}[0-9a-f-]*$/i;
+/** True when actual equals wanted, or wanted is an id prefix (8+ hex characters) that actual begins with. */
+export const idMatches = (actual, wanted) =>
+  actual === wanted || (actual != null && ID_PREFIX.test(wanted) && String(actual).startsWith(wanted));
+
 const pathOnly = (value) => {
   try {
-    return new URL(String(value ?? '/'), 'http://local.invalid').pathname.slice(0, 600);
+    return new URL(String(value ?? '/'), 'http://local.invalid').pathname.slice(0, 600); // NOSONAR: reserved or loopback placeholder host, not a real transport
   } catch {
     return '/';
   }
 };
 const positive = (value, fallback, max) => Math.min(max, Math.max(1, Number.parseInt(value, 10) || fallback));
-const AUDIT_KINDS = ['api', 'liquid-fetchxml', 'form', 'page', 'entity-read', 'entity-query'];
+// The trace ids one traceId filter may list (a page of Activities joins its audit entries in one call).
+const MAX_TRACE_IDS = 200;
+const AUDIT_KINDS = new Set(['api', 'liquid-fetchxml', 'form', 'page', 'entity-read', 'entity-query']);
 // Runtime services may add their own lowercase kinds (for example native form services).
 const auditKind = (kind) =>
-  AUDIT_KINDS.includes(kind) || (typeof kind === 'string' && /^[a-z][a-z0-9-]{1,39}$/.test(kind)) ? kind : 'api';
+  AUDIT_KINDS.has(kind) || (typeof kind === 'string' && /^[a-z][a-z0-9-]{1,39}$/.test(kind)) ? kind : 'api';
 const statusMatches = (status, filter) => {
   const value = String(filter ?? '')
     .trim()
@@ -70,12 +100,20 @@ const statusMatches = (status, filter) => {
 
 /** In-memory, bounded trace ledger. It never retains HTTP headers or row bodies. */
 export class AuditLog {
-  constructor({ limit = 1000 } = {}) {
+  // entityNames(name) -> the lowercase names (logical, entity set) the entity filter stands for; the host sets it.
+  constructor({ limit = 1000, entityNames = null } = {}) {
     this.limit = positive(limit, 1000, 10000);
+    this.entityNames = entityNames;
     this.entries = [];
+    this.index = new Map(); // id -> retained entry, kept in sync with eviction and clear
     this.sequence = 0;
     this.dropped = 0;
     this.listeners = new Set();
+  }
+
+  /** The retained entry with this id (the live record, not a copy), or null. */
+  byId(id) {
+    return (typeof id === 'string' && this.index.get(id)) || null;
   }
 
   /** Observe completed entries (sanitized copies); returns an unsubscribe function. */
@@ -95,7 +133,11 @@ export class AuditLog {
     query,
     correlationId,
     parentId,
+    traceId,
+    spanId,
     activeConfigurationPreset,
+    visitorId,
+    sessionKey,
   } = {}) {
     const started = performance.now();
     const id = randomUUID();
@@ -104,6 +146,9 @@ export class AuditLog {
       sequence: ++this.sequence,
       correlationId: correlationId || id,
       parentId: parentId ?? null,
+      // The trace-store root span of this request (docs/design/tracing.md), so the audit view links to the trace.
+      traceId: traceId ? limitText(traceId, 128) : null,
+      spanId: spanId ? limitText(spanId, 128) : null,
       ...(activeConfigurationPreset
         ? {
             activeConfigurationPreset: {
@@ -123,6 +168,9 @@ export class AuditLog {
         contactId: limitText(identity?.contactId ?? identity?.id, 100) || null,
         roles: (identity?.roles ?? []).map((role) => auditText(role, 200)).slice(0, 100),
       },
+      // The browser session (D-M-2 Who): the anonymous visitor cookie id, and contact:<id> or visitor:<id> (else null).
+      visitorId: visitorId ? limitText(visitorId, 100) : null,
+      sessionKey: sessionKey ? limitText(sessionKey, 140) : null,
       query: auditQuery(query),
       status: null,
       rowCount: null,
@@ -130,8 +178,9 @@ export class AuditLog {
       durationMs: null,
     };
     this.entries.push(entry);
+    this.index.set(id, entry);
     if (this.entries.length > this.limit) {
-      this.entries.splice(0, this.entries.length - this.limit);
+      for (const evicted of this.entries.splice(0, this.entries.length - this.limit)) this.index.delete(evicted.id);
       this.dropped++;
     }
     let completed = false;
@@ -148,7 +197,7 @@ export class AuditLog {
         entity: actualEntity,
         saveMs,
         saveMode,
-      } = {}) => {
+      } = {}) => /* NOSONAR: single-pass routine, splitting it would change shared state */ {
         if (completed) return;
         completed = true;
         entry.durationMs = Math.round((performance.now() - started) * 100) / 100;
@@ -158,8 +207,8 @@ export class AuditLog {
         if (Number.isInteger(rowCount) && rowCount >= 0) entry.rowCount = rowCount;
         if (actualProvider) entry.provider = actualProvider === 'live' ? 'live' : 'local';
         if (actualEntity) entry.entity = limitText(actualEntity, 160);
-        entry.outcome =
-          entry.status === 401 || entry.status === 403 ? 'denied' : entry.status >= 400 ? 'error' : 'success';
+        if (entry.status === 401 || entry.status === 403) entry.outcome = 'denied';
+        else entry.outcome = entry.status >= 400 ? 'error' : 'success';
         if (error || simulatorCode || portalError?.code)
           entry.error = {
             code: auditText(error?.code ?? simulatorCode ?? portalError?.code ?? 'SIMULATOR_ERROR', 160),
@@ -192,6 +241,14 @@ export class AuditLog {
         .trim()
         .toUpperCase(),
       correlationId = String(get('correlationId') ?? '').trim(),
+      traceIds = new Set(
+        String(get('traceId') ?? '')
+          .split(',')
+          .map((value) => value.trim())
+          .filter(Boolean),
+      ),
+      visitorId = String(get('visitorId') ?? '').trim(),
+      sessionKey = String(get('sessionKey') ?? '').trim(),
       contactId = String(get('contactId') ?? '')
         .trim()
         .replace(/[{}]/g, '')
@@ -202,7 +259,18 @@ export class AuditLog {
           .toLowerCase(),
       search = lower('search'),
       pathFilter = lower('path'),
-      entity = lower('entity');
+      entityValue = lower('entity') || lower('table');
+    // A Web API entry names the entity set (x_items), a Liquid read the logical name (x_item): either finds both.
+    let entities = null;
+    if (entityValue) {
+      let names = [entityValue];
+      try {
+        names = this.entityNames?.(entityValue) ?? names;
+      } catch {
+        /* an unresolvable name filters as itself */
+      }
+      entities = new Set(names.map((name) => String(name).toLowerCase()));
+    }
     const sequenceBound = (key) => {
       const value = get(key);
       if (value === undefined || value === null || value === '') return null;
@@ -213,27 +281,33 @@ export class AuditLog {
         });
       return Number(value);
     };
+    if (traceIds.size > MAX_TRACE_IDS)
+      throw Object.assign(new RangeError(`traceId names at most ${MAX_TRACE_IDS} trace ids.`), {
+        status: 400,
+        code: 'InvalidAuditFilter',
+        parameter: 'traceId',
+      });
     const afterSequence = sequenceBound('afterSequence'),
       throughSequence = sequenceBound('throughSequence');
+    const filter = {
+      kind,
+      provider,
+      outcome,
+      status,
+      method,
+      correlationId,
+      traceIds,
+      visitorId,
+      sessionKey,
+      contactId,
+      afterSequence,
+      throughSequence,
+      pathFilter,
+      entities,
+      search,
+    };
     return this.entries
-      .filter(
-        (entry) =>
-          (!kind || entry.kind === kind) &&
-          (!provider || entry.provider === provider) &&
-          (!outcome || entry.outcome === outcome) &&
-          statusMatches(entry.status, status) &&
-          (!method || entry.method === method) &&
-          (!correlationId || entry.correlationId === correlationId) &&
-          (!contactId ||
-            String(entry.identity.contactId ?? '')
-              .replace(/[{}]/g, '')
-              .toLowerCase() === contactId) &&
-          (afterSequence === null || entry.sequence > afterSequence) &&
-          (throughSequence === null || entry.sequence <= throughSequence) &&
-          (!pathFilter || entry.path.toLowerCase().includes(pathFilter)) &&
-          (!entity || String(entry.entity ?? '').toLowerCase() === entity) &&
-          (!search || JSON.stringify(entry).toLowerCase().includes(search)),
-      )
+      .filter((entry) => matchesAuditEntry(entry, filter))
       .slice()
       .reverse();
   }
@@ -273,7 +347,48 @@ export class AuditLog {
   }
   clear() {
     this.entries = [];
+    this.index.clear();
     this.dropped = 0;
     return this.list();
   }
+}
+
+function matchesAuditEntry(entry, filter) {
+  const {
+    kind,
+    provider,
+    outcome,
+    status,
+    method,
+    correlationId,
+    traceIds,
+    visitorId,
+    sessionKey,
+    contactId,
+    afterSequence,
+    throughSequence,
+    pathFilter,
+    entities,
+    search,
+  } = filter;
+  return (
+    (!kind || entry.kind === kind) &&
+    (!provider || entry.provider === provider) &&
+    (!outcome || entry.outcome === outcome) &&
+    statusMatches(entry.status, status) &&
+    (!method || entry.method === method) &&
+    (!correlationId || entry.correlationId === correlationId) &&
+    (!traceIds.size || traceIds.has(entry.traceId)) &&
+    (!visitorId || idMatches(entry.visitorId ?? null, visitorId)) &&
+    (!sessionKey || idMatches(entry.sessionKey ?? null, sessionKey)) &&
+    (!contactId ||
+      String(entry.identity.contactId ?? '')
+        .replace(/[{}]/g, '')
+        .toLowerCase() === contactId) &&
+    (afterSequence === null || entry.sequence > afterSequence) &&
+    (throughSequence === null || entry.sequence <= throughSequence) &&
+    (!pathFilter || entry.path.toLowerCase().includes(pathFilter)) &&
+    (!entities || entities.has(String(entry.entity ?? '').toLowerCase())) &&
+    (!search || JSON.stringify(entry).toLowerCase().includes(search))
+  );
 }

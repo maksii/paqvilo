@@ -1,20 +1,22 @@
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { tmpdir } from 'node:os';
 import { execFile, spawn } from 'node:child_process';
 import http from 'node:http';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
-import { createFixture } from './fixture.mjs';
+import { createFixture, tempDirSync } from './fixture.mjs';
 import { AGENT_ACTIONS } from '../lense/commands/agent.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_')));
+// Commands run from an empty folder: the toolkit checkout's own paqvilo.config.yml and .paqvilo must not take part.
+const cwd = tempDirSync('paqvilo-envelopes-cwd-');
+after(() => fs.rmSync(cwd, { recursive: true, force: true }));
 // Asynchronous so that the independent invocations of one test run concurrently.
 const run = (...args) =>
   withProcessSlot(
@@ -23,7 +25,7 @@ const run = (...args) =>
         execFile(
           process.execPath,
           [cli, ...args],
-          { encoding: 'utf8', windowsHide: true, timeout: 30000, env, maxBuffer: 64 << 20 },
+          { cwd, encoding: 'utf8', windowsHide: true, timeout: 30000, env, maxBuffer: 64 << 20 },
           (error, stdout, stderr) =>
             resolve({ status: error ? (typeof error.code === 'number' ? error.code : null) : 0, stdout, stderr }),
         ),
@@ -38,7 +40,7 @@ test('every bounded agent action has a documented reference section', () => {
 test('offline JSON envelopes disclose map writes, support no-write, and diagnose all lost settings in doctor', async (t) => {
   const fx = createFixture();
   t.after(fx.cleanup);
-  const work = fs.mkdtempSync(path.join(tmpdir(), 'paqvilo-offline-envelopes-'));
+  const work = tempDirSync('paqvilo-offline-envelopes-');
   t.after(() => fs.rmSync(work, { recursive: true, force: true }));
   const config = path.join(work, 'catalogue.yml');
   fs.writeFileSync(
@@ -206,6 +208,7 @@ test('every JSON command failure has a truthful envelope and status retains comp
     );
   }
   const child = spawn(process.execPath, [cli, 'lense', 'status', '--config', config, '--json'], {
+    cwd,
     windowsHide: true,
     env,
   });

@@ -29,14 +29,14 @@ function configuration(options) {
 function managementFailure(result) {
   const output = String(result?.stdout ?? '') + '\n' + String(result?.stderr ?? ''),
     match = /(?:HTTP|StatusCode|status.code|status)\D{0,8}([45]\d\d)/i.exec(output);
+  let exitCode;
+  if (Number.isInteger(result?.exitCode)) exitCode = result.exitCode;
+  else if (Number.isInteger(result?.code)) exitCode = result.code;
+  else exitCode = null;
   return Object.assign(new Error('PAC Power Pages management failed; command output withheld.'), {
     code: 'POWER_PAGES_MANAGEMENT_FAILED',
     status: match ? Number(match[1]) : null,
-    exitCode: Number.isInteger(result?.exitCode)
-      ? result.exitCode
-      : Number.isInteger(result?.code)
-        ? result.code
-        : null,
+    exitCode,
   });
 }
 async function command(name, args, options) {
@@ -135,7 +135,10 @@ export async function readPowerPagesSites(options) {
 export async function readPowerPagesSite(options) {
   if (!guid(options.id)) throw new Error('Power Pages management requires an explicit management site GUID.');
   const data = jsonResponse(await command('get-website-by-id', ['--id', options.id], options));
-  const rows = Array.isArray(data) ? data : Array.isArray(data.value) ? data.value : [data.value ?? data];
+  let rows;
+  if (Array.isArray(data)) rows = data;
+  else if (Array.isArray(data.value)) rows = data.value;
+  else rows = [data.value ?? data];
   if (rows.length !== 1) throw new Error('Power Pages management returned an ambiguous site.');
   const site = siteRecord(rows[0]);
   if (site.id.toLowerCase() !== options.id.toLowerCase())

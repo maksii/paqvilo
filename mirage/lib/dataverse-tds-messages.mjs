@@ -127,7 +127,11 @@ export function rpcToQuery(rpc) {
   if (typeof stmt?.value !== 'string') throw new TdsProtocolError('sp_executesql needs an NVARCHAR statement');
   const params = {};
   values.forEach((p, k) => {
-    const key = p.name ? (p.name.startsWith('@') ? p.name : `@${p.name}`) : `@p${k + 1}`;
+    let key;
+    if (p.name) {
+      if (p.name.startsWith('@')) key = p.name;
+      else key = `@${p.name}`;
+    } else key = `@p${k + 1}`;
     params[key] = p.value;
   });
   return { sql: stmt.value, params };

@@ -10,11 +10,12 @@ import { loadOrganizationSources } from '../lib/solution-runtime-source.mjs';
 import { buildSourceGraph } from '../lib/source-graph.mjs';
 import { preflight, preflightExitCode } from '../lib/capability-report.mjs';
 import { yamlNode, classifyYamlPath } from '../lib/solution-yaml.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const FIXTURE = fileURLToPath(new URL('./fixtures/yaml-solution/', import.meta.url));
 
 async function copy(t, extra = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'solution-yaml-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'solution-yaml-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await fs.cp(FIXTURE, root, { recursive: true });
   for (const [relative, text] of Object.entries(extra)) {
@@ -117,7 +118,7 @@ test('a YAML component file the adapter cannot read is an unsupported row and st
 });
 
 test('a YAML solution that loads nothing is SOLUTION_YAML_EMPTY and blocks strict preflight', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'solution-yaml-empty-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'solution-yaml-empty-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await fs.mkdir(path.join(root, 'solutions', 'FxEmpty'), { recursive: true });
   await fs.writeFile(

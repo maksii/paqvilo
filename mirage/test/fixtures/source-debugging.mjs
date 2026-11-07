@@ -5,7 +5,7 @@ import { createSimulator } from '../../server.mjs';
 import { ownedFixture } from '../../testing/owned-fixture.mjs';
 
 export async function sourceDebugFixture(t, options = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-source-debug-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-source-debug-')));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const script = 'window.inventedDebugger = function () {\n  return 42;\n};\n',
     style = '.invented { color: red; }\n';

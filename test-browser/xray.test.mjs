@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own Lense X-ray inspector UI (lense/xray-ui.mjs) against an invented loopback portal
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -16,6 +17,9 @@ import { inspectionFixture, addNativeInspectionFixture } from '../test/source-in
 import { xrayUi } from '../lense/xray-ui.mjs';
 import { createSimulator } from '../mirage/server.mjs';
 
+// X-ray paints in animation frames; after two more frames every paint scheduled before the call has run.
+const painted = (page) =>
+  page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 const waitField = async (page, qualified, status = 'exact') => {
   await page.waitForFunction(
     ({ qualified, status }) => {
@@ -29,6 +33,35 @@ const waitField = async (page, qualified, status = 'exact') => {
     },
     { qualified, status },
   );
+};
+// Waits for the X-ray card title. A timeout alone does not say why the card shows something else, so the failure carries
+// the selected element, its identity and evidence states, and the card's visibility at that moment.
+const titled = async (page, title) => {
+  try {
+    await page.locator('#paqvilo-xray').locator('.title').getByText(title, { exact: true }).waitFor();
+  } catch (error) {
+    const state = await page
+      .evaluate(() => {
+        const host = document.getElementById('paqvilo-xray'),
+          ui = host.shadowRoot ?? host,
+          identity = host.__px.selection(),
+          node = host.__px.selectedNode();
+        return {
+          selected: node?.outerHTML.slice(0, 120) ?? null,
+          title: identity?.title,
+          kind: identity?.kind,
+          owner: identity?.evidence?.owner?.status,
+          source: identity?.evidence?.source?.status,
+          refs: (identity?.evidence?.source?.refs ?? []).map((ref) => `${ref.name ?? ref.id}:${ref.status}`),
+          cardHidden: ui.querySelector('.card')?.hidden,
+          cardTitle: ui.querySelector('.card .title')?.textContent ?? null,
+          details: ui.querySelector('[data-action=details]')?.getAttribute('aria-pressed'),
+          scope: host.__px.getSelectionScope(node ?? undefined),
+        };
+      })
+      .catch((reason) => ({ unavailable: String(reason?.message ?? reason) }));
+    throw new Error(`${error.message}\nX-ray state: ${JSON.stringify(state)}`, { cause: error });
+  }
 };
 let browser;
 before(async () => {
@@ -62,7 +95,10 @@ test(
     fs.writeFileSync(partialFile, previousSidebar);
     const hooks = path.join(fx.work, 'empty-hooks');
     fs.mkdirSync(hooks);
-    const git = (...args) => execFileSync('git', ['-C', fx.portal, ...args], { stdio: 'pipe' });
+    // Repository variables of a calling Git process and signing in the user's configuration stay out.
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_/i.test(key)));
+    const git = (...args) =>
+      execFileSync('git', ['-C', fx.portal, '-c', 'commit.gpgsign=false', ...args], { stdio: 'pipe', env });
     git('init', '--quiet');
     git('add', '.');
     git(
@@ -113,7 +149,6 @@ test(
     await once(server, 'listening');
     const origin = `http://127.0.0.1:${server.address().port}`;
     context = await browser.newContext({ viewport: { width: 1440, height: 1060 }, serviceWorkers: 'block' });
-    context.setDefaultTimeout(10_000);
     await context.route('**/*', (route) =>
       new URL(route.request().url()).origin === origin ? route.fallback() : route.abort(),
     );
@@ -134,9 +169,11 @@ test(
     page.on('pageerror', (error) => errors.push(error.message));
     detach = await attachSession(context, session);
     const opened = [];
+    let arrived = () => {};
     panel = enablePanel(context, session, {
       open: async (...args) => {
         opened.push(args);
+        arrived();
         return null;
       },
     });
@@ -152,12 +189,12 @@ test(
       const p = await point(selector);
       await page.mouse.click(p.x, p.y);
     };
-    // Source opening is asynchronous; wait (bounded) for the next editor call instead of sleeping.
+    // Source opening is asynchronous; nextOpen(click) resolves at the editor call the click causes.
     let seenOpens = 0;
-    const nextOpen = async () => {
-      const deadline = Date.now() + 5000;
-      while (opened.length <= seenOpens && Date.now() < deadline)
-        await new Promise((resolve) => setTimeout(resolve, 20));
+    const nextOpen = async (click) => {
+      const next = new Promise((resolve) => (arrived = resolve));
+      await click();
+      await next;
       assert.equal(opened.length, seenOpens + 1, 'exactly one source open');
       seenOpens = opened.length;
       return opened.at(-1);
@@ -179,22 +216,22 @@ test(
       .locator('[data-evidence-source]')
       .filter({ hasText: 'Entity.xml' })
       .getByRole('button', { name: 'Open source', exact: true });
-    await fieldSource.click();
-    assert.match((await nextOpen())?.[1] ?? '', /Entities[\\/]fx_widget[\\/]Entity.xml$/);
+    assert.match((await nextOpen(() => fieldSource.click()))?.[1] ?? '', /Entities[\\/]fx_widget[\\/]Entity.xml$/);
     await pick('#save');
     assert.equal(await page.evaluate(() => window.actions), 0);
     await page.keyboard.press('Enter');
     assert.equal(await page.evaluate(() => window.actions), 0);
     await xray.getByRole('button', { name: 'Details', exact: true }).click();
     await pick('.updates h2');
-    await xray.locator('.title').getByText('Partial', { exact: true }).waitFor();
+    await titled(page, 'Partial');
     await xray.getByText('web-templates/Partial.webtemplate.source.html', { exact: false }).first().waitFor();
-    await xray
-      .locator('[data-evidence-source]')
-      .filter({ hasText: 'Partial.webtemplate.source.html' })
-      .getByRole('button', { name: 'Open source', exact: true })
-      .click();
-    const template = await nextOpen();
+    const template = await nextOpen(() =>
+      xray
+        .locator('[data-evidence-source]')
+        .filter({ hasText: 'Partial.webtemplate.source.html' })
+        .getByRole('button', { name: 'Open source', exact: true })
+        .click(),
+    );
     assert.match(template?.[1] ?? '', /Partial.webtemplate.source.html$/);
     assert.equal(template?.[2], 1);
     await evidence('02-template-source');
@@ -213,7 +250,7 @@ test(
       document.querySelector('.columns').prepend(node);
     });
     await pick('.updates h2');
-    await xray.locator('.title').getByText('Partial', { exact: true }).waitFor();
+    await titled(page, 'Partial');
     await xray.getByRole('button', { name: 'Details', exact: true }).click();
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.keyboard.down('Control');
@@ -244,7 +281,7 @@ test(
     assert.equal(await xray.locator('.element-label').textContent(), 'button');
     await page.locator('#clipped').scrollIntoViewIfNeeded();
     await pick('#clipped');
-    await page.waitForTimeout(350);
+    await painted(page);
     const clip = await page.locator('#overflow').boundingBox(),
       rect = await xray.locator('.selected').boundingBox();
     assert.ok(rect.x >= clip.x && rect.x + rect.width <= clip.x + clip.width + 1);
@@ -254,8 +291,8 @@ test(
     await page.evaluate(() => {
       document.querySelector('#shadow-control').shadowRoot.querySelector('button').remove();
     });
-    await page.waitForTimeout(400);
-    assert.equal(await xray.locator('.title').count(), 0);
+    // The selection is released when X-ray notices the removed node.
+    await page.waitForFunction(() => !document.getElementById('paqvilo-xray').shadowRoot.querySelector('.title'));
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.setViewportSize({ width: 540, height: 900 });
     await xray.getByRole('button', { name: 'Details', exact: true }).click();
@@ -269,7 +306,7 @@ test(
     await page.locator('#save').click();
     assert.ok((await page.evaluate(() => window.actions)) > 0);
     await page.keyboard.press('Alt+Shift+L');
-    await page.waitForTimeout(300);
+    await scope.locator('.wrap.hidden').waitFor({ state: 'attached' });
     await page.keyboard.press('Alt+Shift+X');
     await xray.getByRole('toolbar').waitFor();
     await panel.draw(page);
@@ -280,172 +317,169 @@ test(
   },
 );
 
-test(
-  'X-ray keeps nested table contexts, scaled clipping, dialog order and popovers isolated',
-  { timeout: 45_000 },
-  async (t) => {
-    const context = await browser.newContext({ viewport: { width: 1400, height: 1000 } });
-    t.after(() => context.close());
-    const page = await context.newPage();
-    page.setDefaultTimeout(8000);
-    const errors = [];
-    page.on('pageerror', (error) => errors.push(error.message));
-    await page.route('http://127.0.0.1:11886/**', (route) =>
-      route.fulfill({
-        contentType: 'text/html',
-        body: `<!doctype html><style>body{margin:50px;font:16px sans-serif}.scaled{transform:scale(.7);transform-origin:top left;width:320px;height:110px;overflow:hidden;border:4px solid #777}.scaled button{margin-left:200px;width:300px;height:60px}dialog{padding:40px;width:500px}input{display:block;margin:15px;padding:12px}#later{position:fixed;top:150px;left:180px}#popover{position:fixed;inset:0;width:100vw;height:100vh;background:#fff8}</style><div id="EntityFormControl_outer" data-entityname="fx_outer" data-formid="outer"><div data-viewid="inner-view"><input id="inner" name="fx_shared"></div></div><input id="ambiguous" name="fx_shared"><button id="fx_shared">An ID alone is not a field binding</button><div class="scaled"><button id="scaled">Scaled and clipped</button></div><dialog id="later"><input id="later-field" name="fx_shared"></dialog><dialog id="initial"><input id="initial-field" name="fx_shared"><div id="popover" popover="manual">A later top-layer surface</div></dialog>`,
-      }),
-    );
-    await page.goto('http://127.0.0.1:11886/');
-    await page.evaluate(() => document.getElementById('initial').showModal());
-    const data = { origin: 'http://127.0.0.1:11886', token: 'invented-xray-test' },
-      report = {
-        pageSources: [],
-        forms: [{ id: 'outer', entity: 'fx_outer', name: 'Outer form' }],
-        views: [{ id: 'inner-view', entity: 'fx_inner', name: 'Inner view' }],
-        columns: [
-          { entity: 'fx_outer', name: 'fx_shared' },
-          { entity: 'fx_inner', name: 'fx_shared' },
-        ],
-      };
-    await page.evaluate(xrayUi, data);
-    await page.evaluate(
-      ({ data, report }) => {
-        document.getElementById('paqvilo-xray').__px.update(data, report);
-        document.getElementById('paqvilo-xray').__px.toggle(true);
-      },
-      { data, report },
-    );
-    const xray = page.locator('#paqvilo-xray');
-    assert.equal(await xray.evaluate((node) => node.parentElement.id), 'initial');
-    await page.evaluate(() => document.getElementById('later').showModal());
-    await page.waitForFunction(() => document.getElementById('paqvilo-xray').parentElement.id === 'later');
-    await xray.getByRole('button', { name: 'Details', exact: true }).click();
-    await page.evaluate(() => document.getElementById('later').close());
-    await page.waitForFunction(() => document.getElementById('paqvilo-xray').parentElement.id === 'initial');
-    await page.evaluate(() => document.getElementById('popover').showPopover());
-    await page.waitForTimeout(100);
-    // A subsequently opened native popover must remain below the inspector controls.
-    await xray.getByRole('button', { name: 'Details', exact: true }).click();
-    await xray.getByRole('button', { name: 'Details', exact: true }).click();
-    await page.evaluate(() => {
-      document.getElementById('popover').hidePopover();
-      document.getElementById('initial').close();
-    });
-    await page.waitForFunction(() => document.getElementById('paqvilo-xray').parentElement === document.body);
-    const pick = async (selector) => {
-      const r = await page.locator(selector).boundingBox();
-      await page.mouse.click(r.x + Math.min(r.width / 2, 30), r.y + r.height / 2);
+test('X-ray keeps nested table contexts, scaled clipping, dialog order and popovers isolated', async (t) => {
+  const context = await browser.newContext({ viewport: { width: 1400, height: 1000 } });
+  t.after(() => context.close());
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.route('http://127.0.0.1:11886/**', (route) =>
+    route.fulfill({
+      contentType: 'text/html',
+      body: `<!doctype html><style>body{margin:50px;font:16px sans-serif}.scaled{transform:scale(.7);transform-origin:top left;width:320px;height:110px;overflow:hidden;border:4px solid #777}.scaled button{margin-left:200px;width:300px;height:60px}dialog{padding:40px;width:500px}input{display:block;margin:15px;padding:12px}#later{position:fixed;top:150px;left:180px}#popover{position:fixed;inset:0;width:100vw;height:100vh;background:#fff8}</style><div id="EntityFormControl_outer" data-entityname="fx_outer" data-formid="outer"><div data-viewid="inner-view"><input id="inner" name="fx_shared"></div></div><input id="ambiguous" name="fx_shared"><button id="fx_shared">An ID alone is not a field binding</button><div class="scaled"><button id="scaled">Scaled and clipped</button></div><dialog id="later"><input id="later-field" name="fx_shared"></dialog><dialog id="initial"><input id="initial-field" name="fx_shared"><div id="popover" popover="manual">A later top-layer surface</div></dialog>`,
+    }),
+  );
+  await page.goto('http://127.0.0.1:11886/');
+  await page.evaluate(() => document.getElementById('initial').showModal());
+  const data = { origin: 'http://127.0.0.1:11886', token: 'invented-xray-test' },
+    report = {
+      pageSources: [],
+      forms: [{ id: 'outer', entity: 'fx_outer', name: 'Outer form' }],
+      views: [{ id: 'inner-view', entity: 'fx_inner', name: 'Inner view' }],
+      columns: [
+        { entity: 'fx_outer', name: 'fx_shared' },
+        { entity: 'fx_inner', name: 'fx_shared' },
+      ],
     };
-    await pick('#inner');
-    await waitField(page, 'fx_inner.fx_shared');
-    assert.equal(await xray.getByText('Outer form', { exact: true }).count(), 0);
-    await xray
-      .locator('[data-evidence-role=enclosing]')
-      .getByText('Inner view', { exact: true })
-      .first()
-      .waitFor({ state: 'attached' });
-    await pick('#ambiguous');
-    assert.equal(await xray.locator('[data-inspection-evidence]').getAttribute('data-owner-status'), 'candidate');
-    await page.evaluate(() => document.getElementById('ambiguous').setAttribute('data-entityname', 'fx_outer'));
-    await waitField(page, 'fx_outer.fx_shared', 'candidate');
-    await pick('#fx_shared');
-    assert.equal(await xray.locator('[data-inspection-evidence]').getAttribute('data-owner-status'), 'unavailable');
-    await pick('#scaled');
-    await page.waitForTimeout(350);
-    const clipped = await xray.locator('.selected').boundingBox(),
-      container = await page.locator('.scaled').boundingBox();
-    assert.ok(clipped.width < 100);
-    assert.ok(clipped.x + clipped.width <= container.x + container.width);
-    await xray.getByRole('combobox', { name: 'Highlight layer' }).selectOption('none');
-    await page.waitForTimeout(100);
-    assert.equal(await xray.locator('.marks .mark:not(.selected):not(.hover)').count(), 0);
-    // Replacing the page body tears down the old listeners instead of intercepting a new document.
-    await page.evaluate(() => {
-      document.body.innerHTML = '<button id="fresh" onclick="window.freshClicked=true">New page tree</button>';
-    });
-    await page.waitForTimeout(400);
-    await page.locator('#fresh').click();
-    assert.equal(await page.evaluate(() => window.freshClicked), true);
-    assert.deepEqual(errors, []);
-  },
-);
+  await page.evaluate(xrayUi, data);
+  await page.evaluate(
+    ({ data, report }) => {
+      document.getElementById('paqvilo-xray').__px.update(data, report);
+      document.getElementById('paqvilo-xray').__px.toggle(true);
+    },
+    { data, report },
+  );
+  const xray = page.locator('#paqvilo-xray');
+  assert.equal(await xray.evaluate((node) => node.parentElement.id), 'initial');
+  await page.evaluate(() => document.getElementById('later').showModal());
+  await page.waitForFunction(() => document.getElementById('paqvilo-xray').parentElement.id === 'later');
+  await xray.getByRole('button', { name: 'Details', exact: true }).click();
+  await page.evaluate(() => document.getElementById('later').close());
+  await page.waitForFunction(() => document.getElementById('paqvilo-xray').parentElement.id === 'initial');
+  // X-ray lifts itself above a new top-layer surface from the popover's toggle event.
+  await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const popover = document.getElementById('popover');
+        popover.addEventListener('toggle', resolve, { once: true });
+        popover.showPopover();
+      }),
+  );
+  // A subsequently opened native popover must remain below the inspector controls.
+  await xray.getByRole('button', { name: 'Details', exact: true }).click();
+  await xray.getByRole('button', { name: 'Details', exact: true }).click();
+  await page.evaluate(() => {
+    document.getElementById('popover').hidePopover();
+    document.getElementById('initial').close();
+  });
+  await page.waitForFunction(() => document.getElementById('paqvilo-xray').parentElement === document.body);
+  const pick = async (selector) => {
+    const r = await page.locator(selector).boundingBox();
+    await page.mouse.click(r.x + Math.min(r.width / 2, 30), r.y + r.height / 2);
+  };
+  await pick('#inner');
+  await waitField(page, 'fx_inner.fx_shared');
+  assert.equal(await xray.getByText('Outer form', { exact: true }).count(), 0);
+  await xray
+    .locator('[data-evidence-role=enclosing]')
+    .getByText('Inner view', { exact: true })
+    .first()
+    .waitFor({ state: 'attached' });
+  await pick('#ambiguous');
+  assert.equal(await xray.locator('[data-inspection-evidence]').getAttribute('data-owner-status'), 'candidate');
+  await page.evaluate(() => document.getElementById('ambiguous').setAttribute('data-entityname', 'fx_outer'));
+  await waitField(page, 'fx_outer.fx_shared', 'candidate');
+  await pick('#fx_shared');
+  assert.equal(await xray.locator('[data-inspection-evidence]').getAttribute('data-owner-status'), 'unavailable');
+  await pick('#scaled');
+  await painted(page);
+  const clipped = await xray.locator('.selected').boundingBox(),
+    container = await page.locator('.scaled').boundingBox();
+  assert.ok(clipped.width < 100);
+  assert.ok(clipped.x + clipped.width <= container.x + container.width);
+  await xray.getByRole('combobox', { name: 'Highlight layer' }).selectOption('none');
+  await painted(page);
+  assert.equal(await xray.locator('.marks .mark:not(.selected):not(.hover)').count(), 0);
+  // Replacing the page body tears down the old listeners instead of intercepting a new document.
+  await page.evaluate(() => {
+    document.body.innerHTML = '<button id="fresh" onclick="window.freshClicked=true">New page tree</button>';
+  });
+  // The removed host disposes itself from the mutation callback, before this evaluation returns.
+  await page.locator('#fresh').click();
+  assert.equal(await page.evaluate(() => window.freshClicked), true);
+  assert.deepEqual(errors, []);
+});
 
-test(
-  'X-ray identifies the basic form, FormXml and column from a native Mirage-rendered form',
-  { timeout: 45_000 },
-  async (t) => {
-    const fx = inspectionFixture();
-    let app, context, panel, detach;
-    ownedFixture(t).add(async () => {
-      await panel?.dispose();
-    });
-    ownedFixture(t).add(async () => {
-      await detach?.();
-    });
-    ownedFixture(t).add(async () => {
-      await context?.close();
-    });
-    ownedFixture(t).add(async () => {
-      await app?.close();
-    });
-    ownedFixture(t).remove(async () => {
-      fx.cleanup();
-    });
-    fs.writeFileSync(
-      path.join(fx.portal, 'web-templates/Main.webtemplate.source.html'),
-      "<main>{% entityform name: 'Edit widget' %}</main>",
-    );
-    const formFile = path.join(fx.portal, 'basic-forms/Widget.basicform.yml');
-    fs.writeFileSync(formFile, fs.readFileSync(formFile, 'utf8').replace('100000001', '100000000'));
-    app = await createSimulator({
-      sourceDir: fx.portal,
-      solutionRoots: [fx.solution],
-      stateFile: path.join(fx.work, 'state.json'),
-      watch: false,
-      initial: {
-        version: 1,
-        tables: { fx_widget: [] },
-        mappings: { fx_widget: { entitySet: 'fx_widgets', idColumn: 'fx_widgetid' } },
-        permissions: [],
-        settings: { permissionMode: 'permissive' },
-        simulator: { mode: 'local', pageMode: 'local', identity: null, endpoints: [], live: {} },
-      },
-    });
-    context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, serviceWorkers: 'block' });
-    context.setDefaultTimeout(10000);
-    await context.route('**/*', (route) =>
-      new URL(route.request().url()).origin === app.url ? route.fallback() : route.abort(),
-    );
-    const session = new OverlaySession({
-      sourceDir: fx.portal,
-      origin: app.url,
-      site: structuredClone(SITE),
-      sourceMaps: false,
-      siteName: 'Native form fixture',
-      envName: 'loopback',
-      stateDir: fx.work,
-      browser: {},
-      mirage: true,
-      mirageSourceRoots: [fx.portal, fx.solution],
-      mirageConfig: { project: fx.project },
-    });
-    const page = await context.newPage();
-    detach = await attachSession(context, session);
-    panel = enablePanel(context, session, { open: async () => null });
-    await page.goto(app.url);
-    const field = page.locator('#fx_title');
-    await field.waitFor();
-    await page.locator('#paqvilo-xray').waitFor({ state: 'attached' });
-    await page.keyboard.press('Alt+Shift+X');
-    await page.locator('#paqvilo-xray').getByRole('toolbar').waitFor();
-    const r = await field.boundingBox();
-    await page.mouse.click(r.x + Math.min(25, r.width / 2), r.y + r.height / 2);
-    const xray = page.locator('#paqvilo-xray');
-    await waitField(page, 'fx_widget.fx_title');
-    await xray.getByText('Edit widget', { exact: true }).first().waitFor({ state: 'attached' });
-    await xray.getByText('Widget form', { exact: true }).first().waitFor({ state: 'attached' });
-    assert.equal(await xray.getByText('Styles', { exact: true }).count(), 0);
-    assert.equal(await xray.locator('.title').innerText(), 'Title');
-  },
-);
+test('X-ray identifies the basic form, FormXml and column from a native Mirage-rendered form', async (t) => {
+  const fx = inspectionFixture();
+  let app, context, panel, detach;
+  ownedFixture(t).add(async () => {
+    await panel?.dispose();
+  });
+  ownedFixture(t).add(async () => {
+    await detach?.();
+  });
+  ownedFixture(t).add(async () => {
+    await context?.close();
+  });
+  ownedFixture(t).add(async () => {
+    await app?.close();
+  });
+  ownedFixture(t).remove(async () => {
+    fx.cleanup();
+  });
+  fs.writeFileSync(
+    path.join(fx.portal, 'web-templates/Main.webtemplate.source.html'),
+    "<main>{% entityform name: 'Edit widget' %}</main>",
+  );
+  const formFile = path.join(fx.portal, 'basic-forms/Widget.basicform.yml');
+  fs.writeFileSync(formFile, fs.readFileSync(formFile, 'utf8').replace('100000001', '100000000'));
+  app = await createSimulator({
+    sourceDir: fx.portal,
+    solutionRoots: [fx.solution],
+    stateFile: path.join(fx.work, 'state.json'),
+    watch: false,
+    initial: {
+      version: 1,
+      tables: { fx_widget: [] },
+      mappings: { fx_widget: { entitySet: 'fx_widgets', idColumn: 'fx_widgetid' } },
+      permissions: [],
+      settings: { permissionMode: 'permissive' },
+      simulator: { mode: 'local', pageMode: 'local', identity: null, endpoints: [], live: {} },
+    },
+  });
+  context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, serviceWorkers: 'block' });
+  await context.route('**/*', (route) =>
+    new URL(route.request().url()).origin === app.url ? route.fallback() : route.abort(),
+  );
+  const session = new OverlaySession({
+    sourceDir: fx.portal,
+    origin: app.url,
+    site: structuredClone(SITE),
+    sourceMaps: false,
+    siteName: 'Native form fixture',
+    envName: 'loopback',
+    stateDir: fx.work,
+    browser: {},
+    mirage: true,
+    mirageSourceRoots: [fx.portal, fx.solution],
+    mirageConfig: { project: fx.project },
+  });
+  const page = await context.newPage();
+  detach = await attachSession(context, session);
+  panel = enablePanel(context, session, { open: async () => null });
+  await page.goto(app.url);
+  const field = page.locator('#fx_title');
+  await field.waitFor();
+  await page.locator('#paqvilo-xray').waitFor({ state: 'attached' });
+  await page.keyboard.press('Alt+Shift+X');
+  await page.locator('#paqvilo-xray').getByRole('toolbar').waitFor();
+  const r = await field.boundingBox();
+  await page.mouse.click(r.x + Math.min(25, r.width / 2), r.y + r.height / 2);
+  const xray = page.locator('#paqvilo-xray');
+  await waitField(page, 'fx_widget.fx_title');
+  await xray.getByText('Edit widget', { exact: true }).first().waitFor({ state: 'attached' });
+  await xray.getByText('Widget form', { exact: true }).first().waitFor({ state: 'attached' });
+  assert.equal(await xray.getByText('Styles', { exact: true }).count(), 0);
+  assert.equal(await xray.locator('.title').innerText(), 'Title');
+});

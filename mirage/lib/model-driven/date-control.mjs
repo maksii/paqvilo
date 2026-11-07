@@ -35,6 +35,78 @@ function parseTime(text) {
 const timeText = ({ hour, minute }) => `${hour % 12 || 12}:${pad(minute)} ${hour < 12 ? 'AM' : 'PM'}`;
 let nextId = 0;
 
+function dateForValue(value, instant, wall, valid, onlyDate, independent) {
+  if (wall) return localDate(wall.getUTCFullYear(), wall.getUTCMonth(), wall.getUTCDate());
+  if (!valid) return null;
+  if (value instanceof Date) return instant;
+  if (onlyDate || independent) return parseDate(String(value).slice(0, 10));
+  return instant;
+}
+
+function timeForValue(value, instant, wall, valid, independent) {
+  if (wall) return { hour: wall.getUTCHours(), minute: wall.getUTCMinutes() };
+  if (valid && independent && !(value instanceof Date)) return parseTime(String(value).slice(11, 16));
+  if (valid) return { hour: instant.getHours(), minute: instant.getMinutes() };
+  return null;
+}
+
+function navigateTimeOptions(event, timeOptions, openTime, state) {
+  if (!(
+    ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) &&
+    (timeOptions.isConnected || event.key.startsWith('Arrow'))
+  ))
+    return false;
+  event.preventDefault();
+  const closed = !timeOptions.isConnected;
+  openTime();
+  if (event.key === 'Home') state.setActive(0);
+  else if (event.key === 'End') state.setActive(47);
+  else {
+    let adjustment = 0;
+    if (!closed) adjustment = event.key === 'ArrowDown' ? 1 : -1;
+    state.setActive(Math.max(0, Math.min(47, state.getActive() + adjustment)));
+  }
+  state.setKeyboard(true);
+  state.mark();
+  state.reveal();
+  return true;
+}
+
+function focusKeyForLabel(label) {
+  if (label.startsWith('Navigate to previous month')) return 'previous-month';
+  if (label.startsWith('Navigate to next month')) return 'next-month';
+  if (label.startsWith('Navigate to previous year')) return 'previous-year';
+  if (label.startsWith('Navigate to next year')) return 'next-year';
+  if (/^(Month|Year) picker/.test(label)) return 'year-picker';
+  return label;
+}
+
+function dateForCalendarKey(event, date) {
+  let next;
+  if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key))
+    next = localDate(
+      date.getFullYear(),
+      date.getMonth(),
+      date.getDate() + { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 }[event.key],
+    );
+  else if (event.key === 'Home' || event.key === 'End')
+    next = localDate(
+      date.getFullYear(),
+      date.getMonth(),
+      date.getDate() + (event.key === 'Home' ? -date.getDay() : 6 - date.getDay()),
+    );
+  else if (event.key === 'PageUp' || event.key === 'PageDown') {
+    const offset = (event.key === 'PageUp' ? -1 : 1) * (event.shiftKey ? 12 : 1);
+    const month = localDate(date.getFullYear(), date.getMonth() + offset, 1);
+    next = localDate(
+      month.getFullYear(),
+      month.getMonth(),
+      Math.min(date.getDate(), localDate(month.getFullYear(), month.getMonth() + 1, 0).getDate()),
+    );
+  }
+  return next;
+}
+
 export function renderDate(field, initialValue, context = {}) {
   const onlyDate = String(field.format).toLowerCase() === 'dateonly' || field.dateTimeBehavior === 'DateOnly';
   const independent = field.dateTimeBehavior === 'TimeZoneIndependent';
@@ -56,17 +128,7 @@ export function renderDate(field, initialValue, context = {}) {
     node.type = 'button';
     node.setAttribute('aria-label', label);
     node.title = label;
-    node.dataset.focusKey = label.startsWith('Navigate to previous month')
-      ? 'previous-month'
-      : label.startsWith('Navigate to next month')
-        ? 'next-month'
-        : label.startsWith('Navigate to previous year')
-          ? 'previous-year'
-          : label.startsWith('Navigate to next year')
-            ? 'next-year'
-            : /^(Month|Year) picker/.test(label)
-              ? 'year-picker'
-              : label;
+    node.dataset.focusKey = focusKeyForLabel(label);
     if (glyph) node.innerHTML = icon(glyph);
     node.addEventListener('click', action);
     return node;
@@ -149,23 +211,9 @@ export function renderDate(field, initialValue, context = {}) {
     const instant = value == null || value === '' ? null : new Date(value);
     const valid = instant && Number.isFinite(instant.getTime());
     const wall = valid && staffTimeZone ? new Date(instant.getTime() + offset * 60000) : null;
-    const date = wall
-      ? localDate(wall.getUTCFullYear(), wall.getUTCMonth(), wall.getUTCDate())
-      : valid
-        ? value instanceof Date
-          ? instant
-          : onlyDate || independent
-            ? parseDate(String(value).slice(0, 10))
-            : instant
-        : null;
+    const date = dateForValue(value, instant, wall, valid, onlyDate, independent);
     primary.value = date ? dateText(date) : '';
-    const localTime = wall
-      ? { hour: wall.getUTCHours(), minute: wall.getUTCMinutes() }
-      : valid && independent && !(value instanceof Date)
-        ? parseTime(String(value).slice(11, 16))
-        : valid
-          ? { hour: instant.getHours(), minute: instant.getMinutes() }
-          : null;
+    const localTime = timeForValue(value, instant, wall, valid, independent);
     time.value = localTime ? timeText(localTime) : '';
     updateValidity();
   }
@@ -282,6 +330,76 @@ export function renderDate(field, initialValue, context = {}) {
     render();
     calendar.querySelector(`[data-date="${keyOf(date)}"]`)?.focus();
   };
+  function handleCalendarDayKey(event, date) {
+    const next = dateForCalendarKey(event, date);
+    if (!next) return;
+    event.preventDefault();
+    event.stopPropagation();
+    focusDay(next);
+  }
+  function toggleYearPicker() {
+    years = !years;
+    render();
+  }
+  function moveYearPage(direction) {
+    if (direction < 0) yearPage = Math.max(1, yearPage - (years ? 12 : 1));
+    else yearPage = Math.min(9999, yearPage + (years ? 12 : 1));
+    render();
+  }
+  function selectCalendarYearOrMonth(year, index) {
+    if (years) {
+      yearPage = year;
+      years = false;
+      render();
+    } else {
+      shown = localDate(yearPage, index, 1);
+      focused = localDate(yearPage, index, 1);
+      render();
+    }
+  }
+  function renderMonthsPane() {
+    const monthsPane = document.createElement('div');
+    monthsPane.className = 'calendar-months';
+    const yearHeader = document.createElement('div');
+    yearHeader.className = 'calendar-header';
+    const yearButton = button(
+      years
+        ? `Year picker ${yearPage} - ${yearPage + 11}, select to switch to month picker`
+        : `Month picker for year ${yearPage}, select to switch to year picker`,
+      null,
+      () => toggleYearPicker(),
+    );
+    yearButton.className = 'calendar-heading';
+    yearButton.textContent = years ? `${yearPage} - ${yearPage + 11}` : String(yearPage);
+    yearHeader.append(
+      yearButton,
+      button(
+        'Navigate to previous ' +
+          (years ? 'year range ' + (yearPage - 12) + ' - ' + (yearPage - 1) : 'year ' + (yearPage - 1)),
+        'sortUp',
+        () => moveYearPage(-1),
+      ),
+      button(
+        'Navigate to next ' +
+          (years ? 'year range ' + (yearPage + 12) + ' - ' + (yearPage + 23) : 'year ' + (yearPage + 1)),
+        'sortDown',
+        () => moveYearPage(1),
+      ),
+    );
+    const monthGrid = document.createElement('div');
+    monthGrid.className = 'calendar-month-grid';
+    monthGrid.setAttribute('role', 'group');
+    monthGrid.setAttribute('aria-label', years ? 'Years' : 'Months');
+    for (let index = 0; index < 12; index++) {
+      const year = yearPage + index;
+      const month = button(years ? String(year) : months[index], null, () => selectCalendarYearOrMonth(year, index));
+      month.textContent = years ? String(year) : months[index].slice(0, 3);
+      month.disabled = years && (year < 1 || year > 9999);
+      monthGrid.append(month);
+    }
+    monthsPane.append(yearHeader, monthGrid);
+    return monthsPane;
+  }
   function render() {
     const focusKey = calendar.contains(document.activeElement) ? document.activeElement.dataset.focusKey : null;
     rendering = true;
@@ -333,96 +451,12 @@ export function renderDate(field, initialValue, context = {}) {
         day.classList.toggle('today', keyOf(today) === key);
         day.classList.toggle('selected', Boolean(selected && keyOf(selected) === key));
         if (keyOf(today) === key) day.setAttribute('aria-current', 'date');
-        day.addEventListener('keydown', (event) => {
-          let next;
-          if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key))
-            next = localDate(
-              date.getFullYear(),
-              date.getMonth(),
-              date.getDate() + { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 }[event.key],
-            );
-          else if (event.key === 'Home' || event.key === 'End')
-            next = localDate(
-              date.getFullYear(),
-              date.getMonth(),
-              date.getDate() + (event.key === 'Home' ? -date.getDay() : 6 - date.getDay()),
-            );
-          else if (event.key === 'PageUp' || event.key === 'PageDown') {
-            const offset = (event.key === 'PageUp' ? -1 : 1) * (event.shiftKey ? 12 : 1);
-            const month = localDate(date.getFullYear(), date.getMonth() + offset, 1);
-            next = localDate(
-              month.getFullYear(),
-              month.getMonth(),
-              Math.min(date.getDate(), localDate(month.getFullYear(), month.getMonth() + 1, 0).getDate()),
-            );
-          }
-          if (next) {
-            event.preventDefault();
-            event.stopPropagation();
-            focusDay(next);
-          }
-        });
+        day.addEventListener('keydown', (event) => handleCalendarDayKey(event, date));
         cell.append(day);
       }
     }
     daysPane.append(dayHeader, grid);
-    const monthsPane = document.createElement('div');
-    monthsPane.className = 'calendar-months';
-    const yearHeader = document.createElement('div');
-    yearHeader.className = 'calendar-header';
-    const yearButton = button(
-      years
-        ? `Year picker ${yearPage} - ${yearPage + 11}, select to switch to month picker`
-        : `Month picker for year ${yearPage}, select to switch to year picker`,
-      null,
-      () => {
-        years = !years;
-        render();
-      },
-    );
-    yearButton.className = 'calendar-heading';
-    yearButton.textContent = years ? `${yearPage} - ${yearPage + 11}` : String(yearPage);
-    yearHeader.append(
-      yearButton,
-      button(
-        `Navigate to previous ${years ? `year range ${yearPage - 12} - ${yearPage - 1}` : `year ${yearPage - 1}`}`,
-        'sortUp',
-        () => {
-          yearPage = Math.max(1, yearPage - (years ? 12 : 1));
-          render();
-        },
-      ),
-      button(
-        `Navigate to next ${years ? `year range ${yearPage + 12} - ${yearPage + 23}` : `year ${yearPage + 1}`}`,
-        'sortDown',
-        () => {
-          yearPage = Math.min(9999, yearPage + (years ? 12 : 1));
-          render();
-        },
-      ),
-    );
-    const monthGrid = document.createElement('div');
-    monthGrid.className = 'calendar-month-grid';
-    monthGrid.setAttribute('role', 'group');
-    monthGrid.setAttribute('aria-label', years ? 'Years' : 'Months');
-    for (let index = 0; index < 12; index++) {
-      const year = yearPage + index;
-      const month = button(years ? String(year) : months[index], null, () => {
-        if (years) {
-          yearPage = year;
-          years = false;
-          render();
-        } else {
-          shown = localDate(yearPage, index, 1);
-          focused = localDate(yearPage, index, 1);
-          render();
-        }
-      });
-      month.textContent = years ? String(year) : months[index].slice(0, 3);
-      month.disabled = years && (year < 1 || year > 9999);
-      monthGrid.append(month);
-    }
-    monthsPane.append(yearHeader, monthGrid);
+    const monthsPane = renderMonthsPane();
     calendar.append(daysPane, monthsPane);
     daysPane.classList.toggle('year-picker-open', years);
     if (focusKey)
@@ -536,23 +570,20 @@ export function renderDate(field, initialValue, context = {}) {
       closeTime(true);
       return;
     }
-    if (
-      ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) &&
-      (timeOptions.isConnected || event.key.startsWith('Arrow'))
-    ) {
-      event.preventDefault();
-      const closed = !timeOptions.isConnected;
-      openTime();
-      timeActive =
-        event.key === 'Home'
-          ? 0
-          : event.key === 'End'
-            ? 47
-            : Math.max(0, Math.min(47, timeActive + (closed ? 0 : event.key === 'ArrowDown' ? 1 : -1)));
-      timeKeyboard = true;
-      markTime();
-      revealTime();
-    } else if (event.key === 'Enter') {
+    const navigated = navigateTimeOptions(event, timeOptions, openTime, {
+      getActive() {
+        return timeActive;
+      },
+      setActive(value) {
+        timeActive = value;
+      },
+      setKeyboard(value) {
+        timeKeyboard = value;
+      },
+      mark: markTime,
+      reveal: revealTime,
+    });
+    if (!navigated && event.key === 'Enter') {
       event.preventDefault();
       if (timeOptions.isConnected) chooseTime(timeActive);
       else time.dispatchEvent(new Event('change', { bubbles: true }));

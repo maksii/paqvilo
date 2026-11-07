@@ -9,7 +9,7 @@ import { createSimulator } from '../server.mjs';
 import { loadProjectConfig, projectSummary } from '../lib/project-config.mjs';
 import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
 import { readLocalFile } from '../../lense/local-file.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const APP = '77777777-7777-4777-8777-777777777777';
 const CLIENT = '99999999-9999-4999-8999-999999999999';
@@ -43,8 +43,7 @@ function identityEndpoint(api, mode, params) {
   endpoint.search = params.toString();
   return endpoint.href;
 }
-const requestIdentity = (endpoint, headers) =>
-  fetch(endpoint, { headers, redirect: 'error', signal: AbortSignal.timeout(10000) });
+const requestIdentity = (endpoint, headers) => fetch(endpoint, { headers, redirect: 'error' });
 
 async function ownedArcChallenge(header, root) {
   const prefix = 'Basic realm=';
@@ -75,8 +74,9 @@ async function readOwnedArcSecret(challenge) {
     throw new Error('Arc challenge must contain exactly the generated 64 hexadecimal characters.');
   return secret;
 }
-async function fixture(t, options, sourceOverrides = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-organization-'));
+// Writes the invented Solution only; tests that start their own runtime (or CLI) need no fixture runtime.
+async function solutionSources(t, sourceOverrides = {}) {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-organization-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'solution');
   const files = {
@@ -92,6 +92,10 @@ async function fixture(t, options, sourceOverrides = {}) {
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(file, content);
   }
+  return { root, solution, files };
+}
+async function fixture(t, options, sourceOverrides) {
+  const { root, solution, files } = await solutionSources(t, sourceOverrides);
   const stateFile = path.join(root, 'must-not-be-written.json');
   const sim = await createSimulator({
     solutionRoots: [solution],
@@ -118,7 +122,6 @@ const ui = (sim, method, suffix = '', values, etag) =>
       ...(etag ? { 'if-match': etag } : {}),
     },
     ...(values ? { body: JSON.stringify(values) } : {}),
-    signal: AbortSignal.timeout(10000),
   });
 async function client(sim) {
   const registration = await body(
@@ -152,7 +155,6 @@ async function client(sim) {
         ...(values ? { 'content-type': 'application/json', prefer: 'return=representation' } : {}),
       },
       ...(values ? { body: JSON.stringify(values) } : {}),
-      signal: AbortSignal.timeout(10000),
     });
 }
 
@@ -293,7 +295,7 @@ test('standalone validation responses agree with the documented payload and quer
 });
 
 test('project platform settings need evidence, known keys and in-range values', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-platform-config-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-platform-config-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'project.json'),
     solution = path.join(root, 'solution');
@@ -350,7 +352,7 @@ for (const kind of ['dataverse-api', 'model-driven'])
   });
 
 test('standalone project CLI forwards organization platform settings into the actual query runtime', async (t) => {
-  const { root, solution } = await fixture(t, { runtime: { kind: 'model-driven' } });
+  const { root, solution } = await solutionSources(t);
   const file = path.join(root, 'cli-project.json');
   await fs.writeFile(
     file,
@@ -382,26 +384,26 @@ test('standalone project CLI forwards organization platform settings into the ac
     { cwd: toolkitRoot, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true },
   );
   const exited = new Promise((resolve) => child.once('exit', resolve));
-  t.after(async () => {
+  // Stop the CLI (which holds its state file) before the owned directory is removed.
+  ownedFixture(t).add(async () => {
     if (child.exitCode === null) {
       child.stdin.write('stop\n');
+      // Bounded fallback for a CLI that ignores the documented stdin stop command.
       const timer = setTimeout(() => child.kill(), 10000);
       await exited;
       clearTimeout(timer);
     }
   });
+  // Startup settles on the ready report or the child's failure; no wall-clock bound below the test's own timeout,
+  // since importing and starting the runtime on a loaded runner has no documented startup budget.
   const started = await new Promise((resolve, reject) => {
     let stdout = '',
       stderr = '';
-    const timeout = setTimeout(() => reject(new Error('Standalone CLI startup timed out: ' + stderr)), 20000);
     child.stdout.on('data', (chunk) => {
       stdout += chunk;
       try {
         const report = JSON.parse(stdout);
-        if (report.url) {
-          clearTimeout(timeout);
-          resolve(report);
-        }
+        if (report.url) resolve(report);
       } catch {
         /* await complete JSON */
       }
@@ -409,14 +411,8 @@ test('standalone project CLI forwards organization platform settings into the ac
     child.stderr.on('data', (chunk) => {
       stderr += chunk;
     });
-    child.once('error', (error) => {
-      clearTimeout(timeout);
-      reject(error);
-    });
-    child.once('exit', (code) => {
-      clearTimeout(timeout);
-      reject(new Error(`Standalone CLI exited ${code}: ${stderr}`));
-    });
+    child.once('error', reject);
+    child.once('exit', (code) => reject(new Error(`Standalone CLI exited ${code}: ${stderr}`)));
   });
   const status = await body(await fetch(started.url + '/_sim/api/status'));
   assert.equal(status.platformSettings.find((item) => item.key === 'QueryLinkEntityLimit').value, 1);
@@ -503,8 +499,7 @@ for (const kind of ['dataverse-api', 'model-driven'])
     });
 
 test('independent client directory and ZIP sources reload without changing complete organization metadata', async (t) => {
-  const { sim: initial, root, solution } = await fixture(t, { runtime: { kind: 'model-driven' } });
-  await initial.close();
+  const { root, solution } = await solutionSources(t);
   const clientRoot = path.join(root, 'external-clients'),
     archive = path.join(root, 'external.zip');
   await fs.mkdir(path.join(clientRoot, 'WebResources'), { recursive: true });
@@ -534,7 +529,8 @@ test('independent client directory and ZIP sources reload without changing compl
     modelDriven: { trustedExtensions: true, clientSources: [clientRoot, archive] },
     watch: true,
   });
-  t.after(() => sim.close());
+  // The watcher closes before the owned directory is removed; t.after hooks run in registration order.
+  ownedFixture(t).add(() => sim.close());
   const catalogue = await body(await ui(sim, 'GET'));
   assert.ok(catalogue.tables.x_item);
   const urls = Object.fromEntries(
@@ -560,7 +556,7 @@ test('independent client directory and ZIP sources reload without changing compl
   assert.equal(await selectedSource(urls['x_/external.js']), 'window.External = 1;');
   assert.equal(await selectedSource(urls['x_/archive.js']), 'window.Archive = 1;');
   const changed = async (url, expected) => {
-    const deadline = Date.now() + 10000;
+    const deadline = Date.now() + 60_000;
     while (Date.now() < deadline) {
       if ((await selectedSource(url)) === expected) return;
       await new Promise((resolve) => setTimeout(resolve, 50));

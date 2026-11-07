@@ -1,11 +1,11 @@
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { loadConfig, loadCatalogue, loadDevTargets } from '../lense/config.mjs';
 import { setEnvLine, rememberSelection } from '../lense/commands/use.mjs';
 import { resolveCatalogue } from '../lense/api.mjs';
+import { tempDirSync } from './fixture.mjs';
 
 const CATALOGUE = `
 defaultSite: alpha
@@ -45,7 +45,7 @@ const write = (rel, text) => {
   fs.writeFileSync(path.join(dir, rel), text);
 };
 beforeEach(() => {
-  dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-cfg-')));
+  dir = tempDirSync('paqvilo-cfg-');
   config = path.join(dir, 'paqvilo.config.yml');
   write('paqvilo.config.yml', CATALOGUE);
   for (const site of ['alpha', 'beta', 'gamma'])
@@ -751,7 +751,7 @@ test('Mirage settings are schema checked', async () => {
 });
 
 test('resolved catalogue reports effective paths and shell, env, local and catalogue provenance', async (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-resolved-'));
+  const root = tempDirSync('paqvilo-resolved-');
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.mkdirSync(path.join(root, 'portal'));
   const config = path.join(root, 'paqvilo.config.yml');

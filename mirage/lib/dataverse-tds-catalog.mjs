@@ -81,7 +81,7 @@ export function buildCatalog({ store, metadataFields, metadata }) {
   const tables = new Map();
   for (const [logical, mapping] of Object.entries(store.state.mappings ?? {})) {
     if (!mapping.entitySet || mapping.isVirtual || mapping.dataSourceId) continue;
-    const fields = { ...store.fieldDefinitions(logical, metadataFields), ...(metadata?.(logical) ?? {}) };
+    const fields = { ...store.fieldDefinitions(logical, metadataFields), ...metadata?.(logical) };
     const idColumn = mapping.idColumn;
     const columns = [
       column(idColumn, 'uniqueidentifier', { kind: 'attribute', attribute: idColumn }, { nullable: false }),

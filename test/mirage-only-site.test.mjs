@@ -3,13 +3,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { renderTemplate } from '../lense/setup/templates.mjs';
 import { loadDevTargets, mirageOnlySite, loadCatalogue } from '../lense/config.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
+import { tempDirSync } from './fixture.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const env = Object.fromEntries(
@@ -29,7 +29,7 @@ const run = (...args) =>
   );
 
 function fixture(t) {
-  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-mirage-only-')));
+  const dir = tempDirSync('paqvilo-mirage-only-');
   t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
   fs.mkdirSync(path.join(dir, 'solutions', 'x_core', 'Other'), { recursive: true });
   fs.writeFileSync(

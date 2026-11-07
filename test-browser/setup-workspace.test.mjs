@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory, drainFixture, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -6,13 +7,13 @@ import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
-import net from 'node:net';
 import { chromium } from 'playwright-core';
 import YAML from 'yaml';
 import { prepareDemo } from '../lense/commands/demo.mjs';
 import { prepareProject } from '../lense/project-scaffold.mjs';
 import { startSetupServer } from '../lense/setup/server.mjs';
 import { createSimulator } from '../mirage/server.mjs';
+import { freeDebugPort } from './helpers/debug-port.mjs';
 
 // These cases exercise the All settings view of /_setup/ (Quick setup is the default for a new browser).
 const allSettings = (page) =>
@@ -40,14 +41,32 @@ async function newPage(t, options) {
   return context.newPage();
 }
 async function temporary(t) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-setup-browser-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-setup-browser-'));
   t.resources = [];
   t.after(async () => {
-    for (const dispose of t.resources.reverse()) await dispose();
+    await drainFixture(t.resources.toReversed());
     await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   return directory;
 }
+
+test('setup fixture drains its browser after a sibling resource close fails and retains its directory', async (t) => {
+  const hooks = [],
+    context = { after: (hook) => hooks.push(hook) },
+    owner = ownedFixture(t);
+  let page, directory;
+  owner.add(() => page?.context().close());
+  owner.remove(() => directory && fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  directory = await temporary(context);
+  page = await newPage(context);
+  const failure = Error('Invented setup sibling close failure');
+  context.resources.push(() => {
+    throw failure;
+  });
+  await assert.rejects(hooks[0](), (error) => error === failure);
+  assert.equal(page.isClosed(), true);
+  assert.equal((await fs.stat(directory)).isDirectory(), true, 'failed draining retains fixture state');
+});
 async function localGit(directory, source) {
   await fs.cp(source, directory, { recursive: true });
   const git = (...args) =>
@@ -55,6 +74,8 @@ async function localGit(directory, source) {
       encoding: 'utf8',
       windowsHide: true,
       stdio: 'pipe',
+      // Repository variables of a calling Git process would redirect these commands.
+      env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_/i.test(key))),
     });
   git('init', '--quiet');
   git('add', '.');
@@ -354,11 +375,7 @@ test(
         sites: { portal: { source: '.', environments: { dev: simulator.url }, markup: { enabled: false } } },
       }),
     );
-    const listener = net.createServer();
-    listener.listen(0, '127.0.0.1');
-    await once(listener, 'listening');
-    const port = listener.address().port;
-    await new Promise((resolve) => listener.close(resolve));
+    const port = await freeDebugPort();
     const child = spawn(
       process.execPath,
       [
@@ -376,13 +393,19 @@ test(
     );
     let output = '',
       remote,
-      setupUrl;
-    child.stdout.on('data', (chunk) => {
-      output += chunk;
+      setupUrl,
+      announced;
+    // Dev prints the setup address before it announces that it watches sources.
+    const watching = new Promise((resolve, reject) => {
+      announced = resolve;
+      child.once('exit', () => reject(new Error(output)));
     });
-    child.stderr.on('data', (chunk) => {
+    const read = (chunk) => {
       output += chunk;
-    });
+      if (/Watching local sources|Watching sources|Browse pages and open tabs/.test(output)) announced();
+    };
+    child.stdout.on('data', read);
+    child.stderr.on('data', read);
     const exited = once(child, 'exit');
     t.resources.push(async () => {
       if (remote) {
@@ -394,16 +417,7 @@ test(
       await exited;
       if (setupUrl) await assert.rejects(fetch(setupUrl), /fetch failed/, 'the owned setup server stops with dev');
     });
-    const deadline = Date.now() + 45000;
-    while (
-      !/Watching local sources/.test(output) &&
-      !/Watching sources/.test(output) &&
-      !/Browse pages and open tabs/.test(output) &&
-      Date.now() < deadline
-    ) {
-      if (child.exitCode !== null) throw new Error(output);
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
+    await watching;
     setupUrl = output.match(/setup\s+(http:\/\/127\.0\.0\.1:\d+\/_setup\/)/)?.[1];
     assert.ok(setupUrl, output);
     remote = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
@@ -442,7 +456,8 @@ test(
   async (t) => {
     const work = await temporary(t),
       demo = path.join(work, 'feedback');
-    await prepareDemo(demo);
+    // Any project with one website exercises the feedback; a scaffold needs no demo copy.
+    await prepareProject(demo, { name: 'feedback', sites: ['example'], noPack: true });
     const server = await startSetupServer({ directory: demo, processEnv: {} });
     t.resources.push(() => server.close());
     const page = await newPage(t, { viewport: { width: 1280, height: 900 }, reducedMotion: 'reduce' });
@@ -453,7 +468,8 @@ test(
     const reading = new Promise((resolve) => {
       releaseRead = resolve;
     });
-    t.after(() => releaseRead());
+    // Resources close in reverse order, so held routes are released before their context closes.
+    t.resources.push(() => releaseRead());
     await page.route('**/_setup/api/status', async (route) => {
       await reading;
       await route.continue();
@@ -478,7 +494,7 @@ test(
     const saving = new Promise((resolve) => {
       releaseSave = resolve;
     });
-    t.after(() => releaseSave());
+    t.resources.push(() => releaseSave());
     await page.route('**/_setup/api/config', async (route) => {
       writes++;
       await saving;
@@ -532,7 +548,7 @@ test(
     const timedOut = new Promise((resolve) => {
       releaseTimeout = resolve;
     });
-    t.after(() => releaseTimeout());
+    t.resources.push(() => releaseTimeout());
     await page.route('**/_setup/api/config', async (route) => {
       timeoutWrites++;
       await timedOut;

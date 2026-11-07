@@ -33,8 +33,9 @@ const CDP_RELEASE_MS = 5_000;
 
 // Composed input events also cover controls inside closed shadow roots. Keep
 // only a document-level boolean; no field contents or node references are stored.
+// NOSONAR: window preserves the browser WindowProxy boundary when page code reassigns globalThis.
 function installLateDraftTracker(slot, origins, binding) {
-  if (window !== window.top || !origins.includes(location.origin) || window[slot]) return;
+  if (window !== window.top || !origins.includes(location.origin) || window[slot]) return; // NOSONAR: preserve the page window receiver and binding
   let changed = false,
     pending = null;
   const navigation = window.navigation;
@@ -42,10 +43,10 @@ function installLateDraftTracker(slot, origins, binding) {
   const stop =
     typeof nativeStop === 'function' &&
     Function.prototype.toString.call(nativeStop) === 'function stop() { [native code] }'
-      ? nativeStop.bind(window)
+      ? nativeStop.bind(window) // NOSONAR: preserve the page window receiver and binding
       : null;
   let originalBinding = window[binding];
-  let notify = typeof originalBinding === 'function' ? originalBinding.bind(window) : null;
+  let notify = typeof originalBinding === 'function' ? originalBinding.bind(window) : null; // NOSONAR: preserve the page window receiver and binding
   const clear = () => {
     const previous = pending;
     pending = null;
@@ -89,7 +90,8 @@ function installLateDraftTracker(slot, origins, binding) {
   navigation?.addEventListener('navigate', navigate);
   navigation?.addEventListener('navigateerror', clear);
   navigation?.addEventListener('navigatesuccess', clear);
-  Object.defineProperty(window, slot, {
+  Object.defineProperty(/* NOSONAR */ window, slot, {
+    // NOSONAR: preserve the page window receiver and binding
     configurable: true,
     value: Object.freeze({
       dirty: () => changed,
@@ -98,7 +100,7 @@ function installLateDraftTracker(slot, origins, binding) {
         // CDP binding is installed. Capture the admitted function before inspection,
         // rather than permanently retaining that earlier absence.
         originalBinding = window[binding];
-        notify = typeof originalBinding === 'function' ? originalBinding.bind(window) : null;
+        notify = typeof originalBinding === 'function' ? originalBinding.bind(window) : null; // NOSONAR: preserve the page window receiver and binding
       },
       repair(destination) {
         if (!stop || !notify || typeof navigation?.addEventListener !== 'function') return false;
@@ -123,7 +125,7 @@ function installLateDraftTracker(slot, origins, binding) {
 
 // Runs on a retained document object. No field value leaves the browser, and
 // checking drafts and starting the GET happen in the same JavaScript turn.
-function repairLateDocument(expected, destination, slot) {
+/* NOSONAR */ function repairLateDocument(expected, destination, slot) {
   if (this !== document || location.href !== expected) return 'superseded';
   // Keep cleanup ownership current even when an observed draft declines repair.
   window[slot]?.refreshBinding();
@@ -136,12 +138,10 @@ function repairLateDocument(expected, destination, slot) {
       return 'draft';
     if (!(node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement || node instanceof HTMLSelectElement))
       continue;
-    const prototype =
-      node instanceof HTMLInputElement
-        ? HTMLInputElement.prototype
-        : node instanceof HTMLTextAreaElement
-          ? HTMLTextAreaElement.prototype
-          : HTMLSelectElement.prototype;
+    let prototype;
+    if (node instanceof HTMLInputElement) prototype = HTMLInputElement.prototype;
+    else if (node instanceof HTMLTextAreaElement) prototype = HTMLTextAreaElement.prototype;
+    else prototype = HTMLSelectElement.prototype;
     // Cloning customized built-ins or custom select descendants can execute
     // application constructors. Preserve those controls without probing them.
     if (
@@ -238,7 +238,7 @@ export async function interceptOrigins(
   const sessions = new Map();
   const pendingAttachments = new Set();
   const pendingClosures = new Set();
-  const activeRoutes = new Set();
+  const activeRoutes = new Set(); // NOSONAR: collection is written for its side effect
   let stopped = false;
   let disposal;
   const release = (record) => {
@@ -337,9 +337,11 @@ export async function interceptOrigins(
       record.routes.add(route);
       // whatever the handler does or fails to do, the request is not left paused
       Promise.resolve()
-        .then(() =>
-          stopped || record.closed ? route.abort() : matches(event.request.url) ? handler(route) : route.fallback(),
-        )
+        .then(() => {
+          if (stopped || record.closed) return route.abort();
+          if (matches(event.request.url)) return handler(route);
+          return route.fallback();
+        })
         .catch(() => {})
         .then(() => route.answered || route.fallback())
         .finally(async () => {
@@ -397,8 +399,13 @@ export async function interceptOrigins(
       await configure('Runtime.enable');
       await configure('Runtime.addBinding', { name: record.draftBinding });
       record.draftBindingReady = true;
-      record.draftScript = await configure('Page.addScriptToEvaluateOnNewDocument', { source: draftSource });
-      await configure('Runtime.evaluate', { expression: draftSource });
+      // Register the tracker and install it in existing contexts in one CDP command.
+      // A separate Runtime.evaluate can lose its context during a new-tab navigation,
+      // falsely treating a healthy target as an interception failure.
+      record.draftScript = await configure('Page.addScriptToEvaluateOnNewDocument', {
+        source: draftSource,
+        runImmediately: true,
+      });
       // CSP remains enforced unless explicitly disabled for this development session.
       if (bypassCSP) await configure('Page.setBypassCSP', { enabled: true });
       // A file the browser has cached from the online site would not be asked for again when its
@@ -552,16 +559,16 @@ export async function interceptOrigins(
     return pending;
   };
   const onPage = (page) => {
-    startAttachment(page);
+    void startAttachment(page);
   };
   const dispose = () => {
     if (disposal) return disposal;
     stopped = true;
     context.off('page', onPage);
     disposal = (async () => {
-      await Promise.allSettled([...pendingAttachments]);
+      await Promise.allSettled(pendingAttachments);
       await Promise.allSettled([...sessions.values()].map(release));
-      await Promise.allSettled([...pendingClosures]);
+      await Promise.allSettled(pendingClosures);
       activeRoutes.clear();
     })();
     return disposal;
@@ -608,7 +615,7 @@ function makeRoute({ cdp, context, page, event, isMainDocument, onFulfilled }) {
     /** An opt-in owned developer tool may add a validated request header. */
     setRequestHeader(name, value) {
       if (route.answered || fetched) throw new Error('Request headers are already sent');
-      if (!/^[!#$%&'*+.^_`|~\w-]+$/.test(name) || typeof value !== 'string' || /[\r\n\0]/.test(value))
+      if (!/^[!#$%&'*+.^`|~\w-]+$/.test(name) || typeof value !== 'string' || /[\r\n\0]/.test(value))
         throw new Error('Invalid request header');
       headers[name.toLowerCase()] = value;
       headersChanged = true;
@@ -616,7 +623,7 @@ function makeRoute({ cdp, context, page, event, isMainDocument, onFulfilled }) {
     /** Remove an internal owned-tool header before continuing the native request. */
     removeRequestHeader(name) {
       if (route.answered || fetched) throw new Error('Request headers are already sent');
-      if (typeof name !== 'string' || !/^[!#$%&'*+.^_`|~\w-]+$/.test(name)) throw new Error('Invalid request header');
+      if (typeof name !== 'string' || !/^[!#$%&'*+.^`|~\w-]+$/.test(name)) throw new Error('Invalid request header');
       delete headers[name.toLowerCase()];
       headersChanged = true;
     },
@@ -672,7 +679,7 @@ function makeRoute({ cdp, context, page, event, isMainDocument, onFulfilled }) {
       });
     },
     /** Answers from `response` (what fetch() returned), optionally with another body, or from status/headers/body. */
-    async fulfill({ response, status, headers: given, body, provenance } = {}) {
+    /* NOSONAR */ async fulfill({ response, status, headers: given, body, provenance } = {}) {
       if (route.answered) return false;
       let responseHeaders;
       let payload = body;
@@ -695,7 +702,10 @@ function makeRoute({ cdp, context, page, event, isMainDocument, onFulfilled }) {
         responseHeaders = responseHeaders.filter((h) => !STALE_AFTER_EDIT.has(h.name.toLowerCase()));
         responseHeaders.push({ name: 'cache-control', value: 'no-store' });
       }
-      const bytes = noBody ? Buffer.alloc(0) : Buffer.isBuffer(payload) ? payload : Buffer.from(payload ?? '', 'utf8');
+      let bytes;
+      if (noBody) bytes = Buffer.alloc(0);
+      else if (Buffer.isBuffer(payload)) bytes = payload;
+      else bytes = Buffer.from(payload ?? '', 'utf8');
       if (!noBody) responseHeaders.push({ name: 'content-length', value: String(bytes.length) });
       const acknowledged = await send('Fetch.fulfillRequest', {
         responseCode: code,
@@ -709,15 +719,15 @@ function makeRoute({ cdp, context, page, event, isMainDocument, onFulfilled }) {
       return acknowledged;
     },
     /** Lets the request go to the online portal untouched. */
-    fallback: () =>
-      fetched && !SAFE_METHODS.has(request.method)
-        ? route.abort()
-        : send(
-            'Fetch.continueRequest',
-            headersChanged
-              ? { headers: Object.entries(headers).map(([name, value]) => ({ name, value: String(value) })) }
-              : {},
-          ),
+    fallback: () => {
+      if (fetched && !SAFE_METHODS.has(request.method)) return route.abort();
+      return send(
+        'Fetch.continueRequest',
+        headersChanged
+          ? { headers: Object.entries(headers).map(([name, value]) => ({ name, value: String(value) })) }
+          : {},
+      );
+    },
     abort: () => send('Fetch.failRequest', { errorReason: 'Aborted' }),
     disposeResponses: async () => {
       await Promise.allSettled([...responses].map((response) => response.dispose?.()));

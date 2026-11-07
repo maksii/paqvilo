@@ -1,6 +1,7 @@
+// @test-kind unproven: local currency model (stamping, rate direction, half-away rounding, refusal codes and messages) without a native capture; tests with native proof carry their own tag
 // Currency (lib/dataverse-currency.mjs): money columns stamped with the transaction currency, its rate and the base amounts on
 // write; RetrieveExchangeRate (dataverse-predefined.mjs) answers 200 and 404.
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { EXTENSION } from '../lib/dataverse-currency.mjs';
 import { baseCurrencyId } from '../lib/dataverse-security.mjs';
@@ -31,8 +32,12 @@ const mappings = {
     },
     fields: {
       x_name: { dataverseType: 'nvarchar' },
-      x_price: { dataverseType: 'money', precision: 2 },
-      x_cost: { dataverseType: 'money', precision: 4 },
+      // AccuracySource 2 (the currency's precision), 0 (the column's own precision).
+      x_price: { dataverseType: 'money', precision: 2, precisionSource: 2 },
+      x_cost: { dataverseType: 'money', precision: 4, precisionSource: 2 },
+      // AccuracySource 0 (the column's own precision) and 2 (the currency's precision).
+      x_exact: { dataverseType: 'money', precision: 4, precisionSource: 0 },
+      x_rounded: { dataverseType: 'money', precision: 4, precisionSource: 2 },
     },
   },
   x_note: {
@@ -106,8 +111,18 @@ async function setup(t) {
   return { ...fixture, diagnostics, ledger };
 }
 
-test('create without a currency stamps the base currency: rate 1 and each money _base at the base precision', async (t) => {
-  const { request, json, store } = await setup(t);
+// One organization for the cases that only add rows under their own names, read, or are refused and roll back: a
+// fixture starts a whole Dataverse API, so they share it. The case that empties the currency table calls setup(t) for
+// its own. Cases run in file order (node:test runs a file's tests one at a time).
+const cleanups = [];
+let shared = null;
+const sharedSetup = () => (shared ??= setup({ after: (fn) => cleanups.push(fn) }));
+after(async () => {
+  for (const cleanup of cleanups.reverse()) await cleanup();
+});
+
+test('create without a currency stamps the base currency: rate 1 and each money _base at the base precision', async () => {
+  const { request, json, store } = await sharedSetup();
   const created = await json(
     await request('POST', '/x_ledgers', { x_name: 'Base', x_price: 100.456, x_cost: 10.5 }),
     201,
@@ -119,8 +134,8 @@ test('create without a currency stamps the base currency: rate 1 and each money 
   assert.equal(row.transactioncurrencyid, store.state.tables.transactioncurrency[0].transactioncurrencyid);
 });
 
-test('money-free creates retain an unset currency until a zero money value is written', async (t) => {
-  const { request, json, ledger, store } = await setup(t);
+test('money-free creates retain an unset currency until a zero money value is written', async () => {
+  const { request, json, ledger, store } = await sharedSetup();
   for (const [name, values] of [
     ['Omitted', {}],
     ['Explicit null', { x_price: null, x_cost: null }],
@@ -144,16 +159,16 @@ test('money-free creates retain an unset currency until a zero money value is wr
   }
 });
 
-test('an explicit currency alone still supplies its rate without inventing money amounts', async (t) => {
-  const { request, json, ledger } = await setup(t);
+test('an explicit currency alone still supplies its rate without inventing money amounts', async () => {
+  const { request, json, ledger } = await sharedSetup();
   await json(await request('POST', '/x_ledgers', { x_name: 'Currency only', ...currencyBind(EURO) }), 201);
   assert.equal(ledger('Currency only').transactioncurrencyid, EURO);
   assert.equal(ledger('Currency only').exchangerate, 1.3);
   assert.equal(ledger('Currency only').x_price_base, undefined);
 });
 
-test('invalid money payloads retain the shared OData validation code and roll back derived stamps', async (t) => {
-  const { request, json, store } = await setup(t);
+test('invalid money payloads retain the shared OData validation code and roll back derived stamps', async () => {
+  const { request, json, store } = await sharedSetup();
   const before = structuredClone(store.state.tables.x_ledger);
   for (const value of ['NaN', {}]) {
     const error = await json(await request('POST', '/x_ledgers', { x_name: 'Invalid money', x_price: value }), 400);
@@ -165,8 +180,17 @@ test('invalid money payloads retain the shared OData validation code and roll ba
   }
 });
 
-test("create with an explicit currency divides by its rate, rounded to the currency precision (not the column's)", async (t) => {
-  const { request, json, ledger } = await setup(t);
+// @test-kind parity: native and native-r2 currency (pqwp_money 7.125 stores pqwp_money_base 7.125, column AccuracySource 0 Accuracy 4) and MoneyAttributeMetadata.PrecisionSource (Microsoft.Xrm.Sdk)
+test('the base amount takes the digits of its column PrecisionSource: 0 the column precision, 2 the currency precision', async () => {
+  const { request, json, ledger } = await sharedSetup();
+  await json(await request('POST', '/x_ledgers', { x_name: 'Source', x_exact: 7.125, x_rounded: 7.125 }), 201);
+  assert.equal(ledger('Source').exchangerate, 1);
+  assert.equal(ledger('Source').x_exact_base, 7.125);
+  assert.equal(ledger('Source').x_rounded_base, 7.13);
+});
+
+test("create with an explicit currency divides by its rate, rounded to the currency precision (not the column's)", async () => {
+  const { request, json, ledger } = await sharedSetup();
   await json(
     await request('POST', '/x_ledgers', { x_name: 'Euro', x_price: 100, x_cost: 10, ...currencyBind(EURO) }),
     201,
@@ -177,8 +201,8 @@ test("create with an explicit currency divides by its rate, rounded to the curre
   assert.equal(ledger('Euro').x_cost_base, 7.692);
 });
 
-test('a currency without a precision rounds each money _base to its column precision', async (t) => {
-  const { request, json, ledger } = await setup(t);
+test('a currency without a precision rounds each money _base to its column precision', async () => {
+  const { request, json, ledger } = await sharedSetup();
   await json(
     await request('POST', '/x_ledgers', { x_name: 'Bare', x_price: 10, x_cost: 10, ...currencyBind(BARE) }),
     201,
@@ -187,8 +211,8 @@ test('a currency without a precision rounds each money _base to its column preci
   assert.equal(ledger('Bare').x_cost_base, 3.3333);
 });
 
-test('a bind naming an unknown currency is refused with the lookup inner code and stores nothing', async (t) => {
-  const { request, json, ledger } = await setup(t);
+test('a bind naming an unknown currency is refused with the lookup inner code and stores nothing', async () => {
+  const { request, json, ledger } = await sharedSetup();
   // Native code not known: the Web API resolves the bind before the hook runs and answers 404, not the hook's 400.
   const body = await json(
     await request('POST', '/x_ledgers', { x_name: 'Lost', x_price: 1, ...currencyBind(UNKNOWN) }),
@@ -198,8 +222,8 @@ test('a bind naming an unknown currency is refused with the lookup inner code an
   assert.equal(ledger('Lost'), null);
 });
 
-test('an update of a row whose held currency no longer exists is refused with the lookup inner code and changes nothing', async (t) => {
-  const { request, json, store } = await setup(t);
+test('an update of a row whose held currency no longer exists is refused with the lookup inner code and changes nothing', async () => {
+  const { request, json, store } = await sharedSetup();
   const before = structuredClone(store.state.tables.x_ledger.find((row) => row.x_ledgerid === HELD_LOST));
   // Native code not known: the records layer resolves the stored lookup before the hook and answers 404, not the hook's 400.
   const body = await json(await request('PATCH', `/x_ledgers(${HELD_LOST})`, { x_price: 60 }), 404);
@@ -210,8 +234,8 @@ test('an update of a row whose held currency no longer exists is refused with th
   );
 });
 
-test('an update that gives a money value keeps the currency the row holds and its rate', async (t) => {
-  const { request, json, store } = await setup(t);
+test('an update that gives a money value keeps the currency the row holds and its rate', async () => {
+  const { request, json, store } = await sharedSetup();
   await json(await request('PATCH', `/x_ledgers(${HELD})`, { x_price: 130 }), 200);
   const row = store.state.tables.x_ledger.find((item) => item.x_ledgerid === HELD);
   assert.equal(row.transactioncurrencyid, EURO);
@@ -219,8 +243,8 @@ test('an update that gives a money value keeps the currency the row holds and it
   assert.equal(row.x_price_base, 100);
 });
 
-test('a table without money columns is untouched: no currency, rate or diagnostic is stamped', async (t) => {
-  const { request, json, store, diagnostics } = await setup(t);
+test('a table without money columns is untouched: no currency, rate or diagnostic is stamped', async () => {
+  const { request, json, store, diagnostics } = await sharedSetup();
   await json(await request('POST', '/x_notes', { x_name: 'Plain' }), 201);
   const row = store.state.tables.x_note.find((item) => item.x_name === 'Plain');
   assert.equal('transactioncurrencyid' in row, false);
@@ -241,8 +265,8 @@ test('a missing base currency emits CURRENCY_BASE_MISSING once and the write pro
   assert.equal(ledger('Second').x_price, 6);
 });
 
-test('RetrieveExchangeRate answers the base and an invented currency, and 404 for an unknown id', async (t) => {
-  const { request, json, store } = await setup(t);
+test('RetrieveExchangeRate answers the base and an invented currency, and 404 for an unknown id', async () => {
+  const { request, json, store } = await sharedSetup();
   const base = store.state.tables.transactioncurrency[0].transactioncurrencyid;
   assert.equal(
     (await json(await request('GET', `/RetrieveExchangeRate(TransactionCurrencyId=${base})`), 200)).ExchangeRate,
@@ -256,6 +280,7 @@ test('RetrieveExchangeRate answers the base and an invented currency, and 404 fo
   assert.equal(missing.error.code, '0x80040217');
 });
 
+// @test-kind contract: the extension's capability record (Paqvilo design)
 test('describe names the stamping and the reused exchange-rate function at behaviour level', () => {
   const record = EXTENSION.describe();
   assert.equal(record.level, 'behaviour');
