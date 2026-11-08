@@ -1,3 +1,6 @@
+// @test-kind contract: Code App dev-server supervision (startup, readiness, ownership and shutdown) designed by Paqvilo.
+// A missing command reports "could not start" only after the Windows launcher wrapper (a Node process) has started, so
+// these tests keep the default startup deadline and rely on the test timeout as the hang guard.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -27,6 +30,7 @@ test('Code App shutdown waits for actual stdio closure after its owner exits', {
   await assertChildStdioDrain(gate, stopCodeAppDevServer);
 });
 
+// @test-kind security: loopback-only readiness probing; refused destinations are never requested.
 test('readiness refuses external, non-HTTP and credential-bearing URLs before any request', async (t) => {
   const original = globalThis.fetch;
   t.after(() => {
@@ -55,6 +59,7 @@ test('readiness refuses external, non-HTTP and credential-bearing URLs before an
     );
 });
 
+// @test-kind security: readiness never follows a redirect to another listener.
 test('readiness does not follow a configured loopback listener redirect', { timeout: 180_000 }, async (t) => {
   let redirected = 0;
   const destination = http.createServer((_req, res) => {
@@ -79,7 +84,7 @@ test('readiness does not follow a configured loopback listener redirect', { time
           name: 'redirected',
           dir: '.',
           localAppUrl: `http://127.0.0.1:${listener.address().port}/mounted`,
-          devServer: { command: ['definitely-missing-code-app-command'], timeoutMs: 1000 },
+          devServer: { command: ['definitely-missing-code-app-command'] },
         },
       ],
       { output: () => {} },
@@ -123,6 +128,7 @@ test('readiness probing releases a response whose body does not finish', { timeo
   await session.close();
 });
 
+// @test-kind security: unsafe starting paths are rejected before a runtime opens.
 test('mirage rejects unsafe starting paths before opening a runtime', () => {
   const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
   for (const value of ['https://example.test/', '//example.test/', '/\\example.test/', '/bad\npath']) {
@@ -211,7 +217,7 @@ test('failed startup drains already owned apps and never invokes a shell', { tim
           name: 'missing',
           dir: root,
           localAppUrl: target,
-          devServer: { command: ['definitely-missing-code-app-command'], timeoutMs: 1000 },
+          devServer: { command: ['definitely-missing-code-app-command'] },
         },
       ],
       { output: () => {} },
