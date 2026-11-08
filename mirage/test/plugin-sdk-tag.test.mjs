@@ -293,9 +293,20 @@ test(
         context: { initiatingUserId: user, organizationId: user, businessUnitId: user },
         timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
       };
+    // A CLR deadline includes the plug-ins its SDK calls start, each possibly on a cold host. Budget each type for its
+    // own call graph (as plugin-sdk-create-id.test.mjs does): the Caller's Delete runs three observers and up to two
+    // Leaf creates; an observer's stage 20/40 Create runs one Leaf.
+    const nestedInvocations = { Caller: 5, DeleteObserver: 1, Leaf: 0 };
     const runtimeByType = new Map();
     for (const type of ['Caller', 'DeleteObserver', 'Leaf'])
-      runtimeByType.set(type, await prepareClrRuntime({ ...descriptor, typeName: 'Invented.' + type }));
+      runtimeByType.set(
+        type,
+        await prepareClrRuntime({
+          ...descriptor,
+          typeName: 'Invented.' + type,
+          timeoutMs: ORDINARY_CLR_TIMEOUT_MS * (nestedInvocations[type] + 1),
+        }),
+      );
     let index = 0;
     const step = (entity, message, stage, type) => ({
         id: '30000000-0000-0000-0000-' + String(++index).padStart(12, '0'),
