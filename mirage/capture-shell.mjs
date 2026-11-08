@@ -35,6 +35,23 @@ export function captureCdpUrl(value) {
 const removeProfile = (directory) =>
   fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 
+/** Launch options of the anonymous capture browser. */
+function captureLaunchOptions(channel, port, platform = process.platform) {
+  const options = windowsLaunchOptions(
+    {
+      headless: true,
+      ...(channel !== 'chromium' ? { channel } : {}),
+      args: [`--remote-debugging-port=${port}`],
+    },
+    platform,
+  );
+  // On Windows, Edge signs a new profile into the Windows Microsoft account ("implicit sign-in") and adds that
+  // account's msn.com/bing.com cookies within seconds. The capture profile must stay anonymous. The feature
+  // joins the one --disable-features switch (args[0]) so the backported defaults stay in effect.
+  if (platform === 'win32') options.args[0] += ',msImplicitSignin';
+  return options;
+}
+
 /** A headless browser on a temporary profile with a loopback CDP port; close() removes the profile. */
 export async function launchCaptureBrowser(channel) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-shell-'));
@@ -44,14 +61,7 @@ export async function launchCaptureBrowser(channel) {
     await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
     const port = probe.address().port;
     await new Promise((resolve) => probe.close(resolve));
-    context = await chromium.launchPersistentContext(
-      directory,
-      windowsLaunchOptions({
-        headless: true,
-        ...(channel !== 'chromium' ? { channel } : {}),
-        args: [`--remote-debugging-port=${port}`],
-      }),
-    );
+    context = await chromium.launchPersistentContext(directory, captureLaunchOptions(channel, port));
     return {
       cdp: `http://127.0.0.1:${port}`,
       close: async () => {

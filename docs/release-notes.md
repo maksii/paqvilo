@@ -82,6 +82,7 @@ organization's metadata. Large datasets use far less memory.
 - Code app servers finish writing their output before shutdown is reported.
 - The rich-text compatibility editor sanitizes content with DOMPurify and keeps tables and paragraphs across saves.
 - `verify` cleanup waits for Windows to release the browser profile.
+- The temporary Edge browser used for shell capture no longer signs in to the Windows Microsoft account.
 
 ### Upgrade notes
 
