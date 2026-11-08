@@ -4,8 +4,8 @@
 
 This release lets you see and debug what the local runtime does: every request becomes a trace, original C#
 plug-ins stop at breakpoints in VS Code, and a new analyzer reviews your Power Platform sources. Canvas apps
-get a local player, Code Apps get a managed multi-app workflow, and XrmToolBox can connect to a local
-organization. Large datasets use far less memory.
+get a local player, Code Apps get a managed multi-app workflow, and the .NET Framework SDK can read a local
+organization's metadata. Large datasets use far less memory.
 
 ### New
 
@@ -32,8 +32,9 @@ organization. Large datasets use far less memory.
   set parameters, and shows connections and requests. The Vite plug-in keeps the Microsoft SDK's `/app` and
   `/data` imports working against Mirage, with HMR and source breakpoints. See
   [Code Apps](../mirage/docs/code-apps.md#develop-sdk-apps-with-vite-and-the-workbench).
-- **XrmToolBox and `CrmServiceClient`.** The SOAP Organization service answers organization and metadata
-  messages in the .NET Framework SDK's contracts, so `CrmServiceClient` connects and reads metadata. See
+- **`CrmServiceClient` (.NET Framework).** The SOAP Organization service answers organization and metadata
+  messages in the .NET Framework SDK's contracts, so `CrmServiceClient`, the client XrmToolBox uses, connects
+  through `AuthOverrideHook` and reads metadata. See
   [Dataverse API](../mirage/docs/dataverse-api.md#soap-organization-service).
 - **Connector definitions.** A data pack can register captured Swagger 2.0 connector definitions. Calls are
   matched by operation ID or method and path, and inputs are validated before your provider runs. See
