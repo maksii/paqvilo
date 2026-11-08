@@ -221,8 +221,10 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
               name: 'Late document writes',
               steps: [
                 { action: 'navigate', path: '/' },
-                // The held writes end at this click's budget, which the navigation waits report.
-                { action: 'click', selector: '#save', timeout: 3000 },
+                // With hold, the held writes end at this click's budget, which the navigation waits report. Without
+                // hold, the click waits for the /done navigation the server releases only after both late writes
+                // arrive, so it keeps the default deadline: a slow host must not fail it.
+                { action: 'click', selector: '#save', ...(beforeNavigation ? { timeout: 3000 } : {}) },
                 { action: 'settle' },
                 { action: 'visible', selector: '#done' },
               ],
