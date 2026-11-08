@@ -2,287 +2,104 @@
 
 ## 0.9.8
 
-- Preserve platform-owned audit stamps in Update plug-in Targets without demanding visitor association grants for
-  unchanged platform values. Explicit bindings and plug-in lookup edits retain authorization and rollback.
-- Expose opt-in authenticated, local-only [pack transactions](../mirage/docs/data-packs.md#authenticated-local-endpoint-writes)
-  with declared targets, scoped CRUD, concurrency checks and bounded atomic idempotency receipts.
-  Pack routes also retain requester audit/trace attribution, including repeated global-pattern matches.
-- Return detached primary-key acknowledgments from pack mutations, keeping protected row data and mutable pipeline
-  references behind explicit permission-scoped reads. Project server-logic connector Create responses through current
-  column security, including values assigned by plug-ins, without masking the stored record.
-- Recover one `ECONNRESET` for safe [configuration assignments](public-api.md), retaining a fixed diagnostic and
-  propagating other failures. Uncertain record writes and preset application are never replayed automatically.
-- Distinguish absent/empty enhanced record payloads from syntax errors with `PAQ-SOURCE-002`; withheld settings
-  remain incomplete without advice to disclose values. Keep declared primary names/keys queryable in partial
-  Solution exports, while rejecting genuinely unknown columns.
-- Bound whole-metadata resolution in rollup write scans independently of unrelated table count. Preserve structured
-  metadata invalidation, current authorization, the full plug-in pipeline and atomic rollback.
-- Add `paqvilo analyze` and shared Doctor source analysis with 126 rules across Dataverse, ALM, model-driven apps,
-  Canvas, PCF, Code Apps, cloud flows, connectors, MCP, mobile declarations and Power Pages. Direct folders and
-  declared project sources work without a portal catalogue. Errors, warnings and hints remain separate; Doctor
-  is advisory unless an explicit threshold is selected. See [static analysis](static-analysis.md).
-- Inspect supported source and package contents within shared read and archive budgets without running project
-  code, formulas, builds, PAC or tenant requests. Reports retain partial/unsupported coverage and 18 separate
-  operation/evidence capabilities; local declarations do not certify compilation, authorization or native runtime behavior.
-- Load model-driven apps with only the navigation index and the selected table's metadata. Forms, views and fields
-  of other tables arrive when a lookup or subgrid needs them. The complete catalogue at `/_apps/api` still returns
-  every table, form, view and field, and a large catalogue is gzip-compressed when the client accepts gzip. See [startup and responsiveness](../mirage/docs/runtime-performance.md#model-driven-catalogue).
-- Derive column metadata once per request for wide records and FetchXML pages instead of once per row and column.
-  Edited labels and field security appear on the next request.
-- Add `createOwned()` preset factories, which hand a freshly generated dataset to the runtime without a retained
-  copy. Inside a factory, `records.table()` streams rows into checksummed paged record storage beside the state
-  file, with bounded read caches and a primary-key index. Snapshots, exports and record results remain ordinary
-  data, and existing `load()` presets keep their memoized, detached copies. See [data packs](../mirage/docs/data-packs.md)
-  and [generated record storage](../mirage/docs/record-storage.md).
-- Reduce memory and copying on large datasets during startup, journal replay, checkpoint restore and status polling.
-  Unchanged restarts journal only changed sections and tables, and still detect edits made between restarts. A
-  failed startup initialization is discarded instead of persisted.
-- Show a count above the native 5,000-record limit as `5000+` in model-driven grids and subgrids. Next-page
-  navigation continues past the limit, and smaller filtered results keep their exact count.
-- Keep scripts and PCF controls in very large Solution trees: source discovery and client-asset discovery have
-  separate budgets. Source edits to column labels or security, component presence and same-name solution assets
-  reach the served metadata even when no record changed.
-- Capture observed same-origin `/_pcfwebresource/<guid>` stylesheets, which have no file extension, after verifying
-  that the response is CSS; origin, credential, path and size checks still apply. Duplicate observations fetch once
-  and keep their media and cascade order. Two origins that would share one local path fail explicitly. A failed
-  capture or refresh keeps the previous shell, including its valid stylesheets.
-- Sanitize the local rich-text compatibility editor's content with DOMPurify: scripts, event handlers, `javascript:`
-  URLs, frames, objects and SVG/MathML markup are removed. A captured native CKEditor keeps its own filtering. See
-  [public API](public-api.md). Both editors keep paragraphs, tables and preformatted blocks across save and reopen,
-  store native-style JSON hidden values, skip writes and change events for unchanged content (so authored mutation
-  observers cannot loop) and report ready only after the editor's own document loads. Read-only fields stay read-only.
-- Admit each shared model-driven source file once per synchronous metadata projection, retaining fresh filesystem
-  validation for subsequent queries and source-opening actions. Keep the source-byte cache bounded.
-- Use native Windows path resolution during source-index construction, preserving root confinement, file identity,
-  size limits and every before/after pathname and content-version check.
-- Stream complete model-driven metadata one table at a time with backpressure and disconnect handling, retaining
-  the same JSON bytes, exact numeric precision, forms, fields and security capabilities. Avoid cloning business
-  state to initialize the live-bridge configuration.
-- Resolve explicitly table-bound custom-grid column declarations through the direct-observation adapter, including
-  explicitly linked scroll-head clones. Load their exported table definitions on demand, including selected grids
-  beyond the bounded page scan, and keep those tables admitted when the sources reload, so Open source still finds
-  them after an edit. Unbound columns retain candidates; API requests and cell values supply no ownership.
-- Accept a verified native basic-form wrapper when its optional layout reports an all-zero form ID. Explicit
-  unknown form declarations remain unresolved. A generic native modal can join its same-origin `data-page`
-  placement, rendered list/subgrid, exported action type/form and layout table when the join is unique and consistent.
-  Definition URL hints can reject conflicts; unresolved joins retain table and declared-form context without field ownership.
-- Reject modal list/view contradictions and retain subgrid ownership when the grid is its own subgrid wrapper.
-  Join rendered advanced-form layouts only to matching configured steps, including subsequent step replacements.
-- Join native quick-view iframe declarations to a verified parent form and exported QuickForms target. Check
-  the current document path and conflicting navigation hints; retain unknown or conflicting boundaries.
-- Read only approved form/table query hints for definition context, leaving row and unrelated query values unread.
-- Carry verified attribute-host identity through accessible same-origin rich-text editor frames. Independent inner
-  forms, conflicting declarations, missing exports and inaccessible frames retain their evidence boundaries.
-- Retain original-table conflicts on linked grid clones, admit selected late clones within the scan bound, and
-  validate quick-view target declarations independently from the containing form across supported themes.
-- Preserve model-driven recommended requirement levels and PCF schema requirement values. Update every rendered
-  control bound to an attribute, retaining distinct control IDs and correct label associations across tabs.
-- Keep row-spanning baseline form controls within their declared section columns, including subsequent quick views.
-- Reuse the complete startup implementation fingerprint for the first state request while retaining source-change
-  invalidation and concurrent-file-removal handling. Defer unused runtime imports in scaffolded smoke tests and
-  declaration-only helpers; preserve strict content, authentication, denial and external-asset acceptance checks.
-- Remove verification's temporary copy asynchronously, so queued Windows directory-handle releases can finish, and retry
-  a profile file the exited browser still holds with a linear backoff of up to 11 s.
-- Run a code app's module scripts in document order under `codeApps()`, as the browser does without it, so an
-  application module never runs before an earlier inline script. The code apps workbench launches each app in a new
-  frame, so a dev-server reload of the previous document cannot drop applied query parameters.
-- Scan FetchXML and form XML markup in linear time, with the same results, on unterminated comments, tags and
-  attributes.
-- Extend regressions for crowded cards, frame shortcuts, dynamic modal/quick-view identities, nested editors and
-  owned-browser target isolation. The latter drops actual CDP requests in an independent loopback WebSocket proxy:
-  a tab or popup whose interception setup fails or is cancelled closes alone, healthy tabs keep their drafts, watchers
-  and agent endpoints continue, a retried tab applies current sources, and losing the shared browser connection ends
-  the session. See [Lense](lense.md).
-- Local validation reproduces the hosted checks that previously failed only on GitHub: the Security workflow's
-  CodeQL analysis with its pinned bundle, compared with GitHub's dismissed alerts; Windows browser lanes in both
-  Chromium and Edge; an 8.3 `TEMP` alias and an empty npm cache for the package smoke, as on hosted runners; and two
-  extra runs of each changed test file. See [CONTRIBUTING](../CONTRIBUTING.md).
-- Write the code app bootstrap specifier as an inert module string literal, as page script URLs already are.
-- Trace each local request as a tree of spans: the HTTP request, portal Web API call, form submission, Dataverse
-  operation, function, action, bulk message and `$batch` part, permission decisions, plug-in stages and steps with
-  their SDK calls and trace lines, secrets, outbound HTTP, web hook and Service Bus deliveries, asynchronous and
-  background jobs, classic workflows, server logic, cloud flow runs and actions, connector calls, canvas app actions
-  and page renders. Every host of a runtime shares one store: Power Pages, the standalone host with its model-driven,
-  canvas and code apps, the Dataverse Web API listener and its SOAP endpoint, TDS and the local identity provider, and
-  `/_sim/api` administration writes are traced too. Loopback calls, portal pages, the model-driven shell, the canvas player, the
-  code-app client and staged jobs join the trace of the request that caused them, with `staged-by` and `triggered`
-  links, and each audit entry links to its trace. `mirage.trace` sets the level (`off`, `summary` by default, or `full`
-  with redacted inputs and outputs), retention and optional persistence under the state folder; the level and the
-  retention limits also change at run time. Read traces in the `_sim` **Activity** view, through `/_sim/api/trace`, with
-  `paqvilo mirage trace list|show|spans|stats|settings|clear|flush|export|watch` or with `connectRuntime().trace`. See
+This release lets you see and debug what the local runtime does: every request becomes a trace, original C#
+plug-ins stop at breakpoints in VS Code, and a new analyzer reviews your Power Platform sources. Canvas apps
+get a local player, Code Apps get a managed multi-app workflow, and XrmToolBox can connect to a local
+organization. Large datasets use far less memory.
+
+### New
+
+- **Request tracing and Monitor.** Each request becomes one tree of steps: the HTTP call, portal Web API,
+  table permissions, the Dataverse operation, plug-in stages and steps with their trace lines, web hooks, jobs,
+  workflows, cloud flow runs and connectors, and the page render. The `_sim` **Monitor** has **Health** and
+  **Activity** views with filters, step search, side-by-side comparison and stats. Read traces with
+  `paqvilo mirage trace`, `/_sim/api/trace` or `connectRuntime().trace`, and export JSON, NDJSON or OTLP.
+  `mirage.trace.level` sets the level: `off`, `summary` (default) or `full` with redacted payloads. See
   [request tracing](../mirage/docs/tracing.md).
-- Every span that acts on a row names its table and record id, from the dispatch and the plug-in steps to the jobs,
-  web hooks and flows it starts; filter on `recordId` in the API, `--record-id` in the CLI or **Same record** in the
-  view. Plug-in step spans keep their registered images by alias, shared variables and execution context at `full`,
-  and a plug-in fault keeps one identity (type, code, status, plug-in type, step, stage, depth) on the step, the
-  dispatch and the request. Jobs are named by their process, a failed flow run names its failing action, a connector
-  error keeps the provider's own code and cause, sealed flow runs are marked `secure: true`, and spans can end
-  `cancelled`.
-- JavaScript plug-in handlers receive the operation's `sharedVariables` (and `context.SharedVariables` for a
-  `pluginTypes` handler), shared with later JavaScript and CLR steps of the operation. See
-  [project extensions](project-extensions.md#plug-in-type-handlers).
-- The `_sim` navigation has **Home** (Workspace) and **Monitor** with **Health** and **Activity**. Home holds the
-  first-run checklist, how this browser signs in and where to go next; Runtime state holds the runtime, persistence and
-  workspace configuration panels. Health starts with a banner (readiness, site, address, source version, uptime and a
-  strip of key numbers), then compact tiles with **Expand** for their graphs, the system map open by default, Blocking
-  and Configuration, and each counter opens the matching activity. Activity replaces the Live logs, Request audit,
-  Traces and Render & diagnostics views with one workspace: tabs Activities, Log stream, Findings, Pages & render and
-  Stats under one set of filters (time, result, who, table, record id, host, search) that is the page address, and an
-  activity detail with a **Why**
-  line, Steps, Log & findings, Rendered (template source file and line), Request and JSON. One vocabulary (activity,
-  step, finding, log line, who, result) and one time format (local `HH:MM:SS.mmm`, date and UTC on hover) are used in
-  Monitor and Flows & jobs. At level `off` Activities lists the request audit. The old addresses `#dashboard`,
-  `#overview`, `#logs`, `#audit`, `#trace` and `#evidence` redirect to their new place with their filters. Flows & jobs,
-  Backend operations, Data records, Portal identity and Organization identity & API link to the activity of what they
-  ran. With tracing off, Live follows the request audit. See
-  [`_sim` administration](../mirage/docs/sim-administration.md#monitor).
-- Every `_sim` view shares one page layout: the breadcrumb names the page (current item in the accent colour) with the
-  view's (i) after it, one toolbar row with the actions and **Filters · n**, a filter drawer on the right, chips under
-  the toolbar, and explanations behind (i) buttons and tooltips. Every table is one shared table with sortable
-  headings, row dividers, row actions pinned right, ↑/↓ and Enter, and a bottom bar with the count, rows per page and
-  paging; paged Data records sort on the runtime. At phone width the sidebar folds behind **Menu**, the top bar's links
-  move into **Apps & actions**, and Activity's tabs become a dropdown. See
-  [`_sim` administration](../mirage/docs/sim-administration.md#page-layout).
-- Table filters take a logical or an entity set name, and `recordId`, `actorId`, `sessionKey` and `visitorId` take a
-  prefix of at least 8 hexadecimal characters, in traces and the audit. Audit entries record `visitorId` and
-  `sessionKey`. `GET /_sim/api/dashboard` answers `runtime.startedAt` and `runtime.uptimeMs`. `trace list` and
-  `trace spans` print local times with the UTC offset in the header, or ISO UTC with `--utc`. `simulator.trace.subscribe`
-  takes `events` and `traceId` like `connectRuntime().trace.subscribe`.
-- Sort activities by time, duration, step count or errors; search the steps of an activity, keep only its errors and
-  denials, read it as JSON, copy its id or link, and compare two activities side by side with the duration delta of
-  each matched step. Stats compares the root p95 with the previous range of the same length and lists the slowest steps
-  and latest errors. The list sits beside the open activity on wide screens and names each activity's first error; the
-  step drawer shows the path from the root, Parent and Root, and links flow run, job and plug-in step ids to their
-  views. The `_sim` pages follow the browser's dark colour scheme.
-- Link the audit and the trace both ways: the root span of an audited request carries `auditId`, a Liquid read's audit
-  entry names its own `read` span, sign-in entries name their span, and trace summaries carry `auditId`. Filter traces
-  by `auditId` and by `result` (the activity's own result) in the routes, `connectRuntime().trace` and the CLI
-  (`--audit-id`, `--result`), and audit entries by `traceId` (up to 200 ids). Findings raised during a request, the
-  portal and Dataverse request rings and flow runs (`traceSpanId`) name their trace. Inbound `X-Sim-Trace-Id` is read
-  as an audit id only, and outbound calls send it only as the audit id of an audited ancestor.
-- Keep the runtime log stream on the server: `mirage.logs.retain` lines (default 2000), with startup and reload lines
-  and one `plugin` line per declarative plugin rule evaluated, read through `GET /_sim/api/logs` and
-  `connectRuntime().logs()`. A plugin rule evaluation is also a `rule` event on its span. The trace channel takes
-  `events=` and `traceId=`, `GET /_sim/api/render-sources` resolves template steps to their source file and line, and
-  `GET /_sim/api/activity/export?format=bundle` (`connectRuntime().exportBundle()`,
-  `paqvilo mirage trace export --format bundle`) streams one NDJSON bundle of activities, audit entries, log lines,
-  findings and the evidence reference. See [request tracing](../mirage/docs/tracing.md#activity-bundle).
-- Export traces as JSON, NDJSON or OTLP JSON (`resourceSpans`), streamed one trace at a time and bounded by `limit`
-  (200 by default, at most 2000). `trace watch` takes the list filters and `--trace-end`, and ends with exit 0 when the
-  runtime stops; every `trace --json` action prints one envelope, and failures name a code such as `TraceNotFound` or
-  `RuntimeUnreachable`. A filter outside its values answers 400 `InvalidTraceFilter` naming its `parameter`, and the
-  CLI exits 2 for it. `connectRuntime().trace` adds `ancestry`, `subscribe` and `flush`, and a runtime that closes the
-  connection before its response completed rejects with `RuntimeConnectionLost` (CLI exit 1).
-- A trace that reaches `spansPerTrace` stays one trace and counts the refused spans; trace ids from headers must be
-  UUIDs, and `/_sim/api/trace/id/<traceId>` reads any trace id. Persisted traces are written as delta lines after the
-  response, a runtime without a state folder reports `NoStateDirectory`, and trace ids stay out of the state file. File
-  and binary columns are captured as their size and SHA-256, never their bytes.
+- **Debug original C# plug-ins.** Point a trusted plug-in descriptor at your Debug DLL and PDB, build, restart
+  Mirage, trigger the operation and attach Microsoft's C# debugger in VS Code. A descriptor can set
+  `defaultMode: 'clr'` so its step runs the original assembly on every start. See
+  [debug original C# in VS Code](../mirage/docs/dataverse-plugins.md#debug-original-c-in-vs-code).
+- **`paqvilo analyze` and Doctor guidance.** 126 rules check Dataverse and ALM, model-driven apps, Canvas, PCF,
+  Code Apps, cloud flows, connectors, MCP, mobile declarations and Power Pages. Point it at a folder or a
+  project; no portal catalogue is needed. Findings are errors, warnings or hints. Doctor stays advisory unless
+  you set a threshold. Nothing is built or executed and no tenant is contacted. See
+  [static analysis](static-analysis.md).
+- **Canvas player.** `/_apps/canvas/<app>` runs a Canvas app from its exported source: controls, Power Fx,
+  components, PCF, media, galleries and local data, with an inspector for source locations, state and errors.
+  Source edits reload the app. See [Canvas apps](../mirage/docs/canvas-apps.md).
+- **Code Apps development.** `mirage dev` starts your app servers, opens a workbench to switch between apps and
+  set parameters, and shows connections and requests. The Vite plug-in keeps the Microsoft SDK's `/app` and
+  `/data` imports working against Mirage, with HMR and source breakpoints. See
+  [Code Apps](../mirage/docs/code-apps.md#develop-sdk-apps-with-vite-and-the-workbench).
+- **XrmToolBox and `CrmServiceClient`.** The SOAP Organization service answers organization and metadata
+  messages in the .NET Framework SDK's contracts, so `CrmServiceClient` connects and reads metadata. See
+  [Dataverse API](../mirage/docs/dataverse-api.md#soap-organization-service).
+- **Connector definitions.** A data pack can register captured Swagger 2.0 connector definitions. Calls are
+  matched by operation ID or method and path, and inputs are validated before your provider runs. See
+  [data packs](../mirage/docs/data-packs.md).
+- **Test data tooling.** `paqvilo/mirage/fixtures` and `paqvilo/mirage/testing` generate datasets from your
+  schema, remap identities and relationships, report coverage, emit TypeScript declarations and compare
+  permission models and plug-in registrations. See [public API](public-api.md).
+- **Large generated datasets.** `createOwned()` preset factories stream rows into compressed, checksummed record
+  pages beside the state file. Existing `load()` presets are unchanged. See
+  [generated record storage](../mirage/docs/record-storage.md).
+- **Pack transactions.** Opt-in, authenticated, local-only pack endpoints write records with declared targets,
+  rollback, concurrency checks and idempotency receipts. See
+  [data packs](../mirage/docs/data-packs.md#authenticated-local-endpoint-writes).
 
-Synthetic and native qualification are distinct. Loopback passes establish the exercised contracts; they do not
-establish native control coverage, a deployed source revision or production readiness.
+### Improved
 
-### Consumer feedback qualification, 2026-11-06
+- **Plug-in parity.** Reads, images, shared variables, parent contexts, request IDs, tags, async targets and
+  SOAP serialization follow native behavior more closely. JavaScript plug-ins receive `sharedVariables`. This
+  does not make Mirage complete Dataverse parity; see
+  [plug-in execution boundaries](../mirage/docs/dataverse-plugins.md#execution-boundaries).
+- **Model-driven apps.** Apps load only the navigation and the selected table's metadata; other tables arrive
+  when a lookup or subgrid needs them. Counts above 5,000 show as `5000+`. Side panes, form and choice
+  contracts, PCF resize, ribbon labels and requirement levels behave more like the platform.
+- **Flows.** Stricter expression parsing with diagnostics (`inspectFlowExpression`), more functions, exact UTC
+  `ticks`, JSON Schema for request inputs and ParseJson, and trigger conditions evaluated before a run starts.
+- **Performance at scale.** A row write no longer scales with the size of the solution. Startup, restarts,
+  status polling and the full catalogue use less memory and stream their output. Qualified with invented data
+  up to 100 million records.
+- **Lense source attribution.** Open source finds custom grid columns, basic forms, quick views, modals and
+  rich-text frames more reliably, and keeps unresolved cases explicit.
+- **`_sim` layout.** Every view shares one layout: breadcrumb, toolbar, filter drawer and one table style. It
+  works at phone width and follows the browser's dark mode.
+- **CLI.** Commands validate their arguments before any file, browser or PAC work. JSON errors go to stdout and
+  readable errors to stderr. Report paths cannot overwrite inputs or credentials.
 
-The reported preview maps to release commit `e7fa18402f72`. On that exact source, 71 focused unit checks and
-28 browser checks passed on Node 24.22.1, Windows x64, using invented schemas and disposable loopback browsers.
-This receipt contains no customer data, source paths, tenant identifiers or authentication material.
-The following stable feedback IDs distinguish reproduced defects from qualification already supported by that release:
+### Fixed
 
-| ID  | Review outcome and verification                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 215 | Fixed redundant whole-metadata work in write observation; `write-metadata-cost.test.mjs` compares the old per-table path, current snapshots, structured edits and rollback. Existing startup/cache tests and the source-volume browser readiness test preserve source/data coverage and local edits. See the measured workload below.                                                                                                                                                                                                |
-| 232 | No current toolkit defect reproduced: `test-browser/xray-feedback.test.mjs` checks selected sources before crowded context, paging, retained disclosure choices, unknown elements and card movement without activating native controls.                                                                                                                                                                                                                                                                                              |
-| 234 | No current toolkit defect reproduced: the same browser suite checks uniquely joined generic modal placement in lists/subgrids, multiple action forms/lists, replacements, conflicting URL/layout hints, absent exports and source changes. Unjoined context stays qualified.                                                                                                                                                                                                                                                         |
-| 237 | No current toolkit defect reproduced: the same suite checks two empty/disabled editor hosts and nested repeated IDs at 4 and 900 candidates, advanced-step replacement and explicit unknown/inaccessible boundaries, without reading values.                                                                                                                                                                                                                                                                                         |
-| 238 | Owned-browser executable fault receipt: `dev-session-close-errors.test.mjs` passed a real independently proxied `Page.getFrameTree` stall in a cancelled initializer, explicit tab and popup. Both 10-second deadlines fired; only failed tabs closed. Two unsaved drafts, watcher updates, agent session/events/pages and a new tab executing changed source survived. Actual shared transport loss stopped the owned session and removed its watcher/discovery. Test duration: 23.1 seconds. No existing user browser was faulted. |
-| 239 | No current toolkit defect reproduced: `richtext-form.test.mjs` checks empty/plain/quoted formatted HTML through repeated edit/postback/reopen, actual hidden JSON, authored jQuery and mutation observers, bounded events, paragraph structure and zero page errors. Editor-document readiness uses a controlled blank-document gate.                                                                                                                                                                                                |
-| 240 | No current toolkit defect reproduced: `shell-capture.test.mjs` checks managed GUID CSS, duplicate/query observations, non-CSS/404/oversize/unsafe inputs, origin/credential protection and failed-refresh rollback retaining the prior shell.                                                                                                                                                                                                                                                                                        |
-| 241 | Added the missing public capability; `pack-endpoint-writes.test.mjs` exercises authenticated HTTP transactions, token/target/provider refusal, children/rollback, stale revisions, capability expiry, concurrent duplicate keys, changed inputs, payload bounds and independent runtimes.                                                                                                                                                                                                                                            |
-| 242 | Added bounded configuration recovery; `runtime-configuration-recovery.test.mjs` checks before-send and after-commit resets, second-reset/server/unreachable refusal, no create replay and a retained real client after a 4,000-row preset replacement. Lost snippet creation resumes by reading its committed identity. The operating system connection-reuse cause remains unproven.                                                                                                                                                |
-| 243 | Reproduced scalar Update refusal with audit relationships and no systemuser AppendTo; fixed its authorization input. `audit-binding-authorization.test.mjs` retains audit values and Targets, denied/permitted explicit binds, plug-in edits and rollback.                                                                                                                                                                                                                                                                           |
-| 244 | Reproduced absent enhanced payload misdiagnosis; `analysis-component-payload.test.mjs` covers absent/empty/optional/null values, invalid JSON, malformed XML and unknown kinds without disclosing values. Existing secret/parser security assertions remain intact.                                                                                                                                                                                                                                                                  |
-| 245 | Corrected documentation to distinguish request validation from native-qualified 405 refusal. Existing bulk, PreValidation, elastic and permission tests retain their native assertions and row-preservation guarantees.                                                                                                                                                                                                                                                                                                              |
-| 246 | Reproduced an empty default grid failing on a declared primary name. `partial-primary-metadata.test.mjs` now verifies usable empty/populated HTTP grids, exact declared fields and rejection of unknown fields.                                                                                                                                                                                                                                                                                                                      |
+- Updates no longer fail when exported audit relationships stamp modifier fields.
+- Default grids work on partial Solution exports whose primary name column is declared but not exported.
+- A server-logic Create response no longer exposes a column that column security hides.
+- Absent or empty enhanced payloads are reported as missing (`PAQ-SOURCE-002`), not as syntax errors.
+- A configuration assignment recovers from one dropped connection (`ECONNRESET`); record writes are never replayed.
+- Code app module scripts run in document order, and the workbench keeps query parameters across dev-server reloads.
+- A malformed Canvas control version can no longer hang the runtime; FetchXML and form XML scan in linear time.
+- Code app servers finish writing their output before shutdown is reported.
+- The rich-text compatibility editor sanitizes content with DOMPurify and keeps tables and paragraphs across saves.
+- `verify` cleanup waits for Windows to release the browser profile.
 
-The separate `--large` performance probe used 256 invented tables, 10,240 forms and 20,000 records. Fresh,
-unchanged and journal-grown starts took 4.793, 2.891 and 1.742 seconds; first status responses took 26, 11 and
-8 ms. First grid API reads took 27, 20 and 20 ms. Complete catalogue reads took 8.9–10.2 seconds, with a maximum
-concurrent status heartbeat of 45 ms. All declared probe budgets passed, all 20,000 records remained, and the
-journal edit survived. Cumulative process peak RSS reached 2,755 MiB across these same-process runs. This includes
-the complete source/state and catalogue workload plus V8 retained heap capacity; it is not a per-phase retained-heap
-measurement or proof of a leak. Cold module import precedes the first exported callback; context preparation has
-its own progress phases, as described in [runtime performance](../mirage/docs/runtime-performance.md).
+### Upgrade notes
 
-A separate visible-browser fixture with 64 tables, 256 forms and 4,096 records measured fresh/restart runtime calls
-at 651/525 ms, usable grid search at 188/146 ms, and refresh at 89/95 ms. It searches for an actual row, observes no
-page-script errors and retains all tables/rows and a local edit without reapplying bootstrap. These sequential local
-samples are neither a randomized package comparison nor a portable hardware budget. Full source volume, native
-deployment differences and a consumer's signed-in native requalification require that consumer's own authorized
-environment; synthetic receipts establish the toolkit contracts and do not claim native/live parity.
+- Tracing is on at `summary`. Set `mirage.trace.level: off` to turn it off.
+- The old `_sim` addresses (`#dashboard`, `#overview`, `#logs`, `#audit`, `#trace`, `#evidence`) redirect to
+  Monitor with their filters.
+- The CLI now rejects extra or misplaced arguments that it used to ignore. Check scripts that call it.
 
-Hosted Edge qualification also exposed two test synchronization defects. The code-app workbench now holds the
-requested frame response and observes that exact frame's navigation before using its bridge. Owned CLI readiness
-listens to process output, exit and cancellation under the test's existing deadline, rather than imposing a shorter
-independent startup deadline. Both retain their functional assertions and pass locally in Edge; the workbench also
-passes in Chromium. Neither fix increases sleeps or changes runtime/parity behavior.
+### Contributor validation
 
-A full Chromium run also expired its default locator wait before finding the live-write opt-in switch. A controlled
-initial-state response gate now proves that document load can precede workspace readiness; the test waits for the
-observed connected state under its unchanged owning deadline, reports startup failures directly, and retains every
-disabled/enabled, saved-state and error assertion. This exercises initialization ordering without sleeps or retries.
+- `npm run validate` and pre-push reproduce the hosted checks: CodeQL with the pinned bundle, Windows browser
+  lanes in both Chromium and Edge, the hosted runner's `TEMP` alias and an empty npm cache. Lanes run
+  concurrently (`paqvilo.ci.jobs` or `PAQ_CI_JOBS`), and changed test files run twice more.
+- Every new or changed test declares its kind with `// @test-kind`. See [test kinds](test-kinds.md).
+- SonarQube analyzes branches and pull requests. It is not a required check.
+- The test suite was audited: sleeps and wall-clock assertions were replaced by real signals, and slow hosts no
+  longer fail tests.
 
-The same local run exposed CPU oversubscription: the all-CPU CodeQL process overlapped timed CLR semantic tests,
-and an ordinary observer exceeded its existing 10-second fixture budget. CodeQL now runs as an exclusive local
-validation step, matching its dedicated hosted job. Barrier regressions prove it drains preceding work, excludes
-other lanes, preserves subsequent concurrency and continues all functional lanes after an analysis failure. Native
-parity assertions, fixture budgets and production timeout behavior are unchanged.
-
-Strict acceptance also caught implementation drift caused by the concurrent SDK-lock test itself: its temporary
-portal and runtime state were written beside generated SDK output in the watched toolkit tree. The fixture now
-keeps them under that output's existing `obj` exclusion. A before/after implementation-hash assertion reproduced
-the old drift and passes with the corrected layout. The evidence suite and synthetic acceptance recipe pass together;
-implementation-drift rejection, locked-file checks and every deliberate acceptance-failure variant remain active.
-
-An Ubuntu browser job also exhausted its deadline before tests: the hosted APT mirror fell back for release metadata
-but stalled on package indexes. Hosted Linux browser preparation now replaces only the exact Azure archive token
-with the working official HTTPS archive, preserves other sources/priorities, and sets bounded transport retries and
-timeouts. Incomplete index updates fail explicitly. Non-hosted machines retain their package configuration. A real
-loopback APT timeout regression exercises failure without changing system packages or contacting external mirrors.
-The regression also uses the runner's published trailing-slash mirror format and real APT configuration ordering:
-our bounds load after its `zz-retries` defaults, and preparation reports the effective timeout/retry settings.
-
-Full-source Sonar review found two new maintainability findings: split declared-primary-field construction from
-the table projection, and make JSON wire normalization explicit for pack results. The latter is serialization,
-not a generic deep clone: Date/toJSON, omitted properties and non-finite numbers must match the response and saved
-receipt. A regression checks these values, duplicate receipts and rollback on an unserializable result.
-
-The other 69 findings reproduce reviewed false positives on the reported release. All match the same rule,
-component, message, issue hash and unchanged surrounding source; 67 also retain the exact range, with two shifted
-by the metadata-snapshot callback. Of these, 66 have identical complete files; the other three have unrelated
-metadata callback changes. Review retained the necessary checks rather than changing native/security assertions:
-
-| Finding family            | Count | Current-source evidence                                                                                                                                  |
-| ------------------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| S3403 comparisons         | 37    | Optional captures, missing map/array keys, mutable state, defaulted public inputs and native value unions retain both possible outcomes.                 |
-| S2259 nullability         | 8     | Caller admission, successful initialization, short-circuit guards and throwing parsers protect the dereferences.                                         |
-| S3782 arguments           | 5     | Numeric branches are filtered/lazy; `String.slice` explicitly permits an omitted/undefined end.                                                          |
-| S5869 character classes   | 6     | Non-whitespace and the four whitespace line terminators are disjoint; the negated class intentionally admits only horizontal whitespace.                 |
-| S8786 regular expressions | 2     | Bounded XML input ends at a tag close; the anchored multipart expression accepts every remaining byte as body, preventing repeated failing suffix scans. |
-| S4123 promises            | 4     | Injected principals, pending storage flushes and CDP body operations can be asynchronous; completion is observable.                                      |
-| S4036 executable lookup   | 2     | The developer/CI verifier invokes fixed `git` arguments without a shell or request-controlled toolchain.                                                 |
-| S5332 parser base         | 2     | The `.invalid` HTTP origin is an inert URL parser/equality sentinel; only validated relative paths are retained, without network access.                 |
-| S2189 / S1994 loops       | 2     | Closing-tag position and fetched record count advance; exhausted/empty pages terminate pagination.                                                       |
-| S2187 test registration   | 1     | The shared storage contract registers real tests against the loopback authenticated transport.                                                           |
-
-The existing dispositions are carried to this branch only for those exact matches. No analysis rules, coverage
-lanes, thresholds, native parity assertions or security assertions are removed or weakened.
-
-Final API review reproduced two additional security failures with invented data: a pack handler could read and mutate
-the internal write-result row, and an exported server-logic Create response exposed a protected value assigned by a
-plug-in. Pack mutators now return detached keys, with explicit reads retaining table permissions and column masks.
-The server-logic response applies the current column-read projection. Regressions verify attempted result tampering,
-create/update/delete acknowledgments, denied reads and rollback, masked reads, newly granted read access, and unchanged
-stored protected values. Existing exact-numeric connector responses and authorization assertions remain intact.
+Update with `npm install --save-dev paqvilo@^0.9.8` and commit the lockfile.
 
 ## 0.9.7
 
