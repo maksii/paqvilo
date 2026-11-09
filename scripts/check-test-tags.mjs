@@ -1,3 +1,4 @@
+import { sharedParityDescriptor, SHARED } from './parity-shared-descriptor.mjs';
 // Enforces docs/test-kinds.md on test files a change adds or modifies.
 //   node scripts/check-test-tags.mjs --staged          pre-commit: the index against HEAD
 //   node scripts/check-test-tags.mjs --base <rev>      a branch against <rev> (merge base)
@@ -197,10 +198,12 @@ function appendCaseGuard(ast, node, index, call, regions) {
     arrayName = call.arguments[1]?.name,
     indices = call.arguments[2],
     next = node.body[index + 1];
-  const descriptor =
-    call.arguments[4]?.type === 'ArrayExpression' && call.arguments[4].elements.length === 1
-      ? call.arguments[4].elements[0]
-      : null;
+  const shared = sharedParityDescriptor(ast);
+  const arg =
+    call.arguments[4]?.type === 'Identifier' && call.arguments[4].name === SHARED ? shared?.data : call.arguments[4];
+  const descriptor = arg?.type === 'ArrayExpression' && arg.elements.length === 1 ? arg.elements[0] : null;
+  if (arg?.type !== 'ArrayExpression' || (call.arguments[4]?.type === 'Identifier' && !descriptor))
+    throw new Error('invalid shared parity descriptor');
   const guidBranch = property(property(descriptor, 'caseSelection'), 'guardBeforeGuidBranch')?.value === true;
   const protectedAssertion = guidBranch ? node.body[index + 2] : next;
   const declarations = ast.body.flatMap((item) =>
@@ -269,6 +272,14 @@ function appendCaseRegions({ hasMarker, text, lines, regions, errors }) {
       }
       visit(ast);
       if (usedMarker && !guards) throw new Error('missing case guard');
+      const shared = sharedParityDescriptor(ast);
+      if (shared)
+        regions.push({
+          start: shared.declaration.loc.start.line,
+          end: shared.declaration.loc.end.line,
+          kinds: ['parity'],
+          partial: true,
+        });
       for (const node of ast.body)
         if (
           (node.type === 'ImportDeclaration' &&

@@ -5,6 +5,7 @@ import {
   assertAssertionTailXml as __paqSoapTail,
 } from '../../scripts/parity-assertion-loop.mjs';
 import { assertSoapParityBindings as __paqSoapBindings } from '../../scripts/qualify-parity.mjs';
+// @parity-evidence: Microsoft.CrmSdk.CoreAssemblies 9.0.2.60 writes and reads the corrected held Entity related-graph XML; the 44 previously selected assertion inputs and bindings are unchanged.
 const __paqSoapDescriptor = {
   version: 1,
   sourceBinding: 'VALUES',
@@ -465,7 +466,7 @@ const __paqSoapDescriptor = {
     '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:a="http://schemas.microsoft.com/xrm/2011/Contracts" xmlns:svc="http://schemas.microsoft.com/xrm/2011/Contracts/Services" xmlns:g="http://schemas.microsoft.com/crm/2011/Contracts" xmlns:l="http://schemas.microsoft.com/xrm/2012/Contracts" xmlns:o="http://schemas.microsoft.com/xrm/7.1/Contracts" xmlns:x9="http://schemas.microsoft.com/xrm/9.0/Contracts" xmlns:x14="http://schemas.microsoft.com/xrm/2014/Contracts" xmlns:b="http://schemas.datacontract.org/2004/07/System.Collections.Generic" xmlns:c="http://www.w3.org/2001/XMLSchema" xmlns:e="http://schemas.microsoft.com/2003/10/Serialization/" xmlns:f="http://schemas.microsoft.com/2003/10/Serialization/Arrays" xmlns:i="http://www.w3.org/2001/XMLSchema-instance"><s:Body><v i:type="a:ColumnSet"><a:AllColumns>false</a:AllColumns><a:Columns><f:string>name</f:string><f:string>createdon</f:string></a:Columns></v></s:Body></s:Envelope>',
     '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:a="http://schemas.microsoft.com/xrm/2011/Contracts" xmlns:svc="http://schemas.microsoft.com/xrm/2011/Contracts/Services" xmlns:g="http://schemas.microsoft.com/crm/2011/Contracts" xmlns:l="http://schemas.microsoft.com/xrm/2012/Contracts" xmlns:o="http://schemas.microsoft.com/xrm/7.1/Contracts" xmlns:x9="http://schemas.microsoft.com/xrm/9.0/Contracts" xmlns:x14="http://schemas.microsoft.com/xrm/2014/Contracts" xmlns:b="http://schemas.datacontract.org/2004/07/System.Collections.Generic" xmlns:c="http://www.w3.org/2001/XMLSchema" xmlns:e="http://schemas.microsoft.com/2003/10/Serialization/" xmlns:f="http://schemas.microsoft.com/2003/10/Serialization/Arrays" xmlns:i="http://www.w3.org/2001/XMLSchema-instance"><s:Body><v i:type="a:ColumnSet"><a:AllColumns>true</a:AllColumns><a:Columns></a:Columns></v></s:Body></s:Envelope>',
     '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:a="http://schemas.microsoft.com/xrm/2011/Contracts" xmlns:svc="http://schemas.microsoft.com/xrm/2011/Contracts/Services" xmlns:g="http://schemas.microsoft.com/crm/2011/Contracts" xmlns:l="http://schemas.microsoft.com/xrm/2012/Contracts" xmlns:o="http://schemas.microsoft.com/xrm/7.1/Contracts" xmlns:x9="http://schemas.microsoft.com/xrm/9.0/Contracts" xmlns:x14="http://schemas.microsoft.com/xrm/2014/Contracts" xmlns:b="http://schemas.datacontract.org/2004/07/System.Collections.Generic" xmlns:c="http://www.w3.org/2001/XMLSchema" xmlns:e="http://schemas.microsoft.com/2003/10/Serialization/" xmlns:f="http://schemas.microsoft.com/2003/10/Serialization/Arrays" xmlns:i="http://www.w3.org/2001/XMLSchema-instance"><s:Body><v i:type="a:EntityReferenceCollection"><a:EntityReference><a:Id>6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f</a:Id><a:KeyAttributes></a:KeyAttributes><a:LogicalName>widget</a:LogicalName><a:Name>Blue</a:Name></a:EntityReference></v></s:Body></s:Envelope>',
-    '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:a="http://schemas.microsoft.com/xrm/2011/Contracts" xmlns:svc="http://schemas.microsoft.com/xrm/2011/Contracts/Services" xmlns:g="http://schemas.microsoft.com/crm/2011/Contracts" xmlns:l="http://schemas.microsoft.com/xrm/2012/Contracts" xmlns:o="http://schemas.microsoft.com/xrm/7.1/Contracts" xmlns:x9="http://schemas.microsoft.com/xrm/9.0/Contracts" xmlns:x14="http://schemas.microsoft.com/xrm/2014/Contracts" xmlns:b="http://schemas.datacontract.org/2004/07/System.Collections.Generic" xmlns:c="http://www.w3.org/2001/XMLSchema" xmlns:e="http://schemas.microsoft.com/2003/10/Serialization/" xmlns:f="http://schemas.microsoft.com/2003/10/Serialization/Arrays" xmlns:i="http://www.w3.org/2001/XMLSchema-instance"><s:Body><v i:type="a:Entity"><a:Attributes></a:Attributes><a:FormattedValues></a:FormattedValues><a:Id>6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f</a:Id><a:KeyAttributes></a:KeyAttributes><a:LogicalName>widget</a:LogicalName><a:RelatedEntities><a:KeyValuePairOfRelationshipEntityCollection><b:key><a:PrimaryEntityRole>Referenced</a:PrimaryEntityRole><a:SchemaName>widget_gadgets</a:SchemaName></b:key><b:value><a:Entities></a:Entities><a:EntityName>gadget</a:EntityName><a:MoreRecords>false</a:MoreRecords><a:TotalRecordCount>1</a:TotalRecordCount><a:TotalRecordCountLimitExceeded>false</a:TotalRecordCountLimitExceeded></b:value></a:KeyValuePairOfRelationshipEntityCollection></a:RelatedEntities></v></s:Body></s:Envelope>',
+    '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:a="http://schemas.microsoft.com/xrm/2011/Contracts" xmlns:svc="http://schemas.microsoft.com/xrm/2011/Contracts/Services" xmlns:g="http://schemas.microsoft.com/crm/2011/Contracts" xmlns:l="http://schemas.microsoft.com/xrm/2012/Contracts" xmlns:o="http://schemas.microsoft.com/xrm/7.1/Contracts" xmlns:x9="http://schemas.microsoft.com/xrm/9.0/Contracts" xmlns:x14="http://schemas.microsoft.com/xrm/2014/Contracts" xmlns:b="http://schemas.datacontract.org/2004/07/System.Collections.Generic" xmlns:c="http://www.w3.org/2001/XMLSchema" xmlns:e="http://schemas.microsoft.com/2003/10/Serialization/" xmlns:f="http://schemas.microsoft.com/2003/10/Serialization/Arrays" xmlns:i="http://www.w3.org/2001/XMLSchema-instance"><s:Body><v i:type="a:Entity"><a:Attributes></a:Attributes><a:FormattedValues></a:FormattedValues><a:Id>6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f</a:Id><a:KeyAttributes></a:KeyAttributes><a:LogicalName>widget</a:LogicalName><a:RelatedEntities><a:KeyValuePairOfRelationshipEntityCollectionX_PsK4FkN><b:key><a:PrimaryEntityRole>Referenced</a:PrimaryEntityRole><a:SchemaName>widget_gadgets</a:SchemaName></b:key><b:value><a:Entities></a:Entities><a:EntityName>gadget</a:EntityName><a:MoreRecords>false</a:MoreRecords><a:TotalRecordCount>1</a:TotalRecordCount><a:TotalRecordCountLimitExceeded>false</a:TotalRecordCountLimitExceeded></b:value></a:KeyValuePairOfRelationshipEntityCollectionX_PsK4FkN></a:RelatedEntities></v></s:Body></s:Envelope>',
     '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:a="http://schemas.microsoft.com/xrm/2011/Contracts" xmlns:svc="http://schemas.microsoft.com/xrm/2011/Contracts/Services" xmlns:g="http://schemas.microsoft.com/crm/2011/Contracts" xmlns:l="http://schemas.microsoft.com/xrm/2012/Contracts" xmlns:o="http://schemas.microsoft.com/xrm/7.1/Contracts" xmlns:x9="http://schemas.microsoft.com/xrm/9.0/Contracts" xmlns:x14="http://schemas.microsoft.com/xrm/2014/Contracts" xmlns:b="http://schemas.datacontract.org/2004/07/System.Collections.Generic" xmlns:c="http://www.w3.org/2001/XMLSchema" xmlns:e="http://schemas.microsoft.com/2003/10/Serialization/" xmlns:f="http://schemas.microsoft.com/2003/10/Serialization/Arrays" xmlns:i="http://www.w3.org/2001/XMLSchema-instance"><s:Body><v i:type="a:EntityCollection"><a:Entities><a:Entity><a:Attributes><a:KeyValuePairOfstringanyType><b:key>name</b:key><b:value i:type="c:string">Blue</b:value></a:KeyValuePairOfstringanyType></a:Attributes><a:FormattedValues></a:FormattedValues><a:Id>6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f</a:Id><a:KeyAttributes></a:KeyAttributes><a:LogicalName>widget</a:LogicalName></a:Entity></a:Entities><a:EntityName>widget</a:EntityName><a:MoreRecords>true</a:MoreRecords><a:PagingCookie>&lt;cookie page=&quot;2&quot;/&gt;</a:PagingCookie><a:TotalRecordCount>12</a:TotalRecordCount><a:TotalRecordCountLimitExceeded>false</a:TotalRecordCountLimitExceeded></v></s:Body></s:Envelope>',
   ],
   tailXml: [
@@ -797,9 +798,8 @@ __paqSoapBindings(import.meta.url, [
   {
     kind: 'soap-assertion-loop-v1',
     repositoryRoot: '../..',
-    sourceAstSha256: '2493d96ebe4f291610f10f5662a149bf89022e9a024c4177438c036b232c4540',
-    loopDescriptorSha256: '8c19f450a09cb29d8238e3425bd9449f38f2e2c9920e7e2a11bea4bff0d40475',
-    // @parity-evidence: Two fresh independent Microsoft.CrmSdk.CoreAssemblies 9.0.2.60 SDK runs match all 44 selected original assertions; receipt SHA-256 6bc4b940111bb8ddd1ad77e0d4d4ec64c8fdabc898974ff46bbda3d2b803c2b9, assertion binding SHA-256 4ede2fc3d2cfea7b5d3d39d2eab3ac69e5b04f92d1208e33e4bdf759f3af4329.
+    sourceAstSha256: 'cf8d84ca0604eb81f5aa265eea758d5aa50b2c7cbe8c633749d10e70ca8b7265',
+    loopDescriptorSha256: '818167d310e034e245d69c1b8e71e2f5224b319c8710b4e3a5a978896c977fab',
     helperSha256: 'cce389a6db4c1cf9d57683cba2bfd9fd82e50f0a27f80f2d2420a25f11b075a7',
     proofs: [
       {
@@ -1653,7 +1653,8 @@ test('EntityReferenceCollection encodes untyped EntityReference items and decode
   );
 });
 
-test('RelatedEntities items are KeyValuePairOfRelationshipEntityCollection with declared key and value', () => {
+// @parity-evidence: Microsoft.CrmSdk.CoreAssemblies 9.0.2.60 DataContractSerializer produced the suffixed collection item and consumed the corrected graph in both prefix forms.
+test('RelatedEntities items are KeyValuePairOfRelationshipEntityCollectionX_PsK4FkN with declared key and value', () => {
   const related = [
     {
       relationship: { schemaName: 'widget_gadgets', primaryEntityRole: 'Referenced' },
@@ -1682,12 +1683,15 @@ test('RelatedEntities items are KeyValuePairOfRelationshipEntityCollection with 
   });
   assert.ok(
     xml.includes(
-      '<a:RelatedEntities><a:KeyValuePairOfRelationshipEntityCollection><b:key><a:PrimaryEntityRole>Referenced</a:PrimaryEntityRole><a:SchemaName>widget_gadgets</a:SchemaName></b:key>' +
-        '<b:value><a:Entities></a:Entities><a:EntityName>gadget</a:EntityName><a:MoreRecords>false</a:MoreRecords><a:TotalRecordCount>1</a:TotalRecordCount><a:TotalRecordCountLimitExceeded>false</a:TotalRecordCountLimitExceeded></b:value></a:KeyValuePairOfRelationshipEntityCollection></a:RelatedEntities>',
+      '<a:RelatedEntities><a:KeyValuePairOfRelationshipEntityCollectionX_PsK4FkN><b:key><a:PrimaryEntityRole>Referenced</a:PrimaryEntityRole><a:SchemaName>widget_gadgets</a:SchemaName></b:key>' +
+        '<b:value><a:Entities></a:Entities><a:EntityName>gadget</a:EntityName><a:MoreRecords>false</a:MoreRecords><a:TotalRecordCount>1</a:TotalRecordCount><a:TotalRecordCountLimitExceeded>false</a:TotalRecordCountLimitExceeded></b:value></a:KeyValuePairOfRelationshipEntityCollectionX_PsK4FkN></a:RelatedEntities>',
     ),
     xml,
   );
-  const item = byName(byName(encodedNode(xml), 'RelatedEntities'), 'KeyValuePairOfRelationshipEntityCollection');
+  const item = byName(
+    byName(encodedNode(xml), 'RelatedEntities'),
+    'KeyValuePairOfRelationshipEntityCollectionX_PsK4FkN',
+  );
   assert.equal(item.ns, 'http://schemas.microsoft.com/xrm/2011/Contracts');
   assert.deepStrictEqual(decodeValue(encodedNode(xml)).relatedEntities, related);
 });

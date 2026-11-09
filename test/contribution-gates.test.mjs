@@ -338,6 +338,7 @@ function hookFixture(t, { classifier, readyDependencies = false } = {}) {
     'scripts/ensure-dependencies.mjs',
     'scripts/check-test-tags.mjs',
     'scripts/parity-query-universe.mjs',
+    'scripts/parity-shared-descriptor.mjs',
     '.github/scripts/change-scope.mjs',
   ]) {
     write(name, fs.readFileSync(new URL(`../${name}`, import.meta.url)));
@@ -443,10 +444,11 @@ test('staged test-kind checks load their real local helper without installed dep
   const file = 'test/invented.test.mjs';
   const body = "import test from 'node:test';\ntest('invented', () => {});\n";
   assert.equal(fs.existsSync(path.join(root, 'node_modules')), false);
-  assert.deepEqual(
-    fs.readFileSync(path.join(root, 'scripts/parity-query-universe.mjs')),
-    fs.readFileSync(new URL('../scripts/parity-query-universe.mjs', import.meta.url)),
-  );
+  for (const helper of ['parity-query-universe.mjs', 'parity-shared-descriptor.mjs'])
+    assert.deepEqual(
+      fs.readFileSync(path.join(root, 'scripts', helper)),
+      fs.readFileSync(new URL(`../scripts/${helper}`, import.meta.url)),
+    );
   write(file, body);
   git('add', file);
   const untagged = run();

@@ -5,12 +5,83 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { encodeValue, NS } from '../lib/dataverse-soap-xml.mjs';
+import { createHash } from 'node:crypto';
+import { decodeValue, encodeValue, NS, parseXml } from '../lib/dataverse-soap-xml.mjs';
 import { soapSdkResults } from '../lib/dataverse-soap-sdk-values.mjs';
 const soapSdkValue = (value) => soapSdkResults({ value }).get('value');
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 
 const id = '11111111-1111-4111-8111-111111111111';
+
+// @test-kind parity: Microsoft.CrmSdk.CoreAssemblies 9.0.2.60 DataContractSerializer writes and reads Entity.RelatedEntities
+// @parity-evidence: The executed official Microsoft.CrmSdk.CoreAssemblies 9.0.2.60 DLL has SHA-256 f696eaeb1145bce9f517d0b8fa5e925d0216176919af8d417dcd439acb1797f9.
+test('SDK and SOAP exchange an Entity related graph in both directions', { skip: CLR_SKIP }, async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-soap-related-sdk-'));
+  try {
+    const sdk = clrSdk(),
+      source = path.join(root, 'Related.cs'),
+      executable = path.join(root, 'Related.exe');
+    assert.equal(
+      createHash('sha256')
+        .update(await fs.readFile(sdk))
+        .digest('hex'),
+      'f696eaeb1145bce9f517d0b8fa5e925d0216176919af8d417dcd439acb1797f9',
+      'SDK oracle must be the verified Microsoft.CrmSdk.CoreAssemblies 9.0.2.60 DLL',
+    );
+    await fs.copyFile(sdk, path.join(root, 'Microsoft.Xrm.Sdk.dll'));
+    await fs.writeFile(
+      source,
+      `using System;using System.Xml;using System.Runtime.Serialization;using Microsoft.Xrm.Sdk;
+class Related {static void Main(string[] args){if(args.Length>0){var e=new Entity("widget",new Guid("${id}"));e.RelatedEntities.Add(new Relationship("widget_gadgets"){PrimaryEntityRole=EntityRole.Referenced},new EntityCollection{EntityName="gadget",TotalRecordCount=1});using(var w=XmlWriter.Create(Console.Out,new XmlWriterSettings{OmitXmlDeclaration=true}))new DataContractSerializer(typeof(object),new Type[]{typeof(Entity)}).WriteObject(w,e);return;}
+var d=new XmlDocument();d.LoadXml(Console.In.ReadToEnd());var row=(Entity)new DataContractSerializer(typeof(Entity)).ReadObject(new XmlNodeReader(d.DocumentElement.FirstChild),false);if(row.RelatedEntities.Count!=1)throw new Exception("Related graph missing");foreach(var p in row.RelatedEntities)if(p.Key.SchemaName!="widget_gadgets"||p.Key.PrimaryEntityRole!=EntityRole.Referenced||p.Value.EntityName!="gadget"||p.Value.TotalRecordCount!=1)throw new Exception("Related graph changed");Console.Write("observed");}}`,
+    );
+    compileClr(source, executable, {
+      target: 'exe',
+      references: [sdk, 'System.Runtime.Serialization.dll', 'System.Xml.dll'],
+    });
+    const relatedEntities = [
+      {
+        relationship: { schemaName: 'widget_gadgets', primaryEntityRole: 'Referenced' },
+        entities: {
+          type: 'EntityCollection',
+          entityName: 'gadget',
+          entities: [],
+          moreRecords: false,
+          totalRecordCount: 1,
+          totalRecordCountLimitExceeded: false,
+        },
+      },
+    ];
+    const entity = {
+      type: 'Entity',
+      logicalName: 'widget',
+      id,
+      attributes: new Map(),
+      formattedValues: new Map(),
+      keyAttributes: new Map(),
+      relatedEntities,
+    };
+    const declarations = Object.entries(NS)
+      .map(([name, uri]) => `xmlns:${name}="${uri}"`)
+      .join(' ');
+    const options = { encoding: 'utf8', windowsHide: true, timeout: 10000 };
+    const read = spawnSync(executable, [], {
+      ...options,
+      input: `<root ${declarations}>${encodeValue('a:Entity', entity)}</root>`,
+    });
+    assert.equal(read.status, 0, read.stderr);
+    assert.equal(read.stdout, 'observed');
+    const write = spawnSync(executable, ['write'], options);
+    assert.equal(write.status, 0, write.stderr);
+    const decoded = decodeValue(parseXml(write.stdout));
+    assert.equal(decoded.relatedEntities.length, 1);
+    assert.deepEqual(decoded.relatedEntities[0].relationship, relatedEntities[0].relationship);
+    assert.equal(decoded.relatedEntities[0].entities.entityName, 'gadget');
+    assert.equal(decoded.relatedEntities[0].entities.totalRecordCount, 1);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 5 });
+  }
+});
 const value = () => ({
   $type: 'Entity',
   logicalName: 'widget',

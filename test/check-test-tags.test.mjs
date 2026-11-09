@@ -440,3 +440,51 @@ test('mixed', () => { { __paqParityAssertions(import.meta.url, [{a: 1}]); assert
     /no longer executed/,
   );
 });
+
+// @test-kind tooling: shared descriptor source and selected values remain protected, with malformed aliases rejected.
+test('shared case descriptor is protected and invalid aliases fail closed', () => {
+  const lines = [
+    '// @test-kind unproven: invented matrix',
+    "import { parityCaseBindings as __paqParityCaseBindings, assertParityBindings as __paqParityBindings, freezeParityDescriptor as __paqParityFreeze } from './scripts/qualify-parity.mjs';",
+    'const __paqParityShared = __paqParityFreeze([{caseSelection:{}}]);',
+    '__paqParityBindings(import.meta.url, __paqParityShared);',
+    'const cases = [',
+    "  ['first', 1],",
+    "  ['unmatched', 2],",
+    "  ['third', 3],",
+    '];',
+    'for (const [name, expected] of cases) {',
+    '  test(name, () => {',
+    '    __paqParityCaseBindings(import.meta.url, cases, [0, 2], [name, expected], __paqParityShared);',
+    '    assert.equal(actual(name), expected);',
+    '  });',
+    '}',
+  ];
+  const text = lines.join('\n'),
+    parsed = parseTestKinds(text);
+  assert.deepEqual(parsed.errors, []);
+  assert.deepEqual(kindsAt(parsed, 3), ['parity']);
+  assert.deepEqual(kindsAt(parsed, 6), ['parity']);
+  assert.deepEqual(kindsAt(parsed, 7), ['unproven']);
+  assert.match(
+    check({
+      files: ['mixed.test.mjs'],
+      oldText: () => text,
+      newText: () => text,
+      diffOf: () => '@@ -3 +3 @@\n-old\n+new\n',
+    })[0],
+    /parity test/,
+  );
+  for (const changed of [
+    text.replace('const __paqParityShared', 'let __paqParityShared'),
+    text.replace(
+      'assert.equal(actual(name), expected);',
+      'const alias = __paqParityShared; assert.equal(actual(name), expected);',
+    ),
+    text.replace(
+      '__paqParityBindings(import.meta.url, __paqParityShared)',
+      '__paqParityBindings(import.meta.url, unknown)',
+    ),
+  ])
+    assert.ok(parseTestKinds(changed).errors.length);
+});

@@ -497,6 +497,13 @@ function batchSeparatorAt(sql, start, end) {
 
 // ---- parser
 
+// Parser diagnostics need the originating token without changing the public AST shape.
+export const SQL_OPERATOR_TOKEN = Symbol('sqlOperatorToken');
+const withOperatorToken = (node, token) => {
+  Object.defineProperty(node, SQL_OPERATOR_TOKEN, { value: token });
+  return node;
+};
+
 const peek = (s, k = 0) => s.tokens[s.pos + k];
 const advance = (s) => s.tokens[s.pos++];
 const isKeyword = (tok, value) => tok?.type === 'keyword' && tok.value === value;
@@ -553,7 +560,7 @@ function parsePrefix(s, ctx) {
   const tok = peek(s);
   if (isKeyword(tok, 'NOT')) {
     advance(s);
-    return { type: 'Unary', operator: 'NOT', operand: parseBinding(s, BP.NOT, ctx) };
+    return withOperatorToken({ type: 'Unary', operator: 'NOT', operand: parseBinding(s, BP.NOT, ctx) }, tok);
   }
   if (isOperator(tok, '-') || isOperator(tok, '+')) {
     advance(s);
@@ -570,13 +577,13 @@ function parseInfix(s, left, ctx) {
   const tok = advance(s);
   if (tok.type === 'operator' || isKeyword(tok, 'AND') || isKeyword(tok, 'OR')) {
     const right = parseBinding(s, bindingPower(tok), ctx);
-    return { type: 'Binary', operator: tok.value, left, right };
+    return withOperatorToken({ type: 'Binary', operator: tok.value, left, right }, tok);
   }
   if (isKeyword(tok, 'IS')) {
     const negated = isKeyword(peek(s), 'NOT');
     if (negated) advance(s);
     expectKeyword(s, 'NULL');
-    return { type: 'IsNull', operand: left, negated };
+    return withOperatorToken({ type: 'IsNull', operand: left, negated }, tok);
   }
   let negated = false;
   let kw = tok;
@@ -589,14 +596,14 @@ function parseInfix(s, left, ctx) {
     if (isKeyword(peek(s), 'SELECT')) {
       const subquery = parseSubqueryHere(s, ctx);
       expectPunct(s, ')');
-      return { type: 'In', operand: left, negated, list: null, subquery };
+      return withOperatorToken({ type: 'In', operand: left, negated, list: null, subquery }, tok);
     }
     const list = [];
     do {
       list.push(parseBinding(s, 0, ctx));
     } while (eatPunct(s, ','));
     expectPunct(s, ')');
-    return { type: 'In', operand: left, negated, list, subquery: null };
+    return withOperatorToken({ type: 'In', operand: left, negated, list, subquery: null }, tok);
   }
   if (kw.value === 'LIKE') {
     const pattern = parseBinding(s, BP.PREDICATE, ctx);
@@ -605,13 +612,13 @@ function parseInfix(s, left, ctx) {
       advance(s);
       escape = parseBinding(s, BP.PREDICATE, ctx);
     }
-    return { type: 'Like', operand: left, negated, pattern, escape };
+    return withOperatorToken({ type: 'Like', operand: left, negated, pattern, escape }, tok);
   }
   // BETWEEN: the bounds stop before AND so that "x BETWEEN 1 AND 2 AND y" splits correctly.
   const low = parseBinding(s, BP.AND, ctx);
   expectKeyword(s, 'AND');
   const high = parseBinding(s, BP.AND, ctx);
-  return { type: 'Between', operand: left, negated, low, high };
+  return withOperatorToken({ type: 'Between', operand: left, negated, low, high }, tok);
 }
 
 function eatPunct(s, value) {
@@ -670,7 +677,7 @@ function parseKeywordExpression(s, ctx, tok) {
     expectPunct(s, '(');
     const subquery = parseSubqueryHere(s, ctx);
     expectPunct(s, ')');
-    return { type: 'Exists', subquery };
+    return withOperatorToken({ type: 'Exists', subquery }, tok);
   }
   if (FUNCTION_KEYWORDS.has(tok.value) && isPunct(peek(s, 1), '(')) {
     advance(s);
@@ -754,10 +761,10 @@ function parseCase(s, ctx) {
 function parseCast(s, ctx, tryCast) {
   expectPunct(s, '(');
   const operand = parseBinding(s, 0, ctx);
-  expectKeyword(s, 'AS');
+  const asToken = expectKeyword(s, 'AS');
   const targetType = parseTypeSpec(s);
   expectPunct(s, ')');
-  return { type: 'Cast', operand, targetType, tryCast };
+  return withOperatorToken({ type: 'Cast', operand, targetType, tryCast }, asToken);
 }
 
 function parseConvert(s, ctx, tryConvert) {

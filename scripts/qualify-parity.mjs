@@ -1,3 +1,4 @@
+import { sharedParityDescriptor, SHARED, FREEZE } from './parity-shared-descriptor.mjs';
 // Strict, manifest-driven qualification of existing tests. Semantic evidence review
 // belongs to the manifest author; this tool checks bindings and never invents proof.
 import fs from 'node:fs';
@@ -8,6 +9,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { builtinModules, createRequire } from 'node:module';
 import { parseTestKinds, kindsAt } from './check-test-tags.mjs';
 import { validateMicrosoftCdnArtifact } from './parity-official-artifacts.mjs';
+import { verifyMicrosoftOci } from './parity-microsoft-oci.mjs';
 import { analyzeGeneratedFixtures, analyzeUnselectedFixtureSlice } from './parity-generated-fixtures.mjs';
 import { analyzeMemoryRendererSlice } from './parity-memory-renderer-slice.mjs';
 import { certifyMemoryContextSlice } from './parity-memory-context-slice.mjs';
@@ -20,6 +22,8 @@ import { analyzeRecordsFixtureSlice } from './parity-records-fixture-slice.mjs';
 import { verifyScalarMigration } from './parity-scalar-migration.mjs';
 import { analyzeAssertionLoop } from './parity-assertion-loop.mjs';
 import { queryUniverse } from './parity-query-universe.mjs';
+import { typedCaseIndex } from './parity-typed-case.mjs';
+import { extract as extractTypedSqlSource } from './parity-sql-source.mjs';
 import { verifyQueryMessageBridge, verifyQueryMessageBridgeCase } from './parity-query-message-bridge.mjs';
 import { resolveGitExecutable } from './trusted-git.mjs';
 
@@ -32,6 +36,7 @@ const TOOL = fileURLToPath(import.meta.url);
 const CONTEXT_VALIDATED = Symbol('context-bindings-validated');
 const verifiedContextSources = new Set();
 const modelSourcePaths = new WeakMap();
+const sharedReferences = new WeakMap();
 const IMPORT = '__paqParityBindings';
 const SOURCE_IMPORT = '__paqParitySourceBindings';
 const REGION_IMPORT = '__paqParityAssertions';
@@ -283,6 +288,13 @@ function attachSourceAssertions(
 }
 export function describeParitySource(source, file = 'fixture.test.mjs') {
   const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module', range: true, loc: true });
+  let shared;
+  try {
+    shared = sharedParityDescriptor(ast);
+  } catch {
+    fail('invalid-shared-parity-descriptor');
+  }
+  if (shared) for (const ref of shared.refs) sharedReferences.set(ref, shared.data);
   const tags = parseTestKinds(source),
     { bindings, namespaces, assertionObjects, assertionFunctions, libraryBindings } = collectSourceImports(ast),
     declaredNames = new Set();
@@ -318,7 +330,16 @@ export function describeParitySource(source, file = 'fixture.test.mjs') {
       libraryBindings,
       declaredNames,
     });
-  const model = { ast, source, sourceSha256: parityHash(source), tags, registrations, declarations, identifiers };
+  const model = {
+    ast,
+    source,
+    sourceSha256: parityHash(source),
+    tags,
+    registrations,
+    declarations,
+    identifiers,
+    sharedDescriptor: shared,
+  };
   modelSourcePaths.set(model, file);
   return model;
 }
@@ -796,7 +817,13 @@ function validatePortableCdnProof(root, proof, context, receipts) {
   );
 }
 function proveOfficialPackage(root, proof, context, capsule, receipts) {
-  if (proof.package?.ecosystem === 'npm')
+  if (proof.package?.ecosystem === 'microsoft-oci') {
+    try {
+      verifyMicrosoftOci(proof.package);
+    } catch {
+      fail('official-package-provenance-required');
+    }
+  } else if (proof.package?.ecosystem === 'npm')
     check(officialNpmPackage(proof.package), 'official-package-provenance-required');
   else if (proof.package?.ecosystem === 'microsoft-cdn') {
     validateCdnPublicShape(proof, capsule);
@@ -997,7 +1024,7 @@ function guardDescriptors(node) {
     }
     fail('invalid-generated-guard');
   };
-  const value = converted(data);
+  const value = converted(sharedReferences.get(data) ?? data);
   check(Array.isArray(value) && value.length, 'invalid-generated-guard');
   return value;
 }
@@ -1354,12 +1381,12 @@ function moduleContextHash(
     );
   }
   function cleanElement(item) {
-    if (ignored.has(item) || proofImports.has(item)) return [];
+    if (ignored.has(item) || proofImports.has(item) || item === model.sharedDescriptor?.declaration) return [];
     if (
       item?.type === 'ImportDeclaration' &&
       item.specifiers.length &&
       item.specifiers.every((specifier) =>
-        [IMPORT, SOURCE_IMPORT, REGION_IMPORT, CASE_IMPORT].includes(specifier.local.name),
+        [IMPORT, SOURCE_IMPORT, REGION_IMPORT, CASE_IMPORT, FREEZE].includes(specifier.local.name),
       ) &&
       typeof item.source.value === 'string' &&
       item.source.value.endsWith('/scripts/qualify-parity.mjs')
@@ -1663,6 +1690,38 @@ function verifyUniverse(old, current, spec, oldModel, newModel, fixtureBindings 
     fixtureBindings,
     verifiedCaseBody,
   );
+  if (universe.encoding === 'typed-v1') {
+    check(Boolean(spec.caseSelection), 'typed-universe-requires-case-selection');
+    const baseline = extractTypedSqlSource(oldModel.source),
+      current = extractTypedSqlSource(newModel.source);
+    const names = ['name', 'args', 'expected', 'ctx'];
+    const bindings = (data) =>
+      data.rows.map(({ value }) =>
+        Object.fromEntries(names.map((name, index) => [name, value[index] ?? { type: 'undefined' }])),
+      );
+    check(
+      baseline.titles &&
+        current.titles &&
+        baseline.rows.length === universe.count &&
+        current.rows.length === universe.count,
+      'declared-case-count-mismatch',
+    );
+    check(
+      jsonHash(bindings(baseline)) === jsonHash(universe.caseBindings) &&
+        jsonHash(baseline.titles) === jsonHash(universe.cases),
+      'case-bindings-do-not-match',
+    );
+    if (activeFixture)
+      check(
+        jsonHash(bindings(current)) === jsonHash(universe.currentCaseBindings) &&
+          jsonHash(universe.currentCaseBindings) === universe.currentCaseBindingsSha256,
+        'corrected-case-bindings-mismatch',
+      );
+    else check(jsonHash(bindings(current)) === jsonHash(universe.caseBindings), 'case-bindings-do-not-match');
+    check(jsonHash(baseline.titles) === jsonHash(current.titles), 'corrected-case-title-mismatch');
+    return;
+  }
+  check(universe.encoding === undefined, 'unsupported-case-binding-encoding');
   validateStaticRegistrationContext(old, oldModel);
   const { environments, currentEnvironments } = expandUniverseEnvironments(old, oldModel, newModel, fixtureBindings);
   check(environments.length === universe.count, 'declared-case-count-mismatch');
@@ -2235,13 +2294,20 @@ function verifyPartial(oldModel, currentModel, spec, factIds, moduleDelta, gener
         spec.caseUniverse.sourceBindings[0].name === loop.right.name &&
         !old.callback.async &&
         !current.callback.async &&
-        (old.kinds.includes('unproven') || (verifiedCaseBody && old.kinds.length === 0)) &&
+        (old.kinds.includes('unproven') ||
+          ((verifiedCaseBody || spec.caseUniverse.encoding === 'typed-v1') && old.kinds.length === 0)) &&
         current.kinds.includes('unproven') &&
         !old.kinds.includes('parity') &&
         !current.kinds.includes('parity') &&
         old.callback.params.length === 0 &&
         current.callback.params.length === 0 &&
-        old.callback.expression &&
+        (old.callback.expression ||
+          (old.callback.body.type === 'BlockStatement' &&
+            old.callback.body.body.length === 1 &&
+            old.callback.body.body[0].type === 'ExpressionStatement' &&
+            current.callback.body.type === 'BlockStatement' &&
+            current.callback.body.body.length === 1 &&
+            current.callback.body.body[0].type === 'ExpressionStatement')) &&
         spec.regions.length === 1 &&
         spec.regions[0].assertions.length === 1 &&
         Array.isArray(names) &&
@@ -3579,19 +3645,24 @@ function reviewFixtureCorrections({
     check(
       oldEntry?.type === 'ArrayExpression' &&
         currentEntry?.type === 'ArrayExpression' &&
-        oldEntry.elements.length === 2 &&
-        currentEntry.elements.length === 2 &&
+        ((oldEntry.elements.length === 2 && correction.expectedIndex === undefined) ||
+          ([3, 4].includes(oldEntry.elements.length) && correction.expectedIndex === 2)) &&
+        currentEntry.elements.length === oldEntry.elements.length &&
         oldEntry.elements.every(Boolean) &&
         currentEntry.elements.every(Boolean) &&
         parityAstHash(oldEntry) === correction.oldAstSha256 &&
         parityAstHash(currentEntry) === correction.currentAstSha256 &&
-        parityAstHash(oldEntry.elements[0]) === parityAstHash(currentEntry.elements[0]) &&
+        oldEntry.elements.every(
+          (item, index) =>
+            index === (correction.expectedIndex ?? 1) ||
+            parityAstHash(item) === parityAstHash(currentEntry.elements[index]),
+        ) &&
         !used.has(currentEntry),
       'invalid-fixture-correction',
     );
     literalCaseValue(oldEntry.elements[0]);
-    literalCaseValue(oldEntry.elements[1]);
-    literalCaseValue(currentEntry.elements[1]);
+    literalCaseValue(oldEntry.elements[correction.expectedIndex ?? 1]);
+    literalCaseValue(currentEntry.elements[correction.expectedIndex ?? 1]);
     const uses = (row) => {
       let found = false;
       function visit(node) {
@@ -3917,12 +3988,13 @@ function unwrapExistingCase(root, file, source, model, selectedIds = new Set()) 
   check(
     resolved === TOOL &&
       declaration.specifiers.length >= 1 &&
-      declaration.specifiers.length <= 2 &&
+      declaration.specifiers.length <= 3 &&
       declaration.specifiers.every(
         (item) =>
           item.type === 'ImportSpecifier' &&
           ((item.local.name === CASE_IMPORT && item.imported.name === 'parityCaseBindings') ||
-            (item.local.name === IMPORT && item.imported.name === 'assertParityBindings')),
+            (item.local.name === IMPORT && item.imported.name === 'assertParityBindings') ||
+            (item.local.name === FREEZE && item.imported.name === 'freezeParityDescriptor')),
       ),
     'invalid-existing-case-import',
   );
@@ -3939,14 +4011,31 @@ function unwrapExistingCase(root, file, source, model, selectedIds = new Set()) 
   if (!selectedIds.has(descriptors[0].baselineId)) return { descriptors, source, caseGuard: true, preserveOnly: true };
   const row = registration(model, descriptors[0]);
   const body = row.callback.body.body;
-  check(body?.length === 2 && body[1]?.type === 'ReturnStatement' && body[1].argument, 'invalid-existing-case-guard');
+  const concise = descriptors[0].originalCallbackExpression === true;
+  check(
+    body?.length === 2 &&
+      (concise
+        ? body[1]?.type === 'ReturnStatement' && body[1].argument
+        : body[1]?.type === 'ExpressionStatement' && body[1].expression),
+    'invalid-existing-case-guard',
+  );
+  const restoredBody = concise ? `(${source.slice(...body[1].argument.range)})` : `{${source.slice(...body[1].range)}}`;
   const edits = [
     { start: declaration.range[0], end: declaration.range[1], text: '' },
     { start: guards[0].range[0], end: guards[0].range[1], text: '' },
+    ...(model.sharedDescriptor
+      ? [
+          {
+            start: model.sharedDescriptor.declaration.range[0],
+            end: model.sharedDescriptor.declaration.range[1],
+            text: '',
+          },
+        ]
+      : []),
     {
       start: row.callback.body.range[0],
       end: row.callback.body.range[1],
-      text: `(${source.slice(...body[1].argument.range)})`,
+      text: restoredBody,
     },
   ];
   let unwrapped = source;
@@ -4247,13 +4336,26 @@ function selectedSliceInputs(file, oldModel, currentModel) {
       .map((role) => role.source),
   };
 }
+function compactTypedUniverse(universe) {
+  if (universe?.encoding !== 'typed-v1' || !Array.isArray(universe.caseBindings)) return universe;
+  const { caseBindings, currentCaseBindings, ...rest } = universe;
+  return {
+    ...rest,
+    caseBindingsSha256: jsonHash(caseBindings),
+    ...(currentCaseBindings ? { currentCaseBindingsSha256: jsonHash(currentCaseBindings) } : {}),
+  };
+}
 function preserveExistingCase(prior, next) {
   check(prior.length === 1 && next.length === 1, 'existing-case-definition-omitted');
   const old = prior[0],
     current = next[0];
   for (const [key, value] of Object.entries(old)) {
     if (key === 'proofs' || key === 'caseSelection') continue;
-    check(Object.hasOwn(current, key) && jsonHash(value) === jsonHash(current[key]), 'existing-case-binding-changed');
+    const previous = key === 'caseUniverse' && current[key]?.caseBindingsSha256 ? compactTypedUniverse(value) : value;
+    check(
+      Object.hasOwn(current, key) && jsonHash(previous) === jsonHash(current[key]),
+      'existing-case-binding-changed',
+    );
   }
   check(current.caseSelection, 'existing-case-definition-omitted');
   for (const [key, value] of Object.entries(old.caseSelection))
@@ -6012,7 +6114,10 @@ function descriptorPart3(
     ...(moduleDelta?.fixtureBindings.size ? { baselineSourceBindings: spec.caseUniverse.sourceBindings } : {}),
     loopHeaders: caseMigration ? registration(currentModel, spec).loopHeaders : old.loopHeaders,
     ...(caseMigration ? { baselineLoopHeaders: old.loopHeaders } : {}),
-    caseUniverse: spec.caseUniverse,
+    caseUniverse:
+      spec.caseSelection && !caseMigration && !spec.retainedUniverseAssertions
+        ? compactTypedUniverse(spec.caseUniverse)
+        : spec.caseUniverse,
     ...(spec.caseFacts ? { caseFacts: spec.caseFacts } : {}),
     ...(spec.assertionLoops ? { assertionLoops: spec.assertionLoops } : {}),
   };
@@ -6027,6 +6132,7 @@ function descriptorPart4(
       ? {
           caseSelection: {
             selected: spec.caseSelection.selected,
+            ...(spec.caseUniverse.encoding ? { encoding: spec.caseUniverse.encoding } : {}),
             bindings: spec.caseUniverse.currentCaseBindings ?? spec.caseUniverse.caseBindings,
             source: old.loops[0].right.name,
             names: Object.keys(spec.caseUniverse.caseBindings[0]),
@@ -7035,8 +7141,110 @@ function prepareQualificationContext({
   }
   return { moduleDelta, retainedSpecs, retainedCurrent, isolationRegistrationsAstSha256 };
 }
+// SQL typed selections must bind each selected original case to its own reviewed
+// fact, original/current tuple and exact captured primitive output. Semantic SQL
+// input/context equivalence remains a separately reviewed responsibility.
+function verifyTypedSqlFacts(root, guarantee, spec, oldModel, currentModel, baseline) {
+  if (spec.caseUniverse?.encoding !== 'typed-v1') return;
+  check(
+    SHA.test(guarantee.context?.semanticReviewSha256) && SHA.test(guarantee.context?.semanticReviewCertificateSha256),
+    'typed-semantic-review-required',
+  );
+  const receiptBytes = fs.readFileSync(confined(root, guarantee.context.semanticReviewPath));
+  check(
+    parityHash(receiptBytes) === guarantee.context.semanticReviewCertificateSha256,
+    'typed-semantic-review-required',
+  );
+  const receipt = JSON.parse(receiptBytes),
+    reviewRows = receipt.review?.cases;
+  check(
+    receipt.sourceReceiptSha256 === guarantee.context.semanticReviewSha256 &&
+      receipt.baseline === baseline &&
+      Array.isArray(reviewRows) &&
+      new Set(reviewRows.map((row) => row.index)).size === reviewRows.length,
+    'typed-semantic-review-required',
+  );
+  const old = extractTypedSqlSource(oldModel.source),
+    current = extractTypedSqlSource(currentModel.source);
+  const facts = new Map();
+  for (const proof of guarantee.proofs) {
+    const capsule = JSON.parse(fs.readFileSync(confined(root, proof.path), 'utf8'));
+    for (const fact of proof.facts) facts.set(fact.id, pointer(capsule, fact.pointer));
+  }
+  const assertionHashes = spec.regions.flatMap((region) => region.assertions.map((assertion) => assertion.sha256));
+  const used = new Set();
+  function primitive(value) {
+    check(value && ['null', 'number', 'string', 'boolean'].includes(value.type), 'typed-output-unsupported');
+    return value.type === 'null' ? null : value.value;
+  }
+  function captured(cell) {
+    if (cell?.kind === 'null') return null;
+    if (cell?.kind === 'string' && typeof cell.value === 'string') return cell.value;
+    if (cell?.kind === 'System.Int32' && typeof cell.exact === 'string' && /^-?(?:0|[1-9]\d*)$/u.test(cell.exact)) {
+      const number = Number(cell.exact);
+      check(Number.isSafeInteger(number), 'typed-output-unsupported');
+      return number;
+    }
+    if (cell?.kind === 'float64' && typeof cell.roundtrip === 'string' && typeof cell.bitsBase64 === 'string') {
+      const bytes = Buffer.from(cell.bitsBase64, 'base64'),
+        value = Number(cell.roundtrip);
+      check(
+        bytes.length === 8 &&
+          bytes.toString('base64') === cell.bitsBase64 &&
+          Number.isFinite(value) &&
+          Object.is(bytes.readDoubleLE(), value),
+        'typed-output-unsupported',
+      );
+      return value;
+    }
+    fail('typed-output-unsupported');
+  }
+  for (const selection of spec.caseSelection?.selected ?? []) {
+    check(selection.factIds.length === 1 && !used.has(selection.factIds[0]), 'typed-case-fact-required');
+    used.add(selection.factIds[0]);
+    const fact = facts.get(selection.factIds[0]),
+      index = selection.caseIndex,
+      review = reviewRows.find((row) => row.index === index);
+    check(
+      fact &&
+        review &&
+        review.originalId === `${spec.baselineId}#${index}` &&
+        review.sourceTupleSha256 === old.rowAstSha256[index] &&
+        review.currentTupleSha256 === current.rowAstSha256[index] &&
+        review.sql === fact.query &&
+        fact.caseIndex === index &&
+        fact.baselineId === `${spec.baselineId}#${index}` &&
+        fact.baselineTupleAstSha256 === old.rowAstSha256[index] &&
+        fact.currentTupleAstSha256 === current.rowAstSha256[index] &&
+        jsonHash(fact.assertionSha256) === jsonHash(assertionHashes) &&
+        fact.semanticReviewSha256 === guarantee.context.semanticReviewSha256 &&
+        typeof fact.query === 'string' &&
+        fact.typedOutcome?.query === fact.query &&
+        fact.typedOutcome?.outcome === 'result',
+      'typed-case-fact-mismatch',
+    );
+    const resultSets = fact.typedOutcome.resultSets;
+    check(
+      Array.isArray(resultSets) &&
+        resultSets.length === 1 &&
+        resultSets[0].columns?.length === 1 &&
+        resultSets[0].rows?.length === 1 &&
+        resultSets[0].rows[0]?.length === 1,
+      'typed-output-unsupported',
+    );
+    const before = primitive(old.rows[index].value[2]),
+      after = primitive(current.rows[index].value[2]);
+    check(
+      jsonHash(before) === jsonHash(fact.priorExpected) &&
+        jsonHash(after) === jsonHash(fact.currentExpected) &&
+        Object.is(captured(resultSets[0].rows[0][0]), after),
+      'typed-case-output-mismatch',
+    );
+  }
+}
 function collectQualificationGuarantees({
   root,
+  baseline,
   file,
   oldModel,
   currentModel,
@@ -7076,6 +7284,7 @@ function collectQualificationGuarantees({
         prove(root, proof, { ...proofContext, supplementalWitness: guarantee.supplementalWitness }),
       );
       check(new Set(facts).size === facts.length, 'ambiguous-fact-id');
+      for (const spec of guarantee.tests) verifyTypedSqlFacts(root, guarantee, spec, oldModel, currentModel, baseline);
       const matched = guarantee.tests.map((spec) =>
         spec.regions
           ? verifyPartial(oldModel, currentModel, spec, new Set(facts), moduleDelta, generated)
@@ -7090,6 +7299,29 @@ function collectQualificationGuarantees({
     } catch (error) {
       report.pending.push(pending(file, guarantee, error));
     }
+  }
+}
+function addTypedSemanticReviewDependencies(root, imports, selected) {
+  const semanticReviews = selected
+    .filter((item) => item.spec.caseUniverse?.encoding === 'typed-v1')
+    .map((item) => ({
+      path: item.guarantee.context.semanticReviewPath,
+      sha256: item.guarantee.context.semanticReviewCertificateSha256,
+    }));
+  if (semanticReviews.length) {
+    const dependencies = new Map(imports.dependencies.map((item) => [item.path, item.sha256]));
+    for (const item of semanticReviews) {
+      check(
+        SHA.test(item.sha256) &&
+          parityHash(fs.readFileSync(confined(root, item.path))) === item.sha256 &&
+          (!dependencies.has(item.path) || dependencies.get(item.path) === item.sha256),
+        'typed-semantic-review-required',
+      );
+      dependencies.set(item.path, item.sha256);
+    }
+    imports.dependencies = [...dependencies]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([path, sha256]) => ({ path, sha256 }));
   }
 }
 function reviewQualificationSource({
@@ -7116,6 +7348,7 @@ function reviewQualificationSource({
       fixtureSlice: generated.fixtureSlice,
       memorySlice: generated.memorySlice,
     });
+    addTypedSemanticReviewDependencies(root, imports, selected);
     if (caseMigration) {
       const dependencies = new Map(imports.dependencies.map((item) => [item.path, item.sha256]));
       for (const item of caseMigration.dependencies) {
@@ -7666,6 +7899,7 @@ function qualifyOneFile(
   const { isolationRegistrationsAstSha256 } = preparedContext;
   collectQualificationGuarantees({
     root,
+    baseline: manifest.baseline,
     file,
     oldModel,
     currentModel,
@@ -7887,12 +8121,38 @@ function extractFileKindHeader(before, after, model) {
   else if (after.startsWith('\n', end)) newline = 1;
   return { header: tag + '\n', after: after.slice(0, at) + after.slice(end + newline) };
 }
+function partialRegionEdit(before, item, descriptor, statements) {
+  const expressionBody = item.current.callback.body.type !== 'BlockStatement';
+  const [start, end] = expressionBody
+    ? arrowExpressionRange(before, item.current.callback)
+    : [statements[0].range[0], statements.at(-1).range[1]];
+  const selection = descriptor.caseSelection;
+  const guard = selection
+    ? `${CASE_IMPORT}(import.meta.url, ${selection.source}, ${JSON.stringify(selection.selected.map((entry) => entry.caseIndex))}, {${selection.names.join(',')}}, ${SHARED});`
+    : `${REGION_IMPORT}(import.meta.url, ${JSON.stringify([descriptor])});`;
+  if (selection && !expressionBody && !item.verifiedCaseBody) {
+    check(statements.length === 1 && statements[0].type === 'ExpressionStatement', 'invalid-case-parity-marker');
+    return { start, end: start, text: `${guard}\n` };
+  }
+  if (item.verifiedCaseBody) {
+    check(
+      selection && statements.length === 1 && statements[0].type === 'ReturnStatement',
+      'invalid-case-parity-marker',
+    );
+    return { start, end: start, text: `${guard}\n` };
+  }
+  return {
+    start,
+    end,
+    text: `{\n${guard}\n${expressionBody ? 'return ' : ''}${before.slice(start, end)}${expressionBody ? ';' : ''}\n}`,
+  };
+}
 function generatePartial(root, file, before, model, selected, descriptors) {
   const caseMode = selected.some((item) => item.spec.caseSelection);
   check(
     !model.identifiers.has(REGION_IMPORT) &&
       !model.identifiers.has(CASE_IMPORT) &&
-      (!caseMode || selected.length === 1),
+      (!caseMode || (selected.length === 1 && !model.identifiers.has(SHARED) && !model.identifiers.has(FREEZE))),
     'reserved-binding-collision',
   );
   const existing = model.ast.body.find(
@@ -7914,27 +8174,7 @@ function generatePartial(root, file, before, model, selected, descriptors) {
   const edits = [];
   selected.forEach((item, index) => {
     for (const { statements } of item.regions) {
-      const expressionBody = item.current.callback.body.type !== 'BlockStatement';
-      const [start, end] = expressionBody
-        ? arrowExpressionRange(before, item.current.callback)
-        : [statements[0].range[0], statements.at(-1).range[1]];
-      const selection = descriptors[index].caseSelection;
-      const guard = selection
-        ? `${CASE_IMPORT}(import.meta.url, ${selection.source}, ${JSON.stringify(selection.selected.map((entry) => entry.caseIndex))}, {${selection.names.join(',')}}, ${JSON.stringify([descriptors[index]])});`
-        : `${REGION_IMPORT}(import.meta.url, ${JSON.stringify([descriptors[index]])});`;
-      if (item.verifiedCaseBody) {
-        check(
-          selection && statements.length === 1 && statements[0].type === 'ReturnStatement',
-          'invalid-case-parity-marker',
-        );
-        edits.push({ start, end: start, text: `${guard}\n` });
-        continue;
-      }
-      edits.push({
-        start,
-        end,
-        text: `{\n${guard}\n${expressionBody ? 'return ' : ''}${before.slice(start, end)}${expressionBody ? ';' : ''}\n}`,
-      });
+      edits.push(partialRegionEdit(before, item, descriptors[index], statements));
     }
   });
   let after = before;
@@ -7950,9 +8190,11 @@ function generatePartial(root, file, before, model, selected, descriptors) {
   after = extracted.after;
   const regionBinding = caseMode ? `parityCaseBindings as ${CASE_IMPORT}` : `parityAssertions as ${REGION_IMPORT}`;
   const sharedBinding = own ? '' : `, assertParityBindings as ${IMPORT}`;
+  const descriptorImport = caseMode ? `, freezeParityDescriptor as ${FREEZE}` : '';
+  const declaration = caseMode ? `const ${SHARED} = ${FREEZE}(${JSON.stringify(descriptors)});\n` : '';
   after =
     header +
-    `import { ${regionBinding}${sharedBinding} } from ${JSON.stringify(relative)};\n${IMPORT}(import.meta.url, ${JSON.stringify(descriptors)});\n` +
+    `import { ${regionBinding}${sharedBinding}${descriptorImport} } from ${JSON.stringify(relative)};\n${declaration}${IMPORT}(import.meta.url, ${caseMode ? SHARED : JSON.stringify(descriptors)});\n` +
     after;
   if (selected.some((item) => item.verifiedCaseBody))
     after =
@@ -7976,6 +8218,18 @@ function generatePartial(root, file, before, model, selected, descriptors) {
     );
   }
   return after;
+}
+/** Freeze all descriptor data before either source-bound guard can observe it. */
+export function freezeParityDescriptor(value) {
+  const seen = new WeakSet();
+  function freeze(item) {
+    if (!item || typeof item !== 'object' || seen.has(item)) return;
+    seen.add(item);
+    for (const child of Object.values(item)) freeze(child);
+    Object.freeze(item);
+  }
+  freeze(value);
+  return value;
 }
 /** Synchronous proof guard used at the start of an inline assertion block. */
 export function parityAssertions(moduleUrl, descriptors) {
@@ -8291,7 +8545,10 @@ function verifyCaseSelectionMarker({ descriptor, model, row, file }) {
           body[markerIndex + 1].consequent?.type === 'BlockStatement' &&
           body[markerIndex + 1].consequent.body.at(-1)?.type === 'ReturnStatement' &&
           selection.selected.some((entry) => entry.caseIndex === 138))) &&
-      body[assertionIndex].type === 'ReturnStatement' &&
+      body[assertionIndex].type ===
+        (descriptor.originalCallbackExpression || descriptor.caseBodyMigration
+          ? 'ReturnStatement'
+          : 'ExpressionStatement') &&
       (descriptor.caseBodyMigration || body.length === 2) &&
       marker?.type === 'CallExpression' &&
       marker.callee?.name === CASE_IMPORT &&
@@ -8317,7 +8574,9 @@ function verifyCaseSelectionMarker({ descriptor, model, row, file }) {
       Array.isArray(selection.bindings) &&
       jsonHash(row.kinds) === jsonHash(selection.parentKinds) &&
       jsonHash(selection.bindings) ===
-        jsonHash(descriptor.caseUniverse.currentCaseBindings ?? descriptor.caseUniverse.caseBindings) &&
+        (descriptor.caseUniverse.currentCaseBindingsSha256 ??
+          descriptor.caseUniverse.caseBindingsSha256 ??
+          jsonHash(descriptor.caseUniverse.currentCaseBindings ?? descriptor.caseUniverse.caseBindings)) &&
       selection.bindings.length === descriptor.caseUniverse.count &&
       new Set(selection.bindings.map(jsonHash)).size === selection.bindings.length &&
       Array.isArray(selection.selected) &&
@@ -8332,7 +8591,7 @@ function verifyCaseSelectionMarker({ descriptor, model, row, file }) {
           item.factIds.length &&
           item.factIds.every((id) => descriptor.proofs.some((proof) => proof.facts.some((fact) => fact.id === id))),
       ) &&
-      row.assertions.some((item) => item.node === body[assertionIndex].argument) &&
+      row.assertions.some((item) => item.node === (body[assertionIndex].argument ?? body[assertionIndex].expression)) &&
       (!descriptor.caseBodyMigration ||
         (Array.isArray(selection.retainedAssertionHashes) &&
           new Set(selection.retainedAssertionHashes).size === selection.retainedAssertionHashes.length &&
@@ -8630,9 +8889,58 @@ function validateParityBindings(moduleUrl, descriptors, { legacyOriginalGuards, 
     legacyOriginalGuards,
   });
 }
+// For a typed matrix, retain the expensive source/semantic analysis only while every
+// byte-bound input remains identical. Hashes, confinement and descriptor identity are
+// checked on every call; changes fall back to the full verifier and fail closed.
+const typedRuntimeCache = new Map();
+function typedRuntimeKey(moduleUrl, descriptors) {
+  if (!Array.isArray(descriptors) || descriptors.length !== 1) return null;
+  const descriptor = descriptors[0];
+  if (
+    descriptor.caseSelection?.encoding !== 'typed-v1' ||
+    descriptor.supplementalWitness ||
+    descriptor.memoryContextCertificates ||
+    descriptor.recordsReviewSha256 ||
+    descriptor.recordsFixture ||
+    descriptor.coexistingCaseGuardSha256 ||
+    !Array.isArray(descriptor.inputDependencies) ||
+    !Array.isArray(descriptor.proofs) ||
+    !descriptor.proofs.length ||
+    !descriptor.proofs.every(
+      (proof) => proof.mode === 'official-package' && proof.package?.ecosystem === 'microsoft-oci',
+    )
+  )
+    return null;
+  const file = fileURLToPath(moduleUrl),
+    source = fs.readFileSync(file);
+  if (source.includes(Buffer.from(REGION_IMPORT))) return null;
+  check(
+    typeof descriptor.repositoryRoot === 'string' && !path.isAbsolute(descriptor.repositoryRoot),
+    'explicit-repository-root-required',
+  );
+  const root = path.resolve(path.dirname(file), descriptor.repositoryRoot);
+  confined(root, path.relative(root, file));
+  for (const dependency of descriptor.inputDependencies)
+    check(
+      SHA.test(dependency.sha256) && parityHash(fs.readFileSync(confined(root, dependency.path))) === dependency.sha256,
+      'changed-test-input-dependency',
+    );
+  for (const proof of descriptor.proofs)
+    check(
+      SHA.test(proof.sha256) && parityHash(fs.readFileSync(confined(root, proof.path))) === proof.sha256,
+      'stale-proof-sha',
+    );
+  return `${file}:${parityHash(source)}:${jsonHash(descriptors)}`;
+}
 /** Runtime guard used by generated tests; legacy overrides are restricted to migration preflight. */
 export function assertParityBindings(moduleUrl, descriptors) {
+  const key = typedRuntimeKey(moduleUrl, descriptors);
+  if (key && typedRuntimeCache.has(key)) return;
   validateParityBindings(moduleUrl, descriptors);
+  if (key) {
+    if (typedRuntimeCache.size >= 32) typedRuntimeCache.clear();
+    typedRuntimeCache.set(key, true);
+  }
 }
 /** Source-bound guard for the reviewed 68-case scalar reader migration. */
 export function assertQueryParityBindings(moduleUrl, descriptors) {
@@ -8858,6 +9166,11 @@ export function parityCaseBindings(moduleUrl, cases, indices, binding, descripto
       jsonHash(indices) === jsonHash(selection.selected.map((item) => item.caseIndex)),
     'invalid-case-parity-binding',
   );
+  if (selection.encoding === 'typed-v1') {
+    const index = typedCaseIndex(cases, selection.names, selection.bindings, binding);
+    return indices.includes(index);
+  }
+  check(selection.encoding === undefined, 'unsupported-case-binding-encoding');
   const bindings = cases.map((item) => {
     const values = selection.names.length === 1 ? [item] : item;
     check(Array.isArray(values) && values.length === selection.names.length, 'changed-case-parity-universe');

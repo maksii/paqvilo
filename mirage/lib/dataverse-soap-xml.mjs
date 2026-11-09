@@ -423,9 +423,9 @@ function encodeRelated(list) {
   return `<a:RelatedEntities>${list
     .map(
       (r) =>
-        `<a:KeyValuePairOfRelationshipEntityCollection><b:key>${relationshipBody(r.relationship)}</b:key>` +
+        `<a:KeyValuePairOfRelationshipEntityCollectionX_PsK4FkN><b:key>${relationshipBody(r.relationship)}</b:key>` +
         (r.entities == null ? nil('b:value') : `<b:value>${collectionBody(r.entities)}</b:value>`) +
-        '</a:KeyValuePairOfRelationshipEntityCollection>',
+        '</a:KeyValuePairOfRelationshipEntityCollectionX_PsK4FkN>',
     )
     .join('')}</a:RelatedEntities>`;
 }

@@ -777,13 +777,7 @@ test('SDK declaration accepts a strict TypeScript consumer with a partial client
   }
 });
 
-test('case regions bind matched cases while every original case executes in order', async (t) => {
-  const text = loopSource
-    .replace('[1, 2]', '[\n  1, // first\n  2, // unmatched\n  3, // third\n]')
-    .replace(
-      "  test('case ' + value, () => {\n    assert.ok(value > 0);\n  });",
-      "  test('case ' + value, () => assert.ok(value > 0));",
-    );
+function threeCasePartial(t, text) {
   const f = partial(fixture(t, text), [[0]]),
     model = describeParitySource(text, 'sample.test.mjs'),
     row = model.registrations[0],
@@ -797,6 +791,17 @@ test('case regions bind matched cases while every original case executes in orde
     ancestorLoops: row.loopHeaders.map((headerAstSha256) => ({ headerAstSha256 })),
   };
   f.spec.caseSelection = { selected: [0, 2].map((caseIndex) => ({ caseIndex, factIds: ['status'] })) };
+  return { f, cases };
+}
+
+test('case regions bind matched cases while every original case executes in order', async (t) => {
+  const text = loopSource
+    .replace('[1, 2]', '[\n  1, // first\n  2, // unmatched\n  3, // third\n]')
+    .replace(
+      "  test('case ' + value, () => {\n    assert.ok(value > 0);\n  });",
+      "  test('case ' + value, () => assert.ok(value > 0));",
+    );
+  const { f } = threeCasePartial(t, text);
   const report = f.run();
   assert.deepEqual(report.pending, []);
   assert.equal(report.originalDefinitions, 0);
@@ -3199,4 +3204,173 @@ for (const [name, expected] of cases) {
   f.spec.caseUniverse.currentCaseBindings[1].expected = 99;
   f.updateCurrent(changed);
   assert.equal(f.run().pending[0].reason, 'corrected-case-bindings-mismatch');
+});
+
+test('official SQL OCI binding requires the reviewed registry manifest and capsule identity', (t) => {
+  const f = fixture(t),
+    bytes = fs.readFileSync(new URL('./fixtures/microsoft-sql-image-manifest.json', import.meta.url));
+  const digest = parityHash(bytes),
+    proof = f.manifest.files[0].guarantees[0].proofs[0];
+  const pkg = {
+    ecosystem: 'microsoft-oci',
+    id: 'mssql/server',
+    sha256: digest,
+    source: `https://mcr.microsoft.com/v2/mssql/server/manifests/sha256:${digest}`,
+    bodyBase64: bytes.toString('base64'),
+  };
+  f.capsule.package = pkg;
+  f.updateProof(f.capsule);
+  proof.mode = 'official-package';
+  proof.package = pkg;
+  proof.packagePointer = '/package';
+  assert.deepEqual(f.run().pending, []);
+  proof.package = { ...pkg, source: 'https://example.com/manifest' };
+  assert.equal(f.run().pending[0].reason, 'official-package-provenance-required');
+  proof.package = pkg;
+  f.capsule.package = { ...pkg, id: 'other' };
+  f.updateProof(f.capsule);
+  assert.equal(f.run().pending[0].reason, 'official-package-not-bound-to-receipt');
+});
+
+// @test-kind tooling: a block callback matrix preserves its assertion and rejects altered control flow and evidence markers.
+test('block case regions preserve one direct assertion and reject source tampering', async (t) => {
+  const text = loopSource.replace('[1, 2]', '[\n  1, // first\n  2, // unmatched\n  3, // third\n]');
+  const { f, cases } = threeCasePartial(t, text);
+  const report = f.run();
+  assert.deepEqual(report.pending, []);
+  assert.equal(report.qualifiedOriginalCases, 2);
+  writeParityQualification(report, { root: f.root });
+  const file = path.join(f.root, 'sample.test.mjs'),
+    generated = fs.readFileSync(file, 'utf8'),
+    binding = report.changes[0].bindings;
+  assertParityBindings(pathToFileURL(file), binding);
+  const tags = parseTestKinds(generated),
+    lines = generated.split(/\r?\n/u),
+    lineOf = (fragment) => lines.findIndex((line) => line.includes(fragment)) + 1;
+  assert.deepEqual(kindsAt(tags, lineOf('1, // first')), ['parity']);
+  assert.deepEqual(kindsAt(tags, lineOf('2, // unmatched')), ['unproven']);
+  assert.deepEqual(kindsAt(tags, lineOf('3, // third')), ['parity']);
+  const { spawnSync } = await import('node:child_process');
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  const execution = spawnSync(process.execPath, ['--test', '--test-reporter=spec', file], { encoding: 'utf8', env });
+  assert.equal(execution.status, 0, execution.stdout + execution.stderr);
+  for (const c of cases) assert.match(execution.stdout, new RegExp(c));
+  f.updateCurrent(generated);
+  let repeat = f.run();
+  assert.deepEqual(repeat.pending, []);
+  assert.equal(repeat.changes.length, 0);
+  assert.equal(repeat.newQualifiedOriginalCases, 0);
+  const secondProof = structuredClone(f.manifest.files[0].guarantees[0].proofs[0]);
+  secondProof.path = 'proof-block-second.json';
+  secondProof.facts[0].id = 'second-block-status';
+  fs.copyFileSync(f.proofFile, path.join(f.root, secondProof.path));
+  f.manifest.files[0].guarantees[0].proofs.push(secondProof);
+  f.spec.caseSelection.selected = [
+    { caseIndex: 0, factIds: ['status'] },
+    { caseIndex: 1, factIds: ['second-block-status'] },
+    { caseIndex: 2, factIds: ['status'] },
+  ];
+  const cumulative = f.run();
+  assert.deepEqual(cumulative.pending, []);
+  assert.equal(cumulative.newQualifiedOriginalCases, 1);
+  writeParityQualification(cumulative, { root: f.root });
+  const cumulativeSource = fs.readFileSync(file, 'utf8');
+  f.updateCurrent(cumulativeSource);
+  repeat = f.run();
+  assert.deepEqual(repeat.pending, []);
+  assert.equal(repeat.changes.length, 0);
+  assert.equal(repeat.newQualifiedOriginalCases, 0);
+  f.manifest.files[0].guarantees[0].proofs.pop();
+  assert.ok(f.run().pending.length);
+  f.manifest.files[0].guarantees[0].proofs.push(secondProof);
+  f.spec.caseSelection.selected = [
+    { caseIndex: 0, factIds: ['status'] },
+    { caseIndex: 2, factIds: ['status'] },
+  ];
+  f.updateCurrent(generated);
+  for (const altered of [
+    generated.replace('assert.ok(value > 0)', 'assert.ok(value >= 0)'),
+    generated.replace('__paqParityCaseBindings(import.meta.url', '__paqParityCaseBindings(null'),
+    generated.replace('[0,2], {value}', '[0,1], {value}'),
+    generated.replace('assert.ok(value > 0)', 'const injected = 1; assert.ok(value > 0)'),
+    generated.replace('assert.ok(value > 0)', 'if (value) assert.ok(value > 0)'),
+  ]) {
+    assert.notEqual(altered, generated);
+    fs.writeFileSync(file, altered);
+    assert.throws(() => assertParityBindings(pathToFileURL(file), binding));
+  }
+  for (const altered of [
+    text.replace('assert.ok(value > 0);', 'const injected = 1; assert.ok(value > 0);'),
+    text.replace('assert.ok(value > 0);', 'if (value) assert.ok(value > 0);'),
+  ]) {
+    f.updateCurrent(altered);
+    assert.ok(f.run().pending.length);
+  }
+});
+
+// @test-kind tooling: shared case descriptors are deeply frozen, source-bound and backwards compatible with inline guards.
+test('shared case descriptor freezes all values and rejects aliases, shadowing and mutation', async (t) => {
+  const text = loopSource.replace('[1, 2]', '[\n  1, // first\n  2, // unmatched\n  3, // third\n]');
+  const { f } = threeCasePartial(t, text);
+  const report = f.run();
+  assert.deepEqual(report.pending, []);
+  writeParityQualification(report, { root: f.root });
+  const file = path.join(f.root, 'sample.test.mjs'),
+    generated = fs.readFileSync(file, 'utf8'),
+    bindings = report.changes[0].bindings;
+  assert.equal((generated.match(/baselineId/g) || []).length, 1);
+  assertParityBindings(pathToFileURL(file), bindings);
+  const { freezeParityDescriptor } = await import('../scripts/qualify-parity.mjs');
+  const frozen = freezeParityDescriptor([{ x: { items: [1] } }]);
+  assert.ok(
+    Object.isFrozen(frozen) &&
+      Object.isFrozen(frozen[0]) &&
+      Object.isFrozen(frozen[0].x) &&
+      Object.isFrozen(frozen[0].x.items),
+  );
+  assert.throws(() => frozen[0].x.items.push(2), TypeError);
+  const nested = { child: {} };
+  Object.freeze(nested);
+  freezeParityDescriptor(nested);
+  assert.ok(Object.isFrozen(nested.child));
+  const cyclic = {};
+  cyclic.self = cyclic;
+  freezeParityDescriptor(cyclic);
+  assert.ok(Object.isFrozen(cyclic));
+  for (const mutate of [
+    (d) => d[0].caseSelection.selected.pop(),
+    (d) => {
+      d[0].proofs[0].sha256 = '0'.repeat(64);
+    },
+  ]) {
+    const altered = structuredClone(bindings);
+    mutate(altered);
+    assert.throws(() => parityCaseBindings(pathToFileURL(file), [1, 2, 3], [0, 2], { value: 1 }, altered));
+  }
+  const casesBad = [
+    generated.replace('const __paqParityShared =', 'let __paqParityShared ='),
+    generated.replace('freezeParityDescriptor as __paqParityFreeze', 'freezeParityDescriptor as otherFreeze'),
+    generated.replace('assert.ok(value > 0)', 'const stolen = __paqParityShared; assert.ok(value > 0)'),
+    generated.replace('assert.ok(value > 0)', '__paqParityShared[0].baselineId = "bad"; assert.ok(value > 0)'),
+    generated.replace('assert.ok(value > 0)', 'const __paqParityShared = []; assert.ok(value > 0)'),
+    generated.replace(
+      '__paqParityBindings(import.meta.url, __paqParityShared)',
+      '__paqParityBindings(import.meta.url, missingDescriptor)',
+    ),
+  ];
+  for (const changed of casesBad) {
+    assert.notEqual(changed, generated);
+    fs.writeFileSync(file, changed);
+    assert.throws(() => assertParityBindings(pathToFileURL(file), bindings));
+    assert.ok(parseTestKinds(changed).errors.length);
+  }
+  const decl = generated.match(/const __paqParityShared = __paqParityFreeze\((\[.*\])\);/u);
+  assert.ok(decl);
+  const legacy = generated
+    .replace(decl[0], '')
+    .replaceAll('__paqParityShared', decl[1])
+    .replace(', freezeParityDescriptor as __paqParityFreeze', '');
+  fs.writeFileSync(file, legacy);
+  assertParityBindings(pathToFileURL(file), bindings);
 });
