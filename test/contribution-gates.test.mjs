@@ -6,6 +6,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
+import { parse } from 'espree';
 import { validateCommitMessage } from '../scripts/conventional-commit.mjs';
 import {
   classifyChanges as completeScope,
@@ -331,19 +332,56 @@ test('PR scope excludes unrelated base-branch code but includes both sides of re
   assert.equal(classify({ before: head }, { VALIDATE_ALL: 'true' }).runtime, true);
 });
 
+// The hook executes staged copies, including every local module imported by its selected entry points.
+function copyLocalModules(sourceRoot, entries, write) {
+  const pending = [...entries],
+    seen = new Set();
+  while (pending.length) {
+    const name = pending.pop();
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const source = fs.readFileSync(path.join(sourceRoot, name), 'utf8');
+    write(name, source);
+    const nodes = [parse(source, { ecmaVersion: 'latest', sourceType: 'module' })];
+    while (nodes.length) {
+      const node = nodes.pop();
+      const specifier =
+        node.type === 'ImportDeclaration' ||
+        node.type === 'ExportNamedDeclaration' ||
+        node.type === 'ExportAllDeclaration'
+          ? node.source?.value
+          : node.type === 'ImportExpression'
+            ? node.source?.value
+            : node.type === 'CallExpression' && node.callee?.name === 'require' && node.arguments.length === 1
+              ? node.arguments[0].value
+              : undefined;
+      if (typeof specifier === 'string' && specifier.startsWith('.')) {
+        const resolved = path.resolve(sourceRoot, path.dirname(name), specifier);
+        const relative = path.relative(sourceRoot, resolved);
+        assert.ok(relative && relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative));
+        pending.push(relative);
+      }
+      for (const value of Object.values(node)) {
+        if (Array.isArray(value)) nodes.push(...value.filter((item) => item?.type));
+        else if (value?.type) nodes.push(value);
+      }
+    }
+  }
+  return seen;
+}
+
 function hookFixture(t, { classifier, readyDependencies = false } = {}) {
   const { root, env, git, write } = fixture(t);
-  for (const name of [
-    'scripts/git-hooks.mjs',
-    'scripts/ensure-dependencies.mjs',
-    'scripts/check-test-tags.mjs',
-    'scripts/parity-query-universe.mjs',
-    'scripts/parity-shared-descriptor.mjs',
-    'scripts/parity-shared-partial.mjs',
-    '.github/scripts/change-scope.mjs',
-  ]) {
-    write(name, fs.readFileSync(new URL(`../${name}`, import.meta.url)));
-  }
+  copyLocalModules(
+    fileURLToPath(new URL('..', import.meta.url)),
+    [
+      'scripts/git-hooks.mjs',
+      'scripts/ensure-dependencies.mjs',
+      'scripts/check-test-tags.mjs',
+      '.github/scripts/change-scope.mjs',
+    ],
+    write,
+  );
   if (classifier) write('.github/scripts/change-scope.mjs', classifier);
   if (readyDependencies)
     write(
@@ -366,6 +404,36 @@ function hookFixture(t, { classifier, readyDependencies = false } = {}) {
     assert.deepEqual(fs.readdirSync(path.join(root, '.paqvilo', 'hooks')), [], 'owned snapshots were cleaned');
   return { root, env, git, write, run, assertCleaned };
 }
+
+test('hook fixture copies the transitive local module closure without installing dependencies', (t) => {
+  const sourceRoot = tempDirSync('paqvilo-hook-modules-');
+  t.after(() => fs.rmSync(sourceRoot, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(sourceRoot, 'nested'));
+  fs.writeFileSync(
+    path.join(sourceRoot, 'entry.mjs'),
+    "import { value } from './nested/first.mjs'; console.log(value);\n",
+  );
+  fs.writeFileSync(path.join(sourceRoot, 'nested/first.mjs'), "export { value } from './second.mjs';\n");
+  fs.writeFileSync(
+    path.join(sourceRoot, 'nested/second.mjs'),
+    "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url); const extra = require('./extra.cjs'); const third = await import('./third.mjs'); export const value = third.value + extra;\n",
+  );
+  fs.writeFileSync(path.join(sourceRoot, 'nested/third.mjs'), "export const value = 'transitive';\n");
+  fs.writeFileSync(path.join(sourceRoot, 'nested/extra.cjs'), "module.exports = ' closure';\n");
+  const { root, write } = fixture(t);
+  const copied = copyLocalModules(sourceRoot, ['entry.mjs'], write);
+  assert.deepEqual([...copied].sort(), [
+    'entry.mjs',
+    path.join('nested', 'extra.cjs'),
+    path.join('nested', 'first.mjs'),
+    path.join('nested', 'second.mjs'),
+    path.join('nested', 'third.mjs'),
+  ]);
+  assert.equal(fs.existsSync(path.join(root, 'node_modules')), false);
+  const result = spawnSync(process.execPath, [path.join(root, 'entry.mjs')], { encoding: 'utf8', windowsHide: true });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'transitive closure');
+});
 
 test('README-only hook isolates staged sources and gate selection from unstaged edits', (t) => {
   const { root, git, write, run, assertCleaned } = hookFixture(t, { readyDependencies: true });
