@@ -15,6 +15,16 @@ journals and raw recordings remain in the external developer workbench.
 | Dataverse Web API | [Typed input/query tests](../webapi-native-contract.test.mjs) and [existing scalar-reader matrix](../dataverse-scalar-reader-http.test.mjs): exact selected native status/code/message guarantees, separately from local diagnostic and safety contracts. |
 | Plugins | Existing individually tagged plugin/CLR suites retain their recorded guarantees. Frontend and HTTP evidence do not upgrade plugin expectations. |
 
+[Query reader cases](../dataverse-query-reader.test.mjs) bind all 63 original
+status, error-code and message cases to their complete source universe. Ten
+additional cases use [six OData 8.3 cases](dataverse-query-six-case-facts.json),
+[one OData 7.20 case](dataverse-query-one-case-facts.json) and
+[three OData 7.20 cases](dataverse-query-three-case-facts.json), each with two
+native HTTP observations and source-relative typed-property mappings. The last
+three package observations used Windows .NET Framework; those observations do
+not identify the runtime or package version deployed by Dataverse. The enclosing
+test's separate store-nonmutation assertion is not qualified by these captures.
+
 Generated test cases, expression counts and HTTP executions measure different things.
 They overlap and must not be summed as distinct platform features. A native capture
 does not by itself prove local replay or final-tree validation; those receipts remain

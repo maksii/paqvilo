@@ -1,0 +1,1441 @@
+{
+  "version": 1,
+  "scope": "Repeated SQL Server engine results for nine exact date-string inputs; no Dataverse TDS claim",
+  "package": {
+    "ecosystem": "microsoft-oci",
+    "id": "mssql/server",
+    "sha256": "cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718",
+    "source": "https://mcr.microsoft.com/v2/mssql/server/manifests/sha256:cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718",
+    "bodyBase64": "eyJzY2hlbWFWZXJzaW9uIjoyLCJtZWRpYVR5cGUiOiJhcHBsaWNhdGlvbi92bmQuZG9ja2VyLmRpc3RyaWJ1dGlvbi5tYW5pZmVzdC52Mitqc29uIiwiY29uZmlnIjp7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuY29udGFpbmVyLmltYWdlLnYxK2pzb24iLCJzaXplIjozMzcwLCJkaWdlc3QiOiJzaGEyNTY6N2ZiMjEzOTM0MTcxNWU4YTcxODQzY2ZjMmYwMmJhYjZlOTVmMWM1MmMwZmE5ZjlhNmIyZTdiNzYxZjA2MDc4MCJ9LCJsYXllcnMiOlt7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuaW1hZ2Uucm9vdGZzLmRpZmYudGFyLmd6aXAiLCJzaXplIjozMTU1OTQwMCwiZGlnZXN0Ijoic2hhMjU2OmNiNWUzNzRiZTY2MmE1NjJiODI3MTE1ODYzOWU5MThiOWM2MzRhYTRkZmRjOGIzYWEzMWNjZmM5OWNmOGMwNzcifSx7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuaW1hZ2Uucm9vdGZzLmRpZmYudGFyLmd6aXAiLCJzaXplIjo1MDIxMjIzODQsImRpZ2VzdCI6InNoYTI1NjpjZjc2ZTQ3YzIzN2Y5YmZkZThjNzM4ZmQzZTNmYTgzMWI1M2E2MmFlNTI2OTQ0MTYwMGQ0MTM4OTAwNTVkOGFlIn0seyJtZWRpYVR5cGUiOiJhcHBsaWNhdGlvbi92bmQuZG9ja2VyLmltYWdlLnJvb3Rmcy5kaWZmLnRhci5nemlwIiwic2l6ZSI6OTMwMjcwMDMsImRpZ2VzdCI6InNoYTI1NjoxNmU4NDM2YzBjYmFlN2RmNWEzODEzMTE2MWU4OGYxMGE0OTdhZjZlMjRhOWVlNmRjYzcwMDY3ZThjYjI4YWU3In1dfQ=="
+  },
+  "runs": [
+    {
+      "runSha256": "83ac15c6360018cf192655b27e3cba122b008d800b630b0727472fca6c502532",
+      "runnerSha256": "d3720ecee266ad25e88f831e8baa697cf809d4a872c0f88980609798542b9c9a",
+      "inventorySha256": "c367ce486675e6be36f9d4e8ac7d950e32c5d4b281a25360441d4bb8076800dd",
+      "facts": {
+        "sql-function-date-string-83": {
+          "caseIndex": 83,
+          "baselineId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#83",
+          "baselineTupleAstSha256": "afacfad93877822e92b4858805cc5d8a42d0f6c8ee9e1c0de8639496827600b3",
+          "currentTupleAstSha256": "afacfad93877822e92b4858805cc5d8a42d0f6c8ee9e1c0de8639496827600b3",
+          "assertionSha256": [
+            "cf60392995a11111755931aae17b92b36e4d1cf1447f3103b43baf642efd3dab"
+          ],
+          "baselineTupleSource": "['DATEDIFF', ['day', '2036-03-01', '2036-02-28'], -2]",
+          "baselineValues": [
+            "DATEDIFF",
+            [
+              "day",
+              "2036-03-01",
+              "2036-02-28"
+            ],
+            -2
+          ],
+          "priorExpected": -2,
+          "currentExpected": -2,
+          "query": "SELECT DATEDIFF(day, CAST(N'2036-03-01' AS nvarchar(10)), CAST(N'2036-02-28' AS nvarchar(10))) AS [value]",
+          "typedOutcome": {
+            "outcome": "result",
+            "resultSets": [
+              {
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "int",
+                    "clrType": "System.Int32",
+                    "precision": 10,
+                    "scale": 255
+                  }
+                ],
+                "rows": [
+                  [
+                    {
+                      "kind": "System.Int32",
+                      "exact": "-2"
+                    }
+                  ]
+                ]
+              }
+            ],
+            "query": "SELECT DATEDIFF(day, CAST(N'2036-03-01' AS nvarchar(10)), CAST(N'2036-02-28' AS nvarchar(10))) AS [value]",
+            "id": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#83"
+          },
+          "context": {
+            "version": {
+              "kind": "string",
+              "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+            },
+            "productVersion": {
+              "kind": "string",
+              "value": "16.0.4305.5"
+            },
+            "edition": {
+              "kind": "string",
+              "value": "Developer Edition (64-bit)"
+            },
+            "collation": {
+              "kind": "string",
+              "value": "SQL_Latin1_General_CP1_CI_AS"
+            },
+            "language": {
+              "kind": "string",
+              "value": "us_english"
+            },
+            "dateFirst": {
+              "kind": "System.Byte",
+              "exact": "7"
+            },
+            "options": {
+              "kind": "System.Int32",
+              "exact": "5432"
+            }
+          },
+          "semanticReviewSha256": "05009e3262498631131eb4a8f1929449f2c18f947c359d0e2aabc1eed1758937"
+        },
+        "sql-function-date-string-84": {
+          "caseIndex": 84,
+          "baselineId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#84",
+          "baselineTupleAstSha256": "62c91efc55a6f7ab8dcf612758de714fffe282f033d0fa91e8e054e9a7b39266",
+          "currentTupleAstSha256": "62c91efc55a6f7ab8dcf612758de714fffe282f033d0fa91e8e054e9a7b39266",
+          "assertionSha256": [
+            "cf60392995a11111755931aae17b92b36e4d1cf1447f3103b43baf642efd3dab"
+          ],
+          "baselineTupleSource": "['DATEDIFF', ['day', '2007-05-06 23:59:59.999', '2007-05-07 00:00:00'], 1]",
+          "baselineValues": [
+            "DATEDIFF",
+            [
+              "day",
+              "2007-05-06 23:59:59.999",
+              "2007-05-07 00:00:00"
+            ],
+            1
+          ],
+          "priorExpected": 1,
+          "currentExpected": 1,
+          "query": "SELECT DATEDIFF(day, CAST(N'2007-05-06 23:59:59.999' AS nvarchar(23)), CAST(N'2007-05-07 00:00:00' AS nvarchar(19))) AS [value]",
+          "typedOutcome": {
+            "outcome": "result",
+            "resultSets": [
+              {
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "int",
+                    "clrType": "System.Int32",
+                    "precision": 10,
+                    "scale": 255
+                  }
+                ],
+                "rows": [
+                  [
+                    {
+                      "kind": "System.Int32",
+                      "exact": "1"
+                    }
+                  ]
+                ]
+              }
+            ],
+            "query": "SELECT DATEDIFF(day, CAST(N'2007-05-06 23:59:59.999' AS nvarchar(23)), CAST(N'2007-05-07 00:00:00' AS nvarchar(19))) AS [value]",
+            "id": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#84"
+          },
+          "context": {
+            "version": {
+              "kind": "string",
+              "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+            },
+            "productVersion": {
+              "kind": "string",
+              "value": "16.0.4305.5"
+            },
+            "edition": {
+              "kind": "string",
+              "value": "Developer Edition (64-bit)"
+            },
+            "collation": {
+              "kind": "string",
+              "value": "SQL_Latin1_General_CP1_CI_AS"
+            },
+            "language": {
+              "kind": "string",
+              "value": "us_english"
+            },
+            "dateFirst": {
+              "kind": "System.Byte",
+              "exact": "7"
+            },
+            "options": {
+              "kind": "System.Int32",
+              "exact": "5432"
+            }
+          },
+          "semanticReviewSha256": "05009e3262498631131eb4a8f1929449f2c18f947c359d0e2aabc1eed1758937"
+        },
+        "sql-function-date-string-85": {
+          "caseIndex": 85,
+          "baselineId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#85",
+          "baselineTupleAstSha256": "9bf27772c5b4596cf30dc54401fe6ef0c712275ec9d570b019e193bb695f8a90",
+          "currentTupleAstSha256": "9bf27772c5b4596cf30dc54401fe6ef0c712275ec9d570b019e193bb695f8a90",
+          "assertionSha256": [
+            "cf60392995a11111755931aae17b92b36e4d1cf1447f3103b43baf642efd3dab"
+          ],
+          "baselineTupleSource": "['DATEDIFF', ['year', '2000-12-31', '2001-01-01'], 1]",
+          "baselineValues": [
+            "DATEDIFF",
+            [
+              "year",
+              "2000-12-31",
+              "2001-01-01"
+            ],
+            1
+          ],
+          "priorExpected": 1,
+          "currentExpected": 1,
+          "query": "SELECT DATEDIFF(year, CAST(N'2000-12-31' AS nvarchar(10)), CAST(N'2001-01-01' AS nvarchar(10))) AS [value]",
+          "typedOutcome": {
+            "outcome": "result",
+            "resultSets": [
+              {
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "int",
+                    "clrType": "System.Int32",
+                    "precision": 10,
+                    "scale": 255
+                  }
+                ],
+                "rows": [
+                  [
+                    {
+                      "kind": "System.Int32",
+                      "exact": "1"
+                    }
+                  ]
+                ]
+              }
+            ],
+            "query": "SELECT DATEDIFF(year, CAST(N'2000-12-31' AS nvarchar(10)), CAST(N'2001-01-01' AS nvarchar(10))) AS [value]",
+            "id": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#85"
+          },
+          "context": {
+            "version": {
+              "kind": "string",
+              "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+            },
+            "productVersion": {
+              "kind": "string",
+              "value": "16.0.4305.5"
+            },
+            "edition": {
+              "kind": "string",
+              "value": "Developer Edition (64-bit)"
+            },
+            "collation": {
+              "kind": "string",
+              "value": "SQL_Latin1_General_CP1_CI_AS"
+            },
+            "language": {
+              "kind": "string",
+              "value": "us_english"
+            },
+            "dateFirst": {
+              "kind": "System.Byte",
+              "exact": "7"
+            },
+            "options": {
+              "kind": "System.Int32",
+              "exact": "5432"
+            }
+          },
+          "semanticReviewSha256": "05009e3262498631131eb4a8f1929449f2c18f947c359d0e2aabc1eed1758937"
+        },
+        "sql-function-date-string-86": {
+          "caseIndex": 86,
+          "baselineId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#86",
+          "baselineTupleAstSha256": "7e3126a78a0bab055e6553010b2814f4bd849de7b5ca6392903b7bee69bc8159",
+          "currentTupleAstSha256": "7e3126a78a0bab055e6553010b2814f4bd849de7b5ca6392903b7bee69bc8159",
+          "assertionSha256": [
+            "cf60392995a11111755931aae17b92b36e4d1cf1447f3103b43baf642efd3dab"
+          ],
+          "baselineTupleSource": "['DATEDIFF', ['month', '2026-01-31', '2026-02-01'], 1]",
+          "baselineValues": [
+            "DATEDIFF",
+            [
+              "month",
+              "2026-01-31",
+              "2026-02-01"
+            ],
+            1
+          ],
+          "priorExpected": 1,
+          "currentExpected": 1,
+          "query": "SELECT DATEDIFF(month, CAST(N'2026-01-31' AS nvarchar(10)), CAST(N'2026-02-01' AS nvarchar(10))) AS [value]",
+          "typedOutcome": {
+            "outcome": "result",
+            "resultSets": [
+              {
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "int",
+                    "clrType": "System.Int32",
+                    "precision": 10,
+                    "scale": 255
+                  }
+                ],
+                "rows": [
+                  [
+                    {
+                      "kind": "System.Int32",
+                      "exact": "1"
+                    }
+                  ]
+                ]
+              }
+            ],
+            "query": "SELECT DATEDIFF(month, CAST(N'2026-01-31' AS nvarchar(10)), CAST(N'2026-02-01' AS nvarchar(10))) AS [value]",
+            "id": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#86"
+          },
+          "context": {
+            "version": {
+              "kind": "string",
+              "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+            },
+            "productVersion": {
+              "kind": "string",
+              "value": "16.0.4305.5"
+            },
+            "edition": {
+              "kind": "string",
+              "value": "Developer Edition (64-bit)"
+            },
+            "collation": {
+              "kind": "string",
+              "value": "SQL_Latin1_General_CP1_CI_AS"
+            },
+            "language": {
+              "kind": "string",
+              "value": "us_english"
+            },
+            "dateFirst": {
+              "kind": "System.Byte",
+              "exact": "7"
+            },
+            "options": {
+              "kind": "System.Int32",
+              "exact": "5432"
+            }
+          },
+          "semanticReviewSha256": "05009e3262498631131eb4a8f1929449f2c18f947c359d0e2aabc1eed1758937"
+        },
+        "sql-function-date-string-87": {
+          "caseIndex": 87,
+          "baselineId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#87",
+          "baselineTupleAstSha256": "e60600311a3e9b54c0e7e39690fe2fa3e90b75eed2de24bbb33fc57ba1b56d6e",
+          "currentTupleAstSha256": "e60600311a3e9b54c0e7e39690fe2fa3e90b75eed2de24bbb33fc57ba1b56d6e",
+          "assertionSha256": [
+            "cf60392995a11111755931aae17b92b36e4d1cf1447f3103b43baf642efd3dab"
+          ],
+          "baselineTupleSource": "['DATEDIFF', ['week', '2026-10-17', '2026-10-18'], 1]",
+          "baselineValues": [
+            "DATEDIFF",
+            [
+              "week",
+              "2026-10-17",
+              "2026-10-18"
+            ],
+            1
+          ],
+          "priorExpected": 1,
+          "currentExpected": 1,
+          "query": "SELECT DATEDIFF(week, CAST(N'2026-10-17' AS nvarchar(10)), CAST(N'2026-10-18' AS nvarchar(10))) AS [value]",
+          "typedOutcome": {
+            "outcome": "result",
+            "resultSets": [
+              {
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "int",
+                    "clrType": "System.Int32",
+                    "precision": 10,
+                    "scale": 255
+                  }
+                ],
+                "rows": [
+                  [
+                    {
+                      "kind": "System.Int32",
+                      "exact": "1"
+                    }
+                  ]
+                ]
+              }
+            ],
+            "query": "SELECT DATEDIFF(week, CAST(N'2026-10-17' AS nvarchar(10)), CAST(N'2026-10-18' AS nvarchar(10))) AS [value]",
+            "id": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#87"
+          },
+          "context": {
+            "version": {
+              "kind": "string",
+              "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+            },
+            "productVersion": {
+              "kind": "string",
+              "value": "16.0.4305.5"
+            },
+            "edition": {
+              "kind": "string",
+              "value": "Developer Edition (64-bit)"
+            },
+            "collation": {
+              "kind": "string",
+              "value": "SQL_Latin1_General_CP1_CI_AS"
+            },
+            "language": {
+              "kind": "string",
+              "value": "us_english"
+            },
+            "dateFirst": {
+              "kind": "System.Byte",
+              "exact": "7"
+            },
+            "options": {
+              "kind": "System.Int32",
+              "exact": "5432"
+            }
+          },
+          "semanticReviewSha256": "05009e3262498631131eb4a8f1929449f2c18f947c359d0e2aabc1eed1758937"
+        },
+        "sql-function-date-string-88": {
+          "caseIndex": 88,
+          "baselineId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#88",
+          "baselineTupleAstSha256": "057e7ba717cb7bc81b8bc1de42c886b5db45d04988ce1fbe6eee08c6cebc8209",
+          "currentTupleAstSha256": "057e7ba717cb7bc81b8bc1de42c886b5db45d04988ce1fbe6eee08c6cebc8209",
+          "assertionSha256": [
+            "cf60392995a11111755931aae17b92b36e4d1cf1447f3103b43baf642efd3dab"
+          ],
+          "baselineTupleSource": "['DATEDIFF', ['hour', '2026-01-01 00:59', '2026-01-01 01:00'], 1]",
+          "baselineValues": [
+            "DATEDIFF",
+            [
+              "hour",
+              "2026-01-01 00:59",
+              "2026-01-01 01:00"
+            ],
+            1
+          ],
+          "priorExpected": 1,
+          "currentExpected": 1,
+          "query": "SELECT DATEDIFF(hour, CAST(N'2026-01-01 00:59' AS nvarchar(16)), CAST(N'2026-01-01 01:00' AS nvarchar(16))) AS [value]",
+          "typedOutcome": {
+            "outcome": "result",
+            "resultSets": [
+              {
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "int",
+                    "clrType": "System.Int32",
+                    "precision": 10,
+                    "scale": 255
+                  }
+                ],
+                "rows": [
+                  [
+                    {
+                      "kind": "System.Int32",
+                      "exact": "1"
+                    }
+                  ]
+                ]
+              }
+            ],
+            "query": "SELECT DATEDIFF(hour, CAST(N'2026-01-01 00:59' AS nvarchar(16)), CAST(N'2026-01-01 01:00' AS nvarchar(16))) AS [value]",
+            "id": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#88"
+          },
+          "context": {
+            "version": {
+              "kind": "string",
+              "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+            },
+            "productVersion": {
+              "kind": "string",
+              "value": "16.0.4305.5"
+            },
+            "edition": {
+              "kind": "string",
+              "value": "Developer Edition (64-bit)"
+            },
+            "collation": {
+              "kind": "string",
+              "value": "SQL_Latin1_General_CP1_CI_AS"
+            },
+            "language": {
+              "kind": "string",
+              "value": "us_english"
+            },
+            "dateFirst": {
+              "kind": "System.Byte",
+              "exact": "7"
+            },
+            "options": {
+              "kind": "System.Int32",
+              "exact": "5432"
+            }
+          },
+          "semanticReviewSha256": "05009e3262498631131eb4a8f1929449f2c18f947c359d0e2aabc1eed1758937"
+        },
+        "sql-function-date-string-89": {
+          "caseIndex": 89,
+          "baselineId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#89",
+          "baselineTupleAstSha256": "9d181735175f6071b0672f59845413b736f6c6e58c4ba8fd2092906a781a518f",
+          "currentTupleAstSha256": "9d181735175f6071b0672f59845413b736f6c6e58c4ba8fd2092906a781a518f",
+          "assertionSha256": [
+            "cf60392995a11111755931aae17b92b36e4d1cf1447f3103b43baf642efd3dab"
+          ],
+          "baselineTupleSource": "['DATEDIFF', ['second', '2026-01-01 00:00:00', '2026-01-01 00:01:30'], 90]",
+          "baselineValues": [
+            "DATEDIFF",
+            [
+              "second",
+              "2026-01-01 00:00:00",
+              "2026-01-01 00:01:30"
+            ],
+            90
+          ],
+          "priorExpected": 90,
+          "currentExpected": 90,
+          "query": "SELECT DATEDIFF(second, CAST(N'2026-01-01 00:00:00' AS nvarchar(19)), CAST(N'2026-01-01 00:01:30' AS nvarchar(19))) AS [value]",
+          "typedOutcome": {
+            "outcome": "result",
+            "resultSets": [
+              {
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "int",
+                    "clrType": "System.Int32",
+                    "precision": 10,
+                    "scale": 255
+                  }
+                ],
+                "rows": [
+                  [
+                    {
+                      "kind": "System.Int32",
+                      "exact": "90"
+                    }
+                  ]
+                ]
+              }
+            ],
+            "query": "SELECT DATEDIFF(second, CAST(N'2026-01-01 00:00:00' AS nvarchar(19)), CAST(N'2026-01-01 00:01:30' AS nvarchar(19))) AS [value]",
+            "id": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#89"
+          },
+          "context": {
+            "version": {
+              "kind": "string",
+              "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+            },
+            "productVersion": {
+              "kind": "string",
+              "value": "16.0.4305.5"
+            },
+            "edition": {
+              "kind": "string",
+              "value": "Developer Edition (64-bit)"
+            },
+            "collation": {
+              "kind": "string",
+              "value": "SQL_Latin1_General_CP1_CI_AS"
+            },
+            "language": {
+              "kind": "string",
+              "value": "us_english"
+            },
+            "dateFirst": {
+              "kind": "System.Byte",
+              "exact": "7"
+            },
+            "options": {
+              "kind": "System.Int32",
+              "exact": "5432"
+            }
+          },
+          "semanticReviewSha256": "05009e3262498631131eb4a8f1929449f2c18f947c359d0e2aabc1eed1758937"
+        },
+        "sql-function-date-string-109": {
+          "caseIndex": 109,
+          "baselineId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#109",
+          "baselineTupleAstSha256": "59d3919a07642c9aabebdff06a9005e9bea17cdee3c290bea525acc284bf9361",
+          "currentTupleAstSha256": "59d3919a07642c9aabebdff06a9005e9bea17cdee3c290bea525acc284bf9361",
+          "assertionSha256": [
+            "cf60392995a11111755931aae17b92b36e4d1cf1447f3103b43baf642efd3dab"
+          ],
+          "baselineTupleSource": "['ISDATE', ['2026-02-28'], 1]",
+          "baselineValues": [
+            "ISDATE",
+            [
+              "2026-02-28"
+            ],
+            1
+          ],
+          "priorExpected": 1,
+          "currentExpected": 1,
+          "query": "SELECT ISDATE(CAST(N'2026-02-28' AS nvarchar(10))) AS [value]",
+          "typedOutcome": {
+            "outcome": "result",
+            "resultSets": [
+              {
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "int",
+                    "clrType": "System.Int32",
+                    "precision": 10,
+                    "scale": 255
+                  }
+                ],
+                "rows": [
+                  [
+                    {
+                      "kind": "System.Int32",
+                      "exact": "1"
+                    }
+                  ]
+                ]
+              }
+            ],
+            "query": "SELECT ISDATE(CAST(N'2026-02-28' AS nvarchar(10))) AS [value]",
+            "id": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#109"
+          },
+          "context": {
+            "version": {
+              "kind": "string",
+              "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+            },
+            "productVersion": {
+              "kind": "string",
+              "value": "16.0.4305.5"
+            },
+            "edition": {
+              "kind": "string",
+              "value": "Developer Edition (64-bit)"
+            },
+            "collation": {
+              "kind": "string",
+              "value": "SQL_Latin1_General_CP1_CI_AS"
+            },
+            "language": {
+              "kind": "string",
+              "value": "us_english"
+            },
+            "dateFirst": {
+              "kind": "System.Byte",
+              "exact": "7"
+            },
+            "options": {
+              "kind": "System.Int32",
+              "exact": "5432"
+            }
+          },
+          "semanticReviewSha256": "05009e3262498631131eb4a8f1929449f2c18f947c359d0e2aabc1eed1758937"
+        },
+        "sql-function-date-string-110": {
+          "caseIndex": 110,
+          "baselineId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#110",
+          "baselineTupleAstSha256": "fee59654fee716bf191068155e5895f7abd3ef14a048fc5a03aa343a4c6e189c",
+          "currentTupleAstSha256": "fee59654fee716bf191068155e5895f7abd3ef14a048fc5a03aa343a4c6e189c",
+          "assertionSha256": [
+            "cf60392995a11111755931aae17b92b36e4d1cf1447f3103b43baf642efd3dab"
+          ],
+          "baselineTupleSource": "['ISDATE', ['2026-02-30'], 0]",
+          "baselineValues": [
+            "ISDATE",
+            [
+              "2026-02-30"
+            ],
+            0
+          ],
+          "priorExpected": 0,
+          "currentExpected": 0,
+          "query": "SELECT ISDATE(CAST(N'2026-02-30' AS nvarchar(10))) AS [value]",
+          "typedOutcome": {
+            "outcome": "result",
+            "resultSets": [
+              {
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "int",
+                    "clrType": "System.Int32",
+                    "precision": 10,
+                    "scale": 255
+                  }
+                ],
+                "rows": [
+                  [
+                    {
+                      "kind": "System.Int32",
+                      "exact": "0"
+                    }
+                  ]
+                ]
+              }
+            ],
+            "query": "SELECT ISDATE(CAST(N'2026-02-30' AS nvarchar(10))) AS [value]",
+            "id": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#110"
+          },
+          "context": {
+            "version": {
+              "kind": "string",
+              "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+            },
+            "productVersion": {
+              "kind": "string",
+              "value": "16.0.4305.5"
+            },
+            "edition": {
+              "kind": "string",
+              "value": "Developer Edition (64-bit)"
+            },
+            "collation": {
+              "kind": "string",
+              "value": "SQL_Latin1_General_CP1_CI_AS"
+            },
+            "language": {
+              "kind": "string",
+              "value": "us_english"
+            },
+            "dateFirst": {
+              "kind": "System.Byte",
+              "exact": "7"
+            },
+            "options": {
+              "kind": "System.Int32",
+              "exact": "5432"
+            }
+          },
+          "semanticReviewSha256": "05009e3262498631131eb4a8f1929449f2c18f947c359d0e2aabc1eed1758937"
+        }
+      }
+    },
+    {
+      "runSha256": "d6c8647cefd648df9b4add07fbcee6ef14c0e09c7b1ceeb659302a0d0757747c",
+      "runnerSha256": "d3720ecee266ad25e88f831e8baa697cf809d4a872c0f88980609798542b9c9a",
+      "inventorySha256": "c367ce486675e6be36f9d4e8ac7d950e32c5d4b281a25360441d4bb8076800dd",
+      "facts": {
+        "sql-function-date-string-83": {
+          "caseIndex": 83,
+          "baselineId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#83",
+          "baselineTupleAstSha256": "afacfad93877822e92b4858805cc5d8a42d0f6c8ee9e1c0de8639496827600b3",
+          "currentTupleAstSha256": "afacfad93877822e92b4858805cc5d8a42d0f6c8ee9e1c0de8639496827600b3",
+          "assertionSha256": [
+            "cf60392995a11111755931aae17b92b36e4d1cf1447f3103b43baf642efd3dab"
+          ],
+          "baselineTupleSource": "['DATEDIFF', ['day', '2036-03-01', '2036-02-28'], -2]",
+          "baselineValues": [
+            "DATEDIFF",
+            [
+              "day",
+              "2036-03-01",
+              "2036-02-28"
+            ],
+            -2
+          ],
+          "priorExpected": -2,
+          "currentExpected": -2,
+          "query": "SELECT DATEDIFF(day, CAST(N'2036-03-01' AS nvarchar(10)), CAST(N'2036-02-28' AS nvarchar(10))) AS [value]",
+          "typedOutcome": {
+            "outcome": "result",
+            "resultSets": [
+              {
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "int",
+                    "clrType": "System.Int32",
+                    "precision": 10,
+                    "scale": 255
+                  }
+                ],
+                "rows": [
+                  [
+                    {
+                      "kind": "System.Int32",
+                      "exact": "-2"
+                    }
+                  ]
+                ]
+              }
+            ],
+            "query": "SELECT DATEDIFF(day, CAST(N'2036-03-01' AS nvarchar(10)), CAST(N'2036-02-28' AS nvarchar(10))) AS [value]",
+            "id": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#83"
+          },
+          "context": {
+            "version": {
+              "kind": "string",
+              "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+            },
+            "productVersion": {
+              "kind": "string",
+              "value": "16.0.4305.5"
+            },
+            "edition": {
+              "kind": "string",
+              "value": "Developer Edition (64-bit)"
+            },
+            "collation": {
+              "kind": "string",
+              "value": "SQL_Latin1_General_CP1_CI_AS"
+            },
+            "language": {
+              "kind": "string",
+              "value": "us_english"
+            },
+            "dateFirst": {
+              "kind": "System.Byte",
+              "exact": "7"
+            },
+            "options": {
+              "kind": "System.Int32",
+              "exact": "5432"
+            }
+          },
+          "semanticReviewSha256": "05009e3262498631131eb4a8f1929449f2c18f947c359d0e2aabc1eed1758937"
+        },
+        "sql-function-date-string-84": {
+          "caseIndex": 84,
+          "baselineId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#84",
+          "baselineTupleAstSha256": "62c91efc55a6f7ab8dcf612758de714fffe282f033d0fa91e8e054e9a7b39266",
+          "currentTupleAstSha256": "62c91efc55a6f7ab8dcf612758de714fffe282f033d0fa91e8e054e9a7b39266",
+          "assertionSha256": [
+            "cf60392995a11111755931aae17b92b36e4d1cf1447f3103b43baf642efd3dab"
+          ],
+          "baselineTupleSource": "['DATEDIFF', ['day', '2007-05-06 23:59:59.999', '2007-05-07 00:00:00'], 1]",
+          "baselineValues": [
+            "DATEDIFF",
+            [
+              "day",
+              "2007-05-06 23:59:59.999",
+              "2007-05-07 00:00:00"
+            ],
+            1
+          ],
+          "priorExpected": 1,
+          "currentExpected": 1,
+          "query": "SELECT DATEDIFF(day, CAST(N'2007-05-06 23:59:59.999' AS nvarchar(23)), CAST(N'2007-05-07 00:00:00' AS nvarchar(19))) AS [value]",
+          "typedOutcome": {
+            "outcome": "result",
+            "resultSets": [
+              {
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "int",
+                    "clrType": "System.Int32",
+                    "precision": 10,
+                    "scale": 255
+                  }
+                ],
+                "rows": [
+                  [
+                    {
+                      "kind": "System.Int32",
+                      "exact": "1"
+                    }
+                  ]
+                ]
+              }
+            ],
+            "query": "SELECT DATEDIFF(day, CAST(N'2007-05-06 23:59:59.999' AS nvarchar(23)), CAST(N'2007-05-07 00:00:00' AS nvarchar(19))) AS [value]",
+            "id": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#84"
+          },
+          "context": {
+            "version": {
+              "kind": "string",
+              "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+            },
+            "productVersion": {
+              "kind": "string",
+              "value": "16.0.4305.5"
+            },
+            "edition": {
+              "kind": "string",
+              "value": "Developer Edition (64-bit)"
+            },
+            "collation": {
+              "kind": "string",
+              "value": "SQL_Latin1_General_CP1_CI_AS"
+            },
+            "language": {
+              "kind": "string",
+              "value": "us_english"
+            },
+            "dateFirst": {
+              "kind": "System.Byte",
+              "exact": "7"
+            },
+            "options": {
+              "kind": "System.Int32",
+              "exact": "5432"
+            }
+          },
+          "semanticReviewSha256": "05009e3262498631131eb4a8f1929449f2c18f947c359d0e2aabc1eed1758937"
+        },
+        "sql-function-date-string-85": {
+          "caseIndex": 85,
+          "baselineId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#85",
+          "baselineTupleAstSha256": "9bf27772c5b4596cf30dc54401fe6ef0c712275ec9d570b019e193bb695f8a90",
+          "currentTupleAstSha256": "9bf27772c5b4596cf30dc54401fe6ef0c712275ec9d570b019e193bb695f8a90",
+          "assertionSha256": [
+            "cf60392995a11111755931aae17b92b36e4d1cf1447f3103b43baf642efd3dab"
+          ],
+          "baselineTupleSource": "['DATEDIFF', ['year', '2000-12-31', '2001-01-01'], 1]",
+          "baselineValues": [
+            "DATEDIFF",
+            [
+              "year",
+              "2000-12-31",
+              "2001-01-01"
+            ],
+            1
+          ],
+          "priorExpected": 1,
+          "currentExpected": 1,
+          "query": "SELECT DATEDIFF(year, CAST(N'2000-12-31' AS nvarchar(10)), CAST(N'2001-01-01' AS nvarchar(10))) AS [value]",
+          "typedOutcome": {
+            "outcome": "result",
+            "resultSets": [
+              {
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "int",
+                    "clrType": "System.Int32",
+                    "precision": 10,
+                    "scale": 255
+                  }
+                ],
+                "rows": [
+                  [
+                    {
+                      "kind": "System.Int32",
+                      "exact": "1"
+                    }
+                  ]
+                ]
+              }
+            ],
+            "query": "SELECT DATEDIFF(year, CAST(N'2000-12-31' AS nvarchar(10)), CAST(N'2001-01-01' AS nvarchar(10))) AS [value]",
+            "id": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#85"
+          },
+          "context": {
+            "version": {
+              "kind": "string",
+              "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+            },
+            "productVersion": {
+              "kind": "string",
+              "value": "16.0.4305.5"
+            },
+            "edition": {
+              "kind": "string",
+              "value": "Developer Edition (64-bit)"
+            },
+            "collation": {
+              "kind": "string",
+              "value": "SQL_Latin1_General_CP1_CI_AS"
+            },
+            "language": {
+              "kind": "string",
+              "value": "us_english"
+            },
+            "dateFirst": {
+              "kind": "System.Byte",
+              "exact": "7"
+            },
+            "options": {
+              "kind": "System.Int32",
+              "exact": "5432"
+            }
+          },
+          "semanticReviewSha256": "05009e3262498631131eb4a8f1929449f2c18f947c359d0e2aabc1eed1758937"
+        },
+        "sql-function-date-string-86": {
+          "caseIndex": 86,
+          "baselineId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#86",
+          "baselineTupleAstSha256": "7e3126a78a0bab055e6553010b2814f4bd849de7b5ca6392903b7bee69bc8159",
+          "currentTupleAstSha256": "7e3126a78a0bab055e6553010b2814f4bd849de7b5ca6392903b7bee69bc8159",
+          "assertionSha256": [
+            "cf60392995a11111755931aae17b92b36e4d1cf1447f3103b43baf642efd3dab"
+          ],
+          "baselineTupleSource": "['DATEDIFF', ['month', '2026-01-31', '2026-02-01'], 1]",
+          "baselineValues": [
+            "DATEDIFF",
+            [
+              "month",
+              "2026-01-31",
+              "2026-02-01"
+            ],
+            1
+          ],
+          "priorExpected": 1,
+          "currentExpected": 1,
+          "query": "SELECT DATEDIFF(month, CAST(N'2026-01-31' AS nvarchar(10)), CAST(N'2026-02-01' AS nvarchar(10))) AS [value]",
+          "typedOutcome": {
+            "outcome": "result",
+            "resultSets": [
+              {
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "int",
+                    "clrType": "System.Int32",
+                    "precision": 10,
+                    "scale": 255
+                  }
+                ],
+                "rows": [
+                  [
+                    {
+                      "kind": "System.Int32",
+                      "exact": "1"
+                    }
+                  ]
+                ]
+              }
+            ],
+            "query": "SELECT DATEDIFF(month, CAST(N'2026-01-31' AS nvarchar(10)), CAST(N'2026-02-01' AS nvarchar(10))) AS [value]",
+            "id": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#86"
+          },
+          "context": {
+            "version": {
+              "kind": "string",
+              "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+            },
+            "productVersion": {
+              "kind": "string",
+              "value": "16.0.4305.5"
+            },
+            "edition": {
+              "kind": "string",
+              "value": "Developer Edition (64-bit)"
+            },
+            "collation": {
+              "kind": "string",
+              "value": "SQL_Latin1_General_CP1_CI_AS"
+            },
+            "language": {
+              "kind": "string",
+              "value": "us_english"
+            },
+            "dateFirst": {
+              "kind": "System.Byte",
+              "exact": "7"
+            },
+            "options": {
+              "kind": "System.Int32",
+              "exact": "5432"
+            }
+          },
+          "semanticReviewSha256": "05009e3262498631131eb4a8f1929449f2c18f947c359d0e2aabc1eed1758937"
+        },
+        "sql-function-date-string-87": {
+          "caseIndex": 87,
+          "baselineId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#87",
+          "baselineTupleAstSha256": "e60600311a3e9b54c0e7e39690fe2fa3e90b75eed2de24bbb33fc57ba1b56d6e",
+          "currentTupleAstSha256": "e60600311a3e9b54c0e7e39690fe2fa3e90b75eed2de24bbb33fc57ba1b56d6e",
+          "assertionSha256": [
+            "cf60392995a11111755931aae17b92b36e4d1cf1447f3103b43baf642efd3dab"
+          ],
+          "baselineTupleSource": "['DATEDIFF', ['week', '2026-10-17', '2026-10-18'], 1]",
+          "baselineValues": [
+            "DATEDIFF",
+            [
+              "week",
+              "2026-10-17",
+              "2026-10-18"
+            ],
+            1
+          ],
+          "priorExpected": 1,
+          "currentExpected": 1,
+          "query": "SELECT DATEDIFF(week, CAST(N'2026-10-17' AS nvarchar(10)), CAST(N'2026-10-18' AS nvarchar(10))) AS [value]",
+          "typedOutcome": {
+            "outcome": "result",
+            "resultSets": [
+              {
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "int",
+                    "clrType": "System.Int32",
+                    "precision": 10,
+                    "scale": 255
+                  }
+                ],
+                "rows": [
+                  [
+                    {
+                      "kind": "System.Int32",
+                      "exact": "1"
+                    }
+                  ]
+                ]
+              }
+            ],
+            "query": "SELECT DATEDIFF(week, CAST(N'2026-10-17' AS nvarchar(10)), CAST(N'2026-10-18' AS nvarchar(10))) AS [value]",
+            "id": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#87"
+          },
+          "context": {
+            "version": {
+              "kind": "string",
+              "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+            },
+            "productVersion": {
+              "kind": "string",
+              "value": "16.0.4305.5"
+            },
+            "edition": {
+              "kind": "string",
+              "value": "Developer Edition (64-bit)"
+            },
+            "collation": {
+              "kind": "string",
+              "value": "SQL_Latin1_General_CP1_CI_AS"
+            },
+            "language": {
+              "kind": "string",
+              "value": "us_english"
+            },
+            "dateFirst": {
+              "kind": "System.Byte",
+              "exact": "7"
+            },
+            "options": {
+              "kind": "System.Int32",
+              "exact": "5432"
+            }
+          },
+          "semanticReviewSha256": "05009e3262498631131eb4a8f1929449f2c18f947c359d0e2aabc1eed1758937"
+        },
+        "sql-function-date-string-88": {
+          "caseIndex": 88,
+          "baselineId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#88",
+          "baselineTupleAstSha256": "057e7ba717cb7bc81b8bc1de42c886b5db45d04988ce1fbe6eee08c6cebc8209",
+          "currentTupleAstSha256": "057e7ba717cb7bc81b8bc1de42c886b5db45d04988ce1fbe6eee08c6cebc8209",
+          "assertionSha256": [
+            "cf60392995a11111755931aae17b92b36e4d1cf1447f3103b43baf642efd3dab"
+          ],
+          "baselineTupleSource": "['DATEDIFF', ['hour', '2026-01-01 00:59', '2026-01-01 01:00'], 1]",
+          "baselineValues": [
+            "DATEDIFF",
+            [
+              "hour",
+              "2026-01-01 00:59",
+              "2026-01-01 01:00"
+            ],
+            1
+          ],
+          "priorExpected": 1,
+          "currentExpected": 1,
+          "query": "SELECT DATEDIFF(hour, CAST(N'2026-01-01 00:59' AS nvarchar(16)), CAST(N'2026-01-01 01:00' AS nvarchar(16))) AS [value]",
+          "typedOutcome": {
+            "outcome": "result",
+            "resultSets": [
+              {
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "int",
+                    "clrType": "System.Int32",
+                    "precision": 10,
+                    "scale": 255
+                  }
+                ],
+                "rows": [
+                  [
+                    {
+                      "kind": "System.Int32",
+                      "exact": "1"
+                    }
+                  ]
+                ]
+              }
+            ],
+            "query": "SELECT DATEDIFF(hour, CAST(N'2026-01-01 00:59' AS nvarchar(16)), CAST(N'2026-01-01 01:00' AS nvarchar(16))) AS [value]",
+            "id": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#88"
+          },
+          "context": {
+            "version": {
+              "kind": "string",
+              "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+            },
+            "productVersion": {
+              "kind": "string",
+              "value": "16.0.4305.5"
+            },
+            "edition": {
+              "kind": "string",
+              "value": "Developer Edition (64-bit)"
+            },
+            "collation": {
+              "kind": "string",
+              "value": "SQL_Latin1_General_CP1_CI_AS"
+            },
+            "language": {
+              "kind": "string",
+              "value": "us_english"
+            },
+            "dateFirst": {
+              "kind": "System.Byte",
+              "exact": "7"
+            },
+            "options": {
+              "kind": "System.Int32",
+              "exact": "5432"
+            }
+          },
+          "semanticReviewSha256": "05009e3262498631131eb4a8f1929449f2c18f947c359d0e2aabc1eed1758937"
+        },
+        "sql-function-date-string-89": {
+          "caseIndex": 89,
+          "baselineId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#89",
+          "baselineTupleAstSha256": "9d181735175f6071b0672f59845413b736f6c6e58c4ba8fd2092906a781a518f",
+          "currentTupleAstSha256": "9d181735175f6071b0672f59845413b736f6c6e58c4ba8fd2092906a781a518f",
+          "assertionSha256": [
+            "cf60392995a11111755931aae17b92b36e4d1cf1447f3103b43baf642efd3dab"
+          ],
+          "baselineTupleSource": "['DATEDIFF', ['second', '2026-01-01 00:00:00', '2026-01-01 00:01:30'], 90]",
+          "baselineValues": [
+            "DATEDIFF",
+            [
+              "second",
+              "2026-01-01 00:00:00",
+              "2026-01-01 00:01:30"
+            ],
+            90
+          ],
+          "priorExpected": 90,
+          "currentExpected": 90,
+          "query": "SELECT DATEDIFF(second, CAST(N'2026-01-01 00:00:00' AS nvarchar(19)), CAST(N'2026-01-01 00:01:30' AS nvarchar(19))) AS [value]",
+          "typedOutcome": {
+            "outcome": "result",
+            "resultSets": [
+              {
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "int",
+                    "clrType": "System.Int32",
+                    "precision": 10,
+                    "scale": 255
+                  }
+                ],
+                "rows": [
+                  [
+                    {
+                      "kind": "System.Int32",
+                      "exact": "90"
+                    }
+                  ]
+                ]
+              }
+            ],
+            "query": "SELECT DATEDIFF(second, CAST(N'2026-01-01 00:00:00' AS nvarchar(19)), CAST(N'2026-01-01 00:01:30' AS nvarchar(19))) AS [value]",
+            "id": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#89"
+          },
+          "context": {
+            "version": {
+              "kind": "string",
+              "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+            },
+            "productVersion": {
+              "kind": "string",
+              "value": "16.0.4305.5"
+            },
+            "edition": {
+              "kind": "string",
+              "value": "Developer Edition (64-bit)"
+            },
+            "collation": {
+              "kind": "string",
+              "value": "SQL_Latin1_General_CP1_CI_AS"
+            },
+            "language": {
+              "kind": "string",
+              "value": "us_english"
+            },
+            "dateFirst": {
+              "kind": "System.Byte",
+              "exact": "7"
+            },
+            "options": {
+              "kind": "System.Int32",
+              "exact": "5432"
+            }
+          },
+          "semanticReviewSha256": "05009e3262498631131eb4a8f1929449f2c18f947c359d0e2aabc1eed1758937"
+        },
+        "sql-function-date-string-109": {
+          "caseIndex": 109,
+          "baselineId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#109",
+          "baselineTupleAstSha256": "59d3919a07642c9aabebdff06a9005e9bea17cdee3c290bea525acc284bf9361",
+          "currentTupleAstSha256": "59d3919a07642c9aabebdff06a9005e9bea17cdee3c290bea525acc284bf9361",
+          "assertionSha256": [
+            "cf60392995a11111755931aae17b92b36e4d1cf1447f3103b43baf642efd3dab"
+          ],
+          "baselineTupleSource": "['ISDATE', ['2026-02-28'], 1]",
+          "baselineValues": [
+            "ISDATE",
+            [
+              "2026-02-28"
+            ],
+            1
+          ],
+          "priorExpected": 1,
+          "currentExpected": 1,
+          "query": "SELECT ISDATE(CAST(N'2026-02-28' AS nvarchar(10))) AS [value]",
+          "typedOutcome": {
+            "outcome": "result",
+            "resultSets": [
+              {
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "int",
+                    "clrType": "System.Int32",
+                    "precision": 10,
+                    "scale": 255
+                  }
+                ],
+                "rows": [
+                  [
+                    {
+                      "kind": "System.Int32",
+                      "exact": "1"
+                    }
+                  ]
+                ]
+              }
+            ],
+            "query": "SELECT ISDATE(CAST(N'2026-02-28' AS nvarchar(10))) AS [value]",
+            "id": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#109"
+          },
+          "context": {
+            "version": {
+              "kind": "string",
+              "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+            },
+            "productVersion": {
+              "kind": "string",
+              "value": "16.0.4305.5"
+            },
+            "edition": {
+              "kind": "string",
+              "value": "Developer Edition (64-bit)"
+            },
+            "collation": {
+              "kind": "string",
+              "value": "SQL_Latin1_General_CP1_CI_AS"
+            },
+            "language": {
+              "kind": "string",
+              "value": "us_english"
+            },
+            "dateFirst": {
+              "kind": "System.Byte",
+              "exact": "7"
+            },
+            "options": {
+              "kind": "System.Int32",
+              "exact": "5432"
+            }
+          },
+          "semanticReviewSha256": "05009e3262498631131eb4a8f1929449f2c18f947c359d0e2aabc1eed1758937"
+        },
+        "sql-function-date-string-110": {
+          "caseIndex": 110,
+          "baselineId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#110",
+          "baselineTupleAstSha256": "fee59654fee716bf191068155e5895f7abd3ef14a048fc5a03aa343a4c6e189c",
+          "currentTupleAstSha256": "fee59654fee716bf191068155e5895f7abd3ef14a048fc5a03aa343a4c6e189c",
+          "assertionSha256": [
+            "cf60392995a11111755931aae17b92b36e4d1cf1447f3103b43baf642efd3dab"
+          ],
+          "baselineTupleSource": "['ISDATE', ['2026-02-30'], 0]",
+          "baselineValues": [
+            "ISDATE",
+            [
+              "2026-02-30"
+            ],
+            0
+          ],
+          "priorExpected": 0,
+          "currentExpected": 0,
+          "query": "SELECT ISDATE(CAST(N'2026-02-30' AS nvarchar(10))) AS [value]",
+          "typedOutcome": {
+            "outcome": "result",
+            "resultSets": [
+              {
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "int",
+                    "clrType": "System.Int32",
+                    "precision": 10,
+                    "scale": 255
+                  }
+                ],
+                "rows": [
+                  [
+                    {
+                      "kind": "System.Int32",
+                      "exact": "0"
+                    }
+                  ]
+                ]
+              }
+            ],
+            "query": "SELECT ISDATE(CAST(N'2026-02-30' AS nvarchar(10))) AS [value]",
+            "id": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#110"
+          },
+          "context": {
+            "version": {
+              "kind": "string",
+              "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+            },
+            "productVersion": {
+              "kind": "string",
+              "value": "16.0.4305.5"
+            },
+            "edition": {
+              "kind": "string",
+              "value": "Developer Edition (64-bit)"
+            },
+            "collation": {
+              "kind": "string",
+              "value": "SQL_Latin1_General_CP1_CI_AS"
+            },
+            "language": {
+              "kind": "string",
+              "value": "us_english"
+            },
+            "dateFirst": {
+              "kind": "System.Byte",
+              "exact": "7"
+            },
+            "options": {
+              "kind": "System.Int32",
+              "exact": "5432"
+            }
+          },
+          "semanticReviewSha256": "05009e3262498631131eb4a8f1929449f2c18f947c359d0e2aabc1eed1758937"
+        }
+      }
+    }
+  ]
+}

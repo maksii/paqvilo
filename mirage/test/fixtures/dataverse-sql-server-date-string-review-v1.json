@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "scope": "Derived SQL Server fixed literal date-string integer review; no general date/time adapter or Dataverse TDS claim",
+  "baseline": "1171cccc8baed9218f7fd7689afae4abdc89252b",
+  "sourceReceiptSha256": "05009e3262498631131eb4a8f1929449f2c18f947c359d0e2aabc1eed1758937",
+  "review": {
+    "cases": [
+      {
+        "index": 83,
+        "originalId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#83",
+        "classification": "unchanged-baseline-tuple",
+        "sourceTupleSha256": "afacfad93877822e92b4858805cc5d8a42d0f6c8ee9e1c0de8639496827600b3",
+        "currentTupleSha256": "afacfad93877822e92b4858805cc5d8a42d0f6c8ee9e1c0de8639496827600b3",
+        "sql": "SELECT DATEDIFF(day, CAST(N'2036-03-01' AS nvarchar(10)), CAST(N'2036-02-28' AS nvarchar(10))) AS [value]",
+        "bounds": "Fixed ISO literal/datepart and captured SQL language/date settings; no general civil-time or timezone equivalence."
+      },
+      {
+        "index": 84,
+        "originalId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#84",
+        "classification": "unchanged-baseline-tuple",
+        "sourceTupleSha256": "62c91efc55a6f7ab8dcf612758de714fffe282f033d0fa91e8e054e9a7b39266",
+        "currentTupleSha256": "62c91efc55a6f7ab8dcf612758de714fffe282f033d0fa91e8e054e9a7b39266",
+        "sql": "SELECT DATEDIFF(day, CAST(N'2007-05-06 23:59:59.999' AS nvarchar(23)), CAST(N'2007-05-07 00:00:00' AS nvarchar(19))) AS [value]",
+        "bounds": "Millisecond boundary output matches only this literal; no claim SQL implicit date parse preserves JS UTC instant."
+      },
+      {
+        "index": 85,
+        "originalId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#85",
+        "classification": "unchanged-baseline-tuple",
+        "sourceTupleSha256": "9bf27772c5b4596cf30dc54401fe6ef0c712275ec9d570b019e193bb695f8a90",
+        "currentTupleSha256": "9bf27772c5b4596cf30dc54401fe6ef0c712275ec9d570b019e193bb695f8a90",
+        "sql": "SELECT DATEDIFF(year, CAST(N'2000-12-31' AS nvarchar(10)), CAST(N'2001-01-01' AS nvarchar(10))) AS [value]",
+        "bounds": "Fixed ISO literal/datepart and captured SQL language/date settings; no general civil-time or timezone equivalence."
+      },
+      {
+        "index": 86,
+        "originalId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#86",
+        "classification": "unchanged-baseline-tuple",
+        "sourceTupleSha256": "7e3126a78a0bab055e6553010b2814f4bd849de7b5ca6392903b7bee69bc8159",
+        "currentTupleSha256": "7e3126a78a0bab055e6553010b2814f4bd849de7b5ca6392903b7bee69bc8159",
+        "sql": "SELECT DATEDIFF(month, CAST(N'2026-01-31' AS nvarchar(10)), CAST(N'2026-02-01' AS nvarchar(10))) AS [value]",
+        "bounds": "Fixed ISO literal/datepart and captured SQL language/date settings; no general civil-time or timezone equivalence."
+      },
+      {
+        "index": 87,
+        "originalId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#87",
+        "classification": "unchanged-baseline-tuple",
+        "sourceTupleSha256": "e60600311a3e9b54c0e7e39690fe2fa3e90b75eed2de24bbb33fc57ba1b56d6e",
+        "currentTupleSha256": "e60600311a3e9b54c0e7e39690fe2fa3e90b75eed2de24bbb33fc57ba1b56d6e",
+        "sql": "SELECT DATEDIFF(week, CAST(N'2026-10-17' AS nvarchar(10)), CAST(N'2026-10-18' AS nvarchar(10))) AS [value]",
+        "bounds": "This Saturday/Sunday week boundary matches captured SQL context and JS Sunday-based calculation; no general DATEFIRST claim."
+      },
+      {
+        "index": 88,
+        "originalId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#88",
+        "classification": "unchanged-baseline-tuple",
+        "sourceTupleSha256": "057e7ba717cb7bc81b8bc1de42c886b5db45d04988ce1fbe6eee08c6cebc8209",
+        "currentTupleSha256": "057e7ba717cb7bc81b8bc1de42c886b5db45d04988ce1fbe6eee08c6cebc8209",
+        "sql": "SELECT DATEDIFF(hour, CAST(N'2026-01-01 00:59' AS nvarchar(16)), CAST(N'2026-01-01 01:00' AS nvarchar(16))) AS [value]",
+        "bounds": "Fixed ISO literal/datepart and captured SQL language/date settings; no general civil-time or timezone equivalence."
+      },
+      {
+        "index": 89,
+        "originalId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#89",
+        "classification": "unchanged-baseline-tuple",
+        "sourceTupleSha256": "9d181735175f6071b0672f59845413b736f6c6e58c4ba8fd2092906a781a518f",
+        "currentTupleSha256": "9d181735175f6071b0672f59845413b736f6c6e58c4ba8fd2092906a781a518f",
+        "sql": "SELECT DATEDIFF(second, CAST(N'2026-01-01 00:00:00' AS nvarchar(19)), CAST(N'2026-01-01 00:01:30' AS nvarchar(19))) AS [value]",
+        "bounds": "Fixed ISO literal/datepart and captured SQL language/date settings; no general civil-time or timezone equivalence."
+      },
+      {
+        "index": 109,
+        "originalId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#109",
+        "classification": "unchanged-baseline-tuple",
+        "sourceTupleSha256": "59d3919a07642c9aabebdff06a9005e9bea17cdee3c290bea525acc284bf9361",
+        "currentTupleSha256": "59d3919a07642c9aabebdff06a9005e9bea17cdee3c290bea525acc284bf9361",
+        "sql": "SELECT ISDATE(CAST(N'2026-02-28' AS nvarchar(10))) AS [value]",
+        "bounds": "Validity result only for this literal under captured SQL language/date settings; no general date parsing equivalence."
+      },
+      {
+        "index": 110,
+        "originalId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#110",
+        "classification": "unchanged-baseline-tuple",
+        "sourceTupleSha256": "fee59654fee716bf191068155e5895f7abd3ef14a048fc5a03aa343a4c6e189c",
+        "currentTupleSha256": "fee59654fee716bf191068155e5895f7abd3ef14a048fc5a03aa343a4c6e189c",
+        "sql": "SELECT ISDATE(CAST(N'2026-02-30' AS nvarchar(10))) AS [value]",
+        "bounds": "Validity result only for this literal under captured SQL language/date settings; no general date parsing equivalence."
+      }
+    ],
+    "holds": [
+      "Exact listed date strings, dateparts and captured language/date settings only.",
+      "No JS Date timezone mapping, general parsing behavior or Dataverse TDS behavior is established."
+    ]
+  }
+}

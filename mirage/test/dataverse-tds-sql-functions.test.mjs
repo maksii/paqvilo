@@ -60,6 +60,34 @@ const __paqParityShared = __paqParityFreeze([
     runtimeInputs: [],
     inputDependencies: [
       {
+        path: 'mirage/test/fixtures/dataverse-sql-server-binary64-review-v1.json',
+        sha256: '2196e8aa60ab7f3a2405a2e5b99a8270236f51a4e030030e11d74e7ccce089d9',
+      },
+      {
+        path: 'mirage/test/fixtures/dataverse-sql-server-civil-date-review-v1.json',
+        sha256: '2ae522c2273e7cb625f023e64217e862f3f28831e0a6f50e4c66ccfcd7a8d97c',
+      },
+      {
+        path: 'mirage/test/fixtures/dataverse-sql-server-date-string-review-v1.json',
+        sha256: '0a18039ec68683a7d2b5eaa90fde1cd03fa723bb33f7bb87a3a5a8ada66574bf',
+      },
+      {
+        path: 'mirage/test/fixtures/dataverse-sql-server-decimal-review-v1.json',
+        sha256: '7edb418de94d30021814f18da7b2eadd48d2bbbf0d11986a66df4b75cb447945',
+      },
+      {
+        path: 'mirage/test/fixtures/dataverse-sql-server-format-null-review-v1.json',
+        sha256: '3378b46e6442bd1265db5387e4c5f99e76d72e588618c6b0abd7c6c2731c8fb6',
+      },
+      {
+        path: 'mirage/test/fixtures/dataverse-sql-server-iif-true-review-v1.json',
+        sha256: 'a1e8c68a2688286b52e25d12e7c7d0cb78d7f78993f97999b29026b709c3ef7e',
+      },
+      {
+        path: 'mirage/test/fixtures/dataverse-sql-server-next-review-v1.json',
+        sha256: 'd69135229caeee05301b9fcf8e5048c4ae0638eca205cd737deca17916cde0a7',
+      },
+      {
         path: 'mirage/test/fixtures/dataverse-sql-server-primitive-review-v1.json',
         sha256: 'eb325d95299b7c0bd25372d4696c92f2b0633b5c517c24e8b177d1229a9b6835',
       },
@@ -228,6 +256,7 @@ const __paqParityShared = __paqParityFreeze([
       selected: [
         { caseIndex: 0, factIds: ['sql-function-0'] },
         { caseIndex: 1, factIds: ['sql-function-1'] },
+        { caseIndex: 3, factIds: ['sql-function-format-null-3'] },
         { caseIndex: 4, factIds: ['sql-function-4'] },
         { caseIndex: 5, factIds: ['sql-function-5'] },
         { caseIndex: 6, factIds: ['sql-function-correction-6'] },
@@ -236,6 +265,7 @@ const __paqParityShared = __paqParityFreeze([
         { caseIndex: 9, factIds: ['sql-function-9'] },
         { caseIndex: 10, factIds: ['sql-function-10'] },
         { caseIndex: 11, factIds: ['sql-function-11'] },
+        { caseIndex: 14, factIds: ['sql-function-iif-true-14'] },
         { caseIndex: 15, factIds: ['sql-function-15'] },
         { caseIndex: 16, factIds: ['sql-function-16'] },
         { caseIndex: 17, factIds: ['sql-function-17'] },
@@ -256,15 +286,19 @@ const __paqParityShared = __paqParityFreeze([
         { caseIndex: 33, factIds: ['sql-function-33'] },
         { caseIndex: 34, factIds: ['sql-function-34'] },
         { caseIndex: 35, factIds: ['sql-function-35'] },
+        { caseIndex: 36, factIds: ['sql-function-next-36'] },
         { caseIndex: 37, factIds: ['sql-function-37'] },
         { caseIndex: 38, factIds: ['sql-function-correction-38'] },
         { caseIndex: 39, factIds: ['sql-function-39'] },
         { caseIndex: 40, factIds: ['sql-function-40'] },
+        { caseIndex: 41, factIds: ['sql-function-next-41'] },
         { caseIndex: 42, factIds: ['sql-function-42'] },
         { caseIndex: 43, factIds: ['sql-function-43'] },
         { caseIndex: 44, factIds: ['sql-function-44'] },
         { caseIndex: 45, factIds: ['sql-function-45'] },
         { caseIndex: 46, factIds: ['sql-function-46'] },
+        { caseIndex: 47, factIds: ['sql-function-next-47'] },
+        { caseIndex: 48, factIds: ['sql-function-next-48'] },
         { caseIndex: 49, factIds: ['sql-function-49'] },
         { caseIndex: 50, factIds: ['sql-function-50'] },
         { caseIndex: 51, factIds: ['sql-function-51'] },
@@ -282,13 +316,64 @@ const __paqParityShared = __paqParityFreeze([
         { caseIndex: 66, factIds: ['sql-function-66'] },
         { caseIndex: 67, factIds: ['sql-function-67'] },
         { caseIndex: 68, factIds: ['sql-function-68'] },
+        { caseIndex: 69, factIds: ['sql-function-format-null-69'] },
+        { caseIndex: 70, factIds: ['sql-function-format-null-70'] },
+        { caseIndex: 71, factIds: ['sql-function-civil-71'] },
+        { caseIndex: 72, factIds: ['sql-function-civil-72'] },
+        { caseIndex: 73, factIds: ['sql-function-format-null-73'] },
+        { caseIndex: 74, factIds: ['sql-function-format-null-74'] },
+        { caseIndex: 75, factIds: ['sql-function-format-null-75'] },
+        { caseIndex: 76, factIds: ['sql-function-format-null-76'] },
+        { caseIndex: 77, factIds: ['sql-function-format-null-77'] },
+        { caseIndex: 78, factIds: ['sql-function-civil-78'] },
+        { caseIndex: 79, factIds: ['sql-function-civil-79'] },
+        { caseIndex: 80, factIds: ['sql-function-civil-80'] },
+        { caseIndex: 83, factIds: ['sql-function-date-string-83'] },
+        { caseIndex: 84, factIds: ['sql-function-date-string-84'] },
+        { caseIndex: 85, factIds: ['sql-function-date-string-85'] },
+        { caseIndex: 86, factIds: ['sql-function-date-string-86'] },
+        { caseIndex: 87, factIds: ['sql-function-date-string-87'] },
+        { caseIndex: 88, factIds: ['sql-function-date-string-88'] },
+        { caseIndex: 89, factIds: ['sql-function-date-string-89'] },
+        { caseIndex: 95, factIds: ['sql-function-civil-95'] },
+        { caseIndex: 96, factIds: ['sql-function-civil-96'] },
+        { caseIndex: 97, factIds: ['sql-function-civil-97'] },
+        { caseIndex: 98, factIds: ['sql-function-civil-98'] },
+        { caseIndex: 99, factIds: ['sql-function-civil-99'] },
+        { caseIndex: 100, factIds: ['sql-function-civil-100'] },
+        { caseIndex: 101, factIds: ['sql-function-civil-101'] },
+        { caseIndex: 102, factIds: ['sql-function-civil-102'] },
+        { caseIndex: 103, factIds: ['sql-function-civil-103'] },
+        { caseIndex: 104, factIds: ['sql-function-civil-104'] },
+        { caseIndex: 109, factIds: ['sql-function-date-string-109'] },
+        { caseIndex: 110, factIds: ['sql-function-date-string-110'] },
         { caseIndex: 111, factIds: ['sql-function-111'] },
+        { caseIndex: 112, factIds: ['sql-function-decimal-112'] },
+        { caseIndex: 113, factIds: ['sql-function-decimal-113'] },
+        { caseIndex: 114, factIds: ['sql-function-decimal-114'] },
+        { caseIndex: 115, factIds: ['sql-function-decimal-115'] },
+        { caseIndex: 116, factIds: ['sql-function-float-116'] },
+        { caseIndex: 117, factIds: ['sql-function-float-117'] },
+        { caseIndex: 118, factIds: ['sql-function-decimal-118'] },
+        { caseIndex: 119, factIds: ['sql-function-decimal-119'] },
+        { caseIndex: 120, factIds: ['sql-function-decimal-120'] },
+        { caseIndex: 121, factIds: ['sql-function-decimal-121'] },
+        { caseIndex: 122, factIds: ['sql-function-decimal-122'] },
+        { caseIndex: 123, factIds: ['sql-function-decimal-123'] },
+        { caseIndex: 124, factIds: ['sql-function-decimal-124'] },
+        { caseIndex: 125, factIds: ['sql-function-decimal-125'] },
+        { caseIndex: 126, factIds: ['sql-function-decimal-126'] },
+        { caseIndex: 127, factIds: ['sql-function-decimal-127'] },
+        { caseIndex: 128, factIds: ['sql-function-decimal-128'] },
+        { caseIndex: 129, factIds: ['sql-function-float-129'] },
+        { caseIndex: 130, factIds: ['sql-function-float-130'] },
         { caseIndex: 132, factIds: ['sql-function-132'] },
         { caseIndex: 134, factIds: ['sql-function-134'] },
         { caseIndex: 135, factIds: ['sql-function-135'] },
         { caseIndex: 136, factIds: ['sql-function-136'] },
         { caseIndex: 137, factIds: ['sql-function-137'] },
         { caseIndex: 138, factIds: ['sql-function-138'] },
+        { caseIndex: 139, factIds: ['sql-function-float-139'] },
       ],
       encoding: 'typed-v1',
       bindings: [
@@ -2136,10 +2221,542 @@ const __paqParityShared = __paqParityFreeze([
           },
         ],
       },
+      {
+        path: 'mirage/test/fixtures/dataverse-sql-server-next-primitives-v1.json',
+        sha256: '69f94f10a73bbce1ca6ba92d787be98a10eac134390c7f7836546478cd6edd7f',
+        mode: 'official-package',
+        package: {
+          ecosystem: 'microsoft-oci',
+          id: 'mssql/server',
+          sha256: 'cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718',
+          source:
+            'https://mcr.microsoft.com/v2/mssql/server/manifests/sha256:cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718',
+          bodyBase64:
+            'eyJzY2hlbWFWZXJzaW9uIjoyLCJtZWRpYVR5cGUiOiJhcHBsaWNhdGlvbi92bmQuZG9ja2VyLmRpc3RyaWJ1dGlvbi5tYW5pZmVzdC52Mitqc29uIiwiY29uZmlnIjp7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuY29udGFpbmVyLmltYWdlLnYxK2pzb24iLCJzaXplIjozMzcwLCJkaWdlc3QiOiJzaGEyNTY6N2ZiMjEzOTM0MTcxNWU4YTcxODQzY2ZjMmYwMmJhYjZlOTVmMWM1MmMwZmE5ZjlhNmIyZTdiNzYxZjA2MDc4MCJ9LCJsYXllcnMiOlt7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuaW1hZ2Uucm9vdGZzLmRpZmYudGFyLmd6aXAiLCJzaXplIjozMTU1OTQwMCwiZGlnZXN0Ijoic2hhMjU2OmNiNWUzNzRiZTY2MmE1NjJiODI3MTE1ODYzOWU5MThiOWM2MzRhYTRkZmRjOGIzYWEzMWNjZmM5OWNmOGMwNzcifSx7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuaW1hZ2Uucm9vdGZzLmRpZmYudGFyLmd6aXAiLCJzaXplIjo1MDIxMjIzODQsImRpZ2VzdCI6InNoYTI1NjpjZjc2ZTQ3YzIzN2Y5YmZkZThjNzM4ZmQzZTNmYTgzMWI1M2E2MmFlNTI2OTQ0MTYwMGQ0MTM4OTAwNTVkOGFlIn0seyJtZWRpYVR5cGUiOiJhcHBsaWNhdGlvbi92bmQuZG9ja2VyLmltYWdlLnJvb3Rmcy5kaWZmLnRhci5nemlwIiwic2l6ZSI6OTMwMjcwMDMsImRpZ2VzdCI6InNoYTI1NjoxNmU4NDM2YzBjYmFlN2RmNWEzODEzMTE2MWU4OGYxMGE0OTdhZjZlMjRhOWVlNmRjYzcwMDY3ZThjYjI4YWU3In1dfQ==',
+        },
+        packagePointer: '/package',
+        capturePointers: ['/runs/0/runSha256', '/runs/1/runSha256'],
+        facts: [
+          {
+            id: 'sql-function-next-36',
+            pointer: '/runs/0/facts/sql-function-next-36',
+            sha256: '572b805bce23369cc424fd373851bf9ab42f71c2e5d233b1661a8c5a6a1ca29b',
+            replicatedPointers: ['/runs/0/facts/sql-function-next-36', '/runs/1/facts/sql-function-next-36'],
+          },
+          {
+            id: 'sql-function-next-41',
+            pointer: '/runs/0/facts/sql-function-next-41',
+            sha256: 'f32686a2954aa29d2ac72e52a10f354a231070aa75a66a44c9818d2d85680579',
+            replicatedPointers: ['/runs/0/facts/sql-function-next-41', '/runs/1/facts/sql-function-next-41'],
+          },
+          {
+            id: 'sql-function-next-47',
+            pointer: '/runs/0/facts/sql-function-next-47',
+            sha256: 'afd075a17f38d77b832797d0a0b526f09f190ef99928a961b86e3c4f93742cb4',
+            replicatedPointers: ['/runs/0/facts/sql-function-next-47', '/runs/1/facts/sql-function-next-47'],
+          },
+          {
+            id: 'sql-function-next-48',
+            pointer: '/runs/0/facts/sql-function-next-48',
+            sha256: 'b03c7f86b80f62f0e363fa3252f6c3f908eec7e0736c6bc8f903ac5367e9e925',
+            replicatedPointers: ['/runs/0/facts/sql-function-next-48', '/runs/1/facts/sql-function-next-48'],
+          },
+        ],
+      },
+      {
+        path: 'mirage/test/fixtures/dataverse-sql-server-decimal-facts-v1.json',
+        sha256: 'b889a6f9239f2c9febf97f125b9f8b3b9df482abc24a8ed9b2407d87b1504246',
+        mode: 'official-package',
+        package: {
+          ecosystem: 'microsoft-oci',
+          id: 'mssql/server',
+          sha256: 'cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718',
+          source:
+            'https://mcr.microsoft.com/v2/mssql/server/manifests/sha256:cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718',
+          bodyBase64:
+            'eyJzY2hlbWFWZXJzaW9uIjoyLCJtZWRpYVR5cGUiOiJhcHBsaWNhdGlvbi92bmQuZG9ja2VyLmRpc3RyaWJ1dGlvbi5tYW5pZmVzdC52Mitqc29uIiwiY29uZmlnIjp7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuY29udGFpbmVyLmltYWdlLnYxK2pzb24iLCJzaXplIjozMzcwLCJkaWdlc3QiOiJzaGEyNTY6N2ZiMjEzOTM0MTcxNWU4YTcxODQzY2ZjMmYwMmJhYjZlOTVmMWM1MmMwZmE5ZjlhNmIyZTdiNzYxZjA2MDc4MCJ9LCJsYXllcnMiOlt7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuaW1hZ2Uucm9vdGZzLmRpZmYudGFyLmd6aXAiLCJzaXplIjozMTU1OTQwMCwiZGlnZXN0Ijoic2hhMjU2OmNiNWUzNzRiZTY2MmE1NjJiODI3MTE1ODYzOWU5MThiOWM2MzRhYTRkZmRjOGIzYWEzMWNjZmM5OWNmOGMwNzcifSx7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuaW1hZ2Uucm9vdGZzLmRpZmYudGFyLmd6aXAiLCJzaXplIjo1MDIxMjIzODQsImRpZ2VzdCI6InNoYTI1NjpjZjc2ZTQ3YzIzN2Y5YmZkZThjNzM4ZmQzZTNmYTgzMWI1M2E2MmFlNTI2OTQ0MTYwMGQ0MTM4OTAwNTVkOGFlIn0seyJtZWRpYVR5cGUiOiJhcHBsaWNhdGlvbi92bmQuZG9ja2VyLmltYWdlLnJvb3Rmcy5kaWZmLnRhci5nemlwIiwic2l6ZSI6OTMwMjcwMDMsImRpZ2VzdCI6InNoYTI1NjoxNmU4NDM2YzBjYmFlN2RmNWEzODEzMTE2MWU4OGYxMGE0OTdhZjZlMjRhOWVlNmRjYzcwMDY3ZThjYjI4YWU3In1dfQ==',
+        },
+        packagePointer: '/package',
+        capturePointers: ['/runs/0/runSha256', '/runs/1/runSha256'],
+        facts: [
+          {
+            id: 'sql-function-decimal-112',
+            pointer: '/runs/0/facts/sql-function-decimal-112',
+            sha256: '95898584261fabdceeccd908c7927c3b4569dba7e9d394532ed842f3205c9770',
+            replicatedPointers: ['/runs/0/facts/sql-function-decimal-112', '/runs/1/facts/sql-function-decimal-112'],
+          },
+          {
+            id: 'sql-function-decimal-113',
+            pointer: '/runs/0/facts/sql-function-decimal-113',
+            sha256: 'e623b09b1b8fef50405e04f54773b8aaf93d576590e035a0c930ca0bde2c967a',
+            replicatedPointers: ['/runs/0/facts/sql-function-decimal-113', '/runs/1/facts/sql-function-decimal-113'],
+          },
+          {
+            id: 'sql-function-decimal-114',
+            pointer: '/runs/0/facts/sql-function-decimal-114',
+            sha256: 'ec343ae3e62d0967488c47782191b241349bb8fd5990a2a6b210a870ef68326c',
+            replicatedPointers: ['/runs/0/facts/sql-function-decimal-114', '/runs/1/facts/sql-function-decimal-114'],
+          },
+          {
+            id: 'sql-function-decimal-115',
+            pointer: '/runs/0/facts/sql-function-decimal-115',
+            sha256: '0942a86f0422db183fc0831549ddc1e7355f90db0533faedf1ff03e5a297561c',
+            replicatedPointers: ['/runs/0/facts/sql-function-decimal-115', '/runs/1/facts/sql-function-decimal-115'],
+          },
+          {
+            id: 'sql-function-decimal-118',
+            pointer: '/runs/0/facts/sql-function-decimal-118',
+            sha256: '16f904872a8bee12f0ef92a8e2b8e9244be22380ee76eb733e9274532714fe1e',
+            replicatedPointers: ['/runs/0/facts/sql-function-decimal-118', '/runs/1/facts/sql-function-decimal-118'],
+          },
+          {
+            id: 'sql-function-decimal-119',
+            pointer: '/runs/0/facts/sql-function-decimal-119',
+            sha256: '665f7304b527f6fe3d73e80fcbdabb60a2459629c340de57894249e539776030',
+            replicatedPointers: ['/runs/0/facts/sql-function-decimal-119', '/runs/1/facts/sql-function-decimal-119'],
+          },
+          {
+            id: 'sql-function-decimal-120',
+            pointer: '/runs/0/facts/sql-function-decimal-120',
+            sha256: 'e6bfdcad51bd56359d787effa57679bdd38dbcb069025c3853f627de4528adf8',
+            replicatedPointers: ['/runs/0/facts/sql-function-decimal-120', '/runs/1/facts/sql-function-decimal-120'],
+          },
+          {
+            id: 'sql-function-decimal-121',
+            pointer: '/runs/0/facts/sql-function-decimal-121',
+            sha256: '89b3a51761471c37d7bff2ea9db9d5c5b6f2518a47cdcfc8b47715e417412eaf',
+            replicatedPointers: ['/runs/0/facts/sql-function-decimal-121', '/runs/1/facts/sql-function-decimal-121'],
+          },
+          {
+            id: 'sql-function-decimal-122',
+            pointer: '/runs/0/facts/sql-function-decimal-122',
+            sha256: '1555d4d13c3497a22b84a3bc25f5a383142a6dd9c2d10a033e93e163c1fcdaf2',
+            replicatedPointers: ['/runs/0/facts/sql-function-decimal-122', '/runs/1/facts/sql-function-decimal-122'],
+          },
+          {
+            id: 'sql-function-decimal-123',
+            pointer: '/runs/0/facts/sql-function-decimal-123',
+            sha256: 'eff736ac2cf24b8d2012c0f21f70513a4721ccc868d4367e3d32b3fc1bb6930e',
+            replicatedPointers: ['/runs/0/facts/sql-function-decimal-123', '/runs/1/facts/sql-function-decimal-123'],
+          },
+          {
+            id: 'sql-function-decimal-124',
+            pointer: '/runs/0/facts/sql-function-decimal-124',
+            sha256: 'a6de2000a2ff6ff96a2cff4f897e1f3e8eafb0adabc726e275df3b0803ee4737',
+            replicatedPointers: ['/runs/0/facts/sql-function-decimal-124', '/runs/1/facts/sql-function-decimal-124'],
+          },
+          {
+            id: 'sql-function-decimal-125',
+            pointer: '/runs/0/facts/sql-function-decimal-125',
+            sha256: 'f951b48e9a7104a2b9c40678558af090ee66b34ffdd587406522788c67fdf7ea',
+            replicatedPointers: ['/runs/0/facts/sql-function-decimal-125', '/runs/1/facts/sql-function-decimal-125'],
+          },
+          {
+            id: 'sql-function-decimal-126',
+            pointer: '/runs/0/facts/sql-function-decimal-126',
+            sha256: '8e80194cc06804d23df93614caacf49a84b65cea3398d34aa706a0f7fd1a5410',
+            replicatedPointers: ['/runs/0/facts/sql-function-decimal-126', '/runs/1/facts/sql-function-decimal-126'],
+          },
+          {
+            id: 'sql-function-decimal-127',
+            pointer: '/runs/0/facts/sql-function-decimal-127',
+            sha256: '92224e1303810db2af0199ced9580970923d1ee3bff4450e4b93b45a9acdbead',
+            replicatedPointers: ['/runs/0/facts/sql-function-decimal-127', '/runs/1/facts/sql-function-decimal-127'],
+          },
+          {
+            id: 'sql-function-decimal-128',
+            pointer: '/runs/0/facts/sql-function-decimal-128',
+            sha256: 'ab2f47882bef5f596c76058236cb44580e17e717d8e4e84cad1f8b9513122770',
+            replicatedPointers: ['/runs/0/facts/sql-function-decimal-128', '/runs/1/facts/sql-function-decimal-128'],
+          },
+        ],
+      },
+      {
+        path: 'mirage/test/fixtures/dataverse-sql-server-date-string-facts-v1.json',
+        sha256: 'e29f11e1a6438742e8fd5a31080a3e7af15b5a7ee290918776e0786e8ac10e12',
+        mode: 'official-package',
+        package: {
+          ecosystem: 'microsoft-oci',
+          id: 'mssql/server',
+          sha256: 'cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718',
+          source:
+            'https://mcr.microsoft.com/v2/mssql/server/manifests/sha256:cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718',
+          bodyBase64:
+            'eyJzY2hlbWFWZXJzaW9uIjoyLCJtZWRpYVR5cGUiOiJhcHBsaWNhdGlvbi92bmQuZG9ja2VyLmRpc3RyaWJ1dGlvbi5tYW5pZmVzdC52Mitqc29uIiwiY29uZmlnIjp7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuY29udGFpbmVyLmltYWdlLnYxK2pzb24iLCJzaXplIjozMzcwLCJkaWdlc3QiOiJzaGEyNTY6N2ZiMjEzOTM0MTcxNWU4YTcxODQzY2ZjMmYwMmJhYjZlOTVmMWM1MmMwZmE5ZjlhNmIyZTdiNzYxZjA2MDc4MCJ9LCJsYXllcnMiOlt7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuaW1hZ2Uucm9vdGZzLmRpZmYudGFyLmd6aXAiLCJzaXplIjozMTU1OTQwMCwiZGlnZXN0Ijoic2hhMjU2OmNiNWUzNzRiZTY2MmE1NjJiODI3MTE1ODYzOWU5MThiOWM2MzRhYTRkZmRjOGIzYWEzMWNjZmM5OWNmOGMwNzcifSx7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuaW1hZ2Uucm9vdGZzLmRpZmYudGFyLmd6aXAiLCJzaXplIjo1MDIxMjIzODQsImRpZ2VzdCI6InNoYTI1NjpjZjc2ZTQ3YzIzN2Y5YmZkZThjNzM4ZmQzZTNmYTgzMWI1M2E2MmFlNTI2OTQ0MTYwMGQ0MTM4OTAwNTVkOGFlIn0seyJtZWRpYVR5cGUiOiJhcHBsaWNhdGlvbi92bmQuZG9ja2VyLmltYWdlLnJvb3Rmcy5kaWZmLnRhci5nemlwIiwic2l6ZSI6OTMwMjcwMDMsImRpZ2VzdCI6InNoYTI1NjoxNmU4NDM2YzBjYmFlN2RmNWEzODEzMTE2MWU4OGYxMGE0OTdhZjZlMjRhOWVlNmRjYzcwMDY3ZThjYjI4YWU3In1dfQ==',
+        },
+        packagePointer: '/package',
+        capturePointers: ['/runs/0/runSha256', '/runs/1/runSha256'],
+        facts: [
+          {
+            id: 'sql-function-date-string-83',
+            pointer: '/runs/0/facts/sql-function-date-string-83',
+            sha256: 'd09d3433e363041fad9f87ec03b8bc3feb816359c18e86f1419c476a426d3dcd',
+            replicatedPointers: [
+              '/runs/0/facts/sql-function-date-string-83',
+              '/runs/1/facts/sql-function-date-string-83',
+            ],
+          },
+          {
+            id: 'sql-function-date-string-84',
+            pointer: '/runs/0/facts/sql-function-date-string-84',
+            sha256: '632d6db5a89a7eb6d79377ff0838093907786e231eb59b43b34e3b2cd855d80c',
+            replicatedPointers: [
+              '/runs/0/facts/sql-function-date-string-84',
+              '/runs/1/facts/sql-function-date-string-84',
+            ],
+          },
+          {
+            id: 'sql-function-date-string-85',
+            pointer: '/runs/0/facts/sql-function-date-string-85',
+            sha256: 'f6330bacdd25409617239489d109039a8f55f8329aafdf66b89537735aacbae9',
+            replicatedPointers: [
+              '/runs/0/facts/sql-function-date-string-85',
+              '/runs/1/facts/sql-function-date-string-85',
+            ],
+          },
+          {
+            id: 'sql-function-date-string-86',
+            pointer: '/runs/0/facts/sql-function-date-string-86',
+            sha256: 'e466fea9ada4232e1cf4f21ea770b7943de0765064ec87c4ded2a0fa7fecc5b5',
+            replicatedPointers: [
+              '/runs/0/facts/sql-function-date-string-86',
+              '/runs/1/facts/sql-function-date-string-86',
+            ],
+          },
+          {
+            id: 'sql-function-date-string-87',
+            pointer: '/runs/0/facts/sql-function-date-string-87',
+            sha256: '6d47dada88e68ec39c8e60704c16ae89d72ceb3b4c95aeb0357f5c3efe8bf181',
+            replicatedPointers: [
+              '/runs/0/facts/sql-function-date-string-87',
+              '/runs/1/facts/sql-function-date-string-87',
+            ],
+          },
+          {
+            id: 'sql-function-date-string-88',
+            pointer: '/runs/0/facts/sql-function-date-string-88',
+            sha256: '6ccfada88b5f7d672cddd508f17e0b7da2981dc17a444f5c878fcda6f28fb1e7',
+            replicatedPointers: [
+              '/runs/0/facts/sql-function-date-string-88',
+              '/runs/1/facts/sql-function-date-string-88',
+            ],
+          },
+          {
+            id: 'sql-function-date-string-89',
+            pointer: '/runs/0/facts/sql-function-date-string-89',
+            sha256: 'e07389e1ae9764cba0fb1e1ceaeec25792445ff3ef44e62cc5953caee7358854',
+            replicatedPointers: [
+              '/runs/0/facts/sql-function-date-string-89',
+              '/runs/1/facts/sql-function-date-string-89',
+            ],
+          },
+          {
+            id: 'sql-function-date-string-109',
+            pointer: '/runs/0/facts/sql-function-date-string-109',
+            sha256: '12518a24154dcd7b386268bfde6802880196ebce721523ee0c785df7a598b8c2',
+            replicatedPointers: [
+              '/runs/0/facts/sql-function-date-string-109',
+              '/runs/1/facts/sql-function-date-string-109',
+            ],
+          },
+          {
+            id: 'sql-function-date-string-110',
+            pointer: '/runs/0/facts/sql-function-date-string-110',
+            sha256: 'e839fd38eb9d1d5c51647191c6f577c56c6fd931fb5c6722f814bab9dc3ff3c0',
+            replicatedPointers: [
+              '/runs/0/facts/sql-function-date-string-110',
+              '/runs/1/facts/sql-function-date-string-110',
+            ],
+          },
+        ],
+      },
+      {
+        path: 'mirage/test/fixtures/dataverse-sql-server-binary64-facts-v1.json',
+        sha256: '27cb8018b7d68b701962cd543eb53526ed8db379536823fe5fa7bd5113b2e006',
+        mode: 'official-package',
+        package: {
+          ecosystem: 'microsoft-oci',
+          id: 'mssql/server',
+          sha256: 'cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718',
+          source:
+            'https://mcr.microsoft.com/v2/mssql/server/manifests/sha256:cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718',
+          bodyBase64:
+            'eyJzY2hlbWFWZXJzaW9uIjoyLCJtZWRpYVR5cGUiOiJhcHBsaWNhdGlvbi92bmQuZG9ja2VyLmRpc3RyaWJ1dGlvbi5tYW5pZmVzdC52Mitqc29uIiwiY29uZmlnIjp7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuY29udGFpbmVyLmltYWdlLnYxK2pzb24iLCJzaXplIjozMzcwLCJkaWdlc3QiOiJzaGEyNTY6N2ZiMjEzOTM0MTcxNWU4YTcxODQzY2ZjMmYwMmJhYjZlOTVmMWM1MmMwZmE5ZjlhNmIyZTdiNzYxZjA2MDc4MCJ9LCJsYXllcnMiOlt7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuaW1hZ2Uucm9vdGZzLmRpZmYudGFyLmd6aXAiLCJzaXplIjozMTU1OTQwMCwiZGlnZXN0Ijoic2hhMjU2OmNiNWUzNzRiZTY2MmE1NjJiODI3MTE1ODYzOWU5MThiOWM2MzRhYTRkZmRjOGIzYWEzMWNjZmM5OWNmOGMwNzcifSx7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuaW1hZ2Uucm9vdGZzLmRpZmYudGFyLmd6aXAiLCJzaXplIjo1MDIxMjIzODQsImRpZ2VzdCI6InNoYTI1NjpjZjc2ZTQ3YzIzN2Y5YmZkZThjNzM4ZmQzZTNmYTgzMWI1M2E2MmFlNTI2OTQ0MTYwMGQ0MTM4OTAwNTVkOGFlIn0seyJtZWRpYVR5cGUiOiJhcHBsaWNhdGlvbi92bmQuZG9ja2VyLmltYWdlLnJvb3Rmcy5kaWZmLnRhci5nemlwIiwic2l6ZSI6OTMwMjcwMDMsImRpZ2VzdCI6InNoYTI1NjoxNmU4NDM2YzBjYmFlN2RmNWEzODEzMTE2MWU4OGYxMGE0OTdhZjZlMjRhOWVlNmRjYzcwMDY3ZThjYjI4YWU3In1dfQ==',
+        },
+        packagePointer: '/package',
+        capturePointers: ['/runs/0/runSha256', '/runs/1/runSha256'],
+        facts: [
+          {
+            id: 'sql-function-float-116',
+            pointer: '/runs/0/facts/sql-function-float-116',
+            sha256: 'aae4b977f61fd4794621f5d49d4ed950f9b543f6d23e901a86fdaba7c9ad5965',
+            replicatedPointers: ['/runs/0/facts/sql-function-float-116', '/runs/1/facts/sql-function-float-116'],
+          },
+          {
+            id: 'sql-function-float-117',
+            pointer: '/runs/0/facts/sql-function-float-117',
+            sha256: 'c74ea651a9e24a2a0394f6eabf91da6d18e551d9af7fff7e7964df4d572c8fa7',
+            replicatedPointers: ['/runs/0/facts/sql-function-float-117', '/runs/1/facts/sql-function-float-117'],
+          },
+          {
+            id: 'sql-function-float-129',
+            pointer: '/runs/0/facts/sql-function-float-129',
+            sha256: '10ff2219bb54fb0eaad449d983ffe7fca9f9ef8b94b91481fb48f01421972b9e',
+            replicatedPointers: ['/runs/0/facts/sql-function-float-129', '/runs/1/facts/sql-function-float-129'],
+          },
+          {
+            id: 'sql-function-float-130',
+            pointer: '/runs/0/facts/sql-function-float-130',
+            sha256: '2b719417f0757d0e2dd431ed3fe7b3ac51f5f3e8c14b3d85fd028d56cfe735ee',
+            replicatedPointers: ['/runs/0/facts/sql-function-float-130', '/runs/1/facts/sql-function-float-130'],
+          },
+          {
+            id: 'sql-function-float-139',
+            pointer: '/runs/0/facts/sql-function-float-139',
+            sha256: 'ce80c4a133a151afba324f3feb0022c11cf34d415a45037893b71ed084dd5f46',
+            replicatedPointers: ['/runs/0/facts/sql-function-float-139', '/runs/1/facts/sql-function-float-139'],
+          },
+        ],
+      },
+      {
+        path: 'mirage/test/fixtures/dataverse-sql-server-civil-date-facts-v1.json',
+        sha256: 'd66b9f6b7e2db776922529c018320880574b82868c526ea373e32e397920a566',
+        mode: 'official-package',
+        package: {
+          ecosystem: 'microsoft-oci',
+          id: 'mssql/server',
+          sha256: 'cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718',
+          source:
+            'https://mcr.microsoft.com/v2/mssql/server/manifests/sha256:cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718',
+          bodyBase64:
+            'eyJzY2hlbWFWZXJzaW9uIjoyLCJtZWRpYVR5cGUiOiJhcHBsaWNhdGlvbi92bmQuZG9ja2VyLmRpc3RyaWJ1dGlvbi5tYW5pZmVzdC52Mitqc29uIiwiY29uZmlnIjp7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuY29udGFpbmVyLmltYWdlLnYxK2pzb24iLCJzaXplIjozMzcwLCJkaWdlc3QiOiJzaGEyNTY6N2ZiMjEzOTM0MTcxNWU4YTcxODQzY2ZjMmYwMmJhYjZlOTVmMWM1MmMwZmE5ZjlhNmIyZTdiNzYxZjA2MDc4MCJ9LCJsYXllcnMiOlt7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuaW1hZ2Uucm9vdGZzLmRpZmYudGFyLmd6aXAiLCJzaXplIjozMTU1OTQwMCwiZGlnZXN0Ijoic2hhMjU2OmNiNWUzNzRiZTY2MmE1NjJiODI3MTE1ODYzOWU5MThiOWM2MzRhYTRkZmRjOGIzYWEzMWNjZmM5OWNmOGMwNzcifSx7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuaW1hZ2Uucm9vdGZzLmRpZmYudGFyLmd6aXAiLCJzaXplIjo1MDIxMjIzODQsImRpZ2VzdCI6InNoYTI1NjpjZjc2ZTQ3YzIzN2Y5YmZkZThjNzM4ZmQzZTNmYTgzMWI1M2E2MmFlNTI2OTQ0MTYwMGQ0MTM4OTAwNTVkOGFlIn0seyJtZWRpYVR5cGUiOiJhcHBsaWNhdGlvbi92bmQuZG9ja2VyLmltYWdlLnJvb3Rmcy5kaWZmLnRhci5nemlwIiwic2l6ZSI6OTMwMjcwMDMsImRpZ2VzdCI6InNoYTI1NjoxNmU4NDM2YzBjYmFlN2RmNWEzODEzMTE2MWU4OGYxMGE0OTdhZjZlMjRhOWVlNmRjYzcwMDY3ZThjYjI4YWU3In1dfQ==',
+        },
+        packagePointer: '/package',
+        capturePointers: ['/runs/0/runSha256', '/runs/1/runSha256'],
+        facts: [
+          {
+            id: 'sql-function-civil-71',
+            pointer: '/runs/0/facts/sql-function-civil-71',
+            sha256: 'cf7fbfbbdcb2ca2c0cf4a6206d26e67c66ac0964f451fb8630cb650a630ff11b',
+            replicatedPointers: ['/runs/0/facts/sql-function-civil-71', '/runs/1/facts/sql-function-civil-71'],
+          },
+          {
+            id: 'sql-function-civil-72',
+            pointer: '/runs/0/facts/sql-function-civil-72',
+            sha256: 'eb333030005e3b9cb6107c80516dae045de8f933ef2ba3a3107b645f52e66f45',
+            replicatedPointers: ['/runs/0/facts/sql-function-civil-72', '/runs/1/facts/sql-function-civil-72'],
+          },
+          {
+            id: 'sql-function-civil-78',
+            pointer: '/runs/0/facts/sql-function-civil-78',
+            sha256: '3d2f12212310a673fc12d95da48c8077780d6ebd7e8f08ab4e4175b3a8f5dbaf',
+            replicatedPointers: ['/runs/0/facts/sql-function-civil-78', '/runs/1/facts/sql-function-civil-78'],
+          },
+          {
+            id: 'sql-function-civil-79',
+            pointer: '/runs/0/facts/sql-function-civil-79',
+            sha256: '817b70434733c29bbb2b3e12732a44579b63946e43e581c76fc84af4e5b853c2',
+            replicatedPointers: ['/runs/0/facts/sql-function-civil-79', '/runs/1/facts/sql-function-civil-79'],
+          },
+          {
+            id: 'sql-function-civil-80',
+            pointer: '/runs/0/facts/sql-function-civil-80',
+            sha256: 'bcbda09f959eaeb18953a4c22fd1b5a73e8cf03b9e6a49b3567fc7f41080e66b',
+            replicatedPointers: ['/runs/0/facts/sql-function-civil-80', '/runs/1/facts/sql-function-civil-80'],
+          },
+          {
+            id: 'sql-function-civil-95',
+            pointer: '/runs/0/facts/sql-function-civil-95',
+            sha256: 'ba66025353b0f132c07d97b4c8dbb6f01ba1385271588ab801333de025b1c808',
+            replicatedPointers: ['/runs/0/facts/sql-function-civil-95', '/runs/1/facts/sql-function-civil-95'],
+          },
+          {
+            id: 'sql-function-civil-96',
+            pointer: '/runs/0/facts/sql-function-civil-96',
+            sha256: 'e139e9784fa6304930a15eb8acc9e0c9314f2ef72c887427481983571c432cda',
+            replicatedPointers: ['/runs/0/facts/sql-function-civil-96', '/runs/1/facts/sql-function-civil-96'],
+          },
+          {
+            id: 'sql-function-civil-97',
+            pointer: '/runs/0/facts/sql-function-civil-97',
+            sha256: '0c169c5c4dac1391eb3238e88061aa9f227ae2f6d5ab5155863e4252b4145545',
+            replicatedPointers: ['/runs/0/facts/sql-function-civil-97', '/runs/1/facts/sql-function-civil-97'],
+          },
+          {
+            id: 'sql-function-civil-98',
+            pointer: '/runs/0/facts/sql-function-civil-98',
+            sha256: 'cf15a005401465d4e6e238d1787cdfe959b0db0911507db746547745d523f22e',
+            replicatedPointers: ['/runs/0/facts/sql-function-civil-98', '/runs/1/facts/sql-function-civil-98'],
+          },
+          {
+            id: 'sql-function-civil-99',
+            pointer: '/runs/0/facts/sql-function-civil-99',
+            sha256: '46538f7deb94b467454bc2528fde85bd735c29f697bfbf0366f5f00678024ab3',
+            replicatedPointers: ['/runs/0/facts/sql-function-civil-99', '/runs/1/facts/sql-function-civil-99'],
+          },
+          {
+            id: 'sql-function-civil-100',
+            pointer: '/runs/0/facts/sql-function-civil-100',
+            sha256: 'f3f2f333a900453ddec2084fb36351ea43552dea9397fe44f54df3471664f02f',
+            replicatedPointers: ['/runs/0/facts/sql-function-civil-100', '/runs/1/facts/sql-function-civil-100'],
+          },
+          {
+            id: 'sql-function-civil-101',
+            pointer: '/runs/0/facts/sql-function-civil-101',
+            sha256: 'caa1fb5969d13eab4c74a24b49e9f5a8ea52fe7c7b1408152e144cd4941cc4b7',
+            replicatedPointers: ['/runs/0/facts/sql-function-civil-101', '/runs/1/facts/sql-function-civil-101'],
+          },
+          {
+            id: 'sql-function-civil-102',
+            pointer: '/runs/0/facts/sql-function-civil-102',
+            sha256: 'fa8b6f492b7ab3a45c7348934c281a6e8960fc38324b0e1854302c415de258cc',
+            replicatedPointers: ['/runs/0/facts/sql-function-civil-102', '/runs/1/facts/sql-function-civil-102'],
+          },
+          {
+            id: 'sql-function-civil-103',
+            pointer: '/runs/0/facts/sql-function-civil-103',
+            sha256: '52eb4708cc81c255145cf78b4f3c69f754d473dfdb406eaeb004be766dabb94c',
+            replicatedPointers: ['/runs/0/facts/sql-function-civil-103', '/runs/1/facts/sql-function-civil-103'],
+          },
+          {
+            id: 'sql-function-civil-104',
+            pointer: '/runs/0/facts/sql-function-civil-104',
+            sha256: 'c9274fe4c7bc81f660d56f8a98e055e143adf510a2fcec8b8c52dc6fc1f99065',
+            replicatedPointers: ['/runs/0/facts/sql-function-civil-104', '/runs/1/facts/sql-function-civil-104'],
+          },
+        ],
+      },
+      {
+        path: 'mirage/test/fixtures/dataverse-sql-server-format-null-facts-v1.json',
+        sha256: '5ef7bb9b59730d4bf9ee3a064539ee3e96a9a6d22c56061b40de3e1acefbf90d',
+        mode: 'official-package',
+        package: {
+          ecosystem: 'microsoft-oci',
+          id: 'mssql/server',
+          sha256: 'cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718',
+          source:
+            'https://mcr.microsoft.com/v2/mssql/server/manifests/sha256:cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718',
+          bodyBase64:
+            'eyJzY2hlbWFWZXJzaW9uIjoyLCJtZWRpYVR5cGUiOiJhcHBsaWNhdGlvbi92bmQuZG9ja2VyLmRpc3RyaWJ1dGlvbi5tYW5pZmVzdC52Mitqc29uIiwiY29uZmlnIjp7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuY29udGFpbmVyLmltYWdlLnYxK2pzb24iLCJzaXplIjozMzcwLCJkaWdlc3QiOiJzaGEyNTY6N2ZiMjEzOTM0MTcxNWU4YTcxODQzY2ZjMmYwMmJhYjZlOTVmMWM1MmMwZmE5ZjlhNmIyZTdiNzYxZjA2MDc4MCJ9LCJsYXllcnMiOlt7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuaW1hZ2Uucm9vdGZzLmRpZmYudGFyLmd6aXAiLCJzaXplIjozMTU1OTQwMCwiZGlnZXN0Ijoic2hhMjU2OmNiNWUzNzRiZTY2MmE1NjJiODI3MTE1ODYzOWU5MThiOWM2MzRhYTRkZmRjOGIzYWEzMWNjZmM5OWNmOGMwNzcifSx7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuaW1hZ2Uucm9vdGZzLmRpZmYudGFyLmd6aXAiLCJzaXplIjo1MDIxMjIzODQsImRpZ2VzdCI6InNoYTI1NjpjZjc2ZTQ3YzIzN2Y5YmZkZThjNzM4ZmQzZTNmYTgzMWI1M2E2MmFlNTI2OTQ0MTYwMGQ0MTM4OTAwNTVkOGFlIn0seyJtZWRpYVR5cGUiOiJhcHBsaWNhdGlvbi92bmQuZG9ja2VyLmltYWdlLnJvb3Rmcy5kaWZmLnRhci5nemlwIiwic2l6ZSI6OTMwMjcwMDMsImRpZ2VzdCI6InNoYTI1NjoxNmU4NDM2YzBjYmFlN2RmNWEzODEzMTE2MWU4OGYxMGE0OTdhZjZlMjRhOWVlNmRjYzcwMDY3ZThjYjI4YWU3In1dfQ==',
+        },
+        packagePointer: '/package',
+        capturePointers: ['/runs/0/runSha256', '/runs/1/runSha256'],
+        facts: [
+          {
+            id: 'sql-function-format-null-3',
+            pointer: '/runs/0/facts/sql-function-format-null-3',
+            sha256: '414414356ed57e934051099717085cd7e442c66f00c72739f8823d2f7a999b89',
+            replicatedPointers: [
+              '/runs/0/facts/sql-function-format-null-3',
+              '/runs/1/facts/sql-function-format-null-3',
+            ],
+          },
+          {
+            id: 'sql-function-format-null-69',
+            pointer: '/runs/0/facts/sql-function-format-null-69',
+            sha256: '58ea3cdc174bbd50f5435068fe1a692f00b76a2c0f2ec5a89c83c16d91351c53',
+            replicatedPointers: [
+              '/runs/0/facts/sql-function-format-null-69',
+              '/runs/1/facts/sql-function-format-null-69',
+            ],
+          },
+          {
+            id: 'sql-function-format-null-70',
+            pointer: '/runs/0/facts/sql-function-format-null-70',
+            sha256: '107abb7068e2b47df5bcbdc5b8ccfc616963d7ef7c5c63af1fb25c90e83663d9',
+            replicatedPointers: [
+              '/runs/0/facts/sql-function-format-null-70',
+              '/runs/1/facts/sql-function-format-null-70',
+            ],
+          },
+          {
+            id: 'sql-function-format-null-73',
+            pointer: '/runs/0/facts/sql-function-format-null-73',
+            sha256: 'f914c5be51be50c80df93e9954ebae32cb765e95ee59c68e1dda6d5710b20eb7',
+            replicatedPointers: [
+              '/runs/0/facts/sql-function-format-null-73',
+              '/runs/1/facts/sql-function-format-null-73',
+            ],
+          },
+          {
+            id: 'sql-function-format-null-74',
+            pointer: '/runs/0/facts/sql-function-format-null-74',
+            sha256: '3346f0c7b7a916317e2faa198dff09daf7573532bdc13e1eae2b0511aa26e051',
+            replicatedPointers: [
+              '/runs/0/facts/sql-function-format-null-74',
+              '/runs/1/facts/sql-function-format-null-74',
+            ],
+          },
+          {
+            id: 'sql-function-format-null-75',
+            pointer: '/runs/0/facts/sql-function-format-null-75',
+            sha256: '1292cc0f6d5fd7f168295cd49c8d88b51050d6fa97620e4f4c8a000f8eda4d6f',
+            replicatedPointers: [
+              '/runs/0/facts/sql-function-format-null-75',
+              '/runs/1/facts/sql-function-format-null-75',
+            ],
+          },
+          {
+            id: 'sql-function-format-null-76',
+            pointer: '/runs/0/facts/sql-function-format-null-76',
+            sha256: '5ab329996cef50a4c0f6ef41df826653bed9df35cdcb627f487fe6cb0d2f31a9',
+            replicatedPointers: [
+              '/runs/0/facts/sql-function-format-null-76',
+              '/runs/1/facts/sql-function-format-null-76',
+            ],
+          },
+          {
+            id: 'sql-function-format-null-77',
+            pointer: '/runs/0/facts/sql-function-format-null-77',
+            sha256: 'ac6ed4029fa597f52753b6149c6acc1d1ad077611d79009917b4c7d5630d52c9',
+            replicatedPointers: [
+              '/runs/0/facts/sql-function-format-null-77',
+              '/runs/1/facts/sql-function-format-null-77',
+            ],
+          },
+        ],
+      },
+      {
+        path: 'mirage/test/fixtures/dataverse-sql-server-iif-true-facts-v1.json',
+        sha256: '0c0a758f68afbb775ee4fe7d9bd3f0d98d24817a817d08025230db5457b27295',
+        mode: 'official-package',
+        package: {
+          ecosystem: 'microsoft-oci',
+          id: 'mssql/server',
+          sha256: 'cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718',
+          source:
+            'https://mcr.microsoft.com/v2/mssql/server/manifests/sha256:cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718',
+          bodyBase64:
+            'eyJzY2hlbWFWZXJzaW9uIjoyLCJtZWRpYVR5cGUiOiJhcHBsaWNhdGlvbi92bmQuZG9ja2VyLmRpc3RyaWJ1dGlvbi5tYW5pZmVzdC52Mitqc29uIiwiY29uZmlnIjp7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuY29udGFpbmVyLmltYWdlLnYxK2pzb24iLCJzaXplIjozMzcwLCJkaWdlc3QiOiJzaGEyNTY6N2ZiMjEzOTM0MTcxNWU4YTcxODQzY2ZjMmYwMmJhYjZlOTVmMWM1MmMwZmE5ZjlhNmIyZTdiNzYxZjA2MDc4MCJ9LCJsYXllcnMiOlt7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuaW1hZ2Uucm9vdGZzLmRpZmYudGFyLmd6aXAiLCJzaXplIjozMTU1OTQwMCwiZGlnZXN0Ijoic2hhMjU2OmNiNWUzNzRiZTY2MmE1NjJiODI3MTE1ODYzOWU5MThiOWM2MzRhYTRkZmRjOGIzYWEzMWNjZmM5OWNmOGMwNzcifSx7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuaW1hZ2Uucm9vdGZzLmRpZmYudGFyLmd6aXAiLCJzaXplIjo1MDIxMjIzODQsImRpZ2VzdCI6InNoYTI1NjpjZjc2ZTQ3YzIzN2Y5YmZkZThjNzM4ZmQzZTNmYTgzMWI1M2E2MmFlNTI2OTQ0MTYwMGQ0MTM4OTAwNTVkOGFlIn0seyJtZWRpYVR5cGUiOiJhcHBsaWNhdGlvbi92bmQuZG9ja2VyLmltYWdlLnJvb3Rmcy5kaWZmLnRhci5nemlwIiwic2l6ZSI6OTMwMjcwMDMsImRpZ2VzdCI6InNoYTI1NjoxNmU4NDM2YzBjYmFlN2RmNWEzODEzMTE2MWU4OGYxMGE0OTdhZjZlMjRhOWVlNmRjYzcwMDY3ZThjYjI4YWU3In1dfQ==',
+        },
+        packagePointer: '/package',
+        capturePointers: ['/runs/0/runSha256', '/runs/1/runSha256'],
+        facts: [
+          {
+            id: 'sql-function-iif-true-14',
+            pointer: '/runs/0/facts/sql-function-iif-true-14',
+            sha256: 'feae6176664588b7e2ab7562e0172b07a20fdbf2bbf34f829b45d81f06e8e517',
+            replicatedPointers: ['/runs/0/facts/sql-function-iif-true-14', '/runs/1/facts/sql-function-iif-true-14'],
+          },
+        ],
+      },
     ],
   },
 ]);
 __paqParityBindings(import.meta.url, __paqParityShared);
+// @parity-evidence: Existing region assertions and exact reviewed proof bindings are preserved during cumulative qualification.
+
+// @parity-evidence: Existing region assertions and exact reviewed proof bindings are preserved during cumulative qualification.
+
+// @parity-evidence: Existing region assertions and exact reviewed proof bindings are preserved during cumulative qualification.
+
+// @parity-evidence: Existing region assertions and exact reviewed proof bindings are preserved during cumulative qualification.
+
+// @parity-evidence: Existing region assertions and exact reviewed proof bindings are preserved during cumulative qualification.
+
+// @parity-evidence: Existing region assertions and exact reviewed proof bindings are preserved during cumulative qualification.
+
+// @parity-evidence: Existing region assertions and exact reviewed proof bindings are preserved during cumulative qualification.
 
 // @parity-evidence: Repeated Microsoft SQL Server 2022 engine captures, mirage/test/fixtures/dataverse-sql-server-function-facts.json SHA-256 e6aa0995861d943219e153b10df0815bd8d62ad7b5c07978f008b02f2f01c9f5; CONCAT_WS NULL separator and PATINDEX anchoring.
 import test from 'node:test';
@@ -2384,9 +3001,11 @@ for (const [name, args, expected, ctx] of cases) {
       import.meta.url,
       cases,
       [
-        0, 1, 4, 5, 6, 7, 8, 9, 10, 11, 15, 16, 17, 18, 19, 20, 21, 22, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
-        37, 38, 39, 40, 42, 43, 44, 45, 46, 49, 50, 51, 52, 53, 56, 57, 58, 59, 61, 62, 63, 64, 65, 66, 67, 68, 111,
-        132, 134, 135, 136, 137, 138,
+        0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 14, 15, 16, 17, 18, 19, 20, 21, 22, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33,
+        34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 56, 57, 58, 59, 61, 62, 63, 64,
+        65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 83, 84, 85, 86, 87, 88, 89, 95, 96, 97, 98, 99,
+        100, 101, 102, 103, 104, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125,
+        126, 127, 128, 129, 130, 132, 134, 135, 136, 137, 138, 139,
       ],
       { name, args, expected, ctx },
       __paqParityShared,

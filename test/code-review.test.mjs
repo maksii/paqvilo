@@ -1,9 +1,12 @@
+// @test-kind tooling: code-review analysis, filesystem boundaries and clone accounting are exercised with local fixtures.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import syncFs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { createHash } from 'node:crypto';
 import os from 'node:os';
 import {
   inspectDeadCode,
@@ -11,6 +14,9 @@ import {
   compareReview,
   reviewInventory,
   publicApiOrigins,
+  projectedGuardCloneKey,
+  verifiedCloneGuard,
+  cloneOccurrencesStable,
 } from '../scripts/code-review.mjs';
 import { browserSources, knipConfig } from '../scripts/code-review.config.mjs';
 import { tempDir } from './fixture.mjs';
@@ -108,6 +114,7 @@ test('analysis accepts explicitly aliased roots and rebases clone paths from a c
   assert.deepEqual(await fs.readdir(temporary), [], 'canonical snapshots are still removed');
 });
 
+// @test-kind tooling+security: review sources must not escape trusted workspace and privacy boundaries.
 test('native Git-root identity retains indexed-link refusals when legacy realpath preserves an alias spelling', async (t) => {
   const fixture = await tempDir('paqvilo-git-root-alias-');
   t.after(() => fs.rm(fixture, { recursive: true, force: true }));
@@ -262,6 +269,7 @@ test('actual runtime and full configuration detect body-only orphans despite pac
   }
 });
 
+// @test-kind tooling+security: review sources must not escape trusted workspace and privacy boundaries.
 test('Git-indexed linked ancestors cannot expose outside or ignored private sources to review', async (t) => {
   const fixture = await tempDir('paqvilo-linked-review-');
   t.after(() => fs.rm(fixture, { recursive: true, force: true }));
@@ -365,4 +373,171 @@ test('a nested staging snapshot uses its own files rather than an ancestor Git i
   assert.ok(
     inspectDeadCode(root, config).some((item) => item.type === 'files' && item.file === 'mirage/lib/orphan.mjs'),
   );
+});
+
+// @test-kind tooling: clone fingerprint projection must preserve guarded evidence and baseline multiplicity.
+test('clone boundary projection keeps only an accepted exact body and preserves multiplicity', () => {
+  const pair = ['a.mjs', 'b.mjs'];
+  const body = ['  const item = {', '    value: 42,', '  };'].join('\n');
+  const lines = ['  ]);', "  prior('x');"];
+  const occurrences = lines.map((first, index) => ({ relative: pair[index], text: first + '\n' + body }));
+  const clone = {
+    fragment: occurrences[0].text,
+    firstFile: { start: 1, end: 4, startLoc: { column: 3 }, endLoc: { column: 4 } },
+    secondFile: { start: 1, end: 4, startLoc: { column: lines[1].length - 1 }, endLoc: { column: 4 } },
+  };
+  const read = (file) => occurrences[file === clone.firstFile ? 0 : 1];
+  const verify = (item) => item.relative === 'a.mjs';
+  const expected = pair.join('|') + ':' + createHash('sha256').update(body).digest('hex');
+  assert.equal(projectedGuardCloneKey(clone, pair, read, verify), expected);
+  assert.equal(
+    projectedGuardCloneKey(clone, pair, read, () => false),
+    null,
+    'forged guard is rejected',
+  );
+  assert.equal(
+    projectedGuardCloneKey(clone, pair, read, () => {
+      throw new Error('changed proof');
+    }),
+    null,
+  );
+  const changed = structuredClone(occurrences);
+  changed[1].text = changed[1].text.replace('value: 42', 'value: 43');
+  assert.equal(
+    projectedGuardCloneKey(clone, pair, (file) => changed[file === clone.firstFile ? 0 : 1], verify),
+    null,
+  );
+  const logicPrefix = structuredClone(occurrences);
+  logicPrefix[1].text = logicPrefix[1].text.replace("prior('x');", 'prior(extra);');
+  const badClone = structuredClone(clone);
+  badClone.secondFile.startLoc.column = 3;
+  assert.equal(
+    projectedGuardCloneKey(badClone, pair, (file) => logicPrefix[file === badClone.firstFile ? 0 : 1], verify),
+    null,
+  );
+  const full = { key: 'new-full-key', baselineKey: expected };
+  assert.deepEqual(compareReview([full], [{ key: expected }]), []);
+  assert.equal(compareReview([full, full], [{ key: expected }]).length, 1, 'new occurrence still fails');
+  assert.equal(compareReview([{ key: 'new-logic', baselineKey: 'different-body' }], [{ key: expected }]).length, 1);
+  assert.equal(compareReview([full], [{ key: 'different-pair:' + expected.split(':').at(-1) }]).length, 1);
+  const withNewLogic = body + '\n  executeNewLogic();';
+  const extended = structuredClone(clone);
+  extended.fragment = lines[0] + '\n' + withNewLogic;
+  for (const file of [extended.firstFile, extended.secondFile]) {
+    file.end = 5;
+    file.endLoc.column = '  executeNewLogic();'.length;
+  }
+  const copies = lines.map((first, index) => ({ relative: pair[index], text: first + '\n' + withNewLogic }));
+  const newKey = projectedGuardCloneKey(extended, pair, (file) => copies[file === extended.firstFile ? 0 : 1], verify);
+  assert.ok(newKey && newKey !== expected);
+  assert.equal(compareReview([{ key: 'extended-clone', baselineKey: newKey }], [{ key: expected }]).length, 1);
+  const captured = [
+    { relative: 'a', bytes: Buffer.from('first') },
+    { relative: 'b', bytes: Buffer.from('second') },
+  ];
+  const unchanged = (name) => captured.find((item) => item.relative === name).bytes;
+  assert.ok(cloneOccurrencesStable(captured, unchanged, unchanged));
+  assert.ok(
+    !cloneOccurrencesStable(captured, (name) => (name === 'a' ? Buffer.from('changed') : unchanged(name)), unchanged),
+  );
+  assert.ok(
+    !cloneOccurrencesStable(captured, unchanged, (name) => (name === 'b' ? Buffer.from('changed') : unchanged(name))),
+  );
+});
+
+// @test-kind tooling: clone fingerprint projection must preserve guarded evidence and baseline multiplicity.
+test('real generated guard preserves the reviewed clone fingerprint without hiding the raw fragment', async (t) => {
+  const directory = fileURLToPath(new URL('../', import.meta.url)),
+    output = await tempDir('clone-boundary-real-');
+  t.after(() => fs.rm(output, { recursive: true, force: true }));
+  const files = ['mirage/test/model-driven-client-state.test.mjs', 'mirage/test/model-driven-staff-context.test.mjs'];
+  const findings = inspectClones(directory, files, output);
+  const oldHash = '31924183d7723c11c1edb3465b0d7be732cfaad52e9dd1873d5b7c2aee2a19a4';
+  const original = findings.find((item) => item.baselineKey?.endsWith(oldHash));
+  assert.ok(original, 'authentic guarded fixture retains its exact pre-guard clone body');
+  assert.notEqual(original.key, original.baselineKey);
+  assert.ok(compareReview([original], [{ key: original.baselineKey }]).length === 0);
+  const report = JSON.parse(await fs.readFile(path.join(output, 'jscpd-report.json'), 'utf8'));
+  assert.ok(report.duplicates.some((item) => item.fragment.startsWith('  ]);\n')));
+});
+
+// @test-kind tooling: clone fingerprint projection must preserve guarded evidence and baseline multiplicity.
+test('an actual generated guard rejects changed proof before boundary projection', async (t) => {
+  const repository = fileURLToPath(new URL('../', import.meta.url));
+  const parent = path.join(repository, '.paqvilo');
+  await fs.mkdir(parent, { recursive: true });
+  const root = await fs.mkdtemp(path.join(parent, 'review-guard-proof-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  for (const name of ['scripts', 'mirage/lib', 'mirage/testing'])
+    await fs.cp(path.join(repository, name), path.join(root, name), { recursive: true });
+  await fs.mkdir(path.join(root, 'mirage/test/fixtures'), { recursive: true });
+  const testFile = path.join(root, 'mirage/test/model-driven-client-state.test.mjs');
+  const proofFile = path.join(root, 'mirage/test/fixtures/model-driven-client-online-native-facts.json');
+  await fs.copyFile(path.join(repository, 'mirage/test/model-driven-client-state.test.mjs'), testFile);
+  await fs.copyFile(
+    path.join(repository, 'mirage/test/fixtures/model-driven-client-online-native-facts.json'),
+    proofFile,
+  );
+  await fs.copyFile(
+    path.join(repository, 'mirage/test/model-driven-staff-context.test.mjs'),
+    path.join(root, 'mirage/test/model-driven-staff-context.test.mjs'),
+  );
+  await fs.mkdir(path.join(root, 'lense'), { recursive: true });
+  await fs.copyFile(path.join(repository, 'lense/local-file.mjs'), path.join(root, 'lense/local-file.mjs'));
+  await fs.symlink(
+    path.join(repository, 'node_modules'),
+    path.join(root, 'node_modules'),
+    process.platform === 'win32' ? 'junction' : 'dir',
+  );
+  const { inspectClones: inspectCopiedClones } = await import(
+    pathToFileURL(path.join(root, 'scripts/code-review.mjs')).href
+  );
+  const files = ['mirage/test/model-driven-client-state.test.mjs', 'mirage/test/model-driven-staff-context.test.mjs'];
+  const before = inspectCopiedClones(root, files, path.join(root, 'report-before'));
+  assert.ok(
+    before.some((item) => item.baselineKey),
+    'valid copied guard establishes the baseline fallback',
+  );
+  const { assertParityBindingsFromSource } = await import(
+    pathToFileURL(path.join(root, 'scripts/qualify-parity.mjs')).href
+  );
+  assert.doesNotThrow(() => assertParityBindingsFromSource(pathToFileURL(testFile)));
+  await fs.appendFile(proofFile, ' ');
+  assert.throws(() => assertParityBindingsFromSource(pathToFileURL(testFile)), /stale-proof-sha/);
+  const after = inspectCopiedClones(root, files, path.join(root, 'report-after'));
+  assert.ok(after.length > 0 && after.every((item) => !item.baselineKey), 'changed proof removes every fallback');
+  assert.deepEqual(
+    after.map((item) => item.key),
+    before.map((item) => item.key),
+    'raw findings stay unchanged',
+  );
+});
+
+// @test-kind tooling: clone fingerprint projection must preserve guarded evidence and baseline multiplicity.
+test('guard verification fails closed on forged source, wrong import and snapshot changes', async (t) => {
+  const repository = fileURLToPath(new URL('../', import.meta.url));
+  const relative = 'mirage/test/model-driven-client-state.test.mjs';
+  const authentic = await fs.readFile(path.join(repository, relative));
+  const guardLine =
+    authentic
+      .toString('utf8')
+      .split(/\r?\n/u)
+      .findIndex((line) => line.trim() === ']);') + 1;
+  assert.ok(guardLine > 0);
+  assert.equal(verifiedCloneGuard(repository, relative, authentic, guardLine), true);
+  assert.equal(
+    verifiedCloneGuard(repository, relative, Buffer.concat([authentic, Buffer.from(' ')]), guardLine),
+    false,
+  );
+  const root = await tempDir('clone-forged-guard-');
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.mkdir(path.join(root, 'mirage/test'), { recursive: true });
+  const forged =
+    "import { assertParityBindings as __paqParityBindings } from '../../scripts/qualify-parity.mjs';\nimport { test } from 'node:test';\ntest('forged', () => {\n  __paqParityBindings(import.meta.url, [\n    {}\n  ]);\n});\n";
+  const target = path.join(root, relative);
+  await fs.writeFile(target, forged);
+  assert.equal(verifiedCloneGuard(root, relative, Buffer.from(forged), 6), false);
+  const wrongImport = forged.replace('../../scripts/qualify-parity.mjs', '../../scripts/wrong.mjs');
+  await fs.writeFile(target, wrongImport);
+  assert.equal(verifiedCloneGuard(root, relative, Buffer.from(wrongImport), 6), false);
 });

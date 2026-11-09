@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "baseline": "1171cccc8baed9218f7fd7689afae4abdc89252b",
+  "producerSha256": "191cd47a5df9993b7c20277d14e22ec52ab3c8c74d805da5e935157098dbe207",
+  "scope": "Two independently opened authenticated draft model-driven forms. Online client state only.",
+  "captures": [
+    {
+      "runSha256": "385fca2442f0c140300c7b5f870844c936d72990e1edbb25a96c64b097102414",
+      "result": {
+        "actorMatches": true,
+        "organizationMatches": true,
+        "appMatches": true,
+        "entityMatches": true,
+        "draft": true,
+        "values": [
+          false,
+          "Online"
+        ]
+      }
+    },
+    {
+      "runSha256": "45fb6eb027f51cbfdd0c34243d36733720d7ad621f822c7d79e0681f01aa48e3",
+      "result": {
+        "actorMatches": true,
+        "organizationMatches": true,
+        "appMatches": true,
+        "entityMatches": true,
+        "draft": true,
+        "values": [
+          false,
+          "Online"
+        ]
+      }
+    }
+  ]
+}

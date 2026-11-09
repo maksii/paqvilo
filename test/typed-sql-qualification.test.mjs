@@ -17,16 +17,19 @@ import {
 const h = (value) => parityHash(JSON.stringify(value));
 const loop =
   "for (const [name, args, expected, ctx] of cases) {\n  test(`${name}(${args.map((a) => (a instanceof Date ? a.toISOString() : typeof a === 'bigint' ? `${a}n` : JSON.stringify(a))).join(', ')})${ctx ? ` ${JSON.stringify(ctx)}` : ''}`, () => {\n    assert.deepStrictEqual(call(name, args, ctx), expected);\n  });\n}";
-const source =
+const defaultSource =
   `// @test-kind unproven: invented matrix for qualification tooling.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 const utc = (y, mo, d, h = 0, mi = 0, s = 0, ms = 0) => new Date(Date.UTC(y, mo - 1, d, h, mi, s, ms));
 const dec = (decimal) => ({ decimal });
 const call = (name, args, ctx) => null;
-const cases = [['LEN', [null], null], ['LEFT', [null, 2], null]];
+const cases = [
+  ['LEN', [null], null],
+  ['LEFT', [null, 2], null],
+];
 ` + loop;
-function setup(t) {
+function setup(t, source = defaultSource) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'typed-parity-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.writeFileSync(path.join(root, 'package.json'), '{"type":"module"}');
@@ -238,4 +241,227 @@ test('cached typed guard rechecks full live universe, source, proof and review b
     }
   }
   assertParityBindings(url, descriptors);
+});
+
+test('typed cumulative selection retains prior evidence and accepts only disjoint additive reviews', (t) => {
+  const f = setup(t);
+  const file = f.manifest.files[0],
+    guarantee = file.guarantees[0],
+    spec = guarantee.tests[0];
+  const secondRow = f.review.review.cases.pop();
+  fs.writeFileSync(path.join(f.root, 'review.json'), JSON.stringify(f.review));
+  guarantee.context.semanticReviewCertificateSha256 = parityHash(fs.readFileSync(path.join(f.root, 'review.json')));
+  spec.caseSelection.selected = [spec.caseSelection.selected[0]];
+  const first = f.run();
+  assert.deepEqual(first.pending, []);
+  writeParityQualification(first, { root: f.root });
+  file.currentSha256 = parityHash(fs.readFileSync(path.join(f.root, file.path)));
+
+  const secondReview = {
+    baseline: f.review.baseline,
+    sourceReceiptSha256: 'e'.repeat(64),
+    review: { cases: [secondRow] },
+  };
+  fs.writeFileSync(path.join(f.root, 'review-extra.json'), JSON.stringify(secondReview));
+  const extraReview = {
+    path: 'review-extra.json',
+    sha256: parityHash(fs.readFileSync(path.join(f.root, 'review-extra.json'))),
+    sourceReceiptSha256: secondReview.sourceReceiptSha256,
+  };
+  const originalCapsule = JSON.parse(fs.readFileSync(path.join(f.root, 'proof.json')));
+  const fact = { ...originalCapsule.runs[0].facts['fact-1'], semanticReviewSha256: secondReview.sourceReceiptSha256 };
+  const extraCapsule = {
+    package: originalCapsule.package,
+    runs: [
+      { runSha256: '3'.repeat(64), facts: { 'fact-extra': fact } },
+      { runSha256: '4'.repeat(64), facts: { 'fact-extra': fact } },
+    ],
+  };
+  fs.writeFileSync(path.join(f.root, 'proof-extra.json'), JSON.stringify(extraCapsule));
+  const extraProof = {
+    ...f.proof,
+    path: 'proof-extra.json',
+    sha256: parityHash(fs.readFileSync(path.join(f.root, 'proof-extra.json'))),
+    facts: [
+      {
+        id: 'fact-extra',
+        pointer: '/runs/0/facts/fact-extra',
+        sha256: h(fact),
+        replicatedPointers: ['/runs/0/facts/fact-extra', '/runs/1/facts/fact-extra'],
+      },
+    ],
+  };
+  guarantee.context.additionalSemanticReviews = [extraReview];
+  guarantee.proofs.push(extraProof);
+  spec.caseSelection.selected.push({ caseIndex: 1, factIds: ['fact-extra'] });
+  const cumulative = f.run();
+  assert.deepEqual(cumulative.pending, []);
+  assert.equal(cumulative.newQualifiedOriginalCases, 1);
+  const descriptors = cumulative.changes[0].bindings;
+  assert.deepEqual(
+    descriptors[0].inputDependencies.map((item) => item.path),
+    ['review-extra.json', 'review.json'],
+  );
+
+  fs.copyFileSync(path.join(f.root, 'review.json'), path.join(f.root, 'review-replacement.json'));
+  guarantee.context.semanticReviewPath = 'review-replacement.json';
+  assert.equal(f.run().pending[0].reason, 'existing-case-binding-changed');
+  guarantee.context.semanticReviewPath = 'review.json';
+  const priorReview = fs.readFileSync(path.join(f.root, 'review.json'));
+  fs.writeFileSync(path.join(f.root, 'review.json'), Buffer.concat([priorReview, Buffer.from('\n')]));
+  const priorHash = guarantee.context.semanticReviewCertificateSha256;
+  guarantee.context.semanticReviewCertificateSha256 = parityHash(fs.readFileSync(path.join(f.root, 'review.json')));
+  assert.equal(f.run().pending[0].reason, 'changed-test-input-dependency');
+  fs.writeFileSync(path.join(f.root, 'review.json'), priorReview);
+  guarantee.context.semanticReviewCertificateSha256 = priorHash;
+  spec.caseSelection.selected[1].factIds = ['fact-0'];
+  assert.equal(f.run().pending[0].reason, 'typed-case-fact-required');
+  spec.caseSelection.selected[1].factIds = ['fact-extra'];
+  guarantee.proofs.shift();
+  assert.ok(f.run().pending.length);
+  guarantee.proofs.unshift(f.proof);
+
+  guarantee.context.additionalSemanticReviews = [{ ...extraReview, path: 'review.json' }];
+  assert.equal(f.run().pending[0].reason, 'typed-semantic-review-required');
+  guarantee.context.additionalSemanticReviews = [{ ...extraReview, path: './review.json' }];
+  assert.equal(f.run().pending[0].reason, 'typed-semantic-review-required');
+  guarantee.context.additionalSemanticReviews = [extraReview];
+  secondReview.review.cases[0].index = 0;
+  fs.writeFileSync(path.join(f.root, 'review-extra.json'), JSON.stringify(secondReview));
+  extraReview.sha256 = parityHash(fs.readFileSync(path.join(f.root, 'review-extra.json')));
+  assert.equal(f.run().pending[0].reason, 'typed-semantic-review-collision');
+  secondReview.review.cases[0].index = 1;
+  fs.writeFileSync(path.join(f.root, 'review-extra.json'), JSON.stringify(secondReview));
+  extraReview.sha256 = parityHash(fs.readFileSync(path.join(f.root, 'review-extra.json')));
+  writeParityQualification(cumulative, { root: f.root });
+  const url = pathToFileURL(path.join(f.root, file.path));
+  assertParityBindings(url, descriptors);
+  fs.appendFileSync(path.join(f.root, 'review-extra.json'), ' ');
+  assert.throws(() => assertParityBindings(url, descriptors), /changed-test-input-dependency/);
+});
+
+test('typed SQL decimal and Int64 facts require exact representations and reject tampering', (t) => {
+  const decimalSource = String(defaultSource).replace(
+    "  ['LEN', [null], null],\n  ['LEFT', [null, 2], null],",
+    "  ['ABS', [dec('1.50')], dec('1.50')],\n  ['ABS', [-7n], 7n],",
+  );
+  assert.notEqual(decimalSource, defaultSource);
+  const f = setup(t, decimalSource);
+  const proofPath = path.join(f.root, 'proof.json');
+  const capsule = JSON.parse(fs.readFileSync(proofPath));
+  for (const run of capsule.runs) {
+    const decimal = run.facts['fact-0'];
+    decimal.priorExpected = { decimal: '1.50' };
+    decimal.currentExpected = { decimal: '1.50' };
+    decimal.typedOutcome.resultSets = [
+      {
+        columns: [{ name: 'value', sqlType: 'decimal', precision: 3, scale: 2 }],
+        rows: [
+          [
+            {
+              kind: 'sql-decimal',
+              exact: '1.50',
+              positive: true,
+              precision: 3,
+              scale: 2,
+              words: ['150', '0', '0', '0'],
+            },
+          ],
+        ],
+      },
+    ];
+    const bigint = run.facts['fact-1'];
+    bigint.priorExpected = { bigint: '7' };
+    bigint.currentExpected = { bigint: '7' };
+    bigint.typedOutcome.resultSets = [
+      {
+        columns: [{ name: 'value', sqlType: 'bigint' }],
+        rows: [[{ kind: 'System.Int64', exact: '7' }]],
+      },
+    ];
+  }
+  const original = structuredClone(capsule);
+  function updateProof(value) {
+    fs.writeFileSync(proofPath, JSON.stringify(value));
+    f.proof.sha256 = parityHash(fs.readFileSync(proofPath));
+    for (const fact of f.proof.facts) fact.sha256 = h(value.runs[0].facts[fact.id]);
+  }
+  updateProof(capsule);
+  assert.deepEqual(f.run().pending, []);
+  for (const mutate of [
+    (fact) => {
+      fact.typedOutcome.resultSets[0].rows[0][0].words[0] = '151';
+    },
+    (fact) => {
+      fact.typedOutcome.resultSets[0].rows[0][0].positive = false;
+    },
+    (fact) => {
+      fact.typedOutcome.resultSets[0].rows[0][0].scale = 1;
+    },
+    (fact) => {
+      fact.typedOutcome.resultSets[0].columns[0].precision = 4;
+    },
+    (fact) => {
+      fact.currentExpected.decimal = '1.5';
+    },
+  ]) {
+    const changed = structuredClone(original);
+    for (const run of changed.runs) mutate(run.facts['fact-0']);
+    updateProof(changed);
+    assert.ok(f.run().pending.length, 'modified decimal fact must be rejected');
+  }
+  const overflow = structuredClone(original);
+  for (const run of overflow.runs)
+    run.facts['fact-1'].typedOutcome.resultSets[0].rows[0][0].exact = '9223372036854775808';
+  updateProof(overflow);
+  assert.ok(f.run().pending.length, 'out-of-range Int64 must be rejected');
+});
+
+test('typed SQL Int32 facts enforce the signed 32-bit wire range', (t) => {
+  for (const [expected, accepted] of [
+    [2147483647, true],
+    [-2147483648, true],
+    [2147483648, false],
+    [-2147483649, false],
+  ]) {
+    const typedSource = String(defaultSource).replace("['LEN', [null], null]", `['LEN', [null], ${expected}]`);
+    assert.notEqual(typedSource, defaultSource);
+    const f = setup(t, typedSource);
+    const proofPath = path.join(f.root, 'proof.json');
+    const capsule = JSON.parse(fs.readFileSync(proofPath));
+    for (const run of capsule.runs) {
+      const fact = run.facts['fact-0'];
+      fact.priorExpected = expected;
+      fact.currentExpected = expected;
+      fact.typedOutcome.resultSets[0].rows[0][0] = { kind: 'System.Int32', exact: String(expected) };
+    }
+    fs.writeFileSync(proofPath, JSON.stringify(capsule));
+    f.proof.sha256 = parityHash(fs.readFileSync(proofPath));
+    f.proof.facts[0].sha256 = h(capsule.runs[0].facts['fact-0']);
+    const result = f.run();
+    if (accepted) assert.deepEqual(result.pending, []);
+    else assert.equal(result.pending[0].reason, 'typed-output-unsupported');
+  }
+});
+
+test('typed SQL float results preserve the sign of zero', (t) => {
+  const zeroSource = String(defaultSource).replace("['LEN', [null], null]", "['LEN', [null], 0]");
+  assert.notEqual(zeroSource, defaultSource);
+  const f = setup(t, zeroSource);
+  const proofPath = path.join(f.root, 'proof.json');
+  const capsule = JSON.parse(fs.readFileSync(proofPath));
+  for (const run of capsule.runs) {
+    const fact = run.facts['fact-0'];
+    fact.priorExpected = 0;
+    fact.currentExpected = 0;
+    fact.typedOutcome.resultSets[0].rows[0][0] = {
+      kind: 'float64',
+      roundtrip: '-0',
+      bitsBase64: 'AAAAAAAAAIA=',
+    };
+  }
+  fs.writeFileSync(proofPath, JSON.stringify(capsule));
+  f.proof.sha256 = parityHash(fs.readFileSync(proofPath));
+  f.proof.facts[0].sha256 = h(capsule.runs[0].facts['fact-0']);
+  assert.equal(f.run().pending[0].reason, 'typed-case-output-mismatch');
 });

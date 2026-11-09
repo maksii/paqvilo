@@ -1,0 +1,185 @@
+{
+  "version": 1,
+  "scope": "Repeated SQL Server engine result for one exact true branch; no Dataverse TDS claim",
+  "package": {
+    "ecosystem": "microsoft-oci",
+    "id": "mssql/server",
+    "sha256": "cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718",
+    "source": "https://mcr.microsoft.com/v2/mssql/server/manifests/sha256:cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718",
+    "bodyBase64": "eyJzY2hlbWFWZXJzaW9uIjoyLCJtZWRpYVR5cGUiOiJhcHBsaWNhdGlvbi92bmQuZG9ja2VyLmRpc3RyaWJ1dGlvbi5tYW5pZmVzdC52Mitqc29uIiwiY29uZmlnIjp7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuY29udGFpbmVyLmltYWdlLnYxK2pzb24iLCJzaXplIjozMzcwLCJkaWdlc3QiOiJzaGEyNTY6N2ZiMjEzOTM0MTcxNWU4YTcxODQzY2ZjMmYwMmJhYjZlOTVmMWM1MmMwZmE5ZjlhNmIyZTdiNzYxZjA2MDc4MCJ9LCJsYXllcnMiOlt7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuaW1hZ2Uucm9vdGZzLmRpZmYudGFyLmd6aXAiLCJzaXplIjozMTU1OTQwMCwiZGlnZXN0Ijoic2hhMjU2OmNiNWUzNzRiZTY2MmE1NjJiODI3MTE1ODYzOWU5MThiOWM2MzRhYTRkZmRjOGIzYWEzMWNjZmM5OWNmOGMwNzcifSx7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuaW1hZ2Uucm9vdGZzLmRpZmYudGFyLmd6aXAiLCJzaXplIjo1MDIxMjIzODQsImRpZ2VzdCI6InNoYTI1NjpjZjc2ZTQ3YzIzN2Y5YmZkZThjNzM4ZmQzZTNmYTgzMWI1M2E2MmFlNTI2OTQ0MTYwMGQ0MTM4OTAwNTVkOGFlIn0seyJtZWRpYVR5cGUiOiJhcHBsaWNhdGlvbi92bmQuZG9ja2VyLmltYWdlLnJvb3Rmcy5kaWZmLnRhci5nemlwIiwic2l6ZSI6OTMwMjcwMDMsImRpZ2VzdCI6InNoYTI1NjoxNmU4NDM2YzBjYmFlN2RmNWEzODEzMTE2MWU4OGYxMGE0OTdhZjZlMjRhOWVlNmRjYzcwMDY3ZThjYjI4YWU3In1dfQ=="
+  },
+  "runs": [
+    {
+      "runSha256": "64da54ac714a33bb1472fc3b288b07de8cf8320e9708c02cbac33ee4b5f5314b",
+      "runnerSha256": "e99e756806b7f5a52e4b80017cfa6e32d416b54731d18f894d60821adbf6498e",
+      "inventorySha256": "5860c83c758fce5f8a268aae2826ec30d23b4058b1a18d5746e7f3b8133b93d8",
+      "facts": {
+        "sql-function-iif-true-14": {
+          "caseIndex": 14,
+          "baselineId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#14",
+          "baselineTupleAstSha256": "02b2b5d61a25dcfc5cc8cfd0582dd22761f31641e4026295425e50c890858ebb",
+          "currentTupleAstSha256": "02b2b5d61a25dcfc5cc8cfd0582dd22761f31641e4026295425e50c890858ebb",
+          "assertionSha256": [
+            "cf60392995a11111755931aae17b92b36e4d1cf1447f3103b43baf642efd3dab"
+          ],
+          "baselineTupleSource": "['IIF', [true, 1, 2], 1]",
+          "baselineValues": [
+            "IIF",
+            [
+              true,
+              1,
+              2
+            ],
+            1
+          ],
+          "priorExpected": 1,
+          "currentExpected": 1,
+          "query": "SELECT IIF(1 = 1, 1, 2) AS [value]",
+          "typedOutcome": {
+            "query": "SELECT IIF(1 = 1, 1, 2) AS [value]",
+            "resultSets": [
+              {
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "int",
+                    "clrType": "System.Int32",
+                    "precision": 10,
+                    "scale": 255
+                  }
+                ],
+                "rows": [
+                  [
+                    {
+                      "kind": "System.Int32",
+                      "exact": "1"
+                    }
+                  ]
+                ]
+              }
+            ],
+            "id": "case14-iif-true",
+            "outcome": "result"
+          },
+          "context": {
+            "version": {
+              "kind": "string",
+              "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+            },
+            "productVersion": {
+              "kind": "string",
+              "value": "16.0.4305.5"
+            },
+            "edition": {
+              "kind": "string",
+              "value": "Developer Edition (64-bit)"
+            },
+            "collation": {
+              "kind": "string",
+              "value": "SQL_Latin1_General_CP1_CI_AS"
+            },
+            "language": {
+              "kind": "string",
+              "value": "us_english"
+            },
+            "dateFirst": {
+              "kind": "System.Byte",
+              "exact": "7"
+            },
+            "options": {
+              "kind": "System.Int32",
+              "exact": "5432"
+            }
+          },
+          "semanticReviewSha256": "af71fa103a879ffbbe9512e61437cd841635b70d3579e616b2150e2cec781626"
+        }
+      }
+    },
+    {
+      "runSha256": "d5ff71c142c2fb9ad5c6910c2d03989c2ae2331cba50049a142009b05bab34a8",
+      "runnerSha256": "e99e756806b7f5a52e4b80017cfa6e32d416b54731d18f894d60821adbf6498e",
+      "inventorySha256": "5860c83c758fce5f8a268aae2826ec30d23b4058b1a18d5746e7f3b8133b93d8",
+      "facts": {
+        "sql-function-iif-true-14": {
+          "caseIndex": 14,
+          "baselineId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#14",
+          "baselineTupleAstSha256": "02b2b5d61a25dcfc5cc8cfd0582dd22761f31641e4026295425e50c890858ebb",
+          "currentTupleAstSha256": "02b2b5d61a25dcfc5cc8cfd0582dd22761f31641e4026295425e50c890858ebb",
+          "assertionSha256": [
+            "cf60392995a11111755931aae17b92b36e4d1cf1447f3103b43baf642efd3dab"
+          ],
+          "baselineTupleSource": "['IIF', [true, 1, 2], 1]",
+          "baselineValues": [
+            "IIF",
+            [
+              true,
+              1,
+              2
+            ],
+            1
+          ],
+          "priorExpected": 1,
+          "currentExpected": 1,
+          "query": "SELECT IIF(1 = 1, 1, 2) AS [value]",
+          "typedOutcome": {
+            "query": "SELECT IIF(1 = 1, 1, 2) AS [value]",
+            "resultSets": [
+              {
+                "columns": [
+                  {
+                    "name": "value",
+                    "sqlType": "int",
+                    "clrType": "System.Int32",
+                    "precision": 10,
+                    "scale": 255
+                  }
+                ],
+                "rows": [
+                  [
+                    {
+                      "kind": "System.Int32",
+                      "exact": "1"
+                    }
+                  ]
+                ]
+              }
+            ],
+            "id": "case14-iif-true",
+            "outcome": "result"
+          },
+          "context": {
+            "version": {
+              "kind": "string",
+              "value": "Microsoft SQL Server 2022 (RTM-CU27-GDR) (KB5126934) - 16.0.4305.5 (X64) \n\tOct  2 2026 17:28:11 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Linux (Ubuntu 22.04.5 LTS) <X64>"
+            },
+            "productVersion": {
+              "kind": "string",
+              "value": "16.0.4305.5"
+            },
+            "edition": {
+              "kind": "string",
+              "value": "Developer Edition (64-bit)"
+            },
+            "collation": {
+              "kind": "string",
+              "value": "SQL_Latin1_General_CP1_CI_AS"
+            },
+            "language": {
+              "kind": "string",
+              "value": "us_english"
+            },
+            "dateFirst": {
+              "kind": "System.Byte",
+              "exact": "7"
+            },
+            "options": {
+              "kind": "System.Int32",
+              "exact": "5432"
+            }
+          },
+          "semanticReviewSha256": "af71fa103a879ffbbe9512e61437cd841635b70d3579e616b2150e2cec781626"
+        }
+      }
+    }
+  ]
+}

@@ -1,4 +1,5 @@
 import { sharedParityDescriptor, SHARED, FREEZE } from './parity-shared-descriptor.mjs';
+import { sharedPartialDescriptors, PARTIAL_SHARED, PARTIAL_FREEZE } from './parity-shared-partial.mjs';
 // Strict, manifest-driven qualification of existing tests. Semantic evidence review
 // belongs to the manifest author; this tool checks bindings and never invents proof.
 import fs from 'node:fs';
@@ -7,6 +8,7 @@ import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { builtinModules, createRequire } from 'node:module';
+import { isDeepStrictEqual } from 'node:util';
 import { parseTestKinds, kindsAt } from './check-test-tags.mjs';
 import { validateMicrosoftCdnArtifact } from './parity-official-artifacts.mjs';
 import { verifyMicrosoftOci } from './parity-microsoft-oci.mjs';
@@ -21,10 +23,20 @@ import { analyzeMixedPlainRendererSlice } from './parity-mixed-plain-renderer-sl
 import { analyzeRecordsFixtureSlice } from './parity-records-fixture-slice.mjs';
 import { verifyScalarMigration } from './parity-scalar-migration.mjs';
 import { analyzeAssertionLoop } from './parity-assertion-loop.mjs';
+import {
+  compactSoapProof,
+  sameSoapProofIdentity,
+  soapAuthorityContains,
+  soapKindHeaderEnd,
+  soapNamespaceRegionsValid,
+  soapPriorFactsPreserved,
+} from './parity-soap-authority.mjs';
 import { queryUniverse } from './parity-query-universe.mjs';
 import { typedCaseIndex } from './parity-typed-case.mjs';
 import { extract as extractTypedSqlSource } from './parity-sql-source.mjs';
 import { verifyQueryMessageBridge, verifyQueryMessageBridgeCase } from './parity-query-message-bridge.mjs';
+import { routeQueryWitnesses } from './parity-query-witness-routing.mjs';
+import { assertFrozenQueryAuthority, assertQueryWriteAuthority } from './parity-query-frozen-authority.mjs';
 import { resolveGitExecutable } from './trusted-git.mjs';
 
 const require = createRequire(import.meta.url);
@@ -288,13 +300,15 @@ function attachSourceAssertions(
 }
 export function describeParitySource(source, file = 'fixture.test.mjs') {
   const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module', range: true, loc: true });
-  let shared;
+  let shared, partialShared;
   try {
     shared = sharedParityDescriptor(ast);
+    partialShared = sharedPartialDescriptors(ast, parityAstHash);
   } catch {
     fail('invalid-shared-parity-descriptor');
   }
   if (shared) for (const ref of shared.refs) sharedReferences.set(ref, shared.data);
+  if (partialShared) for (const ref of partialShared.references) sharedReferences.set(ref.node, ref.data);
   const tags = parseTestKinds(source),
     { bindings, namespaces, assertionObjects, assertionFunctions, libraryBindings } = collectSourceImports(ast),
     declaredNames = new Set();
@@ -339,6 +353,7 @@ export function describeParitySource(source, file = 'fixture.test.mjs') {
     declarations,
     identifiers,
     sharedDescriptor: shared,
+    sharedPartialDescriptor: partialShared,
   };
   modelSourcePaths.set(model, file);
   return model;
@@ -355,11 +370,15 @@ function generatorSkeleton(node, registrations) {
   );
 }
 function registration(model, spec) {
-  const candidates = model.registrations.filter(
+  const titled = model.registrations.filter(
     (row) =>
       row.titleExpressionSha256 === spec.titleExpressionSha256 &&
       (!spec.parentTitleExpressionSha256 || row.parent?.titleExpressionSha256 === spec.parentTitleExpressionSha256),
   );
+  const candidates = spec.loopHeaders
+    ? titled.filter((row) => jsonHash(row.loopHeaders) === jsonHash(spec.loopHeaders))
+    : titled;
+  check(candidates.length || !titled.length || !spec.loopHeaders, 'changed-loop-header');
   check(candidates.length === 1, candidates.length ? 'ambiguous-registration' : 'missing-registration');
   return candidates[0];
 }
@@ -1381,12 +1400,18 @@ function moduleContextHash(
     );
   }
   function cleanElement(item) {
-    if (ignored.has(item) || proofImports.has(item) || item === model.sharedDescriptor?.declaration) return [];
+    if (
+      ignored.has(item) ||
+      proofImports.has(item) ||
+      item === model.sharedDescriptor?.declaration ||
+      item === model.sharedPartialDescriptor?.declaration
+    )
+      return [];
     if (
       item?.type === 'ImportDeclaration' &&
       item.specifiers.length &&
       item.specifiers.every((specifier) =>
-        [IMPORT, SOURCE_IMPORT, REGION_IMPORT, CASE_IMPORT, FREEZE].includes(specifier.local.name),
+        [IMPORT, SOURCE_IMPORT, REGION_IMPORT, CASE_IMPORT, FREEZE, PARTIAL_FREEZE].includes(specifier.local.name),
       ) &&
       typeof item.source.value === 'string' &&
       item.source.value.endsWith('/scripts/qualify-parity.mjs')
@@ -1680,6 +1705,78 @@ function expandUniverseEnvironments(old, oldModel, newModel, fixtureBindings) {
   }
   return { environments, currentEnvironments };
 }
+const SQL_EVALUATOR_HELPERS = Object.freeze({
+  run: '00095d7cbf637b0a9b6cacfe9a0c11a4599b21c9bfb82b06b879e42457815897',
+  plain: 'b07411ba5de899c8dbd6a85ceb01beb185f7f8f4f10bcfd2b65e87e69f721d18',
+  rowsOf: '5a02474f8f2040d58158701f3b108802c2ead975115fc7fe529f00debc8fda20',
+  NOW: 'eedc0ebb2d4beb4fabd36aae353b3bb9e07f9ebdcada3322801e264b0437c4d5',
+  check: '026c7924eb36a9c67bdf121c6afd7b7324e174b19a88ddf086b5bb44d5e8c79a',
+  makeScan: '4daa62ed8be0cec5a74a94c5e56ea8e6e97da62accba0c010da7cd029ba6c093',
+});
+const SQL_EVALUATOR_LOOP = '4ee8f44ae863d654e9366f5a73ededcaeec081f4f8463a7c1a9dea30cfbebc1b';
+
+function verifySqlEvaluatorHelpers(model) {
+  for (const [name, expected] of Object.entries(SQL_EVALUATOR_HELPERS)) {
+    const nodes = model.ast.body.flatMap((node) => {
+      if (node.type === 'FunctionDeclaration' && node.id?.name === name) return [node];
+      if (node.type === 'VariableDeclaration' && node.kind === 'const')
+        return node.declarations.filter((item) => item.id?.name === name).map((item) => item.init);
+      return [];
+    });
+    check(nodes.length === 1 && parityAstHash(nodes[0]) === expected, 'changed-sql-evaluator-helper');
+  }
+}
+
+function sqlEvaluatorBindings(model) {
+  const declarations = model.declarations.filter((item) => item.name === 'semanticCases' && item.ownerTitle === null);
+  check(declarations.length === 1 && declarations[0].initializer.type === 'ArrayExpression', 'sql-eval-universe');
+  let references = 0;
+  function visit(node) {
+    if (node.type === 'Identifier' && node.name === 'semanticCases') references++;
+    childNodes(node).forEach(visit);
+  }
+  visit(model.ast);
+  check(references === 2, 'sql-eval-universe');
+  const rows = literalCaseValue(declarations[0].initializer);
+  check(
+    rows.length === 52 &&
+      rows.every(
+        (row) => Array.isArray(row) && row.length === 3 && typeof row[0] === 'string' && typeof row[1] === 'string',
+      ),
+    'sql-eval-universe',
+  );
+  return rows.map(([label, sql, expected]) => ({ label, sql, expected }));
+}
+
+function verifySqlEvaluatorUniverse(old, current, spec, oldModel, newModel, activeFixture) {
+  check(
+    spec.sqlEvaluator === true &&
+      spec.caseSelection &&
+      old.loops.length === 1 &&
+      current.loops.length === 1 &&
+      parityAstHash(old.loops[0]) === SQL_EVALUATOR_LOOP &&
+      parityAstHash(current.loops[0]) === SQL_EVALUATOR_LOOP,
+    'sql-eval-universe',
+  );
+  verifySqlEvaluatorHelpers(oldModel);
+  verifySqlEvaluatorHelpers(newModel);
+  const original = sqlEvaluatorBindings(oldModel),
+    candidate = sqlEvaluatorBindings(newModel),
+    universe = spec.caseUniverse;
+  const titles = original.map((row) => `T-SQL semantics: ${row.label}`);
+  check(
+    jsonHash(original) === jsonHash(universe.caseBindings) &&
+      jsonHash(titles) === jsonHash(universe.cases) &&
+      jsonHash(titles) === universe.casesSha256 &&
+      jsonHash(candidate.map((row) => `T-SQL semantics: ${row.label}`)) === jsonHash(titles) &&
+      (activeFixture
+        ? jsonHash(candidate) === jsonHash(universe.currentCaseBindings) &&
+          jsonHash(candidate) === universe.currentCaseBindingsSha256
+        : jsonHash(candidate) === jsonHash(original)),
+    'sql-eval-universe',
+  );
+}
+
 function verifyUniverse(old, current, spec, oldModel, newModel, fixtureBindings = new Map(), verifiedCaseBody = null) {
   const { universe, activeFixture } = validateUniverseContext(
     old,
@@ -1719,6 +1816,10 @@ function verifyUniverse(old, current, spec, oldModel, newModel, fixtureBindings 
       );
     else check(jsonHash(bindings(current)) === jsonHash(universe.caseBindings), 'case-bindings-do-not-match');
     check(jsonHash(baseline.titles) === jsonHash(current.titles), 'corrected-case-title-mismatch');
+    return;
+  }
+  if (universe.encoding === 'sql-eval-v1') {
+    verifySqlEvaluatorUniverse(old, current, spec, oldModel, newModel, activeFixture);
     return;
   }
   check(universe.encoding === undefined, 'unsupported-case-binding-encoding');
@@ -2266,12 +2367,43 @@ function regionStatements(row, region, allowReturn = false) {
   statements.forEach(safe);
   return statements;
 }
+function attachSqlEvaluatorAssertion(model, row) {
+  verifySqlEvaluatorHelpers(model);
+  const body = row.callback.body;
+  const expression = body.type === 'BlockStatement' ? body.body.at(-1)?.argument : body;
+  check(
+    !row.callback.async &&
+      row.callback.params.length === 0 &&
+      expression?.type === 'CallExpression' &&
+      expression.callee?.type === 'Identifier' &&
+      expression.callee.name === 'check' &&
+      expression.arguments.length === 2 &&
+      expression.arguments[0]?.type === 'Identifier' &&
+      expression.arguments[0].name === 'sql' &&
+      expression.arguments[1]?.type === 'Identifier' &&
+      expression.arguments[1].name === 'expected',
+    'sql-eval-helper-call-changed',
+  );
+  if (!row.assertions.some((item) => item.node === expression))
+    row.assertions.push({
+      node: expression,
+      sha256: parityAstHash(expression),
+      libraryBindings: new Map(),
+      declaredNames: new Set(),
+    });
+}
+
 function verifyPartial(oldModel, currentModel, spec, factIds, moduleDelta, generated = {}) {
   const replacements = moduleDelta?.replacements ?? new Map();
   const verifiedCaseBody = moduleDelta?.verifiedCaseBody;
   const old = oldModel.registrations.find((item) => item.id === spec.baselineId);
   check(old && old.titleExpressionSha256 === spec.titleExpressionSha256, 'stale-baseline-id');
   const current = registration(currentModel, spec);
+  check((spec.sqlEvaluator === true) === (spec.caseUniverse?.encoding === 'sql-eval-v1'), 'sql-eval-configuration');
+  if (spec.sqlEvaluator === true) {
+    attachSqlEvaluatorAssertion(oldModel, old);
+    attachSqlEvaluatorAssertion(currentModel, current);
+  }
   check(Array.isArray(spec.regions) && spec.regions.length && !spec.assertions, 'partial-regions-required');
   const originalGuards = new Set(old.assertions.filter(isHashGuard).map((item) => item.sha256));
   if (!verifiedCaseBody)
@@ -2295,7 +2427,8 @@ function verifyPartial(oldModel, currentModel, spec, factIds, moduleDelta, gener
         !old.callback.async &&
         !current.callback.async &&
         (old.kinds.includes('unproven') ||
-          ((verifiedCaseBody || spec.caseUniverse.encoding === 'typed-v1') && old.kinds.length === 0)) &&
+          ((verifiedCaseBody || ['typed-v1', 'sql-eval-v1'].includes(spec.caseUniverse.encoding)) &&
+            old.kinds.length === 0)) &&
         current.kinds.includes('unproven') &&
         !old.kinds.includes('parity') &&
         !current.kinds.includes('parity') &&
@@ -2655,6 +2788,168 @@ function analyzeSdkLateHarness(model, spec) {
   };
 }
 
+// The selected online-client test precedes the only filesystem fixture. This
+// review is limited to ordinary top-level test registrations and does not
+// permit os access from module setup or any earlier callback.
+export function analyzeClientLateFixture(model, spec) {
+  const selected = registration(model, spec);
+  const fixture = model.registrations.filter(
+    (row) => row.title === 'usersettingscollection answers GET and PATCH for the caller and feeds the staff context',
+  );
+  check(selected && !selected.parent && fixture.length === 1 && !fixture[0].parent, 'unsupported-client-harness');
+  check(selected.node.range[0] < fixture[0].node.range[0], 'unsupported-client-harness');
+  const earlier = model.registrations.filter((row) => row.node.range[0] < selected.node.range[0]);
+  check(
+    !selected.callback.async && earlier.length === 1 && !earlier[0].parent && !earlier[0].callback.async,
+    'unsupported-client-harness',
+  );
+  const imports = model.ast.body.filter((node) => node.type === 'ImportDeclaration');
+  const os = imports.filter((node) => node.source.value === 'node:os');
+  const testImport = imports.filter((node) => node.source.value === 'node:test');
+  check(
+    os.length === 1 &&
+      os[0].specifiers.length === 1 &&
+      os[0].specifiers[0].type === 'ImportDefaultSpecifier' &&
+      os[0].specifiers[0].local.name === 'os' &&
+      testImport.length === 1 &&
+      testImport[0].specifiers.length === 1 &&
+      testImport[0].specifiers[0].type === 'ImportDefaultSpecifier' &&
+      testImport[0].specifiers[0].local.name === 'test',
+    'unsupported-client-harness',
+  );
+  const parents = new Map();
+  function visit(node) {
+    for (const child of childNodes(node)) {
+      parents.set(child, node);
+      visit(child);
+    }
+  }
+  visit(model.ast);
+  const scopes = analyzeScopes(model.ast, { ecmaVersion: 2022, sourceType: 'module' });
+  const moduleScope = scopes.scopes.find((scope) => scope.type === 'module');
+  const recognizedIdentifiers = new Set();
+  for (const [name, source, methods] of [
+    ['fs', 'node:fs/promises', ['rm', 'mkdir', 'writeFile']],
+    ['path', 'node:path', ['join']],
+  ]) {
+    const declaration = imports.find((node) => node.source.value === source);
+    const binding = moduleScope?.set.get(name);
+    check(
+      declaration?.specifiers.length === 1 &&
+        declaration.specifiers[0].type === 'ImportDefaultSpecifier' &&
+        declaration.specifiers[0].local.name === name &&
+        binding?.defs.length === 1 &&
+        binding.defs[0].parent === declaration &&
+        binding.references.length > 0 &&
+        scopes.scopes.every((scope) => scope === moduleScope || !scope.set.has(name)),
+      'unsupported-client-harness',
+    );
+    for (const ref of binding.references) {
+      const id = ref.identifier;
+      const member = parents.get(id);
+      check(
+        id.range[0] >= fixture[0].callback.range[0] &&
+          id.range[1] <= fixture[0].callback.range[1] &&
+          member?.type === 'MemberExpression' &&
+          !member.computed &&
+          member.object === id &&
+          methods.includes(member.property.name) &&
+          parents.get(member)?.type === 'CallExpression' &&
+          parents.get(member).callee === member,
+        'unsupported-client-harness',
+      );
+      if (name === 'fs') recognizedIdentifiers.add(id);
+    }
+  }
+  const helperImports = imports.filter((node) => node.source.value === '../testing/owned-fixture.mjs');
+  check(helperImports.length === 1, 'unsupported-client-harness');
+  const [helperImport] = helperImports;
+  check(helperImport.specifiers.length === 2, 'unsupported-client-harness');
+  for (const name of ['ownedFixture', 'makeTemporaryDirectory']) {
+    const binding = moduleScope?.set.get(name);
+    check(
+      helperImport?.specifiers.some(
+        (item) => item.type === 'ImportSpecifier' && item.imported.name === name && item.local.name === name,
+      ) &&
+        binding?.defs.length === 1 &&
+        binding.defs[0].parent === helperImport &&
+        binding.references.length > 0 &&
+        scopes.scopes.every((scope) => scope === moduleScope || !scope.set.has(name)) &&
+        binding.references.every((ref) => {
+          const id = ref.identifier;
+          const call = parents.get(id);
+          return (
+            id.range[0] >= fixture[0].callback.range[0] &&
+            id.range[1] <= fixture[0].callback.range[1] &&
+            call?.type === 'CallExpression' &&
+            call.callee === id
+          );
+        }),
+      'unsupported-client-harness',
+    );
+  }
+  const osBinding = moduleScope?.set.get('os');
+  check(
+    osBinding?.defs.length === 1 &&
+      osBinding.defs[0].parent === os[0] &&
+      osBinding.references.length > 0 &&
+      scopes.scopes.every((scope) => scope === moduleScope || !scope.set.has('os')) &&
+      osBinding.references.every((ref) => {
+        const id = ref.identifier;
+        const member = parents.get(id);
+        return (
+          id.range[0] >= fixture[0].callback.range[0] &&
+          id.range[1] <= fixture[0].callback.range[1] &&
+          member?.type === 'MemberExpression' &&
+          !member.computed &&
+          member.object === id &&
+          member.property.name === 'tmpdir' &&
+          parents.get(member)?.type === 'CallExpression' &&
+          parents.get(member).callee === member
+        );
+      }),
+    'unsupported-client-harness',
+  );
+  const testBinding = moduleScope?.set.get('test');
+  check(
+    testBinding?.defs.length === 1 &&
+      testBinding.references.length === model.registrations.length &&
+      testBinding.references.every((ref) => {
+        const call = parents.get(ref.identifier);
+        return (
+          call?.type === 'CallExpression' &&
+          call.callee === ref.identifier &&
+          call.arguments.length === 2 &&
+          call.arguments[0]?.type === 'Literal' &&
+          typeof call.arguments[0].value === 'string' &&
+          model.registrations.some((row) => !row.parent && row.node === call)
+        );
+      }) &&
+      model.ast.body.every(
+        (node) =>
+          node.type === 'ImportDeclaration' ||
+          model.registrations.some((row) => !row.parent && row.node === node.expression),
+      ),
+    'unsupported-client-harness',
+  );
+  return {
+    recognizedBuiltinImports: new Set(os),
+    recognizedIdentifiers,
+    isolatedIdentifiers: new Set(),
+    recognizedExternalInputs: new Set(),
+    // This exact test-input helper has only builtin imports and allocates a
+    // WeakMap at module load; its filesystem methods run only when called.
+    handledInputSources: new Set(['../testing/owned-fixture.mjs']),
+    dependencies: [
+      {
+        path: 'mirage/testing/owned-fixture.mjs',
+        sha256: '88ddbb5a2a7a001fc9389340419536ae561a65606384e9744c440c4e363754a0',
+      },
+    ],
+    fixtures: [],
+  };
+}
+
 // Reviewers classify direct imports explicitly. Input modules and their static local closure are byte-bound.
 function reviewStaticImportRoles(model, file, generated) {
   const nodeBuiltins = new Set(builtinModules.map((name) => name.replace(/^node:/u, '')));
@@ -2892,6 +3187,20 @@ function collectSelectedRuntimeInputs(selected, classify, externalKind) {
 }
 
 function reviewRuntimeInputs(model, file, selected, generated) {
+  const evaluatorDateChecks = new Set();
+  if (selected.some((item) => item.spec?.sqlEvaluator === true && item.spec.caseUniverse?.encoding === 'sql-eval-v1')) {
+    verifySqlEvaluatorHelpers(model);
+    const plain = model.ast.body
+      .flatMap((node) => (node.type === 'VariableDeclaration' ? node.declarations : []))
+      .find((item) => item.id?.name === 'plain').init;
+    function collectDateChecks(node) {
+      if (node.type === 'BinaryExpression' && node.operator === 'instanceof' && node.right?.name === 'Date')
+        evaluatorDateChecks.add(node.right);
+      childNodes(node).forEach(collectDateChecks);
+    }
+    collectDateChecks(plain);
+    check(evaluatorDateChecks.size === 1, 'changed-sql-evaluator-helper');
+  }
   const property = (node) => {
     if (node?.type !== 'MemberExpression') return null;
     if (!node.computed) return node.property.name;
@@ -2930,7 +3239,7 @@ function reviewRuntimeInputs(model, file, selected, generated) {
         parent?.type === 'NewExpression' &&
         parent.callee === node &&
         parent.arguments.length > 0;
-      check(allowedMember || fixedDate, 'unknown-runtime-input-producer');
+      check(allowedMember || fixedDate || evaluatorDateChecks.has(node), 'unknown-runtime-input-producer');
     }
     if (node.type === 'Identifier' && ['window', 'self'].includes(node.name)) fail('unknown-runtime-input-producer');
     const kind = externalKind(node);
@@ -3944,7 +4253,8 @@ function unwrapExistingPartial(root, file, source, model, oldModel, validatedTok
         (item) =>
           item.type === 'ImportSpecifier' &&
           ((item.local.name === REGION_IMPORT && item.imported.name === 'parityAssertions') ||
-            (item.local.name === IMPORT && item.imported.name === 'assertParityBindings')),
+            (item.local.name === IMPORT && item.imported.name === 'assertParityBindings') ||
+            (item.local.name === PARTIAL_FREEZE && item.imported.name === 'freezeParityDescriptor')),
       ),
     'invalid-existing-partial-import',
   );
@@ -3952,7 +4262,8 @@ function unwrapExistingPartial(root, file, source, model, oldModel, validatedTok
     (item) =>
       item.type === 'ExpressionStatement' &&
       item.expression.type === 'CallExpression' &&
-      item.expression.callee.name === IMPORT,
+      item.expression.callee.name === IMPORT &&
+      guardDescriptors(item.expression).some((descriptor) => descriptor.regionHashes),
   );
   check(guards.length > 0, 'existing-partial-source-guard-required');
   const descriptors = guards.flatMap((item) => guardDescriptors(item.expression));
@@ -3967,6 +4278,15 @@ function unwrapExistingPartial(root, file, source, model, oldModel, validatedTok
   const edits = [
     { start: declaration.range[0], end: declaration.range[1], text: '' },
     ...guards.map((item) => ({ start: item.range[0], end: item.range[1], text: '' })),
+    ...(model.sharedPartialDescriptor
+      ? [
+          {
+            start: model.sharedPartialDescriptor.declaration.range[0],
+            end: model.sharedPartialDescriptor.declaration.range[1],
+            text: '',
+          },
+        ]
+      : []),
   ];
   const wrappers = collectPartialWrapperEdits(model, source, descriptors, edits);
   check(wrappers === descriptors.reduce((n, item) => n + (item.regionHashes?.length ?? 0), 0), 'changed-region-set');
@@ -4004,8 +4324,9 @@ function unwrapExistingCase(root, file, source, model, selectedIds = new Set()) 
       item.expression.type === 'CallExpression' &&
       item.expression.callee.name === IMPORT,
   );
-  check(guards.length === 1, 'existing-case-source-guard-required');
-  const descriptors = guardDescriptors(guards[0].expression);
+  const caseGuards = guards.filter((guard) => guardDescriptors(guard.expression).some((item) => item.caseSelection));
+  check(caseGuards.length === 1, 'existing-case-source-guard-required');
+  const descriptors = guardDescriptors(caseGuards[0].expression);
   check(descriptors.length === 1 && descriptors[0].caseSelection, 'invalid-existing-case-guard');
   validateParityBindings(pathToFileURL(path.resolve(root, file.path)), descriptors);
   if (!selectedIds.has(descriptors[0].baselineId)) return { descriptors, source, caseGuard: true, preserveOnly: true };
@@ -4022,7 +4343,7 @@ function unwrapExistingCase(root, file, source, model, selectedIds = new Set()) 
   const restoredBody = concise ? `(${source.slice(...body[1].argument.range)})` : `{${source.slice(...body[1].range)}}`;
   const edits = [
     { start: declaration.range[0], end: declaration.range[1], text: '' },
-    { start: guards[0].range[0], end: guards[0].range[1], text: '' },
+    { start: caseGuards[0].range[0], end: caseGuards[0].range[1], text: '' },
     ...(model.sharedDescriptor
       ? [
           {
@@ -4337,7 +4658,8 @@ function selectedSliceInputs(file, oldModel, currentModel) {
   };
 }
 function compactTypedUniverse(universe) {
-  if (universe?.encoding !== 'typed-v1' || !Array.isArray(universe.caseBindings)) return universe;
+  if (!['typed-v1', 'sql-eval-v1'].includes(universe?.encoding) || !Array.isArray(universe.caseBindings))
+    return universe;
   const { caseBindings, currentCaseBindings, ...rest } = universe;
   return {
     ...rest,
@@ -4351,6 +4673,16 @@ function preserveExistingCase(prior, next) {
     current = next[0];
   for (const [key, value] of Object.entries(old)) {
     if (key === 'proofs' || key === 'caseSelection') continue;
+    if (key === 'inputDependencies' && old.caseSelection?.encoding === 'typed-v1') {
+      const dependencies = current.inputDependencies;
+      check(
+        Array.isArray(dependencies) &&
+          new Set(dependencies.map((item) => item.path)).size === dependencies.length &&
+          value.every((item) => dependencies.some((candidate) => jsonHash(candidate) === jsonHash(item))),
+        'existing-case-binding-changed',
+      );
+      continue;
+    }
     const previous = key === 'caseUniverse' && current[key]?.caseBindingsSha256 ? compactTypedUniverse(value) : value;
     check(
       Object.hasOwn(current, key) && jsonHash(previous) === jsonHash(current[key]),
@@ -4931,7 +5263,19 @@ function verifySelectedQueryFacts({
   facets,
 }) {
   const used = new Set();
-  let bridgeAuthority;
+  const bridgedPaths = [
+    ...new Set(
+      selected
+        .filter((item) => item.factIds.length === 6)
+        .map((item) => {
+          const matches = candidates.filter(({ proof }) => proof.facts.some((fact) => fact.id === item.factIds[0]));
+          check(matches.length === 1, 'unsupported-query-fact-binding');
+          return matches[0].proof.path;
+        }),
+    ),
+  ];
+  const routes = routeQueryWitnesses({ file, prior: prior[0], bridgedPaths });
+  const bridgeAuthorities = new Map();
   for (const item of selected) {
     const matches = candidates.flatMap((candidate) =>
       candidate.proof.facts.filter((fact) => fact.id === item.factIds[0]).map((fact) => ({ ...candidate, fact })),
@@ -4943,19 +5287,31 @@ function verifySelectedQueryFacts({
     check(match && Number.isSafeInteger(position), 'unsupported-query-fact-binding');
     const bridged = item.factIds.length === 6;
     if (bridged) {
+      const witness = routes.get(proof.path);
+      const retainedAuthority =
+        prior[0].queryBridgeAuthorities?.find((entry) => entry.proofPath === proof.path)?.sha256 ??
+        prior[0].queryBridgeAuthoritySha256;
       check(
-        prior[0].queryBridgeAuthoritySha256 === file.queryBridgeWitness?.sha256 ||
-          capsule.source.currentSha256 === file.currentSha256,
+        retainedAuthority === witness?.sha256 || capsule.source.currentSha256 === file.currentSha256,
         'stale-query-bridge-source',
       );
-      if (!bridgeAuthority)
-        bridgeAuthority = verifyQueryMessageBridge({
-          evidenceRoot: proofContext.evidenceRoot,
-          witness: file.queryBridgeWitness,
-          capsule,
-          expectedSourceSha256: file.baselineSha256,
-        });
-      verifyQueryMessageBridgeCase(bridgeAuthority, capsule, item.caseIndex, binding[item.caseIndex], sourceTypes);
+      if (!bridgeAuthorities.has(proof.path))
+        bridgeAuthorities.set(
+          proof.path,
+          verifyQueryMessageBridge({
+            evidenceRoot: proofContext.evidenceRoot,
+            witness,
+            capsule,
+            expectedSourceSha256: file.baselineSha256,
+          }),
+        );
+      verifyQueryMessageBridgeCase(
+        bridgeAuthorities.get(proof.path),
+        capsule,
+        item.caseIndex,
+        binding[item.caseIndex],
+        sourceTypes,
+      );
     }
     verifyQueryCaptureRounds(capsule, bridged, position, binding, item);
     const suffixes = bridged
@@ -4968,7 +5324,7 @@ function verifySelectedQueryFacts({
       used.size === selected.reduce((count, item) => count + item.factIds.length, 0),
     'unsupported-query-fact-binding',
   );
-  return bridgeAuthority;
+  return bridgeAuthorities;
 }
 
 function extendQueryMatrix(root, file, before, oldModel, currentModel, proofContext) {
@@ -4995,6 +5351,11 @@ function extendQueryMatrix(root, file, before, oldModel, currentModel, proofCont
   check(guard.length === 1 && declarations.length === 1, 'invalid-query-bindings');
   const call = guard[0].expression,
     prior = guardDescriptors({ ...call, callee: { type: 'Identifier', name: IMPORT } });
+  const requiresPriorAuthority = Boolean(file.queryBridgeWitnesses || prior[0]?.queryBridgeAuthoritySha256);
+  if (requiresPriorAuthority) {
+    check(proofContext.queryPriorAuthority, 'missing-frozen-query-authority');
+    assertFrozenQueryAuthority({ ...proofContext.queryPriorAuthority, currentSource: before });
+  }
   assertQueryParityBindings(pathToFileURL(path.resolve(root, file.path)), prior);
   const dataCall = {
     ...call,
@@ -5054,7 +5415,7 @@ function extendQueryMatrix(root, file, before, oldModel, currentModel, proofCont
     capsule: JSON.parse(fs.readFileSync(confined(root, proof.path), 'utf8')),
   }));
   verifyCandidateQueryEvidence(candidates, file, spec, titles, old);
-  const bridgeAuthority = verifySelectedQueryFacts({
+  const bridgeAuthorities = verifySelectedQueryFacts({
     root,
     file,
     prior,
@@ -5071,10 +5432,26 @@ function extendQueryMatrix(root, file, before, oldModel, currentModel, proofCont
       ...prior[0],
       queryDescriptorSha256: jsonHash(data),
       proofs: portable,
-      ...(bridgeAuthority ? { queryBridgeAuthoritySha256: bridgeAuthority.authoritySha256 } : {}),
+      ...(bridgeAuthorities.size
+        ? {
+            queryBridgeAuthoritySha256:
+              prior[0].queryBridgeAuthoritySha256 ?? bridgeAuthorities.values().next().value.authoritySha256,
+          }
+        : {}),
+      ...(file.queryBridgeWitnesses
+        ? {
+            queryBridgeAuthorities: [...bridgeAuthorities].map(([proofPath, authority]) => ({
+              proofPath,
+              sha256: authority.authoritySha256,
+            })),
+          }
+        : {}),
     };
-  if (jsonHash(data) === jsonHash(previous) && jsonHash(portable) === jsonHash(prior[0].proofs))
+  if (jsonHash(data) === jsonHash(previous) && jsonHash(portable) === jsonHash(prior[0].proofs)) {
+    if (requiresPriorAuthority)
+      assertQueryWriteAuthority({ ...proofContext.queryPriorAuthority, beforeSource: before, afterSource: before });
     return { after: before, binding: prior[0], count: selected.length, added: 0 };
+  }
   const edits = [
     {
       start: declarations[0].declarations[0].init.range[0],
@@ -5086,6 +5463,8 @@ function extendQueryMatrix(root, file, before, oldModel, currentModel, proofCont
   let after = before;
   for (const edit of edits.toSorted((a, b) => b.start - a.start))
     after = after.slice(0, edit.start) + edit.text + after.slice(edit.end);
+  if (requiresPriorAuthority)
+    assertQueryWriteAuthority({ ...proofContext.queryPriorAuthority, beforeSource: before, afterSource: after });
   return {
     after,
     binding: descriptor,
@@ -5242,6 +5621,66 @@ function qualifyQueryMatrix(root, file, before, oldModel, currentModel, proofCon
   return { after: prefix + instrumented, binding: bindingDescriptor, descriptor };
 }
 
+// Reverse only the checked SOAP scaffolding, retaining every original statement.
+function restoreSoapLoop(root, file, source) {
+  const tree = parse(source, { ecmaVersion: 'latest', sourceType: 'module', range: true });
+  const data = tree.body.find(
+    (n) => n.type === 'VariableDeclaration' && n.declarations[0]?.id?.name === '__paqSoapDescriptor',
+  );
+  if (!data) return null;
+  const guard = tree.body.find((n) => n.type === 'ExpressionStatement' && n.expression?.callee?.name === SOAP_IMPORT);
+  check(guard, 'invalid-soap-bindings');
+  const binding = guardDescriptors({ ...guard.expression, callee: { type: 'Identifier', name: IMPORT } });
+  verifySoapParitySource(pathToFileURL(path.join(root, file.path)), binding, source);
+  const declarationCall = {
+    ...guard.expression,
+    callee: { type: 'Identifier', name: IMPORT },
+    arguments: [guard.expression.arguments[0], { type: 'ArrayExpression', elements: [data.declarations[0].init] }],
+  };
+  const descriptor = guardDescriptors(declarationCall)[0];
+  const imports = tree.body.filter(
+    (n) =>
+      n.type === 'ImportDeclaration' &&
+      n.specifiers.some(
+        (s) =>
+          s.local.name === SOAP_IMPORT ||
+          s.local.name === '__paqSoapValue' ||
+          s.local.name === '__paqSoapComplete' ||
+          s.local.name === '__paqSoapTail',
+      ),
+  );
+  check(imports.length === 2, 'invalid-soap-bindings');
+  const model = describeParitySource(source, file.path);
+  const row = model.registrations.find(
+    (r) => r.titleExpressionSha256 === file.guarantees[0].tests[0].titleExpressionSha256,
+  );
+  check(row?.callback.body.type === 'BlockStatement', 'unsupported-assertion-loop');
+  const body = row.callback.body.body;
+  check(
+    body.length === 5 &&
+      body[0].type === 'VariableDeclaration' &&
+      body[0].declarations[0]?.id?.name === '__paqSoapIndex' &&
+      body[1].type === 'ForOfStatement' &&
+      body[2].expression?.callee?.name === '__paqSoapComplete',
+    'unsupported-assertion-loop',
+  );
+  const loop = body[1],
+    marker = loop.body.body[1];
+  check(marker.expression?.callee?.name === '__paqSoapValue', 'unsupported-assertion-loop');
+  const edits = [...imports, data, guard, body[0], marker, body[2]].map((n) => ({
+    start: n.range[0],
+    end: n.range[1],
+    text: '',
+  }));
+  for (const statement of body.slice(3)) {
+    const call = statement.expression?.arguments?.[0]?.arguments?.[0];
+    check(call?.callee?.name === '__paqSoapTail' && call.arguments.length === 3, 'unsupported-assertion-loop');
+    edits.push({ start: call.range[0], end: call.range[1], text: source.slice(...call.arguments[0].range) });
+  }
+  for (const edit of edits.toSorted((a, b) => b.start - a.start))
+    source = source.slice(0, edit.start) + edit.text + source.slice(edit.end);
+  return { source, descriptor, binding: binding[0] };
+}
 function qualifySoapLoop(root, file, original, before, oldModel, currentModel, proofContext) {
   check(
     file.path === 'mirage/test/dataverse-soap-xml.test.mjs' && file.guarantees?.length === 1,
@@ -5326,11 +5765,8 @@ function qualifySoapLoop(root, file, original, before, oldModel, currentModel, p
     proofs: [publicProof(proof, proofContext)],
   };
   const relative = path.relative(path.dirname(path.resolve(root, file.path)), TOOL).replaceAll(path.sep, '/');
-  const headerEnd = instrumented.indexOf('\n') + 1;
-  check(
-    headerEnd > 0 && instrumented.slice(0, headerEnd).includes('@test-kind compatibility'),
-    'unsupported-assertion-loop',
-  );
+  const headerEnd = soapKindHeaderEnd(instrumented);
+  check(headerEnd > 0, 'unsupported-assertion-loop');
   const header = instrumented.slice(0, headerEnd);
   instrumented = instrumented.slice(headerEnd);
   const after =
@@ -5979,6 +6415,7 @@ function descriptorPart0(
     repositoryRoot: path.relative(path.dirname(path.resolve(root, file.path)), root).replaceAll(path.sep, '/') || '.',
     titleExpressionSha256: spec.titleExpressionSha256,
     ...(spec.parentTitleExpressionSha256 ? { parentTitleExpressionSha256: spec.parentTitleExpressionSha256 } : {}),
+    ...(spec.sqlEvaluator === true ? { sqlEvaluator: true } : {}),
     ...(old.callback.expression && !caseMigration ? { originalCallbackExpression: true } : {}),
     ...(conciseSpecs.length ? { conciseSpecs } : {}),
     originalAssertions: old.assertions.map((item) => correctedAssertions.get(item.node) ?? item.sha256),
@@ -6168,6 +6605,80 @@ function descriptorPart4(
       : {}),
   };
 }
+function validateSoapPriorAuthority(root, file, previous, proofContext) {
+  const headSource = proofContext.readSoapHead(file.path);
+  const head = restoreSoapLoop(root, file, headSource);
+  check(head, 'missing-soap-head-authority');
+  check(soapAuthorityContains(previous, head), 'changed-soap-head-authority');
+  const receipt = proofContext.soapPriorAuthority;
+  check(
+    receipt?.version === 1 &&
+      typeof receipt.source === 'string' &&
+      SHA.test(receipt.sourceSha256) &&
+      parityHash(receipt.source) === receipt.sourceSha256 &&
+      typeof receipt.acceptedBy === 'string' &&
+      receipt.acceptedBy.trim(),
+    'missing-soap-prior-authority',
+  );
+  const accepted = restoreSoapLoop(root, file, receipt.source);
+  check(
+    accepted &&
+      accepted.binding.sourceAstSha256 === previous.binding.sourceAstSha256 &&
+      soapAuthorityContains(accepted, head) &&
+      soapAuthorityContains(accepted, previous) &&
+      soapAuthorityContains(previous, accepted),
+    'changed-soap-prior-authority',
+  );
+}
+function dispatchSoapQualification({ root, file, original, before, oldModel, currentModel, proofContext, report }) {
+  const previous = restoreSoapLoop(root, file, before);
+  if (previous) validateSoapPriorAuthority(root, file, previous, proofContext);
+  const restored = previous?.source ?? before;
+  const model = previous ? describeParitySource(restored, file.path) : currentModel;
+  const result = qualifySoapLoop(root, file, original, restored, oldModel, model, proofContext);
+  if (previous) {
+    const old = previous.descriptor,
+      next = result.descriptor;
+    const fresh = result.binding;
+    check(soapPriorFactsPreserved(previous, next, fresh), 'changed-soap-prior-proof');
+    const existing = previous.binding.proofs.some((proof) => sameSoapProofIdentity(proof, fresh.proofs[0]));
+    if (existing && jsonHash(old) === jsonHash(next)) {
+      result.after = before;
+      result.binding = previous.binding;
+    } else {
+      result.binding = {
+        ...fresh,
+        ...(previous.binding.namespaceRegions ? { namespaceRegions: previous.binding.namespaceRegions } : {}),
+        proofs: existing
+          ? previous.binding.proofs
+          : [...previous.binding.proofs, compactSoapProof(fresh.proofs[0], previous.binding.proofs)],
+      };
+      const generated = JSON.stringify([fresh]);
+      check(result.after.includes(generated), 'invalid-soap-bindings');
+      result.after = result.after.replace(generated, JSON.stringify([result.binding]));
+      result.after =
+        '// @parity-evidence: Reproduced official SDK results and every previously protected SOAP assertion and proof remain bound by the cumulative guard.\n' +
+        result.after;
+    }
+  }
+  report.files.push({
+    path: file.path,
+    originalDefinitions: 0,
+    newOriginalDefinitions: 0,
+    expandedOriginalCases: 0,
+    newExpandedOriginalCases: 0,
+    qualifiedOriginalCases: 0,
+    newQualifiedOriginalCases: 0,
+    partialAssertions: result.descriptor.instances.length,
+    newPartialAssertions: result.descriptor.instances.length - (previous?.descriptor.instances.length ?? 0),
+    beforeSha256: parityHash(before),
+    afterSha256: parityHash(result.after),
+    proofBindingTestsAdded: 0,
+  });
+  if (result.after !== before)
+    report.changes.push({ path: file.path, before, after: result.after, bindings: [result.binding] });
+  return true;
+}
 function dispatchExactQualification({ root, file, original, before, oldModel, currentModel, proofContext, report }) {
   if (file.path === 'mirage/test/dataverse-query-reader.test.mjs') {
     const cumulative = currentModel.identifiers.has(QUERY_IMPORT);
@@ -6194,24 +6705,8 @@ function dispatchExactQualification({ root, file, original, before, oldModel, cu
       report.changes.push({ path: file.path, before, after: result.after, bindings: [result.binding] });
     return true;
   }
-  if (file.path === 'mirage/test/dataverse-soap-xml.test.mjs') {
-    const result = qualifySoapLoop(root, file, original, before, oldModel, currentModel, proofContext);
-    report.files.push({
-      path: file.path,
-      originalDefinitions: 0,
-      newOriginalDefinitions: 0,
-      expandedOriginalCases: 0,
-      newExpandedOriginalCases: 0,
-      qualifiedOriginalCases: 0,
-      newQualifiedOriginalCases: 0,
-      partialAssertions: 44,
-      beforeSha256: parityHash(before),
-      afterSha256: parityHash(result.after),
-      proofBindingTestsAdded: 0,
-    });
-    report.changes.push({ path: file.path, before, after: result.after, bindings: [result.binding] });
-    return true;
-  }
+  if (file.path === 'mirage/test/dataverse-soap-xml.test.mjs')
+    return dispatchSoapQualification({ root, file, original, before, oldModel, currentModel, proofContext, report });
   if (file.path === 'mirage/test/dataverse-scalar-reader-http.test.mjs') {
     const result = qualifyScalarMigration(root, file, original, before, proofContext);
     report.files.push({
@@ -6317,6 +6812,11 @@ function prepareExistingQualification({ root, file, candidate, currentModel, old
   if (partialBefore) {
     currentModel = describeParitySource(partialBefore.source, file.path);
     modelSourcePaths.set(currentModel, path.resolve(root, file.path));
+    if (!partialBefore.caseGuard && currentModel.identifiers.has(CASE_IMPORT)) {
+      const retainedCase = unwrapExistingCase(root, file, partialBefore.source, currentModel, requestedIds);
+      check(retainedCase?.preserveOnly === true, 'existing-case-preservation-required');
+      existingCase = retainedCase;
+    }
     if (routing) {
       routing = analyzeEachRoutingInput(file, oldModel, currentModel);
     }
@@ -6521,7 +7021,22 @@ function dispatchRecordsQualification({
 function analyzeSdkQualification(state) {
   const { file, oldModel, currentModel, recordsSpecs, report, recordsReview } = state;
   let { generated } = state;
-  if (file.path === 'mirage/test/code-apps-sdk.test.mjs' && recordsSpecs.length === 1) {
+  if (
+    file.path === 'mirage/test/model-driven-client-state.test.mjs' &&
+    recordsSpecs.length === 1 &&
+    recordsSpecs[0].baselineId === 'mirage/test/model-driven-client-state.test.mjs:45:0'
+  ) {
+    try {
+      generated = {
+        old: analyzeClientLateFixture(oldModel, recordsSpecs[0]),
+        current: analyzeClientLateFixture(currentModel, recordsSpecs[0]),
+        sdkHarnessSlice: true,
+      };
+    } catch (error) {
+      report.pending.push(pending(file, null, error));
+      return false;
+    }
+  } else if (file.path === 'mirage/test/code-apps-sdk.test.mjs' && recordsSpecs.length === 1) {
     try {
       generated = {
         old: analyzeSdkLateHarness(oldModel, recordsSpecs[0]),
@@ -6655,7 +7170,10 @@ function analyzeRouterQualification(state) {
 function analyzeGeneratedFixtureQualification(state) {
   const { root, file, oldModel, currentModel, report, readBaseline, recordsReview } = state;
   let { generated } = state;
-  if (oldModel.ast.body.some((node) => node.type === 'ImportDeclaration' && node.source.value === 'node:os')) {
+  if (
+    !generated.sdkHarnessSlice &&
+    oldModel.ast.body.some((node) => node.type === 'ImportDeclaration' && node.source.value === 'node:os')
+  ) {
     try {
       const specs = (file.guarantees ?? []).flatMap((guarantee) => guarantee.tests ?? []);
       const oldSelected = specs.map((spec) => ({
@@ -6982,12 +7500,27 @@ function resolveQualificationDelta({
   }
   if (generated.hostSlice) {
     const review = file.moduleReview,
-      scope = review?.hostSlice;
+      scope = review?.hostSlice,
+      tests = (file.guarantees ?? []).flatMap((guarantee) => guarantee.tests ?? []),
+      scopePartial =
+        scope?.partialOnly === true &&
+        tests.length === 1 &&
+        tests[0].baselineId === 'mirage/test/power-fx-language.test.mjs:285:0' &&
+        !tests[0].caseSelection &&
+        jsonHash(tests[0].regions?.map((region) => region.assertions.map((item) => item.sha256))) ===
+          jsonHash([
+            ['1f9dbd835c1dab648db877be6616c09e01f9981d44bb6ea5fd126211c3303253'],
+            ['47708213d94dbe35697528de3e42a30d97f32681f21ee0b0c847387051f03a4f'],
+          ]) &&
+        generated.old.fixtures[0]?.selectedBodySha256 ===
+          'a9a0fecb6d3e6accf361e7641f3e8baa3b962a10506e1e9dca0ec9e51b4e2c5c';
     if (!(
       review &&
       Array.isArray(review.addedTests) &&
       review.addedTests.length === 0 &&
-      scope?.zeroNewCredit === true &&
+      ((scope?.zeroNewCredit === true &&
+        tests.every((test) => test.baselineId === existingCase.descriptors[0].baselineId)) ||
+        scopePartial) &&
       scope.priorCaseGuardSha256 === jsonHash(existingCase.descriptors[0]) &&
       typeof scope.reviewedBy === 'string' &&
       scope.reviewedBy.length > 0 &&
@@ -7141,29 +7674,116 @@ function prepareQualificationContext({
   }
   return { moduleDelta, retainedSpecs, retainedCurrent, isolationRegistrationsAstSha256 };
 }
+function typedReviewRows(root, context, baseline) {
+  const reviewRows = new Map();
+  const certificates = typedSemanticReviews(root, context);
+  for (const certificate of certificates) {
+    const receiptBytes = fs.readFileSync(confined(root, certificate.path));
+    check(parityHash(receiptBytes) === certificate.sha256, 'typed-semantic-review-required');
+    const receipt = JSON.parse(receiptBytes);
+    check(
+      receipt.sourceReceiptSha256 === certificate.sourceReceiptSha256 &&
+        receipt.baseline === baseline &&
+        Array.isArray(receipt.review?.cases),
+      'typed-semantic-review-required',
+    );
+    for (const row of receipt.review.cases) {
+      check(Number.isInteger(row.index) && !reviewRows.has(row.index), 'typed-semantic-review-collision');
+      reviewRows.set(row.index, { row, sourceReceiptSha256: certificate.sourceReceiptSha256 });
+    }
+  }
+  return reviewRows;
+}
+
 // SQL typed selections must bind each selected original case to its own reviewed
 // fact, original/current tuple and exact captured primitive output. Semantic SQL
 // input/context equivalence remains a separately reviewed responsibility.
+function typedSqlExpectedValue(value) {
+  check(value && typeof value === 'object', 'typed-output-unsupported');
+  if (['null', 'number', 'string', 'boolean'].includes(value.type)) return value.type === 'null' ? null : value.value;
+  if (value.type === 'bigint' && typeof value.value === 'string' && /^-?(?:0|[1-9]\d*)$/u.test(value.value))
+    return { bigint: value.value };
+  if (
+    value.type === 'object' &&
+    jsonHash(Object.keys(value.value ?? {})) === jsonHash(['decimal']) &&
+    value.value.decimal?.type === 'string' &&
+    typeof value.value.decimal.value === 'string' &&
+    /^-?\d+(?:\.\d+)?$/u.test(value.value.decimal.value)
+  )
+    return { decimal: value.value.decimal.value };
+  fail('typed-output-unsupported');
+}
+
+function typedSqlCapturedDecimal(cell, column) {
+  check(
+    column?.sqlType === 'decimal' &&
+      Number.isInteger(cell.precision) &&
+      cell.precision >= 1 &&
+      cell.precision <= 38 &&
+      Number.isInteger(cell.scale) &&
+      cell.scale >= 0 &&
+      cell.scale <= cell.precision &&
+      column.precision === cell.precision &&
+      column.scale === cell.scale &&
+      typeof cell.positive === 'boolean' &&
+      Array.isArray(cell.words) &&
+      cell.words.length === 4 &&
+      cell.words.every((word) => {
+        if (typeof word !== 'string' || !/^-?(?:0|[1-9]\d*)$/u.test(word)) return false;
+        const n = Number(word);
+        return Number.isInteger(n) && n >= -2147483648 && n <= 2147483647;
+      }),
+    'typed-output-unsupported',
+  );
+  const coefficient = cell.words.reduce(
+    (sum, word, index) => sum + (BigInt.asUintN(32, BigInt(word)) << BigInt(index * 32)),
+    0n,
+  );
+  check(coefficient.toString().length <= cell.precision, 'typed-output-unsupported');
+  const digits = coefficient.toString().padStart(cell.scale + 1, '0');
+  const text =
+    (cell.positive ? '' : '-') + (cell.scale ? `${digits.slice(0, -cell.scale)}.${digits.slice(-cell.scale)}` : digits);
+  check(cell.exact === text, 'typed-output-unsupported');
+  return { decimal: text };
+}
+
+function typedSqlCapturedValue(cell, column) {
+  if (cell?.kind === 'null') return null;
+  if (cell?.kind === 'string' && typeof cell.value === 'string') return cell.value;
+  if (cell?.kind === 'sql-decimal') return typedSqlCapturedDecimal(cell, column);
+  if (
+    cell?.kind === 'System.Int64' &&
+    column?.sqlType === 'bigint' &&
+    typeof cell.exact === 'string' &&
+    /^-?(?:0|[1-9]\d*)$/u.test(cell.exact)
+  ) {
+    const value = BigInt(cell.exact);
+    check(value >= -(1n << 63n) && value < 1n << 63n, 'typed-output-unsupported');
+    return { bigint: value.toString() };
+  }
+  if (cell?.kind === 'System.Int32' && typeof cell.exact === 'string' && /^-?(?:0|[1-9]\d*)$/u.test(cell.exact)) {
+    const number = Number(cell.exact);
+    check(Number.isInteger(number) && number >= -2147483648 && number <= 2147483647, 'typed-output-unsupported');
+    return number;
+  }
+  if (cell?.kind === 'float64' && typeof cell.roundtrip === 'string' && typeof cell.bitsBase64 === 'string') {
+    const bytes = Buffer.from(cell.bitsBase64, 'base64'),
+      value = Number(cell.roundtrip);
+    check(
+      bytes.length === 8 &&
+        bytes.toString('base64') === cell.bitsBase64 &&
+        Number.isFinite(value) &&
+        Object.is(bytes.readDoubleLE(), value),
+      'typed-output-unsupported',
+    );
+    return value;
+  }
+  fail('typed-output-unsupported');
+}
+
 function verifyTypedSqlFacts(root, guarantee, spec, oldModel, currentModel, baseline) {
   if (spec.caseUniverse?.encoding !== 'typed-v1') return;
-  check(
-    SHA.test(guarantee.context?.semanticReviewSha256) && SHA.test(guarantee.context?.semanticReviewCertificateSha256),
-    'typed-semantic-review-required',
-  );
-  const receiptBytes = fs.readFileSync(confined(root, guarantee.context.semanticReviewPath));
-  check(
-    parityHash(receiptBytes) === guarantee.context.semanticReviewCertificateSha256,
-    'typed-semantic-review-required',
-  );
-  const receipt = JSON.parse(receiptBytes),
-    reviewRows = receipt.review?.cases;
-  check(
-    receipt.sourceReceiptSha256 === guarantee.context.semanticReviewSha256 &&
-      receipt.baseline === baseline &&
-      Array.isArray(reviewRows) &&
-      new Set(reviewRows.map((row) => row.index)).size === reviewRows.length,
-    'typed-semantic-review-required',
-  );
+  const reviewRows = typedReviewRows(root, guarantee.context, baseline);
   const old = extractTypedSqlSource(oldModel.source),
     current = extractTypedSqlSource(currentModel.source);
   const facts = new Map();
@@ -7173,38 +7793,14 @@ function verifyTypedSqlFacts(root, guarantee, spec, oldModel, currentModel, base
   }
   const assertionHashes = spec.regions.flatMap((region) => region.assertions.map((assertion) => assertion.sha256));
   const used = new Set();
-  function primitive(value) {
-    check(value && ['null', 'number', 'string', 'boolean'].includes(value.type), 'typed-output-unsupported');
-    return value.type === 'null' ? null : value.value;
-  }
-  function captured(cell) {
-    if (cell?.kind === 'null') return null;
-    if (cell?.kind === 'string' && typeof cell.value === 'string') return cell.value;
-    if (cell?.kind === 'System.Int32' && typeof cell.exact === 'string' && /^-?(?:0|[1-9]\d*)$/u.test(cell.exact)) {
-      const number = Number(cell.exact);
-      check(Number.isSafeInteger(number), 'typed-output-unsupported');
-      return number;
-    }
-    if (cell?.kind === 'float64' && typeof cell.roundtrip === 'string' && typeof cell.bitsBase64 === 'string') {
-      const bytes = Buffer.from(cell.bitsBase64, 'base64'),
-        value = Number(cell.roundtrip);
-      check(
-        bytes.length === 8 &&
-          bytes.toString('base64') === cell.bitsBase64 &&
-          Number.isFinite(value) &&
-          Object.is(bytes.readDoubleLE(), value),
-        'typed-output-unsupported',
-      );
-      return value;
-    }
-    fail('typed-output-unsupported');
-  }
+
   for (const selection of spec.caseSelection?.selected ?? []) {
     check(selection.factIds.length === 1 && !used.has(selection.factIds[0]), 'typed-case-fact-required');
     used.add(selection.factIds[0]);
     const fact = facts.get(selection.factIds[0]),
       index = selection.caseIndex,
-      review = reviewRows.find((row) => row.index === index);
+      reviewed = reviewRows.get(index),
+      review = reviewed?.row;
     check(
       fact &&
         review?.originalId === `${spec.baselineId}#${index}` &&
@@ -7216,7 +7812,7 @@ function verifyTypedSqlFacts(root, guarantee, spec, oldModel, currentModel, base
         fact.baselineTupleAstSha256 === old.rowAstSha256[index] &&
         fact.currentTupleAstSha256 === current.rowAstSha256[index] &&
         jsonHash(fact.assertionSha256) === jsonHash(assertionHashes) &&
-        fact.semanticReviewSha256 === guarantee.context.semanticReviewSha256 &&
+        fact.semanticReviewSha256 === reviewed.sourceReceiptSha256 &&
         typeof fact.query === 'string' &&
         fact.typedOutcome?.query === fact.query &&
         fact.typedOutcome?.outcome === 'result',
@@ -7231,15 +7827,184 @@ function verifyTypedSqlFacts(root, guarantee, spec, oldModel, currentModel, base
         resultSets[0].rows[0]?.length === 1,
       'typed-output-unsupported',
     );
-    const before = primitive(old.rows[index].value[2]),
-      after = primitive(current.rows[index].value[2]);
+    const before = typedSqlExpectedValue(old.rows[index].value[2]),
+      after = typedSqlExpectedValue(current.rows[index].value[2]),
+      actual = typedSqlCapturedValue(resultSets[0].rows[0][0], resultSets[0].columns[0]);
     check(
       jsonHash(before) === jsonHash(fact.priorExpected) &&
         jsonHash(after) === jsonHash(fact.currentExpected) &&
-        Object.is(captured(resultSets[0].rows[0][0]), after),
+        (after !== null && typeof after === 'object' ? jsonHash(actual) === jsonHash(after) : Object.is(actual, after)),
       'typed-case-output-mismatch',
     );
   }
+}
+
+function sqlEvaluatorCapturedValue(cell, column) {
+  const value = typedSqlCapturedValue(cell, column);
+  if (value && typeof value === 'object' && Object.hasOwn(value, 'decimal')) return value.decimal;
+  if (value && typeof value === 'object' && Object.hasOwn(value, 'bigint')) return `${value.bigint}n`;
+  return value;
+}
+
+function verifySqlEvaluatorOutcome(outcome, expected) {
+  if (!Array.isArray(expected)) {
+    check(
+      expected &&
+        Number.isInteger(expected.error) &&
+        outcome?.outcome === 'sql-error' &&
+        Array.isArray(outcome.errors) &&
+        outcome.errors.length === 1 &&
+        outcome.errors[0].number === expected.error,
+      'sql-eval-outcome-mismatch',
+    );
+    return;
+  }
+  const sets = outcome?.resultSets;
+  check(outcome?.outcome === 'result' && Array.isArray(sets) && sets.length === 1, 'sql-eval-outcome-mismatch');
+  const { columns, rows } = sets[0];
+  check(Array.isArray(columns) && Array.isArray(rows), 'sql-eval-outcome-mismatch');
+  const actual = rows.map((row) => {
+    check(Array.isArray(row) && row.length === columns.length, 'sql-eval-outcome-mismatch');
+    return row.map((cell, index) => sqlEvaluatorCapturedValue(cell, columns[index]));
+  });
+  check(isDeepStrictEqual(actual, expected), 'sql-eval-outcome-mismatch');
+}
+
+function verifySqlEvaluatorFacts(root, guarantee, spec, oldModel, currentModel, baseline, file) {
+  if (spec.sqlEvaluator !== true || spec.caseUniverse?.encoding !== 'sql-eval-v1') return;
+  const reviewRows = typedReviewRows(root, guarantee.context, baseline),
+    oldRows = sqlEvaluatorBindings(oldModel),
+    currentRows = sqlEvaluatorBindings(currentModel);
+  const original = oldModel.declarations.find((item) => item.name === 'semanticCases' && item.ownerTitle === null),
+    current = currentModel.declarations.find((item) => item.name === 'semanticCases' && item.ownerTitle === null);
+  const facts = new Map();
+  for (const proof of guarantee.proofs) {
+    const capsule = JSON.parse(fs.readFileSync(confined(root, proof.path), 'utf8'));
+    for (const fact of proof.facts) facts.set(fact.id, pointer(capsule, fact.pointer));
+  }
+  const used = new Set();
+  for (const selection of spec.caseSelection?.selected ?? []) {
+    check(selection.factIds.length === 1 && !used.has(selection.factIds[0]), 'sql-eval-fact-required');
+    used.add(selection.factIds[0]);
+    const index = selection.caseIndex,
+      fact = facts.get(selection.factIds[0]),
+      reviewed = reviewRows.get(index),
+      row = reviewed?.row,
+      oldHash = parityAstHash(original.initializer.elements[index]),
+      currentHash = parityAstHash(current.initializer.elements[index]);
+    check(
+      fact &&
+        row &&
+        oldHash === currentHash &&
+        row.originalId === `${spec.baselineId}#${index}` &&
+        row.tupleSha256 === oldHash &&
+        row.sql === oldRows[index].sql &&
+        fact.caseIndex === index &&
+        fact.baselineId === row.originalId &&
+        fact.baselineTupleAstSha256 === oldHash &&
+        fact.currentTupleAstSha256 === currentHash &&
+        fact.query === row.sql &&
+        fact.typedOutcome?.query === row.sql &&
+        fact.semanticReviewSha256 === reviewed.sourceReceiptSha256 &&
+        isDeepStrictEqual(fact.expected, oldRows[index].expected) &&
+        isDeepStrictEqual(currentRows[index], oldRows[index]),
+      'sql-eval-fact-mismatch',
+    );
+    verifySqlEvaluatorOutcome(fact.typedOutcome, oldRows[index].expected);
+  }
+  const corrections = file.moduleReview?.fixtureCorrections ?? [];
+  let certificate;
+  if (corrections.length) {
+    const context = guarantee.context;
+    check(
+      typeof context.correctionReviewPath === 'string' &&
+        SHA.test(context.correctionReviewSha256) &&
+        SHA.test(context.correctionSourceSha256),
+      'sql-eval-correction-review-required',
+    );
+    const bytes = fs.readFileSync(confined(root, context.correctionReviewPath));
+    check(parityHash(bytes) === context.correctionReviewSha256, 'sql-eval-correction-review-required');
+    certificate = JSON.parse(bytes);
+    check(
+      certificate.baseline === baseline &&
+        certificate.sourceReceiptSha256 === context.correctionSourceSha256 &&
+        Array.isArray(certificate.cases) &&
+        certificate.cases.length === corrections.length &&
+        new Set(certificate.cases.map((item) => item.id)).size === corrections.length,
+      'sql-eval-correction-review-required',
+    );
+  }
+  for (const correction of corrections) {
+    check(
+      ['semanticCases', 'orderedCases'].includes(correction.binding) &&
+        correction.guaranteeId === guarantee.id &&
+        correction.factIds?.length === 1 &&
+        !used.has(correction.factIds[0]),
+      'sql-eval-correction-fact-mismatch',
+    );
+    used.add(correction.factIds[0]);
+    const originalArray = oldModel.declarations.find(
+        (item) => item.name === correction.binding && item.ownerTitle === null,
+      ),
+      currentArray = currentModel.declarations.find(
+        (item) => item.name === correction.binding && item.ownerTitle === null,
+      ),
+      originalEntry = originalArray?.initializer.elements[correction.index],
+      currentEntry = currentArray?.initializer.elements[correction.index],
+      originalTests = oldModel.registrations.filter((item) =>
+        item.loops.some((loop) => loop.right?.name === correction.binding),
+      ),
+      fact = facts.get(correction.factIds[0]),
+      reviewed = certificate.cases.find((item) => item.id === fact?.baselineId);
+    check(
+      originalEntry &&
+        currentEntry &&
+        fact &&
+        reviewed &&
+        originalTests.length === 1 &&
+        fact.baselineId === `${originalTests[0].id}#${correction.index}` &&
+        fact.binding === correction.binding &&
+        fact.index === correction.index &&
+        fact.oldTupleSha256 === parityAstHash(originalEntry) &&
+        fact.currentTupleSha256 === parityAstHash(currentEntry) &&
+        reviewed.baselineTupleAstSha256 === fact.oldTupleSha256 &&
+        reviewed.currentTupleAstSha256 === fact.currentTupleSha256 &&
+        reviewed.sql === fact.query &&
+        fact.semanticReviewSha256 === certificate.sourceReceiptSha256 &&
+        isDeepStrictEqual(reviewed.baselineExpected, literalCaseValue(originalEntry.elements[2])) &&
+        isDeepStrictEqual(reviewed.currentExpected, literalCaseValue(currentEntry.elements[2])) &&
+        fact.query === literalCaseValue(originalEntry.elements[1]) &&
+        fact.query === literalCaseValue(currentEntry.elements[1]) &&
+        fact.typedOutcome?.query === fact.query,
+      'sql-eval-correction-fact-mismatch',
+    );
+    verifySqlEvaluatorOutcome(fact.typedOutcome, literalCaseValue(currentEntry.elements[2]));
+  }
+}
+function typedSemanticReviews(root, context) {
+  const primary = {
+    path: context?.semanticReviewPath,
+    sha256: context?.semanticReviewCertificateSha256,
+    sourceReceiptSha256: context?.semanticReviewSha256,
+  };
+  const additional = context?.additionalSemanticReviews ?? [];
+  check(Array.isArray(additional), 'typed-semantic-review-required');
+  const certificates = [primary, ...additional];
+  check(
+    certificates.every(
+      (item) => item && typeof item.path === 'string' && SHA.test(item.sha256) && SHA.test(item.sourceReceiptSha256),
+    ) &&
+      new Set(certificates.map((item) => item.path)).size === certificates.length &&
+      new Set(certificates.map((item) => item.sourceReceiptSha256)).size === certificates.length,
+    'typed-semantic-review-required',
+  );
+  const resolved = certificates.map((item) => fs.realpathSync(confined(root, item.path)));
+  check(
+    new Set(resolved.map((item) => (process.platform === 'win32' ? item.toLowerCase() : item))).size ===
+      resolved.length,
+    'typed-semantic-review-required',
+  );
+  return certificates;
 }
 function collectQualificationGuarantees({
   root,
@@ -7283,7 +8048,10 @@ function collectQualificationGuarantees({
         prove(root, proof, { ...proofContext, supplementalWitness: guarantee.supplementalWitness }),
       );
       check(new Set(facts).size === facts.length, 'ambiguous-fact-id');
-      for (const spec of guarantee.tests) verifyTypedSqlFacts(root, guarantee, spec, oldModel, currentModel, baseline);
+      for (const spec of guarantee.tests) {
+        verifyTypedSqlFacts(root, guarantee, spec, oldModel, currentModel, baseline);
+        verifySqlEvaluatorFacts(root, guarantee, spec, oldModel, currentModel, baseline, file);
+      }
       const matched = guarantee.tests.map((spec) =>
         spec.regions
           ? verifyPartial(oldModel, currentModel, spec, new Set(facts), moduleDelta, generated)
@@ -7302,11 +8070,14 @@ function collectQualificationGuarantees({
 }
 function addTypedSemanticReviewDependencies(root, imports, selected) {
   const semanticReviews = selected
-    .filter((item) => item.spec.caseUniverse?.encoding === 'typed-v1')
-    .map((item) => ({
-      path: item.guarantee.context.semanticReviewPath,
-      sha256: item.guarantee.context.semanticReviewCertificateSha256,
-    }));
+    .filter((item) => ['typed-v1', 'sql-eval-v1'].includes(item.spec.caseUniverse?.encoding))
+    .flatMap((item) => {
+      const context = item.guarantee.context;
+      const reviews = typedSemanticReviews(root, context);
+      if (item.spec.sqlEvaluator === true && context.correctionReviewPath)
+        reviews.push({ path: context.correctionReviewPath, sha256: context.correctionReviewSha256 });
+      return reviews;
+    });
   if (semanticReviews.length) {
     const dependencies = new Map(imports.dependencies.map((item) => [item.path, item.sha256]));
     for (const item of semanticReviews) {
@@ -7520,7 +8291,10 @@ function renderQualificationCandidate({
       ? generatePartial(root, file, workSource, workModel, selected, descriptors)
       : generate(root, file, workSource, workModel, selected, descriptors);
     if (partialBefore) {
-      if (jsonHash(partialBefore.descriptors) === jsonHash(descriptors)) after = before;
+      const sameDescriptors = jsonHash(partialBefore.descriptors) === jsonHash(descriptors);
+      const migratingShared =
+        file.sharedPartialDescriptors === true && !describeParitySource(before, file.path).sharedPartialDescriptor;
+      if (sameDescriptors && !migratingShared) after = before;
       else
         after =
           '// @parity-evidence: Existing region assertions and exact reviewed proof bindings are preserved during cumulative qualification.\n' +
@@ -7870,6 +8644,10 @@ function qualifyOneFile(
     )
     .map((row) => ({
       titleExpressionSha256: row.titleExpressionSha256,
+      ...(recordsSpecs.some((spec) => spec.sqlEvaluator === true) &&
+      oldModel.registrations.filter((item) => item.titleExpressionSha256 === row.titleExpressionSha256).length > 1
+        ? { loopHeaders: row.loopHeaders }
+        : {}),
       ...(row.parent ? { parentTitleExpressionSha256: row.parent.titleExpressionSha256 } : {}),
     }));
   const originalGuards = new Set(
@@ -7980,8 +8758,13 @@ export function qualifyParityManifest(
     evidenceRoot,
     securityApprovalFile,
     securityApprovalSha256,
+    queryPriorAuthorityFile,
+    queryPriorAuthoritySha256,
+    queryPriorSourceFile,
     caseCandidateFile,
     reviewedCandidateFile,
+    soapPriorAuthorityFile,
+    soapPriorAuthoritySha256,
     recordsReviewFile,
     recordsReviewedSourceFile,
   } = {},
@@ -8002,7 +8785,39 @@ export function qualifyParityManifest(
     !securityBytes || (SHA.test(securityApprovalSha256) && parityHash(securityBytes) === securityApprovalSha256),
     'security-approval-digest-mismatch',
   );
+  const queryAuthorityBytes = queryPriorAuthorityFile ? fs.readFileSync(queryPriorAuthorityFile) : null;
+  check(
+    !queryAuthorityBytes ||
+      (SHA.test(queryPriorAuthoritySha256) &&
+        parityHash(queryAuthorityBytes) === queryPriorAuthoritySha256 &&
+        typeof queryPriorSourceFile === 'string'),
+    'invalid-frozen-query-authority',
+  );
+  const soapAuthorityBytes = soapPriorAuthorityFile ? fs.readFileSync(soapPriorAuthorityFile) : null;
+  check(
+    Boolean(soapAuthorityBytes) === Boolean(soapPriorAuthoritySha256) &&
+      (!soapAuthorityBytes ||
+        (SHA.test(soapPriorAuthoritySha256) && parityHash(soapAuthorityBytes) === soapPriorAuthoritySha256)),
+    'soap-prior-authority-digest-mismatch',
+  );
   const proofContext = {
+    ...(queryAuthorityBytes
+      ? {
+          queryPriorAuthority: {
+            receiptBytes: queryAuthorityBytes,
+            pinnedReceiptSha256: queryPriorAuthoritySha256,
+            trustedSource: fs.readFileSync(queryPriorSourceFile),
+          },
+        }
+      : {}),
+
+    readSoapHead: (file) =>
+      execFileSync(resolveGitExecutable(), ['show', `HEAD:${file}`], {
+        cwd: root,
+        encoding: 'utf8',
+        maxBuffer: 16 * 1024 * 1024,
+      }),
+    ...(soapAuthorityBytes ? { soapPriorAuthority: JSON.parse(soapAuthorityBytes) } : {}),
     evidenceRoot,
     prepared: new Map(),
     ...(securityBytes
@@ -8120,15 +8935,21 @@ function extractFileKindHeader(before, after, model) {
   else if (after.startsWith('\n', end)) newline = 1;
   return { header: tag + '\n', after: after.slice(0, at) + after.slice(end + newline) };
 }
-function partialRegionEdit(before, item, descriptor, statements) {
+function partialGuard(descriptor, sharedIndex) {
+  const selection = descriptor.caseSelection;
+  if (selection)
+    return `${CASE_IMPORT}(import.meta.url, ${selection.source}, ${JSON.stringify(selection.selected.map((entry) => entry.caseIndex))}, {${selection.names.join(',')}}, ${SHARED});`;
+  let argument = JSON.stringify([descriptor]);
+  if (sharedIndex !== undefined) argument = `[${PARTIAL_SHARED}[${sharedIndex}]]`;
+  return `${REGION_IMPORT}(import.meta.url, ${argument});`;
+}
+function partialRegionEdit(before, item, descriptor, statements, sharedIndex) {
   const expressionBody = item.current.callback.body.type !== 'BlockStatement';
   const [start, end] = expressionBody
     ? arrowExpressionRange(before, item.current.callback)
     : [statements[0].range[0], statements.at(-1).range[1]];
   const selection = descriptor.caseSelection;
-  const guard = selection
-    ? `${CASE_IMPORT}(import.meta.url, ${selection.source}, ${JSON.stringify(selection.selected.map((entry) => entry.caseIndex))}, {${selection.names.join(',')}}, ${SHARED});`
-    : `${REGION_IMPORT}(import.meta.url, ${JSON.stringify([descriptor])});`;
+  const guard = partialGuard(descriptor, sharedIndex);
   if (selection && !expressionBody && !item.verifiedCaseBody) {
     check(statements.length === 1 && statements[0].type === 'ExpressionStatement', 'invalid-case-parity-marker');
     return { start, end: start, text: `${guard}\n` };
@@ -8146,14 +8967,41 @@ function partialRegionEdit(before, item, descriptor, statements) {
     text: `{\n${guard}\n${expressionBody ? 'return ' : ''}${before.slice(start, end)}${expressionBody ? ';' : ''}\n}`,
   };
 }
-function generatePartial(root, file, before, model, selected, descriptors) {
-  const caseMode = selected.some((item) => item.spec.caseSelection);
+function partialPrelude(caseMode, sharedMode, own, descriptors, relative) {
+  const regionBinding = caseMode ? `parityCaseBindings as ${CASE_IMPORT}` : `parityAssertions as ${REGION_IMPORT}`;
+  const sharedBinding = own ? '' : `, assertParityBindings as ${IMPORT}`;
+  let descriptorImport = '';
+  let declaration = '';
+  let argument = JSON.stringify(descriptors);
+  if (caseMode) {
+    descriptorImport = `, freezeParityDescriptor as ${FREEZE}`;
+    declaration = `const ${SHARED} = ${FREEZE}(${argument});\n`;
+    argument = SHARED;
+  }
+  if (sharedMode) {
+    descriptorImport = `, freezeParityDescriptor as ${PARTIAL_FREEZE}`;
+    declaration = `const ${PARTIAL_SHARED} = ${PARTIAL_FREEZE}(${argument});\n`;
+    argument = PARTIAL_SHARED;
+  }
+  return `import { ${regionBinding}${sharedBinding}${descriptorImport} } from ${JSON.stringify(relative)};\n${declaration}${IMPORT}(import.meta.url, ${argument});\n`;
+}
+function checkPartialImportAvailability(root, file, before, model, selected, caseMode) {
+  const priorCase = !caseMode && model.identifiers.has(CASE_IMPORT) && unwrapExistingCase(root, file, before, model);
   check(
     !model.identifiers.has(REGION_IMPORT) &&
-      !model.identifiers.has(CASE_IMPORT) &&
+      (!model.identifiers.has(CASE_IMPORT) || priorCase?.preserveOnly === true) &&
       (!caseMode || (selected.length === 1 && !model.identifiers.has(SHARED) && !model.identifiers.has(FREEZE))),
     'reserved-binding-collision',
   );
+}
+function generatePartial(root, file, before, model, selected, descriptors) {
+  const caseMode = selected.some((item) => item.spec.caseSelection);
+  const sharedMode = file.sharedPartialDescriptors === true;
+  check(
+    !sharedMode || (!caseMode && !model.identifiers.has(PARTIAL_SHARED) && !model.identifiers.has(PARTIAL_FREEZE)),
+    'reserved-binding-collision',
+  );
+  checkPartialImportAvailability(root, file, before, model, selected, caseMode);
   const existing = model.ast.body.find(
     (node) => node.type === 'ImportDeclaration' && node.specifiers.some((item) => item.local.name === IMPORT),
   );
@@ -8173,7 +9021,7 @@ function generatePartial(root, file, before, model, selected, descriptors) {
   const edits = [];
   selected.forEach((item, index) => {
     for (const { statements } of item.regions) {
-      edits.push(partialRegionEdit(before, item, descriptors[index], statements));
+      edits.push(partialRegionEdit(before, item, descriptors[index], statements, sharedMode ? index : undefined));
     }
   });
   let after = before;
@@ -8187,14 +9035,7 @@ function generatePartial(root, file, before, model, selected, descriptors) {
   const extracted = extractFileKindHeader(before, after, model);
   const header = extracted.header;
   after = extracted.after;
-  const regionBinding = caseMode ? `parityCaseBindings as ${CASE_IMPORT}` : `parityAssertions as ${REGION_IMPORT}`;
-  const sharedBinding = own ? '' : `, assertParityBindings as ${IMPORT}`;
-  const descriptorImport = caseMode ? `, freezeParityDescriptor as ${FREEZE}` : '';
-  const declaration = caseMode ? `const ${SHARED} = ${FREEZE}(${JSON.stringify(descriptors)});\n` : '';
-  after =
-    header +
-    `import { ${regionBinding}${sharedBinding}${descriptorImport} } from ${JSON.stringify(relative)};\n${declaration}${IMPORT}(import.meta.url, ${caseMode ? SHARED : JSON.stringify(descriptors)});\n` +
-    after;
+  after = header + partialPrelude(caseMode, sharedMode, own, descriptors, relative) + after;
   if (selected.some((item) => item.verifiedCaseBody))
     after =
       '// @parity-evidence: Exact repeated official package case results and retained historical proof assertions are bound by the generated source and evidence guards.\n' +
@@ -8489,15 +9330,16 @@ function verifyCoexistingCaseGuard({ descriptor, model, moduleUrl }) {
       node.expression?.type === 'CallExpression' &&
       node.expression.callee?.name === IMPORT,
   );
-  check(SHA.test(descriptor.coexistingCaseGuardSha256) && guards.length === 1, 'changed-coexisting-case-guard');
-  const bindings = guardDescriptors(guards[0].expression);
+  const caseGuards = guards.filter((guard) => guardDescriptors(guard.expression).some((item) => item.caseSelection));
+  check(SHA.test(descriptor.coexistingCaseGuardSha256) && caseGuards.length === 1, 'changed-coexisting-case-guard');
+  const bindings = guardDescriptors(caseGuards[0].expression);
   check(
     bindings.length === 1 &&
       bindings[0].caseSelection &&
       jsonHash(bindings[0]) === descriptor.coexistingCaseGuardSha256,
     'changed-coexisting-case-guard',
   );
-  validateParityBindings(moduleUrl, bindings);
+  validateParityBindings(moduleUrl, bindings, { contextValidationToken: CONTEXT_VALIDATED });
 }
 
 function verifyCaseSelectionMarker({ descriptor, model, row, file }) {
@@ -8516,7 +9358,8 @@ function verifyCaseSelectionMarker({ descriptor, model, row, file }) {
     (node) =>
       node.type === 'ExpressionStatement' &&
       node.expression?.type === 'CallExpression' &&
-      node.expression.callee?.name === IMPORT,
+      node.expression.callee?.name === IMPORT &&
+      guardDescriptors(node.expression).some((item) => item.caseSelection),
   );
   const markerImports = model.ast.body.filter(
     (node) => node.type === 'ImportDeclaration' && node.specifiers.some((item) => item.local.name === CASE_IMPORT),
@@ -8676,6 +9519,7 @@ function verifyRuntimeDescriptor({ descriptor, model, file, moduleUrl, legacyOri
   );
   verifyRuntimeProofs({ descriptor, root });
   const row = registration(model, descriptor);
+  if (descriptor.sqlEvaluator === true) attachSqlEvaluatorAssertion(model, row);
   if (descriptor.recordsReviewSha256)
     check(
       descriptor.recordsReviewSha256 === '5a7fcbf242941cfa2b97c8baa9316402b821f33b1f0a7a7c7742b8fbd0ef09e7',
@@ -8757,8 +9601,9 @@ function collectRuntimeRegionBindings(model) {
         statement.expression?.type === 'CallExpression' &&
         statement.expression.callee?.name === IMPORT,
     );
-    check(top.length === 1, 'invalid-region-module-guard');
-    const bound = guardDescriptors(top[0].expression);
+    const regionGuards = top.filter((guard) => guardDescriptors(guard.expression).some((item) => item.regionHashes));
+    check(regionGuards.length === 1, 'invalid-region-module-guard');
+    const bound = guardDescriptors(regionGuards[0].expression);
     allRegionBindings = bound;
     check(
       bound.length === regionBindings.size &&
@@ -9045,12 +9890,55 @@ export function assertQueryCompletion(count, descriptor) {
   );
 }
 export function assertSoapParityBindings(moduleUrl, descriptors) {
+  return verifySoapParitySource(moduleUrl, descriptors, fs.readFileSync(fileURLToPath(moduleUrl), 'utf8'));
+}
+export function assertSoapParityBindingsFromSource(moduleUrl, descriptors, source) {
+  return verifySoapParitySource(moduleUrl, descriptors, source);
+}
+export function soapBindingsFromSource(source) {
+  const tree = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
+  const guards = tree.body.filter(
+    (node) => node.type === 'ExpressionStatement' && node.expression?.callee?.name === SOAP_IMPORT,
+  );
+  check(guards.length === 1, 'invalid-soap-bindings');
+  return guardDescriptors({ ...guards[0].expression, callee: { type: 'Identifier', name: IMPORT } });
+}
+export function soapLoopDescriptorFromSource(source) {
+  const tree = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
+  const declarations = tree.body.filter(
+    (node) =>
+      node.type === 'VariableDeclaration' &&
+      node.kind === 'const' &&
+      node.declarations.length === 1 &&
+      node.declarations[0].id?.name === '__paqSoapDescriptor',
+  );
+  const guards = tree.body.filter(
+    (node) => node.type === 'ExpressionStatement' && node.expression?.callee?.name === SOAP_IMPORT,
+  );
+  check(declarations.length === 1 && guards.length === 1, 'invalid-soap-bindings');
+  const call = guards[0].expression;
+  return guardDescriptors({
+    ...call,
+    callee: { type: 'Identifier', name: IMPORT },
+    arguments: [call.arguments[0], { type: 'ArrayExpression', elements: [declarations[0].declarations[0].init] }],
+  })[0];
+}
+export function assertSoapNamespaceProof(moduleUrl, factId) {
+  const file = fileURLToPath(moduleUrl),
+    descriptors = soapBindingsFromSource(fs.readFileSync(file, 'utf8'));
+  assertSoapParityBindings(moduleUrl, descriptors);
+  check(
+    descriptors[0].namespaceRegions?.some((region) => region.factId === factId),
+    'invalid-soap-namespace-guard',
+  );
+}
+function verifySoapParitySource(moduleUrl, descriptors, source) {
   check(
     Array.isArray(descriptors) && descriptors.length === 1 && descriptors[0]?.kind === 'soap-assertion-loop-v1',
     'invalid-soap-bindings',
   );
   const file = fileURLToPath(moduleUrl),
-    tree = parse(fs.readFileSync(file, 'utf8'), { ecmaVersion: 'latest', sourceType: 'module' }),
+    tree = parse(source, { ecmaVersion: 'latest', sourceType: 'module' }),
     descriptor = descriptors[0];
   const imports = tree.body.filter(
     (node) => node.type === 'ImportDeclaration' && node.specifiers.some((item) => item.local.name === SOAP_IMPORT),
@@ -9094,16 +9982,37 @@ export function assertSoapParityBindings(moduleUrl, descriptors) {
       { type: 'ArrayExpression', elements: [data[0].declarations[0].init] },
     ],
   };
-  check(jsonHash(guardDescriptors(declarationCall)[0]) === descriptor.loopDescriptorSha256, 'changed-soap-descriptor');
+  const loopDescriptor = guardDescriptors(declarationCall)[0];
+  check(jsonHash(loopDescriptor) === descriptor.loopDescriptorSha256, 'changed-soap-descriptor');
   const root = path.resolve(path.dirname(file), descriptor.repositoryRoot);
   check(
     path.resolve(root, 'mirage/test') === path.dirname(path.resolve(file)) &&
       parityHash(fs.readFileSync(confined(root, 'scripts/parity-assertion-loop.mjs'))) === descriptor.helperSha256 &&
       Array.isArray(descriptor.proofs) &&
-      descriptor.proofs.length === 1,
+      descriptor.proofs.length >= 1,
     'changed-soap-input',
   );
   for (const proof of descriptor.proofs) prove(root, proof);
+  const factIds = descriptor.proofs.flatMap((proof) => proof.facts.map((fact) => fact.id));
+  check(
+    new Set(factIds).size === factIds.length &&
+      loopDescriptor.instances.every((instance) => instance.factIds.every((id) => factIds.includes(id))),
+    'changed-soap-prior-proof',
+  );
+  const model = describeParitySource(source, file);
+  check(
+    soapNamespaceRegionsValid(
+      model,
+      descriptor,
+      file,
+      TOOL,
+      parityAstHash,
+      (from, specifier) =>
+        specifier.startsWith('file:') ? fileURLToPath(specifier) : path.resolve(path.dirname(from), specifier),
+      (proof) => JSON.parse(fs.readFileSync(confined(root, proof.path), 'utf8')),
+    ),
+    'changed-soap-namespace-guard',
+  );
 }
 export function assertScalarParityBindings(moduleUrl, descriptors) {
   check(
@@ -9169,7 +10078,7 @@ export function parityCaseBindings(moduleUrl, cases, indices, binding, descripto
     const index = typedCaseIndex(cases, selection.names, selection.bindings, binding);
     return indices.includes(index);
   }
-  check(selection.encoding === undefined, 'unsupported-case-binding-encoding');
+  check(selection.encoding === undefined || selection.encoding === 'sql-eval-v1', 'unsupported-case-binding-encoding');
   const bindings = cases.map((item) => {
     const values = selection.names.length === 1 ? [item] : item;
     check(Array.isArray(values) && values.length === selection.names.length, 'changed-case-parity-universe');
@@ -9276,7 +10185,7 @@ export function writeParityPendingFindings(report, directory) {
 function cli(args) {
   if (args.includes('--help')) {
     process.stdout.write(
-      'Usage: node scripts/qualify-parity.mjs --manifest <json> [--root <repo>] [--evidence-root <private-dir>] [--security-approval-file <private-json> --security-approval-sha256 <sha256>] [--write] [--pending-dir <dir>]\nDry-run is the default. All original assertions/cases and reviewed independent evidence must be explicitly mapped.\n',
+      'Usage: node scripts/qualify-parity.mjs --manifest <json> [--root <repo>] [--evidence-root <private-dir>] [--security-approval-file <private-json> --security-approval-sha256 <sha256>] [--query-prior-authority-file <json> --query-prior-authority-sha256 <sha256> --query-prior-source-file <source>] [--soap-prior-authority-file <private-json> --soap-prior-authority-sha256 <sha256>] [--write] [--pending-dir <dir>]\nDry-run is the default. All original assertions/cases and reviewed independent evidence must be explicitly mapped.\n',
     );
     return;
   }
@@ -9292,8 +10201,13 @@ function cli(args) {
     evidenceRoot: option('--evidence-root'),
     securityApprovalFile: option('--security-approval-file'),
     securityApprovalSha256: option('--security-approval-sha256'),
+    queryPriorAuthorityFile: option('--query-prior-authority-file'),
+    queryPriorAuthoritySha256: option('--query-prior-authority-sha256'),
+    queryPriorSourceFile: option('--query-prior-source-file'),
     caseCandidateFile: option('--case-candidate-file'),
     reviewedCandidateFile: option('--reviewed-candidate-file'),
+    soapPriorAuthorityFile: option('--soap-prior-authority-file'),
+    soapPriorAuthoritySha256: option('--soap-prior-authority-sha256'),
     recordsReviewFile: option('--records-review-file'),
     recordsReviewedSourceFile: option('--records-reviewed-source-file'),
   });

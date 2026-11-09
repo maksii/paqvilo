@@ -101,6 +101,37 @@ test('SOAP loop checker protects selected inputs and markers without tagging hel
   assert.deepEqual(kindsAt(parsed, 7), ['parity']);
   assert.deepEqual(kindsAt(parsed, 28), ['compatibility']);
   assert.deepEqual(kindsAt(parsed, lines.findIndex((line) => line.includes('__paqSoapComplete(')) + 1), ['parity']);
+  const extended = lines
+    .join('\n')
+    .replace(
+      JSON.stringify(Array.from({ length: 21 }, (_, index) => index)),
+      JSON.stringify(Array.from({ length: 22 }, (_, index) => index)),
+    );
+  assert.deepEqual(parseTestKinds(extended).errors, []);
+  assert.deepEqual(kindsAt(parseTestKinds(extended), 28), ['parity']);
+  assert.ok(parseTestKinds(extended.replace('[0,1,2,3', '[0,0,2,3')).errors.length);
+  const sibling =
+    lines
+      .join('\n')
+      .replace(
+        '__paqSoapBindings(import.meta.url, [{}]);',
+        '__paqSoapBindings(import.meta.url, [{namespaceRegions:[{factId:"namespace"}]}]);\n' +
+          "import { assertSoapNamespaceProof as __paqSoapNamespaceProof } from './tool.mjs';",
+      ) +
+    "\ntest('sibling', () => {\n  assert.ok(localOnly);\n  {\n    __paqSoapNamespaceProof(import.meta.url, 'namespace');\n    assert.equal(actualNamespace, expectedNamespace);\n  }\n});\n";
+  const siblingTags = parseTestKinds(sibling),
+    siblingLines = sibling.split('\n');
+  assert.deepEqual(siblingTags.errors, []);
+  assert.deepEqual(kindsAt(siblingTags, siblingLines.findIndex((line) => line.includes('assert.ok(localOnly)')) + 1), [
+    'compatibility',
+  ]);
+  assert.deepEqual(
+    kindsAt(siblingTags, siblingLines.findIndex((line) => line.includes('assert.equal(actualNamespace')) + 1),
+    ['parity'],
+  );
+  assert.ok(
+    parseTestKinds(sibling.replace("__paqSoapNamespaceProof(import.meta.url, 'namespace');", '')).errors.length,
+  );
   assert.ok(
     parseTestKinds(lines.join('\n').replace('  __paqSoapComplete(index, __paqSoapDescriptor);', '')).errors.length,
   );

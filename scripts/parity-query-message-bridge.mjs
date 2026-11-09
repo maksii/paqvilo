@@ -134,6 +134,38 @@ function zipEntry(archive, wanted) {
   check(found);
   return hash(found);
 }
+export function queryPackageArchiveMember(name, version, runtimeKind) {
+  check(/^Microsoft\.OData\.(Core|Edm)$/u.test(name));
+  check(['8.3.0', '7.20.0'].includes(version));
+  check(runtimeKind === undefined || (runtimeKind === 'windows-netframework' && version === '7.20.0'));
+  if (version === '8.3.0') return `lib/net8.0/${name}.dll`;
+  if (runtimeKind === 'windows-netframework') return `lib/net45/${name}.dll`;
+  return name === 'Microsoft.OData.Core' ? `lib/netcoreapp3.1/${name}.dll` : `lib/netstandard2.0/${name}.dll`;
+}
+export function assertQueryAuthorityProcess({ runtimeKind, namespace, receipt, run, recorded, parsed, stderr }) {
+  const common = run.launcherPid > 0 && run.launcherPid === recorded.launcherPid;
+  const windows =
+    runtimeKind === 'windows-netframework' &&
+    namespace.runtimeKind === runtimeKind &&
+    receipt.runtimeKind === runtimeKind &&
+    run.processId > 0 &&
+    run.processId === recorded.processId &&
+    run.processId === parsed.processId &&
+    run.launcherPid === run.processId &&
+    /^\.NET Framework 4\.8(?:\.\d+)*$/u.test(parsed.runtime) &&
+    parsed.runtime === recorded.runtime &&
+    stderr === '';
+  const linux =
+    runtimeKind === undefined &&
+    namespace.runtimeKind === undefined &&
+    receipt.runtimeKind === undefined &&
+    run.linuxPid > 0 &&
+    run.linuxPid === recorded.linuxPid &&
+    stderr.includes(`HOST_PID=${run.linuxPid}`) &&
+    /Uid:\s+65534\s+65534\s+65534\s+65534/u.test(stderr) &&
+    ['CapEff', 'CapPrm', 'CapAmb'].every((key) => new RegExp(String.raw`${key}:\s+0000000000000000`, 'u').test(stderr));
+  check(common && (windows || linux));
+}
 export function verifyQueryMessageBridge({ evidenceRoot, witness, capsule, expectedSourceSha256 }) {
   check(evidenceRoot && witness && typeof witness.indexPath === 'string' && /^[a-f0-9]{64}$/u.test(witness.sha256));
   const root = fs.realpathSync(evidenceRoot);
@@ -163,7 +195,7 @@ export function verifyQueryMessageBridge({ evidenceRoot, witness, capsule, expec
   const verifyPackage = (pkg) => {
     check(
       /^Microsoft\.OData\.(Core|Edm)$/u.test(pkg.name) &&
-        pkg.version === '8.3.0' &&
+        ['8.3.0', '7.20.0'].includes(pkg.version) &&
         !packages.has(pkg.name) &&
         pkg.publisherArchiveUrl ===
           `https://api.nuget.org/v3-flatcontainer/${pkg.name.toLowerCase()}/${pkg.version}/${pkg.name.toLowerCase()}.${pkg.version}.nupkg` &&
@@ -172,12 +204,17 @@ export function verifyQueryMessageBridge({ evidenceRoot, witness, capsule, expec
     const archive = readRef(pkg.archive),
       extracted = readRef(pkg.extractedDll);
     check(
-      zipEntry(archive, `lib/net8.0/${pkg.name}.dll`) === hash(extracted) &&
+      zipEntry(archive, queryPackageArchiveMember(pkg.name, pkg.version, index.runtimeKind)) === hash(extracted) &&
         hash(extracted) === pkg.extractedDll.sha256,
     );
     packages.set(pkg.name, pkg);
   };
   for (const pkg of index.packages) verifyPackage(pkg);
+  check(packages.get('Microsoft.OData.Core')?.version === packages.get('Microsoft.OData.Edm')?.version);
+  check(
+    index.runtimeKind === undefined ||
+      (index.runtimeKind === 'windows-netframework' && packages.get('Microsoft.OData.Core')?.version === '7.20.0'),
+  );
   const sources = new Map();
   const verifyNamespace = (namespace) => {
     check(
@@ -194,7 +231,7 @@ export function verifyQueryMessageBridge({ evidenceRoot, witness, capsule, expec
     );
     for (const key of ['producer', 'project', 'input', 'binary', 'launcher']) readRef(namespace[key]);
     const expected =
-      namespace.name === 'original-input'
+      namespace.name === 'original-input' && packages.get('Microsoft.OData.Core')?.version === '8.3.0'
         ? { producer: 'source', project: 'project', input: 'cases', binary: 'executable' }
         : { producer: 'program', project: 'project', input: 'input', binary: 'executable' };
     for (const [key, receiptKey] of Object.entries(expected))
@@ -206,22 +243,22 @@ export function verifyQueryMessageBridge({ evidenceRoot, witness, capsule, expec
         stdout = readRef(run.stdout),
         stderr = readRef(run.stderr).toString('utf8'),
         parsed = JSON.parse(stdout);
+      assertQueryAuthorityProcess({
+        runtimeKind: index.runtimeKind,
+        namespace,
+        receipt,
+        run,
+        recorded,
+        parsed,
+        stderr,
+      });
       check(
         run.exitCode === 0 &&
           run.signal === null &&
-          run.linuxPid > 0 &&
-          run.launcherPid > 0 &&
-          run.linuxPid === recorded.linuxPid &&
-          run.launcherPid === recorded.launcherPid &&
           run.startedAtUtc === recorded.startedAtUtc &&
           run.endedAtUtc === recorded.endedAtUtc &&
           run.stdout.sha256 === recorded.stdoutSha256 &&
           run.stderr.sha256 === recorded.stderrSha256 &&
-          stderr.includes(`HOST_PID=${run.linuxPid}`) &&
-          /Uid:\s+65534\s+65534\s+65534\s+65534/u.test(stderr) &&
-          ['CapEff', 'CapPrm', 'CapAmb'].every((key) =>
-            new RegExp(String.raw`${key}:\s+0000000000000000`, 'u').test(stderr),
-          ) &&
           Array.isArray(parsed.results),
       );
       for (const pkg of packages.values()) {
@@ -240,7 +277,9 @@ export function verifyQueryMessageBridge({ evidenceRoot, witness, capsule, expec
       results.push(parsed.results);
     }
     check(
-      namespace.runs[0].linuxPid !== namespace.runs[1].linuxPid &&
+      (index.runtimeKind === 'windows-netframework'
+        ? namespace.runs[0].processId !== namespace.runs[1].processId
+        : namespace.runs[0].linuxPid !== namespace.runs[1].linuxPid) &&
         namespace.runs[0].launcherPid !== namespace.runs[1].launcherPid,
     );
     sources.set(namespace.name, results);

@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "scope": "Two SDK DataContract child namespace assertion instances, not the original lexical prefix assertions or whole tests.",
+  "baseline": "1171cccc8baed9218f7fd7689afae4abdc89252b",
+  "source": {
+    "baselineSourceSha256": "f9714a545510a9a6eeec463c04d866cbd42015f8acafef5f48e5f0f4c32440cf",
+    "tests": [
+      {
+        "id": "mirage/test/dataverse-soap-xml.test.mjs:373:0",
+        "title": "KeyAttributes items are in the xrm/7.1 namespace (KeyAttributeCollection)",
+        "assertionIndex": 1,
+        "assertionSha256": "2df51c4149a6ac649b74ca40f5905e489942cabde557dd836378c0d09d7b1c4d"
+      },
+      {
+        "id": "mirage/test/dataverse-soap-xml.test.mjs:386:0",
+        "title": "ErrorDetails items are KeyValuePairOfstringanyType in the xrm/2011 namespace",
+        "assertionIndex": 1,
+        "assertionSha256": "cf06fb5fed196f64bc9abc4407f53ad6d68938b6ea23274a79798e857db8caf1"
+      }
+    ]
+  },
+  "package": {
+    "id": "Microsoft.CrmSdk.CoreAssemblies",
+    "version": "9.0.2.60",
+    "source": "https://api.nuget.org/v3-flatcontainer/microsoft.crmsdk.coreassemblies/9.0.2.60/microsoft.crmsdk.coreassemblies.9.0.2.60.nupkg",
+    "sha256": "59650574cdc89c1f506fabd7275fe6325a59a8bae9fa9f92c5b5c2cbe31d5e1f",
+    "signatureVerified": false
+  },
+  "producer": {
+    "sourceSha256": "2b555b4c90ffae4afbe1d1a9a7a3e0558a91a8040598daea2847ac3199993b7d",
+    "assemblySha256": "fc9b1b1c1b468d84a94307bc445edecdcc46b29795261cfdec79d426341220b6",
+    "sdkAssemblySha256": "f696eaeb1145bce9f517d0b8fa5e925d0216176919af8d417dcd439acb1797f9",
+    "privateReceiptSha256": "a369cbb90842cd8c416483ec7744fa50b51c04959944323d7102426516823b55"
+  },
+  "runs": [
+    {
+      "pid": 83196,
+      "rawSha256": "625fbef38a56c52ecdb9e6718528e34899b206839032db2040e6c1bab1d1f4bd",
+      "facts": [
+        {
+          "title": "KeyAttributes items are in the xrm/7.1 namespace (KeyAttributeCollection)",
+          "itemName": "KeyValuePairOfstringanyType",
+          "namespace": "http://schemas.microsoft.com/xrm/7.1/Contracts",
+          "expected": "http://schemas.microsoft.com/xrm/7.1/Contracts"
+        },
+        {
+          "title": "ErrorDetails items are KeyValuePairOfstringanyType in the xrm/2011 namespace",
+          "itemName": "KeyValuePairOfstringanyType",
+          "namespace": "http://schemas.microsoft.com/xrm/2011/Contracts",
+          "expected": "http://schemas.microsoft.com/xrm/2011/Contracts"
+        }
+      ],
+      "sdkXml": [
+        "<EntityReference xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns=\"http://schemas.microsoft.com/xrm/2011/Contracts\"><Id>6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f</Id><KeyAttributes xmlns:d2p1=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:d2p2=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\"><d2p1:KeyValuePairOfstringanyType><d2p2:key>code</d2p2:key><d2p2:value xmlns:d4p1=\"http://www.w3.org/2001/XMLSchema\" i:type=\"d4p1:string\">W-1</d2p2:value></d2p1:KeyValuePairOfstringanyType></KeyAttributes><LogicalName>widget</LogicalName><Name i:nil=\"true\" /><RowVersion i:nil=\"true\" /></EntityReference>",
+        "<OrganizationServiceFault xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns=\"http://schemas.microsoft.com/xrm/2011/Contracts\"><ActivityId>00000000-0000-0000-0000-000000000000</ActivityId><ErrorCode>-2147220969</ErrorCode><ErrorDetails xmlns:d2p1=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\"><KeyValuePairOfstringanyType><d2p1:key>Retry-After</d2p1:key><d2p1:value xmlns:d4p1=\"http://schemas.microsoft.com/2003/10/Serialization/\" i:type=\"d4p1:duration\">PT5S</d2p1:value></KeyValuePairOfstringanyType></ErrorDetails><HelpLink i:nil=\"true\" /><Message>Throttled</Message><Timestamp>2026-10-19T08:30:00Z</Timestamp><ExceptionRetriable>false</ExceptionRetriable><ExceptionSource i:nil=\"true\" /><InnerFault i:nil=\"true\" /><OriginalException i:nil=\"true\" /><TraceText i:nil=\"true\" /></OrganizationServiceFault>"
+      ]
+    },
+    {
+      "pid": 59276,
+      "rawSha256": "08919f73951f4d9b027221886d2a98c6761cf3920aa772877bb8963dadc5861e",
+      "facts": [
+        {
+          "title": "KeyAttributes items are in the xrm/7.1 namespace (KeyAttributeCollection)",
+          "itemName": "KeyValuePairOfstringanyType",
+          "namespace": "http://schemas.microsoft.com/xrm/7.1/Contracts",
+          "expected": "http://schemas.microsoft.com/xrm/7.1/Contracts"
+        },
+        {
+          "title": "ErrorDetails items are KeyValuePairOfstringanyType in the xrm/2011 namespace",
+          "itemName": "KeyValuePairOfstringanyType",
+          "namespace": "http://schemas.microsoft.com/xrm/2011/Contracts",
+          "expected": "http://schemas.microsoft.com/xrm/2011/Contracts"
+        }
+      ],
+      "sdkXml": [
+        "<EntityReference xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns=\"http://schemas.microsoft.com/xrm/2011/Contracts\"><Id>6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f</Id><KeyAttributes xmlns:d2p1=\"http://schemas.microsoft.com/xrm/7.1/Contracts\" xmlns:d2p2=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\"><d2p1:KeyValuePairOfstringanyType><d2p2:key>code</d2p2:key><d2p2:value xmlns:d4p1=\"http://www.w3.org/2001/XMLSchema\" i:type=\"d4p1:string\">W-1</d2p2:value></d2p1:KeyValuePairOfstringanyType></KeyAttributes><LogicalName>widget</LogicalName><Name i:nil=\"true\" /><RowVersion i:nil=\"true\" /></EntityReference>",
+        "<OrganizationServiceFault xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns=\"http://schemas.microsoft.com/xrm/2011/Contracts\"><ActivityId>00000000-0000-0000-0000-000000000000</ActivityId><ErrorCode>-2147220969</ErrorCode><ErrorDetails xmlns:d2p1=\"http://schemas.datacontract.org/2004/07/System.Collections.Generic\"><KeyValuePairOfstringanyType><d2p1:key>Retry-After</d2p1:key><d2p1:value xmlns:d4p1=\"http://schemas.microsoft.com/2003/10/Serialization/\" i:type=\"d4p1:duration\">PT5S</d2p1:value></KeyValuePairOfstringanyType></ErrorDetails><HelpLink i:nil=\"true\" /><Message>Throttled</Message><Timestamp>2026-10-19T08:30:00Z</Timestamp><ExceptionRetriable>false</ExceptionRetriable><ExceptionSource i:nil=\"true\" /><InnerFault i:nil=\"true\" /><OriginalException i:nil=\"true\" /><TraceText i:nil=\"true\" /></OrganizationServiceFault>"
+      ]
+    }
+  ]
+}

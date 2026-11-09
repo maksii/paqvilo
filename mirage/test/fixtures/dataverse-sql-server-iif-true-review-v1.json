@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "scope": "Derived fixed true-branch SQL Server review; no general Boolean adapter or Dataverse TDS claim",
+  "baseline": "1171cccc8baed9218f7fd7689afae4abdc89252b",
+  "sourceReceiptSha256": "af71fa103a879ffbbe9512e61437cd841635b70d3579e616b2150e2cec781626",
+  "review": {
+    "cases": [
+      {
+        "index": 14,
+        "originalId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#14",
+        "classification": "unchanged-baseline-tuple",
+        "sourceTupleSha256": "02b2b5d61a25dcfc5cc8cfd0582dd22761f31641e4026295425e50c890858ebb",
+        "currentTupleSha256": "02b2b5d61a25dcfc5cc8cfd0582dd22761f31641e4026295425e50c890858ebb",
+        "sql": "SELECT IIF(1 = 1, 1, 2) AS [value]",
+        "bounds": "Exact fixed true-branch/output mapping through SQL 1=1 predicate only; no general Boolean adapter or truthiness guarantee."
+      }
+    ],
+    "holds": [
+      "Only true-branch selection for the exact source case and SQL predicate; no general Boolean truthiness or UNKNOWN mapping.",
+      "Fresh container binary not separately hashed; digest-pinned image and independent client receipts are retained privately."
+    ]
+  }
+}

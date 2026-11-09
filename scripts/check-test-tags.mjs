@@ -1,4 +1,5 @@
 import { sharedParityDescriptor, SHARED } from './parity-shared-descriptor.mjs';
+import { sharedPartialDescriptors } from './parity-shared-partial.mjs';
 // Enforces docs/test-kinds.md on test files a change adds or modifies.
 //   node scripts/check-test-tags.mjs --staged          pre-commit: the index against HEAD
 //   node scripts/check-test-tags.mjs --base <rev>      a branch against <rev> (merge base)
@@ -131,6 +132,14 @@ function appendAssertionRegions({ hasMarker, text, lines, regions }) {
   if (hasMarker('__paqParityAssertions')) {
     try {
       const ast = parse(text, { ecmaVersion: 'latest', sourceType: 'module', loc: true });
+      const shared = sharedPartialDescriptors(ast, astHash);
+      if (shared)
+        regions.push({
+          start: shared.declaration.loc.start.line,
+          end: shared.declaration.loc.end.line,
+          kinds: ['parity'],
+          partial: true,
+        });
       function visit(node) {
         if (
           node.type === 'BlockStatement' &&
@@ -193,6 +202,20 @@ function appendRetainedAssertions(node, descriptor, regions) {
     regions.push({ start: item.loc.start.line, end: item.loc.end.line, kinds: ['parity'], partial: true });
 }
 
+function appendSqlEvaluatorHelperRegions(ast, descriptor, arrayName, regions) {
+  if (property(descriptor, 'sqlEvaluator')?.value !== true) return;
+  if (arrayName !== 'semanticCases') throw new Error('invalid SQL evaluator guard');
+  for (const name of ['run', 'plain', 'rowsOf', 'NOW', 'check', 'makeScan']) {
+    const matches = ast.body.filter(
+      (item) =>
+        (item.type === 'FunctionDeclaration' && item.id?.name === name) ||
+        (item.type === 'VariableDeclaration' && item.declarations.some((declaration) => declaration.id?.name === name)),
+    );
+    if (matches.length !== 1) throw new Error('invalid SQL evaluator helper');
+    regions.push({ start: matches[0].loc.start.line, end: matches[0].loc.end.line, kinds: ['parity'], partial: true });
+  }
+}
+
 function appendCaseGuard(ast, node, index, call, regions) {
   const statement = node.body[index],
     arrayName = call.arguments[1]?.name,
@@ -245,6 +268,7 @@ function appendCaseGuard(ast, node, index, call, regions) {
   if (guidBranch && !numbers.includes(138)) throw new Error('missing guarded GUID case');
   for (const entry of [statement, protectedAssertion, ...numbers.map((number) => entries[number])])
     regions.push({ start: entry.loc.start.line, end: entry.loc.end.line, kinds: ['parity'], partial: true });
+  appendSqlEvaluatorHelperRegions(ast, descriptor, arrayName, regions);
   appendRetainedAssertions(node, descriptor, regions);
 }
 
@@ -421,7 +445,8 @@ function soapGuardDeclarations(ast) {
   if (selected?.type !== 'ArrayExpression') throw new Error('missing soap selection');
   const numbers = selected.elements.map((item) => item?.value);
   if (
-    numbers.length !== 21 ||
+    !numbers.length ||
+    numbers.length > 27 ||
     new Set(numbers).size !== numbers.length ||
     numbers.some(
       (number, index) =>
@@ -477,6 +502,53 @@ function soapGuardMarkers(ast) {
   return { marked, loop };
 }
 
+function appendSoapNamespaceRegions(ast, guard, regions) {
+  const descriptor = guard.expression.arguments[1].elements[0],
+    metadata = property(descriptor, 'namespaceRegions');
+  const imports = ast.body.filter(
+    (node) =>
+      node.type === 'ImportDeclaration' &&
+      node.specifiers.some((item) => item.local.name === '__paqSoapNamespaceProof'),
+  );
+  const blocks = [];
+  function visit(node) {
+    if (node.type === 'BlockStatement' && node.body[0]?.expression?.callee?.name === '__paqSoapNamespaceProof')
+      blocks.push(node);
+    for (const value of Object.values(node))
+      for (const child of Array.isArray(value) ? value : [value]) if (child?.type) visit(child);
+  }
+  visit(ast);
+  if (!metadata) {
+    if (imports.length || blocks.length) throw new Error('unbound SOAP namespace marker');
+    return;
+  }
+  if (
+    metadata.type !== 'ArrayExpression' ||
+    !metadata.elements.length ||
+    imports.length !== 1 ||
+    blocks.length !== metadata.elements.length
+  )
+    throw new Error('invalid SOAP namespace markers');
+  const ids = metadata.elements.map((entry) => property(entry, 'factId')?.value);
+  if (ids.some((id) => typeof id !== 'string') || new Set(ids).size !== ids.length)
+    throw new Error('invalid SOAP namespace facts');
+  const seen = blocks.map((block) => {
+    const call = block.body[0].expression;
+    if (
+      block.body.length !== 2 ||
+      block.body[1].type !== 'ExpressionStatement' ||
+      call.arguments.length !== 2 ||
+      call.arguments[1]?.type !== 'Literal'
+    )
+      throw new Error('invalid SOAP namespace region');
+    return call.arguments[1].value;
+  });
+  if (new Set(seen).size !== ids.length || ids.some((id) => !seen.includes(id)))
+    throw new Error('unbound SOAP namespace fact');
+  for (const node of [imports[0], ...blocks])
+    regions.push({ start: node.loc.start.line, end: node.loc.end.line, kinds: ['parity'], partial: true });
+}
+
 function appendSoapRegions({ hasMarker, text, lines, regions, errors }) {
   if (hasMarker('__paqSoapBindings')) {
     try {
@@ -484,6 +556,7 @@ function appendSoapRegions({ hasMarker, text, lines, regions, errors }) {
       const { imports, helperImports, guards, declarations, values, numbers } = soapGuardDeclarations(ast);
       appendSoapUniverse(values, numbers, regions);
       const { marked, loop } = soapGuardMarkers(ast);
+      appendSoapNamespaceRegions(ast, guards[0], regions);
       for (const node of [
         imports[0],
         helperImports[0],

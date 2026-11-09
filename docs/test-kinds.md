@@ -131,14 +131,30 @@ below bind both baseline and current case values. Async callbacks, assertion-typ
 are currently unsupported and fail closed.
 
 The SDK SOAP value-loop migration is a separate bounded form. Its source certificate
-binds the complete 27-value typed universe, the selected 21 values, both assertion
+binds the complete 27-value typed universe, the selected 22 values, both assertion
 sites and two literal tail inputs. A synchronous check runs on every iteration,
 including held values, and a completion check verifies the full loop ran. The original
 assertions and their order remain in place. The source guard pins the complete
 instrumented module, helper and repeated SDK evidence; the checker protects the
 selected inputs and shared assertion sites while retaining the file's existing
-compatibility kind elsewhere. The 44 mapped assertion instances are partial
-coverage and confer no whole-test credit.
+compatibility kind elsewhere. The 46 mapped assertion instances are partial
+coverage and confer no whole-test credit. A cumulative run requires an externally
+accepted prior-source receipt supplied with `--soap-prior-authority-file` and
+`--soap-prior-authority-sha256`; the qualifier also reads the guarded source
+from trusted Git HEAD and requires both authorities to remain represented. The
+receipt's digest must come from the reviewer who accepted it: a name inside the
+JSON alone is not approval. Existing proof objects remain intact, and a new
+capsule's runtime proof carries only newly mapped facts after preflight verifies
+its complete fact set. An identical rerun makes no source change.
+
+Two additional SOAP namespace assertions use bounded sibling regions. The
+namespace writer validates the accepted loop authority and exact original test
+bodies before wrapping those assertions; the lexical prefix assertions in the
+same tests remain compatibility checks. The module guard binds each region to
+its original assertion and body, baseline identity, and reproduced SDK fact.
+Use `scripts/qualify-soap-namespace.mjs --help` for the required manifest,
+proof and accepted-authority inputs. The regions add assertion-level coverage,
+not whole-test or Dataverse dispatch credit.
 
 The bounded query-reader matrix supports selected proven cases in an unchanged
 63-case async subtest loop. Its literal spread/map inputs are evaluated from

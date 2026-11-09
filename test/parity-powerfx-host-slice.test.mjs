@@ -57,3 +57,21 @@ test('rejects cross-callback global, prototype, computed alias, async and hook m
   ])
     assert.equal(probe(source + '\n' + extra).fixtures.length, 0, extra);
 });
+test('binds the exact scope callback and rejects changed inputs or assertions', () => {
+  const scope = source.replace(
+    "const local = hostOf({ timeZone: 'Europe/Amsterdam' }); assert.equal(run('1+1', local), 2); assert.equal(run('2+2', local), 4);",
+    `const values = { a: 10, T: [{ a: 1 }, { a: 2 }] };
+    assert.equal(run('Sum(Filter(T, a > 1), a)', hostOf(), values), 2);
+    assert.equal(run('Sum(Filter(T, ThisRecord.a + [@a] > 11), a)', hostOf(), values), 2, '[@a] reads the global past the record scope');
+    assert.equal(run('Concat(ForAll(T As Outer, Concat(Filter(T, a = Outer.a), Text(a))), Value)', hostOf(), values), '12');
+    assert.equal(run('Sum(Filter(T, T[@a] = 2), a)', hostOf(), values), 2);`,
+  );
+  assert.equal(probe(scope).fixtures.length, 1);
+  for (const changed of [
+    scope.replace('a: 10', 'a: 11'),
+    scope.replace('a > 1', 'a > 0'),
+    scope.replace("values), '12'", "values), '21'"),
+    scope + '\ntest.before(() => {});',
+  ])
+    assert.equal(probe(changed).fixtures.length, 0);
+});

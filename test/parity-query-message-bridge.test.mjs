@@ -2,9 +2,68 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { verifyQueryMessageBridgeCase } from '../scripts/parity-query-message-bridge.mjs';
+import {
+  assertQueryAuthorityProcess,
+  queryPackageArchiveMember,
+  verifyQueryMessageBridgeCase,
+} from '../scripts/parity-query-message-bridge.mjs';
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const digest = (value) => hash(JSON.stringify(value));
+test('package versions and runtime profiles require their exact official archive members', () => {
+  assert.equal(queryPackageArchiveMember('Microsoft.OData.Core', '8.3.0'), 'lib/net8.0/Microsoft.OData.Core.dll');
+  assert.equal(
+    queryPackageArchiveMember('Microsoft.OData.Core', '7.20.0'),
+    'lib/netcoreapp3.1/Microsoft.OData.Core.dll',
+  );
+  assert.equal(
+    queryPackageArchiveMember('Microsoft.OData.Edm', '7.20.0'),
+    'lib/netstandard2.0/Microsoft.OData.Edm.dll',
+  );
+  assert.equal(
+    queryPackageArchiveMember('Microsoft.OData.Core', '7.20.0', 'windows-netframework'),
+    'lib/net45/Microsoft.OData.Core.dll',
+  );
+  assert.throws(() => queryPackageArchiveMember('Microsoft.OData.Core', '8.3.0', 'windows-netframework'));
+  assert.throws(() => queryPackageArchiveMember('Microsoft.OData.Core', '7.20.1'));
+  assert.throws(() => queryPackageArchiveMember('Microsoft.OData.Core', '7.20.0', 'unknown'));
+});
+test('Windows process identity and Linux isolation evidence cannot be substituted', () => {
+  const windows = {
+    runtimeKind: 'windows-netframework',
+    namespace: { runtimeKind: 'windows-netframework' },
+    receipt: { runtimeKind: 'windows-netframework' },
+    run: { processId: 42, launcherPid: 42 },
+    recorded: { processId: 42, launcherPid: 42, runtime: '.NET Framework 4.8.1' },
+    parsed: { processId: 42, runtime: '.NET Framework 4.8.1' },
+    stderr: '',
+  };
+  assert.doesNotThrow(() => assertQueryAuthorityProcess(windows));
+  for (const bad of [
+    { ...windows, parsed: { ...windows.parsed, processId: 43 } },
+    { ...windows, parsed: { ...windows.parsed, runtime: '.NET 10.0' } },
+    { ...windows, parsed: { ...windows.parsed, runtime: '.NET Framework 4.80' } },
+    { ...windows, stderr: 'error' },
+    { ...windows, namespace: {} },
+  ])
+    assert.throws(() => assertQueryAuthorityProcess(bad));
+  const linux = {
+    runtimeKind: undefined,
+    namespace: {},
+    receipt: {},
+    run: { linuxPid: 42, launcherPid: 41 },
+    recorded: { linuxPid: 42, launcherPid: 41 },
+    parsed: {},
+    stderr:
+      'HOST_PID=42\nUid: 65534 65534 65534 65534\nCapEff: 0000000000000000\nCapPrm: 0000000000000000\nCapAmb: 0000000000000000\n',
+  };
+  assert.doesNotThrow(() => assertQueryAuthorityProcess(linux));
+  assert.throws(() =>
+    assertQueryAuthorityProcess({
+      ...linux,
+      stderr: linux.stderr.replace('CapEff: 0000000000000000', 'CapEff: 0000000000000001'),
+    }),
+  );
+});
 function invented() {
   const expected = { option: '$filter', value: 'x eq', status: 400, message: "Error at position 4 in 'x eq'." };
   const predicted = "Error at position 7 in 'yyyy eq'.";

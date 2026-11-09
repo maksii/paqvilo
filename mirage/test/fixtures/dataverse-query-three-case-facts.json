@@ -1,0 +1,341 @@
+{
+  "schemaVersion": 1,
+  "scope": "Three original and role-adapted official OData 7.20 .NET Framework parser errors and two native HTTP responses. No deployed runtime claim or store nonmutation claim.",
+  "source": {
+    "baseline": "1171cccc8baed9218f7fd7689afae4abdc89252b",
+    "baselineSha256": "6846b32690ec29526fa42a130d20ccca651fa8ea096298b047b70ace0354822a",
+    "currentSha256": "17e1ab8097926063f3c83708fc6ad400b3208971a8cf998267b04802c1778346",
+    "casesAstSha256": "e8e0ef1779cf6b749f1bfe0a76d17a7985d85431ac229abdfbfb8318a4083c15",
+    "certificateSha256": "1c1ab566a2530737e1e36e243999aac716630ce9ee036e8547e36be9d16e14fe",
+    "reviewSha256": "b6225b4a2f9c45bd9efd556bce77fba395b3be95eec584306fbdca0985c5916d",
+    "planSha256": "eec5de50821e10f370c2a4d63e6a777541e6fc3e970248453e15a3d880e746b6",
+    "originalSdkSha256": "d3d262742e0b0935f301036521e497b9e7458c2245ebfdf49b226fa48739a5cd",
+    "adaptedSdkSha256": "0496a1aa1157dcc0789349cc306c6893e4c707612ddd92b01ad8fbe6afb46b33",
+    "comparisonSha256": "8c7e86d693da96769bf13cefcf6a7712fd4158054aaa30d8ecfb184bf3558c8e",
+    "supervisorSha256": "7889744c3ea4fa10b52ae33b8dd37a8e49fddd45f95575fdc9000ec95c3af638"
+  },
+  "captures": [
+    {
+      "runSha256": "c45d2aa9539f94fdbf20657c50629eb5257e4a801a4fdc119148b9f6940c9bc4",
+      "provenanceSha256": "3dfefba47db66327a3e6d5a15a0df4bbc8932d2fef7dbc52ed41768cfeb95f71",
+      "metadataSha256": "801b3308cb09e01984e871387bb6382ef29dfac1d3ad8e6af808d8b17d354564",
+      "csdlSha256": "c72a388f700b5200c8de2556383a7b5b4db6e4ff29ff776e90b0fe7a67afa629",
+      "cases": [
+        {
+          "caseIndex": 44,
+          "sourceBinding": {
+            "option": "$filter",
+            "value": "quantity eq --1.2345678",
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Unrecognized 'Edm.Double' literal '--1.2345678' at '12' in 'quantity eq --1.2345678'."
+          },
+          "sourceRoles": {
+            "mappedOption": "$filter",
+            "mappedValue": "pqwp_integer eq --1.2345678",
+            "replacements": [
+              {
+                "original": "quantity",
+                "native": "pqwp_integer",
+                "start": 0,
+                "end": 8,
+                "type": "Edm.Int32"
+              }
+            ],
+            "offsetEvidence": [
+              {
+                "originalOffset": 12,
+                "proposedNativeOffset": 16,
+                "sourceLength": 23,
+                "nativeLength": 27,
+                "originalCharacter": "-",
+                "nativeCharacter": "-",
+                "originalAtEnd": false,
+                "nativeAtEnd": false
+              }
+            ]
+          },
+          "requestSha256": "9223c8f3b483e44f16396134db2e7ee2da74d0e9fc3147263c25be89f61f7c84",
+          "responseBodySha256": "cf5b6104056522080de4c79d274d27dc709707f0232765aaacf242dd3a843789",
+          "facts": {
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Unrecognized 'Edm.Double' literal '--1.2345678' at '16' in 'pqwp_integer eq --1.2345678'."
+          },
+          "originalSdkMessages": [
+            "Unrecognized 'Edm.Double' literal '--1.2345678' at '12' in 'quantity eq --1.2345678'.",
+            "Unrecognized 'Edm.Double' literal '--1.2345678' at '12' in 'quantity eq --1.2345678'."
+          ],
+          "adaptedSdkMessages": [
+            "Unrecognized 'Edm.Double' literal '--1.2345678' at '16' in 'pqwp_integer eq --1.2345678'.",
+            "Unrecognized 'Edm.Double' literal '--1.2345678' at '16' in 'pqwp_integer eq --1.2345678'."
+          ],
+          "predictedNativeMessage": "Unrecognized 'Edm.Double' literal '--1.2345678' at '16' in 'pqwp_integer eq --1.2345678'."
+        },
+        {
+          "caseIndex": 50,
+          "sourceBinding": {
+            "option": "$filter",
+            "value": "quantity eq --79228162514264337593543950335",
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Unrecognized 'Edm.Decimal' literal '--79228162514264337593543950335' at '12' in 'quantity eq --79228162514264337593543950335'."
+          },
+          "sourceRoles": {
+            "mappedOption": "$filter",
+            "mappedValue": "pqwp_integer eq --79228162514264337593543950335",
+            "replacements": [
+              {
+                "original": "quantity",
+                "native": "pqwp_integer",
+                "start": 0,
+                "end": 8,
+                "type": "Edm.Int32"
+              }
+            ],
+            "offsetEvidence": [
+              {
+                "originalOffset": 12,
+                "proposedNativeOffset": 16,
+                "sourceLength": 43,
+                "nativeLength": 47,
+                "originalCharacter": "-",
+                "nativeCharacter": "-",
+                "originalAtEnd": false,
+                "nativeAtEnd": false
+              }
+            ]
+          },
+          "requestSha256": "5d40b32e9a20ff9e84d94434a6149ec318f3cdb2380add151c11e68ca7d7c884",
+          "responseBodySha256": "7411995495a16ef73444531bdc0de4af48c266bd388afaeea4509793814f5dc3",
+          "facts": {
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Unrecognized 'Edm.Decimal' literal '--79228162514264337593543950335' at '16' in 'pqwp_integer eq --79228162514264337593543950335'."
+          },
+          "originalSdkMessages": [
+            "Unrecognized 'Edm.Decimal' literal '--79228162514264337593543950335' at '12' in 'quantity eq --79228162514264337593543950335'.",
+            "Unrecognized 'Edm.Decimal' literal '--79228162514264337593543950335' at '12' in 'quantity eq --79228162514264337593543950335'."
+          ],
+          "adaptedSdkMessages": [
+            "Unrecognized 'Edm.Decimal' literal '--79228162514264337593543950335' at '16' in 'pqwp_integer eq --79228162514264337593543950335'.",
+            "Unrecognized 'Edm.Decimal' literal '--79228162514264337593543950335' at '16' in 'pqwp_integer eq --79228162514264337593543950335'."
+          ],
+          "predictedNativeMessage": "Unrecognized 'Edm.Decimal' literal '--79228162514264337593543950335' at '16' in 'pqwp_integer eq --79228162514264337593543950335'."
+        },
+        {
+          "caseIndex": 54,
+          "sourceBinding": {
+            "option": "$filter",
+            "value": "quantity eq --10000000000000000000000000000",
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Unrecognized 'Edm.Double' literal '--10000000000000000000000000000' at '12' in 'quantity eq --10000000000000000000000000000'."
+          },
+          "sourceRoles": {
+            "mappedOption": "$filter",
+            "mappedValue": "pqwp_integer eq --10000000000000000000000000000",
+            "replacements": [
+              {
+                "original": "quantity",
+                "native": "pqwp_integer",
+                "start": 0,
+                "end": 8,
+                "type": "Edm.Int32"
+              }
+            ],
+            "offsetEvidence": [
+              {
+                "originalOffset": 12,
+                "proposedNativeOffset": 16,
+                "sourceLength": 43,
+                "nativeLength": 47,
+                "originalCharacter": "-",
+                "nativeCharacter": "-",
+                "originalAtEnd": false,
+                "nativeAtEnd": false
+              }
+            ]
+          },
+          "requestSha256": "70821dba498dfca0907ed5e8ff76122b599e71ae1bd136b23e8e57bfa3fe7ebd",
+          "responseBodySha256": "3d3a41e213a3a3d1a8259a8213cb68ef30297496af682725a42a55e2c9a2cfaa",
+          "facts": {
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Unrecognized 'Edm.Double' literal '--10000000000000000000000000000' at '16' in 'pqwp_integer eq --10000000000000000000000000000'."
+          },
+          "originalSdkMessages": [
+            "Unrecognized 'Edm.Double' literal '--10000000000000000000000000000' at '12' in 'quantity eq --10000000000000000000000000000'.",
+            "Unrecognized 'Edm.Double' literal '--10000000000000000000000000000' at '12' in 'quantity eq --10000000000000000000000000000'."
+          ],
+          "adaptedSdkMessages": [
+            "Unrecognized 'Edm.Double' literal '--10000000000000000000000000000' at '16' in 'pqwp_integer eq --10000000000000000000000000000'.",
+            "Unrecognized 'Edm.Double' literal '--10000000000000000000000000000' at '16' in 'pqwp_integer eq --10000000000000000000000000000'."
+          ],
+          "predictedNativeMessage": "Unrecognized 'Edm.Double' literal '--10000000000000000000000000000' at '16' in 'pqwp_integer eq --10000000000000000000000000000'."
+        }
+      ]
+    },
+    {
+      "runSha256": "cf5576460747575b9f64e4fe596398ce3b952de9c2af33fb58b8d46950aeb2c3",
+      "provenanceSha256": "03685310ee4ea738cc3f9cc4c716d3000271ef8faa8168e1c9cf25d32beccb8f",
+      "metadataSha256": "801b3308cb09e01984e871387bb6382ef29dfac1d3ad8e6af808d8b17d354564",
+      "csdlSha256": "c72a388f700b5200c8de2556383a7b5b4db6e4ff29ff776e90b0fe7a67afa629",
+      "cases": [
+        {
+          "caseIndex": 44,
+          "sourceBinding": {
+            "option": "$filter",
+            "value": "quantity eq --1.2345678",
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Unrecognized 'Edm.Double' literal '--1.2345678' at '12' in 'quantity eq --1.2345678'."
+          },
+          "sourceRoles": {
+            "mappedOption": "$filter",
+            "mappedValue": "pqwp_integer eq --1.2345678",
+            "replacements": [
+              {
+                "original": "quantity",
+                "native": "pqwp_integer",
+                "start": 0,
+                "end": 8,
+                "type": "Edm.Int32"
+              }
+            ],
+            "offsetEvidence": [
+              {
+                "originalOffset": 12,
+                "proposedNativeOffset": 16,
+                "sourceLength": 23,
+                "nativeLength": 27,
+                "originalCharacter": "-",
+                "nativeCharacter": "-",
+                "originalAtEnd": false,
+                "nativeAtEnd": false
+              }
+            ]
+          },
+          "requestSha256": "9223c8f3b483e44f16396134db2e7ee2da74d0e9fc3147263c25be89f61f7c84",
+          "responseBodySha256": "cf5b6104056522080de4c79d274d27dc709707f0232765aaacf242dd3a843789",
+          "facts": {
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Unrecognized 'Edm.Double' literal '--1.2345678' at '16' in 'pqwp_integer eq --1.2345678'."
+          },
+          "originalSdkMessages": [
+            "Unrecognized 'Edm.Double' literal '--1.2345678' at '12' in 'quantity eq --1.2345678'.",
+            "Unrecognized 'Edm.Double' literal '--1.2345678' at '12' in 'quantity eq --1.2345678'."
+          ],
+          "adaptedSdkMessages": [
+            "Unrecognized 'Edm.Double' literal '--1.2345678' at '16' in 'pqwp_integer eq --1.2345678'.",
+            "Unrecognized 'Edm.Double' literal '--1.2345678' at '16' in 'pqwp_integer eq --1.2345678'."
+          ],
+          "predictedNativeMessage": "Unrecognized 'Edm.Double' literal '--1.2345678' at '16' in 'pqwp_integer eq --1.2345678'."
+        },
+        {
+          "caseIndex": 50,
+          "sourceBinding": {
+            "option": "$filter",
+            "value": "quantity eq --79228162514264337593543950335",
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Unrecognized 'Edm.Decimal' literal '--79228162514264337593543950335' at '12' in 'quantity eq --79228162514264337593543950335'."
+          },
+          "sourceRoles": {
+            "mappedOption": "$filter",
+            "mappedValue": "pqwp_integer eq --79228162514264337593543950335",
+            "replacements": [
+              {
+                "original": "quantity",
+                "native": "pqwp_integer",
+                "start": 0,
+                "end": 8,
+                "type": "Edm.Int32"
+              }
+            ],
+            "offsetEvidence": [
+              {
+                "originalOffset": 12,
+                "proposedNativeOffset": 16,
+                "sourceLength": 43,
+                "nativeLength": 47,
+                "originalCharacter": "-",
+                "nativeCharacter": "-",
+                "originalAtEnd": false,
+                "nativeAtEnd": false
+              }
+            ]
+          },
+          "requestSha256": "5d40b32e9a20ff9e84d94434a6149ec318f3cdb2380add151c11e68ca7d7c884",
+          "responseBodySha256": "7411995495a16ef73444531bdc0de4af48c266bd388afaeea4509793814f5dc3",
+          "facts": {
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Unrecognized 'Edm.Decimal' literal '--79228162514264337593543950335' at '16' in 'pqwp_integer eq --79228162514264337593543950335'."
+          },
+          "originalSdkMessages": [
+            "Unrecognized 'Edm.Decimal' literal '--79228162514264337593543950335' at '12' in 'quantity eq --79228162514264337593543950335'.",
+            "Unrecognized 'Edm.Decimal' literal '--79228162514264337593543950335' at '12' in 'quantity eq --79228162514264337593543950335'."
+          ],
+          "adaptedSdkMessages": [
+            "Unrecognized 'Edm.Decimal' literal '--79228162514264337593543950335' at '16' in 'pqwp_integer eq --79228162514264337593543950335'.",
+            "Unrecognized 'Edm.Decimal' literal '--79228162514264337593543950335' at '16' in 'pqwp_integer eq --79228162514264337593543950335'."
+          ],
+          "predictedNativeMessage": "Unrecognized 'Edm.Decimal' literal '--79228162514264337593543950335' at '16' in 'pqwp_integer eq --79228162514264337593543950335'."
+        },
+        {
+          "caseIndex": 54,
+          "sourceBinding": {
+            "option": "$filter",
+            "value": "quantity eq --10000000000000000000000000000",
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Unrecognized 'Edm.Double' literal '--10000000000000000000000000000' at '12' in 'quantity eq --10000000000000000000000000000'."
+          },
+          "sourceRoles": {
+            "mappedOption": "$filter",
+            "mappedValue": "pqwp_integer eq --10000000000000000000000000000",
+            "replacements": [
+              {
+                "original": "quantity",
+                "native": "pqwp_integer",
+                "start": 0,
+                "end": 8,
+                "type": "Edm.Int32"
+              }
+            ],
+            "offsetEvidence": [
+              {
+                "originalOffset": 12,
+                "proposedNativeOffset": 16,
+                "sourceLength": 43,
+                "nativeLength": 47,
+                "originalCharacter": "-",
+                "nativeCharacter": "-",
+                "originalAtEnd": false,
+                "nativeAtEnd": false
+              }
+            ]
+          },
+          "requestSha256": "70821dba498dfca0907ed5e8ff76122b599e71ae1bd136b23e8e57bfa3fe7ebd",
+          "responseBodySha256": "3d3a41e213a3a3d1a8259a8213cb68ef30297496af682725a42a55e2c9a2cfaa",
+          "facts": {
+            "status": 400,
+            "code": "0x80060888",
+            "message": "Unrecognized 'Edm.Double' literal '--10000000000000000000000000000' at '16' in 'pqwp_integer eq --10000000000000000000000000000'."
+          },
+          "originalSdkMessages": [
+            "Unrecognized 'Edm.Double' literal '--10000000000000000000000000000' at '12' in 'quantity eq --10000000000000000000000000000'.",
+            "Unrecognized 'Edm.Double' literal '--10000000000000000000000000000' at '12' in 'quantity eq --10000000000000000000000000000'."
+          ],
+          "adaptedSdkMessages": [
+            "Unrecognized 'Edm.Double' literal '--10000000000000000000000000000' at '16' in 'pqwp_integer eq --10000000000000000000000000000'.",
+            "Unrecognized 'Edm.Double' literal '--10000000000000000000000000000' at '16' in 'pqwp_integer eq --10000000000000000000000000000'."
+          ],
+          "predictedNativeMessage": "Unrecognized 'Edm.Double' literal '--10000000000000000000000000000' at '16' in 'pqwp_integer eq --10000000000000000000000000000'."
+        }
+      ]
+    }
+  ]
+}

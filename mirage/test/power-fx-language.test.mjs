@@ -1,5 +1,115 @@
-// @parity-evidence: Exact repeated official package case results and retained historical proof assertions are bound by the generated source and evidence guards.
+// @parity-evidence: Existing region assertions and exact reviewed proof bindings are preserved during cumulative qualification.
 // @test-kind unproven: local language and host conformance models; only independently qualified cases below are parity.
+import {
+  parityAssertions as __paqParityAssertions,
+  freezeParityDescriptor as __paqParityPartialFreeze,
+} from '../../scripts/qualify-parity.mjs';
+const __paqParityPartialShared = __paqParityPartialFreeze([
+  {
+    baselineId: 'mirage/test/power-fx-language.test.mjs:285:0',
+    repositoryRoot: '../..',
+    titleExpressionSha256: '45e6fb3ad624887ac543caf517bcd42c567d290629a5df8c901156bb83346a69',
+    originalAssertions: [
+      '1f9dbd835c1dab648db877be6616c09e01f9981d44bb6ea5fd126211c3303253',
+      '9e2265733fb3799aa6cee8dfca3f401143c46fd5c31b70a11241d3ea3aa989f7',
+      '47708213d94dbe35697528de3e42a30d97f32681f21ee0b0c847387051f03a4f',
+      '766698dc6f77c9709464bf844aa14e079fb9033a0fb96db891ebd0b319c413d1',
+    ],
+    originalBodyAstSha256: 'a9a0fecb6d3e6accf361e7641f3e8baa3b962a10506e1e9dca0ec9e51b4e2c5c',
+    originalGuardHashes: [],
+    moduleContextAstSha256: '11f05de6c50bca45b6bd4c68985dc16cc26c784cbc6e6e8988f38ef641146349',
+    isolationRegistrationsAstSha256: 'befad91f97320e5c622563e12d00f28f1d77878280bc82609e8f7a148747590b',
+    coexistingCaseGuardSha256: '9acffb20f5094f63f03bfe29b018480636ecd63c3655b8f6712ada39c3d664c4',
+    moduleReview: {
+      reviewedBy: '/root/powerfx_remediation',
+      reason: 'Preserve the validated existing case and DST proof guards while binding two exact scope assertions.',
+      corrections: [],
+      addedTests: [],
+      hostSlice: {
+        priorCaseGuardSha256: '9acffb20f5094f63f03bfe29b018480636ecd63c3655b8f6712ada39c3d664c4',
+        reviewedBy: '/root/powerfx_remediation',
+        reason: 'Preserve proven case guard and identical fixed-clock host closure.',
+        partialOnly: true,
+      },
+    },
+    importRoles: [
+      {
+        source: '../lib/power-fx.mjs',
+        role: 'implementation-under-test',
+        reviewedBy: '/root/powerfx_remediation',
+        reason: 'Power Fx runtime exercised by original formula; implementation remains mutable.',
+      },
+    ],
+    runtimeInputs: [],
+    generatedFixtures: [
+      {
+        baselineId: 'mirage/test/power-fx-language.test.mjs:285:0',
+        clockSha256: 'd1c67e4782f35c3d87b871c8d4d015d0e840faf7f05530ea00ed83a686ea6ac3',
+        hostSha256: 'd0361b7b1e4461148d5f0c56dee4fbeb162b0e3a89fa70bfddb76a8b7b24c3db',
+        runnerSha256: '9f824d7b40a27a4f9000f96a94019ed29a5f93631c6a441c7ca39e1ee72fdb86',
+        selectedBodySha256: 'a9a0fecb6d3e6accf361e7641f3e8baa3b962a10506e1e9dca0ec9e51b4e2c5c',
+      },
+    ],
+    inputDependencies: [],
+    sourceBindings: [
+      { name: 'run', initializerAstSha256: '9f824d7b40a27a4f9000f96a94019ed29a5f93631c6a441c7ca39e1ee72fdb86' },
+    ],
+    loopHeaders: [],
+    caseUniverse: {
+      count: 1,
+      cases: [
+        {
+          baselineId: 'mirage/test/power-fx-language.test.mjs:285:0',
+          title: 'scopes: ThisRecord, As, [@global] and Table[@field] disambiguation',
+        },
+      ],
+      casesSha256: '1c8eb8fc3ca25b960b839ae410d9302a638c252bc779b53734c739a146e24518',
+      sourceBindings: [
+        { name: 'run', initializerAstSha256: '9f824d7b40a27a4f9000f96a94019ed29a5f93631c6a441c7ca39e1ee72fdb86' },
+      ],
+      ancestorLoops: [],
+    },
+    proofs: [
+      {
+        path: 'mirage/test/fixtures/power-fx-batch-official-evidence.json',
+        sha256: '401327ef94098a0f50811c769e204fb2225768bda9edb27e8a4f150bb8690e5e',
+        mode: 'official-package',
+        capturePointers: ['/runs/0/receiptSha256', '/runs/1/receiptSha256'],
+        package: {
+          id: 'Microsoft.PowerFx.Interpreter',
+          version: '1.99.0.0',
+          versionKind: 'assembly',
+          sha256: 'f06ed03f9599741990e2db49bbb495b88b5655faab89d5a5017dbec9c75ac780',
+          artifactKind: 'Unmodified Microsoft assembly shipped in official PAC 2.13.1',
+          source: 'https://github.com/microsoft/Power-Fx',
+        },
+        packagePointer: '/package',
+        facts: [
+          {
+            id: 'assert-24735c1e0c0d8cfc7ef9',
+            pointer: '/runs/0/results/53',
+            sha256: '7739734dd4cf706f08765e9c13a611c5cc9d0a244b91b53f997c68a716382ced',
+            replicatedPointers: ['/runs/0/results/53', '/runs/1/results/53'],
+          },
+          {
+            id: 'assert-05d48bf9003dfe43e665',
+            pointer: '/runs/0/results/55',
+            sha256: '8303932f4969db99aff7021469bbb1877861dc1674c0341288e1810093fcb354',
+            replicatedPointers: ['/runs/0/results/55', '/runs/1/results/55'],
+          },
+        ],
+      },
+    ],
+    regionHashes: [
+      ['1f9dbd835c1dab648db877be6616c09e01f9981d44bb6ea5fd126211c3303253'],
+      ['47708213d94dbe35697528de3e42a30d97f32681f21ee0b0c847387051f03a4f'],
+    ],
+    regionFactIds: [[['assert-24735c1e0c0d8cfc7ef9']], [['assert-05d48bf9003dfe43e665']]],
+  },
+]);
+__paqParityBindings(import.meta.url, __paqParityPartialShared);
+
+// @parity-evidence: Exact repeated official package case results and retained historical proof assertions are bound by the generated source and evidence guards.
 import { parityCaseBindings as __paqParityCaseBindings } from '../../scripts/qualify-parity.mjs';
 __paqParityBindings(import.meta.url, [
   {
@@ -5243,16 +5353,26 @@ test('errors: a top-level error value throws 400 PowerFxError with its Learn Err
 
 test('scopes: ThisRecord, As, [@global] and Table[@field] disambiguation', () => {
   const values = { a: 10, T: [{ a: 1 }, { a: 2 }] };
-  assert.equal(run('Sum(Filter(T, a > 1), a)', hostOf(), values), 2);
+
+  {
+    __paqParityAssertions(import.meta.url, [__paqParityPartialShared[0]]);
+    assert.equal(run('Sum(Filter(T, a > 1), a)', hostOf(), values), 2);
+  }
+
   assert.equal(
     run('Sum(Filter(T, ThisRecord.a + [@a] > 11), a)', hostOf(), values),
     2,
     '[@a] reads the global past the record scope',
   );
-  assert.equal(
-    run('Concat(ForAll(T As Outer, Concat(Filter(T, a = Outer.a), Text(a))), Value)', hostOf(), values),
-    '12',
-  );
+
+  {
+    __paqParityAssertions(import.meta.url, [__paqParityPartialShared[0]]);
+    assert.equal(
+      run('Concat(ForAll(T As Outer, Concat(Filter(T, a = Outer.a), Text(a))), Value)', hostOf(), values),
+      '12',
+    );
+  }
+
   assert.equal(run('Sum(Filter(T, T[@a] = 2), a)', hostOf(), values), 2);
 });
 

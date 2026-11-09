@@ -1,0 +1,257 @@
+{
+  "version": 1,
+  "scope": "Derived exact SQL engine statement rows/error-number review; no TDS claim",
+  "baseline": "1171cccc8baed9218f7fd7689afae4abdc89252b",
+  "sourceReceiptSha256": "4bb933dd90703daf6a197fb517af021c0868f22e4922e612fa2d59a093c31532",
+  "helperAstSha256": {
+    "plain": "7ec54c68ab24ed7b69c933f644f4a0a100cf8490d047147a909a8a0183aa68b8",
+    "rowsOf": "b0fa7ee45c47abbdfd8ef358b17d0b1d61a0c580a73c7a7b3b543eaeb12b5d56",
+    "check": "026c7924eb36a9c67bdf121c6afd7b7324e174b19a88ddf086b5bb44d5e8c79a"
+  },
+  "review": {
+    "cases": [
+      {
+        "index": 0,
+        "originalId": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#0",
+        "tupleSha256": "4ac700f1e2913b7fc6b6f5f11853156cbd37d8d9ba0939e37db15edf840c2510",
+        "sql": "SELECT 7.0 / 2 AS d",
+        "expected": [
+          [
+            "3.500000"
+          ]
+        ],
+        "bounds": "Exact FROM-less statement result or SQL error number only; no TDS or unasserted result metadata."
+      },
+      {
+        "index": 1,
+        "originalId": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#1",
+        "tupleSha256": "38054cc0a5db6fbd7561a06f7cb4acd12f124ad2f268b561ba41bc00fa215eea",
+        "sql": "SELECT 1 / 3.0 AS d",
+        "expected": [
+          [
+            "0.333333"
+          ]
+        ],
+        "bounds": "Exact FROM-less statement result or SQL error number only; no TDS or unasserted result metadata."
+      },
+      {
+        "index": 2,
+        "originalId": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#2",
+        "tupleSha256": "d1372834705967dbc95f4c0328899213e391ccc7cc156cc581548c3163055eb3",
+        "sql": "SELECT 10 / 3.0 AS d",
+        "expected": [
+          [
+            "3.333333"
+          ]
+        ],
+        "bounds": "Exact FROM-less statement result or SQL error number only; no TDS or unasserted result metadata."
+      },
+      {
+        "index": 3,
+        "originalId": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#3",
+        "tupleSha256": "9a99c63e54f96372767763e5ad97bd20623cd34cf6c922302deca4846a425871",
+        "sql": "SELECT -7.0 / 2 AS d",
+        "expected": [
+          [
+            "-3.500000"
+          ]
+        ],
+        "bounds": "Exact FROM-less statement result or SQL error number only; no TDS or unasserted result metadata."
+      },
+      {
+        "index": 4,
+        "originalId": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#4",
+        "tupleSha256": "1a8809b74c48d48397f395592e3995703e420d79fe1d2200879de07123444c86",
+        "sql": "SELECT 7.0 * 2.5 AS d",
+        "expected": [
+          [
+            "17.50"
+          ]
+        ],
+        "bounds": "Exact FROM-less statement result or SQL error number only; no TDS or unasserted result metadata."
+      },
+      {
+        "index": 5,
+        "originalId": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#5",
+        "tupleSha256": "5a2d81f97251225ebccc662e7558259e59663fff93a0a23ac782218d624826c9",
+        "sql": "SELECT 7.5 - 0.25 AS d",
+        "expected": [
+          [
+            "7.25"
+          ]
+        ],
+        "bounds": "Exact FROM-less statement result or SQL error number only; no TDS or unasserted result metadata."
+      },
+      {
+        "index": 6,
+        "originalId": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#6",
+        "tupleSha256": "050dd32531c0d0c4560ae55c02e9029972b6aafa63a7e552f25fbe96bc9bd8ec",
+        "sql": "SELECT 7 % 3.0 AS d",
+        "expected": [
+          [
+            "1.0"
+          ]
+        ],
+        "bounds": "Exact FROM-less statement result or SQL error number only; no TDS or unasserted result metadata."
+      },
+      {
+        "index": 7,
+        "originalId": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#7",
+        "tupleSha256": "6814b541f3cc55cd9ab35f6446fb47024af91a59a1fbfc1b812066ec703ad938",
+        "sql": "SELECT 7.0E0 / 2 AS d",
+        "expected": [
+          [
+            3.5
+          ]
+        ],
+        "bounds": "Exact FROM-less statement result or SQL error number only; no TDS or unasserted result metadata."
+      },
+      {
+        "index": 8,
+        "originalId": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#8",
+        "tupleSha256": "f780b1fdd5ffd16979164094277c8e77ba39b98595d6755f1c45659f801e1f82",
+        "sql": "SELECT CAST(1 AS float) / 4 AS d",
+        "expected": [
+          [
+            0.25
+          ]
+        ],
+        "bounds": "Exact FROM-less statement result or SQL error number only; no TDS or unasserted result metadata."
+      },
+      {
+        "index": 10,
+        "originalId": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#10",
+        "tupleSha256": "0a484fd542d73825c0bbfdf0e3d4e87301d3dfca723034e09776f2cd8c73f0a2",
+        "sql": "SELECT 2147483647 + 1 AS d",
+        "expected": {
+          "error": 8115
+        },
+        "bounds": "Exact FROM-less statement result or SQL error number only; no TDS or unasserted result metadata."
+      },
+      {
+        "index": 13,
+        "originalId": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#13",
+        "tupleSha256": "78c46de8cd58cf450a309f4b02f66668a24f38faa174640016d873417926bda8",
+        "sql": "SELECT CAST('99999999999999999999999999999999999999' AS decimal(38,0)) * 10 AS d",
+        "expected": {
+          "error": 8115
+        },
+        "bounds": "Exact FROM-less statement result or SQL error number only; no TDS or unasserted result metadata."
+      },
+      {
+        "index": 14,
+        "originalId": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#14",
+        "tupleSha256": "e570432d2ad51b82e0ebf8a0489fb464a362aa5b094955098a668ab9d03c5621",
+        "sql": "SELECT 1.0 / 0 AS d",
+        "expected": {
+          "error": 8134
+        },
+        "bounds": "Exact FROM-less statement result or SQL error number only; no TDS or unasserted result metadata."
+      },
+      {
+        "index": 15,
+        "originalId": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#15",
+        "tupleSha256": "68d69b7b0c9cd58d4a810330ab7576516878b224309b06b71b82574bb4670109",
+        "sql": "SELECT '5' + 1 AS d",
+        "expected": [
+          [
+            6
+          ]
+        ],
+        "bounds": "Exact FROM-less statement result or SQL error number only; no TDS or unasserted result metadata."
+      },
+      {
+        "index": 16,
+        "originalId": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#16",
+        "tupleSha256": "9bd678d6cf2b571492a8a1324e22420ec580c38380d6d85d071ddc46510d65d7",
+        "sql": "SELECT 'x' + 1 AS d",
+        "expected": {
+          "error": 245
+        },
+        "bounds": "Exact FROM-less statement result or SQL error number only; no TDS or unasserted result metadata."
+      },
+      {
+        "index": 17,
+        "originalId": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#17",
+        "tupleSha256": "7884093fdd0f62869d42f7c600887daa22c30ba06348eb1dc79b558688805513",
+        "sql": "SELECT '2.5' * 2 AS d",
+        "expected": {
+          "error": 245
+        },
+        "bounds": "Exact FROM-less statement result or SQL error number only; no TDS or unasserted result metadata."
+      },
+      {
+        "index": 18,
+        "originalId": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#18",
+        "tupleSha256": "4bbf6c53aa124b4d9a1ff55d1411e5e0c4aeb959c69b6d04d7b7d07337eee27b",
+        "sql": "SELECT '2.5' * 2.0 AS d",
+        "expected": [
+          [
+            "5.00"
+          ]
+        ],
+        "bounds": "Exact FROM-less statement result or SQL error number only; no TDS or unasserted result metadata."
+      },
+      {
+        "index": 30,
+        "originalId": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#30",
+        "tupleSha256": "eb3f516b4363952f1e6f646a3f7af0f653d6ea6f0cf80014171141366a976c46",
+        "sql": "SELECT 1 AS d WHERE 1 + 1",
+        "expected": {
+          "error": 4145
+        },
+        "bounds": "Exact FROM-less statement result or SQL error number only; no TDS or unasserted result metadata."
+      },
+      {
+        "index": 31,
+        "originalId": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#31",
+        "tupleSha256": "9fec6728d9825c714973fd59d4c823dcd9117f58200b8e33980f6356e3586078",
+        "sql": "SELECT CASE WHEN 1 THEN 'y' END AS d",
+        "expected": {
+          "error": 4145
+        },
+        "bounds": "Exact FROM-less statement result or SQL error number only; no TDS or unasserted result metadata."
+      },
+      {
+        "index": 34,
+        "originalId": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#34",
+        "tupleSha256": "3d40f1841f2bca1f05742fbd7de60b5e8b0e79af3bc382676c34711eae5827ec",
+        "sql": "SELECT 1 AS d WHERE 1 = 1",
+        "expected": [
+          [
+            1
+          ]
+        ],
+        "bounds": "Exact FROM-less statement result or SQL error number only; no TDS or unasserted result metadata."
+      },
+      {
+        "index": 42,
+        "originalId": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#42",
+        "tupleSha256": "5706e65360e9fa13e39faa777fbbfd285e851da3858ff6bd75acb478fa00d953",
+        "sql": "SELECT CAST(0xFFFFFFFF AS int) AS d",
+        "expected": [
+          [
+            -1
+          ]
+        ],
+        "bounds": "Exact FROM-less statement result or SQL error number only; no TDS or unasserted result metadata."
+      },
+      {
+        "index": 43,
+        "originalId": "mirage/test/dataverse-tds-sql-eval.test.mjs:613:2#43",
+        "tupleSha256": "e56afa554456ec707f74998f862ff15fb8f0d8cdad51ec6d896452fdb64bdbde",
+        "sql": "SELECT CAST(0x1 AS int) AS d",
+        "expected": [
+          [
+            1
+          ]
+        ],
+        "bounds": "Exact FROM-less statement result or SQL error number only; no TDS or unasserted result metadata."
+      }
+    ],
+    "holds": [
+      "Existing shared async check/rowsOf helper and full 52-case universe require a source-bound guard.",
+      "No general decimal/float serialization, SQL metadata or Dataverse TDS claim."
+    ]
+  }
+}

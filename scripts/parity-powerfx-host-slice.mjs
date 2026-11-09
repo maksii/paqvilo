@@ -27,6 +27,23 @@ const expected = {
   hostOf: 'd0361b7b1e4461148d5f0c56dee4fbeb162b0e3a89fa70bfddb76a8b7b24c3db',
   run: '9f824d7b40a27a4f9000f96a94019ed29a5f93631c6a441c7ca39e1ee72fdb86',
 };
+function scopeFixture(cb, row, vars) {
+  const scopeBody = 'a9a0fecb6d3e6accf361e7641f3e8baa3b962a10506e1e9dca0ec9e51b4e2c5c';
+  if (cb.async || cb.generator || cb.params.length !== 0 || hash(cb.body) !== scopeBody) return null;
+  return {
+    ...empty(),
+    fixtures: [
+      {
+        baselineId: row.id,
+        clockSha256: hash(vars.get('NOW').defs[0].node.init),
+        hostSha256: hash(vars.get('hostOf').defs[0].node.init),
+        runnerSha256: hash(vars.get('run').defs[0].node.init),
+        selectedBodySha256: scopeBody,
+      },
+    ],
+    requiresAllRegistrations: true,
+  };
+}
 export function analyzePowerFxHostSlice({ ast, selected, implementationSources = [] }) {
   try {
     check(selected.length === 1);
@@ -175,6 +192,10 @@ export function analyzePowerFxHostSlice({ ast, selected, implementationSources =
     const row = selected[0].old,
       cb = row.callback,
       body = cb.body?.body;
+    // This exact original callback fixes the values record, all four assertions and
+    // their host calls. Only its independently evidenced assertion regions qualify.
+    const scope = scopeFixture(cb, row, vars);
+    if (scope) return scope;
     check(!cb.async && !cb.generator && cb.params.length === 0 && body?.length === 3);
     const dec = body[0];
     check(dec.type === 'VariableDeclaration' && dec.kind === 'const' && dec.declarations.length === 1);

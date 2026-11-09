@@ -1,3 +1,5 @@
+// @parity-evidence: Two independent official Microsoft.Xrm.Sdk DataContractSerializer processes establish the exact namespace URI assertions for the same EntityReference and OrganizationServiceFault inputs.
+// @parity-evidence: Reproduced official SDK results and every previously protected SOAP assertion and proof remain bound by the cumulative guard.
 // @test-kind compatibility: documented Organization service SOAP/DataContract wire formats (namespaces, member order, faults) from Microsoft SDK docs and samples
 import {
   assertAssertionLoopValue as __paqSoapValue,
@@ -5,7 +7,6 @@ import {
   assertAssertionTailXml as __paqSoapTail,
 } from '../../scripts/parity-assertion-loop.mjs';
 import { assertSoapParityBindings as __paqSoapBindings } from '../../scripts/qualify-parity.mjs';
-// @parity-evidence: Microsoft.CrmSdk.CoreAssemblies 9.0.2.60 writes and reads the corrected held Entity related-graph XML; the 44 previously selected assertion inputs and bindings are unchanged.
 const __paqSoapDescriptor = {
   version: 1,
   sourceBinding: 'VALUES',
@@ -473,8 +474,8 @@ const __paqSoapDescriptor = {
     '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:a="http://schemas.microsoft.com/xrm/2011/Contracts" xmlns:svc="http://schemas.microsoft.com/xrm/2011/Contracts/Services" xmlns:g="http://schemas.microsoft.com/crm/2011/Contracts" xmlns:l="http://schemas.microsoft.com/xrm/2012/Contracts" xmlns:o="http://schemas.microsoft.com/xrm/7.1/Contracts" xmlns:x9="http://schemas.microsoft.com/xrm/9.0/Contracts" xmlns:x14="http://schemas.microsoft.com/xrm/2014/Contracts" xmlns:b="http://schemas.datacontract.org/2004/07/System.Collections.Generic" xmlns:c="http://www.w3.org/2001/XMLSchema" xmlns:e="http://schemas.microsoft.com/2003/10/Serialization/" xmlns:f="http://schemas.microsoft.com/2003/10/Serialization/Arrays" xmlns:i="http://www.w3.org/2001/XMLSchema-instance"><s:Body><v i:nil="true"/></s:Body></s:Envelope>',
     '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:a="http://schemas.microsoft.com/xrm/2011/Contracts" xmlns:svc="http://schemas.microsoft.com/xrm/2011/Contracts/Services" xmlns:g="http://schemas.microsoft.com/crm/2011/Contracts" xmlns:l="http://schemas.microsoft.com/xrm/2012/Contracts" xmlns:o="http://schemas.microsoft.com/xrm/7.1/Contracts" xmlns:x9="http://schemas.microsoft.com/xrm/9.0/Contracts" xmlns:x14="http://schemas.microsoft.com/xrm/2014/Contracts" xmlns:b="http://schemas.datacontract.org/2004/07/System.Collections.Generic" xmlns:c="http://www.w3.org/2001/XMLSchema" xmlns:e="http://schemas.microsoft.com/2003/10/Serialization/" xmlns:f="http://schemas.microsoft.com/2003/10/Serialization/Arrays" xmlns:i="http://www.w3.org/2001/XMLSchema-instance"><s:Body><v i:type="c:string">plain</v></s:Body></s:Envelope>',
   ],
-  selectedIndices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23],
-  heldIndices: [11, 12, 20, 24, 25, 26],
+  selectedIndices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 25],
+  heldIndices: [11, 12, 20, 24, 26],
   assertionAstSha256: [
     '7ef0fc7a9a28a551a9c0787eca59ba24ad53ba8b3ad0d90d436dc9f31c8995fb',
     'b13ec193c1930d0c9cd50d050e117d383fb4ece610c83c89736f79ec47d7a8e4',
@@ -779,6 +780,20 @@ const __paqSoapDescriptor = {
       factIds: ['soap-fact-41'],
     },
     {
+      originalValueIndex: 25,
+      assertionAstSha256: '7ef0fc7a9a28a551a9c0787eca59ba24ad53ba8b3ad0d90d436dc9f31c8995fb',
+      variant: 'direct',
+      caseIndex: 25,
+      factIds: ['soap-fact-44'],
+    },
+    {
+      originalValueIndex: 25,
+      assertionAstSha256: 'b13ec193c1930d0c9cd50d050e117d383fb4ece610c83c89736f79ec47d7a8e4',
+      variant: 'renamed',
+      caseIndex: 25,
+      factIds: ['soap-fact-45'],
+    },
+    {
       originalValueIndex: null,
       assertionAstSha256: '1c0606e6798c78454971a454feac0d38bb31f1608cc9729f6a9d641ce800ee70',
       variant: 'direct',
@@ -798,8 +813,8 @@ __paqSoapBindings(import.meta.url, [
   {
     kind: 'soap-assertion-loop-v1',
     repositoryRoot: '../..',
-    sourceAstSha256: 'cf8d84ca0604eb81f5aa265eea758d5aa50b2c7cbe8c633749d10e70ca8b7265',
-    loopDescriptorSha256: '818167d310e034e245d69c1b8e71e2f5224b319c8710b4e3a5a978896c977fab',
+    sourceAstSha256: 'd72a55685a82aa1ace8e4b0b535a1d64b3f14d9ebad71a227c73452a3a0496d3',
+    loopDescriptorSha256: '28ecc84cabacb8970bc911f9383e95304758e58c2037e76ef6e76e6d306b2754',
     helperSha256: 'cce389a6db4c1cf9d57683cba2bfd9fd82e50f0a27f80f2d2420a25f11b075a7',
     proofs: [
       {
@@ -1083,9 +1098,93 @@ __paqSoapBindings(import.meta.url, [
           },
         ],
       },
+      {
+        path: 'mirage/test/fixtures/dataverse-soap-sdk-interop-46-candidate.json',
+        sha256: '39bf05aaa833e7ab069421550354748bae1a78a8e639048b3521b3a2345f8645',
+        mode: 'official-package',
+        capturePointers: ['/runs/0/rawSha256', '/runs/1/rawSha256'],
+        package: {
+          id: 'Microsoft.CrmSdk.CoreAssemblies',
+          version: '9.0.2.60',
+          sha256: '59650574cdc89c1f506fabd7275fe6325a59a8bae9fa9f92c5b5c2cbe31d5e1f',
+          source:
+            'https://api.nuget.org/v3-flatcontainer/microsoft.crmsdk.coreassemblies/9.0.2.60/microsoft.crmsdk.coreassemblies.9.0.2.60.nupkg',
+          signatureVerified: false,
+        },
+        packagePointer: '/package',
+        facts: [
+          {
+            id: 'soap-fact-44',
+            pointer: '/runs/0/results/25/direct',
+            sha256: '28101968a0d8300e8c320b669d9172e0bece090b6e0db90fb1a6356b37785f87',
+            replicatedPointers: ['/runs/0/results/25/direct', '/runs/1/results/25/direct'],
+          },
+          {
+            id: 'soap-fact-45',
+            pointer: '/runs/0/results/25/renamed',
+            sha256: '28101968a0d8300e8c320b669d9172e0bece090b6e0db90fb1a6356b37785f87',
+            replicatedPointers: ['/runs/0/results/25/renamed', '/runs/1/results/25/renamed'],
+          },
+        ],
+      },
+      {
+        path: 'mirage/test/fixtures/dataverse-soap-sdk-namespaces-20261109.json',
+        sha256: '7318e8dd833cc842738f49b40aede8b7f5236a9bd37490ae3b13b88206ca45b6',
+        mode: 'official-package',
+        package: {
+          id: 'Microsoft.CrmSdk.CoreAssemblies',
+          version: '9.0.2.60',
+          source:
+            'https://api.nuget.org/v3-flatcontainer/microsoft.crmsdk.coreassemblies/9.0.2.60/microsoft.crmsdk.coreassemblies.9.0.2.60.nupkg',
+          sha256: '59650574cdc89c1f506fabd7275fe6325a59a8bae9fa9f92c5b5c2cbe31d5e1f',
+          signatureVerified: false,
+        },
+        packagePointer: '/package',
+        capturePointers: ['/runs/0/rawSha256', '/runs/1/rawSha256'],
+        facts: [
+          {
+            id: 'sdk-namespace-0',
+            pointer: '/runs/0/facts/0/namespace',
+            sha256: '3e6f50f8a33461976eed3a262b75f601e1fbf6447efa58292ec64db4db8b56ea',
+            replicatedPointers: ['/runs/0/facts/0/namespace', '/runs/1/facts/0/namespace'],
+          },
+          {
+            id: 'sdk-namespace-1',
+            pointer: '/runs/0/facts/1/namespace',
+            sha256: '8a86fb7ff6b66a7d30f468dab5ccb6c31e63312efa28ac5f6b388362d2db8fe3',
+            replicatedPointers: ['/runs/0/facts/1/namespace', '/runs/1/facts/1/namespace'],
+          },
+        ],
+      },
+    ],
+    namespaceRegions: [
+      {
+        baselineId: 'mirage/test/dataverse-soap-xml.test.mjs:373:0',
+        baselineCommit: '1171cccc8baed9218f7fd7689afae4abdc89252b',
+        baselineSourceSha256: 'f9714a545510a9a6eeec463c04d866cbd42015f8acafef5f48e5f0f4c32440cf',
+        titleExpressionSha256: 'e26030c0abbee5be6f3ea4def890ad49bdcc0bfdd3ea0027bb2b8d86978c8bcb',
+        originalBodyAstSha256: '4c89f56be7a894fe060c8e56595f7d493e1d68e6c73b60c1f783ef658e5a01c3',
+        assertionSha256: '2df51c4149a6ac649b74ca40f5905e489942cabde557dd836378c0d09d7b1c4d',
+        factId: 'sdk-namespace-0',
+        namespace: 'http://schemas.microsoft.com/xrm/7.1/Contracts',
+      },
+      {
+        baselineId: 'mirage/test/dataverse-soap-xml.test.mjs:386:0',
+        baselineCommit: '1171cccc8baed9218f7fd7689afae4abdc89252b',
+        baselineSourceSha256: 'f9714a545510a9a6eeec463c04d866cbd42015f8acafef5f48e5f0f4c32440cf',
+        titleExpressionSha256: '03dba7815e2631315d7904e13da519e0dde0e90cb2bc8bd94c8d7531819cd26e',
+        originalBodyAstSha256: 'ae16a6b15bf509736b1ca6eab69bf8c914304c4bd11267b8a52dde70633a8170',
+        assertionSha256: 'cf06fb5fed196f64bc9abc4407f53ad6d68938b6ea23274a79798e857db8caf1',
+        factId: 'sdk-namespace-1',
+        namespace: 'http://schemas.microsoft.com/xrm/2011/Contracts',
+      },
     ],
   },
 ]);
+import { assertSoapNamespaceProof as __paqSoapNamespaceProof } from '../../scripts/qualify-parity.mjs';
+
+// @parity-evidence: Microsoft.CrmSdk.CoreAssemblies 9.0.2.60 writes and reads the corrected held Entity related-graph XML; the 44 previously selected assertion inputs and bindings are unchanged.
+
 // Dataverse SOAP XML codec: namespace-aware parsing, value round trips, envelopes, faults.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -1226,10 +1325,12 @@ test('every value type round-trips with canonical and arbitrary prefixes', () =>
   for (const value of VALUES) {
     const xml = envelope(encodeValue('v', value));
     __paqSoapValue(VALUES, __paqSoapIndex++, value, xml, __paqSoapDescriptor);
+
     assert.deepStrictEqual(decodeFrom(xml), value, `direct ${value.type}`);
     assert.deepStrictEqual(decodeFrom(renamed(xml)), value, `renamed ${value.type}`);
   }
   __paqSoapComplete(__paqSoapIndex, __paqSoapDescriptor);
+
   assert.equal(decodeFrom(__paqSoapTail(envelope(encodeValue('v', null)), 0, __paqSoapDescriptor)), null);
   assert.deepStrictEqual(
     decodeFrom(__paqSoapTail(envelope(encodeValue('v', 'plain')), 1, __paqSoapDescriptor)),
@@ -1473,7 +1574,10 @@ test('KeyAttributes items are in the xrm/7.1 namespace (KeyAttributeCollection)'
   });
   assert.ok(xml.includes('<a:KeyAttributes><o:KeyValuePairOfstringanyType><b:key>code</b:key>'), xml);
   const item = byName(byName(encodedNode(xml), 'KeyAttributes'), 'KeyValuePairOfstringanyType');
-  assert.equal(item.ns, 'http://schemas.microsoft.com/xrm/7.1/Contracts');
+  {
+    __paqSoapNamespaceProof(import.meta.url, 'sdk-namespace-0');
+    assert.equal(item.ns, 'http://schemas.microsoft.com/xrm/7.1/Contracts');
+  }
 });
 
 test('ErrorDetails items are KeyValuePairOfstringanyType in the xrm/2011 namespace', () => {
@@ -1493,7 +1597,10 @@ test('ErrorDetails items are KeyValuePairOfstringanyType in the xrm/2011 namespa
     byName(byName(parseEnvelope(xml).request, 'detail'), 'OrganizationServiceFault'),
     'ErrorDetails',
   );
-  assert.equal(details.children[0].ns, 'http://schemas.microsoft.com/xrm/2011/Contracts');
+  {
+    __paqSoapNamespaceProof(import.meta.url, 'sdk-namespace-1');
+    assert.equal(details.children[0].ns, 'http://schemas.microsoft.com/xrm/2011/Contracts');
+  }
 });
 
 test('untyped a:Value decodes OptionSetValue and its collection as int, and Money as text (SDK wire)', () => {

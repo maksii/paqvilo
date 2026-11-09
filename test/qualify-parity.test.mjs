@@ -3374,3 +3374,105 @@ test('shared case descriptor freezes all values and rejects aliases, shadowing a
   fs.writeFileSync(file, legacy);
   assertParityBindings(pathToFileURL(file), bindings);
 });
+test('shared partial descriptors bind each ordered region and retain immutable proof checks', async (t) => {
+  const text = source.replace('  assert.equal(1, 1);', '  assert.equal(1, 1);\n  assert.equal(2, 2);');
+  const f = partial(fixture(t, text), [[0], [1]]);
+  f.manifest.files[0].sharedPartialDescriptors = true;
+  const report = f.run();
+  assert.deepEqual(report.pending, []);
+  writeParityQualification(report, { root: f.root });
+  const file = path.join(f.root, 'sample.test.mjs');
+  const written = fs.readFileSync(file, 'utf8');
+  assert.match(written, /__paqParityPartialShared\[0\]/);
+  assertParityBindings(pathToFileURL(file), report.changes[0].bindings);
+  const { spawnSync } = await import('node:child_process');
+  const execution = spawnSync(process.execPath, ['--test', file], { encoding: 'utf8' });
+  assert.equal(execution.status, 0, execution.stdout + execution.stderr);
+  f.updateCurrent(written);
+  const rerun = f.run();
+  assert.deepEqual(rerun.pending, []);
+  assert.equal(rerun.changes.length, 0);
+  const tampered = [
+    written.replace('__paqParityPartialShared[0]', '__paqParityPartialShared[1]'),
+    written.replace('__paqParityPartialShared[0]', '__paqParityPartialShared[0 + 0]'),
+    written.replace('__paqParityPartialShared[0]', '__paqParityPartialShared.at(0)'),
+    written.replace('assert.equal(1, 1)', 'assert.equal(1, 2)'),
+    written
+      .replace('assert.equal(1, 1)', 'TEMP_ASSERTION')
+      .replace('assert.equal(2, 2)', 'assert.equal(1, 1)')
+      .replace('TEMP_ASSERTION', 'assert.equal(2, 2)'),
+    written.replace('const __paqParityPartialShared', 'let __paqParityPartialShared'),
+    written.replace(
+      'const __paqParityPartialShared',
+      'const leak = __paqParityPartialShared;\nconst __paqParityPartialShared',
+    ),
+    written.replace(
+      '__paqParityBindings(import.meta.url, __paqParityPartialShared);',
+      '__paqParityBindings(import.meta.url, __paqParityPartialShared);\nconst alias = __paqParityPartialShared;',
+    ),
+    written.replace("test('example', () => {", "test('example', () => { const __paqParityPartialShared = [];"),
+    written.replace('__paqParityBindings(import.meta.url, __paqParityPartialShared);', '') +
+      '\n__paqParityBindings(import.meta.url, __paqParityPartialShared);\n',
+  ];
+  for (const [index, changed] of tampered.entries()) {
+    assert.notEqual(changed, written, `tamper ${index} must change source`);
+    const tags = parseTestKinds(changed);
+    assert.ok(
+      tags.errors.length ||
+        tags.regions.some((region) => region.start === 1 && region.end === changed.split(/\r?\n/u).length),
+    );
+    fs.writeFileSync(file, changed);
+    assert.throws(
+      () => assertParityBindings(pathToFileURL(file), report.changes[0].bindings),
+      undefined,
+      `tamper ${index}`,
+    );
+  }
+  fs.writeFileSync(file, written);
+  const proof = fs.readFileSync(f.proofFile, 'utf8');
+  const stat = fs.statSync(f.proofFile);
+  const changedProof = proof.replaceAll('200', '201');
+  assert.notEqual(changedProof, proof);
+  assert.equal(Buffer.byteLength(changedProof), Buffer.byteLength(proof));
+  fs.writeFileSync(f.proofFile, changedProof);
+  fs.utimesSync(f.proofFile, stat.atime, stat.mtime);
+  assert.throws(() => assertParityBindings(pathToFileURL(file), report.changes[0].bindings));
+});
+
+test('shared partial descriptors cannot be swapped across original registrations', (t) => {
+  const text = `${source}\ntest('another', () => { assert.equal(2, 2); });\n`;
+  const f = partial(fixture(t, text), [[0]]);
+  const model = describeParitySource(text, 'sample.test.mjs');
+  const other = model.registrations[1];
+  const second = structuredClone(f.manifest.files[0].guarantees[0]);
+  second.id = 'another-invented-status';
+  second.tests[0].baselineId = other.id;
+  second.tests[0].titleExpressionSha256 = other.titleExpressionSha256;
+  second.tests[0].regions = [{ assertions: [{ sha256: other.assertions[0].sha256, factIds: ['status'] }] }];
+  second.tests[0].caseUniverse.cases = ['another'];
+  second.tests[0].caseUniverse.casesSha256 = hashJson(['another']);
+  f.manifest.files[0].guarantees.push(second);
+  f.manifest.files[0].sharedPartialDescriptors = true;
+  const report = f.run();
+  assert.deepEqual(report.pending, []);
+  writeParityQualification(report, { root: f.root });
+  const file = path.join(f.root, 'sample.test.mjs');
+  const written = fs.readFileSync(file, 'utf8');
+  assertParityBindings(pathToFileURL(file), report.changes[0].bindings);
+  for (const changed of [
+    written.replace('__paqParityPartialShared[0]', '__paqParityPartialShared[1]'),
+    written.replace('__paqParityPartialShared[1]', '__paqParityPartialShared[0]'),
+    written.replace(
+      'const __paqParityPartialShared',
+      'const __paqParityPartialShared = [];\nconst __paqParityPartialShared',
+    ),
+    written.replace(
+      '__paqParityBindings(import.meta.url, __paqParityPartialShared);',
+      '__paqParityBindings(import.meta.url, __paqParityPartialShared);\n__paqParityPartialShared[0].proofs = [];',
+    ),
+  ]) {
+    assert.notEqual(changed, written);
+    fs.writeFileSync(file, changed);
+    assert.throws(() => assertParityBindings(pathToFileURL(file), report.changes[0].bindings));
+  }
+});

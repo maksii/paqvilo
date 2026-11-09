@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "scope": "Derived SQL Server fixed binary64 inputs and outputs review; no general numeric adapter or Dataverse TDS claim",
+  "baseline": "1171cccc8baed9218f7fd7689afae4abdc89252b",
+  "sourceReceiptSha256": "5a47270e3872380ae86e2b56fade3e90cf49464d96ee1d8603d0135a7854283c",
+  "review": {
+    "cases": [
+      {
+        "index": 116,
+        "originalId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#116",
+        "classification": "unchanged-baseline-tuple",
+        "sourceTupleSha256": "79a46b43c04a73d4372a92b4be57142ad3929edd88a053010731088114705e95",
+        "currentTupleSha256": "79a46b43c04a73d4372a92b4be57142ad3929edd88a053010731088114705e95",
+        "sql": "SELECT CEILING(CAST(N'-1.5' AS float)) AS [value]",
+        "bounds": "Input signed 1.5 or 2.5 exactly representable in binary64; exact captured output bits equal JS expected, no general float conversion/rounding guarantee."
+      },
+      {
+        "index": 117,
+        "originalId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#117",
+        "classification": "unchanged-baseline-tuple",
+        "sourceTupleSha256": "ca78ba2b18f2734181009f3f0f7058c8635ce77800b3c7a94271ddea1ee72ca3",
+        "currentTupleSha256": "ca78ba2b18f2734181009f3f0f7058c8635ce77800b3c7a94271ddea1ee72ca3",
+        "sql": "SELECT FLOOR(CAST(N'1.5' AS float)) AS [value]",
+        "bounds": "Input signed 1.5 or 2.5 exactly representable in binary64; exact captured output bits equal JS expected, no general float conversion/rounding guarantee."
+      },
+      {
+        "index": 129,
+        "originalId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#129",
+        "classification": "unchanged-baseline-tuple",
+        "sourceTupleSha256": "795184fb9043404b6fe54f4cb3029dd4855d81e12e7769da2e356d75b83f01c0",
+        "currentTupleSha256": "795184fb9043404b6fe54f4cb3029dd4855d81e12e7769da2e356d75b83f01c0",
+        "sql": "SELECT ROUND(CAST(N'2.5' AS float), CAST(0 AS int)) AS [value]",
+        "bounds": "Input signed 1.5 or 2.5 exactly representable in binary64; exact captured output bits equal JS expected, no general float conversion/rounding guarantee."
+      },
+      {
+        "index": 130,
+        "originalId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#130",
+        "classification": "unchanged-baseline-tuple",
+        "sourceTupleSha256": "4c4e76f414355fa2707c71f2f4b2005ee81fdb6c9294aa8b3b8f2a219712d56e",
+        "currentTupleSha256": "4c4e76f414355fa2707c71f2f4b2005ee81fdb6c9294aa8b3b8f2a219712d56e",
+        "sql": "SELECT ROUND(CAST(N'-2.5' AS float), CAST(0 AS int)) AS [value]",
+        "bounds": "Input signed 1.5 or 2.5 exactly representable in binary64; exact captured output bits equal JS expected, no general float conversion/rounding guarantee."
+      },
+      {
+        "index": 139,
+        "originalId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#139",
+        "classification": "unchanged-baseline-tuple",
+        "sourceTupleSha256": "7d106ffd625ab5ede008b23ab216297a3292fcdd2597242d313f675f1d8e6844",
+        "currentTupleSha256": "7d106ffd625ab5ede008b23ab216297a3292fcdd2597242d313f675f1d8e6844",
+        "sql": "SELECT PI() AS [value]",
+        "bounds": "Exact captured binary64 equals JS Math.PI bits; no general transcendental equivalence."
+      }
+    ],
+    "holds": [
+      "Exact binary-representable fixed inputs and captured IEEE 754 output bits only.",
+      "No general rounding, numeric adapter, or Dataverse TDS behavior is established."
+    ]
+  }
+}
