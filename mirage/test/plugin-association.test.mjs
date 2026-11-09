@@ -742,7 +742,15 @@ public sealed class Observer:IPlugin {public void Execute(IServiceProvider servi
         },
         timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
       });
-      runtimes.set(id, retypeClrRuntime(prepared, { typeName: step.typeName }));
+      // A CLR deadline includes the plug-ins its SDK calls start: the Driver's three relationship calls run six
+      // Observer invocations, each possibly on a cold host (budgeted per call graph, as in plugin-sdk-create-id).
+      runtimes.set(
+        id,
+        retypeClrRuntime(prepared, {
+          typeName: step.typeName,
+          timeoutMs: ORDINARY_CLR_TIMEOUT_MS * (type === 'Driver' ? 7 : 1),
+        }),
+      );
     };
     await add('Driver', 'widget', 'Create', 20);
     for (const operation of ['Associate', 'Disassociate'])

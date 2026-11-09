@@ -35,7 +35,24 @@ export function captureCdpUrl(value) {
 const removeProfile = (directory) =>
   fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 
-/** An anonymous headless guest browser with a loopback CDP port; close() removes its owned temporary profile. */
+/** Launch options of the anonymous capture browser. */
+function captureLaunchOptions(channel, port, platform = process.platform) {
+  const options = windowsLaunchOptions(
+    {
+      headless: true,
+      ...(channel !== 'chromium' ? { channel } : {}),
+      args: [`--remote-debugging-port=${port}`],
+    },
+    platform,
+  );
+  // On Windows, Edge signs a new profile into the Windows Microsoft account ("implicit sign-in") and adds that
+  // account's msn.com/bing.com cookies within seconds. The capture profile must stay anonymous. The feature
+  // joins the one --disable-features switch (args[0]) so the backported defaults stay in effect.
+  if (platform === 'win32') options.args[0] += ',msImplicitSignin';
+  return options;
+}
+
+/** An anonymous headless browser with a loopback CDP port; close() removes its owned temporary profile. */
 export async function launchCaptureBrowser(channel) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-shell-'));
   let context;
@@ -44,15 +61,7 @@ export async function launchCaptureBrowser(channel) {
     await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
     const port = probe.address().port;
     await new Promise((resolve) => probe.close(resolve));
-    context = await chromium.launchPersistentContext(
-      directory,
-      windowsLaunchOptions({
-        headless: true,
-        ...(channel !== 'chromium' ? { channel } : {}),
-        // Guest mode prevents Edge's OS-backed profile sign-in in this explicitly anonymous, owned browser.
-        args: ['--guest', `--remote-debugging-port=${port}`],
-      }),
-    );
+    context = await chromium.launchPersistentContext(directory, captureLaunchOptions(channel, port));
     return {
       cdp: `http://127.0.0.1:${port}`,
       close: async () => {

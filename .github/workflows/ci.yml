@@ -80,6 +80,8 @@ jobs:
         env:
           VALIDATE_ALL: ${{ inputs.full == true || inputs.ref != '' }}
         run: node .github/scripts/change-scope.mjs
+      - name: Install locked test-kind dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Check test kinds of changed tests
         run: node scripts/check-test-tags.mjs --event
   checks:
