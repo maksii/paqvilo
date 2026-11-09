@@ -4,17 +4,16 @@ import { createHash } from 'node:crypto';
 const REVIEWED = new Set(['cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718']);
 export function verifyMicrosoftOci(pkg) {
   if (
-    !pkg ||
-    pkg.ecosystem !== 'microsoft-oci' ||
+    pkg?.ecosystem !== 'microsoft-oci' ||
     pkg.id !== 'mssql/server' ||
     !REVIEWED.has(pkg.sha256) ||
     pkg.source !== `https://mcr.microsoft.com/v2/mssql/server/manifests/sha256:${pkg.sha256}` ||
     typeof pkg.bodyBase64 !== 'string'
   )
-    throw Error('official-oci-provenance-required');
+    throw new Error('official-oci-provenance-required');
   const body = Buffer.from(pkg.bodyBase64, 'base64');
   if (body.toString('base64') !== pkg.bodyBase64 || createHash('sha256').update(body).digest('hex') !== pkg.sha256)
-    throw Error('official-oci-manifest-digest');
+    throw new Error('official-oci-manifest-digest');
   const manifest = JSON.parse(body);
   if (
     manifest.schemaVersion !== 2 ||
@@ -28,6 +27,6 @@ export function verifyMicrosoftOci(pkg) {
       (x) => /^sha256:[a-f0-9]{64}$/.test(x.digest ?? '') && Number.isSafeInteger(x.size) && x.size >= 0,
     )
   )
-    throw Error('unsupported-oci-manifest');
+    throw new Error('unsupported-oci-manifest');
   return { configDigest: manifest.config.digest };
 }

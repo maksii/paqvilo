@@ -7207,8 +7207,7 @@ function verifyTypedSqlFacts(root, guarantee, spec, oldModel, currentModel, base
       review = reviewRows.find((row) => row.index === index);
     check(
       fact &&
-        review &&
-        review.originalId === `${spec.baselineId}#${index}` &&
+        review?.originalId === `${spec.baselineId}#${index}` &&
         review.sourceTupleSha256 === old.rowAstSha256[index] &&
         review.currentTupleSha256 === current.rowAstSha256[index] &&
         review.sql === fact.query &&

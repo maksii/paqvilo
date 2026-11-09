@@ -1,18 +1,17 @@
 // Source-only SQL matrix extraction. It does not execute source or grant parity credit.
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
-const normalize = (v) =>
-  typeof v === 'bigint'
-    ? { $bigint: String(v) }
-    : Array.isArray(v)
-      ? v.map(normalize)
-      : v && typeof v === 'object'
-        ? Object.fromEntries(
-            Object.entries(v)
-              .filter(([k]) => !['loc', 'range', 'start', 'end', 'raw'].includes(k))
-              .map(([k, x]) => [k, normalize(x)]),
-          )
-        : v;
+const normalize = (v) => {
+  if (typeof v === 'bigint') return { $bigint: String(v) };
+  if (Array.isArray(v)) return v.map(normalize);
+  if (v && typeof v === 'object')
+    return Object.fromEntries(
+      Object.entries(v)
+        .filter(([k]) => !['loc', 'range', 'start', 'end', 'raw'].includes(k))
+        .map(([k, x]) => [k, normalize(x)]),
+    );
+  return v;
+};
 const parityAstHash = (node) =>
   createHash('sha256')
     .update(JSON.stringify(normalize(node)))
@@ -47,7 +46,7 @@ export function extract(source) {
   const scope = analyze(ast, { ecmaVersion: 2022, sourceType: 'module' }).scopes.find((x) => x.type === 'module');
   const parents = new Map();
   function indexParents(n, parent = null) {
-    if (!n || !n.type) return;
+    if (!n?.type) return;
     parents.set(n, parent);
     for (const v of Object.values(n))
       if (Array.isArray(v)) v.forEach((x) => indexParents(x, n));
@@ -57,8 +56,7 @@ export function extract(source) {
   for (const name of ['utc', 'dec']) {
     const variable = scope?.set.get(name);
     if (
-      !variable ||
-      variable.defs.length !== 1 ||
+      variable?.defs.length !== 1 ||
       variable.references.some(
         (r) =>
           (r.isWrite() && !r.init) ||
@@ -89,8 +87,7 @@ export function extract(source) {
   if (['Date', 'Math', 'JSON', 'Number'].some((name) => scope.set.has(name))) fail('shadowed-intrinsic');
   const testVar = scope.set.get('test');
   if (
-    !testVar ||
-    testVar.defs.length !== 1 ||
+    testVar?.defs.length !== 1 ||
     testVar.references.some(
       (r) =>
         (r.isWrite() && !r.init) ||
@@ -142,7 +139,7 @@ export function extract(source) {
       fail('unsafe-registration-property');
   }
   function scan(n) {
-    if (!n || !n.type) return;
+    if (!n?.type) return;
     if (['ArrowFunctionExpression', 'FunctionExpression', 'FunctionDeclaration'].includes(n.type)) return;
     if (
       [
@@ -165,8 +162,8 @@ export function extract(source) {
     validateRegistrationProperty(n);
     if (n.type === 'CallExpression') validateRegistrationCall(n);
     for (const v of Object.values(n))
-      if (Array.isArray(v)) v.forEach((x) => scan(x, n));
-      else if (v && typeof v === 'object' && v.type) scan(v, n);
+      if (Array.isArray(v)) v.forEach((x) => scan(x));
+      else if (v && typeof v === 'object' && v.type) scan(v);
   }
   scan(ast);
   let refs = 0;
@@ -286,7 +283,13 @@ export function extract(source) {
     titles = rows.map(({ value: items }) => {
       const [name, args, , ctx] = items.map(materialize);
       if (typeof name !== 'string' || !Array.isArray(args)) fail('unsafe-title');
-      return `${name}(${args.map((a) => (a instanceof Date ? a.toISOString() : typeof a === 'bigint' ? `${a}n` : JSON.stringify(a))).join(', ')})${ctx ? ` ${JSON.stringify(ctx)}` : ''}`;
+      const formatArg = (a) => {
+        if (a instanceof Date) return a.toISOString();
+        if (typeof a === 'bigint') return String(a) + 'n';
+        return JSON.stringify(a);
+      };
+      const suffix = ctx ? ' ' + JSON.stringify(ctx) : '';
+      return `${name}(${args.map(formatArg).join(', ')})${suffix}`;
     });
   }
   return {

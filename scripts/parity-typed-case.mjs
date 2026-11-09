@@ -6,7 +6,7 @@ function encodeDate(value) {
     !Object.isExtensible(value) ||
     !Number.isFinite(Date.prototype.getTime.call(value))
   )
-    throw Error('unsafe-date');
+    throw new Error('unsafe-date');
   return { type: 'date', value: Date.prototype.toISOString.call(value) };
 }
 function encodeArray(value, active) {
@@ -18,12 +18,12 @@ function encodeArray(value, active) {
     Object.getOwnPropertySymbols(value).length ||
     Object.keys(d).length !== value.length + 1
   )
-    throw Error('unsafe-array');
+    throw new Error('unsafe-array');
   const out = [];
   for (let i = 0; i < value.length; i++) {
     const item = d[i];
     if (!item || !item.enumerable || !item.writable || !item.configurable || !Object.hasOwn(item, 'value'))
-      throw Error('unsafe-array');
+      throw new Error('unsafe-array');
     out.push(encodeTyped(item.value, active));
   }
   return { type: 'array', value: out };
@@ -34,7 +34,7 @@ function encodeObject(value, active) {
     !Object.isExtensible(value) ||
     Object.getOwnPropertySymbols(value).length
   )
-    throw Error('unsafe-object');
+    throw new Error('unsafe-object');
   const out = {};
   for (const [key, d] of Object.entries(Object.getOwnPropertyDescriptors(value))) {
     if (
@@ -44,7 +44,7 @@ function encodeObject(value, active) {
       !d.configurable ||
       !Object.hasOwn(d, 'value')
     )
-      throw Error('unsafe-object');
+      throw new Error('unsafe-object');
     out[key] = encodeTyped(d.value, active);
   }
   return { type: 'object', value: out };
@@ -54,11 +54,11 @@ export function encodeTyped(value, active = new Set()) {
   if (value === null) return { type: 'null' };
   if (typeof value === 'string' || typeof value === 'boolean') return { type: typeof value, value };
   if (typeof value === 'number') {
-    if (!Number.isFinite(value)) throw Error('unsupported-number');
+    if (!Number.isFinite(value)) throw new Error('unsupported-number');
     return { type: 'number', value: Object.is(value, -0) ? '-0' : value };
   }
   if (typeof value === 'bigint') return { type: 'bigint', value: value.toString() };
-  if (typeof value !== 'object' || active.has(value)) throw Error('unsupported-typed-value');
+  if (typeof value !== 'object' || active.has(value)) throw new Error('unsupported-typed-value');
   if (value instanceof Date) return encodeDate(value);
   active.add(value);
   try {
@@ -74,28 +74,30 @@ export function encodeCase(values, names) {
     new Set(names).size !== names.length ||
     !names.every((name) => typeof name === 'string' && !['__proto__', 'constructor', 'prototype'].includes(name))
   )
-    throw Error('invalid-case');
+    throw new Error('invalid-case');
   const encoded = encodeTyped(values).value;
   return Object.fromEntries(names.map((name, i) => [name, encoded[i] ?? { type: 'undefined' }]));
 }
 
 export function typedCaseIndex(cases, names, bindings, binding) {
   if (!Array.isArray(cases) || !Array.isArray(names) || names.length === 0 || !Array.isArray(bindings))
-    throw Error('invalid-typed-cases');
+    throw new Error('invalid-typed-cases');
   const source = encodeTyped(cases);
   const encoded = source.value.map((row) => {
-    const values = names.length === 1 ? [row] : row.type === 'array' ? row.value : null;
-    if (!values || values.length > names.length) throw Error('invalid-case');
+    let values = null;
+    if (names.length === 1) values = [row];
+    else if (row.type === 'array') values = row.value;
+    if (!values || values.length > names.length) throw new Error('invalid-case');
     return Object.fromEntries(names.map((name, i) => [name, values[i] ?? { type: 'undefined' }]));
   });
   const keys = encoded.map((item) => JSON.stringify(item));
   if (new Set(keys).size !== keys.length || JSON.stringify(encoded) !== JSON.stringify(bindings))
-    throw Error('changed-typed-case-universe');
+    throw new Error('changed-typed-case-universe');
   const actual = encodeTyped(binding);
   if (actual.type !== 'object' || JSON.stringify(Object.keys(actual.value)) !== JSON.stringify(names))
-    throw Error('invalid-typed-binding');
+    throw new Error('invalid-typed-binding');
   const key = JSON.stringify(actual.value);
   const index = keys.indexOf(key);
-  if (index < 0) throw Error('unknown-typed-case');
+  if (index < 0) throw new Error('unknown-typed-case');
   return index;
 }
