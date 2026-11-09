@@ -2,6 +2,17 @@
 // Inputs name explicitly selected fixture fields; no identity, tokens or pre-existing record values are collected.
 export async function captureModelDrivenContract(input, form = globalThis.Xrm.Page) {
   const results = [];
+  const snapshotFieldState = (attribute, spec) => {
+    const value = attribute.getValue();
+    const required = spec.requiredLevels ? attribute.getRequiredLevel() : undefined;
+    const submit = spec.submitModes ? attribute.getSubmitMode() : undefined;
+    return { value, required, submit };
+  };
+  const restoreFieldState = (attribute, spec, state) => {
+    attribute.setValue(state.value);
+    if (spec.requiredLevels) attribute.setRequiredLevel(state.required);
+    if (spec.submitModes) attribute.setSubmitMode(state.submit);
+  };
   const capture = async (id, operation) => {
     try {
       const value = await operation();
@@ -15,9 +26,7 @@ export async function captureModelDrivenContract(input, form = globalThis.Xrm.Pa
     if (!attribute) throw new Error(`Missing fixture attribute: ${spec.role}`);
     for (const method of spec.metadata ?? ['getAttributeType', 'getFormat', 'getRequiredLevel', 'getSubmitMode'])
       await capture(`${spec.role}.${method}`, () => attribute[method]());
-    const original = attribute.getValue();
-    const originalRequired = spec.requiredLevels ? attribute.getRequiredLevel() : undefined;
-    const originalSubmitMode = spec.submitModes ? attribute.getSubmitMode() : undefined;
+    const original = snapshotFieldState(attribute, spec);
     try {
       for (const value of spec.values ?? []) {
         await capture(`${spec.role}.value.${JSON.stringify(value)}`, () => {
@@ -105,9 +114,7 @@ export async function captureModelDrivenContract(input, form = globalThis.Xrm.Pa
         });
       }
     } finally {
-      attribute.setValue(original);
-      if (spec.requiredLevels) attribute.setRequiredLevel(originalRequired);
-      if (spec.submitModes) attribute.setSubmitMode(originalSubmitMode);
+      restoreFieldState(attribute, spec, original);
     }
   }
   await capture('attributes.missing', () => form.getAttribute('x_missing_contract_field'));

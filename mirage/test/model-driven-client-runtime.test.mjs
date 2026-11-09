@@ -108,7 +108,8 @@ test('form client APIs dispatch async events, track edits and cancel OnSave with
       );
       assert.equal(
         createHash('sha256').update(captureModelDrivenContract.toString()).digest('hex'),
-        '2f29fa7c4642839a8c24b276449de9b37a33a2d88f62fe4ca18a01f7b9912089',
+        // @parity-evidence: two fresh native UCI runs on 2026-11-09 reproduce the same ordered 121 cases (fixture SHA256 99de1dcf0a8b390347e3780db499c30224c1dd39914995bcdf2a414faa2823a8); full post-state matches the unchanged public control. See model-driven-producer-refresh-2026-11-09.json.
+        'e80b3ac30fc180e3f62b25b21bc07ddbc5b6e74d93cfd67a67959587b044ecf3',
       );
       assert.equal(context.getEventSource(), attribute);
     });
@@ -126,7 +127,8 @@ test('form client APIs dispatch async events, track edits and cancel OnSave with
     );
     assert.equal(
       createHash('sha256').update(captureModelDrivenContract.toString()).digest('hex'),
-      '2f29fa7c4642839a8c24b276449de9b37a33a2d88f62fe4ca18a01f7b9912089',
+      // @parity-evidence: two fresh native UCI runs on 2026-11-09 reproduce the same ordered 121 cases (fixture SHA256 99de1dcf0a8b390347e3780db499c30224c1dd39914995bcdf2a414faa2823a8); full post-state matches the unchanged public control. See model-driven-producer-refresh-2026-11-09.json.
+      'e80b3ac30fc180e3f62b25b21bc07ddbc5b6e74d93cfd67a67959587b044ecf3',
     );
     assert.equal(changes, 0, 'setValue does not implicitly fire OnChange');
   });
@@ -173,7 +175,8 @@ test('form client APIs dispatch async events, track edits and cancel OnSave with
     );
     assert.equal(
       createHash('sha256').update(captureModelDrivenContract.toString()).digest('hex'),
-      '2f29fa7c4642839a8c24b276449de9b37a33a2d88f62fe4ca18a01f7b9912089',
+      // @parity-evidence: two fresh native UCI runs on 2026-11-09 reproduce the same ordered 121 cases (fixture SHA256 99de1dcf0a8b390347e3780db499c30224c1dd39914995bcdf2a414faa2823a8); full post-state matches the unchanged public control. See model-driven-producer-refresh-2026-11-09.json.
+      'e80b3ac30fc180e3f62b25b21bc07ddbc5b6e74d93cfd67a67959587b044ecf3',
     );
     assert.equal(runtime.formContext.getAttribute('x_name').getSubmitMode(), 'always');
   });
@@ -395,7 +398,8 @@ test('multiselect form values expose numeric arrays and Xrm writes translate nat
     );
     assert.equal(
       createHash('sha256').update(captureModelDrivenContract.toString()).digest('hex'),
-      '2f29fa7c4642839a8c24b276449de9b37a33a2d88f62fe4ca18a01f7b9912089',
+      // @parity-evidence: two fresh native UCI runs on 2026-11-09 reproduce the same ordered 121 cases (fixture SHA256 99de1dcf0a8b390347e3780db499c30224c1dd39914995bcdf2a414faa2823a8); full post-state matches the unchanged public control. See model-driven-producer-refresh-2026-11-09.json.
+      'e80b3ac30fc180e3f62b25b21bc07ddbc5b6e74d93cfd67a67959587b044ecf3',
     );
     assert.equal(attribute.getAttributeType(), 'multiselectoptionset');
   });

@@ -21,7 +21,8 @@ let controls, client, properties;
 test.before(() => {
   assert.equal(
     createHash('sha256').update(capturePowerPagesControlContract.toString()).digest('hex'),
-    '17827c2b3477e64afaeee43edbbffea0d165ed30e1f9769f52413f2f99399171',
+    // @parity-evidence: two fresh native portal runs on 2026-11-09 reproduce the same ordered 202 results and fixture SHA256 6497bea4d8e3307073c5dacfeb6d74ee679bf4b3799153bd83afd2cfc2271d78; see power-pages-controls-producer-refresh-2026-11-09.json.
+    '3c2c3fb1447e7ac650005f4db0cf5b503717f2c9a12ef49ec39729978260814b',
   );
   assert.equal(
     createHash('sha256').update(capturePowerPagesClientContract.toString()).digest('hex'),

@@ -3,7 +3,7 @@
 export function capturePowerPagesControlContract(input) {
   const results = [];
   const capture = (id, value) => results.push({ id, value: value === undefined ? { undefined: true } : value });
-  for (const spec of input.fields) {
+  const captureField = (spec) => {
     const node = document.getElementById(spec.name);
     if (!node) throw new Error('Rendered form fixture field is missing: ' + spec.role);
     capture(spec.role + '.tag', node.tagName.toLowerCase());
@@ -43,8 +43,9 @@ export function capturePowerPagesControlContract(input) {
       if (feedback)
         capture(spec.role + '.feedbackRestoredLength', Number.parseInt(feedback.textContent, 10) === node.value.length);
     }
-  }
-  for (const spec of input.groups ?? []) {
+  };
+  for (const spec of input.fields) captureField(spec);
+  const captureGroup = (spec) => {
     const node = document.getElementById(spec.name);
     if (!node) throw new Error('Rendered form fixture group is missing: ' + spec.role);
     const radios = [...node.querySelectorAll('input[type="radio"]')];
@@ -85,6 +86,7 @@ export function capturePowerPagesControlContract(input) {
       spec.role + '.restored',
       radios.every((radio, index) => radio.checked === original[index]),
     );
-  }
+  };
+  for (const spec of input.groups ?? []) captureGroup(spec);
   return results;
 }

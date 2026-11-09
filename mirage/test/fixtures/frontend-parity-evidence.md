@@ -31,6 +31,14 @@ and collection lookups/iteration. Handler ordinals retain removed registration s
 guard tracks nested calls separately. The finite probes in `mirage/testing/model-driven-contract.mjs` run against
 the native API, a local browser and the invented offline client fixture. Missing fields fail the probe.
 
+The 121-case producer was reproduced again on 2026-11-09 after extracting synchronous snapshot and
+restoration helpers. Two independently opened native draft forms ran the exact refreshed function and
+original ordered input. Both raw result arrays are byte-identical to the unchanged public fixture. The
+[producer refresh capsule](model-driven-producer-refresh-2026-11-09.json) binds the new function, source
+checks and recordings separately from the unchanged historical manifest. Each run restored the touched
+values, required levels and submit modes, and its complete post-state matched a fresh original-producer
+control, including the native default-field dirty flags. This refresh adds no assertions or case credit.
+
 Out-of-range numeric assignment retains the prior attribute getter snapshot while the form becomes
 invalid; it does not clamp the draft into a valid range. Follow-up captures check both lower and upper
 bounds, validity and getter results after the controls are visibly ready. They also prove dynamic control
@@ -70,6 +78,13 @@ The retained demo export was stale by three source columns; that attempt was rej
 An owned private overlay replays the current source without changing the baseline export. Missing standard
 reference facts for source-admitted controls now fill below explicit exported metadata. Warm-cache replay
 checks that cached raw FormXml still receives that enrichment, without admitting unbound columns.
+
+The rendered-control producer was reproduced twice on 2026-11-09 after a synchronous helper extraction.
+Both native 202-result arrays match the unchanged public fixture exactly. The
+[rendered-control producer refresh capsule](power-pages-controls-producer-refresh-2026-11-09.json) binds
+the new function and ordered input to the current source, rendered component, authored feedback and
+restoration checks. The historical manifest and the separate 189-case client and 26-property evidence
+remain unchanged. Visitor identity, submission and arbitrary handler absence remain outside this scope.
 
 Client control names positively match their rendered source labels; comparing only against a logical name
 would not establish this guarantee. Memo names use their source aria-label. Native type strings are
