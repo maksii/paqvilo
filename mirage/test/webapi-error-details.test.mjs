@@ -17,6 +17,89 @@ import { parseExactJson } from '../lib/exact-numeric.mjs';
 const id = '00000000-0000-4000-8000-000000000001';
 const prefix =
   "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : ";
+// Exact request inputs are authored here and independently checked against each protected capture.
+// This keeps fixture data on the assertion side of the loopback HTTP boundary.
+const nativeReaderRequests = [
+  ['POST', '{"quantity":1.5}'],
+  ['PATCH', '{"quantity":1.5}'],
+  ['POST', '{"quantity":"invalid-A"}'],
+  ['PATCH', '{"quantity":"invalid-A"}'],
+  ['POST', '{"quantity":true}'],
+  ['PATCH', '{"quantity":true}'],
+  ['POST', '{"quantity":{}}'],
+  ['PATCH', '{"quantity":{}}'],
+  ['POST', '{"quantity":[]}'],
+  ['PATCH', '{"quantity":[]}'],
+  ['POST', '{"enabled":"invalid-A"}'],
+  ['PATCH', '{"enabled":"invalid-A"}'],
+  ['POST', '{"amount":"2.25"}'],
+  ['PATCH', '{"amount":"2.25"}'],
+  ['POST', '{"day":"invalid-date-A"}'],
+  ['PATCH', '{"day":"invalid-date-A"}'],
+  ['POST', '{"day":"invalid-date-A"}'],
+  ['PATCH', '{"day":"invalid-date-A"}'],
+  ['POST', '{"title":2}'],
+  ['PATCH', '{"title":2}'],
+  ['POST', '{"quantity":2.5}'],
+  ['PATCH', '{"quantity":2.5}'],
+  ['POST', '{"quantity":"invalid-B"}'],
+  ['PATCH', '{"quantity":"invalid-B"}'],
+  ['POST', '{"quantity":false}'],
+  ['PATCH', '{"quantity":false}'],
+  ['POST', '{"quantity":{}}'],
+  ['PATCH', '{"quantity":{}}'],
+  ['POST', '{"quantity":[]}'],
+  ['PATCH', '{"quantity":[]}'],
+  ['POST', '{"enabled":"invalid-B"}'],
+  ['PATCH', '{"enabled":"invalid-B"}'],
+  ['POST', '{"amount":"3.75"}'],
+  ['PATCH', '{"amount":"3.75"}'],
+  ['POST', '{"day":"invalid-date-B"}'],
+  ['PATCH', '{"day":"invalid-date-B"}'],
+  ['POST', '{"day":"invalid-date-B"}'],
+  ['PATCH', '{"day":"invalid-date-B"}'],
+  ['POST', '{"title":3}'],
+  ['PATCH', '{"title":3}'],
+];
+const nativeGatewayRequests = [
+  ['PATCH', '"textOne"'],
+  ['PATCH', '"frobOne"'],
+  ['PATCH', '"noneOne"'],
+  ['PATCH', '"anotherOne"'],
+  ['PATCH', '"true"'],
+  ['PATCH', '"false"'],
+  ['PATCH', '"null"'],
+  ['PATCH', '"True"'],
+  ['PATCH', '"False"'],
+  ['PATCH', '"Null"'],
+  ['PATCH', '"  text"'],
+  ['PATCH', '"17"'],
+  ['PATCH', '"-17"'],
+  ['PATCH', '"1.5"'],
+  ['PATCH', '"[]"'],
+  ['PATCH', '"[1]"'],
+  ['PATCH', '"{}"'],
+  ['PATCH', '"{\\"invented_unknown_lexer\\":1}"'],
+  ['PATCH', '"\\"nested\\""'],
+  ['PATCH', '""'],
+  ['PATCH', 'true'],
+  ['PATCH', 'false'],
+  ['PATCH', 'null'],
+  ['PATCH', '17'],
+  ['PATCH', '[]'],
+  ['POST', '{"amount":[7]}'],
+  ['PATCH', '{"amount":[7]}'],
+  ['PATCH', '"textTwo"'],
+  ['PATCH', '"frobTwo"'],
+  ['PATCH', '"noneTwo"'],
+  ['PATCH', '"anotherTwo"'],
+  ['POST', '{"amount":[8]}'],
+  ['PATCH', '{"amount":[8]}'],
+  ['POST', '{"amount":{"title":"first-object"}}'],
+  ['PATCH', '{"amount":{"title":"first-object"}}'],
+  ['POST', '{"amount":{"title":"second-object"}}'],
+  ['PATCH', '{"amount":{"title":"second-object"}}'],
+];
 const fixturePorts = new WeakMap();
 async function fixture(t, mode, observed = {}, row = {}) {
   const source = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-reader-error-'));
@@ -431,7 +514,11 @@ test('authenticated native portal reader cohorts reproduce selected HTTP error f
         '5256a83e1629b5da9f40cd29fa9827e4086d41218accb9f23f4719be639f8590',
       );
       const expected = JSON.parse(bytes).cases[index];
-      const result = await send(app, expected.raw, { method: expected.method });
+      // @parity-evidence: The exact literal method and body are checked against the unchanged paired native reader capsule before dispatch.
+      const [method, raw] = nativeReaderRequests[index];
+      assert.equal(method, expected.method);
+      assert.equal(raw, expected.raw);
+      const result = await send(app, raw, { method });
       assert.equal(result.status, expected.expected.status, expected.id);
       assert.deepEqual(result.body.error, expected.expected.error, expected.id);
       assert.deepEqual(Object.keys(result.body.error), Object.keys(expected.expected.error), expected.id);
@@ -600,8 +687,12 @@ test('authenticated gateway lexer and actual changed-input reader holdouts repro
         createHash('sha256').update(bytes).digest('hex'),
         'f108c8385ff517834e9a7ae97d3bae41195a5facb69bf5cf3f25f8b9322d3a69',
       );
-      const entry = JSON.parse(bytes).cases[index],
-        result = await send(app, entry.raw, { method: entry.method });
+      const entry = JSON.parse(bytes).cases[index];
+      // @parity-evidence: The exact literal method and body are checked against the unchanged paired native gateway capsule before dispatch.
+      const [method, raw] = nativeGatewayRequests[index];
+      assert.equal(method, entry.method);
+      assert.equal(raw, entry.raw);
+      const result = await send(app, raw, { method });
       assert.equal(result.status, entry.expected.status, entry.id);
       assert.deepEqual(result.body, entry.expected.body, entry.id);
       if (result.body?.error)

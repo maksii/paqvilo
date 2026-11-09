@@ -4256,6 +4256,1623 @@
       "lines": 14,
       "type": "clone",
       "reason": "Independent example controls, manifests, build and qualification contracts; sharing stops at the owning example package."
+    },
+    {
+      "key": "runtime:exports:mirage/lib/odata-property-order.mjs:validateODataPropertyOrder",
+      "file": "mirage/lib/odata-property-order.mjs",
+      "type": "exports",
+      "name": "validateODataPropertyOrder",
+      "reason": "Runtime own callers invoke this function locally; the exported symbol is consumed by the full-graph unit test, which directly checks invalid configurations. docs/code-review.md permits a reviewed disposition for this test seam; removing the export would require moving the direct assertion to an equally discriminating public caller."
+    },
+    {
+      "key": "tests:clone:mirage/test/code-apps-client.test.mjs|mirage/test/code-apps-client.test.mjs:52dc5b117456e513be4bb1640ed17ba35aafc4ce44c47f2c7f446a25de8c8b2c",
+      "files": ["mirage/test/code-apps-client.test.mjs", "mirage/test/code-apps-client.test.mjs"],
+      "lines": 147,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/code-apps-client.test.mjs:7-153 and mirage/test/code-apps-client.test.mjs:237-384."
+    },
+    {
+      "key": "tests:clone:mirage/test/code-apps-client.test.mjs|mirage/test/code-apps-client.test.mjs:7371421c7492d97c04f16f421dda85cf34416c8d112defbb08bda6d24eb06743",
+      "files": ["mirage/test/code-apps-client.test.mjs", "mirage/test/code-apps-client.test.mjs"],
+      "lines": 152,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.6% and 99.6%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/code-apps-client.test.mjs:234-385 and mirage/test/code-apps-client.test.mjs:393-544."
+    },
+    {
+      "key": "tests:clone:mirage/test/code-apps-client.test.mjs|mirage/test/code-apps-sdk.test.mjs:07eec47274754cdfdd36246c7b73ffee978886a73c3ae543ed5645d5560c6f64",
+      "files": ["mirage/test/code-apps-client.test.mjs", "mirage/test/code-apps-sdk.test.mjs"],
+      "lines": 45,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/code-apps-client.test.mjs:80-124 and mirage/test/code-apps-sdk.test.mjs:67-111."
+    },
+    {
+      "key": "tests:clone:mirage/test/code-apps-sdk.test.mjs|mirage/test/code-apps-sdk.test.mjs:113406feb831748544861262d26773d62c41dad29fa3195467b79757f8e17fb7",
+      "files": ["mirage/test/code-apps-sdk.test.mjs", "mirage/test/code-apps-sdk.test.mjs"],
+      "lines": 52,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.6% and 99.5%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/code-apps-sdk.test.mjs:75-126 and mirage/test/code-apps-sdk.test.mjs:299-350."
+    },
+    {
+      "key": "tests:clone:mirage/test/code-apps-sdk.test.mjs|mirage/test/code-apps-sdk.test.mjs:49377261cbc38a3923906860ee1634a35b9ac1d411fa6c7d559e603c3a14b41e",
+      "files": ["mirage/test/code-apps-sdk.test.mjs", "mirage/test/code-apps-sdk.test.mjs"],
+      "lines": 120,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/code-apps-sdk.test.mjs:6-125 and mirage/test/code-apps-sdk.test.mjs:229-349."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-query-reader.test.mjs|mirage/test/dataverse-query-reader.test.mjs:1bb08b20e78fc37bfef262db4e46d551cd334fa7c9f0255417bb5485cea3ff63",
+      "files": ["mirage/test/dataverse-query-reader.test.mjs", "mirage/test/dataverse-query-reader.test.mjs"],
+      "lines": 55,
+      "type": "clone",
+      "reason": "The generated query descriptor repeats an original literal input/error universe used by the test; retain the original case data and source-bound guard until a verified equivalent representation is available. Reviewed source windows: mirage/test/dataverse-query-reader.test.mjs:8-62 and mirage/test/dataverse-query-reader.test.mjs:1912-1966."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:0238eece3258e89782f6b79351528a715a20d1949d7b28c672d1771a2dc85d26",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 73,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:6125-6197 and mirage/test/dataverse-records.test.mjs:21859-21931."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:0238eece3258e89782f6b79351528a715a20d1949d7b28c672d1771a2dc85d26",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 73,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:6125-6197 and mirage/test/dataverse-records.test.mjs:48689-48761."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:09e5cbbfdd95fe675707f1f9fee634f06c3d5966f91c3a17b0b58d92a993f533",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 27,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (96.6% and 96.6%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:19082-19108 and mirage/test/dataverse-records.test.mjs:20539-20565."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:0cce93a201c6de2308660ab14b01af618c59f102c9eb4495a11336fcb122f3c1",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 1427,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:2896-4322 and mirage/test/dataverse-records.test.mjs:38148-39576."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:0d13da010c2a6acc1c43304ceec04ecf7cb0b6b98701035f3207a39669a28700",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 119,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:227-345 and mirage/test/dataverse-records.test.mjs:790-908."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:0d65a142159ec4296752bfcb6f5e8090e55131f8161a7b81742cfd3a3156dacf",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 1263,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.9% and 99.9%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:21960-23222 and mirage/test/dataverse-records.test.mjs:36881-38143."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:1b82331b768fbe16d5a61c6d5fb920c393679d7846525236c3137f2c4c80b55a",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 1254,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:24-1277 and mirage/test/dataverse-records.test.mjs:2921-4174."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:28c8ba132634ac7851ab6513c8681a2efcc055f621378a0012739526d3419347",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 1332,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:18-1349 and mirage/test/dataverse-records.test.mjs:1468-2799."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:29bf1b4ee4eb24928f0eea3acbedb8f8f4d49b4032fed287b92c7c143e535e0d",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 73,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:1277-1349 and mirage/test/dataverse-records.test.mjs:4174-4246."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:35417c74a24bc214307ea1d6aca319c92c92f461147b9e7e031933ac03cc9866",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 1451,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:3-1453 and mirage/test/dataverse-records.test.mjs:11827-13277."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:3fbd8352524374de642868b4861ce6d77d3509fe7996df0d4db8c61f48cbfc99",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 1446,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:31076-32521 and mirage/test/dataverse-records.test.mjs:32527-33972."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:4ade5df01fc6d8304f95544ed7f36e60788e7d6a6a6b0bfb63966ddd5e8e3c73",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 1265,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.9% and 99.9%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:6224-7488 and mirage/test/dataverse-records.test.mjs:9204-10468."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:4e5b22a7d3c9b95f165fb565e756cc81014aad9640c20bcb142cf013a590842e",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 1502,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:38146-39647 and mirage/test/dataverse-records.test.mjs:39650-41151."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:545e7cd2e12e98e551108efb6c7c90e153510118e1aa38bbf20a5b48c203ff1a",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 1257,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:20-1276 and mirage/test/dataverse-records.test.mjs:10565-11821."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:55e6a395a75e24f2dfb633b75e581a64227ca54406599b52a799bf818ac0744a",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 70,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 99.9%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:4322-4391 and mirage/test/dataverse-records.test.mjs:39577-39646."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:5b1fc74a67e96d9a48aa97deca4672129558fe8cfc652fd1c92c6fbe45829016",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 1456,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:11824-13279 and mirage/test/dataverse-records.test.mjs:16197-17652."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:5d853ef54171da895e359ea3dfa9e1e7620ee794933076c73e6f673a1655195d",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 1333,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:4865-6197 and mirage/test/dataverse-records.test.mjs:7845-9177."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:5d853ef54171da895e359ea3dfa9e1e7620ee794933076c73e6f673a1655195d",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 1333,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:4865-6197 and mirage/test/dataverse-records.test.mjs:27117-28449."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:5e7170b4b7e88c1e211e63c8533de5195be4c224abb439b50ba259b056cb8bf6",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 1457,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:13279-14735 and mirage/test/dataverse-records.test.mjs:14735-16191."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:5e7170b4b7e88c1e211e63c8533de5195be4c224abb439b50ba259b056cb8bf6",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 1457,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:13279-14735 and mirage/test/dataverse-records.test.mjs:17652-19108."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:5e7170b4b7e88c1e211e63c8533de5195be4c224abb439b50ba259b056cb8bf6",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 1457,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:13279-14735 and mirage/test/dataverse-records.test.mjs:19109-20565."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:5f5795d2a35d9c564f9f07c251cfb80d8f5560b1e7a30d20292fe998eca39d10",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 27,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (97.5% and 97.5%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:17626-17652 and mirage/test/dataverse-records.test.mjs:19082-19108."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:5f5795d2a35d9c564f9f07c251cfb80d8f5560b1e7a30d20292fe998eca39d10",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 27,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (97.5% and 97.5%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:17626-17652 and mirage/test/dataverse-records.test.mjs:20539-20565."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:6baa6908b4de4f8e2498832ea9458abda9956b2674964732ac4e4d2745500714",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 66,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:1284-1349 and mirage/test/dataverse-records.test.mjs:6132-6197."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:6e00bcc468d72a7426cbe74c3dcfc84979fc8e00a42c6d4f061c024442c9d6ce",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 1263,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.9% and 99.9%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:10562-11824 and mirage/test/dataverse-records.test.mjs:29809-31071."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:78f57dc986fbd15e4b67c562b99bf7aeef31b52248c51645a4e24542e4f0842f",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 74,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:360-433 and mirage/test/dataverse-records.test.mjs:929-1002."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:7e4f7263c058665e34aa4d1455c6a85dba1e21ebaadd0c9b7f7b8e6466c59f02",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 1255,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:2920-4174 and mirage/test/dataverse-records.test.mjs:4871-6125."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:82c716850051b686470def77e6e5573e61fa114df4b491a1e9157906552b9f50",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 1259,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:47430-48688 and mirage/test/dataverse-records.test.mjs:48806-50064."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:8bf3edd8931afdadab6195883875c67331932a2d36b77e92d21876241fa20892",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 1255,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:4871-6125 and mirage/test/dataverse-records.test.mjs:47435-48689."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:8c105a80e2d756e86251a926a9e6d43428d8568336a66b4295c1fc088cb7e006",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 1442,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:1454-2895 and mirage/test/dataverse-records.test.mjs:31078-32519."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:9275c6933e3871f3b36cd2e4b5033bde2f59c799cae83bb7a1864b6f5b2fb080",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 1276,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.6% and 99.6%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:21947-23222 and mirage/test/dataverse-records.test.mjs:25761-27036."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:95eefaa2a2f7e05cc0bbf825e5b669d4922654173cd6b04c6b1dc0d03054fa7e",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 200,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:437-636 and mirage/test/dataverse-records.test.mjs:1009-1208."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:9ca31938fb75bb7736595a8588f16a43e3307a5c3b794a2383df1de0e4b27312",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 1504,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:38144-39647 and mirage/test/dataverse-records.test.mjs:42661-44164."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:aa32603a2cf1cdbce4af3c5ccc2d7ba5c6617511de521a9fb6c9fd8afb4170be",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 1454,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:11826-13279 and mirage/test/dataverse-records.test.mjs:13282-14735."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:ab1d5445b385bcc35a0da8656507174d4a40b49870518b9cf945b3760fc28a49",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 1258,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:4867-6124 and mirage/test/dataverse-records.test.mjs:6228-7485."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:ac50a4c9cd39028bf34e289dc6e4238a6abeae5c1799bf54513e34ca385066ce",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 1449,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:32524-33972 and mirage/test/dataverse-records.test.mjs:33972-35420."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:b128aa207b60adf8d75cdc3ae6ea086069e608d5e66487761e4317511df6f62f",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 23,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (97.4% and 97.4%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:44142-44164 and mirage/test/dataverse-records.test.mjs:45646-45668."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:bb9a7fe6a1b55e4a3063955f5b3d8b5d98cfea3b4443c4bafe624792e2616b63",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 43,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (97.4% and 97.3%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:23180-23222 and mirage/test/dataverse-records.test.mjs:50025-50067."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:bcf539159cfc8dbb8bf9263b0ad7f6f433cd08a149486a67ba7f68c3c428cbac",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 1276,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.6% and 99.6%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:6213-7488 and mirage/test/dataverse-records.test.mjs:28465-29740."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:be1ac31127fe4c2720d2907e03cd9b6109665d1c0e0256df1294933a8f87c524",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 1448,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:31074-32521 and mirage/test/dataverse-records.test.mjs:35429-36876."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:c46b3b0888131b20be7001f6a8119251c6aee3aac55014675f8be2d9490c9c3a",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 24,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (97.5% and 97.5%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:39624-39647 and mirage/test/dataverse-records.test.mjs:42632-42655."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:c46b3b0888131b20be7001f6a8119251c6aee3aac55014675f8be2d9490c9c3a",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 24,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (98.0% and 98.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:39624-39647 and mirage/test/dataverse-records.test.mjs:45645-45668."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:c7faa171688c4757926be77e99f781c3810de78e10b92f180fba8dad1cc5f7a2",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 1264,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:2914-4177 and mirage/test/dataverse-records.test.mjs:20599-21862."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:c7faa171688c4757926be77e99f781c3810de78e10b92f180fba8dad1cc5f7a2",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 1264,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:2914-4177 and mirage/test/dataverse-records.test.mjs:24413-25676."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:d946e0a9784910c13450e11d9b46ac9c206a98167f34092903faec48e744262b",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 1505,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:39647-41151 and mirage/test/dataverse-records.test.mjs:41151-42655."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:d946e0a9784910c13450e11d9b46ac9c206a98167f34092903faec48e744262b",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 1505,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:39647-41151 and mirage/test/dataverse-records.test.mjs:44164-45668."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:d946e0a9784910c13450e11d9b46ac9c206a98167f34092903faec48e744262b",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 1505,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:39647-41151 and mirage/test/dataverse-records.test.mjs:45668-47172."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:e0da8f0ca2c3f85d7675f135fed87ac3c93d4316f118be33abfd1d148341f1af",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 27,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (97.3% and 97.3%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:13253-13279 and mirage/test/dataverse-records.test.mjs:16165-16191."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:e0da8f0ca2c3f85d7675f135fed87ac3c93d4316f118be33abfd1d148341f1af",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 27,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (98.1% and 98.1%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:13253-13279 and mirage/test/dataverse-records.test.mjs:19082-19108."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:e0da8f0ca2c3f85d7675f135fed87ac3c93d4316f118be33abfd1d148341f1af",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 27,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (98.1% and 98.1%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:13253-13279 and mirage/test/dataverse-records.test.mjs:20539-20565."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:e7f45722a20f9f07901e79ce59e17252b7ffb9c59bddf557ebf2ecb7bc775e26",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 92,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:138-229 and mirage/test/dataverse-records.test.mjs:698-789."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:e9687d5a6a276ac2b7cfe338350fa53f59c7dd1c62a4436d2491f2af3cf7968b",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 104,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:21828-21931 and mirage/test/dataverse-records.test.mjs:25642-25745."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:eaa11699b9f10f3c62c180e191112d71b45f7925b1debaf73fa34f3228fedc89",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 49,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (98.9% and 98.9%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:7440-7488 and mirage/test/dataverse-records.test.mjs:11776-11824."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:eaa11699b9f10f3c62c180e191112d71b45f7925b1debaf73fa34f3228fedc89",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 49,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (98.9% and 98.9%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:7440-7488 and mirage/test/dataverse-records.test.mjs:23174-23222."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:eaa11699b9f10f3c62c180e191112d71b45f7925b1debaf73fa34f3228fedc89",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 49,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (98.9% and 98.8%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:7440-7488 and mirage/test/dataverse-records.test.mjs:50019-50067."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-records.test.mjs|mirage/test/dataverse-records.test.mjs:febd5f5dd424dd1cbcaac5b2a66cb45bce804a4c1ef25d93ebe5ed879751c394",
+      "files": ["mirage/test/dataverse-records.test.mjs", "mirage/test/dataverse-records.test.mjs"],
+      "lines": 1258,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-records.test.mjs:2916-4173 and mirage/test/dataverse-records.test.mjs:21962-23219."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-routing-errors.test.mjs|mirage/test/dataverse-routing-errors.test.mjs:50fdd0f372c009beecf673424bbb2cb66e2d8adc07ba69d1196b5dc6cae5b372",
+      "files": ["mirage/test/dataverse-routing-errors.test.mjs", "mirage/test/dataverse-routing-errors.test.mjs"],
+      "lines": 77,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-routing-errors.test.mjs:3-79 and mirage/test/dataverse-routing-errors.test.mjs:388-464."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-routing-errors.test.mjs|mirage/test/dataverse-routing-errors.test.mjs:d33d5a642a445cc5ad247de6549bbf20b3f45800202d0614abd6bb46e556a4f9",
+      "files": ["mirage/test/dataverse-routing-errors.test.mjs", "mirage/test/dataverse-routing-errors.test.mjs"],
+      "lines": 34,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-routing-errors.test.mjs:15-48 and mirage/test/dataverse-routing-errors.test.mjs:213-246."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-routing-errors.test.mjs|mirage/test/dataverse-routing-errors.test.mjs:d33d5a642a445cc5ad247de6549bbf20b3f45800202d0614abd6bb46e556a4f9",
+      "files": ["mirage/test/dataverse-routing-errors.test.mjs", "mirage/test/dataverse-routing-errors.test.mjs"],
+      "lines": 34,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-routing-errors.test.mjs:15-48 and mirage/test/dataverse-routing-errors.test.mjs:304-337."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-routing-errors.test.mjs|mirage/test/dataverse-routing-errors.test.mjs:d33d5a642a445cc5ad247de6549bbf20b3f45800202d0614abd6bb46e556a4f9",
+      "files": ["mirage/test/dataverse-routing-errors.test.mjs", "mirage/test/dataverse-routing-errors.test.mjs"],
+      "lines": 34,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-routing-errors.test.mjs:15-48 and mirage/test/dataverse-routing-errors.test.mjs:517-550."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-routing-errors.test.mjs|mirage/test/dataverse-routing-errors.test.mjs:d33d5a642a445cc5ad247de6549bbf20b3f45800202d0614abd6bb46e556a4f9",
+      "files": ["mirage/test/dataverse-routing-errors.test.mjs", "mirage/test/dataverse-routing-errors.test.mjs"],
+      "lines": 34,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-routing-errors.test.mjs:15-48 and mirage/test/dataverse-routing-errors.test.mjs:610-643."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-routing-errors.test.mjs|mirage/test/dataverse-routing-errors.test.mjs:d33d5a642a445cc5ad247de6549bbf20b3f45800202d0614abd6bb46e556a4f9",
+      "files": ["mirage/test/dataverse-routing-errors.test.mjs", "mirage/test/dataverse-routing-errors.test.mjs"],
+      "lines": 34,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-routing-errors.test.mjs:15-48 and mirage/test/dataverse-routing-errors.test.mjs:696-729."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-routing-errors.test.mjs|mirage/test/dataverse-routing-errors.test.mjs:d33d5a642a445cc5ad247de6549bbf20b3f45800202d0614abd6bb46e556a4f9",
+      "files": ["mirage/test/dataverse-routing-errors.test.mjs", "mirage/test/dataverse-routing-errors.test.mjs"],
+      "lines": 34,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-routing-errors.test.mjs:15-48 and mirage/test/dataverse-routing-errors.test.mjs:838-871."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-routing-errors.test.mjs|mirage/test/dataverse-routing-errors.test.mjs:d33d5a642a445cc5ad247de6549bbf20b3f45800202d0614abd6bb46e556a4f9",
+      "files": ["mirage/test/dataverse-routing-errors.test.mjs", "mirage/test/dataverse-routing-errors.test.mjs"],
+      "lines": 34,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-routing-errors.test.mjs:15-48 and mirage/test/dataverse-routing-errors.test.mjs:962-995."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-routing-errors.test.mjs|mirage/test/dataverse-routing-errors.test.mjs:d33d5a642a445cc5ad247de6549bbf20b3f45800202d0614abd6bb46e556a4f9",
+      "files": ["mirage/test/dataverse-routing-errors.test.mjs", "mirage/test/dataverse-routing-errors.test.mjs"],
+      "lines": 34,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-routing-errors.test.mjs:15-48 and mirage/test/dataverse-routing-errors.test.mjs:1047-1080."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-routing-errors.test.mjs|mirage/test/dataverse-routing-errors.test.mjs:e11fe10ae4bd764c4cfe3a6cff52100fe735f1cfeae62e1607d0283c5c6eb21e",
+      "files": ["mirage/test/dataverse-routing-errors.test.mjs", "mirage/test/dataverse-routing-errors.test.mjs"],
+      "lines": 64,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.7% and 99.5%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-routing-errors.test.mjs:17-80 and mirage/test/dataverse-routing-errors.test.mjs:402-465."
+    },
+    {
+      "key": "tests:clone:mirage/test/dataverse-routing-errors.test.mjs|mirage/test/dataverse-routing-errors.test.mjs:f8f1130e5777b9d274178dd8ebb52654f03a41b3ceb06b0b07cab63e9362682c",
+      "files": ["mirage/test/dataverse-routing-errors.test.mjs", "mirage/test/dataverse-routing-errors.test.mjs"],
+      "lines": 16,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/dataverse-routing-errors.test.mjs:738-753 and mirage/test/dataverse-routing-errors.test.mjs:755-770."
+    },
+    {
+      "key": "tests:clone:mirage/test/import-render.test.mjs|mirage/test/import-render.test.mjs:14c2fffc61d29f4966ec08ce5c69e19deed4d9cfcb2634683804f9d82bd2953b",
+      "files": ["mirage/test/import-render.test.mjs", "mirage/test/import-render.test.mjs"],
+      "lines": 100,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/import-render.test.mjs:75-174 and mirage/test/import-render.test.mjs:174-273."
+    },
+    {
+      "key": "tests:clone:mirage/test/import-render.test.mjs|mirage/test/import-render.test.mjs:14c2fffc61d29f4966ec08ce5c69e19deed4d9cfcb2634683804f9d82bd2953b",
+      "files": ["mirage/test/import-render.test.mjs", "mirage/test/import-render.test.mjs"],
+      "lines": 100,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/import-render.test.mjs:75-174 and mirage/test/import-render.test.mjs:1517-1616."
+    },
+    {
+      "key": "tests:clone:mirage/test/import-render.test.mjs|mirage/test/import-render.test.mjs:14c2fffc61d29f4966ec08ce5c69e19deed4d9cfcb2634683804f9d82bd2953b",
+      "files": ["mirage/test/import-render.test.mjs", "mirage/test/import-render.test.mjs"],
+      "lines": 100,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/import-render.test.mjs:75-174 and mirage/test/import-render.test.mjs:1616-1715."
+    },
+    {
+      "key": "tests:clone:mirage/test/import-render.test.mjs|mirage/test/import-render.test.mjs:222c39b5a6117ec86f0fbd15d4d159e90653456adb5e0d92a201175a4861bfe6",
+      "files": ["mirage/test/import-render.test.mjs", "mirage/test/import-render.test.mjs"],
+      "lines": 63,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.7% and 99.5%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/import-render.test.mjs:1156-1218 and mirage/test/import-render.test.mjs:4016-4078."
+    },
+    {
+      "key": "tests:clone:mirage/test/import-render.test.mjs|mirage/test/import-render.test.mjs:249c1c8b552ffb48eff8ed57f54d0150c2e82a11d1a6baf4227fdc2fc3dc477d",
+      "files": ["mirage/test/import-render.test.mjs", "mirage/test/import-render.test.mjs"],
+      "lines": 408,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/import-render.test.mjs:3-410 and mirage/test/import-render.test.mjs:2135-2542."
+    },
+    {
+      "key": "tests:clone:mirage/test/import-render.test.mjs|mirage/test/import-render.test.mjs:2bb13f45433d06bc95c5847140653e7411ac7cafa5321b7d5a173d13ebda61fa",
+      "files": ["mirage/test/import-render.test.mjs", "mirage/test/import-render.test.mjs"],
+      "lines": 404,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/import-render.test.mjs:814-1217 and mirage/test/import-render.test.mjs:3674-4077."
+    },
+    {
+      "key": "tests:clone:mirage/test/import-render.test.mjs|mirage/test/import-render.test.mjs:5e68f0a17d5fdb773d12ad783686bc284663442a45b825b16ff3dc2195702ac8",
+      "files": ["mirage/test/import-render.test.mjs", "mirage/test/import-render.test.mjs"],
+      "lines": 59,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/import-render.test.mjs:17-75 and mirage/test/import-render.test.mjs:1459-1517."
+    },
+    {
+      "key": "tests:clone:mirage/test/import-render.test.mjs|mirage/test/import-render.test.mjs:5e68f0a17d5fdb773d12ad783686bc284663442a45b825b16ff3dc2195702ac8",
+      "files": ["mirage/test/import-render.test.mjs", "mirage/test/import-render.test.mjs"],
+      "lines": 59,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/import-render.test.mjs:17-75 and mirage/test/import-render.test.mjs:2690-2748."
+    },
+    {
+      "key": "tests:clone:mirage/test/import-render.test.mjs|mirage/test/import-render.test.mjs:5e68f0a17d5fdb773d12ad783686bc284663442a45b825b16ff3dc2195702ac8",
+      "files": ["mirage/test/import-render.test.mjs", "mirage/test/import-render.test.mjs"],
+      "lines": 59,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/import-render.test.mjs:17-75 and mirage/test/import-render.test.mjs:4112-4170."
+    },
+    {
+      "key": "tests:clone:mirage/test/import-render.test.mjs|mirage/test/import-render.test.mjs:8744e1fd7262a66b27640b87db94ee9b18e8dec978321221220e6179693186ec",
+      "files": ["mirage/test/import-render.test.mjs", "mirage/test/import-render.test.mjs"],
+      "lines": 368,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/import-render.test.mjs:17-384 and mirage/test/import-render.test.mjs:420-787."
+    },
+    {
+      "key": "tests:clone:mirage/test/import-render.test.mjs|mirage/test/import-render.test.mjs:8744e1fd7262a66b27640b87db94ee9b18e8dec978321221220e6179693186ec",
+      "files": ["mirage/test/import-render.test.mjs", "mirage/test/import-render.test.mjs"],
+      "lines": 368,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/import-render.test.mjs:17-384 and mirage/test/import-render.test.mjs:823-1190."
+    },
+    {
+      "key": "tests:clone:mirage/test/import-render.test.mjs|mirage/test/import-render.test.mjs:9a55d640a6f88c5a4d4123dc888b84abc8ae4681018a8e2125a513a006a90907",
+      "files": ["mirage/test/import-render.test.mjs", "mirage/test/import-render.test.mjs"],
+      "lines": 98,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/import-render.test.mjs:75-172 and mirage/test/import-render.test.mjs:273-370."
+    },
+    {
+      "key": "tests:clone:mirage/test/import-render.test.mjs|mirage/test/import-render.test.mjs:9a55d640a6f88c5a4d4123dc888b84abc8ae4681018a8e2125a513a006a90907",
+      "files": ["mirage/test/import-render.test.mjs", "mirage/test/import-render.test.mjs"],
+      "lines": 98,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/import-render.test.mjs:75-172 and mirage/test/import-render.test.mjs:1715-1812."
+    },
+    {
+      "key": "tests:clone:mirage/test/import-render.test.mjs|mirage/test/import-render.test.mjs:b4246d521828650ea8247803ad26fbd5208cc2dd7fd5680dd49ad07a2cee3904",
+      "files": ["mirage/test/import-render.test.mjs", "mirage/test/import-render.test.mjs"],
+      "lines": 403,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/import-render.test.mjs:411-813 and mirage/test/import-render.test.mjs:3241-3643."
+    },
+    {
+      "key": "tests:clone:mirage/test/import-render.test.mjs|mirage/test/import-render.test.mjs:fae2eb09da0096a5cb0e433df1c6d4c084593f87ff088b43ad6ddb576621e23d",
+      "files": ["mirage/test/import-render.test.mjs", "mirage/test/import-render.test.mjs"],
+      "lines": 47,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/import-render.test.mjs:338-384 and mirage/test/import-render.test.mjs:1780-1826."
+    },
+    {
+      "key": "tests:clone:mirage/test/import-render.test.mjs|mirage/test/import-render.test.mjs:fb879d371362b6db9e2364aece29ccd2cce9229aabc5afcc1036b60d036406ad",
+      "files": ["mirage/test/import-render.test.mjs", "mirage/test/import-render.test.mjs"],
+      "lines": 346,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/import-render.test.mjs:1481-1826 and mirage/test/import-render.test.mjs:2712-3057."
+    },
+    {
+      "key": "tests:clone:mirage/test/import-render.test.mjs|mirage/test/import-render.test.mjs:fb879d371362b6db9e2364aece29ccd2cce9229aabc5afcc1036b60d036406ad",
+      "files": ["mirage/test/import-render.test.mjs", "mirage/test/import-render.test.mjs"],
+      "lines": 346,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/import-render.test.mjs:1481-1826 and mirage/test/import-render.test.mjs:4134-4479."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-observed-math.test.mjs|mirage/test/liquid-observed-math.test.mjs:087fa1c23b13bab39c05586d3087eebeac9618d7063b7191f10a6c10c22b41df",
+      "files": ["mirage/test/liquid-observed-math.test.mjs", "mirage/test/liquid-observed-math.test.mjs"],
+      "lines": 199,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-observed-math.test.mjs:966-1164 and mirage/test/liquid-observed-math.test.mjs:4003-4201."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-observed-math.test.mjs|mirage/test/liquid-observed-math.test.mjs:08c774dd077ad820649374fa0043ded7ef4a3f28fd6fc3ebf8271685f0820835",
+      "files": ["mirage/test/liquid-observed-math.test.mjs", "mirage/test/liquid-observed-math.test.mjs"],
+      "lines": 274,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (98.1% and 99.7%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-observed-math.test.mjs:3433-3706 and mirage/test/liquid-observed-math.test.mjs:3717-3989."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-observed-math.test.mjs|mirage/test/liquid-observed-math.test.mjs:22f3cb3ca2f4303695875938cb0ae0db31b9d66f70d50ec57269401581ec5d89",
+      "files": ["mirage/test/liquid-observed-math.test.mjs", "mirage/test/liquid-observed-math.test.mjs"],
+      "lines": 195,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-observed-math.test.mjs:204-398 and mirage/test/liquid-observed-math.test.mjs:1946-2140."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-observed-math.test.mjs|mirage/test/liquid-observed-math.test.mjs:4ccd413d183a024fd3b748493ded349525abf95dab110cfeeec99b0c702ad8af",
+      "files": ["mirage/test/liquid-observed-math.test.mjs", "mirage/test/liquid-observed-math.test.mjs"],
+      "lines": 107,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-observed-math.test.mjs:13-119 and mirage/test/liquid-observed-math.test.mjs:974-1080."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-observed-math.test.mjs|mirage/test/liquid-observed-math.test.mjs:4ccd413d183a024fd3b748493ded349525abf95dab110cfeeec99b0c702ad8af",
+      "files": ["mirage/test/liquid-observed-math.test.mjs", "mirage/test/liquid-observed-math.test.mjs"],
+      "lines": 107,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-observed-math.test.mjs:13-119 and mirage/test/liquid-observed-math.test.mjs:1176-1282."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-observed-math.test.mjs|mirage/test/liquid-observed-math.test.mjs:5248179549bef772795233103f3b399ceb2b683098331a6910370a279b722830",
+      "files": ["mirage/test/liquid-observed-math.test.mjs", "mirage/test/liquid-observed-math.test.mjs"],
+      "lines": 47,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-observed-math.test.mjs:131-177 and mirage/test/liquid-observed-math.test.mjs:314-360."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-observed-math.test.mjs|mirage/test/liquid-observed-math.test.mjs:5c06d73395a439559a7cc2b26d5f3844c80d13204379ca1f4d6dcbdf0f47caf1",
+      "files": ["mirage/test/liquid-observed-math.test.mjs", "mirage/test/liquid-observed-math.test.mjs"],
+      "lines": 58,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-observed-math.test.mjs:62-119 and mirage/test/liquid-observed-math.test.mjs:1488-1545."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-observed-math.test.mjs|mirage/test/liquid-observed-math.test.mjs:5f42d2350d086d0f42e52c755faa380a297628a567c0cd5b8b8afee3d8e9f388",
+      "files": ["mirage/test/liquid-observed-math.test.mjs", "mirage/test/liquid-observed-math.test.mjs"],
+      "lines": 50,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-observed-math.test.mjs:128-177 and mirage/test/liquid-observed-math.test.mjs:1089-1138."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-observed-math.test.mjs|mirage/test/liquid-observed-math.test.mjs:7704dfadd9a1e48ca4f63314af6ad3faea43041c3a51704274f4db0e09574376",
+      "files": ["mirage/test/liquid-observed-math.test.mjs", "mirage/test/liquid-observed-math.test.mjs"],
+      "lines": 251,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-observed-math.test.mjs:1165-1415 and mirage/test/liquid-observed-math.test.mjs:4218-4469."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-observed-math.test.mjs|mirage/test/liquid-observed-math.test.mjs:8b6769a75d88ceef562c89b3f5addf544d67bd9ba2c0ec640185fc21858a872d",
+      "files": ["mirage/test/liquid-observed-math.test.mjs", "mirage/test/liquid-observed-math.test.mjs"],
+      "lines": 182,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-observed-math.test.mjs:399-580 and mirage/test/liquid-observed-math.test.mjs:2606-2787."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-observed-math.test.mjs|mirage/test/liquid-observed-math.test.mjs:9f7e8e5a3bb929fb1446ce47438420222830291146cadf3343fb8ca260397d3f",
+      "files": ["mirage/test/liquid-observed-math.test.mjs", "mirage/test/liquid-observed-math.test.mjs"],
+      "lines": 77,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-observed-math.test.mjs:284-360 and mirage/test/liquid-observed-math.test.mjs:478-554."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-observed-math.test.mjs|mirage/test/liquid-observed-math.test.mjs:9f7e8e5a3bb929fb1446ce47438420222830291146cadf3343fb8ca260397d3f",
+      "files": ["mirage/test/liquid-observed-math.test.mjs", "mirage/test/liquid-observed-math.test.mjs"],
+      "lines": 77,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-observed-math.test.mjs:284-360 and mirage/test/liquid-observed-math.test.mjs:660-736."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-observed-math.test.mjs|mirage/test/liquid-observed-math.test.mjs:9f7e8e5a3bb929fb1446ce47438420222830291146cadf3343fb8ca260397d3f",
+      "files": ["mirage/test/liquid-observed-math.test.mjs", "mirage/test/liquid-observed-math.test.mjs"],
+      "lines": 77,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-observed-math.test.mjs:284-360 and mirage/test/liquid-observed-math.test.mjs:851-927."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-observed-math.test.mjs|mirage/test/liquid-observed-math.test.mjs:a8b211aed6c57b8076b407c3b47b7a4f3c8ff1ca2a2eb8ff6b9673a797ac077f",
+      "files": ["mirage/test/liquid-observed-math.test.mjs", "mirage/test/liquid-observed-math.test.mjs"],
+      "lines": 191,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-observed-math.test.mjs:581-771 and mirage/test/liquid-observed-math.test.mjs:2810-3000."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-observed-math.test.mjs|mirage/test/liquid-observed-math.test.mjs:aa4fbf8f1629449b8819705ebdbb1d52419c85bcfa1f50449b397bf35e157f50",
+      "files": ["mirage/test/liquid-observed-math.test.mjs", "mirage/test/liquid-observed-math.test.mjs"],
+      "lines": 66,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-observed-math.test.mjs:2242-2307 and mirage/test/liquid-observed-math.test.mjs:2453-2518."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-observed-math.test.mjs|mirage/test/liquid-observed-math.test.mjs:c2f34fea718d7bc82ad38f249c387537f55f00dd3049e139ad9f02b022949d43",
+      "files": ["mirage/test/liquid-observed-math.test.mjs", "mirage/test/liquid-observed-math.test.mjs"],
+      "lines": 198,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.4% and 99.4%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-observed-math.test.mjs:2806-3003 and mirage/test/liquid-observed-math.test.mjs:3013-3209."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-observed-math.test.mjs|mirage/test/liquid-observed-math.test.mjs:c58065acada80a43c3989246932e5e5588e9ffe033bae3709aa80036e9b02f26",
+      "files": ["mirage/test/liquid-observed-math.test.mjs", "mirage/test/liquid-observed-math.test.mjs"],
+      "lines": 200,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-observed-math.test.mjs:4-203 and mirage/test/liquid-observed-math.test.mjs:1732-1932."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-observed-math.test.mjs|mirage/test/liquid-observed-math.test.mjs:c6dc5119a2bb1860601badc18e52b8831489142c14bc93e762b4e37ec7662644",
+      "files": ["mirage/test/liquid-observed-math.test.mjs", "mirage/test/liquid-observed-math.test.mjs"],
+      "lines": 103,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-observed-math.test.mjs:13-115 and mirage/test/liquid-observed-math.test.mjs:214-316."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-observed-math.test.mjs|mirage/test/liquid-observed-math.test.mjs:c6dc5119a2bb1860601badc18e52b8831489142c14bc93e762b4e37ec7662644",
+      "files": ["mirage/test/liquid-observed-math.test.mjs", "mirage/test/liquid-observed-math.test.mjs"],
+      "lines": 103,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-observed-math.test.mjs:13-115 and mirage/test/liquid-observed-math.test.mjs:408-510."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-observed-math.test.mjs|mirage/test/liquid-observed-math.test.mjs:c6dc5119a2bb1860601badc18e52b8831489142c14bc93e762b4e37ec7662644",
+      "files": ["mirage/test/liquid-observed-math.test.mjs", "mirage/test/liquid-observed-math.test.mjs"],
+      "lines": 103,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-observed-math.test.mjs:13-115 and mirage/test/liquid-observed-math.test.mjs:590-692."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-observed-math.test.mjs|mirage/test/liquid-observed-math.test.mjs:c6dc5119a2bb1860601badc18e52b8831489142c14bc93e762b4e37ec7662644",
+      "files": ["mirage/test/liquid-observed-math.test.mjs", "mirage/test/liquid-observed-math.test.mjs"],
+      "lines": 103,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-observed-math.test.mjs:13-115 and mirage/test/liquid-observed-math.test.mjs:781-883."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-observed-math.test.mjs|mirage/test/liquid-observed-math.test.mjs:d467da0211012627c529922c82084fc835876d0103400dd70ca1812d856c539e",
+      "files": ["mirage/test/liquid-observed-math.test.mjs", "mirage/test/liquid-observed-math.test.mjs"],
+      "lines": 36,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-observed-math.test.mjs:20-55 and mirage/test/liquid-observed-math.test.mjs:1454-1489."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-observed-math.test.mjs|mirage/test/liquid-observed-math.test.mjs:ea22b373258452d31192677212ce8117bee635aff9f20c2a09268eee12d276a2",
+      "files": ["mirage/test/liquid-observed-math.test.mjs", "mirage/test/liquid-observed-math.test.mjs"],
+      "lines": 268,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 99.9%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-observed-math.test.mjs:1417-1684 and mirage/test/liquid-observed-math.test.mjs:3437-3704."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-observed-math.test.mjs|mirage/test/liquid-observed-math.test.mjs:f085a7a893981fb4c0e82cd346867e4d49e72ead682ee1f2c8654c400ec52233",
+      "files": ["mirage/test/liquid-observed-math.test.mjs", "mirage/test/liquid-observed-math.test.mjs"],
+      "lines": 194,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-observed-math.test.mjs:772-965 and mirage/test/liquid-observed-math.test.mjs:3218-3411."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-observed-math.test.mjs|mirage/test/liquid-observed-math.test.mjs:f3071ca11849d187fa6cc0aef6728a9bc4ac7bc3aca00c8b1637665f600569ed",
+      "files": ["mirage/test/liquid-observed-math.test.mjs", "mirage/test/liquid-observed-math.test.mjs"],
+      "lines": 80,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-observed-math.test.mjs:13-92 and mirage/test/liquid-observed-math.test.mjs:2196-2275."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-observed-math.test.mjs|mirage/test/liquid-observed-math.test.mjs:f3071ca11849d187fa6cc0aef6728a9bc4ac7bc3aca00c8b1637665f600569ed",
+      "files": ["mirage/test/liquid-observed-math.test.mjs", "mirage/test/liquid-observed-math.test.mjs"],
+      "lines": 80,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-observed-math.test.mjs:13-92 and mirage/test/liquid-observed-math.test.mjs:2407-2486."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-observed-math.test.mjs|mirage/test/liquid-observed-math.test.mjs:f5fc3248cdc7a155de0c062de02116241859592f25a386b5aed69d7a4250b77b",
+      "files": ["mirage/test/liquid-observed-math.test.mjs", "mirage/test/liquid-observed-math.test.mjs"],
+      "lines": 52,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-observed-math.test.mjs:126-177 and mirage/test/liquid-observed-math.test.mjs:1321-1372."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-observed-math.test.mjs|mirage/test/liquid-observed-math.test.mjs:f5fc3248cdc7a155de0c062de02116241859592f25a386b5aed69d7a4250b77b",
+      "files": ["mirage/test/liquid-observed-math.test.mjs", "mirage/test/liquid-observed-math.test.mjs"],
+      "lines": 52,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-observed-math.test.mjs:126-177 and mirage/test/liquid-observed-math.test.mjs:1584-1635."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-observed-runtime.test.mjs|mirage/test/liquid-observed-runtime.test.mjs:34f0ee9c62dbf25520f54ebe74e593bde4e6dadfbe602c95b97156f2deac1623",
+      "files": ["mirage/test/liquid-observed-runtime.test.mjs", "mirage/test/liquid-observed-runtime.test.mjs"],
+      "lines": 75,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-observed-runtime.test.mjs:6-80 and mirage/test/liquid-observed-runtime.test.mjs:173-247."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-observed-runtime.test.mjs|mirage/test/liquid-observed-runtime.test.mjs:5ec0a17d48c9cb5ac7385a19111ed0b602dd76f76f2b3d5e06e15131d3e2b279",
+      "files": ["mirage/test/liquid-observed-runtime.test.mjs", "mirage/test/liquid-observed-runtime.test.mjs"],
+      "lines": 69,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-observed-runtime.test.mjs:81-149 and mirage/test/liquid-observed-runtime.test.mjs:276-344."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-paging.test.mjs|mirage/test/liquid-paging.test.mjs:5d55b551892c55ad9462cbf584fa64cf872b743cf66ee8df212635136637a4b5",
+      "files": ["mirage/test/liquid-paging.test.mjs", "mirage/test/liquid-paging.test.mjs"],
+      "lines": 66,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-paging.test.mjs:6-71 and mirage/test/liquid-paging.test.mjs:124-189."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:004f54a1405068d7c5beef732768a491f5dcb8d4a2653d773e9e3c2efc03a3ec",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 372,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.8% and 99.8%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:9695-10066 and mirage/test/liquid-portal-parity.test.mjs:10077-10448."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:0e68dc5e5850629d55badaa8737b3e29cc57d8a924346df726c13c244b2a80ce",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 157,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:15-171 and mirage/test/liquid-portal-parity.test.mjs:4433-4589."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:2da1be4ffc9969c06b3072055f2dc5727ecef8ca486ae9136fa1d5831bb0a315",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 179,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:15-193 and mirage/test/liquid-portal-parity.test.mjs:264-442."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:2da1be4ffc9969c06b3072055f2dc5727ecef8ca486ae9136fa1d5831bb0a315",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 179,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:15-193 and mirage/test/liquid-portal-parity.test.mjs:642-820."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:2da1be4ffc9969c06b3072055f2dc5727ecef8ca486ae9136fa1d5831bb0a315",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 179,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:15-193 and mirage/test/liquid-portal-parity.test.mjs:1020-1198."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:2da1be4ffc9969c06b3072055f2dc5727ecef8ca486ae9136fa1d5831bb0a315",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 179,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:15-193 and mirage/test/liquid-portal-parity.test.mjs:1521-1699."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:2da1be4ffc9969c06b3072055f2dc5727ecef8ca486ae9136fa1d5831bb0a315",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 179,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:15-193 and mirage/test/liquid-portal-parity.test.mjs:1973-2151."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:2da1be4ffc9969c06b3072055f2dc5727ecef8ca486ae9136fa1d5831bb0a315",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 179,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:15-193 and mirage/test/liquid-portal-parity.test.mjs:2509-2687."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:2da1be4ffc9969c06b3072055f2dc5727ecef8ca486ae9136fa1d5831bb0a315",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 179,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:15-193 and mirage/test/liquid-portal-parity.test.mjs:2878-3056."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:2da1be4ffc9969c06b3072055f2dc5727ecef8ca486ae9136fa1d5831bb0a315",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 179,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:15-193 and mirage/test/liquid-portal-parity.test.mjs:3403-3581."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:2da1be4ffc9969c06b3072055f2dc5727ecef8ca486ae9136fa1d5831bb0a315",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 179,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:15-193 and mirage/test/liquid-portal-parity.test.mjs:3763-3941."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:387c7c7a24573cd0146a5bce509be24c6e8ad8abbc0dee10b33c391b5b28fc94",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 523,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:2865-3387 and mirage/test/liquid-portal-parity.test.mjs:10849-11371."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:43c4b736e1f2d53d63a0855139630d1cd23ea5b3467610a0c5a44a005cfe10e6",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 156,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:407-562 and mirage/test/liquid-portal-parity.test.mjs:1163-1318."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:43c4b736e1f2d53d63a0855139630d1cd23ea5b3467610a0c5a44a005cfe10e6",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 156,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:407-562 and mirage/test/liquid-portal-parity.test.mjs:2116-2271."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:43c4b736e1f2d53d63a0855139630d1cd23ea5b3467610a0c5a44a005cfe10e6",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 156,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:407-562 and mirage/test/liquid-portal-parity.test.mjs:3021-3176."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:43c4b736e1f2d53d63a0855139630d1cd23ea5b3467610a0c5a44a005cfe10e6",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 156,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:407-562 and mirage/test/liquid-portal-parity.test.mjs:3906-4061."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:4ab536f11bcbb5c5b90fbda479132e255f70be0406861f8ab1a642cb56dc61f8",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 387,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.8% and 99.8%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:5757-6143 and mirage/test/liquid-portal-parity.test.mjs:6153-6539."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:5b08d72a1916730a06021620f63888d14ef45753fc5f4196fd6569b4018ba380",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 97,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:75-171 and mirage/test/liquid-portal-parity.test.mjs:10647-10743."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:75db3bfd68a5325b845a7851a64c258108690b0f47abcebd4f5a562867fac5b9",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 64,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (95.1% and 99.2%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:4182-4245 and mirage/test/liquid-portal-parity.test.mjs:9626-9687."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:7da8eebc0d611d37694daea8a8db24360bcdd30bbaf918c34c835bcabe750bec",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 192,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:1281-1472 and mirage/test/liquid-portal-parity.test.mjs:2234-2425."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:7da8eebc0d611d37694daea8a8db24360bcdd30bbaf918c34c835bcabe750bec",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 192,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:1281-1472 and mirage/test/liquid-portal-parity.test.mjs:3139-3330."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:7da8eebc0d611d37694daea8a8db24360bcdd30bbaf918c34c835bcabe750bec",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 192,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:1281-1472 and mirage/test/liquid-portal-parity.test.mjs:4024-4215."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:87f468e2c9d3c15619f5518b7bdd583653f0114312a9b333629ef33b4e8b9a03",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 489,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:3754-4242 and mirage/test/liquid-portal-parity.test.mjs:9198-9686."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:89e52d78716df63ccfea27fb9d82ed9d4d18cc00e847f58b08fa83d38dafae82",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 488,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:1011-1498 and mirage/test/liquid-portal-parity.test.mjs:6610-7097."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:93f0aace020b7af923c2e38285ad134f3bf80f9db51a7432ace36fe72bc01c49",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 468,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.8% and 99.8%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:7117-7584 and mirage/test/liquid-portal-parity.test.mjs:7597-8063."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:93f0aace020b7af923c2e38285ad134f3bf80f9db51a7432ace36fe72bc01c49",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 468,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.8% and 99.8%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:7117-7584 and mirage/test/liquid-portal-parity.test.mjs:8090-8557."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:9574f31fe7c0effb556435c7df74288dab9d0a3cc5de8074fe464b6a4e27febe",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 170,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:407-576 and mirage/test/liquid-portal-parity.test.mjs:785-954."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:9574f31fe7c0effb556435c7df74288dab9d0a3cc5de8074fe464b6a4e27febe",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 170,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:407-576 and mirage/test/liquid-portal-parity.test.mjs:1664-1833."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:9574f31fe7c0effb556435c7df74288dab9d0a3cc5de8074fe464b6a4e27febe",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 170,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:407-576 and mirage/test/liquid-portal-parity.test.mjs:2652-2821."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:9574f31fe7c0effb556435c7df74288dab9d0a3cc5de8074fe464b6a4e27febe",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 170,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:407-576 and mirage/test/liquid-portal-parity.test.mjs:3546-3715."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:972259d3fc81a79f84b4e6b377fca38cf7052d45ff7ba3077ba7827d0abc1ab6",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 365,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:2500-2864 and mirage/test/liquid-portal-parity.test.mjs:9699-10063."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:97cce7a5c574bb94fdb93cfa362925df8f38499ebc05ef55b8534d50519fb75a",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 380,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:631-1010 and mirage/test/liquid-portal-parity.test.mjs:5761-6140."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:a5912840d9d6a68ebd8ff74f4a48b988f52dc6302acc19874ac353972333e872",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 36,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:15-50 and mirage/test/liquid-portal-parity.test.mjs:10590-10625."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:ad498f0c78e40eb941621116140ed7ead59e1be075a41efbc45118e4d4eed966",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 384,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.8% and 99.8%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:4944-5327 and mirage/test/liquid-portal-parity.test.mjs:5346-5730."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:b2cd2039f8046c419a2d3d6b1fac3f55097489985eeb30a4293b9ad875d9027f",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 531,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.3% and 99.8%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:10844-11374 and mirage/test/liquid-portal-parity.test.mjs:11391-11919."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:bf7103e60c28aed729cd0188db131e749d367467bcd1f548e87b3a258956960d",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 461,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:1499-1959 and mirage/test/liquid-portal-parity.test.mjs:7121-7581."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:c6fc88dac3e974b21b1072df357a2becddede9029808715d4c74d390d07eeeaa",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 249,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:4-252 and mirage/test/liquid-portal-parity.test.mjs:4687-4935."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:d1152f0eb3dc1cdee17a999ea32ef14881e0b8e41f2481cbec4038ffc22b144b",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 378,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:253-630 and mirage/test/liquid-portal-parity.test.mjs:4948-5325."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:d5edb776faf5b3d0c48a10717bfebbdde2f74203f9f4624557d02496dcc54673",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 30,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (82.6% and 86.2%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:10038-10067 and mirage/test/liquid-portal-parity.test.mjs:10420-10449."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:f3f14ab0efe4802498ee6be0c344e1f1c5ace384903168a139edf3ca32ce23a0",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 366,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:3388-3753 and mirage/test/liquid-portal-parity.test.mjs:11983-12348."
+    },
+    {
+      "key": "tests:clone:mirage/test/liquid-portal-parity.test.mjs|mirage/test/liquid-portal-parity.test.mjs:fa9a5ef5428e169890f04b3da74db1bde1afebc039d87d3fbbc49346fa19e86b",
+      "files": ["mirage/test/liquid-portal-parity.test.mjs", "mirage/test/liquid-portal-parity.test.mjs"],
+      "lines": 540,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/liquid-portal-parity.test.mjs:1960-2499 and mirage/test/liquid-portal-parity.test.mjs:8607-9146."
+    },
+    {
+      "key": "tests:clone:mirage/test/model-driven-collections.test.mjs|mirage/test/model-driven-collections.test.mjs:50f146447002438e0e4ec0a97b1264b3560932d9bee5bf349b7f7862dffceae8",
+      "files": ["mirage/test/model-driven-collections.test.mjs", "mirage/test/model-driven-collections.test.mjs"],
+      "lines": 232,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/model-driven-collections.test.mjs:7-238 and mirage/test/model-driven-collections.test.mjs:270-502."
+    },
+    {
+      "key": "tests:clone:mirage/test/model-driven-collections.test.mjs|mirage/test/model-driven-collections.test.mjs:c0b3863110a0252a4bf4d4e90c97af4d060128e208293a98df5567361d9d17cd",
+      "files": ["mirage/test/model-driven-collections.test.mjs", "mirage/test/model-driven-collections.test.mjs"],
+      "lines": 237,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.7% and 99.7%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/model-driven-collections.test.mjs:267-503 and mirage/test/model-driven-collections.test.mjs:506-741."
+    },
+    {
+      "key": "tests:clone:mirage/test/model-driven-collections.test.mjs|mirage/test/model-driven-collections.test.mjs:c0b3863110a0252a4bf4d4e90c97af4d060128e208293a98df5567361d9d17cd",
+      "files": ["mirage/test/model-driven-collections.test.mjs", "mirage/test/model-driven-collections.test.mjs"],
+      "lines": 237,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.7% and 99.7%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/model-driven-collections.test.mjs:267-503 and mirage/test/model-driven-collections.test.mjs:750-985."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-canvas-common.test.mjs|mirage/test/power-fx-canvas-common.test.mjs:0a09836dc8805c104f8bbf8e6d16ab532c9c724585231a2c95f146147996c52f",
+      "files": ["mirage/test/power-fx-canvas-common.test.mjs", "mirage/test/power-fx-canvas-common.test.mjs"],
+      "lines": 124,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.5% and 99.5%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-canvas-common.test.mjs:274-397 and mirage/test/power-fx-canvas-common.test.mjs:649-772."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-canvas-common.test.mjs|mirage/test/power-fx-canvas-common.test.mjs:307f7ede9d97e3eec862976db9e8c1c6e3405c39f004ac184daa5c5162500a68",
+      "files": ["mirage/test/power-fx-canvas-common.test.mjs", "mirage/test/power-fx-canvas-common.test.mjs"],
+      "lines": 48,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-canvas-common.test.mjs:829-876 and mirage/test/power-fx-canvas-common.test.mjs:1831-1878."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-canvas-common.test.mjs|mirage/test/power-fx-canvas-common.test.mjs:36d6f41595c13af6588eefa7a1b36e72477c88401b375e062a4b09cb3f69433a",
+      "files": ["mirage/test/power-fx-canvas-common.test.mjs", "mirage/test/power-fx-canvas-common.test.mjs"],
+      "lines": 37,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-canvas-common.test.mjs:20-56 and mirage/test/power-fx-canvas-common.test.mjs:146-182."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-canvas-common.test.mjs|mirage/test/power-fx-canvas-common.test.mjs:5cee44559618e8fc1720c9cc7534447432a9ba8363352a373e8a23829cca8cd2",
+      "files": ["mirage/test/power-fx-canvas-common.test.mjs", "mirage/test/power-fx-canvas-common.test.mjs"],
+      "lines": 125,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.3% and 99.3%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-canvas-common.test.mjs:397-521 and mirage/test/power-fx-canvas-common.test.mjs:521-645."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-canvas-common.test.mjs|mirage/test/power-fx-canvas-common.test.mjs:7af352b52c29105ffb4bf01d78a4b923905d4a34c6fdd78fd735e3c42935b69a",
+      "files": ["mirage/test/power-fx-canvas-common.test.mjs", "mirage/test/power-fx-canvas-common.test.mjs"],
+      "lines": 142,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.6% and 97.5%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-canvas-common.test.mjs:909-1050 and mirage/test/power-fx-canvas-common.test.mjs:1637-1778."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-canvas-common.test.mjs|mirage/test/power-fx-canvas-common.test.mjs:8b8d4ecd41d9ae20f1c9d8ca1cc067743e52d61ff7bbbda587f19c33ca15b9f5",
+      "files": ["mirage/test/power-fx-canvas-common.test.mjs", "mirage/test/power-fx-canvas-common.test.mjs"],
+      "lines": 137,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-canvas-common.test.mjs:123-259 and mirage/test/power-fx-canvas-common.test.mjs:913-1049."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-canvas-common.test.mjs|mirage/test/power-fx-canvas-common.test.mjs:9b4384752b76979f7eb38e7bf874d7590757bb54908e859e0dedd6ce0b720bfb",
+      "files": ["mirage/test/power-fx-canvas-common.test.mjs", "mirage/test/power-fx-canvas-common.test.mjs"],
+      "lines": 39,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-canvas-common.test.mjs:790-828 and mirage/test/power-fx-canvas-common.test.mjs:1792-1830."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-canvas-common.test.mjs|mirage/test/power-fx-canvas-common.test.mjs:b6acd34f76115b39f42fd2a98c21c89ea527cae06fdd4a24e274e9379c590023",
+      "files": ["mirage/test/power-fx-canvas-common.test.mjs", "mirage/test/power-fx-canvas-common.test.mjs"],
+      "lines": 26,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (94.4% and 94.4%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-canvas-common.test.mjs:1316-1341 and mirage/test/power-fx-canvas-common.test.mjs:1461-1486."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-canvas-common.test.mjs|mirage/test/power-fx-canvas-common.test.mjs:c8526c35721eabced807149c94c9e05267c577e5e03e8ccf13679b49b9a6e833",
+      "files": ["mirage/test/power-fx-canvas-common.test.mjs", "mirage/test/power-fx-canvas-common.test.mjs"],
+      "lines": 141,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.4% and 99.4%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-canvas-common.test.mjs:911-1051 and mirage/test/power-fx-canvas-common.test.mjs:1056-1196."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-canvas-common.test.mjs|mirage/test/power-fx-canvas-common.test.mjs:cfb3b673768ffbe5fb7e02d1596491fd4f9f10977d94cb4df3e385ca68f4ce23",
+      "files": ["mirage/test/power-fx-canvas-common.test.mjs", "mirage/test/power-fx-canvas-common.test.mjs"],
+      "lines": 122,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.5% and 99.5%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-canvas-common.test.mjs:276-397 and mirage/test/power-fx-canvas-common.test.mjs:400-521."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-canvas-common.test.mjs|mirage/test/power-fx-canvas-common.test.mjs:d76e44c43d2cc066533c58f44036c6416b131ae5f4d33d745febfc10278f8b8d",
+      "files": ["mirage/test/power-fx-canvas-common.test.mjs", "mirage/test/power-fx-canvas-common.test.mjs"],
+      "lines": 145,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.2% and 99.2%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-canvas-common.test.mjs:1342-1486 and mirage/test/power-fx-canvas-common.test.mjs:1487-1631."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-canvas-common.test.mjs|mirage/test/power-fx-canvas-common.test.mjs:e71fd80cec10c0fc1479f9d3cd5aff01cb28bd0f47d1903145746fee8927a550",
+      "files": ["mirage/test/power-fx-canvas-common.test.mjs", "mirage/test/power-fx-canvas-common.test.mjs"],
+      "lines": 119,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-canvas-common.test.mjs:4-122 and mirage/test/power-fx-canvas-common.test.mjs:277-395."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-canvas-common.test.mjs|mirage/test/power-fx-canvas-common.test.mjs:f90f4052cd32e0389c6d12787296d91e68ed088ce422d5d4a93404da148bf042",
+      "files": ["mirage/test/power-fx-canvas-common.test.mjs", "mirage/test/power-fx-canvas-common.test.mjs"],
+      "lines": 145,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.2% and 99.2%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-canvas-common.test.mjs:1052-1196 and mirage/test/power-fx-canvas-common.test.mjs:1197-1341."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-canvas-common.test.mjs|mirage/test/power-fx-canvas-common.test.mjs:f90f4052cd32e0389c6d12787296d91e68ed088ce422d5d4a93404da148bf042",
+      "files": ["mirage/test/power-fx-canvas-common.test.mjs", "mirage/test/power-fx-canvas-common.test.mjs"],
+      "lines": 145,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.2% and 99.2%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-canvas-common.test.mjs:1052-1196 and mirage/test/power-fx-canvas-common.test.mjs:1342-1486."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-language.test.mjs|mirage/test/power-fx-language.test.mjs:00e2bcfa658f3a3c426e78f0eef69887d16d5e07dc1cbd4320a0be5a253a7bd6",
+      "files": ["mirage/test/power-fx-language.test.mjs", "mirage/test/power-fx-language.test.mjs"],
+      "lines": 233,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-language.test.mjs:616-848 and mirage/test/power-fx-language.test.mjs:1026-1258."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-language.test.mjs|mirage/test/power-fx-language.test.mjs:25ef67b1f57ac719c3b4427127c6ae65ee1c976193d805dc8907138e36ed1a4a",
+      "files": ["mirage/test/power-fx-language.test.mjs", "mirage/test/power-fx-language.test.mjs"],
+      "lines": 36,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-language.test.mjs:754-789 and mirage/test/power-fx-language.test.mjs:3544-3581."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-language.test.mjs|mirage/test/power-fx-language.test.mjs:25ef67b1f57ac719c3b4427127c6ae65ee1c976193d805dc8907138e36ed1a4a",
+      "files": ["mirage/test/power-fx-language.test.mjs", "mirage/test/power-fx-language.test.mjs"],
+      "lines": 36,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-language.test.mjs:754-789 and mirage/test/power-fx-language.test.mjs:3969-4006."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-language.test.mjs|mirage/test/power-fx-language.test.mjs:34f37b75e7f300d0e923e13a10e95d01da58e0567791de12b0455328789f9a62",
+      "files": ["mirage/test/power-fx-language.test.mjs", "mirage/test/power-fx-language.test.mjs"],
+      "lines": 66,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-language.test.mjs:550-615 and mirage/test/power-fx-language.test.mjs:783-848."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-language.test.mjs|mirage/test/power-fx-language.test.mjs:3c27d59bec280e16fbbd968f0e29da604b654589d636340c23129f3dc3ba2d93",
+      "files": ["mirage/test/power-fx-language.test.mjs", "mirage/test/power-fx-language.test.mjs"],
+      "lines": 78,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-language.test.mjs:3567-3644 and mirage/test/power-fx-language.test.mjs:3992-4069."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-language.test.mjs|mirage/test/power-fx-language.test.mjs:57c1cb8ddcd7509bcbda02e1fdb6850a557a6d854dcb461007d189c9a5b81aa1",
+      "files": ["mirage/test/power-fx-language.test.mjs", "mirage/test/power-fx-language.test.mjs"],
+      "lines": 314,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-language.test.mjs:851-1164 and mirage/test/power-fx-language.test.mjs:3650-3968."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-language.test.mjs|mirage/test/power-fx-language.test.mjs:6f468e3086d4811fb114b64debf58e4f8d588c93cbcbc3a5789487270e73569b",
+      "files": ["mirage/test/power-fx-language.test.mjs", "mirage/test/power-fx-language.test.mjs"],
+      "lines": 67,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-language.test.mjs:465-531 and mirage/test/power-fx-language.test.mjs:698-764."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-language.test.mjs|mirage/test/power-fx-language.test.mjs:80f9a18eed313fc8fc88afcaa4424cce995e702c03bf802b012cfbb52a462057",
+      "files": ["mirage/test/power-fx-language.test.mjs", "mirage/test/power-fx-language.test.mjs"],
+      "lines": 72,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-language.test.mjs:3328-3399 and mirage/test/power-fx-language.test.mjs:3573-3644."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-language.test.mjs|mirage/test/power-fx-language.test.mjs:81da8a4360b20d67ffd7a3311c98602485999dec0eadd2943a7e21afa299716b",
+      "files": ["mirage/test/power-fx-language.test.mjs", "mirage/test/power-fx-language.test.mjs"],
+      "lines": 20,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-language.test.mjs:531-550 and mirage/test/power-fx-language.test.mjs:764-783."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-language.test.mjs|mirage/test/power-fx-language.test.mjs:9b7f02aa38af83bd57bc6d9936b33f76aaaa1b03a7f69044da16e270395f10ca",
+      "files": ["mirage/test/power-fx-language.test.mjs", "mirage/test/power-fx-language.test.mjs"],
+      "lines": 1112,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-language.test.mjs:1248-2359 and mirage/test/power-fx-language.test.mjs:4059-5170."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-language.test.mjs|mirage/test/power-fx-language.test.mjs:9f5be7c331ee2b69481c604ae0f37c5e23dd11871f222196fef6f6198cbdb946",
+      "files": ["mirage/test/power-fx-language.test.mjs", "mirage/test/power-fx-language.test.mjs"],
+      "lines": 518,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-language.test.mjs:4-521 and mirage/test/power-fx-language.test.mjs:2774-3298."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-language.test.mjs|mirage/test/power-fx-language.test.mjs:b20145e9dad192299a2d1c6ce4682d0de282c3780161d29c39b40c462b297fb3",
+      "files": ["mirage/test/power-fx-language.test.mjs", "mirage/test/power-fx-language.test.mjs"],
+      "lines": 14,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-language.test.mjs:838-851 and mirage/test/power-fx-language.test.mjs:3634-3649."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-language.test.mjs|mirage/test/power-fx-language.test.mjs:b2fb8003a0090d830368a642c636ce9776d41eeb8aa75d80af267785f2f24a58",
+      "files": ["mirage/test/power-fx-language.test.mjs", "mirage/test/power-fx-language.test.mjs"],
+      "lines": 36,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-language.test.mjs:521-556 and mirage/test/power-fx-language.test.mjs:3299-3336."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-language.test.mjs|mirage/test/power-fx-language.test.mjs:e1f0febc71a52d22b0d229ff35dee24771d10c506d6cb3aa501365e94b823b9d",
+      "files": ["mirage/test/power-fx-language.test.mjs", "mirage/test/power-fx-language.test.mjs"],
+      "lines": 80,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-language.test.mjs:386-465 and mirage/test/power-fx-language.test.mjs:619-698."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-language.test.mjs|mirage/test/power-fx-language.test.mjs:e8edd6296ee599a2b1509393ea34c41008fe450128b6e1ca760ce68c5f4075fe",
+      "files": ["mirage/test/power-fx-language.test.mjs", "mirage/test/power-fx-language.test.mjs"],
+      "lines": 198,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-language.test.mjs:557-754 and mirage/test/power-fx-language.test.mjs:3341-3543."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-language.test.mjs|mirage/test/power-fx-language.test.mjs:ebe018abbdc2846baba99a606e0fe618def9423b0464f9793df81d1ffd86f55b",
+      "files": ["mirage/test/power-fx-language.test.mjs", "mirage/test/power-fx-language.test.mjs"],
+      "lines": 30,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-language.test.mjs:3280-3309 and mirage/test/power-fx-language.test.mjs:3525-3554."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-language.test.mjs|mirage/test/power-fx-language.test.mjs:ebe018abbdc2846baba99a606e0fe618def9423b0464f9793df81d1ffd86f55b",
+      "files": ["mirage/test/power-fx-language.test.mjs", "mirage/test/power-fx-language.test.mjs"],
+      "lines": 30,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-language.test.mjs:3280-3309 and mirage/test/power-fx-language.test.mjs:3950-3979."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-oracle-regressions.test.mjs|mirage/test/power-fx-oracle-regressions.test.mjs:0d6da43377da7baf6c88296c1ed1d51f484f6b03a1c08848e4f13be689300ac6",
+      "files": ["mirage/test/power-fx-oracle-regressions.test.mjs", "mirage/test/power-fx-oracle-regressions.test.mjs"],
+      "lines": 177,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.7% and 99.7%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-oracle-regressions.test.mjs:328-504 and mirage/test/power-fx-oracle-regressions.test.mjs:861-1037."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-oracle-regressions.test.mjs|mirage/test/power-fx-oracle-regressions.test.mjs:0d6da43377da7baf6c88296c1ed1d51f484f6b03a1c08848e4f13be689300ac6",
+      "files": ["mirage/test/power-fx-oracle-regressions.test.mjs", "mirage/test/power-fx-oracle-regressions.test.mjs"],
+      "lines": 177,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.7% and 99.7%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-oracle-regressions.test.mjs:328-504 and mirage/test/power-fx-oracle-regressions.test.mjs:1924-2100."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-oracle-regressions.test.mjs|mirage/test/power-fx-oracle-regressions.test.mjs:0f45191d36245d7ef9c977f3be195cd62bbd45503bbff08c54d238f65360e46e",
+      "files": ["mirage/test/power-fx-oracle-regressions.test.mjs", "mirage/test/power-fx-oracle-regressions.test.mjs"],
+      "lines": 178,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.5% and 99.5%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-oracle-regressions.test.mjs:1568-1745 and mirage/test/power-fx-oracle-regressions.test.mjs:2454-2631."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-oracle-regressions.test.mjs|mirage/test/power-fx-oracle-regressions.test.mjs:1acc0b13e1d7b3069781894c0415fbd522b3956c606da7ceb78d44b07fac1a11",
+      "files": ["mirage/test/power-fx-oracle-regressions.test.mjs", "mirage/test/power-fx-oracle-regressions.test.mjs"],
+      "lines": 81,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-oracle-regressions.test.mjs:239-319 and mirage/test/power-fx-oracle-regressions.test.mjs:2721-2801."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-oracle-regressions.test.mjs|mirage/test/power-fx-oracle-regressions.test.mjs:1bc542c8c0475ff1f43f75a05971e555ddbcf4a529dc168164f50e0939623385",
+      "files": ["mirage/test/power-fx-oracle-regressions.test.mjs", "mirage/test/power-fx-oracle-regressions.test.mjs"],
+      "lines": 21,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (97.7% and 97.7%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-oracle-regressions.test.mjs:484-504 and mirage/test/power-fx-oracle-regressions.test.mjs:838-858."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-oracle-regressions.test.mjs|mirage/test/power-fx-oracle-regressions.test.mjs:1bc542c8c0475ff1f43f75a05971e555ddbcf4a529dc168164f50e0939623385",
+      "files": ["mirage/test/power-fx-oracle-regressions.test.mjs", "mirage/test/power-fx-oracle-regressions.test.mjs"],
+      "lines": 21,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (97.7% and 97.7%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-oracle-regressions.test.mjs:484-504 and mirage/test/power-fx-oracle-regressions.test.mjs:1194-1214."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-oracle-regressions.test.mjs|mirage/test/power-fx-oracle-regressions.test.mjs:1bc542c8c0475ff1f43f75a05971e555ddbcf4a529dc168164f50e0939623385",
+      "files": ["mirage/test/power-fx-oracle-regressions.test.mjs", "mirage/test/power-fx-oracle-regressions.test.mjs"],
+      "lines": 21,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (97.7% and 97.7%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-oracle-regressions.test.mjs:484-504 and mirage/test/power-fx-oracle-regressions.test.mjs:1371-1391."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-oracle-regressions.test.mjs|mirage/test/power-fx-oracle-regressions.test.mjs:1bc542c8c0475ff1f43f75a05971e555ddbcf4a529dc168164f50e0939623385",
+      "files": ["mirage/test/power-fx-oracle-regressions.test.mjs", "mirage/test/power-fx-oracle-regressions.test.mjs"],
+      "lines": 21,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (97.7% and 97.7%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-oracle-regressions.test.mjs:484-504 and mirage/test/power-fx-oracle-regressions.test.mjs:1548-1568."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-oracle-regressions.test.mjs|mirage/test/power-fx-oracle-regressions.test.mjs:1bc542c8c0475ff1f43f75a05971e555ddbcf4a529dc168164f50e0939623385",
+      "files": ["mirage/test/power-fx-oracle-regressions.test.mjs", "mirage/test/power-fx-oracle-regressions.test.mjs"],
+      "lines": 21,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (97.7% and 97.7%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-oracle-regressions.test.mjs:484-504 and mirage/test/power-fx-oracle-regressions.test.mjs:1725-1745."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-oracle-regressions.test.mjs|mirage/test/power-fx-oracle-regressions.test.mjs:1bc542c8c0475ff1f43f75a05971e555ddbcf4a529dc168164f50e0939623385",
+      "files": ["mirage/test/power-fx-oracle-regressions.test.mjs", "mirage/test/power-fx-oracle-regressions.test.mjs"],
+      "lines": 21,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (97.7% and 97.7%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-oracle-regressions.test.mjs:484-504 and mirage/test/power-fx-oracle-regressions.test.mjs:1902-1922."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-oracle-regressions.test.mjs|mirage/test/power-fx-oracle-regressions.test.mjs:1bc542c8c0475ff1f43f75a05971e555ddbcf4a529dc168164f50e0939623385",
+      "files": ["mirage/test/power-fx-oracle-regressions.test.mjs", "mirage/test/power-fx-oracle-regressions.test.mjs"],
+      "lines": 21,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (97.7% and 97.7%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-oracle-regressions.test.mjs:484-504 and mirage/test/power-fx-oracle-regressions.test.mjs:2257-2277."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-oracle-regressions.test.mjs|mirage/test/power-fx-oracle-regressions.test.mjs:1bc542c8c0475ff1f43f75a05971e555ddbcf4a529dc168164f50e0939623385",
+      "files": ["mirage/test/power-fx-oracle-regressions.test.mjs", "mirage/test/power-fx-oracle-regressions.test.mjs"],
+      "lines": 21,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (97.7% and 97.7%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-oracle-regressions.test.mjs:484-504 and mirage/test/power-fx-oracle-regressions.test.mjs:2434-2454."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-oracle-regressions.test.mjs|mirage/test/power-fx-oracle-regressions.test.mjs:1d2e33c9c7ba0b7bc5c342da6b8c4a17d97088364dd1bb8b74bdcddd4dbe1109",
+      "files": ["mirage/test/power-fx-oracle-regressions.test.mjs", "mirage/test/power-fx-oracle-regressions.test.mjs"],
+      "lines": 173,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-oracle-regressions.test.mjs:6-178 and mirage/test/power-fx-oracle-regressions.test.mjs:330-502."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-oracle-regressions.test.mjs|mirage/test/power-fx-oracle-regressions.test.mjs:8f0bf88336922a94fa1d90993571eefe40f31f1bcdc0c4cbe7a2f6dd3ee3a782",
+      "files": ["mirage/test/power-fx-oracle-regressions.test.mjs", "mirage/test/power-fx-oracle-regressions.test.mjs"],
+      "lines": 85,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.2% and 99.2%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-oracle-regressions.test.mjs:2718-2802 and mirage/test/power-fx-oracle-regressions.test.mjs:2890-2974."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-oracle-regressions.test.mjs|mirage/test/power-fx-oracle-regressions.test.mjs:a72a7bce9d88982022bd7314a4f84f0041b3e666ba4fe11812a5b038ac24bccc",
+      "files": ["mirage/test/power-fx-oracle-regressions.test.mjs", "mirage/test/power-fx-oracle-regressions.test.mjs"],
+      "lines": 176,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.8% and 99.8%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-oracle-regressions.test.mjs:329-504 and mirage/test/power-fx-oracle-regressions.test.mjs:506-681."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-oracle-regressions.test.mjs|mirage/test/power-fx-oracle-regressions.test.mjs:bf14edaac130a441b462a104576073f1c928b9399669369a988edbe009b4c83f",
+      "files": ["mirage/test/power-fx-oracle-regressions.test.mjs", "mirage/test/power-fx-oracle-regressions.test.mjs"],
+      "lines": 60,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (100.0% and 100.0%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-oracle-regressions.test.mjs:179-238 and mirage/test/power-fx-oracle-regressions.test.mjs:2651-2710."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-oracle-regressions.test.mjs|mirage/test/power-fx-oracle-regressions.test.mjs:d275c508536c044eb61994756e3748e9420ff4753e99aa2c04ae0fc33f6c5ab6",
+      "files": ["mirage/test/power-fx-oracle-regressions.test.mjs", "mirage/test/power-fx-oracle-regressions.test.mjs"],
+      "lines": 21,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (96.9% and 96.9%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-oracle-regressions.test.mjs:838-858 and mirage/test/power-fx-oracle-regressions.test.mjs:1194-1214."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-oracle-regressions.test.mjs|mirage/test/power-fx-oracle-regressions.test.mjs:d275c508536c044eb61994756e3748e9420ff4753e99aa2c04ae0fc33f6c5ab6",
+      "files": ["mirage/test/power-fx-oracle-regressions.test.mjs", "mirage/test/power-fx-oracle-regressions.test.mjs"],
+      "lines": 21,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (96.9% and 96.9%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-oracle-regressions.test.mjs:838-858 and mirage/test/power-fx-oracle-regressions.test.mjs:1371-1391."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-oracle-regressions.test.mjs|mirage/test/power-fx-oracle-regressions.test.mjs:d275c508536c044eb61994756e3748e9420ff4753e99aa2c04ae0fc33f6c5ab6",
+      "files": ["mirage/test/power-fx-oracle-regressions.test.mjs", "mirage/test/power-fx-oracle-regressions.test.mjs"],
+      "lines": 21,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (96.9% and 96.9%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-oracle-regressions.test.mjs:838-858 and mirage/test/power-fx-oracle-regressions.test.mjs:1548-1568."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-oracle-regressions.test.mjs|mirage/test/power-fx-oracle-regressions.test.mjs:d275c508536c044eb61994756e3748e9420ff4753e99aa2c04ae0fc33f6c5ab6",
+      "files": ["mirage/test/power-fx-oracle-regressions.test.mjs", "mirage/test/power-fx-oracle-regressions.test.mjs"],
+      "lines": 21,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (96.9% and 96.9%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-oracle-regressions.test.mjs:838-858 and mirage/test/power-fx-oracle-regressions.test.mjs:1725-1745."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-oracle-regressions.test.mjs|mirage/test/power-fx-oracle-regressions.test.mjs:d275c508536c044eb61994756e3748e9420ff4753e99aa2c04ae0fc33f6c5ab6",
+      "files": ["mirage/test/power-fx-oracle-regressions.test.mjs", "mirage/test/power-fx-oracle-regressions.test.mjs"],
+      "lines": 21,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (96.9% and 96.9%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-oracle-regressions.test.mjs:838-858 and mirage/test/power-fx-oracle-regressions.test.mjs:1902-1922."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-oracle-regressions.test.mjs|mirage/test/power-fx-oracle-regressions.test.mjs:d275c508536c044eb61994756e3748e9420ff4753e99aa2c04ae0fc33f6c5ab6",
+      "files": ["mirage/test/power-fx-oracle-regressions.test.mjs", "mirage/test/power-fx-oracle-regressions.test.mjs"],
+      "lines": 21,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (96.9% and 96.9%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-oracle-regressions.test.mjs:838-858 and mirage/test/power-fx-oracle-regressions.test.mjs:2080-2100."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-oracle-regressions.test.mjs|mirage/test/power-fx-oracle-regressions.test.mjs:d275c508536c044eb61994756e3748e9420ff4753e99aa2c04ae0fc33f6c5ab6",
+      "files": ["mirage/test/power-fx-oracle-regressions.test.mjs", "mirage/test/power-fx-oracle-regressions.test.mjs"],
+      "lines": 21,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (96.9% and 96.9%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-oracle-regressions.test.mjs:838-858 and mirage/test/power-fx-oracle-regressions.test.mjs:2257-2277."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-oracle-regressions.test.mjs|mirage/test/power-fx-oracle-regressions.test.mjs:d275c508536c044eb61994756e3748e9420ff4753e99aa2c04ae0fc33f6c5ab6",
+      "files": ["mirage/test/power-fx-oracle-regressions.test.mjs", "mirage/test/power-fx-oracle-regressions.test.mjs"],
+      "lines": 21,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (96.9% and 96.9%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-oracle-regressions.test.mjs:838-858 and mirage/test/power-fx-oracle-regressions.test.mjs:2434-2454."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-oracle-regressions.test.mjs|mirage/test/power-fx-oracle-regressions.test.mjs:efc246ee435725b929b6a9940abd73cdf7f1cdba4cec4ca24cb413bbbbd40d74",
+      "files": ["mirage/test/power-fx-oracle-regressions.test.mjs", "mirage/test/power-fx-oracle-regressions.test.mjs"],
+      "lines": 178,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.7% and 99.7%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-oracle-regressions.test.mjs:504-681 and mirage/test/power-fx-oracle-regressions.test.mjs:681-858."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-oracle-regressions.test.mjs|mirage/test/power-fx-oracle-regressions.test.mjs:efc246ee435725b929b6a9940abd73cdf7f1cdba4cec4ca24cb413bbbbd40d74",
+      "files": ["mirage/test/power-fx-oracle-regressions.test.mjs", "mirage/test/power-fx-oracle-regressions.test.mjs"],
+      "lines": 178,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.7% and 99.7%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-oracle-regressions.test.mjs:504-681 and mirage/test/power-fx-oracle-regressions.test.mjs:1037-1214."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-oracle-regressions.test.mjs|mirage/test/power-fx-oracle-regressions.test.mjs:efc246ee435725b929b6a9940abd73cdf7f1cdba4cec4ca24cb413bbbbd40d74",
+      "files": ["mirage/test/power-fx-oracle-regressions.test.mjs", "mirage/test/power-fx-oracle-regressions.test.mjs"],
+      "lines": 178,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.7% and 99.7%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-oracle-regressions.test.mjs:504-681 and mirage/test/power-fx-oracle-regressions.test.mjs:1214-1391."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-oracle-regressions.test.mjs|mirage/test/power-fx-oracle-regressions.test.mjs:efc246ee435725b929b6a9940abd73cdf7f1cdba4cec4ca24cb413bbbbd40d74",
+      "files": ["mirage/test/power-fx-oracle-regressions.test.mjs", "mirage/test/power-fx-oracle-regressions.test.mjs"],
+      "lines": 178,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.7% and 99.7%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-oracle-regressions.test.mjs:504-681 and mirage/test/power-fx-oracle-regressions.test.mjs:1391-1568."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-oracle-regressions.test.mjs|mirage/test/power-fx-oracle-regressions.test.mjs:efc246ee435725b929b6a9940abd73cdf7f1cdba4cec4ca24cb413bbbbd40d74",
+      "files": ["mirage/test/power-fx-oracle-regressions.test.mjs", "mirage/test/power-fx-oracle-regressions.test.mjs"],
+      "lines": 178,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.7% and 99.7%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-oracle-regressions.test.mjs:504-681 and mirage/test/power-fx-oracle-regressions.test.mjs:1568-1745."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-oracle-regressions.test.mjs|mirage/test/power-fx-oracle-regressions.test.mjs:efc246ee435725b929b6a9940abd73cdf7f1cdba4cec4ca24cb413bbbbd40d74",
+      "files": ["mirage/test/power-fx-oracle-regressions.test.mjs", "mirage/test/power-fx-oracle-regressions.test.mjs"],
+      "lines": 178,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.7% and 99.7%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-oracle-regressions.test.mjs:504-681 and mirage/test/power-fx-oracle-regressions.test.mjs:1745-1922."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-oracle-regressions.test.mjs|mirage/test/power-fx-oracle-regressions.test.mjs:efc246ee435725b929b6a9940abd73cdf7f1cdba4cec4ca24cb413bbbbd40d74",
+      "files": ["mirage/test/power-fx-oracle-regressions.test.mjs", "mirage/test/power-fx-oracle-regressions.test.mjs"],
+      "lines": 178,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.7% and 99.7%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-oracle-regressions.test.mjs:504-681 and mirage/test/power-fx-oracle-regressions.test.mjs:2100-2277."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-oracle-regressions.test.mjs|mirage/test/power-fx-oracle-regressions.test.mjs:efc246ee435725b929b6a9940abd73cdf7f1cdba4cec4ca24cb413bbbbd40d74",
+      "files": ["mirage/test/power-fx-oracle-regressions.test.mjs", "mirage/test/power-fx-oracle-regressions.test.mjs"],
+      "lines": 178,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.7% and 99.7%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-oracle-regressions.test.mjs:504-681 and mirage/test/power-fx-oracle-regressions.test.mjs:2277-2454."
+    },
+    {
+      "key": "tests:clone:mirage/test/power-fx-oracle-regressions.test.mjs|mirage/test/power-fx-oracle-regressions.test.mjs:f08fcff5e380f7ec9f9eb099d925b3b41c2a0276275e39ee33357d485794f711",
+      "files": ["mirage/test/power-fx-oracle-regressions.test.mjs", "mirage/test/power-fx-oracle-regressions.test.mjs"],
+      "lines": 84,
+      "type": "clone",
+      "reason": "Both source windows are dominated by generated source/evidence guard descriptors (99.2% and 99.2%); original-AST-matching assertions fully inside the respective windows: 0 and 0. Keep all original assertions and proof bindings; no automatic refactor or parity weakening. Reviewed source windows: mirage/test/power-fx-oracle-regressions.test.mjs:2719-2802 and mirage/test/power-fx-oracle-regressions.test.mjs:2804-2887."
+    },
+    {
+      "key": "tests:clone:mirage/test/webapi-error-details.test.mjs|mirage/test/webapi-error-details.test.mjs:01740f409c18c64f37a4ff1ab6e63bd923d0878ddc2f0b046aa12e253e3cd254",
+      "files": ["mirage/test/webapi-error-details.test.mjs", "mirage/test/webapi-error-details.test.mjs"],
+      "lines": 12,
+      "type": "clone",
+      "reason": "Keep separate qualified and unqualified HTTP/error assertion branches at mirage/test/webapi-error-details.test.mjs:360-371 and mirage/test/webapi-error-details.test.mjs:373-384; their distinct evidence scope and original assertions must remain independently guarded."
     }
   ]
 }

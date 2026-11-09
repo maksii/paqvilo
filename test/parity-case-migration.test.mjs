@@ -15,6 +15,8 @@ const reviewed = {
   reason: 'Explicitly reviewed invented source and repeated evidence.',
   factIds: ['invented-fact'],
 };
+const hostileFilter = { prefix: `x"'); globalThis.compromised = true; //\\`, state: `\\"\n'); throw Error('x');//` };
+const hostileFilterSource = String.raw`.filter((row) => row.expression.startsWith("x\"'); globalThis.compromised = true; //\\") && row.status === "\\\"\n'); throw Error('x');//")`;
 function calls(node) {
   const found = [];
   function walk(item) {
@@ -26,6 +28,7 @@ function calls(node) {
   return found;
 }
 function setup(filter = null) {
+  if (filter) assert.deepEqual(filter, hostileFilter);
   const baselineRows = Array.from({ length: 193 }, (_, index) => [`case ${index + 1}`, index === 138 ? true : index]);
   if (filter) for (let i = 0; i < 2; i++) baselineRows[i][0] = `${filter.prefix}${i}`;
   const rows = baselineRows.map((row, index) => (index === 138 ? [row[0], { errorKind: 25 }] : row));
@@ -67,7 +70,7 @@ function setup(filter = null) {
   const declarations = values
     .map(
       ({ id }) =>
-        `const ${id}Data = JSON.parse(fs.readFileSync(new URL('./${id}.json', import.meta.url))); const ${id}Map = new Map(${id}Data.qualified${filter && id === 'p' ? `.filter((row) => row.expression.startsWith(${JSON.stringify(filter.prefix)}) && row.status === ${JSON.stringify(filter.state)})` : ''}.map(({ expression, value }) => [expression, value]));`,
+        `const ${id}Data = JSON.parse(fs.readFileSync(new URL('./${id}.json', import.meta.url))); const ${id}Map = new Map(${id}Data.qualified${filter && id === 'p' ? hostileFilterSource : ''}.map(({ expression, value }) => [expression, value]));`,
     )
     .join('\n');
   const legacy = JSON.stringify({ captures: [{ empty: true }, { empty: true }] }),
@@ -256,7 +259,7 @@ test('reconstructs all paths and retains proof assertions from source and eviden
   assert.equal(result.requiresAllRegistrations, true);
 });
 test('matches hostile filter values as literals and rejects altered source semantics', () => {
-  const filter = { prefix: `x"'); globalThis.compromised = true; //\\`, state: `\\"\n'); throw Error('x');//` };
+  const filter = hostileFilter;
   const input = setup(filter);
   assert.equal(verifyCaseMigration(input).rows.length, 193);
   const changed = structuredClone(input);
