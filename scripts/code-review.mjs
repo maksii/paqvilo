@@ -405,7 +405,7 @@ export function projectedGuardCloneKey(clone, pair, readOccurrence, verifyGuard)
   const suffix = fragment.slice(newline + 1);
   if (!suffix) return null;
   const files = [clone.firstFile, clone.secondFile];
-  const occurrences = files.map(readOccurrence);
+  const occurrences = files.map((file) => readOccurrence(file));
   if (occurrences.some((item) => !item)) return null;
   if (!files.every((file, index) => cloneSuffixMatches(file, occurrences[index], suffix))) return null;
   let guarded;
