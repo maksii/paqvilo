@@ -1,3 +1,4 @@
+// @test-kind tooling: process-slot scheduling and cancellation for isolated test child processes.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { withProcessSlot } from './process-slots.mjs';
@@ -54,4 +55,32 @@ test('process slots count each limit separately, so a stricter caller is never h
   release();
   await Promise.all(all);
   assert.deepEqual(peak, { wide: 3, narrow: 1 });
+});
+
+test('an aborted queued process never starts after the active slot is released', async () => {
+  const controller = new AbortController();
+  let release,
+    started = false;
+  const active = withProcessSlot(() => new Promise((resolve) => (release = resolve)), 1);
+  const queued = withProcessSlot(
+    () => {
+      started = true;
+    },
+    1,
+    { signal: controller.signal },
+  );
+  const rejected = assert.rejects(queued, { name: 'AbortError' });
+  const next = withProcessSlot(() => 'next', 1);
+  controller.abort();
+  release();
+  await active;
+  await rejected;
+  assert.equal(started, false);
+  assert.equal(await next, 'next');
+  await assert.rejects(
+    withProcessSlot(() => assert.fail('pre-aborted work started'), 1, { signal: controller.signal }),
+    {
+      name: 'AbortError',
+    },
+  );
 });

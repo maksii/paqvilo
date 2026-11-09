@@ -14,12 +14,27 @@ export const PROCESS_SLOTS =
 const pools = new Map();
 
 /** Runs `start` (which spawns a process and resolves when it exits) once a slot is free. */
-export async function withProcessSlot(start, limit = PROCESS_SLOTS) {
+export async function withProcessSlot(start, limit = PROCESS_SLOTS, { signal } = {}) {
+  signal?.throwIfAborted();
   let pool = pools.get(limit);
   if (!pool) pools.set(limit, (pool = { active: 0, waiting: [] }));
   if (pool.active < limit) pool.active++;
-  else await new Promise((resolve) => pool.waiting.push(resolve));
+  else
+    await new Promise((resolve, reject) => {
+      const entry = () => {
+        signal?.removeEventListener('abort', abort);
+        resolve();
+      };
+      const abort = () => {
+        const index = pool.waiting.indexOf(entry);
+        if (index !== -1) pool.waiting.splice(index, 1);
+        reject(signal.reason);
+      };
+      pool.waiting.push(entry);
+      signal?.addEventListener('abort', abort, { once: true });
+    });
   try {
+    signal?.throwIfAborted();
     return await start();
   } finally {
     // A waiting call takes this slot over directly, so a new caller cannot slip in between.
