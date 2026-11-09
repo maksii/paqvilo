@@ -12,10 +12,10 @@ export function resolveGitExecutable({ env = process.env, platform = process.pla
   let locations = ['/usr/bin/git', '/usr/local/bin/git'];
   if (platform === 'win32')
     locations = [
-      'C:\\Program Files\\Git\\cmd\\git.exe',
-      'C:\\Program Files\\Git\\bin\\git.exe',
-      'C:\\Program Files (x86)\\Git\\cmd\\git.exe',
-      'C:\\Program Files (x86)\\Git\\bin\\git.exe',
+      String.raw`C:\Program Files\Git\cmd\git.exe`,
+      String.raw`C:\Program Files\Git\bin\git.exe`,
+      String.raw`C:\Program Files (x86)\Git\cmd\git.exe`,
+      String.raw`C:\Program Files (x86)\Git\bin\git.exe`,
     ];
   else if (platform === 'darwin') locations.push('/opt/homebrew/bin/git');
   for (const candidate of locations) {

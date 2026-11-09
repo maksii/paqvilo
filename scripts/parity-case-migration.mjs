@@ -7,7 +7,7 @@ import { hashAst as astHash } from './parity-ast-utils.mjs';
 const { parse } = createRequire(import.meta.url)('espree');
 const parseSource = (source) => parse(source, { ecmaVersion: 'latest', sourceType: 'module', range: true, loc: true });
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
-export const caseMigrationAstHash = astHash;
+export { hashAst as caseMigrationAstHash } from './parity-ast-utils.mjs';
 export const caseMigrationSourceHash = digest;
 const check = (value, reason) => {
   if (!value) throw Object.assign(new Error(reason), { qualificationCode: reason });
@@ -1085,7 +1085,7 @@ export function verifyCaseMigration({ baselineSource, currentSource, candidateSo
   );
   return {
     baselineLoopSha256: astHash(originalLoop),
-    currentLoopSha256: loops[1].map(astHash),
+    currentLoopSha256: loops[1].map((node) => astHash(node)),
     candidateLoopSha256: astHash(loops[2][0]),
     candidateLoopHeaderSha256: astHash({
       type: 'CaseLoopHeader',
@@ -1093,12 +1093,12 @@ export function verifyCaseMigration({ baselineSource, currentSource, candidateSo
       right: loops[2][0].right,
       snapshot: loops[2][0].body.body[0],
     }),
-    caseDeclarationSha256: caseDeclarations.map(astHash),
+    caseDeclarationSha256: caseDeclarations.map((node) => astHash(node)),
     sourceHashes: [digest(baselineSource), digest(currentSource), digest(candidateSource)],
     evidenceHashes,
     helperAssertions: retained,
-    guidAssertionSha256: guidAssertions.map(astHash),
-    retainedAssertionHashes: [...proofCalls, ...guidAssertions].map(astHash),
+    guidAssertionSha256: guidAssertions.map((node) => astHash(node)),
+    retainedAssertionHashes: [...proofCalls, ...guidAssertions].map((node) => astHash(node)),
     originalAssertionSha256: astHash(originalAssert),
     moduleDelta,
     eligibleIndices: eligible,

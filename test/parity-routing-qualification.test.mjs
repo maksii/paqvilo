@@ -36,6 +36,11 @@ test('legacy marker detection preserves comment whitespace and word boundaries',
     /test has no @test-kind/,
   );
   assert.deepEqual(inspect("// @test-kindx\ntest('x', () => {});"), []);
+  for (const suffix of ['A', 'z', '0', '_'])
+    assert.deepEqual(inspect(`// @test-kind${suffix}\ntest('x', () => {});`), []);
+  for (const suffix of ['é', 'K', 'ſ', '\\'])
+    assert.notEqual(inspect(`// @test-kind${suffix}\ntest('x', () => {});`).length, 0);
+  assert.deepEqual(inspect("// @TEST-KIND tooling: case sensitive\ntest('x', () => {});"), []);
 });
 test('declaration scopes retain kinds for loops and indented awaited subtests', () => {
   const source = [

@@ -293,6 +293,7 @@ function panelBrowserImpl(data) {
       catalog: null,
       catalogLoading: null,
       catalogError: null,
+      /** @type {null | { rel: string, loading?: boolean, [key: string]: unknown }} */
       diff: null,
       html: {},
       flashed: (() => {

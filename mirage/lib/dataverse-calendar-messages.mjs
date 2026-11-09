@@ -100,7 +100,6 @@ function zoneFormat(iana) {
 
 // The zone's offset from UTC at an instant, in minutes (positive east of Greenwich).
 export function offsetMinutes(iana, utcMs) {
-  /** @type {Record<string, string | undefined>} */
   const parts = Object.fromEntries(
     zoneFormat(iana)
       .formatToParts(new Date(utcMs))
@@ -372,6 +371,7 @@ const MAX_NEST = 5;
 // A calendar rule's RRULE pattern as a recurrence rule. ponytail: FREQ DAILY or WEEKLY only; a weekly rule without BYDAY repeats
 // on every day.
 function patternOf(text) {
+  /** @type {Partial<Record<string, string>>} */
   const parts = Object.fromEntries(
     String(text)
       .split(';')

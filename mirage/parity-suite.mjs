@@ -1788,15 +1788,9 @@ function writeGuard({ origin, fulfil = [] }) {
   if (proto && !proto.__parityGuarded) {
     const open = proto.open;
     const send = proto.send;
-    proto.open = function (method, url, async, ...rest) {
+    proto.open = /** @param {unknown} async */ function (method, url, async, ...rest) {
       this.__parity = { method, url: String(url), async: async !== false };
-      return open.call(
-        this,
-        method,
-        url,
-        /** @type {boolean | undefined} */ (async) === undefined ? true : async,
-        ...rest,
-      );
+      return open.call(this, method, url, async === undefined ? true : async, ...rest);
     };
     proto.send = function (...args) {
       const info = this.__parity;

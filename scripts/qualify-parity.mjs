@@ -2624,7 +2624,7 @@ function reviewStaticImportRoles(model, file, generated) {
       'unsupported-builtin-import',
     );
   }
-  model.ast.body.forEach(safeBuiltin);
+  model.ast.body.forEach((node) => safeBuiltin(node));
   const direct = model.ast.body
     .filter(
       (node) =>
@@ -3093,7 +3093,7 @@ function reviewAdditionalInputDependencies(root, model, currentModel, selected, 
   return dependencies;
 }
 
-function reviewInputDependencyClosure(
+function reviewInputDependencyClosure({
   root,
   file,
   roles,
@@ -3106,7 +3106,7 @@ function reviewInputDependencyClosure(
   externalKind,
   classify,
   builtinExternal,
-) {
+}) {
   for (const source of generated.handledInputSources ?? [])
     check(
       roles.some((role) => role.source === source && role.role === 'test-input'),
@@ -3139,7 +3139,7 @@ function reviewInputDependencyClosure(
     check(/\.[cm]?js$/u.test(relative), 'unsupported-test-input-import');
     const ast = parse(bytes.toString('utf8'), { ecmaVersion: 'latest', sourceType: 'module' });
     forbidden(ast);
-    ast.body.forEach(safeBuiltin);
+    ast.body.forEach((node) => safeBuiltin(node));
     function rejectExternal(node) {
       check(
         !externalKind(node) &&
@@ -3183,7 +3183,7 @@ function reviewedImports(
   const { runtimeInputs, classify, externalKind } = reviewRuntimeInputs(model, file, selected, generated);
   const { lateImports, forbidden } = reviewLateImportOrder(model, currentModel, selected, file, fixtureSlice);
   const dependencies = reviewAdditionalInputDependencies(root, model, currentModel, selected, file, memorySlice);
-  reviewInputDependencyClosure(
+  reviewInputDependencyClosure({
     root,
     file,
     roles,
@@ -3196,7 +3196,7 @@ function reviewedImports(
     externalKind,
     classify,
     builtinExternal,
-  );
+  });
   return {
     roles,
     runtimeInputs,

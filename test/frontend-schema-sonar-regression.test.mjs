@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
+import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { windowsLaunchOptions, BACKPORTED_DISABLED_FEATURES } from '../mirage/lib/browser-launch.mjs';
 import { observedConfig } from '../mirage/lib/project-config.mjs';
@@ -102,7 +103,22 @@ test('a closed or superseded panel diff cannot be overwritten by its late respon
     'lense/panel-ui.mjs',
     (node) => ts.isCaseClause(node) && node.expression.text === 'diff',
   );
-  for (const replacement of [null, { loading: true, rel: 'newer' }]) {
+  const coercible = {
+    [Symbol.toPrimitive]() {
+      assert.fail('diff ownership must not coerce a replacement');
+    },
+  };
+  for (const replacement of [
+    null,
+    { loading: true, rel: 'newer' },
+    undefined,
+    false,
+    0,
+    '',
+    'original',
+    { loading: true, rel: 'original' },
+    coercible,
+  ]) {
     const pending = Promise.withResolvers();
     const S = { diff: null };
     let draws = 0;
@@ -122,6 +138,84 @@ test('a closed or superseded panel diff cannot be overwritten by its late respon
     assert.strictEqual(S.diff, replacement);
     assert.equal(draws, 2);
   }
+});
+
+test('panel diff ownership accepts only the current request, including requests for the same path', async () => {
+  const clause = await sourceNode(
+    'lense/panel-ui.mjs',
+    (node) => ts.isCaseClause(node) && node.expression.text === 'diff',
+  );
+  const firstResponse = Promise.withResolvers();
+  const secondResponse = Promise.withResolvers();
+  const responses = [firstResponse, secondResponse];
+  const S = { diff: null };
+  let draws = 0;
+  const run = vm.runInNewContext(`(async () => { switch (action) { ${clause} } })`, {
+    S,
+    action: 'diff',
+    rel: 'original',
+    url: '/original',
+    fresh: () => draws++,
+    api: () => responses.shift().promise,
+  });
+  const first = run();
+  const firstPending = S.diff;
+  const second = run();
+  const secondPending = S.diff;
+  assert.notStrictEqual(firstPending, secondPending);
+  secondResponse.resolve({ ok: true, text: 'current result', rel: 'response cannot change the requested path' });
+  await second;
+  const current = S.diff;
+  assert.equal(current.ok, true);
+  assert.equal(current.text, 'current result');
+  assert.equal(current.rel, 'original');
+  firstResponse.resolve({ ok: true, text: 'late original result' });
+  await first;
+  assert.strictEqual(S.diff, current);
+  assert.equal(draws, 4);
+});
+
+test('the declared panel diff state accepts pending requests and the closed null state', () => {
+  const file = fileURLToPath(new URL('../lense/panel-ui.mjs', import.meta.url));
+  const program = ts.createProgram([file], {
+    allowJs: true,
+    noEmit: true,
+    strictNullChecks: true,
+    target: ts.ScriptTarget.ESNext,
+    module: ts.ModuleKind.NodeNext,
+    moduleResolution: ts.ModuleResolutionKind.NodeNext,
+    types: [],
+  });
+  const source = program.getSourceFile(file);
+  const checker = program.getTypeChecker();
+  let comparison;
+  let state;
+  const visit = (node) => {
+    if (ts.isVariableDeclaration(node) && node.name.getText(source) === 'S') state = node;
+    if (
+      ts.isBinaryExpression(node) &&
+      ts.isPropertyAccessExpression(node.left) &&
+      node.left.expression.getText(source) === 'S' &&
+      node.left.name.text === 'diff' &&
+      ts.isIdentifier(node.right) &&
+      node.right.text === 'pending'
+    )
+      comparison = node;
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  assert.ok(comparison);
+  assert.ok(state);
+  assert.equal(
+    checker.isTypeAssignableTo(checker.getTypeAtLocation(comparison.right), checker.getTypeAtLocation(comparison.left)),
+    true,
+    'the ownership comparison must be possible for the pending request assigned before await',
+  );
+  const diff = state.initializer.properties.find((property) => property.name?.getText(source) === 'diff');
+  assert.equal(
+    checker.isTypeAssignableTo(checker.getTypeAtLocation(diff.initializer), checker.getTypeAtLocation(diff)),
+    true,
+  );
 });
 
 test('folder response becomes the picker data and website selection retains its custom-folder path', async () => {

@@ -239,7 +239,6 @@ export function assertPureFixtureBootstrap({ ast }) {
       if (prop.computed) pure(prop.key);
       pure(prop.value);
     }
-    return;
   }
   function pureLocalCall(node) {
     const variable = refs.get(node.callee),
@@ -259,7 +258,6 @@ export function assertPureFixtureBootstrap({ ast }) {
     } finally {
       active.delete(variable);
     }
-    return;
   }
   function pureDate(node) {
     const utc = node.arguments[0];
@@ -272,7 +270,6 @@ export function assertPureFixtureBootstrap({ ast }) {
         utc.callee.property.name === 'UTC' &&
         utc.arguments.every((arg) => arg.type === 'Literal' && typeof arg.value === 'number'),
     );
-    return;
   }
   function pureJoin(node) {
     requireProof(
@@ -280,7 +277,6 @@ export function assertPureFixtureBootstrap({ ast }) {
     );
     pure(node.callee.object);
     node.arguments.forEach(pure);
-    return;
   }
   function pure(node) {
     if (!node || node.type === 'Literal') return;
@@ -1372,12 +1368,11 @@ function ownedReads(ast, { fixtureName, mapName, map, fsName, pathName }) {
 function isolatedReads(ast, { selectedRow, fixtureName, mapName, map, fsName, pathName, implementationSources }) {
   const empty = () => ({ reads: [], nodes: new Set() });
   const sources = new Set(implementationSources ?? []),
-    sutNames = new Set();
-  for (const item of ast.body) {
-    if (item.type === 'ImportDeclaration' && sources.has(item.source.value)) {
-      for (const specifier of item.specifiers) sutNames.add(specifier.local.name);
-    }
-  }
+    sutNames = new Set(
+      ast.body
+        .filter((item) => item.type === 'ImportDeclaration' && sources.has(item.source.value))
+        .flatMap((item) => item.specifiers.map((specifier) => specifier.local.name)),
+    );
   if (!sutNames.size) return empty();
   const imports = ast.body.filter((item) => item.type === 'ImportDeclaration' && item.source.value === 'node:test');
   if (
@@ -1539,100 +1534,93 @@ function isolatedReads(ast, { selectedRow, fixtureName, mapName, map, fsName, pa
   );
   const reads = [],
     nodes = new Set();
-  const collectIsolatedReads = () => {
-    function inspectUnselectedRegistration(registration) {
-      const callback = registration.arguments[1];
-      if (callback === selectedRow.callback || !callback.async || callback.params.length !== 1) return;
-      const body = callback.body.body;
-      function inspectFixtureStatement(statement) {
-        if (
-          statement.type !== 'VariableDeclaration' ||
-          statement.kind !== 'const' ||
-          statement.declarations.length !== 1
-        )
-          return;
-        const binding = statement.declarations[0],
-          setup = binding.init?.argument;
-        if (
-          binding.id.type !== 'Identifier' ||
-          binding.init?.type !== 'AwaitExpression' ||
-          setup?.type !== 'CallExpression' ||
-          setup.callee?.name !== fixtureName ||
-          setup.arguments.length !== 2 ||
-          setup.arguments[0]?.type !== 'Identifier' ||
-          setup.arguments[0].name !== callback.params[0].name
-        )
-          return;
-        const expanded = entriesWithSpread(setup.arguments[1], mapName, map);
-        if (!expanded) return;
-        let entries;
-        try {
-          entries = literalEntries(expanded);
-        } catch {
-          return;
-        }
-        const dir = binding.id.name,
-          uses = [],
-          localReads = [];
-        let definitions = 0;
-        walk(callback, (node, parent) => {
-          if (node.type === 'VariableDeclarator' && bindingNames(node.id).includes(dir)) definitions++;
-          if (
-            ['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression'].includes(node.type) &&
-            node !== callback &&
-            node.params.some((param) => bindingNames(param).includes(dir))
-          )
-            definitions++;
-          if (node.type === 'Identifier' && node.name === dir && node !== binding.id) uses.push({ node, parent });
-          if (
-            node.type === 'CallExpression' &&
-            node.callee?.type === 'MemberExpression' &&
-            !node.callee.computed &&
-            node.callee.object?.name === fsName &&
-            node.callee.property.name === 'readFile' &&
-            node.arguments.length === 2 &&
-            node.arguments[1]?.value === 'utf8'
-          ) {
-            const joined = node.arguments[0],
-              file = joined?.arguments?.[1]?.value;
-            if (
-              joined?.type === 'CallExpression' &&
-              joined.callee?.type === 'MemberExpression' &&
-              !joined.callee.computed &&
-              joined.callee.object?.name === pathName &&
-              joined.callee.property.name === 'join' &&
-              joined.arguments.length === 2 &&
-              joined.arguments[0]?.type === 'Identifier' &&
-              joined.arguments[0].name === dir &&
-              joined.arguments[1]?.type === 'Literal' &&
-              entries.some((entry) => entry.name === file)
-            )
-              localReads.push({ fs: node.callee.object, joined, file });
-          }
-        });
-        if (definitions !== 1 || !localReads.length) return;
-        const allowed = uses.every(
-          ({ node, parent }) =>
-            parent?.type === 'CallExpression' &&
-            parent.arguments[0] === node &&
-            ((parent.callee?.type === 'Identifier' && sutBindings.has(resolved.get(parent.callee))) ||
-              localReads.some((read) => read.joined === parent)),
-        );
-        if (!allowed) return;
-        for (const read of localReads) {
-          nodes.add(read.fs);
-          reads.push({
-            registrationSha256: digest(JSON.stringify(clean(registration))),
-            entry: read.file,
-            entrySha256: entries.find((item) => item.name === read.file).sha256,
-          });
-        }
+  function inspectUnselectedRegistration(registration) {
+    const callback = registration.arguments[1];
+    if (callback === selectedRow.callback || !callback.async || callback.params.length !== 1) return;
+    const body = callback.body.body;
+    function inspectFixtureStatement(statement) {
+      if (statement.type !== 'VariableDeclaration' || statement.kind !== 'const' || statement.declarations.length !== 1)
+        return;
+      const binding = statement.declarations[0],
+        setup = binding.init?.argument;
+      if (
+        binding.id.type !== 'Identifier' ||
+        binding.init?.type !== 'AwaitExpression' ||
+        setup?.type !== 'CallExpression' ||
+        setup.callee?.name !== fixtureName ||
+        setup.arguments.length !== 2 ||
+        setup.arguments[0]?.type !== 'Identifier' ||
+        setup.arguments[0].name !== callback.params[0].name
+      )
+        return;
+      const expanded = entriesWithSpread(setup.arguments[1], mapName, map);
+      if (!expanded) return;
+      let entries;
+      try {
+        entries = literalEntries(expanded);
+      } catch {
+        return;
       }
-      for (const statement of body) inspectFixtureStatement(statement);
+      const dir = binding.id.name,
+        uses = [],
+        localReads = [];
+      let definitions = 0;
+      walk(callback, (node, parent) => {
+        if (node.type === 'VariableDeclarator' && bindingNames(node.id).includes(dir)) definitions++;
+        if (
+          ['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression'].includes(node.type) &&
+          node !== callback &&
+          node.params.some((param) => bindingNames(param).includes(dir))
+        )
+          definitions++;
+        if (node.type === 'Identifier' && node.name === dir && node !== binding.id) uses.push({ node, parent });
+        if (
+          node.type === 'CallExpression' &&
+          node.callee?.type === 'MemberExpression' &&
+          !node.callee.computed &&
+          node.callee.object?.name === fsName &&
+          node.callee.property.name === 'readFile' &&
+          node.arguments.length === 2 &&
+          node.arguments[1]?.value === 'utf8'
+        ) {
+          const joined = node.arguments[0],
+            file = joined?.arguments?.[1]?.value;
+          if (
+            joined?.type === 'CallExpression' &&
+            joined.callee?.type === 'MemberExpression' &&
+            !joined.callee.computed &&
+            joined.callee.object?.name === pathName &&
+            joined.callee.property.name === 'join' &&
+            joined.arguments.length === 2 &&
+            joined.arguments[0]?.type === 'Identifier' &&
+            joined.arguments[0].name === dir &&
+            joined.arguments[1]?.type === 'Literal' &&
+            entries.some((entry) => entry.name === file)
+          )
+            localReads.push({ fs: node.callee.object, joined, file });
+        }
+      });
+      if (definitions !== 1 || !localReads.length) return;
+      const allowed = uses.every(
+        ({ node, parent }) =>
+          parent?.type === 'CallExpression' &&
+          parent.arguments[0] === node &&
+          ((parent.callee?.type === 'Identifier' && sutBindings.has(resolved.get(parent.callee))) ||
+            localReads.some((read) => read.joined === parent)),
+      );
+      if (!allowed) return;
+      for (const read of localReads) {
+        nodes.add(read.fs);
+        reads.push({
+          registrationSha256: digest(JSON.stringify(clean(registration))),
+          entry: read.file,
+          entrySha256: entries.find((item) => item.name === read.file).sha256,
+        });
+      }
     }
-    for (const registration of registrations) inspectUnselectedRegistration(registration);
-  };
-  collectIsolatedReads();
+    for (const statement of body) inspectFixtureStatement(statement);
+  }
+  for (const registration of registrations) inspectUnselectedRegistration(registration);
   return { reads, nodes };
 }
 function confined(root, relative) {

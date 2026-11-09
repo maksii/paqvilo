@@ -42,7 +42,7 @@ const FILE_TAG_LINES = 40;
 function tagAfterComment(text, index) {
   let next = index + 2;
   while (next < text.length && /\s/u.test(text[next])) next++;
-  return text.startsWith('@test-kind', next) && !/[A-Za-z0-9_]/u.test(text[next + 10] ?? '');
+  return text.startsWith('@test-kind', next) && !/\w/u.test(text[next + 10] ?? '');
 }
 function hasAnyTag(text) {
   let lineStart = true;

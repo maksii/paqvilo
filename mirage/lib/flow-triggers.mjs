@@ -807,7 +807,7 @@ export function createFlowTriggerRunner({
       );
     },
   });
-  async function startHost(key, { item, definition, trigger }) {
+  async function startHost(key, { item, definition, trigger }, connectors) {
     const host = {
       key,
       processId: item.processId,
@@ -837,11 +837,8 @@ export function createFlowTriggerRunner({
       });
       return;
     }
-    // A supported connector trigger was admitted only after inspecting this registry.
     const raw = Object.values(definition.triggers)[0],
-      entry = /** @type {{flowTriggers: (connectorId: string, operationId: string | null) => any}} */ (
-        connectors
-      ).flowTriggers(trigger.connectorId, trigger.operationId);
+      entry = connectors.flowTriggers(trigger.connectorId, trigger.operationId);
     Object.assign(host, {
       connectorId: trigger.connectorId,
       operationId: trigger.operationId,
@@ -911,7 +908,7 @@ export function createFlowTriggerRunner({
     }
     for (const [key, want] of found)
       if (!hosts.has(key) && want.trigger.supported && want.trigger.kind !== 'http' && eligible(want.item))
-        await startHost(key, want);
+        await startHost(key, want, connectors);
     return list(found);
   }
   /** The trigger hosts: one entry per Recurrence, HTTP Request and connector-trigger flow. */

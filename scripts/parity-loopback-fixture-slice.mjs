@@ -505,6 +505,49 @@ export function analyzeOwnedHttpTransport({ baselineAst, currentAst, selected })
   return { baseline, current, transportAstSha256: baseline.hash };
 }
 
+function validateRoutingLoopEnvironment(ast, refs) {
+  const dangerous = new Set([
+    'Array',
+    'Object',
+    'Reflect',
+    'Symbol',
+    'Proxy',
+    'globalThis',
+    'global',
+    'Function',
+    'eval',
+  ]);
+  walk(ast, (node) => {
+    requireProof(!['ImportExpression', 'WithStatement', 'ClassDeclaration', 'ClassExpression'].includes(node.type));
+    if (node.type === 'Identifier') requireProof(!dangerous.has(node.name));
+    if (node.type === 'Property')
+      requireProof(
+        !node.computed && !['prototype', '__proto__', 'constructor'].includes(node.key.name ?? node.key.value),
+      );
+    if (node.type === 'MemberExpression') {
+      let key;
+      if (!node.computed) key = node.property.name;
+      else if (node.property.type === 'Literal') key = node.property.value;
+      else if (node.property.type === 'Identifier') {
+        const ref = refs.find((item) => item.identifier === node.property),
+          variable = ref?.resolved,
+          def = variable?.defs[0];
+        requireProof(
+          variable?.defs.length === 1 &&
+            def?.type === 'Variable' &&
+            def.node.id?.type === 'Identifier' &&
+            def.parent?.kind === 'const' &&
+            def.node.init?.type === 'Literal' &&
+            typeof def.node.init.value === 'string' &&
+            !variable.references.some((item) => item.isWrite() && !item.init),
+        );
+        key = def.node.init.value;
+      } else requireProof(false);
+      requireProof(!['prototype', '__proto__', 'constructor'].includes(key));
+    }
+  });
+}
+
 /** Check routing components; the caller must still prove ambient and authentication inputs. */
 export function analyzeRoutingComponents({ baselineAst, currentAst, selected, implementationSources = [] }) {
   const hooks = analyzeLoopbackFixtureSlice({ baselineAst, currentAst, selected, implementationSources });
@@ -719,51 +762,7 @@ export function analyzeRoutingComponents({ baselineAst, currentAst, selected, im
     const loopCertificates = [];
     const validateProvenLoops = () => {
       if (!provenLoops.size) return;
-      const dangerous = new Set([
-        'Array',
-        'Object',
-        'Reflect',
-        'Symbol',
-        'Proxy',
-        'globalThis',
-        'global',
-        'Function',
-        'eval',
-      ]);
-      validateLoopEnvironment();
-      function validateLoopEnvironment() {
-        walk(ast, (node) => {
-          requireProof(
-            !['ImportExpression', 'WithStatement', 'ClassDeclaration', 'ClassExpression'].includes(node.type),
-          );
-          if (node.type === 'Identifier') requireProof(!dangerous.has(node.name));
-          if (node.type === 'Property')
-            requireProof(
-              !node.computed && !['prototype', '__proto__', 'constructor'].includes(node.key.name ?? node.key.value),
-            );
-          if (node.type === 'MemberExpression') {
-            let key;
-            if (!node.computed) key = node.property.name;
-            else if (node.property.type === 'Literal') key = node.property.value;
-            else if (node.property.type === 'Identifier') {
-              const ref = refs.find((item) => item.identifier === node.property),
-                variable = ref?.resolved,
-                def = variable?.defs[0];
-              requireProof(
-                variable?.defs.length === 1 &&
-                  def?.type === 'Variable' &&
-                  def.node.id?.type === 'Identifier' &&
-                  def.parent?.kind === 'const' &&
-                  def.node.init?.type === 'Literal' &&
-                  typeof def.node.init.value === 'string' &&
-                  !variable.references.some((item) => item.isWrite() && !item.init),
-              );
-              key = def.node.init.value;
-            } else requireProof(false);
-            requireProof(!['prototype', '__proto__', 'constructor'].includes(key));
-          }
-        });
-      }
+      validateRoutingLoopEnvironment(ast, refs);
       const assertionImports = ast.body.filter(
         (node) =>
           node.type === 'ImportDeclaration' &&

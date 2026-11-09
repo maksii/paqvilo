@@ -107,7 +107,7 @@ export function validateMicrosoftCdnArtifact(pkg, publisherReads, runs) {
       const declared = new Set();
       for (const item of pkg.manifests) {
         const info = manifest(item);
-        if (!info || expectedReads.has(item.source)) return false;
+        if (!info || expectedReads.has(item.source)) return null;
         expectedReads.set(item.source, { sha256: item.sha256, size: info.size });
         for (const entry of info.entries) declared.add(entry);
       }
@@ -121,15 +121,14 @@ export function validateMicrosoftCdnArtifact(pkg, publisherReads, runs) {
           !validSize(item.size) ||
           expectedReads.has(item.source)
         )
-          return false;
+          return null;
         assets.set(item.source, item);
         expectedReads.set(item.source, item);
       }
       const components = new Set([...assets.keys()].map((source) => controlUrl(source).component));
       for (const component of components)
-        if (![...declared].some((entry) => assets.has(entry) && controlUrl(entry).component === component))
-          return false;
-      if (publisherReads.length !== expectedReads.size) return false;
+        if (![...declared].some((entry) => assets.has(entry) && controlUrl(entry).component === component)) return null;
+      if (publisherReads.length !== expectedReads.size) return null;
       const seenReads = new Set();
       for (const read of publisherReads) {
         const expected = expectedReads.get(read?.source);
@@ -141,7 +140,7 @@ export function validateMicrosoftCdnArtifact(pkg, publisherReads, runs) {
           read.sha256 !== expected.sha256 ||
           read.size !== expected.size
         )
-          return false;
+          return null;
         seenReads.add(read.source);
       }
       return assets;

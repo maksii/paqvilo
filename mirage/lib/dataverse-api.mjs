@@ -2039,9 +2039,19 @@ export async function startDataverseApi({
   });
   const activeOrganization = organization;
   ({ store, settings, change, clock } = organization);
-  const { api, principals, metadata, changes, routes, limits, tenantId, organizationId, environmentId } = organization;
-  const operations = organization.registry,
-    recordHandlers = organization.records;
+  const {
+    api,
+    principals,
+    metadata,
+    changes,
+    routes,
+    limits,
+    tenantId,
+    organizationId,
+    environmentId,
+    registry: operations,
+    records: recordHandlers,
+  } = organization;
   metadataFields = api.metadataFields;
   const servers = [];
   let tds, closing;
@@ -2051,7 +2061,7 @@ export async function startDataverseApi({
         Promise.resolve().then(() => tds?.close()),
         ...servers.map(closeServer),
       ]);
-      if (ownsOrganization) await activeOrganization.close();
+      if (ownsOrganization) await activeOrganization?.close();
       const failures = results.filter((result) => result.status === 'rejected').map((result) => result.reason);
       if (failures.length) throw new AggregateError(failures, 'Dataverse transport cleanup failed.');
     })());
