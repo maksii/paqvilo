@@ -2,7 +2,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { analyzeSoapValueInputs, qualifySoapValues } from '../scripts/qualify-soap-values.mjs';
 import { soapValueRegionsValid } from '../scripts/parity-soap-value-regions.mjs';
@@ -11,12 +10,19 @@ const file = 'mirage/test/dataverse-soap-xml.test.mjs';
 const capsule = JSON.parse(
   fs.readFileSync(new URL('../mirage/test/fixtures/dataverse-soap-sdk-values-20261109.json', import.meta.url)),
 );
-const baseline = execFileSync('git', ['show', `${capsule.baseline}:${file}`], { encoding: 'utf8' });
+// Exact bytes of `file` at commit 1171cccc8baed9218f7fd7689afae4abdc89252b; Git blob e55494adee86843a99d0e6c39d03ef3ac3b6ae5b.
+const baselineBytes = fs.readFileSync(new URL('./fixtures/dataverse-soap-xml-original-1171.txt', import.meta.url));
+const baseline = baselineBytes.toString('utf8');
 const reference = JSON.parse(
   fs.readFileSync(new URL('../mirage/test/fixtures/dataverse-soap-sdk-interop-46-candidate.json', import.meta.url)),
 );
 
 const hash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+test('frozen SOAP source matches the pinned baseline bytes', () => {
+  assert.equal(capsule.baseline, '1171cccc8baed9218f7fd7689afae4abdc89252b');
+  assert.equal(createHash('sha256').update(baselineBytes).digest('hex'), capsule.baselineSourceSha256);
+  assert.equal(capsule.baselineSourceSha256, 'f9714a545510a9a6eeec463c04d866cbd42015f8acafef5f48e5f0f4c32440cf');
+});
 const proof = {
   facts: capsule.source.map((s, i) => ({
     id: `sdk-value-${s.id.split(':')[1]}`,
