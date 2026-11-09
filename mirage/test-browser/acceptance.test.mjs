@@ -9,10 +9,10 @@ import { createSimulator } from '../server.mjs';
 import { runAcceptance } from '../acceptance.mjs';
 import { signInContext } from '../testing/session.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { PROCESS_SLOTS } from '../test/process-slots.mjs';
 
-// Each test owns its loopback server or simulator and the browser runAcceptance launches, and mostly waits
-// on fixture response delays, so a few run at once.
-const TESTS_IN_PARALLEL = 4;
+// Each test launches its own browser. Respect the lane's process budget as well as the outer file concurrency.
+const TESTS_IN_PARALLEL = Math.min(4, PROCESS_SLOTS);
 // Hang guards, not product budgets: a browser launch, flows bounded by their own action timeouts, the runner's
 // 500 ms network-quiet settles and full-page evidence screenshots, and close. A loaded runner spends seconds on each.
 const HANG_GUARD = { timeout: 60_000 };
@@ -229,6 +229,15 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
             },
           ],
         });
+        if (!result.passed)
+          t.diagnostic(
+            JSON.stringify({
+              error: result.flows[0].error,
+              navigationWaits: result.flows[0].navigationWaits,
+              failedRequests: result.flows[0].failedRequests.length,
+              cancelledRequests: result.flows[0].navigationCancelledRequests.length,
+            }),
+          );
         assert.equal(result.passed, true, JSON.stringify(result.flows[0]));
         assert.equal(writes.size, beforeNavigation ? 3 : 2);
         const cancelled = result.flows[0].navigationCancelledRequests;

@@ -1,3 +1,4 @@
+// @test-kind unproven: held or unreviewed platform-sensitive behavior has no native proof in this review.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

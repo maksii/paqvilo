@@ -1,3 +1,4 @@
+// @test-kind security: Local masked-column confidentiality and privilege-boundary regressions; no blanket native parity claim.
 // Masking rules on secured columns: a reader with Read gets the masked value; UnMaskedData=true returns the clear
 // value only with CanReadUnmasked (1 One Record: single-record reads; 3 All Records: every read); every principal,
 // System Administrators included, reads masked values until it asks.
@@ -172,13 +173,15 @@ test('a System Administrator reads masked values until it asks for UnMaskedData'
   assert.equal(await f.many('&UnMaskedData=true', ADMIN), SECRET);
 });
 
+// @test-kind compatibility: Repeated native wrong-case requests verify this parameter error before column projection, not field-security equivalence.
+// @parity-evidence: Two independent raw responses have SHA256 aae8f60065297d815f198fe04c1d7462ac56f180e1ce2ceb09d87abeb1044b60 and contain the literal platform redaction; verification SHA256 3dc1581fb96f35a6c794e582ff1a51f9ebb17ab63dc2f6bda4085035717d3f98.
 test('unmaskeddata (wrong case) answers 0x80060888', async () => {
   const f = shared[3];
   const response = await f.request('GET', `/x_items?$select=x_secret&unmaskeddata=true`, undefined, {}, CUST);
   assert.equal(response.status, 400);
   const body = await response.json();
   assert.equal(body.error.code, '0x80060888');
-  assert.match(body.error.message, /The query parameter unmaskeddata is not supported/);
+  assert.equal(body.error.message, 'The query parameter [REDACTED] is not supported');
 });
 
 test('a regex JS cannot compile reads null with MASKING_RULE_UNSUPPORTED', async (t) => {

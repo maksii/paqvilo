@@ -54,13 +54,8 @@ function decodePac(buffer) {
 
 function parseResult(row, value) {
   if (/^<Error:.*>$/.test(value)) return { kind: 'error', message: value.slice(7, -1).trim() };
-  if (/^"(?:[^"\\]|\\.)*"$/.test(value)) {
-    try {
-      return { kind: 'value', value: JSON.parse(value) };
-    } catch {
-      throw fail('PacOutputInvalid', `Invalid string result for ${row.id}.`);
-    }
-  }
+  // PAC emits Power Fx literals: doubled quotes escape a quote; backslashes stay literal.
+  if (/^"(?:[^"]|"")*"$/.test(value)) return { kind: 'value', value: value.slice(1, -1).replaceAll('""', '"') };
   if (/^-?(?:\d+)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(value)) {
     try {
       return { kind: 'value', value: exactNumeric(value) };
@@ -94,12 +89,19 @@ const oracleOutcome = (row, result, reference, actual) =>
       throw fail('PacOutputInvalid', 'Unexpected or out-of-order echoed expression.');
     const value = lines[++i]?.trim();
     if (!value) throw fail('PacOutputInvalid', `Missing result for ${row.id}.`);
+    if (/^Line \d+: Error(?: \d+(?:-\d+)?)?: /.test(value)) {
+      const messages = [value];
+      while (/^Line \d+: Error(?: \d+(?:-\d+)?)?: /.test(lines[i + 1]?.trim() ?? '')) messages.push(lines[++i].trim());
+      found.push({ kind: 'compile-error', messages });
+      continue;
+    }
     found.push(parseResult(row, value));
   }
   if (found.length !== corpus.length) throw fail('PacOutputInvalid', 'PAC did not return every corpus result.');
   return found;
 }
 export function compareResults(reference, actual, pacProbe, mirageProbe) {
+  if (![reference.kind, actual.kind].every((kind) => ['value', 'error'].includes(kind))) return 'comparison-error';
   if (reference.kind !== actual.kind) return 'difference';
   if (reference.kind !== 'error') {
     const numeric = (value) => typeof value === 'number' || isExactNumeric(value);

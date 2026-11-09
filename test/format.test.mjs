@@ -1,3 +1,4 @@
+// @test-kind unproven: local review has not established every held or unreviewed platform-sensitive behavior.
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
@@ -7,6 +8,7 @@ import * as prettier from 'prettier';
 import { formatProject } from '../scripts/format.mjs';
 import { tempDir } from './fixture.mjs';
 
+// @test-kind tooling: atomic formatting retains CLI ignores and configuration and is idempotent
 test('atomic formatting retains CLI ignores and configuration and is idempotent', async (t) => {
   const root = await tempDir('paqvilo-format-');
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -34,6 +36,7 @@ test('atomic formatting retains CLI ignores and configuration and is idempotent'
   assert.deepEqual(await fs.readdir(path.join(root, '.paqvilo', 'format')), []);
 });
 
+// @test-kind tooling: atomic formatting preserves permissions even under a restrictive umask
 test(
   'atomic formatting preserves permissions even under a restrictive umask',
   { skip: process.platform === 'win32' },
@@ -53,6 +56,7 @@ test(
   },
 );
 
+// @test-kind tooling: formatting preserves a concurrent source save instead of overwriting it
 test('formatting preserves a concurrent source save instead of overwriting it', async (t) => {
   const root = await tempDir('paqvilo-format-concurrent-');
   t.after(() => fs.rm(root, { recursive: true, force: true }));

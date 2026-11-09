@@ -1,5 +1,9 @@
+// @test-kind contract: imported field metadata and disposed-context refusals preserve local client boundaries.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { captureModelDrivenContract } from '../testing/model-driven-contract.mjs';
 import { createFormClientRuntime } from '../lib/model-driven/client-runtime.mjs';
 
 function fixture(fields) {
@@ -35,13 +39,14 @@ test('attribute metadata accessors retain source constraints independently of cu
   assert.deepEqual([amount.getMin(), amount.getMax(), amount.getPrecision()], [-12.25, 0, 3]);
   assert.equal(runtime.formContext.getAttribute('x_title').getMaxLength(), 47);
   assert.equal(runtime.formContext.getAttribute('x_notes').getMaxLength(), 2000);
-  assert.throws(() => runtime.formContext.getAttribute('x_title').getMin(), /does not support/);
-  assert.throws(() => amount.getMaxLength(), /does not support/);
+  // @parity-evidence: model-driven-form-membership-native-facts.json SHA256 0cbae975bfa35da7d5266c3be4a2110b5dc00ce6af2ca480e1ddc45a1b8fd3a1 binds two native runs where these type-inapplicable getters are absent and the unchanged calls raise TypeError; no error text is normalized.
+  assert.throws(() => runtime.formContext.getAttribute('x_title').getMin(), TypeError);
+  assert.throws(() => amount.getMaxLength(), TypeError);
   runtime.destroy();
   assert.throws(() => amount.getMax(), /disposed/);
 });
 
-test('missing metadata and choice columns refuse numeric accessors instead of inventing limits', () => {
+test('missing limits refuse numeric accessors while integer precision derives from its type', async (t) => {
   const runtime = fixture({
     x_number: { name: 'x_number', type: 'number', dataverseType: 'int' },
     x_text: { name: 'x_text', type: 'text' },
@@ -59,7 +64,22 @@ test('missing metadata and choice columns refuse numeric accessors instead of in
   const number = runtime.formContext.getAttribute('x_number');
   assert.throws(() => number.getMin(), /without imported numeric minValue metadata/);
   assert.throws(() => number.getMax(), /without imported numeric maxValue metadata/);
-  assert.throws(() => number.getPrecision(), /without imported numeric precision metadata/);
+  // @parity-evidence: two native UCI runs on 2026-11-08 report integer precision 0; see mirage/test/fixtures/frontend-parity-evidence.md.
+  // @test-kind parity: reproduced native2026-11-08 UCI integer.getPrecision; frontend-parity-evidence.json model-driven suite.
+  // @parity-evidence: both retained121-result captures use the checksum-bound expected fixture and producer below; only this original assertion is qualified.
+  await t.test('native integer precision is zero without a decimal scale', () => {
+    assert.equal(
+      createHash('sha256')
+        .update(readFileSync(new URL('./fixtures/model-driven-contract-expected.json', import.meta.url)))
+        .digest('hex'),
+      '99de1dcf0a8b390347e3780db499c30224c1dd39914995bcdf2a414faa2823a8',
+    );
+    assert.equal(
+      createHash('sha256').update(captureModelDrivenContract.toString()).digest('hex'),
+      '2f29fa7c4642839a8c24b276449de9b37a33a2d88f62fe4ca18a01f7b9912089',
+    );
+    assert.equal(number.getPrecision(), 0);
+  });
   assert.throws(
     () => runtime.formContext.getAttribute('x_text').getMaxLength(),
     /without imported numeric maxLength metadata/,

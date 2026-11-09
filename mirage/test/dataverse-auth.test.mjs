@@ -1,3 +1,4 @@
+// @test-kind unproven: Local identity-provider protocol models; toolkit-only authority isolation and credential-storage policy tests are explicitly distinguished below.
 import assert from 'node:assert/strict';
 import {
   X509Certificate,
@@ -195,6 +196,7 @@ test("JWKS publishes one RS256 key whose n and e verify the authority's tokens",
   assert.equal(JSON.parse(Buffer.from(head, 'base64url').toString('utf8')).kid, keys[0].kid);
 });
 
+// @test-kind security+contract: Each local simulator authority owns its signing key and refuses a sibling simulator token; this isolation policy is not an Entra key-management parity claim.
 test('every authority signs with its own key by default: another one refuses its tokens and publishes a different kid', () => {
   const { applications } = fixture();
   const authority = () =>
@@ -585,6 +587,7 @@ test('verifyBearer tolerates five minutes of clock skew after expiry', () => {
   assert.equal(auth.verifyBearer(`Bearer ${access}`, { origin: ORIGIN, tenantId: TENANT }).ok, true);
 });
 
+// @test-kind security: Toolkit credential storage verifies its own salted hash and rejects a different secret; Microsoft token-service storage internals are outside this guarantee.
 test('hashSecret and verifySecret round trip and reject a mismatch', () => {
   const stored = hashSecret('invented-secret');
   assert.match(stored.hash, /^scrypt\$/);
@@ -594,6 +597,7 @@ test('hashSecret and verifySecret round trip and reject a mismatch', () => {
   assert.notEqual(hashSecret('invented-secret').hash, stored.hash);
 });
 
+// @test-kind security+contract: Compatibility with Paqvilo's legacy local hash format and bounds on its work factors are local persistence/security policy, not native identity-provider behavior.
 test('secret verification accepts legacy local hashes and rejects malformed work factors', () => {
   // Historical salted SHA-256 fixture; literal bytes avoid introducing a weak hash writer.
   const legacy = { salt: 'aW52ZW50ZWQtc2FsdA', hash: 'dsuPwGAtfFyufBsFuG9HsfrkwmzU3sG4kDuzD1710d0' };

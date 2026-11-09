@@ -1,3 +1,4 @@
+// @test-kind unproven: source form membership and local client boundaries require individually bound native proof; unmatched assertions remain unproven.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { compileForm } from '../lib/model-driven/solution.mjs';

@@ -1,6 +1,7 @@
 import { parseKeySegment } from './data.mjs';
 import { DataError } from './data-error.mjs';
 import { dataverseReaderMessage } from './dataverse-reader-details.mjs';
+import { appendObservedDataverseErrorTemplate } from './dataverse-error-templates.mjs';
 import { annotationMatcher } from './webapi-handler.mjs';
 import { uuidV5 } from './dataverse-security.mjs';
 
@@ -683,7 +684,10 @@ function cdsErrorAnnotations(prefer, { code, status, method, logical, requestId,
 }
 
 /** Store error -> { status, body, headers }. Dataverse innerCode wins, then the store code, then the status. */
-export function dataverseError(error, { prefer, logical, requestId, origin, tenantId, id, method } = {}) {
+export function dataverseError(
+  error,
+  { prefer, logical, requestId, origin, tenantId, id, method, errorStacks, errorTemplates, attributeErrorContext } = {},
+) {
   const details = error?.details ?? {};
   if (error?.code === 'Unauthorized') return unauthorizedDataverseError(details, requestId, origin, tenantId);
   // A duplicate of an entity (alternate) key carries its own Dataverse code and message whatever the inner code says.
@@ -691,7 +695,25 @@ export function dataverseError(error, { prefer, logical, requestId, origin, tena
   const [status, code] = keyViolation ? [412, '0x80060892'] : resolveError(error);
   const initialMessage = dataverseReaderMessage(error) ?? error?.message ?? 'An unexpected error occurred.';
   const recordId = id ?? details.id;
-  const message = dataverseErrorMessage(initialMessage, details, { status, code, keyViolation, logical, recordId });
+  let formatted = dataverseErrorMessage(initialMessage, details, { status, code, keyViolation, logical, recordId });
+  if (
+    error?.code === 'InvalidFetchXml' &&
+    code === '0x80041103' &&
+    attributeErrorContext?.entity === details.entity &&
+    details.attribute
+  ) {
+    const { organizationIndex, metadataId, entity } = attributeErrorContext;
+    formatted += `orgIndex: ${organizationIndex}, id: ${metadataId}, logicalName: ${entity}`;
+  }
+  const message =
+    code === '0x80048d19'
+      ? appendObservedDataverseErrorTemplate(formatted, {
+          mode: errorStacks,
+          templates: errorTemplates,
+          method,
+          target: details.dataverseReaderTarget ?? 'record',
+        })
+      : formatted;
   // code and message come first, then the annotations; orderAnnotations must leave this object alone.
   const body = {
     error: {

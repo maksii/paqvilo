@@ -1,3 +1,4 @@
+// @test-kind unproven: local review has not established every held or unreviewed platform-sensitive behavior.
 import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 // Project stop hints: the advertised command stops exactly its runtime from other directories and
 // shells, across project edits. Catalogue, standalone and cleanup scopes have their own files.
@@ -14,6 +15,7 @@ import { workspace, fixtureStatusURL, alive, stopped, portalProject } from './mi
 
 const execute = promisify(execFile);
 
+// @test-kind contract: plain project stop hints stay readable and stop only the advertised runtime from other directories and shells
 test(
   'plain project stop hints stay readable and stop only the advertised runtime from other directories and shells',
   { timeout: 120000 },
@@ -91,6 +93,7 @@ test(
   },
 );
 
+// @test-kind security+contract: owned status probes admit only a numeric port on the fixed HTTP loopback endpoint
 test('owned status probes admit only a numeric port on the fixed HTTP loopback endpoint', () => {
   assert.equal(fixtureStatusURL({ url: 'http://127.0.0.1:12345' }), 'http://127.0.0.1:12345/_sim/api/status');
   assert.equal(fixtureStatusURL({ url: 'http://127.0.0.1:80/' }), 'http://127.0.0.1:80/_sim/api/status');
@@ -117,6 +120,7 @@ test('owned status probes admit only a numeric port on the fixed HTTP loopback e
     assert.throws(() => fixtureStatusURL({ url }), /owned HTTP loopback runtime address/);
 });
 
+// @test-kind contract: standalone settings-only catalogues keep editor settings without claiming a site, and invalid selected sites fail
 test('standalone settings-only catalogues keep editor settings without claiming a site, and invalid selected sites fail', async (t) => {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-settings-only-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
@@ -144,6 +148,7 @@ test('standalone settings-only catalogues keep editor settings without claiming 
   );
 });
 
+// @test-kind security+contract: project stop hints survive valid path remaps, portal renames and removals without selecting a same-source sibling
 test(
   'project stop hints survive valid path remaps, portal renames and removals without selecting a same-source sibling',
   { timeout: 120000 },
@@ -225,6 +230,7 @@ test(
   },
 );
 
+// @test-kind contract: unqualified project stop includes recorded portals absent from current multi- and single-portal mappings
 test(
   'unqualified project stop includes recorded portals absent from current multi- and single-portal mappings',
   { timeout: 90000 },
@@ -267,6 +273,7 @@ test(
   },
 );
 
+// @test-kind contract: listener selectors normalize default ports without binding privileged listeners
 test('listener selectors normalize default ports without binding privileged listeners', () => {
   assert.equal(listenerPort('http://127.0.0.1:80'), '80');
   assert.equal(listenerPort('https://localhost:443'), '443');

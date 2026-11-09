@@ -791,7 +791,7 @@ export function validationJobs(env = process.env, configured = gitConfig('paqvil
  * Runs every step, at most `jobs` at a time, so one pass reports every failure. With one job the output streams as
  * before; otherwise each step writes its own log, and a failed step's log tail is printed when it ends.
  */
-export async function runSteps(steps, jobs, { cwd = root, logs } = {}) {
+export async function runSteps(steps, jobs, { cwd = root, logs, cpus = availableParallelism() } = {}) {
   const parallel = jobs > 1 && steps.length > 1;
   if (!logs) {
     if (parallel) {
@@ -809,7 +809,16 @@ export async function runSteps(steps, jobs, { cwd = root, logs } = {}) {
     const start = performance.now();
     const log = path.join(logs, step.label.replace(/[^\w.-]+/g, '-') + '.log');
     const { output, logError } = openStepLog(parallel, log);
-    const code = await executeStepCommands(step, output, cwd, logError);
+    // A suite already runs four test files concurrently. Divide the process pool
+    // by outer lanes too, rather than letting every file claim the whole machine.
+    const slots = Math.max(1, Math.floor(cpus / (step.exclusive ? 1 : jobs) / 4));
+    const inherited = process.env.PAQ_TEST_PROCESS_SLOTS;
+    const budget = inherited === undefined ? slots : Math.min(slots, Number(inherited));
+    const boundedStep = {
+      ...step,
+      env: { PAQ_TEST_PROCESS_SLOTS: String(budget), ...step.env },
+    };
+    const code = await executeStepCommands(boundedStep, output, cwd, logError);
     reportStepResult(step, code, start, log, parallel, failed, timings);
   });
   if (parallel) console.log(`[ci] step times: ${timings.map(([label, time]) => label + ' ' + time).join(', ')}`);

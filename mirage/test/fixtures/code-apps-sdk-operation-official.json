@@ -1,0 +1,1212 @@
+{
+  "schemaVersion": 1,
+  "scope": "Executed official Microsoft SDK 1.5.0 Dataverse executor with authored isolated data/metadata provider replies. Proves selected option-to-query, response-to-result and file-byte propagation only. Does not prove native host, local adapter source-name mapping, local CSRF policy, partition refusal, connector envelope, or HTTP transport.",
+  "producer": {
+    "path": "canvas-apps-parity/sdk-operations-20261108.mjs",
+    "sha256": "1a92c0ef32ace7f7057be4fc4c27253dcaf2c8761bc5ca8158c4eb1cef123656"
+  },
+  "package": {
+    "name": "@microsoft/power-apps",
+    "version": "1.5.0",
+    "integrity": "sha512-aOJ6/eOfUm2xIqLbIPOQIeAbgjFWTQcFrdmnLQH5eCKQavth1dK8LRKn4s9uVtOE/Tay+Ijf0M1OJVcwChfO7A==",
+    "sources": [
+      {
+        "path": "dist/internal/data/core/common/types.js",
+        "sha256": "427f1c36e1f619e04b8ef2dfe5d2aa5b126b5951377a4619cf649ca886df8eff"
+      },
+      {
+        "path": "dist/internal/data/core/common/utils.js",
+        "sha256": "56ff5e95f506715d3b54901de38cb0fd49e3c64ad452000af48c987209ebaea4"
+      },
+      {
+        "path": "dist/internal/data/core/data/executors/dataverseDataOperationExecutor.js",
+        "sha256": "0264264e0d0dd3dd6265db3d4a384c3f57ad4a9cc831c2c3b79fb05e33810348"
+      },
+      {
+        "path": "dist/internal/data/core/data/executors/shared/stringQueryOptions.js",
+        "sha256": "8a4038b8d1490920d1ef9bb045bc258140d86983908e4774b23d4548396d3f07"
+      },
+      {
+        "path": "dist/internal/data/core/error/codes.js",
+        "sha256": "6792ffde4f208c369bdf01f9f34139de61e04dc311eaef4889f5916f10a101da"
+      },
+      {
+        "path": "dist/internal/data/core/error/constants.js",
+        "sha256": "d79a4dba4a5074c1857125006b39c2d598cd856d43cafbb227e94cc00e6d64d4"
+      },
+      {
+        "path": "dist/internal/data/core/error/error.js",
+        "sha256": "62facb139cac70ba13fbab32b542a2f5be1e36b2309048b22e8e487b70e85a23"
+      },
+      {
+        "path": "dist/internal/data/core/error/messages.js",
+        "sha256": "3ca4b51e635b234b78e25e14f8b5fbf276a6a79ca0a8b40d5c6555c9d367eecc"
+      },
+      {
+        "path": "dist/internal/data/core/error/types.js",
+        "sha256": "08821c3f9761057540579af7c06c820bfac437d5dc4e83b560a4e23a35ce8a7d"
+      },
+      {
+        "path": "dist/internal/data/core/error/util.js",
+        "sha256": "64284d491b095d591208dad524a712586853a0a88958f9da7c963e812214e959"
+      },
+      {
+        "path": "dist/internal/data/core/telemetry/log.js",
+        "sha256": "364793b13106dac107b0e1f5c309518ef1e52650775194828bf475df7be2ee4d"
+      },
+      {
+        "path": "dist/internal/data/core/types/index.js",
+        "sha256": "504a98a426bbf938b17672c318f35a329810ac28e044d56d08e98a17859f57ed"
+      }
+    ]
+  },
+  "originals": [
+    {
+      "path": "mirage/test/code-apps-client.test.mjs",
+      "baselineSha256": "e7e1ea72afa3a3b306c2629b4b295dc728e77f173a3637eeb23d6a172a6fb2e9",
+      "currentSha256": "e0df37eb0e7d8b9b62c3a853fde2bac9b691d893b47e72c5dcee00e6b30050b8"
+    },
+    {
+      "path": "mirage/test/code-apps-sdk.test.mjs",
+      "baselineSha256": "6e908ee136446a0c4c3371eb1f3cb1b21d6809c18c74abb86fbd8d41935a2df0",
+      "currentSha256": "9450b873c980061bc9b02d86660532b0508d336b600154345298675005936a89"
+    }
+  ],
+  "captures": [
+    {
+      "round": 1,
+      "sha256": "fed61054d428614e087a849a4440e4ac599d9212be6ac0c0d745c8a867434383",
+      "process": {
+        "pid": 61212,
+        "nonce": "99375a14-f0a2-4200-bc24-301b91dda903",
+        "finishedAt": "2026-11-08T18:54:08.104Z"
+      },
+      "rows": [
+        {
+          "id": "query",
+          "method": "retrieveMultipleRecordsAsync",
+          "input": [
+            "items",
+            {
+              "select": [
+                "name"
+              ],
+              "filter": "name eq 'A'",
+              "orderBy": [
+                "name desc"
+              ],
+              "top": 2,
+              "maxPageSize": 1,
+              "count": true
+            }
+          ],
+          "result": {
+            "success": true,
+            "data": [
+              {
+                "name": "A"
+              }
+            ],
+            "skipToken": "next",
+            "count": 3,
+            "error": {
+              "$undefined": true
+            }
+          },
+          "calls": [
+            {
+              "method": "retrieveDataAsync",
+              "args": [
+                "https://invented.example.test/api/data/v9.0/items?$select=name&$filter=name+eq+%27A%27&$orderby=name%20desc&$top=2&$count=true",
+                "Dataverse",
+                "items",
+                "GET",
+                {
+                  "Prefer": "odata.maxpagesize=1,odata.include-annotations=*"
+                },
+                {
+                  "$undefined": true
+                },
+                {
+                  "operationName": "dataverseDataOperation.retrieveMultipleRecordsAsync",
+                  "datasetName": "default.cds",
+                  "isDataVerseOperation": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "page",
+          "method": "retrieveMultipleRecordsAsync",
+          "input": [
+            "items",
+            {
+              "skipToken": "next"
+            }
+          ],
+          "result": {
+            "success": true,
+            "data": [
+              {
+                "name": "A"
+              }
+            ],
+            "skipToken": "next",
+            "count": {
+              "$undefined": true
+            },
+            "error": {
+              "$undefined": true
+            }
+          },
+          "calls": [
+            {
+              "method": "retrieveDataAsync",
+              "args": [
+                "https://invented.example.test/api/data/v9.0/items?$skiptoken=next",
+                "Dataverse",
+                "items",
+                "GET",
+                {
+                  "Prefer": "odata.maxpagesize=500,odata.include-annotations=*"
+                },
+                {
+                  "$undefined": true
+                },
+                {
+                  "operationName": "dataverseDataOperation.retrieveMultipleRecordsAsync",
+                  "datasetName": "default.cds",
+                  "isDataVerseOperation": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "undefined-options",
+          "method": "retrieveMultipleRecordsAsync",
+          "input": [
+            "items",
+            {
+              "partitionId": {
+                "$undefined": true
+              },
+              "skip": {
+                "$undefined": true
+              }
+            }
+          ],
+          "result": {
+            "success": true,
+            "data": [
+              {
+                "name": "A"
+              }
+            ],
+            "skipToken": "next",
+            "count": {
+              "$undefined": true
+            },
+            "error": {
+              "$undefined": true
+            }
+          },
+          "calls": [
+            {
+              "method": "retrieveDataAsync",
+              "args": [
+                "https://invented.example.test/api/data/v9.0/items",
+                "Dataverse",
+                "items",
+                "GET",
+                {
+                  "Prefer": "odata.maxpagesize=500,odata.include-annotations=*"
+                },
+                {
+                  "$undefined": true
+                },
+                {
+                  "operationName": "dataverseDataOperation.retrieveMultipleRecordsAsync",
+                  "datasetName": "default.cds",
+                  "isDataVerseOperation": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "create",
+          "method": "createRecordAsync",
+          "input": [
+            "items",
+            {
+              "name": "A"
+            }
+          ],
+          "result": {
+            "success": true,
+            "data": {
+              "id": 1
+            },
+            "error": {
+              "$undefined": true
+            }
+          },
+          "calls": [
+            {
+              "method": "createDataAsync",
+              "args": [
+                "https://invented.example.test/api/data/v9.0/items",
+                "Dataverse",
+                "items",
+                {
+                  "name": "A"
+                },
+                {
+                  "operationName": "dataverseDataOperation.createRecordAsync",
+                  "datasetName": "default.cds",
+                  "isDataVerseOperation": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "update",
+          "method": "updateRecordAsync",
+          "input": [
+            "items",
+            "id",
+            {
+              "name": "B"
+            }
+          ],
+          "result": {
+            "success": true,
+            "data": {
+              "$undefined": true
+            },
+            "error": {
+              "$undefined": true
+            }
+          },
+          "calls": [
+            {
+              "method": "updateDataAsync",
+              "args": [
+                "https://invented.example.test/api/data/v9.0/items(id)",
+                "Dataverse",
+                "items",
+                {
+                  "name": "B"
+                },
+                {
+                  "operationName": "dataverseDataOperation.updateRecordAsync",
+                  "datasetName": "default.cds",
+                  "isDataVerseOperation": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "delete",
+          "method": "deleteRecordAsync",
+          "input": [
+            "items",
+            "id"
+          ],
+          "result": {
+            "success": true,
+            "data": {
+              "$undefined": true
+            },
+            "error": {
+              "$undefined": true
+            }
+          },
+          "calls": [
+            {
+              "method": "deleteDataAsync",
+              "args": [
+                "https://invented.example.test/api/data/v9.0/items(id)",
+                "Dataverse",
+                "items",
+                {
+                  "operationName": "dataverseDataOperation.deleteRecordAsync",
+                  "datasetName": "default.cds",
+                  "isDataVerseOperation": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "upload",
+          "method": "uploadFileToRecord",
+          "input": [
+            "items",
+            "id",
+            "x_file",
+            "sample.bin",
+            {
+              "$uint8": [
+                0,
+                255,
+                17
+              ]
+            }
+          ],
+          "result": {
+            "success": true,
+            "data": {
+              "$undefined": true
+            },
+            "error": {
+              "$undefined": true
+            }
+          },
+          "calls": [
+            {
+              "method": "uploadDataAsync",
+              "args": [
+                "https://invented.example.test/api/data/v9.0/items(id)/x_file",
+                "Dataverse",
+                "items",
+                {
+                  "$uint8": [
+                    0,
+                    255,
+                    17
+                  ]
+                },
+                {
+                  "operationName": "dataverseDataOperation.uploadFileToRecord",
+                  "datasetName": "default.cds",
+                  "isDataVerseOperation": true,
+                  "fileName": "sample.bin"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "download",
+          "method": "downloadFileFromRecord",
+          "input": [
+            "items",
+            "id",
+            "x_file"
+          ],
+          "result": {
+            "success": true,
+            "data": {
+              "$uint8": [
+                0,
+                255,
+                17
+              ]
+            },
+            "error": {
+              "$undefined": true
+            },
+            "fileName": "sample.bin"
+          },
+          "calls": [
+            {
+              "method": "retrieveDataAsync",
+              "args": [
+                "https://invented.example.test/api/data/v9.0/items(id)/x_file/$value",
+                "Dataverse",
+                "items",
+                "GET",
+                {
+                  "Accept": "application/octet-stream"
+                },
+                {
+                  "$undefined": true
+                },
+                {
+                  "operationName": "dataverseDataOperation.downloadFileFromRecord",
+                  "datasetName": "default.cds",
+                  "isDataVerseOperation": true,
+                  "skipBatch": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "image",
+          "method": "downloadImageFromRecord",
+          "input": [
+            "items",
+            "id",
+            "x_image",
+            true
+          ],
+          "result": {
+            "success": true,
+            "data": {
+              "$uint8": [
+                0,
+                255,
+                17
+              ]
+            },
+            "error": {
+              "$undefined": true
+            },
+            "fileName": "x_image.png"
+          },
+          "calls": [
+            {
+              "method": "retrieveDataAsync",
+              "args": [
+                "https://invented.example.test/api/data/v9.0/items(id)/x_image/$value?size=full",
+                "Dataverse",
+                "items",
+                "GET",
+                {
+                  "Accept": "application/octet-stream"
+                },
+                {
+                  "$undefined": true
+                },
+                {
+                  "operationName": "dataverseDataOperation.downloadFileFromRecord",
+                  "datasetName": "default.cds",
+                  "isDataVerseOperation": true,
+                  "skipBatch": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "delete-file",
+          "method": "deleteFileOrImageFromRecord",
+          "input": [
+            "items",
+            "id",
+            "x_file"
+          ],
+          "result": {
+            "success": true,
+            "data": {
+              "$undefined": true
+            },
+            "error": {
+              "$undefined": true
+            }
+          },
+          "calls": [
+            {
+              "method": "deleteDataAsync",
+              "args": [
+                "https://invented.example.test/api/data/v9.0/items(id)/x_file",
+                "Dataverse",
+                "items",
+                {
+                  "operationName": "dataverseDataOperation.deleteFileOrImageFromRecord",
+                  "datasetName": "default.cds",
+                  "isDataVerseOperation": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "metadata",
+          "method": "executeAsync",
+          "input": [
+            {
+              "dataverseRequest": {
+                "action": "getEntityMetadata",
+                "parameters": {
+                  "tableName": "x_item",
+                  "options": {
+                    "metadata": [
+                      "LogicalName"
+                    ],
+                    "schema": {
+                      "columns": [
+                        "x_b"
+                      ],
+                      "oneToMany": true
+                    }
+                  }
+                }
+              }
+            }
+          ],
+          "result": {
+            "success": true,
+            "data": {
+              "LogicalName": "x_item",
+              "Attributes": [
+                {
+                  "LogicalName": "x_a"
+                },
+                {
+                  "LogicalName": "x_b"
+                }
+              ]
+            }
+          },
+          "calls": [
+            {
+              "method": "retrieveDataAsync",
+              "args": [
+                "https://invented.example.test/api/data/v9.0/EntityDefinitions(LogicalName='x_item')?%24select=LogicalName&%24expand=OneToManyRelationships%2CAttributes%28%24filter%3DMicrosoft.Dynamics.CRM.In%28PropertyName%3D%27LogicalName%27%2CPropertyValues%3D%5B%27x_b%27%5D%29%29",
+                "Dataverse",
+                "EntityDefinitions",
+                "GET",
+                {
+                  "Consistency": "Strong"
+                },
+                {
+                  "$undefined": true
+                },
+                {
+                  "operationName": "dataverseDataOperation.retrieveRecordAsync",
+                  "datasetName": "default.cds",
+                  "isDataVerseOperation": true
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "round": 2,
+      "sha256": "642a89e5775dd75e9c73b3d2c707317cf26eed98a700c14d23f15cf4c64b2597",
+      "process": {
+        "pid": 81408,
+        "nonce": "8e05aafe-872b-4f9d-8f73-c983da594524",
+        "finishedAt": "2026-11-08T18:54:08.170Z"
+      },
+      "rows": [
+        {
+          "id": "query",
+          "method": "retrieveMultipleRecordsAsync",
+          "input": [
+            "items",
+            {
+              "select": [
+                "name"
+              ],
+              "filter": "name eq 'A'",
+              "orderBy": [
+                "name desc"
+              ],
+              "top": 2,
+              "maxPageSize": 1,
+              "count": true
+            }
+          ],
+          "result": {
+            "success": true,
+            "data": [
+              {
+                "name": "A"
+              }
+            ],
+            "skipToken": "next",
+            "count": 3,
+            "error": {
+              "$undefined": true
+            }
+          },
+          "calls": [
+            {
+              "method": "retrieveDataAsync",
+              "args": [
+                "https://invented.example.test/api/data/v9.0/items?$select=name&$filter=name+eq+%27A%27&$orderby=name%20desc&$top=2&$count=true",
+                "Dataverse",
+                "items",
+                "GET",
+                {
+                  "Prefer": "odata.maxpagesize=1,odata.include-annotations=*"
+                },
+                {
+                  "$undefined": true
+                },
+                {
+                  "operationName": "dataverseDataOperation.retrieveMultipleRecordsAsync",
+                  "datasetName": "default.cds",
+                  "isDataVerseOperation": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "page",
+          "method": "retrieveMultipleRecordsAsync",
+          "input": [
+            "items",
+            {
+              "skipToken": "next"
+            }
+          ],
+          "result": {
+            "success": true,
+            "data": [
+              {
+                "name": "A"
+              }
+            ],
+            "skipToken": "next",
+            "count": {
+              "$undefined": true
+            },
+            "error": {
+              "$undefined": true
+            }
+          },
+          "calls": [
+            {
+              "method": "retrieveDataAsync",
+              "args": [
+                "https://invented.example.test/api/data/v9.0/items?$skiptoken=next",
+                "Dataverse",
+                "items",
+                "GET",
+                {
+                  "Prefer": "odata.maxpagesize=500,odata.include-annotations=*"
+                },
+                {
+                  "$undefined": true
+                },
+                {
+                  "operationName": "dataverseDataOperation.retrieveMultipleRecordsAsync",
+                  "datasetName": "default.cds",
+                  "isDataVerseOperation": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "undefined-options",
+          "method": "retrieveMultipleRecordsAsync",
+          "input": [
+            "items",
+            {
+              "partitionId": {
+                "$undefined": true
+              },
+              "skip": {
+                "$undefined": true
+              }
+            }
+          ],
+          "result": {
+            "success": true,
+            "data": [
+              {
+                "name": "A"
+              }
+            ],
+            "skipToken": "next",
+            "count": {
+              "$undefined": true
+            },
+            "error": {
+              "$undefined": true
+            }
+          },
+          "calls": [
+            {
+              "method": "retrieveDataAsync",
+              "args": [
+                "https://invented.example.test/api/data/v9.0/items",
+                "Dataverse",
+                "items",
+                "GET",
+                {
+                  "Prefer": "odata.maxpagesize=500,odata.include-annotations=*"
+                },
+                {
+                  "$undefined": true
+                },
+                {
+                  "operationName": "dataverseDataOperation.retrieveMultipleRecordsAsync",
+                  "datasetName": "default.cds",
+                  "isDataVerseOperation": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "create",
+          "method": "createRecordAsync",
+          "input": [
+            "items",
+            {
+              "name": "A"
+            }
+          ],
+          "result": {
+            "success": true,
+            "data": {
+              "id": 1
+            },
+            "error": {
+              "$undefined": true
+            }
+          },
+          "calls": [
+            {
+              "method": "createDataAsync",
+              "args": [
+                "https://invented.example.test/api/data/v9.0/items",
+                "Dataverse",
+                "items",
+                {
+                  "name": "A"
+                },
+                {
+                  "operationName": "dataverseDataOperation.createRecordAsync",
+                  "datasetName": "default.cds",
+                  "isDataVerseOperation": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "update",
+          "method": "updateRecordAsync",
+          "input": [
+            "items",
+            "id",
+            {
+              "name": "B"
+            }
+          ],
+          "result": {
+            "success": true,
+            "data": {
+              "$undefined": true
+            },
+            "error": {
+              "$undefined": true
+            }
+          },
+          "calls": [
+            {
+              "method": "updateDataAsync",
+              "args": [
+                "https://invented.example.test/api/data/v9.0/items(id)",
+                "Dataverse",
+                "items",
+                {
+                  "name": "B"
+                },
+                {
+                  "operationName": "dataverseDataOperation.updateRecordAsync",
+                  "datasetName": "default.cds",
+                  "isDataVerseOperation": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "delete",
+          "method": "deleteRecordAsync",
+          "input": [
+            "items",
+            "id"
+          ],
+          "result": {
+            "success": true,
+            "data": {
+              "$undefined": true
+            },
+            "error": {
+              "$undefined": true
+            }
+          },
+          "calls": [
+            {
+              "method": "deleteDataAsync",
+              "args": [
+                "https://invented.example.test/api/data/v9.0/items(id)",
+                "Dataverse",
+                "items",
+                {
+                  "operationName": "dataverseDataOperation.deleteRecordAsync",
+                  "datasetName": "default.cds",
+                  "isDataVerseOperation": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "upload",
+          "method": "uploadFileToRecord",
+          "input": [
+            "items",
+            "id",
+            "x_file",
+            "sample.bin",
+            {
+              "$uint8": [
+                0,
+                255,
+                17
+              ]
+            }
+          ],
+          "result": {
+            "success": true,
+            "data": {
+              "$undefined": true
+            },
+            "error": {
+              "$undefined": true
+            }
+          },
+          "calls": [
+            {
+              "method": "uploadDataAsync",
+              "args": [
+                "https://invented.example.test/api/data/v9.0/items(id)/x_file",
+                "Dataverse",
+                "items",
+                {
+                  "$uint8": [
+                    0,
+                    255,
+                    17
+                  ]
+                },
+                {
+                  "operationName": "dataverseDataOperation.uploadFileToRecord",
+                  "datasetName": "default.cds",
+                  "isDataVerseOperation": true,
+                  "fileName": "sample.bin"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "download",
+          "method": "downloadFileFromRecord",
+          "input": [
+            "items",
+            "id",
+            "x_file"
+          ],
+          "result": {
+            "success": true,
+            "data": {
+              "$uint8": [
+                0,
+                255,
+                17
+              ]
+            },
+            "error": {
+              "$undefined": true
+            },
+            "fileName": "sample.bin"
+          },
+          "calls": [
+            {
+              "method": "retrieveDataAsync",
+              "args": [
+                "https://invented.example.test/api/data/v9.0/items(id)/x_file/$value",
+                "Dataverse",
+                "items",
+                "GET",
+                {
+                  "Accept": "application/octet-stream"
+                },
+                {
+                  "$undefined": true
+                },
+                {
+                  "operationName": "dataverseDataOperation.downloadFileFromRecord",
+                  "datasetName": "default.cds",
+                  "isDataVerseOperation": true,
+                  "skipBatch": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "image",
+          "method": "downloadImageFromRecord",
+          "input": [
+            "items",
+            "id",
+            "x_image",
+            true
+          ],
+          "result": {
+            "success": true,
+            "data": {
+              "$uint8": [
+                0,
+                255,
+                17
+              ]
+            },
+            "error": {
+              "$undefined": true
+            },
+            "fileName": "x_image.png"
+          },
+          "calls": [
+            {
+              "method": "retrieveDataAsync",
+              "args": [
+                "https://invented.example.test/api/data/v9.0/items(id)/x_image/$value?size=full",
+                "Dataverse",
+                "items",
+                "GET",
+                {
+                  "Accept": "application/octet-stream"
+                },
+                {
+                  "$undefined": true
+                },
+                {
+                  "operationName": "dataverseDataOperation.downloadFileFromRecord",
+                  "datasetName": "default.cds",
+                  "isDataVerseOperation": true,
+                  "skipBatch": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "delete-file",
+          "method": "deleteFileOrImageFromRecord",
+          "input": [
+            "items",
+            "id",
+            "x_file"
+          ],
+          "result": {
+            "success": true,
+            "data": {
+              "$undefined": true
+            },
+            "error": {
+              "$undefined": true
+            }
+          },
+          "calls": [
+            {
+              "method": "deleteDataAsync",
+              "args": [
+                "https://invented.example.test/api/data/v9.0/items(id)/x_file",
+                "Dataverse",
+                "items",
+                {
+                  "operationName": "dataverseDataOperation.deleteFileOrImageFromRecord",
+                  "datasetName": "default.cds",
+                  "isDataVerseOperation": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "metadata",
+          "method": "executeAsync",
+          "input": [
+            {
+              "dataverseRequest": {
+                "action": "getEntityMetadata",
+                "parameters": {
+                  "tableName": "x_item",
+                  "options": {
+                    "metadata": [
+                      "LogicalName"
+                    ],
+                    "schema": {
+                      "columns": [
+                        "x_b"
+                      ],
+                      "oneToMany": true
+                    }
+                  }
+                }
+              }
+            }
+          ],
+          "result": {
+            "success": true,
+            "data": {
+              "LogicalName": "x_item",
+              "Attributes": [
+                {
+                  "LogicalName": "x_a"
+                },
+                {
+                  "LogicalName": "x_b"
+                }
+              ]
+            }
+          },
+          "calls": [
+            {
+              "method": "retrieveDataAsync",
+              "args": [
+                "https://invented.example.test/api/data/v9.0/EntityDefinitions(LogicalName='x_item')?%24select=LogicalName&%24expand=OneToManyRelationships%2CAttributes%28%24filter%3DMicrosoft.Dynamics.CRM.In%28PropertyName%3D%27LogicalName%27%2CPropertyValues%3D%5B%27x_b%27%5D%29%29",
+                "Dataverse",
+                "EntityDefinitions",
+                "GET",
+                {
+                  "Consistency": "Strong"
+                },
+                {
+                  "$undefined": true
+                },
+                {
+                  "operationName": "dataverseDataOperation.retrieveRecordAsync",
+                  "datasetName": "default.cds",
+                  "isDataVerseOperation": true
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "packageProvenance": {
+    "name": "@microsoft/power-apps",
+    "version": "1.5.0",
+    "source": "https://registry.npmjs.org/@microsoft%2fpower-apps/1.5.0",
+    "metadataSha256": "af433728baa965d1eabb81c5bfca498e606e38f0704c441678c922235f1730dc",
+    "archive": {
+      "url": "https://registry.npmjs.org/@microsoft/power-apps/-/power-apps-1.5.0.tgz",
+      "integrity": "sha512-aOJ6/eOfUm2xIqLbIPOQIeAbgjFWTQcFrdmnLQH5eCKQavth1dK8LRKn4s9uVtOE/Tay+Ijf0M1OJVcwChfO7A==",
+      "sha256": "bd67d0e0235a5499c004f419d0da30a27d188a8bd4c47e535fb34d5d52c6efa2",
+      "bytes": 102658
+    },
+    "executedSourceClosure": [
+      {
+        "path": "dist/internal/data/core/common/types.js",
+        "sha256": "427f1c36e1f619e04b8ef2dfe5d2aa5b126b5951377a4619cf649ca886df8eff"
+      },
+      {
+        "path": "dist/internal/data/core/common/utils.js",
+        "sha256": "56ff5e95f506715d3b54901de38cb0fd49e3c64ad452000af48c987209ebaea4"
+      },
+      {
+        "path": "dist/internal/data/core/data/executors/dataverseDataOperationExecutor.js",
+        "sha256": "0264264e0d0dd3dd6265db3d4a384c3f57ad4a9cc831c2c3b79fb05e33810348"
+      },
+      {
+        "path": "dist/internal/data/core/data/executors/shared/stringQueryOptions.js",
+        "sha256": "8a4038b8d1490920d1ef9bb045bc258140d86983908e4774b23d4548396d3f07"
+      },
+      {
+        "path": "dist/internal/data/core/error/codes.js",
+        "sha256": "6792ffde4f208c369bdf01f9f34139de61e04dc311eaef4889f5916f10a101da"
+      },
+      {
+        "path": "dist/internal/data/core/error/constants.js",
+        "sha256": "d79a4dba4a5074c1857125006b39c2d598cd856d43cafbb227e94cc00e6d64d4"
+      },
+      {
+        "path": "dist/internal/data/core/error/error.js",
+        "sha256": "62facb139cac70ba13fbab32b542a2f5be1e36b2309048b22e8e487b70e85a23"
+      },
+      {
+        "path": "dist/internal/data/core/error/messages.js",
+        "sha256": "3ca4b51e635b234b78e25e14f8b5fbf276a6a79ca0a8b40d5c6555c9d367eecc"
+      },
+      {
+        "path": "dist/internal/data/core/error/types.js",
+        "sha256": "08821c3f9761057540579af7c06c820bfac437d5dc4e83b560a4e23a35ce8a7d"
+      },
+      {
+        "path": "dist/internal/data/core/error/util.js",
+        "sha256": "64284d491b095d591208dad524a712586853a0a88958f9da7c963e812214e959"
+      },
+      {
+        "path": "dist/internal/data/core/telemetry/log.js",
+        "sha256": "364793b13106dac107b0e1f5c309518ef1e52650775194828bf475df7be2ee4d"
+      },
+      {
+        "path": "dist/internal/data/core/types/index.js",
+        "sha256": "504a98a426bbf938b17672c318f35a329810ac28e044d56d08e98a17859f57ed"
+      }
+    ],
+    "allExecutedModulesMatchPublishedArchive": true
+  },
+  "qualificationPackage": {
+    "ecosystem": "npm",
+    "id": "@microsoft/power-apps",
+    "version": "1.5.0",
+    "sha256": "bd67d0e0235a5499c004f419d0da30a27d188a8bd4c47e535fb34d5d52c6efa2",
+    "source": "https://registry.npmjs.org/@microsoft/power-apps/-/power-apps-1.5.0.tgz",
+    "integrity": "sha512-aOJ6/eOfUm2xIqLbIPOQIeAbgjFWTQcFrdmnLQH5eCKQavth1dK8LRKn4s9uVtOE/Tay+Ijf0M1OJVcwChfO7A==",
+    "executedSourceClosure": [
+      {
+        "path": "dist/internal/data/core/common/types.js",
+        "sha256": "427f1c36e1f619e04b8ef2dfe5d2aa5b126b5951377a4619cf649ca886df8eff"
+      },
+      {
+        "path": "dist/internal/data/core/common/utils.js",
+        "sha256": "56ff5e95f506715d3b54901de38cb0fd49e3c64ad452000af48c987209ebaea4"
+      },
+      {
+        "path": "dist/internal/data/core/data/executors/dataverseDataOperationExecutor.js",
+        "sha256": "0264264e0d0dd3dd6265db3d4a384c3f57ad4a9cc831c2c3b79fb05e33810348"
+      },
+      {
+        "path": "dist/internal/data/core/data/executors/shared/stringQueryOptions.js",
+        "sha256": "8a4038b8d1490920d1ef9bb045bc258140d86983908e4774b23d4548396d3f07"
+      },
+      {
+        "path": "dist/internal/data/core/error/codes.js",
+        "sha256": "6792ffde4f208c369bdf01f9f34139de61e04dc311eaef4889f5916f10a101da"
+      },
+      {
+        "path": "dist/internal/data/core/error/constants.js",
+        "sha256": "d79a4dba4a5074c1857125006b39c2d598cd856d43cafbb227e94cc00e6d64d4"
+      },
+      {
+        "path": "dist/internal/data/core/error/error.js",
+        "sha256": "62facb139cac70ba13fbab32b542a2f5be1e36b2309048b22e8e487b70e85a23"
+      },
+      {
+        "path": "dist/internal/data/core/error/messages.js",
+        "sha256": "3ca4b51e635b234b78e25e14f8b5fbf276a6a79ca0a8b40d5c6555c9d367eecc"
+      },
+      {
+        "path": "dist/internal/data/core/error/types.js",
+        "sha256": "08821c3f9761057540579af7c06c820bfac437d5dc4e83b560a4e23a35ce8a7d"
+      },
+      {
+        "path": "dist/internal/data/core/error/util.js",
+        "sha256": "64284d491b095d591208dad524a712586853a0a88958f9da7c963e812214e959"
+      },
+      {
+        "path": "dist/internal/data/core/telemetry/log.js",
+        "sha256": "364793b13106dac107b0e1f5c309518ef1e52650775194828bf475df7be2ee4d"
+      },
+      {
+        "path": "dist/internal/data/core/types/index.js",
+        "sha256": "504a98a426bbf938b17672c318f35a329810ac28e044d56d08e98a17859f57ed"
+      }
+    ]
+  }
+}

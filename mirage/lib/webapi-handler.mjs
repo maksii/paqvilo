@@ -1,4 +1,5 @@
 import { readRawBody } from './http-body.mjs';
+import { rejectedGatewayProperty } from './webapi-gateway-fields.mjs';
 import { globalMetadataVersion } from './metadata-version.mjs';
 // Local Power Pages portals Web API (/_api) over the simulator data store.
 //
@@ -7,7 +8,7 @@ import { globalMetadataVersion } from './metadata-version.mjs';
 // web-api-overview, read-operations, write-update-delete-operations,
 // web-api-http-requests-handle-errors) and, where Power Pages passes requests
 // through, the Dataverse Web API.
-import { isExactNumeric } from './exact-numeric.mjs';
+import { isExactNumeric, parseExactJson, stringifyExactJson } from './exact-numeric.mjs';
 import { preparePortalFetchXml } from './portal-fetchxml.mjs';
 import { DataError } from './data-error.mjs';
 import { parseEntityReference, parseKeySegment } from './data.mjs';
@@ -28,6 +29,7 @@ import { contentDisposition, fileNameHeader, siteHeaders } from './response-head
 import { ATTACHMENT_COLUMNS } from './dataverse-files.mjs';
 import {
   attachODataReaderDetails,
+  attachODataJsonSource,
   odataNumberLexemes,
   odataRootDetails,
   observedODataInnerMessage,
@@ -277,6 +279,7 @@ export function webApiErrorResponse(
     errorStacks = 'diagnostic',
     errorTemplates,
     errorMethod,
+    errorEntitySet,
     mutationPermissionText,
     selfNnPermissionErrors,
   } = {},
@@ -315,6 +318,7 @@ export function webApiErrorResponse(
       errorStacks,
       errorTemplates,
       errorMethod,
+      errorEntitySet,
       invalidDate,
     })
   );
@@ -490,23 +494,31 @@ function dataverseErrorResponse({
   errorStacks,
   errorTemplates,
   errorMethod,
+  errorEntitySet,
   invalidDate,
 }) {
-  const innerCode = String(details.innerCode ?? DEFAULT_INNER_CODES[internal] ?? '0x80040203');
+  const innerCode = String(
+    observedODataInnerMessage(error, errorDetails) !== null
+      ? '0x80048d19'
+      : (details.innerCode ?? DEFAULT_INNER_CODES[internal] ?? '0x80040203'),
+  );
   const invalidMinimum =
     internal === 'InvalidDateTime' &&
     (details.failedDateConversion || details.dateTimeBelowMinimum) &&
     invalidDate === 'crm-minimum';
   const message = invalidMinimum
     ? `DateTime is less than minumum value supported by CrmDateTime. Actual value: ${details.dateTimeActual ?? '01/01/0001 00:00:00'}, Minimum value supported: 01/01/1753 00:00:00`
-    : observedDataverseMessage(error, errorDetails, errorStacks, errorTemplates, errorMethod);
+    : observedDataverseMessage(error, errorDetails, errorStacks, errorTemplates, errorMethod, errorEntitySet);
   const response = respond(status, '9004010D', cdsErrorMessage, { code: innerCode, message });
-  if (cdsErrorCode === 'cdscode') response.body.error.cdscode = innerCode;
+  if (cdsErrorCode === 'cdscode' && !details.hideInner) {
+    const { innererror, ...base } = response.body.error;
+    response.body.error = { ...base, cdscode: innerCode, ...(innererror ? { innererror } : {}) };
+  }
   return response;
 }
 
-function observedDataverseMessage(error, errorDetails, errorStacks, errorTemplates, errorMethod) {
-  const observed = observedODataInnerMessage(error, errorDetails);
+function observedDataverseMessage(error, errorDetails, errorStacks, errorTemplates, errorMethod, errorEntitySet) {
+  const observed = observedODataInnerMessage(error, errorDetails, { method: errorMethod, entitySet: errorEntitySet });
   if (observed === null) return error?.message ?? '';
   return appendObservedWebApiErrorTemplate(error, observed, {
     mode: errorStacks,
@@ -535,11 +547,21 @@ export async function handleWebApi(req, res, url, deps) {
       errorStacks: deps.portal?.observed?.webApiErrorStacks,
       errorTemplates: deps.webApiErrorTemplates,
       errorMethod: req.method,
+      errorEntitySet: diagnosticEntitySet(url.pathname),
       mutationPermissionText: deps.portal?.observed?.webApiMutationPermissionText,
       selfNnPermissionErrors: deps.portal?.observed?.webApiSelfNnPermissionErrors,
     });
     deps.onError?.(cause, response);
     deps.json(res, response.status, response.body, { ...apiHeaders(deps.portal), ...response.headers });
+  }
+}
+
+function diagnosticEntitySet(pathname) {
+  try {
+    return decodeURIComponent(/^\/_api\/([^/(]+)/.exec(pathname)?.[1] ?? '');
+  } catch {
+    // Formatting an earlier authentication or route failure must not replace it.
+    return undefined;
   }
 }
 
@@ -602,11 +624,12 @@ export async function handleWebApi(req, res, url, deps) {
   t.span = span;
   // The response the handler writes names the outcome: a row count for a collection, the id of a created row.
   let answered = null;
+  const responseDeps = t.deps;
   t.deps = {
-    ...deps,
+    ...responseDeps,
     json: (out, status, body, headers) => {
       answered = { body, headers };
-      return deps.json(out, status, body, headers);
+      return responseDeps.json(out, status, body, headers);
     },
   };
   try {
@@ -831,6 +854,10 @@ function requestContext(req, res, url, deps, target, method) {
     identity: deps.identity,
     metadata: deps.metadata,
     formatting: {
+      primaryKeyFirst:
+        req.method === 'GET' &&
+        target.segment == null &&
+        deps.portal?.observed?.webApiReadResponse === 'jsonnet-indented',
       timeZoneOffsetMinutes: Number(settings.timeZoneOffsetMinutes ?? 0),
       formattedValueTimeZone: settings.formattedValueTimeZone,
       dateFormat: settings.dateFormat,
@@ -839,10 +866,48 @@ function requestContext(req, res, url, deps, target, method) {
       currencySymbol: settings.currencySymbol,
     },
   });
-  return { req, res, url, deps, store, target, method, mapping, policy, prefer, include, formatter };
+  return {
+    req,
+    res,
+    url,
+    deps: { ...deps, json: responseWriter(req, target, deps) },
+    store,
+    target,
+    method,
+    mapping,
+    policy,
+    prefer,
+    include,
+    formatter,
+  };
 }
 
 // ---- response helpers
+
+// Apply wire encoding only at the final response sink. Buffered reads retain their
+// structured payload through commit, attachment hydration and response tracing.
+function responseWriter(req, target, deps) {
+  return (out, status, payload, headers = {}) => {
+    if (target.segment == null) {
+      if (status === 200 && req.method === 'GET' && deps.portal?.observed?.webApiReadResponse === 'jsonnet-indented') {
+        const text = JSON.stringify(
+          payload,
+          (_key, value) => (isExactNumeric(value) ? JSON.rawJSON(stringifyExactJson(value)) : value),
+          2,
+        ).replaceAll('\n', '\r\n');
+        return deps.json(out, status, payload, headers, { wireText: text });
+      }
+      if (
+        status === 204 &&
+        ['POST', 'PATCH'].includes(req.method) &&
+        deps.portal?.observed?.webApiWriteResponse === 'portal-classic'
+      ) {
+        return deps.json(out, status, payload, headers, { omitContentType: true });
+      }
+    }
+    return deps.json(out, status, payload, headers);
+  };
+}
 
 const send = async (t, status, body, headers = {}) => {
   if (status === 200 || status === 201) {
@@ -921,7 +986,10 @@ const queryOptions = (t, extra = {}) => ({
   includeKeys: true,
   ...extra,
 });
-const entityLocation = (t, mapping, id) => `${t.deps.origin}/_api/${mapping.entitySet}(${id})`;
+const entityLocation = (t, mapping, id) => {
+  const prefix = t.deps.portal?.observed?.webApiWriteResponse === 'portal-classic' ? '/api/data/v9.1/' : '/_api/';
+  return `${t.deps.origin}${prefix}${mapping.entitySet}(${id})`;
+};
 const recordNotFound = (mapping, key) =>
   new DataError(`${mapping.logicalName} With Id = ${key} Does Not Exist`, 404, 'NotFound', {
     innerCode: '0x80040217',
@@ -1325,7 +1393,33 @@ async function getProperty(t, raw) {
 
 async function readBody(t) {
   const observed = t.deps.portal?.observed?.webApiErrorDetails === 'odata-wrapper';
-  const body = await t.deps.jsonBody(t.req, { allowEmpty: false, odataErrorDetails: observed });
+  let body = await t.deps.jsonBody(t.req, { allowEmpty: false, odataErrorDetails: observed });
+  if (t.deps.portal?.observed?.webApiRequestBody === 'portal-classic' && typeof body === 'string') {
+    let decoded;
+    try {
+      decoded = JSON.parse(body);
+    } catch {
+      /* The OData token classifier formats rejected primitive roots. */
+    }
+    if (decoded && typeof decoded === 'object' && !Array.isArray(decoded)) {
+      const source = body;
+      body = attachODataJsonSource(parseExactJson(source, { allowFiniteDouble: true }), source);
+      // Decoding changes only transport representation. All ordinary write and entity policies still run below.
+      const unknown = rejectedGatewayProperty(body, {
+        mapping: t.mapping,
+        fields: t.policy.fields,
+        metadataFields: [t.deps.portal?.webApiEntities?.[t.mapping.logicalName]?.fields],
+        assertWrite: t.policy.assertWrite,
+        operation: t.req.method === 'POST' ? 'create' : 'update',
+      });
+      if (unknown)
+        throw attachODataReaderDetails(badRequest(`Unknown property '${unknown}'.`, 'InvalidRequest', '0x80048d19'), {
+          kind: 'unknown-property',
+          property: unknown,
+          logicalName: t.mapping.logicalName,
+        });
+    }
+  }
   // The parsed body is the webapi span's input (captured, redacted, only at level full).
   t.span?.setInput(() => body);
   t.odataNumberLexemes = observed ? odataNumberLexemes(body) : undefined;
@@ -1558,7 +1652,10 @@ async function patchEntity(t) {
   }
   const params = representationParams(t, mapping);
   const { outcome, id, body: represented } = await writeAndRepresent(t, mapping, params, write);
-  const headers = { 'OData-EntityId': entityLocation(t, mapping, id) };
+  const headers = {
+    'OData-EntityId': entityLocation(t, mapping, id),
+    ...(t.deps.portal?.observed?.webApiWriteResponse === 'portal-classic' ? { entityid: String(id) } : {}),
+  };
   if (params) return send(t, outcome.created ? 201 : 200, represented, headers);
   return sendNoContent(t, headers);
 }

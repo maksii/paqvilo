@@ -3253,7 +3253,7 @@ function prepopulateValue(row, identity, now) {
                 `<input name="${nameAttr(field, '_' + part)}" type="text" id="${attr(field.id)}_${part}" class=" content  text form-control"${valueAttr(scalarValue(record?.[prefix + '_' + part]))} aria-label="${label}" onchange="setIsDirty(this.id);"${readonlyAttr}>`,
             )
             .join('');
-          return `<textarea name="${nameAttr(field)}" rows="4" cols="20" id="${attr(field.id)}" class="trigger text form-control${css} addressCompositeControl${disabled ? ' readonly ' : ' '}" data-composite-control="" data-content-id="${contentId}" data-editable="${disabled ? 'False' : 'True'}" data-content-template="{${prefix}_composite_line1} {${prefix}_composite_line2} {${prefix}_composite_line3}{BREAK}{${prefix}_composite_city} {${prefix}_composite_stateorprovince} {${prefix}_composite_postalcode}{BREAK}{${prefix}_composite_country}"${readonlyAttr}>${escape(String(scalar ?? ''))}</textarea><div id="${contentId}" class="content d-none addressCompositeControlContainer">${boxes}<input id="popoverUpdateButton_${randomUUID()}" class="btn btn-primary w-100" role="button" aria-label="Done" readonly="true" value="Done"></div>`;
+          return `<textarea name="${nameAttr(field)}" rows="4" cols="20" id="${attr(field.id)}" class="trigger text form-control${css} addressCompositeControl${disabled ? ' readonly ' : ' '}" data-composite-control="" data-content-id="${contentId}" data-editable="${disabled ? 'False' : 'True'}" data-content-template="{${prefix}_composite_line1} {${prefix}_composite_line2} {${prefix}_composite_line3}{BREAK}{${prefix}_composite_city} {${prefix}_composite_stateorprovince} {${prefix}_composite_postalcode}{BREAK}{${prefix}_composite_country}" readonly="readonly">${escape(String(scalar ?? ''))}</textarea><div id="${contentId}" class="content d-none addressCompositeControlContainer">${boxes}<input id="popoverUpdateButton_${randomUUID()}" class="btn btn-primary w-100" role="button" aria-label="Done" readonly="true" value="Done"></div>`;
         }
         // MemoControlTemplate: rows = rowspan * 3 - 2; a maximum length adds the platform's
         // LimitInput/LimitPaste handlers (crmentityformview.js).
@@ -5236,6 +5236,9 @@ function formFieldPrepopulate(row, identity, now) {
 }
 
 function fieldImmutable(field, mode) {
+  // The calculated address value is immutable, while its source-defined editor
+  // writes the component columns. Form/control read-only state still applies.
+  if (isAddressComposite(field)) return false;
   if (mode === FORM_MODE.insert) return field.validForCreate === false;
   if (mode === FORM_MODE.edit) return field.validForUpdate === false;
   return false;

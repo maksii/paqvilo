@@ -449,7 +449,7 @@ function appendQueryGroup(parts, group) {
  * AntiXSS-encoded). Absolute input yields Uri.AbsoluteUri; relative input keeps its own
  * path text and fragment (portal navigation may prefix the result with "../").
  */
-function rebuild(url, mutate) {
+function rebuild(url, mutate, relativeResolution) {
   if (url == null) return null;
   const text = String(url);
   const hashIndex = text.indexOf('#');
@@ -463,6 +463,10 @@ function rebuild(url, mutate) {
     if (/^[a-z][a-z0-9+.-]*:/i.test(text)) {
       const parsed = new URL(text);
       return `${parsed.origin}${parsed.pathname}${query}${parsed.hash}`;
+    }
+    if (relativeResolution === 'root' && !path.startsWith('//')) {
+      const resolved = new URL(path || '/', 'http://localhost/');
+      return `${resolved.pathname}${query}`;
     }
     return `${path}${query}${fragment}`;
   } catch {
@@ -612,7 +616,9 @@ function htmlVoidSerialization(markup) {
   const visit = (node) => {
     if (voidTags.has(node.tagName) && node.sourceCodeLocation?.startTag) {
       const location = node.sourceCodeLocation.startTag;
-      replacements.push({ start: location.startOffset, end: location.endOffset, value: serializeOuter(node) });
+      // The hosted sanitizer escapes greater-than signs inside attribute values.
+      const value = serializeOuter(node).replace(/"[^"]*"/g, (attribute) => attribute.replaceAll('>', '&gt;'));
+      replacements.push({ start: location.startOffset, end: location.endOffset, value });
     }
     for (const child of node.childNodes ?? []) visit(child);
     if (node.content) visit(node.content);
@@ -712,11 +718,11 @@ function sliceEnumerable(input, start, len) {
 }
 
 // These preserve the platform's text transformation; they are not an HTML sanitizer.
-function stripHtmlBlocks(text) {
+function stripHtmlBlocks(text, preserveScript = false) {
   // ASCII folding preserves UTF-16 offsets (full Unicode lowercasing can expand a character).
   const folded = text.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
   const blocks = [
-    { open: '<script', close: '</script>', end: -2 },
+    ...(!preserveScript ? [{ open: '<script', close: '</script>', end: -2 }] : []),
     { open: '<!--', close: '-->', end: -2 },
     { open: '<style', close: '</style>', end: -2 },
   ];
@@ -815,6 +821,7 @@ export function createFilters(host = {}) {
     },
     escape_once: (input) => {
       const s = asString(input);
+      if (host.escapeOnce === 'passthrough') return s;
       return s == null || s === '' ? s : htmlEncode(htmlDecode(s));
     },
     truncate(input, length = 50, truncateString = '...') {
@@ -849,7 +856,7 @@ export function createFilters(host = {}) {
     strip_html: (input) => {
       const s = asString(input);
       if (isNullOrWhiteSpace(s)) return s;
-      return stripHtmlTags(stripHtmlBlocks(s));
+      return stripHtmlTags(stripHtmlBlocks(s, host.stripHtmlScriptText === 'preserve'));
     },
     strip: (input) => {
       const s = asString(input);
@@ -931,10 +938,12 @@ export function createFilters(host = {}) {
     },
     // master: $"{input}{@string}" and $"{@string}{input}" (nil renders as nothing).
     append(input, value) {
+      if (host.runtimeCompatibility === 'observed' && input == null) return null;
       const s = asString(input) ?? '';
       return s + (asString(value) ?? '');
     },
     prepend(input, value) {
+      if (host.runtimeCompatibility === 'observed' && input == null) return null;
       const s = asString(input) ?? '';
       return (asString(value) ?? '') + s;
     },
@@ -971,6 +980,8 @@ export function createFilters(host = {}) {
     plus(input, operand) {
       // DotLiquid20: a string input concatenates (string.Concat uses object.ToString()).
       if (typeof input === 'string') return input + netToString(operand);
+      if (host.filterErrors === 'observed' && numberKind(input) === 'int' && typeof operand === 'string')
+        throw new LiquidError('Parameter count mismatch.', 'System.Reflection.TargetParameterCountException');
       return mathOperation(input, operand, 'add');
     },
     minus(input, operand) {
@@ -982,6 +993,8 @@ export function createFilters(host = {}) {
     },
     times(input, operand) {
       if (host.timesDispatch === 'observed') {
+        if (numberKind(input) === 'decimal' && typeof operand === 'string')
+          return mathOperation(input, toNetDecimal(operand), 'multiply');
         const stringArray = Array.isArray(input) && input.length > 0 && input.every((item) => typeof item === 'string');
         if (
           (numberKind(input) === 'int' && typeof operand === 'string') ||
@@ -1017,9 +1030,10 @@ export function createFilters(host = {}) {
         throw new LiquidError('Parameter count mismatch.', 'System.Reflection.TargetParameterCountException');
       if (
         host.filterErrors === 'observed' &&
-        numberKind(input) === 'int' &&
-        asInt(input) !== 0 &&
-        numberKind(operand) === 'decimal' &&
+        numberKind(input) &&
+        toNumber(input) !== 0 &&
+        (numberKind(input) === 'decimal' || numberKind(operand) === 'decimal') &&
+        numberKind(operand) &&
         toNumber(operand) === 0
       )
         return new NetDouble(toNumber(input) / toNumber(operand));
@@ -1418,27 +1432,33 @@ export function createFilters(host = {}) {
       const name = asString(parameterName);
       if (isNullOrWhiteSpace(name)) return target;
       const text = value == null ? '' : formatItem(value);
-      return rebuild(target, (pairs) => {
-        const existing = pairs.filter(([key]) => key != null && key.toLowerCase() === name.toLowerCase());
-        if (existing.length) {
-          const first = pairs.indexOf(existing[0]);
-          const remaining = pairs.filter((pair) => !existing.includes(pair));
-          remaining.splice(first - pairs.slice(0, first).filter((pair) => existing.includes(pair)).length, 0, [
-            existing[0][0],
-            text,
-          ]);
-          return remaining;
-        }
-        return [...pairs, [name, text]];
-      });
+      return rebuild(
+        target,
+        (pairs) => {
+          const existing = pairs.filter(([key]) => key != null && key.toLowerCase() === name.toLowerCase());
+          if (existing.length) {
+            const first = pairs.indexOf(existing[0]);
+            const remaining = pairs.filter((pair) => !existing.includes(pair));
+            remaining.splice(first - pairs.slice(0, first).filter((pair) => existing.includes(pair)).length, 0, [
+              existing[0][0],
+              text,
+            ]);
+            return remaining;
+          }
+          return [...pairs, [name, text]];
+        },
+        host.relativeQueryResolution,
+      );
     },
     remove_query(url, parameterName) {
       const target = asString(url);
       if (target == null) return null;
       const name = asString(parameterName);
       if (isNullOrWhiteSpace(name)) return target;
-      return rebuild(target, (pairs) =>
-        pairs.filter(([key]) => key == null || key.toLowerCase() !== name.toLowerCase()),
+      return rebuild(
+        target,
+        (pairs) => pairs.filter(([key]) => key == null || key.toLowerCase() !== name.toLowerCase()),
+        host.relativeQueryResolution,
       );
     },
     base(url) {

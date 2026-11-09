@@ -1,0 +1,89 @@
+{
+  "recordedDate": "2026-11-08",
+  "scope": "Two independent published native Code Apps player loads; required typed context relationships, authored query decoding/duplicates and resolved object cache only.",
+  "probeFunctionSha256": "3ddc2926ea5a3defcec054bfbc5becb65d8dd0c83e3de788be794e66624ae010",
+  "cacheProbeFunctionSha256": "f258408354c9982fcf4966faeb8ffa01c270e4dc954146a06243727c3c028437",
+  "authoredAppSourceSha256": "0f4d72605f16056ba58c2a5bfd7205abd5a9bc668a8c225d75cd3a726be85fd0",
+  "captures": [
+    {
+      "run": 1,
+      "sha256": "2d70c507d86171d84542c271c8dba5991a3364be42332ae84ef627ccacf9a144"
+    },
+    {
+      "run": 2,
+      "sha256": "2d70c507d86171d84542c271c8dba5991a3364be42332ae84ef627ccacf9a144"
+    }
+  ],
+  "rows": [
+    {
+      "id": "app.appId.matches",
+      "value": true
+    },
+    {
+      "id": "app.environmentId.matches",
+      "value": true
+    },
+    {
+      "id": "app.appSettings.object",
+      "value": true
+    },
+    {
+      "id": "app.queryParams.object",
+      "value": true
+    },
+    {
+      "id": "user.fullName.nonempty",
+      "value": true
+    },
+    {
+      "id": "user.objectId.guid",
+      "value": true
+    },
+    {
+      "id": "user.tenantId.guid",
+      "value": true
+    },
+    {
+      "id": "user.userPrincipalName.nonempty",
+      "value": true
+    },
+    {
+      "id": "host.sessionId.guid",
+      "value": true
+    },
+    {
+      "id": "app.query._paqvilo_literal",
+      "value": "authored + & ="
+    },
+    {
+      "id": "app.query._paqvilo_empty",
+      "value": ""
+    },
+    {
+      "id": "app.query._paqvilo_unicode",
+      "value": "invented Łódź"
+    },
+    {
+      "id": "app.query._paqvilo_repeat",
+      "value": "last"
+    }
+  ],
+  "cache": [
+    {
+      "id": "context.resolvedReference",
+      "value": true
+    },
+    {
+      "id": "context.queryReference",
+      "value": true
+    },
+    {
+      "id": "context.clientMutationVisible",
+      "value": true
+    },
+    {
+      "id": "context.mutationReference",
+      "value": true
+    }
+  ]
+}

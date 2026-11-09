@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "recordedDate": "2026-11-08",
+  "scope": "Seven exact input status/code/binding-message guarantees, captured by the identical formatted public producer twice; field/table aliases and owned identifiers are authored privately. Cleanup anomaly is retained privately and is outside these seven response guarantees.",
+  "helperSha256": "8d30332b553e45f62de42e317e853d0753f98864c062ab688398415e9a378b3a",
+  "collectorSha256": [
+    "58a73b15084a805ac9477440c8e4579b467f5b874866f28a74dd1d47ae32a9b8",
+    "58a73b15084a805ac9477440c8e4579b467f5b874866f28a74dd1d47ae32a9b8"
+  ],
+  "nativeRunSha256": [
+    "d7f4e499428550e7c9356f4e3b671cb4fce525345594e94b196bd63630975441",
+    "a80605fa00f8481a4ec9bb3daf82ca2bb4cd0f50ddb6ba3050cb6fc25d79e86a"
+  ],
+  "cases": [
+    {
+      "id": "double.infinity.patch",
+      "status": 400,
+      "code": "0x80044330",
+      "nativeBodySha256": [
+        "1c318c6c0a068e60cbd0811031526fbae70e714fb78c158d754f139edcb2a965",
+        "1c318c6c0a068e60cbd0811031526fbae70e714fb78c158d754f139edcb2a965"
+      ]
+    },
+    {
+      "id": "double.boolean.patch",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "4bb32c0f5fc66e3e5849a36cf3220fff87afaa9885b5187ba6206f74ea575e45",
+        "4bb32c0f5fc66e3e5849a36cf3220fff87afaa9885b5187ba6206f74ea575e45"
+      ]
+    },
+    {
+      "id": "double.object.patch",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "cf8deed796ff8dfd82225cddb7bb7041f350043fe3384908c2d56faac85be616",
+        "cf8deed796ff8dfd82225cddb7bb7041f350043fe3384908c2d56faac85be616"
+      ]
+    },
+    {
+      "id": "choices.invalid-string.patch",
+      "status": 400,
+      "code": "0x80060888",
+      "nativeBodySha256": [
+        "717602dd102d0523de63760825379a226eea3ff6ee804655d356d2576668c14f",
+        "717602dd102d0523de63760825379a226eea3ff6ee804655d356d2576668c14f"
+      ]
+    },
+    {
+      "id": "choices.number.patch",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "5060c89e48a7cbabc56f8a9294d3124d80a7f1645ca89bb8d6edf7518cc9f038",
+        "5060c89e48a7cbabc56f8a9294d3124d80a7f1645ca89bb8d6edf7518cc9f038"
+      ]
+    },
+    {
+      "id": "choices.boolean.patch",
+      "status": 400,
+      "code": "0x80048d19",
+      "nativeBodySha256": [
+        "635641fd7c31aa4df6f7654b8160f43fee24b3ca68d971ed3aa7f23619d03353",
+        "635641fd7c31aa4df6f7654b8160f43fee24b3ca68d971ed3aa7f23619d03353"
+      ]
+    },
+    {
+      "id": "relationships.bind-invalid",
+      "status": 400,
+      "code": "0x80060888",
+      "message": "')' or ',' expected at position 6 in '(not-a-guid)'.",
+      "nativeBodySha256": [
+        "e3488f1bec632c9a3149ab9b3f57bf88f5e9bbdbbbf71b261eacabc713bf9586",
+        "e3488f1bec632c9a3149ab9b3f57bf88f5e9bbdbbbf71b261eacabc713bf9586"
+      ]
+    }
+  ]
+}

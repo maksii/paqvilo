@@ -8,6 +8,7 @@ import {
 // store mapping of the same name; virtual tables are read-only fallbacks.
 import { isDateOnlyField } from './dataverse-values.mjs';
 import { createHash } from 'node:crypto';
+import { mappedODataPropertyOrder } from './odata-property-order.mjs';
 import { attributeMetadata } from './attribute-metadata.mjs';
 import { tableFields } from './solution-schema.mjs';
 import { pluralizeEntitySetName, standardTable } from './solution-standard.mjs';
@@ -749,6 +750,7 @@ function fromMapping(logical, nav, rel) {
     isCustomRelationship: rel.isCustomRelationship,
     isValidForAdvancedFind: rel.isValidForAdvancedFind,
     securityTypes: rel.securityTypes,
+    dataverseMetadata: rel.dataverseMetadata,
     associatedMenu: rel.associatedMenu,
     menu1: rel.menu1,
     menu2: rel.menu2,
@@ -865,7 +867,17 @@ function deduplicateCsdlNavigations(navs) {
   }
 }
 
-function buildCsdlProperties(attributes, src, edm, byName, annotations) {
+function sourcePropertyComparator(src) {
+  const declared = mappedODataPropertyOrder(src.m) ?? mappedODataPropertyOrder(src.s);
+  const rank = new Map((declared ?? []).map((name, index) => [name, index]));
+  return (a, b) => {
+    const left = rank.get(a.name),
+      right = rank.get(b.name);
+    return left === right ? byName(a, b) : left === undefined ? 1 : right === undefined ? -1 : left - right;
+  };
+}
+
+function buildCsdlProperties(attributes, src, edm, annotations) {
   return attributes
     .filter((attribute) => attribute.IsValidODataAttribute !== false)
     .map((attribute) => {
@@ -880,7 +892,7 @@ function buildCsdlProperties(attributes, src, edm, byName, annotations) {
         label: labelText(attribute.DisplayName),
       };
     })
-    .sort(byName)
+    .sort(sourcePropertyComparator(src))
     .map((property) =>
       xmlElement(
         'Property',
@@ -940,6 +952,7 @@ export function createMetadataService({
   extraCsdl,
   clock = () => Date.now(),
   revision,
+  observedMetadataVersion,
 }) {
   const read = (source) => (typeof source === 'function' ? source() : source) ?? null;
   const schemaRoot = () => read(schema);
@@ -1391,6 +1404,26 @@ export function createMetadataService({
     return [...records.values()];
   }
 
+  // HTTP relationship collections put platform reference templates before source
+  // relationships, and the file/duplicate templates after them. SDK registration
+  // order remains unchanged; every rank comes from the source-derived catalogue.
+  function httpRelationshipRecords() {
+    const records = relationshipRecords();
+    const generated = logicalNames().flatMap((logical) => implicitRelationships(source(logical)));
+    const generatedNames = new Set(generated.map((rel) => rel.schemaName.toLowerCase()));
+    const terminal = (rel) => ['fileattachment', 'duplicaterecord'].includes(rel.referencingEntity);
+    const order = [
+      ...generated.filter((rel) => !terminal(rel)),
+      ...records.filter((rel) => rel.relatedNotes === true),
+      ...records.filter((rel) => rel.relatedNotes !== true && !generatedNames.has(rel.schemaName.toLowerCase())),
+      ...generated.filter(terminal),
+    ];
+    const rank = new Map(order.map((rel, index) => [rel.schemaName.toLowerCase(), index]));
+    return records.sort(
+      (a, b) => (rank.get(a.schemaName.toLowerCase()) ?? Infinity) - (rank.get(b.schemaName.toLowerCase()) ?? Infinity),
+    );
+  }
+
   // Relationship labels are not documented RelationshipMetadataBase properties; they are carried as DisplayName/Description
   // when the relationship writer stored them, and the uncast base projection leaves them out.
   const relationshipLabels = (r) =>
@@ -1426,7 +1459,7 @@ export function createMetadataService({
     };
   }
 
-  function menuShape(menu) {
+  function menuShape(menu, metadataLabel) {
     const shape = associatedMenu();
     if (!menu) return shape;
     for (const [source, property] of Object.entries({
@@ -1442,6 +1475,22 @@ export function createMetadataService({
     }))
       if (menu[source] !== undefined) shape[property] = menu[source];
     if (menu.labels !== undefined) shape.Label = labelBlock(menu.labels, null, lcid);
+    if (metadataLabel) {
+      const localized = Array.isArray(metadataLabel.LocalizedLabels) ? metadataLabel.LocalizedLabels : [];
+      const identities = new Map(
+        localized
+          .filter(
+            (label) =>
+              label &&
+              Number.isInteger(label.LanguageCode) &&
+              typeof label.MetadataId === 'string' &&
+              GUID.test(label.MetadataId),
+          )
+          .map((label) => [label.LanguageCode, label.MetadataId]),
+      );
+      for (const label of [...shape.Label.LocalizedLabels, shape.Label.UserLocalizedLabel].filter(Boolean))
+        if (identities.has(label.LanguageCode)) label.MetadataId = identities.get(label.LanguageCode);
+    }
     return shape;
   }
 
@@ -1462,7 +1511,7 @@ export function createMetadataService({
       ReferencedEntityNavigationPropertyName: r.referencedNav ?? null,
       ReferencingEntityNavigationPropertyName: r.referencingNav ?? null,
       IsHierarchical: r.hierarchical === true,
-      AssociatedMenuConfiguration: menuShape(r.associatedMenu),
+      AssociatedMenuConfiguration: menuShape(r.associatedMenu, r.dataverseMetadata?.AssociatedMenuConfiguration?.Label),
       CascadeConfiguration: {
         Assign: cascade.assign ?? 'NoCascade',
         Delete: cascade.delete ?? 'RemoveLink',
@@ -1627,7 +1676,7 @@ export function createMetadataService({
     const entity = entityOf(src);
     const derived = Boolean(activityColumns) && entity.IsActivity && logical !== 'activitypointer';
     const attributes = derived ? all.filter((attribute) => !activityColumns.has(attribute.LogicalName)) : all;
-    const properties = buildCsdlProperties(attributes, src, edm, byName, annotations);
+    const properties = buildCsdlProperties(attributes, src, edm, annotations);
     const navigation = buildCsdlNavigation(logical, derived, navs, byName, partnerOf, tables);
     const label = labelText(entity.DisplayName);
     // Native $metadata: a principal (systemuser, team) derives from the abstract mscrm.principal and declares the ownerid key
@@ -1952,8 +2001,50 @@ export function createMetadataService({
     return { Count: keys.length, IsReadOnly: false, Keys: keys, Values: values };
   }
 
+  function metadataDigest() {
+    const root = schemaRoot();
+    return createHash('sha256')
+      .update(
+        JSON.stringify({
+          organizationId,
+          tables: root?.tables,
+          relationships: root?.relationships,
+          optionSets: root?.optionSets,
+          mappings: mappingRoot(),
+          virtual: Object.fromEntries(
+            Object.entries(virtualRoot().tables ?? {}).map(([name, table]) => [name, table.mapping]),
+          ),
+          globalOptionSets: read(globalOptionSets),
+          extraCsdl: read(extraCsdl),
+          seq: latestOf().seq,
+        }),
+      )
+      .digest('hex');
+  }
+  let witnessedVersion,
+    witnessedDigest,
+    witnessArmed = false;
+  function captureObservedVersion() {
+    witnessArmed = true;
+    witnessedVersion = read(observedMetadataVersion);
+    witnessedDigest =
+      typeof witnessedVersion === 'string' && /^\d+$/.test(witnessedVersion) ? metadataDigest() : undefined;
+  }
+
   return {
     metadataId: metadataIdOf,
+    captureObservedVersion,
+    httpPropertyOrder(logical) {
+      const src = source(logical);
+      if (!src) return undefined;
+      return attributesOf(src)
+        .filter((attribute) => attribute.IsValidODataAttribute !== false)
+        .map((attribute) => ({
+          name: stemOf(attribute) === 'Lookup' ? `_${attribute.LogicalName}_value` : attribute.LogicalName,
+        }))
+        .sort(sourcePropertyComparator(src))
+        .map((property) => property.name);
+    },
 
     // Read admission and JSON projection consume the same derived definitions as $metadata. Write handlers
     // keep their source declarations; recognizing a platform read companion does not make it writable.
@@ -1978,24 +2069,11 @@ export function createMetadataService({
     // Local global-metadata version: stable across row edits and restarts, and
     // shared by the service document and CSDL. No native version is invented.
     etag: () => {
-      const root = schemaRoot();
-      const digest = createHash('sha256')
-        .update(
-          JSON.stringify({
-            organizationId,
-            tables: root?.tables,
-            relationships: root?.relationships,
-            optionSets: root?.optionSets,
-            mappings: mappingRoot(),
-            virtual: Object.fromEntries(
-              Object.entries(virtualRoot().tables ?? {}).map(([name, table]) => [name, table.mapping]),
-            ),
-            globalOptionSets: read(globalOptionSets),
-            extraCsdl: read(extraCsdl),
-            seq: latestOf().seq,
-          }),
-        )
-        .digest('hex');
+      const observed = read(observedMetadataVersion);
+      if (witnessArmed && observed !== witnessedVersion) captureObservedVersion();
+      const digest = metadataDigest();
+      if (witnessArmed && typeof observed === 'string' && /^\d+$/.test(observed) && digest === witnessedDigest)
+        return `"${observed}"`;
       return `"${BigInt('0x' + digest.slice(0, 13)).toString()}"`;
     },
 
@@ -2003,13 +2081,18 @@ export function createMetadataService({
       return logicalNames().map((name) => entityOf(source(name)));
     },
 
-    entity(key, { expand, labelLanguages } = {}) {
+    entity(key, { expand, labelLanguages, http = false } = {}) {
       const src = sourceFor(key);
       if (!src) return null;
       const out = entityOf(src);
       for (const nav of listOf(expand))
         if (EXPANSIONS[nav]) {
-          const values = EXPANSIONS[nav](src);
+          const values =
+            nav === 'OneToManyRelationships' && http
+              ? oneToManyOf(src.logical, httpRelationshipRecords())
+              : EXPANSIONS[nav](src);
+          if (nav === 'Attributes' && http)
+            values.sort((a, b) => (a.LogicalName < b.LogicalName ? -1 : a.LogicalName > b.LogicalName ? 1 : 0));
           // These navigation collections declare their exact relationship metadata type.
           // OData JSON omits the redundant discriminator; internal/SDK metadata keeps it.
           out[nav] = nav.endsWith('Relationships') ? values.map(({ '@odata.type': _type, ...value }) => value) : values;
@@ -2017,7 +2100,7 @@ export function createMetadataService({
       return limitLabels(out, labelLanguages);
     },
 
-    attributes(name, { cast, key, select, expand, labelLanguages } = {}) {
+    attributes(name, { cast, key, select, expand, labelLanguages, http = false } = {}) {
       // An unknown cast is a query syntax error (400 0x80060888), checked before the table is looked up.
       // route: native answers this with one REQ_ID header (dataverseError), not the engine's two.
       if (cast && !ATTRIBUTE_CASTS.has(castName(cast)))
@@ -2028,6 +2111,7 @@ export function createMetadataService({
       const src = sourceFor(name);
       if (!src) return null;
       let list = attributesOf(src);
+      if (http) list.sort((a, b) => (a.LogicalName < b.LogicalName ? -1 : a.LogicalName > b.LogicalName ? 1 : 0));
       if (cast) list = list.filter((a) => castMatches(castName(cast), a));
       if (key) list = list.filter((a) => matchKey(a, key));
       const keep = listOf(select).length ? [...listOf(select), ...listOf(expand)] : null;
@@ -2141,9 +2225,11 @@ export function createMetadataService({
     },
 
     serviceDocument(origin, version) {
-      const value = [...new Set([...METADATA_ENTITY_SETS, ...logicalNames().map((name) => source(name).entitySet)])]
-        .sort(/* NOSONAR: preserve entity-set default coercion */)
-        .map((name) => ({ name, kind: 'EntitySet', url: name }));
+      // Keep the EntityContainer declaration order used by csdlDocument: source
+      // entity sets first, then the platform metadata collections.
+      const value = [
+        ...new Set([...logicalNames().map((name) => source(name).entitySet), ...METADATA_ENTITY_SETS]),
+      ].map((name) => ({ name, kind: 'EntitySet', url: name }));
       return { '@odata.context': `${origin}/api/data/${version}/$metadata`, value };
     },
 

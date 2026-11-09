@@ -1,0 +1,3794 @@
+{
+  "schemaVersion": 1,
+  "baseline": "1171cccc8baed9218f7fd7689afae4abdc89252b",
+  "scope": "Raw invented native development fixture choice and multiselect option state on an unsaved draft; two source-bound controls in each case. Source role names replace field/control identities, not output values.",
+  "context": {
+    "source": "Independent native draft form executions; raw typed state preserves NaN, null, undefined, object keys and array order.",
+    "limitations": "Three native source options differ from original two-option invented fixtures; no original exact array or general contract is proven. A visually empty option has numeric NaN, not null. Source identity/tag bindings remain private.",
+    "producerSha256": "7f6d169d08409557cc4b12d19fca87fc42ec448c77cce4e6a053154bef8cd5b9",
+    "inputSha256": "f70b07facc228d5790590383a20917e60e9ad373fa486d7842f082d49ab28351",
+    "probeSha256": "cdd1d2bc84f0a986b55d872b051d17cd8d7bcedc7b2aad06fe44fe13b0ee5090"
+  },
+  "captures": [
+    {
+      "runSha256": "bb9f619728cc7bc99de394d75854b9918665aec4d285ff8e654488a786130108",
+      "producerSha256": "7f6d169d08409557cc4b12d19fca87fc42ec448c77cce4e6a053154bef8cd5b9",
+      "cases": [
+        {
+          "id": "choice-baseline",
+          "facts": {
+            "role": "choice",
+            "operation": "observe baseline",
+            "state": {
+              "type": "object",
+              "entries": [
+                {
+                  "key": "source",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "array",
+                    "entries": [
+                      {
+                        "key": "0",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Planned"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720000
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "1",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "In progress"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720001
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "2",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Complete"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720002
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "length",
+                        "enumerable": false,
+                        "configurable": false,
+                        "writable": true,
+                        "value": {
+                          "type": "number",
+                          "value": 3
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "key": "first",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "array",
+                    "entries": [
+                      {
+                        "key": "0",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": ""
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": "NaN"
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "1",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Planned"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720000
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "2",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "In progress"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720001
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "3",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Complete"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720002
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "length",
+                        "enumerable": false,
+                        "configurable": false,
+                        "writable": true,
+                        "value": {
+                          "type": "number",
+                          "value": 4
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "key": "sibling",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "array",
+                    "entries": [
+                      {
+                        "key": "0",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": ""
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": "NaN"
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "1",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Planned"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720000
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "2",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "In progress"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720001
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "3",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Complete"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720002
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "length",
+                        "enumerable": false,
+                        "configurable": false,
+                        "writable": true,
+                        "value": {
+                          "type": "number",
+                          "value": 4
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "key": "value",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "null"
+                  }
+                },
+                {
+                  "key": "text",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "null"
+                  }
+                }
+              ]
+            },
+            "firstAndSiblingSameObject": {
+              "type": "boolean",
+              "value": false
+            },
+            "sourceValuesAndLabels": "Retained exactly as recorded in typed state; no renaming or numeric normalization.",
+            "encoding": "typed-own-properties-v1"
+          }
+        },
+        {
+          "id": "choice-add-caller",
+          "facts": {
+            "role": "choice",
+            "operation": "addOption({text: Zero, value: 0}, 0), then mutate caller text",
+            "state": {
+              "type": "object",
+              "entries": [
+                {
+                  "key": "source",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "array",
+                    "entries": [
+                      {
+                        "key": "0",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Planned"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720000
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "1",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "In progress"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720001
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "2",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Complete"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720002
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "length",
+                        "enumerable": false,
+                        "configurable": false,
+                        "writable": true,
+                        "value": {
+                          "type": "number",
+                          "value": 3
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "key": "first",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "array",
+                    "entries": [
+                      {
+                        "key": "0",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": ""
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": "NaN"
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "1",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Zero"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 0
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "2",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Planned"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720000
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "3",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "In progress"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720001
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "4",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Complete"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720002
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "length",
+                        "enumerable": false,
+                        "configurable": false,
+                        "writable": true,
+                        "value": {
+                          "type": "number",
+                          "value": 5
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "key": "sibling",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "array",
+                    "entries": [
+                      {
+                        "key": "0",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": ""
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": "NaN"
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "1",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Zero"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 0
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "2",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Planned"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720000
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "3",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "In progress"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720001
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "4",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Complete"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720002
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "length",
+                        "enumerable": false,
+                        "configurable": false,
+                        "writable": true,
+                        "value": {
+                          "type": "number",
+                          "value": 5
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "key": "value",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "null"
+                  }
+                },
+                {
+                  "key": "text",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "null"
+                  }
+                }
+              ]
+            },
+            "firstAndSiblingSameObject": {
+              "type": "boolean",
+              "value": false
+            },
+            "sourceValuesAndLabels": "Retained exactly as recorded in typed state; no renaming or numeric normalization.",
+            "encoding": "typed-own-properties-v1"
+          }
+        },
+        {
+          "id": "multi-baseline",
+          "facts": {
+            "role": "multi",
+            "operation": "observe baseline",
+            "state": {
+              "type": "object",
+              "entries": [
+                {
+                  "key": "source",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "array",
+                    "entries": [
+                      {
+                        "key": "0",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Planned"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720000
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "1",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "In progress"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720001
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "2",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Complete"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720002
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "length",
+                        "enumerable": false,
+                        "configurable": false,
+                        "writable": true,
+                        "value": {
+                          "type": "number",
+                          "value": 3
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "key": "first",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "array",
+                    "entries": [
+                      {
+                        "key": "0",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": ""
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": "NaN"
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "1",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Planned"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720000
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "2",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "In progress"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720001
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "3",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Complete"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720002
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "length",
+                        "enumerable": false,
+                        "configurable": false,
+                        "writable": true,
+                        "value": {
+                          "type": "number",
+                          "value": 4
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "key": "sibling",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "array",
+                    "entries": [
+                      {
+                        "key": "0",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": ""
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": "NaN"
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "1",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Planned"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720000
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "2",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "In progress"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720001
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "3",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Complete"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720002
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "length",
+                        "enumerable": false,
+                        "configurable": false,
+                        "writable": true,
+                        "value": {
+                          "type": "number",
+                          "value": 4
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "key": "value",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "null"
+                  }
+                },
+                {
+                  "key": "text",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "null"
+                  }
+                }
+              ]
+            },
+            "firstAndSiblingSameObject": {
+              "type": "boolean",
+              "value": false
+            },
+            "sourceValuesAndLabels": "Retained exactly as recorded in typed state; no renaming or numeric normalization.",
+            "encoding": "typed-own-properties-v1"
+          }
+        },
+        {
+          "id": "multi-add-caller",
+          "facts": {
+            "role": "multi",
+            "operation": "addOption({text: Zero, value: 0}, 0), then mutate caller text",
+            "state": {
+              "type": "object",
+              "entries": [
+                {
+                  "key": "source",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "array",
+                    "entries": [
+                      {
+                        "key": "0",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Planned"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720000
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "1",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "In progress"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720001
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "2",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Complete"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720002
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "length",
+                        "enumerable": false,
+                        "configurable": false,
+                        "writable": true,
+                        "value": {
+                          "type": "number",
+                          "value": 3
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "key": "first",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "array",
+                    "entries": [
+                      {
+                        "key": "0",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": ""
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": "NaN"
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "1",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Zero"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 0
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "2",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Planned"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720000
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "3",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "In progress"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720001
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "4",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Complete"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720002
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "length",
+                        "enumerable": false,
+                        "configurable": false,
+                        "writable": true,
+                        "value": {
+                          "type": "number",
+                          "value": 5
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "key": "sibling",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "array",
+                    "entries": [
+                      {
+                        "key": "0",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": ""
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": "NaN"
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "1",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Zero"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 0
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "2",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Planned"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720000
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "3",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "In progress"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720001
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "4",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Complete"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720002
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "length",
+                        "enumerable": false,
+                        "configurable": false,
+                        "writable": true,
+                        "value": {
+                          "type": "number",
+                          "value": 5
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "key": "value",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "null"
+                  }
+                },
+                {
+                  "key": "text",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "null"
+                  }
+                }
+              ]
+            },
+            "firstAndSiblingSameObject": {
+              "type": "boolean",
+              "value": false
+            },
+            "sourceValuesAndLabels": "Retained exactly as recorded in typed state; no renaming or numeric normalization.",
+            "encoding": "typed-own-properties-v1"
+          }
+        }
+      ]
+    },
+    {
+      "runSha256": "76f708192dea592342fad96ddde1bd1110e785c2c53e99a140dbf5f09a6969f5",
+      "producerSha256": "7f6d169d08409557cc4b12d19fca87fc42ec448c77cce4e6a053154bef8cd5b9",
+      "cases": [
+        {
+          "id": "choice-baseline",
+          "facts": {
+            "role": "choice",
+            "operation": "observe baseline",
+            "state": {
+              "type": "object",
+              "entries": [
+                {
+                  "key": "source",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "array",
+                    "entries": [
+                      {
+                        "key": "0",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Planned"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720000
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "1",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "In progress"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720001
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "2",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Complete"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720002
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "length",
+                        "enumerable": false,
+                        "configurable": false,
+                        "writable": true,
+                        "value": {
+                          "type": "number",
+                          "value": 3
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "key": "first",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "array",
+                    "entries": [
+                      {
+                        "key": "0",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": ""
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": "NaN"
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "1",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Planned"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720000
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "2",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "In progress"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720001
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "3",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Complete"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720002
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "length",
+                        "enumerable": false,
+                        "configurable": false,
+                        "writable": true,
+                        "value": {
+                          "type": "number",
+                          "value": 4
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "key": "sibling",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "array",
+                    "entries": [
+                      {
+                        "key": "0",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": ""
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": "NaN"
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "1",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Planned"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720000
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "2",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "In progress"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720001
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "3",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Complete"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720002
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "length",
+                        "enumerable": false,
+                        "configurable": false,
+                        "writable": true,
+                        "value": {
+                          "type": "number",
+                          "value": 4
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "key": "value",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "null"
+                  }
+                },
+                {
+                  "key": "text",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "null"
+                  }
+                }
+              ]
+            },
+            "firstAndSiblingSameObject": {
+              "type": "boolean",
+              "value": false
+            },
+            "sourceValuesAndLabels": "Retained exactly as recorded in typed state; no renaming or numeric normalization.",
+            "encoding": "typed-own-properties-v1"
+          }
+        },
+        {
+          "id": "choice-add-caller",
+          "facts": {
+            "role": "choice",
+            "operation": "addOption({text: Zero, value: 0}, 0), then mutate caller text",
+            "state": {
+              "type": "object",
+              "entries": [
+                {
+                  "key": "source",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "array",
+                    "entries": [
+                      {
+                        "key": "0",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Planned"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720000
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "1",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "In progress"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720001
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "2",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Complete"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720002
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "length",
+                        "enumerable": false,
+                        "configurable": false,
+                        "writable": true,
+                        "value": {
+                          "type": "number",
+                          "value": 3
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "key": "first",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "array",
+                    "entries": [
+                      {
+                        "key": "0",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": ""
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": "NaN"
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "1",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Zero"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 0
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "2",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Planned"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720000
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "3",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "In progress"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720001
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "4",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Complete"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720002
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "length",
+                        "enumerable": false,
+                        "configurable": false,
+                        "writable": true,
+                        "value": {
+                          "type": "number",
+                          "value": 5
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "key": "sibling",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "array",
+                    "entries": [
+                      {
+                        "key": "0",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": ""
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": "NaN"
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "1",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Zero"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 0
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "2",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Planned"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720000
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "3",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "In progress"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720001
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "4",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Complete"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720002
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "length",
+                        "enumerable": false,
+                        "configurable": false,
+                        "writable": true,
+                        "value": {
+                          "type": "number",
+                          "value": 5
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "key": "value",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "null"
+                  }
+                },
+                {
+                  "key": "text",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "null"
+                  }
+                }
+              ]
+            },
+            "firstAndSiblingSameObject": {
+              "type": "boolean",
+              "value": false
+            },
+            "sourceValuesAndLabels": "Retained exactly as recorded in typed state; no renaming or numeric normalization.",
+            "encoding": "typed-own-properties-v1"
+          }
+        },
+        {
+          "id": "multi-baseline",
+          "facts": {
+            "role": "multi",
+            "operation": "observe baseline",
+            "state": {
+              "type": "object",
+              "entries": [
+                {
+                  "key": "source",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "array",
+                    "entries": [
+                      {
+                        "key": "0",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Planned"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720000
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "1",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "In progress"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720001
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "2",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Complete"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720002
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "length",
+                        "enumerable": false,
+                        "configurable": false,
+                        "writable": true,
+                        "value": {
+                          "type": "number",
+                          "value": 3
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "key": "first",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "array",
+                    "entries": [
+                      {
+                        "key": "0",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": ""
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": "NaN"
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "1",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Planned"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720000
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "2",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "In progress"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720001
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "3",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Complete"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720002
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "length",
+                        "enumerable": false,
+                        "configurable": false,
+                        "writable": true,
+                        "value": {
+                          "type": "number",
+                          "value": 4
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "key": "sibling",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "array",
+                    "entries": [
+                      {
+                        "key": "0",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": ""
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": "NaN"
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "1",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Planned"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720000
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "2",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "In progress"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720001
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "3",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Complete"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720002
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "length",
+                        "enumerable": false,
+                        "configurable": false,
+                        "writable": true,
+                        "value": {
+                          "type": "number",
+                          "value": 4
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "key": "value",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "null"
+                  }
+                },
+                {
+                  "key": "text",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "null"
+                  }
+                }
+              ]
+            },
+            "firstAndSiblingSameObject": {
+              "type": "boolean",
+              "value": false
+            },
+            "sourceValuesAndLabels": "Retained exactly as recorded in typed state; no renaming or numeric normalization.",
+            "encoding": "typed-own-properties-v1"
+          }
+        },
+        {
+          "id": "multi-add-caller",
+          "facts": {
+            "role": "multi",
+            "operation": "addOption({text: Zero, value: 0}, 0), then mutate caller text",
+            "state": {
+              "type": "object",
+              "entries": [
+                {
+                  "key": "source",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "array",
+                    "entries": [
+                      {
+                        "key": "0",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Planned"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720000
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "1",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "In progress"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720001
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "2",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Complete"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720002
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "length",
+                        "enumerable": false,
+                        "configurable": false,
+                        "writable": true,
+                        "value": {
+                          "type": "number",
+                          "value": 3
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "key": "first",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "array",
+                    "entries": [
+                      {
+                        "key": "0",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": ""
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": "NaN"
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "1",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Zero"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 0
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "2",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Planned"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720000
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "3",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "In progress"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720001
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "4",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Complete"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720002
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "length",
+                        "enumerable": false,
+                        "configurable": false,
+                        "writable": true,
+                        "value": {
+                          "type": "number",
+                          "value": 5
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "key": "sibling",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "array",
+                    "entries": [
+                      {
+                        "key": "0",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": ""
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": "NaN"
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "1",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Zero"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 0
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "2",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Planned"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720000
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "3",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "In progress"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720001
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "4",
+                        "enumerable": true,
+                        "configurable": true,
+                        "writable": true,
+                        "value": {
+                          "type": "object",
+                          "entries": [
+                            {
+                              "key": "text",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "string",
+                                "value": "Complete"
+                              }
+                            },
+                            {
+                              "key": "value",
+                              "enumerable": true,
+                              "configurable": true,
+                              "writable": true,
+                              "value": {
+                                "type": "number",
+                                "value": 198720002
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": "length",
+                        "enumerable": false,
+                        "configurable": false,
+                        "writable": true,
+                        "value": {
+                          "type": "number",
+                          "value": 5
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "key": "value",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "null"
+                  }
+                },
+                {
+                  "key": "text",
+                  "enumerable": true,
+                  "configurable": true,
+                  "writable": true,
+                  "value": {
+                    "type": "null"
+                  }
+                }
+              ]
+            },
+            "firstAndSiblingSameObject": {
+              "type": "boolean",
+              "value": false
+            },
+            "sourceValuesAndLabels": "Retained exactly as recorded in typed state; no renaming or numeric normalization.",
+            "encoding": "typed-own-properties-v1"
+          }
+        }
+      ]
+    }
+  ]
+}

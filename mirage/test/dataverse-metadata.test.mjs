@@ -1,7 +1,10 @@
+// @test-kind unproven: Local metadata models; assertions with reproduced native proof declare their own scoped kind.
 // Dataverse metadata service: EntityDefinitions, Attributes, Keys, relationship shapes and the
 // $filter subset, from a mapping-only fixture and from a minimal Solution schema table.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { createMetadataService, objectTypeCode, relationshipSchemaName } from '../lib/dataverse-metadata.mjs';
 import { privilegeId } from '../lib/dataverse-security.mjs';
 import { seed as seedStandard } from '../lib/dataverse-standard.mjs';
@@ -479,14 +482,31 @@ test('many-to-many returns the intersect with both sides', () => {
   assert.deepEqual(mapped.relationships({ cast: '#Microsoft.Dynamics.CRM.ManyToManyRelationshipMetadata' }), [m2m]);
 });
 
-test('service document lists entity sets sorted by name', () => {
+// @test-kind parity: Native service documents enumerate their independent CSDL EntitySets in declaration order, rather than sorting their names.
+// @parity-evidence: dataverse-native-service-document.json binds both native878-set responses and independent CSDL files; this corrects the previous unproven alphabetical expectation.
+test('service document follows the CSDL entity-set declaration order', async () => {
+  const bytes = await readFile(new URL('./fixtures/dataverse-native-service-document.json', import.meta.url));
+  assert.equal(
+    createHash('sha256').update(bytes).digest('hex'),
+    '55b2d50904f1d4a7e4348aff64461879fda66090d3a49b73c4a74db2eeb7fbc7',
+  );
+  const proof = JSON.parse(bytes);
+  assert.equal(proof.captures.length, 2);
+  assert.equal(proof.expected.serviceDocumentFollowsCsdlDeclarationOrder, true);
   const doc = mapped.serviceDocument('https://org.example', 'v9.2');
   assert.equal(doc['@odata.context'], 'https://org.example/api/data/v9.2/$metadata');
   assert.deepEqual(
     doc.value.map((v) => v.name),
-    ['EntityDefinitions', 'GlobalOptionSetDefinitions', 'RelationshipDefinitions', 'gadgets', 'tags', 'widgets'],
+    ['gadgets', 'tags', 'widgets', 'EntityDefinitions', 'GlobalOptionSetDefinitions', 'RelationshipDefinitions'],
   );
-  assert.equal(doc.value[0].kind, 'EntitySet');
+  assert.ok(doc.value.every((value) => value.kind === proof.expected.kind && value.url === value.name));
+  const sourceNames = [...mapped.csdl('https://org.example').matchAll(/<EntitySet Name="([^"]+)"/g)].map(
+    (match) => match[1],
+  );
+  assert.deepEqual(
+    doc.value.map((value) => value.name),
+    sourceNames,
+  );
 });
 
 test('filterMetadata evaluates the supported subset', () => {

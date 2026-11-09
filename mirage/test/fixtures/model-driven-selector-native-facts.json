@@ -1,0 +1,124 @@
+{
+  "schemaVersion": 1,
+  "baseline": "1171cccc8baed9218f7fd7689afae4abdc89252b",
+  "producerSha256": "a5efcd5a8645e2a7702b015225fbcb3cba1d21245df40f657b5f75aa089b18b9",
+  "inputSha256": "41dbb3d8d9e8afa44f3f631b7b62f83ddeb4e9b5e02e0b2d133617e3c93ce441",
+  "helperSha256": "b2483910544d7c476febcc84c78bce2c67b4e5b334fc39e70a3ff144780b4679",
+  "probeSha256": "8d1fb810cbd3db20ec048a2b0a81a5071b1db396393f846c822a0254565057e3",
+  "scope": "Projection of source-bound native form selector lookup on an unsaved draft; no invented or literal form ID appears in public facts.",
+  "limitations": [
+    "No blanket GUID normalization claim.",
+    "Only four specified casing/bracing variants and the exact source-derived form ID were tested.",
+    "Projection retains null versus undefined and identity, not private ID or form label."
+  ],
+  "captures": [
+    {
+      "runSha256": "188b1b4f0dbf2e2aef1f5afb4a0b59c359a704c284b9167bb4d7c14e165ec3fc",
+      "producerSha256": "a5efcd5a8645e2a7702b015225fbcb3cba1d21245df40f657b5f75aa089b18b9",
+      "cases": [
+        {
+          "id": "selector-lowerBare",
+          "facts": {
+            "argumentShape": "lowerBare",
+            "returned": {
+              "kind": "item",
+              "sameCurrent": true,
+              "returnedIdEqualsSource": true
+            },
+            "sourceFormIdShape": "lowercase-bare-guid",
+            "sourceFormIdSha256": "6b0eb6e222f92ad8ea3750159eaaebdd72966255b692369952615b639090f7d3",
+            "sourceFormIdEqualsCurrent": true,
+            "derivation": "Shape was applied to exact current source-derived form ID; equality checked privately against systemform.formid. No GUID literal was substituted."
+          }
+        },
+        {
+          "id": "selector-upperBare",
+          "facts": {
+            "argumentShape": "upperBare",
+            "returned": "null",
+            "sourceFormIdShape": "lowercase-bare-guid",
+            "sourceFormIdSha256": "6b0eb6e222f92ad8ea3750159eaaebdd72966255b692369952615b639090f7d3",
+            "sourceFormIdEqualsCurrent": true,
+            "derivation": "Shape was applied to exact current source-derived form ID; equality checked privately against systemform.formid. No GUID literal was substituted."
+          }
+        },
+        {
+          "id": "selector-lowerBraced",
+          "facts": {
+            "argumentShape": "lowerBraced",
+            "returned": "null",
+            "sourceFormIdShape": "lowercase-bare-guid",
+            "sourceFormIdSha256": "6b0eb6e222f92ad8ea3750159eaaebdd72966255b692369952615b639090f7d3",
+            "sourceFormIdEqualsCurrent": true,
+            "derivation": "Shape was applied to exact current source-derived form ID; equality checked privately against systemform.formid. No GUID literal was substituted."
+          }
+        },
+        {
+          "id": "selector-bracedUpper",
+          "facts": {
+            "argumentShape": "upperBraced",
+            "returned": "null",
+            "sourceFormIdShape": "lowercase-bare-guid",
+            "sourceFormIdSha256": "6b0eb6e222f92ad8ea3750159eaaebdd72966255b692369952615b639090f7d3",
+            "sourceFormIdEqualsCurrent": true,
+            "derivation": "Shape was applied to exact current source-derived form ID; equality checked privately against systemform.formid. No GUID literal was substituted."
+          }
+        }
+      ]
+    },
+    {
+      "runSha256": "3292a8acf4c2e6d937b84cd63142f2af7020f6e39e5cc52f89d2a349fff2094c",
+      "producerSha256": "a5efcd5a8645e2a7702b015225fbcb3cba1d21245df40f657b5f75aa089b18b9",
+      "cases": [
+        {
+          "id": "selector-lowerBare",
+          "facts": {
+            "argumentShape": "lowerBare",
+            "returned": {
+              "kind": "item",
+              "sameCurrent": true,
+              "returnedIdEqualsSource": true
+            },
+            "sourceFormIdShape": "lowercase-bare-guid",
+            "sourceFormIdSha256": "6b0eb6e222f92ad8ea3750159eaaebdd72966255b692369952615b639090f7d3",
+            "sourceFormIdEqualsCurrent": true,
+            "derivation": "Shape was applied to exact current source-derived form ID; equality checked privately against systemform.formid. No GUID literal was substituted."
+          }
+        },
+        {
+          "id": "selector-upperBare",
+          "facts": {
+            "argumentShape": "upperBare",
+            "returned": "null",
+            "sourceFormIdShape": "lowercase-bare-guid",
+            "sourceFormIdSha256": "6b0eb6e222f92ad8ea3750159eaaebdd72966255b692369952615b639090f7d3",
+            "sourceFormIdEqualsCurrent": true,
+            "derivation": "Shape was applied to exact current source-derived form ID; equality checked privately against systemform.formid. No GUID literal was substituted."
+          }
+        },
+        {
+          "id": "selector-lowerBraced",
+          "facts": {
+            "argumentShape": "lowerBraced",
+            "returned": "null",
+            "sourceFormIdShape": "lowercase-bare-guid",
+            "sourceFormIdSha256": "6b0eb6e222f92ad8ea3750159eaaebdd72966255b692369952615b639090f7d3",
+            "sourceFormIdEqualsCurrent": true,
+            "derivation": "Shape was applied to exact current source-derived form ID; equality checked privately against systemform.formid. No GUID literal was substituted."
+          }
+        },
+        {
+          "id": "selector-bracedUpper",
+          "facts": {
+            "argumentShape": "upperBraced",
+            "returned": "null",
+            "sourceFormIdShape": "lowercase-bare-guid",
+            "sourceFormIdSha256": "6b0eb6e222f92ad8ea3750159eaaebdd72966255b692369952615b639090f7d3",
+            "sourceFormIdEqualsCurrent": true,
+            "derivation": "Shape was applied to exact current source-derived form ID; equality checked privately against systemform.formid. No GUID literal was substituted."
+          }
+        }
+      ]
+    }
+  ]
+}

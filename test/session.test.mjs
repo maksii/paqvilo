@@ -1,3 +1,4 @@
+// @test-kind unproven: local review has not established every held or unreviewed platform-sensitive behavior.
 import { makeTemporaryDirectorySync, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 
 import { test, after } from 'node:test';
@@ -49,6 +50,7 @@ const pause = (tab, requestId, url, options) => {
 
 const session = () => new OverlaySession({ origin: ORIGIN, sourceDir: fx.dir, site: SITE, sourceMaps: false });
 
+// @test-kind contract: document rewrite waits for its current source index and sends provenance only with that fulfilled response
 test('document rewrite waits for its current source index and sends provenance only with that fulfilled response', async (t) => {
   const original = '<!doctype html><p>Invented online response</p>';
   const fake = fakeBrowser({ [ORIGIN + '/document']: { headers: { 'content-type': 'text/html' }, body: original } });
@@ -108,6 +110,7 @@ test('document rewrite waits for its current source index and sends provenance o
   );
 });
 
+// @test-kind contract: unavailable inspection metadata does not disable ordinary local overlays or invent response proof
 test('unavailable inspection metadata does not disable ordinary local overlays or invent response proof', async (t) => {
   const fake = fakeBrowser({
     [ORIGIN + '/document']: { headers: { 'content-type': 'text/html' }, body: '<p>Online</p>' },
@@ -168,6 +171,7 @@ test('snippet changes patch fetched HTML fragments while preserving JSON payload
   assert.match(Buffer.from(b.answers('fragment')[0].body, 'base64').toString(), /Changed footer text/);
 });
 
+// @test-kind contract: asynchronous startup preserves the synchronous model and rewrite result
 test('asynchronous startup preserves the synchronous model and rewrite result', async () => {
   const cfg = { origin: ORIGIN, sourceDir: fx.dir, site: SITE, sourceMaps: false };
   const sync = new OverlaySession(cfg);
@@ -177,6 +181,7 @@ test('asynchronous startup preserves the synchronous model and rewrite result', 
   assert.deepEqual(prepared.rewriter.rewrite(ONLINE_HOME, '/'), sync.rewriter.rewrite(ONLINE_HOME, '/'));
 });
 
+// @test-kind contract: Mirage-rendered pages pass through unchanged while the toolkit panel API remains local
 test('Mirage-rendered pages pass through unchanged while the toolkit panel API remains local', async (t) => {
   const local = createFixture();
   t.after(() => local.cleanup());
@@ -284,6 +289,7 @@ test('Mirage Liquid output is not patched a second time by the remote overlay', 
   assert.equal(fallbacks, 1);
 });
 
+// @test-kind contract: HEAD reads no asset bytes and repeated mapped GETs reuse source-map work
 test('HEAD reads no asset bytes and repeated mapped GETs reuse source-map work', async (t) => {
   // The served-body cache never trusts a stamp taken within the file's time tick; the fixture was written moments ago.
   settleFileTimes(t);
@@ -328,6 +334,7 @@ test('HEAD reads no asset bytes and repeated mapped GETs reuse source-map work',
   }
 });
 
+// @test-kind contract: an external route save does not rebuild the unrelated portal index
 test('an external route save does not rebuild the unrelated portal index', () => {
   const dir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-route-refresh-'));
   try {
@@ -353,6 +360,7 @@ test('an external route save does not rebuild the unrelated portal index', () =>
   }
 });
 
+// @test-kind contract: background HTML history deduplicates polling and bounds retained inline bodies
 test('background HTML history deduplicates polling and bounds retained inline bodies', async () => {
   const s = session();
   const page = {};
@@ -394,6 +402,7 @@ test('background HTML history deduplicates polling and bounds retained inline bo
   assert.equal(s.pageHits.get(page).at(-1).url, '/fragment/11');
 });
 
+// @test-kind security+contract: only the portal origin is intercepted, in every tab, also in tabs opened later
 test('only the portal origin is intercepted, in every tab, also in tabs opened later', async () => {
   const b = fakeBrowser();
   b.openTab();
@@ -409,6 +418,7 @@ test('only the portal origin is intercepted, in every tab, also in tabs opened l
   assert.equal(b.sent.filter((s) => s.method === 'Network.setCacheDisabled' && s.cacheDisabled === true).length, 2);
 });
 
+// @test-kind contract: every paused request is answered: also when the handler ignores it or throws
 test('every paused request is answered: also when the handler ignores it or throws', async () => {
   const b = fakeBrowser();
   const tab = b.openTab();
@@ -427,6 +437,7 @@ test('every paused request is answered: also when the handler ignores it or thro
   );
 });
 
+// @test-kind contract: a web file is answered from disk and the portal is not asked
 test('a web file is answered from disk and the portal is not asked', async () => {
   const b = fakeBrowser();
   const tab = b.openTab();
@@ -440,6 +451,7 @@ test('a web file is answered from disk and the portal is not asked', async () =>
   assert.equal(b.fetched.length, 0);
 });
 
+// @test-kind contract: a page is fetched online with the request as the browser made it, rewritten, and answered once
 test('a page is fetched online with the request as the browser made it, rewritten, and answered once', async (t) => {
   const css = 'web-pages/home/content-pages/Home.en-US.webpage.custom_css.css',
     original = fx.read(css);
@@ -483,6 +495,7 @@ test('a page is fetched online with the request as the browser made it, rewritte
   assert.equal(hits[0].page, tab.page);
 });
 
+// @test-kind contract: a form post carries its body to the portal
 test('a form post carries its body to the portal', async () => {
   const b = fakeBrowser({
     [`${ORIGIN}/about-us/`]: { headers: { 'content-type': 'text/html' }, body: '<html><body>saved</body></html>' },
@@ -501,6 +514,7 @@ test('a form post carries its body to the portal', async () => {
   assert.equal(b.answers('r1')[0].method, 'Fetch.fulfillRequest');
 });
 
+// @test-kind contract: a redirect is handed to the browser as it is
 test('a redirect is handed to the browser as it is', async () => {
   const b = fakeBrowser({ [`${ORIGIN}/about-us`]: { status: 301, headers: { location: '/about-us/' } } });
   const tab = b.openTab();
@@ -511,6 +525,7 @@ test('a redirect is handed to the browser as it is', async () => {
   assert.ok(answer.responseHeaders.some((h) => h.name === 'location' && h.value === '/about-us/'));
 });
 
+// @test-kind security+contract: data requests, posts of data and sign-in pages go to the portal untouched
 test('data requests, posts of data and sign-in pages go to the portal untouched', async () => {
   const b = fakeBrowser();
   const tab = b.openTab();
@@ -528,6 +543,7 @@ test('data requests, posts of data and sign-in pages go to the portal untouched'
   assert.equal(b.fetched.length, 0);
 });
 
+// @test-kind contract: when the portal cannot be reached a page request goes back to the browser
 test('when the portal cannot be reached a page request goes back to the browser', async () => {
   const b = fakeBrowser();
   const tab = b.openTab();
@@ -539,6 +555,7 @@ test('when the portal cannot be reached a page request goes back to the browser'
   );
 });
 
+// @test-kind contract: the first custom JavaScript file of a page is picked up when it is created
 test('the first custom JavaScript file of a page is picked up when it is created', (t) => {
   const s = session();
   const rel = 'web-pages/scripts/content-pages/Scripts.en-US.webpage.custom_javascript.js';
@@ -558,6 +575,7 @@ test('the first custom JavaScript file of a page is picked up when it is created
   assert.equal(s.rewriter.rewrite(page, '/scripts/').applied.length, 0);
 });
 
+// @test-kind contract: a tab that loaded its page before interception was on is loaded once more
 test('a tab that loaded its page before interception was on is loaded once more', async () => {
   const b = fakeBrowser();
   const early = b.openTab(`${ORIGIN}/about-us/`);
@@ -586,6 +604,7 @@ test('a tab that loaded its page before interception was on is loaded once more'
   assert.equal(fresh.page.reloads, 0);
 });
 
+// @test-kind security+contract: a failed rewrite preserves a completed form POST response without resubmitting
 test('a failed rewrite preserves a completed form POST response without resubmitting', async () => {
   const original = '<html><body>saved exactly once</body></html>';
   const b = fakeBrowser({ [`${ORIGIN}/save/`]: { headers: { 'content-type': 'text/html' }, body: original } });
@@ -612,6 +631,7 @@ test('a failed rewrite preserves a completed form POST response without resubmit
   assert.deepEqual(faults, ['invalid local markup']);
 });
 
+// @test-kind security+contract: a form request that fails or times out is aborted without browser resubmission
 test('a form request that fails or times out is aborted without browser resubmission', async () => {
   const b = fakeBrowser();
   const tab = b.openTab();
@@ -630,6 +650,7 @@ test('a form request that fails or times out is aborted without browser resubmis
   );
 });
 
+// @test-kind security+contract: an internal API fault is aborted and never forwarded to the portal
 test('an internal API fault is aborted and never forwarded to the portal', async () => {
   const b = fakeBrowser();
   const tab = b.openTab();
@@ -646,6 +667,7 @@ test('an internal API fault is aborted and never forwarded to the portal', async
   assert.equal(b.fetched.length, 0);
 });
 
+// @test-kind security+contract: authentication endpoints stay online even if an explicit local route matches them
 test('authentication endpoints stay online even if an explicit local route matches them', async () => {
   const b = fakeBrowser();
   const tab = b.openTab();
@@ -669,6 +691,7 @@ test('authentication endpoints stay online even if an explicit local route match
     );
 });
 
+// @test-kind contract: a web file payload created after its metadata is picked up on save
 test('a web file payload created after its metadata is picked up on save', () => {
   const metadata = 'web-files/late.css.webfile.yml';
   const payload = 'web-files/late.css';
@@ -685,6 +708,7 @@ test('a web file payload created after its metadata is picked up on save', () =>
   }
 });
 
+// @test-kind contract: repeated file requests retain a count without growing per-tab history
 test('repeated file requests retain a count without growing per-tab history', async () => {
   const b = fakeBrowser();
   const tab = b.openTab();
@@ -698,6 +722,7 @@ test('repeated file requests retain a count without growing per-tab history', as
   assert.equal(hits[0].count, 50);
 });
 
+// @test-kind contract: committing a local edit removes its changed-scope override without another source save
 test('committing a local edit removes its changed-scope override without another source save', async (t) => {
   // The watchers keep the process alive, so a missed refresh must fail instead of hanging the
   // unit lane, which has no --test-timeout. A refresh normally lands within one Git poll and flush.
@@ -731,6 +756,7 @@ test('committing a local edit removes its changed-scope override without another
   }
 });
 
+// @test-kind contract: startup reconciles markup and URL metadata saved during async source prefetch
 test('startup reconciles markup and URL metadata saved during async source prefetch', async (t) => {
   const local = createFixture();
   t.after(() => local.cleanup());
@@ -764,6 +790,7 @@ test('startup reconciles markup and URL metadata saved during async source prefe
   assert.equal(s.resolver.resolve('/updated-scripts/app.js')?.file, local.file('web-files/app.js'));
 });
 
+// @test-kind contract: a baseline discovered during an unrelated save rebuilds every markup patch
 test('a baseline discovered during an unrelated save rebuilds every markup patch', async (t) => {
   const local = createFixture();
   t.after(() => local.cleanup());
@@ -787,6 +814,7 @@ test('a baseline discovered during an unrelated save rebuilds every markup patch
   assert.equal(s.rewriter.patches.length, 0);
 });
 
+// @test-kind contract: web-only saves prepare bytes without synchronous Git and publish tracking asynchronously
 test('web-only saves prepare bytes without synchronous Git and publish tracking asynchronously', async (t) => {
   const local = createFixture();
   t.after(() => local.cleanup());
@@ -808,6 +836,7 @@ test('web-only saves prepare bytes without synchronous Git and publish tracking 
   assert.equal(tracked.has(file), true);
 });
 
+// @test-kind contract: watch readiness reconciles edits made after session creation before first navigation
 test('watch readiness reconciles edits made after session creation before first navigation', async (t) => {
   const local = createFixture();
   t.after(() => local.cleanup());

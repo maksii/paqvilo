@@ -1,0 +1,286 @@
+{
+  "version": 1,
+  "scope": "Five original formula inputs under equivalent fixed clock, LA time zone, en-US culture and decimal parser host. Case 75 returns true, matching its original expectation. GUID produces ErrorValue and IfError kind 25; this does not prove JavaScript exception mapping or native Canvas behavior.",
+  "baseline": "1171cccc8baed9218f7fd7689afae4abdc89252b",
+  "source": {
+    "file": "mirage/test/power-fx-language.test.mjs",
+    "sha256": "f28d696944a17b3785e497e50767ddb534ab0e232a859bf9bcfe09018481bc86",
+    "variables": {
+      "NOW": "920d4dcf175bfbd8919451415e2d6a5af46673dce097d1946bbf706ffa6cca55",
+      "hostOf": "1f1846fbecabe3584f19f15f8c158c409239440e9d330a52e9494871da89e762",
+      "run": "1e81a4020bc8fc6ccea5ceaed90c7b8109ad1e12827167c8811ee375eb274b94",
+      "CASES": "199f7a9f160b4a3ccadfa844973396efcecdb79509b9acda8a47baaba0907d47"
+    },
+    "loopSha256": "6e80145352c3364a2a9793be68e4faf0c5cbffb53cae1b7b707e679dc057a3a0",
+    "defaultLanguageSource": {
+      "file": "mirage/lib/power-fx.mjs",
+      "sha256": "c40ce50c45d4f40b9ab0f263015315f425a8eb3beb862980a02fa4055b02affe",
+      "assignment": "this.language = this.host.language ?? 'en-US'",
+      "assignmentSha256": "98547f7d1a2241711689066abbf4e400b8bff8095034338c62db3d89a6de29cc"
+    },
+    "cases": [
+      {
+        "index": 3,
+        "expression": "2^3^2",
+        "originalTuple": "['2^3^2', 64]",
+        "originalTupleSha256": "03c527130577fbbd23ac683aef78b233b4225aec9306a1acebc7b6232fd26076"
+      },
+      {
+        "index": 75,
+        "expression": "IsError(DateValue(\"13/01/2024\"))",
+        "originalTuple": "['IsError(DateValue(\"13/01/2024\"))', true]",
+        "originalTupleSha256": "791241bf2d38831168e2f1d6baf294a3fca8e983bb7fe794a8445b7b138965e2"
+      },
+      {
+        "index": 76,
+        "expression": "IsError(TimeValue(\"25:00\"))",
+        "originalTuple": "['IsError(TimeValue(\"25:00\"))', true]",
+        "originalTupleSha256": "7a462911dae080be6f670acd9246d34a0e3ab4fc1c15dd5401ff0b0ffe6b7b6b"
+      },
+      {
+        "index": 126,
+        "expression": "CountRows(ForAll([1, 2], If(Value = 1, Blank(), Value)))",
+        "originalTuple": "['CountRows(ForAll([1, 2], If(Value = 1, Blank(), Value)))', 1]",
+        "originalTupleSha256": "c780a1453a58ca6115a28e8ff707359683c3b4e7c772834b9d155ca77b79b455"
+      },
+      {
+        "index": 139,
+        "expression": "GUID(\"77777777-7777-4777-8777-777777777777\") = GUID(\"{77777777777747778777777777777777}\")",
+        "originalTuple": "['GUID(\"77777777-7777-4777-8777-777777777777\") = GUID(\"{77777777777747778777777777777777}\")', true]",
+        "originalTupleSha256": "c2156e4fa385c6f933bdc1adae6777e09867d74ce64cfc054809190a18c0d144"
+      }
+    ]
+  },
+  "inputSha256": "0122c1c33f2c0528b5003ff20c8683835e93af5195e00a42d3f85c10f91ca816",
+  "producer": {
+    "sourceSha256": "780455def94b560c5d28a29d139732b1d302f07ea22cdff388916bf643ef4dd6",
+    "projectSha256": "21271ed61516bdd05af5040d3380abc5cf48df04bd30f3d508754d7559279709",
+    "dllSha256": "66045610e58d5a4ae8c093485fe244c7b8437eba3bd6fa4051bf257a1a5b8a69",
+    "shimSha256": "7ac8a1cdff1b627548de11513fddedd75014f5b041e9ae9054a634bb04aa7982",
+    "shimPackageSha256": "25fc8987f1f700c58603f68edd93ac03a1b7dea35da1e84509f29f444d5b11e9",
+    "launcherSha256": "56b2f89ca90aa09064e99c1a15d3d0c208710517ba20bfa498dbd55841933543"
+  },
+  "package": {
+    "id": "Microsoft.PowerApps.CLI",
+    "version": "2.13.1",
+    "sha256": "07654af406781c1676d1bc5712c393fab2276e54f15ff10bb74a1bdef0d27d3f",
+    "source": "https://api.nuget.org/v3-flatcontainer/microsoft.powerapps.cli/2.13.1/microsoft.powerapps.cli.2.13.1.nupkg"
+  },
+  "runs": [
+    {
+      "rawSha256": "a262b94a1af73c9bac62810c0068b913dcbe6382539e7d2a2f95f6266dd54e39",
+      "hostProcessId": 39268,
+      "startedAtRealUtc": "2026-11-08T21:14:20.137Z",
+      "finishedAtRealUtc": "2026-11-08T21:14:29.138Z",
+      "hostMonotonicElapsedMilliseconds": 9000.5591,
+      "processId": 349,
+      "processSecurity": {
+        "uid": "Uid:\t65534\t65534\t65534\t65534",
+        "capabilitiesEffective": "CapEff:\t0000000000000000"
+      },
+      "before": {
+        "local": "2013-07-15T13:02:00.0000000-07:00",
+        "utc": "2013-07-15T20:02:00.0000000Z",
+        "localZone": "America/Los_Angeles",
+        "localOffset": "-07:00:00"
+      },
+      "after": {
+        "local": "2013-07-15T13:02:00.0000000-07:00",
+        "utc": "2013-07-15T20:02:00.0000000Z"
+      },
+      "innerMonotonicElapsedMilliseconds": 123.6411,
+      "assemblies": [
+        {
+          "FullName": "Microsoft.PowerFx.Interpreter, Version=1.99.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35",
+          "ModuleVersionId": "c00830f1-cff1-4ce9-97a2-c7d759869bac",
+          "sha256": "f06ed03f9599741990e2db49bbb495b88b5655faab89d5a5017dbec9c75ac780"
+        },
+        {
+          "FullName": "Microsoft.PowerFx.Core, Version=1.99.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35",
+          "ModuleVersionId": "79d79918-0479-450c-915a-1f34bac32028",
+          "sha256": "a9e79158c58284ae99b958f285a7ef81a345b1553a2db5df06a0d52612bf170b"
+        }
+      ],
+      "results": [
+        {
+          "expression": "2^3^2",
+          "phase": "evaluation",
+          "kind": "value",
+          "type": "NumberValue",
+          "value": 512,
+          "errors": null,
+          "diagnostics": []
+        },
+        {
+          "expression": "IsError(DateValue(\"13/01/2024\"))",
+          "phase": "evaluation",
+          "kind": "value",
+          "type": "BooleanValue",
+          "value": true,
+          "errors": null,
+          "diagnostics": []
+        },
+        {
+          "expression": "IsError(TimeValue(\"25:00\"))",
+          "phase": "evaluation",
+          "kind": "value",
+          "type": "BooleanValue",
+          "value": false,
+          "errors": null,
+          "diagnostics": []
+        },
+        {
+          "expression": "CountRows(ForAll([1, 2], If(Value = 1, Blank(), Value)))",
+          "phase": "evaluation",
+          "kind": "value",
+          "type": "DecimalValue",
+          "value": 2,
+          "errors": null,
+          "diagnostics": []
+        },
+        {
+          "expression": "GUID(\"77777777-7777-4777-8777-777777777777\") = GUID(\"{77777777777747778777777777777777}\")",
+          "phase": "evaluation",
+          "kind": "error",
+          "type": "ErrorValue",
+          "value": null,
+          "errors": [
+            {
+              "kind": "InvalidArgument",
+              "Message": "Invalid argument"
+            }
+          ],
+          "diagnostics": []
+        },
+        {
+          "expression": "IfError(GUID(\"77777777-7777-4777-8777-777777777777\") = GUID(\"{77777777777747778777777777777777}\"),FirstError.Kind=25)",
+          "phase": "evaluation",
+          "kind": "value",
+          "type": "BooleanValue",
+          "value": true,
+          "errors": null,
+          "diagnostics": []
+        }
+      ],
+      "host": {
+        "fixedClock": "2013-07-15T20:02:00.0000000Z",
+        "timeZone": "America/Los_Angeles",
+        "culture": "en-US",
+        "numberIsFloat": false,
+        "faketime": "2013-07-15 13:02:00",
+        "dontFakeMonotonic": "1",
+        "tz": "America/Los_Angeles",
+        "framework": ".NET 10.0.14",
+        "architecture": "X64"
+      }
+    },
+    {
+      "rawSha256": "096746dc38024588299067d5abbfbb7af14adfc2251ce6db43201d690be9431c",
+      "hostProcessId": 9904,
+      "startedAtRealUtc": "2026-11-08T21:14:29.183Z",
+      "finishedAtRealUtc": "2026-11-08T21:14:29.805Z",
+      "hostMonotonicElapsedMilliseconds": 622.551,
+      "processId": 1134,
+      "processSecurity": {
+        "uid": "Uid:\t65534\t65534\t65534\t65534",
+        "capabilitiesEffective": "CapEff:\t0000000000000000"
+      },
+      "before": {
+        "local": "2013-07-15T13:02:00.0000000-07:00",
+        "utc": "2013-07-15T20:02:00.0000000Z",
+        "localZone": "America/Los_Angeles",
+        "localOffset": "-07:00:00"
+      },
+      "after": {
+        "local": "2013-07-15T13:02:00.0000000-07:00",
+        "utc": "2013-07-15T20:02:00.0000000Z"
+      },
+      "innerMonotonicElapsedMilliseconds": 121.5655,
+      "assemblies": [
+        {
+          "FullName": "Microsoft.PowerFx.Interpreter, Version=1.99.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35",
+          "ModuleVersionId": "c00830f1-cff1-4ce9-97a2-c7d759869bac",
+          "sha256": "f06ed03f9599741990e2db49bbb495b88b5655faab89d5a5017dbec9c75ac780"
+        },
+        {
+          "FullName": "Microsoft.PowerFx.Core, Version=1.99.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35",
+          "ModuleVersionId": "79d79918-0479-450c-915a-1f34bac32028",
+          "sha256": "a9e79158c58284ae99b958f285a7ef81a345b1553a2db5df06a0d52612bf170b"
+        }
+      ],
+      "results": [
+        {
+          "expression": "2^3^2",
+          "phase": "evaluation",
+          "kind": "value",
+          "type": "NumberValue",
+          "value": 512,
+          "errors": null,
+          "diagnostics": []
+        },
+        {
+          "expression": "IsError(DateValue(\"13/01/2024\"))",
+          "phase": "evaluation",
+          "kind": "value",
+          "type": "BooleanValue",
+          "value": true,
+          "errors": null,
+          "diagnostics": []
+        },
+        {
+          "expression": "IsError(TimeValue(\"25:00\"))",
+          "phase": "evaluation",
+          "kind": "value",
+          "type": "BooleanValue",
+          "value": false,
+          "errors": null,
+          "diagnostics": []
+        },
+        {
+          "expression": "CountRows(ForAll([1, 2], If(Value = 1, Blank(), Value)))",
+          "phase": "evaluation",
+          "kind": "value",
+          "type": "DecimalValue",
+          "value": 2,
+          "errors": null,
+          "diagnostics": []
+        },
+        {
+          "expression": "GUID(\"77777777-7777-4777-8777-777777777777\") = GUID(\"{77777777777747778777777777777777}\")",
+          "phase": "evaluation",
+          "kind": "error",
+          "type": "ErrorValue",
+          "value": null,
+          "errors": [
+            {
+              "kind": "InvalidArgument",
+              "Message": "Invalid argument"
+            }
+          ],
+          "diagnostics": []
+        },
+        {
+          "expression": "IfError(GUID(\"77777777-7777-4777-8777-777777777777\") = GUID(\"{77777777777747778777777777777777}\"),FirstError.Kind=25)",
+          "phase": "evaluation",
+          "kind": "value",
+          "type": "BooleanValue",
+          "value": true,
+          "errors": null,
+          "diagnostics": []
+        }
+      ],
+      "host": {
+        "fixedClock": "2013-07-15T20:02:00.0000000Z",
+        "timeZone": "America/Los_Angeles",
+        "culture": "en-US",
+        "numberIsFloat": false,
+        "faketime": "2013-07-15 13:02:00",
+        "dontFakeMonotonic": "1",
+        "tz": "America/Los_Angeles",
+        "framework": ".NET 10.0.14",
+        "architecture": "X64"
+      }
+    }
+  ],
+  "privateReceiptSha256": "01af0f3bd8777c7b421dd63fd20e0cc416f4dd162e53501003fe3b493fabf635"
+}

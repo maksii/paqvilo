@@ -337,6 +337,7 @@ function hookFixture(t, { classifier, readyDependencies = false } = {}) {
     'scripts/git-hooks.mjs',
     'scripts/ensure-dependencies.mjs',
     'scripts/check-test-tags.mjs',
+    'scripts/parity-query-universe.mjs',
     '.github/scripts/change-scope.mjs',
   ]) {
     write(name, fs.readFileSync(new URL(`../${name}`, import.meta.url)));
@@ -432,6 +433,50 @@ test('no-check hook needs no npm or dependencies and still removes its snapshot'
   const result = run();
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /no applicable checks/);
+  assertCleaned();
+});
+
+test('staged test-kind checks load their real local helper without installed dependencies', (t) => {
+  const { root, git, write, run, assertCleaned } = hookFixture(t, {
+    classifier: 'export const preCommitScripts = () => [];',
+  });
+  const file = 'test/invented.test.mjs';
+  const body = "import test from 'node:test';\ntest('invented', () => {});\n";
+  assert.equal(fs.existsSync(path.join(root, 'node_modules')), false);
+  assert.deepEqual(
+    fs.readFileSync(path.join(root, 'scripts/parity-query-universe.mjs')),
+    fs.readFileSync(new URL('../scripts/parity-query-universe.mjs', import.meta.url)),
+  );
+  write(file, body);
+  git('add', file);
+  const untagged = run();
+  assert.equal(untagged.status, 1);
+  assert.match(untagged.stderr, /test has no @test-kind/);
+  assertCleaned();
+
+  write(file, '// @test-kind tooling: invented isolated hook fixture.\n' + body);
+  git('add', file);
+  const valid = run();
+  assert.equal(valid.status, 0, valid.stderr);
+  assert.match(valid.stdout, /no applicable checks/);
+  assert.equal(fs.existsSync(path.join(root, 'node_modules')), false);
+  assertCleaned();
+});
+
+test('a staged generated guard fails closed when its parser is unavailable', (t) => {
+  const { root, git, write, run, assertCleaned } = hookFixture(t, {
+    classifier: 'export const preCommitScripts = () => [];',
+  });
+  const file = 'test/invented.test.mjs';
+  write(
+    file,
+    "// @test-kind tooling: invented isolated hook fixture.\nimport test from 'node:test';\ntest('invented', () => { __paqQueryBindings(); });\n",
+  );
+  git('add', file);
+  const result = run();
+  assert.equal(fs.existsSync(path.join(root, 'node_modules')), false);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /invalid generated query case guard/);
   assertCleaned();
 });
 

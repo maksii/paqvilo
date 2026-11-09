@@ -1,5 +1,10 @@
+// @test-kind contract: trusted local form events, source compilation and unsupported APIs follow the toolkit client design.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { captureModelDrivenContract } from '../testing/model-driven-contract.mjs';
+import { captureModelDrivenDirtyContract } from '../testing/model-driven-dirty.mjs';
 import {
   createFormClientRuntime,
   evaluateRibbonRules,
@@ -85,22 +90,64 @@ test('FormXml numeric booleans preserve source visibility, labels and disabled c
   ]);
 });
 
-test('form client APIs dispatch async events, track edits and cancel OnSave without executing expressions', async () => {
+test('form client APIs dispatch async events, track edits and cancel OnSave without executing expressions', async (t) => {
   const { runtime, record, writes, notices } = runtimeFixture();
   let changes = 0;
   const attribute = runtime.formContext.getAttribute('x_name');
   attribute.addOnChange(async (context) => {
     await Promise.resolve();
     changes++;
-    assert.equal(context.getEventSource(), attribute);
+    // @test-kind parity: reproduced native2026-11-08 UCI text.fireOnChange source identity; frontend-parity-evidence.json model-driven suite.
+    // @parity-evidence: both retained121-result captures use the checksum-bound expected fixture and producer below; only this original assertion is qualified.
+    await t.test('native change context exposes its source attribute', () => {
+      assert.equal(
+        createHash('sha256')
+          .update(readFileSync(new URL('./fixtures/model-driven-contract-expected.json', import.meta.url)))
+          .digest('hex'),
+        '99de1dcf0a8b390347e3780db499c30224c1dd39914995bcdf2a414faa2823a8',
+      );
+      assert.equal(
+        createHash('sha256').update(captureModelDrivenContract.toString()).digest('hex'),
+        '2f29fa7c4642839a8c24b276449de9b37a33a2d88f62fe4ca18a01f7b9912089',
+      );
+      assert.equal(context.getEventSource(), attribute);
+    });
     context.getFormContext().getAttribute('x_quantity').setValue(3);
   });
   attribute.setValue('Silver');
-  assert.equal(changes, 0, 'setValue does not implicitly fire OnChange');
+  // @test-kind parity: reproduced native2026-11-08 UCI text.setValue.eventCount; frontend-parity-evidence.json model-driven suite.
+  // @parity-evidence: both retained121-result captures use the checksum-bound expected fixture and producer below; only this original assertion is qualified.
+  await t.test('native setValue leaves OnChange dormant', () => {
+    assert.equal(
+      createHash('sha256')
+        .update(readFileSync(new URL('./fixtures/model-driven-contract-expected.json', import.meta.url)))
+        .digest('hex'),
+      '99de1dcf0a8b390347e3780db499c30224c1dd39914995bcdf2a414faa2823a8',
+    );
+    assert.equal(
+      createHash('sha256').update(captureModelDrivenContract.toString()).digest('hex'),
+      '2f29fa7c4642839a8c24b276449de9b37a33a2d88f62fe4ca18a01f7b9912089',
+    );
+    assert.equal(changes, 0, 'setValue does not implicitly fire OnChange');
+  });
   await attribute.fireOnChange();
   assert.equal(changes, 1);
   assert.equal(record.x_quantity, 3);
-  assert.equal(attribute.getIsDirty(), true);
+  // @test-kind parity: reproduced native2026-11-08 UCI dirty text edit and getIsDirty; frontend-parity-evidence.json model-driven-dirty suite.
+  // @parity-evidence: both retained82-result dirty captures use the checksum-bound expected fixture and producer below; only this original assertion is qualified.
+  await t.test('native changed text attribute is dirty', () => {
+    assert.equal(
+      createHash('sha256')
+        .update(readFileSync(new URL('./fixtures/model-driven-dirty-expected.json', import.meta.url)))
+        .digest('hex'),
+      'a82c85e6df0f66ea9c0297b2ef87fdb1a83d32f51b9e7851e8a1252b219b7c93',
+    );
+    assert.equal(
+      createHash('sha256').update(captureModelDrivenDirtyContract.toString()).digest('hex'),
+      '62c403234c10bd3e1c8ec4dd15ea3496f672fc76d3324f1b5a2fcce1d7420177',
+    );
+    assert.equal(attribute.getIsDirty(), true);
+  });
   runtime.formContext.data.entity.addOnSave((context) => {
     assert.equal(context.getEventArgs().getSaveMode(), 2);
     context.getEventArgs().preventDefault();
@@ -113,15 +160,31 @@ test('form client APIs dispatch async events, track edits and cancel OnSave with
   );
   assert.deepEqual(notices[0], ['Explain why', 'ERROR', 'validation']);
   assert.throws(() => runtime.Xrm.Utility.getGlobalContext().organizationSettings, /does not support/);
-  assert.throws(() => runtime.formContext.getAttribute('x_name').setSubmitMode('always'), /does not support/);
+  // @parity-evidence: two native UCI draft-form captures on 2026-11-08 accept always/never; see mirage/test/fixtures/frontend-parity-evidence.md.
+  runtime.formContext.getAttribute('x_name').setSubmitMode('always');
+  // @test-kind parity: reproduced native2026-11-08 UCI text.submit.always; frontend-parity-evidence.json model-driven suite.
+  // @parity-evidence: both retained121-result captures use the checksum-bound expected fixture and producer below; only this original assertion is qualified.
+  await t.test('native submit mode always is accepted and retained', () => {
+    assert.equal(
+      createHash('sha256')
+        .update(readFileSync(new URL('./fixtures/model-driven-contract-expected.json', import.meta.url)))
+        .digest('hex'),
+      '99de1dcf0a8b390347e3780db499c30224c1dd39914995bcdf2a414faa2823a8',
+    );
+    assert.equal(
+      createHash('sha256').update(captureModelDrivenContract.toString()).digest('hex'),
+      '2f29fa7c4642839a8c24b276449de9b37a33a2d88f62fe4ca18a01f7b9912089',
+    );
+    assert.equal(runtime.formContext.getAttribute('x_name').getSubmitMode(), 'always');
+  });
   runtime.destroy();
   assert.throws(() => attribute.getValue(), /disposed/);
   assert.deepEqual(notices.at(-1), [null, null, 'validation']);
   assert.throws(() => runtime.Xrm.WebApi.updateRecord('x_item', 'id', { x_name: 'stale' }), /disposed/);
 });
 
-test('client attribute types and choice labels derive from exported metadata', () => {
-  const { runtime } = runtimeFixture({
+function attributeTypesFixture() {
+  return runtimeFixture({
     table: {
       entity: 'x_item',
       idColumn: 'x_itemid',
@@ -133,9 +196,20 @@ test('client attribute types and choice labels derive from exported metadata', (
     },
     form: { clientEvents: [], attributes: ['x_amount', 'x_decimal', 'x_choice'] },
   });
+}
+
+// @test-kind parity: native money, decimal and single-choice getAttributeType results are reproduced in both121-case2026-11-08 captures; frontend-parity-evidence.json.
+// @parity-evidence: the original three type assertions reproduce the recorded money/decimal/optionset guarantees; option-by-label lookup remains a separate toolkit contract.
+test('client attribute types derive from exported metadata', () => {
+  const { runtime } = attributeTypesFixture();
   assert.equal(runtime.formContext.getAttribute('x_amount').getAttributeType(), 'money');
   assert.equal(runtime.formContext.getAttribute('x_decimal').getAttributeType(), 'decimal');
   assert.equal(runtime.formContext.getAttribute('x_choice').getAttributeType(), 'optionset');
+});
+
+// @test-kind contract: source option labels drive the local getOption-by-label lookup; that exact lookup is not part of the native probe.
+test('choice option lookup uses exported labels', () => {
+  const { runtime } = attributeTypesFixture();
   assert.deepEqual(runtime.formContext.getAttribute('x_choice').getOption('One'), { text: 'One', value: 1 });
 });
 
@@ -293,7 +367,7 @@ test('WebApi binds imported single-valued relationships without guessing entity 
   assert.equal(requests.length, count, 'invalid bindings fail before even reading the target record');
 });
 
-test('multiselect form values expose numeric arrays and Xrm writes translate native choice strings', async () => {
+test('multiselect form values expose numeric arrays and Xrm writes translate native choice strings', async (t) => {
   const field = {
     name: 'x_choices',
     type: 'multiselect',
@@ -310,7 +384,21 @@ test('multiselect form values expose numeric arrays and Xrm writes translate nat
   });
   record.x_choices = '1,2';
   const attribute = runtime.formContext.getAttribute('x_choices');
-  assert.equal(attribute.getAttributeType(), 'multiselectoptionset');
+  // @test-kind parity: reproduced native2026-11-08 multi.getAttributeType=multiselectoptionset in both121-result captures; frontend-parity-evidence.json.
+  // @parity-evidence: only the original multiselect type assertion is promoted; value cloning, text lookup and write translation remain outside this region.
+  await t.test('native multiselect attribute retains its declared type', () => {
+    assert.equal(
+      createHash('sha256')
+        .update(readFileSync(new URL('./fixtures/model-driven-contract-expected.json', import.meta.url)))
+        .digest('hex'),
+      '99de1dcf0a8b390347e3780db499c30224c1dd39914995bcdf2a414faa2823a8',
+    );
+    assert.equal(
+      createHash('sha256').update(captureModelDrivenContract.toString()).digest('hex'),
+      '2f29fa7c4642839a8c24b276449de9b37a33a2d88f62fe4ca18a01f7b9912089',
+    );
+    assert.equal(attribute.getAttributeType(), 'multiselectoptionset');
+  });
   assert.deepEqual(attribute.getValue(), [1, 2]);
   assert.deepEqual(attribute.getText(), ['One', 'Two']);
   attribute.getValue().push(3);
@@ -572,7 +660,23 @@ test('page context, version, openUrl, form selector and tab visibility follow Le
   assert.deepEqual(opened, [['http://127.0.0.1:1234/api/data/v9.2/x_items', '_blank', 'noopener']]);
   assert.throws(() => runtime.Xrm.Navigation.openUrl('javascript:alert(1)'), /http\(s\) addresses only/);
   const selector = runtime.formContext.ui.formSelector;
-  assert.equal(selector.getCurrentItem().getId(), '{bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb}');
+  // @parity-evidence: model-driven-single-form-lookup-native-facts.json current-id in both source-bound runs returns the source form ID as a lowercase bare GUID; run hashes 9d80c62657f35145f0aa81e6ddaba2fa1345fd804ddeb440b6f296fdfb422192 and a1d7e36fde479212a64beba38f6e4d522cbc63cee4fe56b313d221de3be9382e.
+  const formIdProofBytes = readFileSync(
+    new URL('./fixtures/model-driven-single-form-lookup-native-facts.json', import.meta.url),
+  );
+  assert.equal(
+    createHash('sha256').update(formIdProofBytes).digest('hex'),
+    '399620eaebfa933d1d851b29feb4050618a61884ad7ede46b9a77dd4a7ee4eff',
+  );
+  const formIdProof = JSON.parse(formIdProofBytes);
+  assert.equal(formIdProof.captures.length, 2);
+  for (const capture of formIdProof.captures)
+    assert.deepEqual(capture.cases.find((entry) => entry.id === 'current-id').facts.result, {
+      type: 'string',
+      equalsSourceFormId: true,
+      shape: 'lowercase-bare-guid',
+    });
+  assert.equal(selector.getCurrentItem().getId(), 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
   assert.equal(selector.getCurrentItem().getLabel(), 'Invented form');
   assert.equal(selector.items.getLength(), 1);
   const general = runtime.formContext.ui.tabs.get('general');

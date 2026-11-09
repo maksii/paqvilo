@@ -1,0 +1,181 @@
+{
+  "version": 1,
+  "scope": "Repeated authenticated keyed method responses on an independently verified existing owned row. No live organization, IDs, names or raw bodies are published. Native and original entity-set roles require explicit source binding.",
+  "derivation": {
+    "factsReaderSha256": "121597b4bed4fdeec0276df7aa796544dea26c2ae0e00eab992b0f86bb896f79",
+    "qualifierAtDerivationSha256": "066904f8d40efe6d07800f8321a2fa15af94aaf9aeb8bdfa377689748c6c9085",
+    "candidateSha256": "cba5b5308e82b9a80d4c05b688afa0c7b99ffdf8c17106c07b72e5d866d14fcd",
+    "unusedRuntimeHelperAttestationSha256": "c85db28a47e5c566fc28384cb9ac8c2f435ae55abb78fec0aa04d2bae81ee34d"
+  },
+  "captures": [
+    {
+      "runSha256": "5c14693516db30e654b84e88b4c87cb509a3c20b03ea6a7831f781353627a6ef",
+      "planSha256": "99353379e1b343209176804a14dc63ae5c186a8e5b0a143121479b3d5ca159e7",
+      "guardSha256": "116c5c4afd7bde72091f2aadd410ea8557907237720f0e7d869f6bbbf743525b",
+      "cleanupSha256": "bf87dca68b4664d06280422d017fa4606b8f0bd5b8b00f5ec856566a837b0d51",
+      "qualifierArchiveSha256": "59cca50067c8304fad5e7b60358eb72f4b75c6e973c2a8c065b8138793ccd44f",
+      "cases": [
+        {
+          "id": "family.existing-head",
+          "label": "head",
+          "rawResponseBodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "rawResponseBytes": 0,
+          "beforeBodySha256": "1094dcd9aa58771d412cda4d3da3588b4545309986c67d899682ca81f26d1d0a",
+          "afterBodySha256": "1094dcd9aa58771d412cda4d3da3588b4545309986c67d899682ca81f26d1d0a",
+          "facts": {
+            "status": 405,
+            "preAndPostOwnedRowEqual": true,
+            "bodyEmpty": true,
+            "allow": "POST,OPTIONS,GET,HEAD,POST"
+          }
+        },
+        {
+          "id": "family.existing-options",
+          "label": "options",
+          "rawResponseBodySha256": "0a918da681bf7eb0c4f3d235829c2ac4c8098e44466823871e06de3a18640f21",
+          "rawResponseBytes": 96,
+          "beforeBodySha256": "1094dcd9aa58771d412cda4d3da3588b4545309986c67d899682ca81f26d1d0a",
+          "afterBodySha256": "1094dcd9aa58771d412cda4d3da3588b4545309986c67d899682ca81f26d1d0a",
+          "facts": {
+            "status": 405,
+            "preAndPostOwnedRowEqual": true,
+            "allow": "POST,OPTIONS,GET,HEAD,POST",
+            "errorCode": "",
+            "message": "The requested resource does not support http method 'OPTIONS'."
+          }
+        },
+        {
+          "id": "family.existing-put-empty",
+          "label": "put-empty",
+          "rawResponseBodySha256": "f5ee0573caadc0527c66357b3d0f9047e506053b9e114e465203a954239dc982",
+          "rawResponseBytes": 81,
+          "beforeBodySha256": "1094dcd9aa58771d412cda4d3da3588b4545309986c67d899682ca81f26d1d0a",
+          "afterBodySha256": "1094dcd9aa58771d412cda4d3da3588b4545309986c67d899682ca81f26d1d0a",
+          "facts": {
+            "status": 405,
+            "preAndPostOwnedRowEqual": true,
+            "errorCode": "0x80060888",
+            "messageEqualsUnsupportedOperationForNativeEntity": true
+          }
+        },
+        {
+          "id": "family.existing-post-empty",
+          "label": "post-empty",
+          "rawResponseBodySha256": "b9548afdbc1e189dee5f0c789e5ba6fa8d73fce008d3d1357408acbf68282bd6",
+          "rawResponseBytes": 111,
+          "beforeBodySha256": "1094dcd9aa58771d412cda4d3da3588b4545309986c67d899682ca81f26d1d0a",
+          "afterBodySha256": "1094dcd9aa58771d412cda4d3da3588b4545309986c67d899682ca81f26d1d0a",
+          "facts": {
+            "status": 405,
+            "preAndPostOwnedRowEqual": true,
+            "errorCode": "0x80060888",
+            "message": "Unmapped Request found, PathTemplate:~/entityset/key, HttpVerb:POST"
+          }
+        },
+        {
+          "id": "family.put-nonempty",
+          "label": "put-nonempty",
+          "rawResponseBodySha256": "f5ee0573caadc0527c66357b3d0f9047e506053b9e114e465203a954239dc982",
+          "rawResponseBytes": 81,
+          "beforeBodySha256": "1094dcd9aa58771d412cda4d3da3588b4545309986c67d899682ca81f26d1d0a",
+          "afterBodySha256": "1094dcd9aa58771d412cda4d3da3588b4545309986c67d899682ca81f26d1d0a",
+          "facts": {
+            "status": 405,
+            "preAndPostOwnedRowEqual": true,
+            "allow": "GET,PATCH,DELETE,OPTIONS,GET,HEAD,POST"
+          }
+        }
+      ],
+      "nativeMetadataSha256": "0eb8add6f4e61e1d42e416de0b64ea9a50930ac5b8366627b4d374b8b01854de",
+      "nativeNameColumnEdmString": true
+    },
+    {
+      "runSha256": "d8fbb1e66e88c39495bfc152c7a21721167b3a61fb0d65291896f733894283d5",
+      "planSha256": "cc19d03aad3d812d8473464bd4b86010c8175cd8a182ab36a7c2c5e7404a8218",
+      "guardSha256": "116c5c4afd7bde72091f2aadd410ea8557907237720f0e7d869f6bbbf743525b",
+      "cleanupSha256": "bf87dca68b4664d06280422d017fa4606b8f0bd5b8b00f5ec856566a837b0d51",
+      "qualifierArchiveSha256": "ed27ca05b217e8bc254c7bab614cffb4d23eb124b0d12dc948026521e563dc9f",
+      "cases": [
+        {
+          "id": "family.existing-head",
+          "label": "head",
+          "rawResponseBodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "rawResponseBytes": 0,
+          "beforeBodySha256": "e78ae954a121ab8c720d821774a610b8273f1a06c4b4f1827baf67bbc55d206c",
+          "afterBodySha256": "e78ae954a121ab8c720d821774a610b8273f1a06c4b4f1827baf67bbc55d206c",
+          "facts": {
+            "status": 405,
+            "preAndPostOwnedRowEqual": true,
+            "bodyEmpty": true,
+            "allow": "POST,OPTIONS,GET,HEAD,POST"
+          }
+        },
+        {
+          "id": "family.existing-options",
+          "label": "options",
+          "rawResponseBodySha256": "0a918da681bf7eb0c4f3d235829c2ac4c8098e44466823871e06de3a18640f21",
+          "rawResponseBytes": 96,
+          "beforeBodySha256": "e78ae954a121ab8c720d821774a610b8273f1a06c4b4f1827baf67bbc55d206c",
+          "afterBodySha256": "e78ae954a121ab8c720d821774a610b8273f1a06c4b4f1827baf67bbc55d206c",
+          "facts": {
+            "status": 405,
+            "preAndPostOwnedRowEqual": true,
+            "allow": "POST,OPTIONS,GET,HEAD,POST",
+            "errorCode": "",
+            "message": "The requested resource does not support http method 'OPTIONS'."
+          }
+        },
+        {
+          "id": "family.existing-put-empty",
+          "label": "put-empty",
+          "rawResponseBodySha256": "f5ee0573caadc0527c66357b3d0f9047e506053b9e114e465203a954239dc982",
+          "rawResponseBytes": 81,
+          "beforeBodySha256": "e78ae954a121ab8c720d821774a610b8273f1a06c4b4f1827baf67bbc55d206c",
+          "afterBodySha256": "e78ae954a121ab8c720d821774a610b8273f1a06c4b4f1827baf67bbc55d206c",
+          "facts": {
+            "status": 405,
+            "preAndPostOwnedRowEqual": true,
+            "errorCode": "0x80060888",
+            "messageEqualsUnsupportedOperationForNativeEntity": true
+          }
+        },
+        {
+          "id": "family.existing-post-empty",
+          "label": "post-empty",
+          "rawResponseBodySha256": "b9548afdbc1e189dee5f0c789e5ba6fa8d73fce008d3d1357408acbf68282bd6",
+          "rawResponseBytes": 111,
+          "beforeBodySha256": "e78ae954a121ab8c720d821774a610b8273f1a06c4b4f1827baf67bbc55d206c",
+          "afterBodySha256": "e78ae954a121ab8c720d821774a610b8273f1a06c4b4f1827baf67bbc55d206c",
+          "facts": {
+            "status": 405,
+            "preAndPostOwnedRowEqual": true,
+            "errorCode": "0x80060888",
+            "message": "Unmapped Request found, PathTemplate:~/entityset/key, HttpVerb:POST"
+          }
+        },
+        {
+          "id": "family.put-nonempty",
+          "label": "put-nonempty",
+          "rawResponseBodySha256": "f5ee0573caadc0527c66357b3d0f9047e506053b9e114e465203a954239dc982",
+          "rawResponseBytes": 81,
+          "beforeBodySha256": "e78ae954a121ab8c720d821774a610b8273f1a06c4b4f1827baf67bbc55d206c",
+          "afterBodySha256": "e78ae954a121ab8c720d821774a610b8273f1a06c4b4f1827baf67bbc55d206c",
+          "facts": {
+            "status": 405,
+            "preAndPostOwnedRowEqual": true,
+            "allow": "GET,PATCH,DELETE,OPTIONS,GET,HEAD,POST"
+          }
+        }
+      ],
+      "nativeMetadataSha256": "0eb8add6f4e61e1d42e416de0b64ea9a50930ac5b8366627b4d374b8b01854de",
+      "nativeNameColumnEdmString": true
+    }
+  ],
+  "limits": [
+    "OPTIONS preflight and anonymous OPTIONS are not covered.",
+    "Authenticated native principal and synthetic local caller require reviewed role equivalence.",
+    "The PUT entity name is represented by a checked native-source-role relation; exact original literal remains unchanged in tests.",
+    "No unobserved row identity, metadata or security behavior is asserted.",
+    "The unused, pure runtime helper was not hash-archived at import time; root attestation and observed source timestamp provide bounded provenance, not an import-time hash."
+  ]
+}

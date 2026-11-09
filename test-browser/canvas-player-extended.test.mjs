@@ -1,3 +1,4 @@
+// @test-kind contract: local Canvas player controls, layout, timer ownership and source-watch lifecycle.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -305,7 +306,14 @@ async function player(t, { display, resolution, onDanger, watch, onRevision, onS
   page.canvasServer = server;
   page.canvasApp = app;
   page.canvasRuntime = runtime;
-  if (watch) await page.clock.install();
+  if (watch) {
+    // Install alone advances with wall time: startup can poll before the test hides the document.
+    const watchTime = new Date('2030-01-01T00:00:00Z');
+    await page.clock.install({ time: new Date(watchTime.getTime() - 86_400_000) });
+    // An explicit tick exercises elapsed time between installation and pausing.
+    await page.clock.runFor(1);
+    await page.clock.pauseAt(watchTime);
+  }
   if (onRevision) await page.route('**/_apps/canvas/api/*?revision=1', onRevision);
   if (onStart)
     await page.route('**/_apps/api/canvas/*', async (route) => {
@@ -543,6 +551,7 @@ test('observed display settings control logical size, letterboxing and orientati
   assert.deepEqual(lockedState.viewport, { width: 844, height: 390 });
 });
 
+// @test-kind contract+security: hostile HTML cannot execute, issue unsafe requests or retain active URL attributes.
 test(
   'HTML viewer renders a safe markup subset without active elements or URL attributes',
   { timeout: 60000 },
@@ -654,6 +663,7 @@ test('source watch pauses while hidden and checks again on visibility regain', {
       await route.fulfill({ status: 200, json: { revision: 'initial-revision' } });
     },
   });
+  assert.equal(checks, 0, 'source watching does not advance during fixture startup');
   await page.evaluate(() => {
     Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
     document.dispatchEvent(new Event('visibilitychange'));

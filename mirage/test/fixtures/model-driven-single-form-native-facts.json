@@ -1,0 +1,141 @@
+{
+  "schemaVersion": 1,
+  "baseline": "1171cccc8baed9218f7fd7689afae4abdc89252b",
+  "scope": "Two independently opened default-selection unsaved main-form drafts in an existing owned app, with a single active source main form and single matching selector item. Projection retains actual source-role equalities and strict identity; no form ID or label is substituted.",
+  "limitations": [
+    "Original subsequent statements follow a local-only navigate assertion that was not executed in native capture.",
+    "No literal GUID or label output is normalized to a different value; literal-output and label assertions remain unqualified.",
+    "The approved startup action was dispatched with exact empty body and its response status was not observed before tab close; no claim that action is inherently read-only.",
+    "The earlier unclassified POST is independent of these captures.",
+    "Only captured default-selection draft context is established, not persisted entity ID, other apps, forms, actors, or native UI behavior."
+  ],
+  "producer": {
+    "runnerSha256": "c6de81cbcf8dd712511c8d271085a627472a47bab38b79e126378f5886482d8d",
+    "inputSha256": "2978851873612cce875af4289bc3eb463ab90c9bceee2044ed6fc3ccace4a41e",
+    "bridge": "normal signed-in Edge Profile 5 Playwright MCP extension; intended organization and user verified by WhoAmI and runtime userSettings"
+  },
+  "captures": [
+    {
+      "runSha256": "95c6ba2adada35bee021200873e2f230f177d78c7a212ace12a7d3e6c14926eb",
+      "producerSha256": "c6de81cbcf8dd712511c8d271085a627472a47bab38b79e126378f5886482d8d",
+      "inputSha256": "2978851873612cce875af4289bc3eb463ab90c9bceee2044ed6fc3ccace4a41e",
+      "source": {
+        "sourceFormXmlSha256": "ab9d9cec336119e784cdaf6c8b511fdac2d51f6adb4820b601c821852581c374",
+        "sourceMainFormCount": 1,
+        "actualItemCount": 1,
+        "defaultSelection": true,
+        "actualAppMatches": true,
+        "intendedActorMatches": true,
+        "formType": 1,
+        "entityIdEmpty": true,
+        "visibleSourceControlReady": true,
+        "returnedItemIdEqualsSource": true,
+        "sourceIdShape": "lowercase-bare-guid"
+      },
+      "cases": [
+        {
+          "id": "original-first-expression",
+          "facts": {
+            "operation": "items.get(current.getId())",
+            "currentPresent": true,
+            "resultSameCurrent": true,
+            "resultIdEqualsSource": true
+          }
+        },
+        {
+          "id": "items-index0",
+          "facts": {
+            "resultSameCurrent": true
+          }
+        },
+        {
+          "id": "items-collection",
+          "facts": {
+            "length": 1,
+            "onlyItemSameCurrent": true
+          }
+        },
+        {
+          "id": "items-source-id",
+          "facts": {
+            "argumentRole": "exact source form ID",
+            "resultSameCurrent": true
+          }
+        },
+        {
+          "id": "items-predicate-false",
+          "facts": {
+            "length": 0
+          }
+        }
+      ],
+      "startup": {
+        "authorizedExactEmptyBodyActionCount": 1,
+        "responseStatusObserved": false,
+        "unreviewedOrganizationNonGet": 0,
+        "tabClosed": true
+      }
+    },
+    {
+      "runSha256": "eca675b2d00dddb8dfde749594b2f2046345b7af0c06729c7d5b8ded73234a0b",
+      "producerSha256": "c6de81cbcf8dd712511c8d271085a627472a47bab38b79e126378f5886482d8d",
+      "inputSha256": "2978851873612cce875af4289bc3eb463ab90c9bceee2044ed6fc3ccace4a41e",
+      "source": {
+        "sourceFormXmlSha256": "ab9d9cec336119e784cdaf6c8b511fdac2d51f6adb4820b601c821852581c374",
+        "sourceMainFormCount": 1,
+        "actualItemCount": 1,
+        "defaultSelection": true,
+        "actualAppMatches": true,
+        "intendedActorMatches": true,
+        "formType": 1,
+        "entityIdEmpty": true,
+        "visibleSourceControlReady": true,
+        "returnedItemIdEqualsSource": true,
+        "sourceIdShape": "lowercase-bare-guid"
+      },
+      "cases": [
+        {
+          "id": "original-first-expression",
+          "facts": {
+            "operation": "items.get(current.getId())",
+            "currentPresent": true,
+            "resultSameCurrent": true,
+            "resultIdEqualsSource": true
+          }
+        },
+        {
+          "id": "items-index0",
+          "facts": {
+            "resultSameCurrent": true
+          }
+        },
+        {
+          "id": "items-collection",
+          "facts": {
+            "length": 1,
+            "onlyItemSameCurrent": true
+          }
+        },
+        {
+          "id": "items-source-id",
+          "facts": {
+            "argumentRole": "exact source form ID",
+            "resultSameCurrent": true
+          }
+        },
+        {
+          "id": "items-predicate-false",
+          "facts": {
+            "length": 0
+          }
+        }
+      ],
+      "startup": {
+        "authorizedExactEmptyBodyActionCount": 1,
+        "responseStatusObserved": false,
+        "unreviewedOrganizationNonGet": 0,
+        "tabClosed": true
+      }
+    }
+  ]
+}

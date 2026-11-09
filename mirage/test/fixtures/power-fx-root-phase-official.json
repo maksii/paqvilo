@@ -1,0 +1,393 @@
+{
+  "package": {
+    "id": "Microsoft.PowerApps.CLI",
+    "version": "2.13.1",
+    "sha256": "07654af406781c1676d1bc5712c393fab2276e54f15ff10bb74a1bdef0d27d3f",
+    "source": "https://api.nuget.org/v3-flatcontainer/microsoft.powerapps.cli/2.13.1/microsoft.powerapps.cli.2.13.1.nupkg"
+  },
+  "scope": "Exact inputs evaluated with official Check before Eval. Unsupported bare-interpreter functions and float literal check failure remain observations of this host, not Canvas claims.",
+  "producer": {
+    "sourceSha256": "050a1858dac29150e495c46f0862bccb910ab9895f235c9255d05c79ac2e9184",
+    "projectSha256": "c280a3d3e4adda5dde8394ea9adfcde102b70eeabd048c92265957daa8393eda",
+    "dllSha256": "34f3d283a9d52ed23fc98cf7b92d56ae28ca7eea80db52cd2625d2d955097fbf",
+    "official": [
+      {
+        "FullName": "Microsoft.PowerFx.Interpreter, Version=1.99.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35",
+        "ModuleVersionId": "c00830f1-cff1-4ce9-97a2-c7d759869bac",
+        "sha256": "f06ed03f9599741990e2db49bbb495b88b5655faab89d5a5017dbec9c75ac780"
+      },
+      {
+        "FullName": "Microsoft.PowerFx.Core, Version=1.99.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35",
+        "ModuleVersionId": "79d79918-0479-450c-915a-1f34bac32028",
+        "sha256": "a9e79158c58284ae99b958f285a7ef81a345b1553a2db5df06a0d52612bf170b"
+      }
+    ]
+  },
+  "inputSha256": "a3fdcb48511c82fed6afa546e400a2133a8fdf109f367f148c70a33ccdce3c21",
+  "input": [
+    {
+      "expression": "IfError(1e300 * 1e300, 0)",
+      "numberIsFloat": true
+    },
+    {
+      "expression": "IfError(1e400, 2)",
+      "numberIsFloat": true
+    },
+    {
+      "expression": "Value(\"$ 12.34\")",
+      "numberIsFloat": false
+    },
+    {
+      "expression": "Language()",
+      "numberIsFloat": false
+    },
+    {
+      "expression": "Text(Time(14, 5, 0), \"h:mm AM/PM\")",
+      "numberIsFloat": false
+    },
+    {
+      "expression": "Text(Date(2024, 3, 5), DateTimeFormat.LongDate)",
+      "numberIsFloat": false
+    },
+    {
+      "expression": "IsError(IsMatch(\"a\", \"(\"))",
+      "numberIsFloat": false
+    },
+    {
+      "expression": "DataSourceInfo([], DataSourceInfo.Required, Name)",
+      "numberIsFloat": false
+    },
+    {
+      "expression": "IsError(Choices([{x:1}].x))",
+      "numberIsFloat": false
+    },
+    {
+      "expression": "IsError(Errors([1]))",
+      "numberIsFloat": false
+    },
+    {
+      "expression": "JSON(Defaults([1]))",
+      "numberIsFloat": false
+    }
+  ],
+  "runs": [
+    {
+      "rawSha256": "1970158a3e61b984285ae493cede0606391251b3e0b81a50c196a392e4a258aa",
+      "processId": 76608,
+      "utcNow": "2026-11-08T18:53:46.9593059Z",
+      "host": {
+        "culture": "en-US",
+        "timeZone": "Pacific Standard Time"
+      },
+      "results": [
+        {
+          "expression": "IfError(1e300 * 1e300, 0)",
+          "phase": "evaluation",
+          "success": true,
+          "diagnostics": [],
+          "valueType": "NumberValue",
+          "kind": "value",
+          "value": 0,
+          "errors": null
+        },
+        {
+          "expression": "IfError(1e400, 2)",
+          "phase": "check",
+          "success": false,
+          "diagnostics": [
+            {
+              "message": "Numeric value is too large.",
+              "severity": "Critical"
+            },
+            {
+              "message": "Incompatible type. We can't evaluate your formula because of a type error.",
+              "severity": "Critical"
+            },
+            {
+              "message": "The function 'IfError' has some invalid arguments.",
+              "severity": "Severe"
+            },
+            {
+              "message": "Argument type mismatch. The types of all result arguments must agree with or be coercible to the first result argument.",
+              "severity": "Critical"
+            }
+          ]
+        },
+        {
+          "expression": "Value(\"$ 12.34\")",
+          "phase": "evaluation",
+          "success": true,
+          "diagnostics": [],
+          "valueType": "DecimalValue",
+          "kind": "value",
+          "value": 12.34,
+          "errors": null
+        },
+        {
+          "expression": "Language()",
+          "phase": "evaluation",
+          "success": true,
+          "diagnostics": [],
+          "valueType": "StringValue",
+          "kind": "value",
+          "value": "en-US",
+          "errors": null
+        },
+        {
+          "expression": "Text(Time(14, 5, 0), \"h:mm AM/PM\")",
+          "phase": "evaluation",
+          "success": true,
+          "diagnostics": [],
+          "valueType": "StringValue",
+          "kind": "value",
+          "value": "2:05 PM",
+          "errors": null
+        },
+        {
+          "expression": "Text(Date(2024, 3, 5), DateTimeFormat.LongDate)",
+          "phase": "evaluation",
+          "success": true,
+          "diagnostics": [],
+          "valueType": "StringValue",
+          "kind": "value",
+          "value": "Tuesday, March 5, 2024",
+          "errors": null
+        },
+        {
+          "expression": "IsError(IsMatch(\"a\", \"(\"))",
+          "phase": "check",
+          "success": false,
+          "diagnostics": [
+            {
+              "message": "'IsMatch' is a recognized but not supported function.",
+              "severity": "Critical"
+            }
+          ]
+        },
+        {
+          "expression": "DataSourceInfo([], DataSourceInfo.Required, Name)",
+          "phase": "check",
+          "success": false,
+          "diagnostics": [
+            {
+              "message": "'DataSourceInfo' is a recognized but not supported function.",
+              "severity": "Critical"
+            },
+            {
+              "message": "Name isn't valid. 'DataSourceInfo' isn't recognized.",
+              "severity": "Critical"
+            },
+            {
+              "message": "The '.' operator cannot be used on Error values.",
+              "severity": "Critical"
+            },
+            {
+              "message": "Name isn't valid. 'Name' isn't recognized.",
+              "severity": "Critical"
+            }
+          ]
+        },
+        {
+          "expression": "IsError(Choices([{x:1}].x))",
+          "phase": "check",
+          "success": false,
+          "diagnostics": [
+            {
+              "message": "'Choices' is a recognized but not supported function.",
+              "severity": "Critical"
+            },
+            {
+              "message": "Deprecated use of '.'. Please use the 'ShowColumns' function instead.",
+              "severity": "Critical"
+            }
+          ]
+        },
+        {
+          "expression": "IsError(Errors([1]))",
+          "phase": "check",
+          "success": false,
+          "diagnostics": [
+            {
+              "message": "'Errors' is a recognized but not supported function.",
+              "severity": "Critical"
+            }
+          ]
+        },
+        {
+          "expression": "JSON(Defaults([1]))",
+          "phase": "check",
+          "success": false,
+          "diagnostics": [
+            {
+              "message": "'JSON' is a recognized but not supported function.",
+              "severity": "Critical"
+            },
+            {
+              "message": "'Defaults' is a recognized but not supported function.",
+              "severity": "Critical"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "rawSha256": "f363810209885f5750957bdcd2e4f3012212c8e42bf9f99e7edcd58267c7029d",
+      "processId": 82540,
+      "utcNow": "2026-11-08T18:53:47.263536Z",
+      "host": {
+        "culture": "en-US",
+        "timeZone": "Pacific Standard Time"
+      },
+      "results": [
+        {
+          "expression": "IfError(1e300 * 1e300, 0)",
+          "phase": "evaluation",
+          "success": true,
+          "diagnostics": [],
+          "valueType": "NumberValue",
+          "kind": "value",
+          "value": 0,
+          "errors": null
+        },
+        {
+          "expression": "IfError(1e400, 2)",
+          "phase": "check",
+          "success": false,
+          "diagnostics": [
+            {
+              "message": "Numeric value is too large.",
+              "severity": "Critical"
+            },
+            {
+              "message": "Incompatible type. We can't evaluate your formula because of a type error.",
+              "severity": "Critical"
+            },
+            {
+              "message": "The function 'IfError' has some invalid arguments.",
+              "severity": "Severe"
+            },
+            {
+              "message": "Argument type mismatch. The types of all result arguments must agree with or be coercible to the first result argument.",
+              "severity": "Critical"
+            }
+          ]
+        },
+        {
+          "expression": "Value(\"$ 12.34\")",
+          "phase": "evaluation",
+          "success": true,
+          "diagnostics": [],
+          "valueType": "DecimalValue",
+          "kind": "value",
+          "value": 12.34,
+          "errors": null
+        },
+        {
+          "expression": "Language()",
+          "phase": "evaluation",
+          "success": true,
+          "diagnostics": [],
+          "valueType": "StringValue",
+          "kind": "value",
+          "value": "en-US",
+          "errors": null
+        },
+        {
+          "expression": "Text(Time(14, 5, 0), \"h:mm AM/PM\")",
+          "phase": "evaluation",
+          "success": true,
+          "diagnostics": [],
+          "valueType": "StringValue",
+          "kind": "value",
+          "value": "2:05 PM",
+          "errors": null
+        },
+        {
+          "expression": "Text(Date(2024, 3, 5), DateTimeFormat.LongDate)",
+          "phase": "evaluation",
+          "success": true,
+          "diagnostics": [],
+          "valueType": "StringValue",
+          "kind": "value",
+          "value": "Tuesday, March 5, 2024",
+          "errors": null
+        },
+        {
+          "expression": "IsError(IsMatch(\"a\", \"(\"))",
+          "phase": "check",
+          "success": false,
+          "diagnostics": [
+            {
+              "message": "'IsMatch' is a recognized but not supported function.",
+              "severity": "Critical"
+            }
+          ]
+        },
+        {
+          "expression": "DataSourceInfo([], DataSourceInfo.Required, Name)",
+          "phase": "check",
+          "success": false,
+          "diagnostics": [
+            {
+              "message": "'DataSourceInfo' is a recognized but not supported function.",
+              "severity": "Critical"
+            },
+            {
+              "message": "Name isn't valid. 'DataSourceInfo' isn't recognized.",
+              "severity": "Critical"
+            },
+            {
+              "message": "The '.' operator cannot be used on Error values.",
+              "severity": "Critical"
+            },
+            {
+              "message": "Name isn't valid. 'Name' isn't recognized.",
+              "severity": "Critical"
+            }
+          ]
+        },
+        {
+          "expression": "IsError(Choices([{x:1}].x))",
+          "phase": "check",
+          "success": false,
+          "diagnostics": [
+            {
+              "message": "'Choices' is a recognized but not supported function.",
+              "severity": "Critical"
+            },
+            {
+              "message": "Deprecated use of '.'. Please use the 'ShowColumns' function instead.",
+              "severity": "Critical"
+            }
+          ]
+        },
+        {
+          "expression": "IsError(Errors([1]))",
+          "phase": "check",
+          "success": false,
+          "diagnostics": [
+            {
+              "message": "'Errors' is a recognized but not supported function.",
+              "severity": "Critical"
+            }
+          ]
+        },
+        {
+          "expression": "JSON(Defaults([1]))",
+          "phase": "check",
+          "success": false,
+          "diagnostics": [
+            {
+              "message": "'JSON' is a recognized but not supported function.",
+              "severity": "Critical"
+            },
+            {
+              "message": "'Defaults' is a recognized but not supported function.",
+              "severity": "Critical"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

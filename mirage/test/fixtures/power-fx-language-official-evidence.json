@@ -1,0 +1,1237 @@
+{
+  "recordedDate": "2026-11-08",
+  "scope": "Exact matching scalar expressions from the existing 193-case language matrix, reproduced with official Microsoft PAC twice in distinct empty-authentication profiles. Host/clock/representation/unsupported or differing results are retained explicitly and never treated as parity. The semantic-error GUID case is qualified separately by power-fx-positive-official-evidence.json and excluded from this scalar-value admission list.",
+  "source": {
+    "name": "Microsoft.PowerApps.CLI",
+    "version": "2.13.1+g251dee1 (.NET Framework 4.8.9363.0)",
+    "executableSha256": "ec3cb8a56bd2b352d3e4d5b03b51db8fbec2453d382c47714904f736b48bc81d",
+    "producerSha256": "5cc83b637420b6ce4220752e4bed8ffd5e6e35b17b80021bfcd19c4ed56823a9",
+    "allCasesSha256": "68cc914c5dfee7af5c344f5782fd02312a5219deefc8476b9615be87c7d4b26b"
+  },
+  "captures": [
+    {
+      "run": 1,
+      "version": "2.13.1+g251dee1 (.NET Framework 4.8.9363.0)",
+      "emptyAuthenticationProfiles": true,
+      "executableSha256": "ec3cb8a56bd2b352d3e4d5b03b51db8fbec2453d382c47714904f736b48bc81d",
+      "outputSha256": "bbf069dcfbafa465ae93c8d0210f369d9bd4fa1add4fc1d92eb062a939abae78",
+      "raw": [
+        {
+          "group": 0,
+          "sha256": "221dd10005761489454d896cc33a7131d58946c5762eb7ef932d0f9fed2b88ad"
+        },
+        {
+          "group": 1,
+          "sha256": "fe6956ded4c749d1c86b398587c687a37ff370f1eeb2f41d7cd183791dd37a4d"
+        },
+        {
+          "group": 2,
+          "sha256": "1a572b2dc75adc4db8d3c8590a789ca198626d2e4c0b3b38ae63ca6dd850a1f5"
+        },
+        {
+          "group": 3,
+          "sha256": "637fcf8e0d1c213c7b60de9ad5bdbe8505d4527f9095e14b4a966af34a66047a"
+        },
+        {
+          "group": 4,
+          "sha256": "d5e57448dbfda2c3977e4d852c0a32489cf681f330ce2b031171b6419e6f1f73"
+        },
+        {
+          "group": 5,
+          "sha256": "8e8eba338d95fbe33e67ec75713a7397849fd7972a8e706870e23a98a4c2c4ad"
+        },
+        {
+          "group": 6,
+          "sha256": "9d5743c05689971a7fd29b91f79057f00a727f02c2e530d2cc822abd4947ce13"
+        },
+        {
+          "group": 7,
+          "sha256": "399a2b67a2a0b58cd3312a59f3d81d151f61aef53d65169430c80bfff47072ff"
+        },
+        {
+          "group": 8,
+          "sha256": "b1fc4f66e325e3736ef9a7dea9753dbf9f2d47b70d430b7b8962df0549a92a15"
+        }
+      ]
+    },
+    {
+      "run": 2,
+      "version": "2.13.1+g251dee1 (.NET Framework 4.8.9363.0)",
+      "emptyAuthenticationProfiles": true,
+      "executableSha256": "ec3cb8a56bd2b352d3e4d5b03b51db8fbec2453d382c47714904f736b48bc81d",
+      "outputSha256": "bbf069dcfbafa465ae93c8d0210f369d9bd4fa1add4fc1d92eb062a939abae78",
+      "raw": [
+        {
+          "group": 0,
+          "sha256": "221dd10005761489454d896cc33a7131d58946c5762eb7ef932d0f9fed2b88ad"
+        },
+        {
+          "group": 1,
+          "sha256": "fe6956ded4c749d1c86b398587c687a37ff370f1eeb2f41d7cd183791dd37a4d"
+        },
+        {
+          "group": 2,
+          "sha256": "1a572b2dc75adc4db8d3c8590a789ca198626d2e4c0b3b38ae63ca6dd850a1f5"
+        },
+        {
+          "group": 3,
+          "sha256": "637fcf8e0d1c213c7b60de9ad5bdbe8505d4527f9095e14b4a966af34a66047a"
+        },
+        {
+          "group": 4,
+          "sha256": "d5e57448dbfda2c3977e4d852c0a32489cf681f330ce2b031171b6419e6f1f73"
+        },
+        {
+          "group": 5,
+          "sha256": "8e8eba338d95fbe33e67ec75713a7397849fd7972a8e706870e23a98a4c2c4ad"
+        },
+        {
+          "group": 6,
+          "sha256": "9d5743c05689971a7fd29b91f79057f00a727f02c2e530d2cc822abd4947ce13"
+        },
+        {
+          "group": 7,
+          "sha256": "399a2b67a2a0b58cd3312a59f3d81d151f61aef53d65169430c80bfff47072ff"
+        },
+        {
+          "group": 8,
+          "sha256": "b1fc4f66e325e3736ef9a7dea9753dbf9f2d47b70d430b7b8962df0549a92a15"
+        }
+      ]
+    }
+  ],
+  "totalCases": 193,
+  "qualified": [
+    {
+      "id": "existing-language-1",
+      "expression": "1 + 2 * 3",
+      "value": 7
+    },
+    {
+      "id": "existing-language-2",
+      "expression": "-2^2",
+      "value": -4
+    },
+    {
+      "id": "existing-language-3",
+      "expression": "2^3^2",
+      "value": 512
+    },
+    {
+      "id": "existing-language-4",
+      "expression": "20%",
+      "value": 0.2
+    },
+    {
+      "id": "existing-language-5",
+      "expression": "\"a\" & 1 & true",
+      "value": "a1true"
+    },
+    {
+      "id": "existing-language-6",
+      "expression": "0.1 + 0.2",
+      "value": 0.3
+    },
+    {
+      "id": "existing-language-7",
+      "expression": "\"The \"\"quoted\"\" text\"",
+      "value": "The \"quoted\" text"
+    },
+    {
+      "id": "existing-language-8",
+      "expression": "$\"Sum: {1 + 2} {{x}}\"",
+      "value": "Sum: 3 {x}"
+    },
+    {
+      "id": "existing-language-9",
+      "expression": "/* c */ 1 // x",
+      "value": 1
+    },
+    {
+      "id": "existing-language-10",
+      "expression": "With({'a b': 2}, 'a b' * 3)",
+      "value": 6
+    },
+    {
+      "id": "existing-language-11",
+      "expression": "Not(false) And !false",
+      "value": true
+    },
+    {
+      "id": "existing-language-12",
+      "expression": "true Or false && false",
+      "value": true
+    },
+    {
+      "id": "existing-language-13",
+      "expression": "\"The\" in \"The keyboard\"",
+      "value": true
+    },
+    {
+      "id": "existing-language-14",
+      "expression": "\"the\" exactin \"The keyboard\"",
+      "value": false
+    },
+    {
+      "id": "existing-language-15",
+      "expression": "2 in [1, 2, 3]",
+      "value": true
+    },
+    {
+      "id": "existing-language-16",
+      "expression": "{a: 1}.a",
+      "value": 1
+    },
+    {
+      "id": "existing-language-18",
+      "expression": "Blank() = Blank()",
+      "value": true
+    },
+    {
+      "id": "existing-language-19",
+      "expression": "Blank() + 1",
+      "value": 1
+    },
+    {
+      "id": "existing-language-20",
+      "expression": "If(1 > 2, \"a\", \"b\")",
+      "value": "b"
+    },
+    {
+      "id": "existing-language-21",
+      "expression": "If(false, 1, false, 2, 3)",
+      "value": 3
+    },
+    {
+      "id": "existing-language-22",
+      "expression": "Switch(2, 1, \"one\", 2, \"two\", \"other\")",
+      "value": "two"
+    },
+    {
+      "id": "existing-language-23",
+      "expression": "And(true, 1 = 1)",
+      "value": true
+    },
+    {
+      "id": "existing-language-24",
+      "expression": "Or(false, false)",
+      "value": false
+    },
+    {
+      "id": "existing-language-25",
+      "expression": "Not(true)",
+      "value": false
+    },
+    {
+      "id": "existing-language-26",
+      "expression": "IfError(1, 2)",
+      "value": 1
+    },
+    {
+      "id": "existing-language-27",
+      "expression": "IfError(1/0, 2)",
+      "value": 2
+    },
+    {
+      "id": "existing-language-28",
+      "expression": "IfError(10, 20, 30)",
+      "value": 30
+    },
+    {
+      "id": "existing-language-29",
+      "expression": "IfError(10, 11, 20, 21, 300)",
+      "value": 300
+    },
+    {
+      "id": "existing-language-30",
+      "expression": "IsError(1/0)",
+      "value": true
+    },
+    {
+      "id": "existing-language-31",
+      "expression": "IsError(Blank())",
+      "value": false
+    },
+    {
+      "id": "existing-language-32",
+      "expression": "IsBlankOrError(Blank())",
+      "value": true
+    },
+    {
+      "id": "existing-language-33",
+      "expression": "IfError(1/0, FirstError.Kind)",
+      "value": 13
+    },
+    {
+      "id": "existing-language-34",
+      "expression": "IfError(1/0, CountRows(AllErrors))",
+      "value": 1
+    },
+    {
+      "id": "existing-language-35",
+      "expression": "With({a: 1, b: 0}, IfError(a/b, If(FirstError.Kind <> ErrorKind.Div0, Error(FirstError), -1)))",
+      "value": -1
+    },
+    {
+      "id": "existing-language-36",
+      "expression": "IfError(Error({Kind: ErrorKind.Validation, Message: \"bad\"}), FirstError.Message)",
+      "value": "bad"
+    },
+    {
+      "id": "existing-language-37",
+      "expression": "IfError(Error(\"custom\"), FirstError.Kind)",
+      "value": 1000
+    },
+    {
+      "id": "existing-language-38",
+      "expression": "IsError(Mid(\"abc\", 0, 1))",
+      "value": true
+    },
+    {
+      "id": "existing-language-39",
+      "expression": "IsBlank(Blank())",
+      "value": true
+    },
+    {
+      "id": "existing-language-40",
+      "expression": "IsBlank(\"\")",
+      "value": true
+    },
+    {
+      "id": "existing-language-41",
+      "expression": "Coalesce(Blank(), \"\", \"a\")",
+      "value": "a"
+    },
+    {
+      "id": "existing-language-42",
+      "expression": "IsEmpty(Filter([1, 2], Value > 5))",
+      "value": true
+    },
+    {
+      "id": "existing-language-43",
+      "expression": "Abs(-1) + Exp(0) + Ln(1) + Sqrt(4) + Power(2, 3)",
+      "value": 12
+    },
+    {
+      "id": "existing-language-44",
+      "expression": "IsError(Sqrt(-1))",
+      "value": true
+    },
+    {
+      "id": "existing-language-45",
+      "expression": "Round(1.005, 2)",
+      "value": 1.01
+    },
+    {
+      "id": "existing-language-46",
+      "expression": "Round(-2.5, 0)",
+      "value": -3
+    },
+    {
+      "id": "existing-language-47",
+      "expression": "RoundUp(2.1, 0)",
+      "value": 3
+    },
+    {
+      "id": "existing-language-48",
+      "expression": "RoundDown(-2.9, 0)",
+      "value": -2
+    },
+    {
+      "id": "existing-language-49",
+      "expression": "Int(-2.5)",
+      "value": -3
+    },
+    {
+      "id": "existing-language-50",
+      "expression": "Trunc(-2.5)",
+      "value": -2
+    },
+    {
+      "id": "existing-language-51",
+      "expression": "Mod(-3, 2)",
+      "value": 1
+    },
+    {
+      "id": "existing-language-52",
+      "expression": "IsError(Mod(1, 0))",
+      "value": true
+    },
+    {
+      "id": "existing-language-53",
+      "expression": "Value(\"10%\")",
+      "value": 0.1
+    },
+    {
+      "id": "existing-language-55",
+      "expression": "Value(\"1,234.5\")",
+      "value": 1234.5
+    },
+    {
+      "id": "existing-language-56",
+      "expression": "IfError(Value(\"abc\"), -1)",
+      "value": -1
+    },
+    {
+      "id": "existing-language-57",
+      "expression": "Decimal(\"1.5\") + Float(\"2\")",
+      "value": 3.5
+    },
+    {
+      "id": "existing-language-58",
+      "expression": "Boolean(\"TRUE\")",
+      "value": true
+    },
+    {
+      "id": "existing-language-59",
+      "expression": "Sum([1, 2, 3], Value)",
+      "value": 6
+    },
+    {
+      "id": "existing-language-60",
+      "expression": "Sum(1, 2, 3)",
+      "value": 6
+    },
+    {
+      "id": "existing-language-61",
+      "expression": "Average(1, 2, 3, Blank())",
+      "value": 2
+    },
+    {
+      "id": "existing-language-62",
+      "expression": "IsError(Average(Blank()))",
+      "value": true
+    },
+    {
+      "id": "existing-language-63",
+      "expression": "Max(1, 5, 3)",
+      "value": 5
+    },
+    {
+      "id": "existing-language-64",
+      "expression": "Min([4, 2, 8], Value * 2)",
+      "value": 4
+    },
+    {
+      "id": "existing-language-65",
+      "expression": "Concat(Sequence(4, 0, 5), Value, \",\")",
+      "value": "0,5,10,15"
+    },
+    {
+      "id": "existing-language-66",
+      "expression": "0.1 + 0.2 = 0.3",
+      "value": true
+    },
+    {
+      "id": "existing-language-67",
+      "expression": "Sum(0.1, 0.2, 0.3) = 0.6",
+      "value": true
+    },
+    {
+      "id": "existing-language-68",
+      "expression": "Value(\"0.1\") + Value(\"0.2\") = 0.3",
+      "value": true
+    },
+    {
+      "id": "existing-language-69",
+      "expression": "Text(9007199254740992 + 1)",
+      "value": "9007199254740993"
+    },
+    {
+      "id": "existing-language-70",
+      "expression": "Text(1/3)",
+      "value": "0.3333333333333333333333333333"
+    },
+    {
+      "id": "existing-language-72",
+      "expression": "IfError(Value(\"1e400\"), -1)",
+      "value": -1
+    },
+    {
+      "id": "existing-language-74",
+      "expression": "IsError(DateValue(\"2023-02-30\"))",
+      "value": true
+    },
+    {
+      "id": "existing-language-75",
+      "expression": "IsError(DateValue(\"13/01/2024\"))",
+      "value": false
+    },
+    {
+      "id": "existing-language-76",
+      "expression": "IsError(TimeValue(\"25:00\"))",
+      "value": false
+    },
+    {
+      "id": "existing-language-77",
+      "expression": "IsError(ForAll([1, 0], 1/Value))",
+      "value": true
+    },
+    {
+      "id": "existing-language-79",
+      "expression": "Float(0.1) + Float(0.2) = 0.3",
+      "value": false
+    },
+    {
+      "id": "existing-language-80",
+      "expression": "Text(Mod(10.5, 3))",
+      "value": "1.5"
+    },
+    {
+      "id": "existing-language-81",
+      "expression": "Round(1.23456789012345678901234567, 25) > 1.234567890123",
+      "value": true
+    },
+    {
+      "id": "existing-language-82",
+      "expression": "Text(1234.5678, \"#,##0.00\")",
+      "value": "1,234.57"
+    },
+    {
+      "id": "existing-language-83",
+      "expression": "Text(0.123, \"0.0%\")",
+      "value": "12.3%"
+    },
+    {
+      "id": "existing-language-84",
+      "expression": "Text(123, \"#\")",
+      "value": "123"
+    },
+    {
+      "id": "existing-language-85",
+      "expression": "Text(5, \"00\")",
+      "value": "05"
+    },
+    {
+      "id": "existing-language-86",
+      "expression": "Concatenate(Text(123, \"#\"), \"ab\")",
+      "value": "123ab"
+    },
+    {
+      "id": "existing-language-87",
+      "expression": "Concat(Concatenate([\"a\", \"b\"], \"!\"), Value)",
+      "value": "a!b!"
+    },
+    {
+      "id": "existing-language-88",
+      "expression": "Left(\"Hello\", 2) & Mid(\"Hello\", 2, 3) & Right(\"Hello\", 2)",
+      "value": "Heelllo"
+    },
+    {
+      "id": "existing-language-89",
+      "expression": "Len(\"Hello\")",
+      "value": 5
+    },
+    {
+      "id": "existing-language-90",
+      "expression": "Trim(\"  a   b  \")",
+      "value": "a b"
+    },
+    {
+      "id": "existing-language-91",
+      "expression": "TrimEnds(\"  a   b  \")",
+      "value": "a   b"
+    },
+    {
+      "id": "existing-language-92",
+      "expression": "Upper(\"ab\") & Lower(\"CD\") & Proper(\"hello world\")",
+      "value": "ABcdHello World"
+    },
+    {
+      "id": "existing-language-93",
+      "expression": "Substitute(\"Sales Cost\", \"Cost\", \"Price\")",
+      "value": "Sales Price"
+    },
+    {
+      "id": "existing-language-94",
+      "expression": "Substitute(\"Quarter 1, 2018\", \"1\", \"2\", 1)",
+      "value": "Quarter 2, 2018"
+    },
+    {
+      "id": "existing-language-95",
+      "expression": "Replace(\"abcdef\", 2, 3, \"X\")",
+      "value": "aXef"
+    },
+    {
+      "id": "existing-language-96",
+      "expression": "Find(\"b\", \"abcb\", 3)",
+      "value": 4
+    },
+    {
+      "id": "existing-language-97",
+      "expression": "IsBlank(Find(\"z\", \"abc\"))",
+      "value": true
+    },
+    {
+      "id": "existing-language-98",
+      "expression": "Concat(Split(\"a,b,c\", \",\"), Value, \"-\")",
+      "value": "a-b-c"
+    },
+    {
+      "id": "existing-language-99",
+      "expression": "Char(65)",
+      "value": "A"
+    },
+    {
+      "id": "existing-language-100",
+      "expression": "StartsWith(\"Hello\", \"he\") && EndsWith(\"Hello\", \"LO\")",
+      "value": true
+    },
+    {
+      "id": "existing-language-101",
+      "expression": "IsMatch(\"joan@contoso.com\", Match.Email)",
+      "value": true
+    },
+    {
+      "id": "existing-language-102",
+      "expression": "IsMatch(\"986\", \"\\d+\")",
+      "value": true
+    },
+    {
+      "id": "existing-language-103",
+      "expression": "IsMatch(\"111-111-111\", \"\\d{3}-\\d{2}-\\d{4}\", MatchOptions.Complete)",
+      "value": false
+    },
+    {
+      "id": "existing-language-104",
+      "expression": "IsMatch(\"123\", Match.MultipleDigits & Match.Period & Match.OptionalDigits, MatchOptions.Complete)",
+      "value": false
+    },
+    {
+      "id": "existing-language-105",
+      "expression": "Match(\"Bob Jones <bob.jones@contoso.com>\", \"<(?<email>\" & Match.Email & \")>\").email",
+      "value": "bob.jones@contoso.com"
+    },
+    {
+      "id": "existing-language-106",
+      "expression": "Match(\"Bob Jones <bob.jones@contoso.com>\", \"<(?<email>\" & Match.Email & \")>\").StartMatch",
+      "value": 11
+    },
+    {
+      "id": "existing-language-107",
+      "expression": "Match(\"The quick brown fox jumps over the lazy dog.\", \"THE\", MatchOptions.IgnoreCase).StartMatch",
+      "value": 1
+    },
+    {
+      "id": "existing-language-108",
+      "expression": "CountRows(MatchAll(\"The quick brown fox jumps over the lazy dog.\", \"the\", MatchOptions.IgnoreCase))",
+      "value": 2
+    },
+    {
+      "id": "existing-language-110",
+      "expression": "CountRows(Filter([1, 2, 3, 4], Value > 2))",
+      "value": 2
+    },
+    {
+      "id": "existing-language-111",
+      "expression": "LookUp([{a: 1, b: \"x\"}, {a: 2, b: \"y\"}], a = 2).b",
+      "value": "y"
+    },
+    {
+      "id": "existing-language-112",
+      "expression": "LookUp([{a: 1, b: \"x\"}], a = 1, b & \"!\")",
+      "value": "x!"
+    },
+    {
+      "id": "existing-language-113",
+      "expression": "Concat(Sort([3, 1, 2], Value, SortOrder.Descending), Value)",
+      "value": "321"
+    },
+    {
+      "id": "existing-language-114",
+      "expression": "Concat(SortByColumns([{n: \"b\"}, {n: \"a\"}], \"n\"), n)",
+      "value": "ab"
+    },
+    {
+      "id": "existing-language-115",
+      "expression": "Concat(SortByColumns([{n: \"a\"}, {n: \"b\"}], n, SortOrder.Descending), n)",
+      "value": "ba"
+    },
+    {
+      "id": "existing-language-116",
+      "expression": "Concat(SortByColumns([{n: \"a\"}, {n: \"b\"}, {n: \"c\"}], n, [\"c\", \"a\", \"b\"]), n)",
+      "value": "cab"
+    },
+    {
+      "id": "existing-language-117",
+      "expression": "First([1,2]).Value + Last([1,2]).Value + Index([5,6,7], 2).Value",
+      "value": 9
+    },
+    {
+      "id": "existing-language-118",
+      "expression": "CountRows(FirstN([1,2,3], 2)) + CountRows(LastN([1,2,3], 1))",
+      "value": 3
+    },
+    {
+      "id": "existing-language-119",
+      "expression": "CountIf([1, 2, 3], Value >= 2)",
+      "value": 2
+    },
+    {
+      "id": "existing-language-120",
+      "expression": "Concat(Distinct([1, 1, 2], Value), Value)",
+      "value": "12"
+    },
+    {
+      "id": "existing-language-121",
+      "expression": "First(AddColumns([{a: 1}], b, a * 2)).b",
+      "value": 2
+    },
+    {
+      "id": "existing-language-122",
+      "expression": "JSON(DropColumns([{a: 1, b: 2}], a))",
+      "value": "[{\"b\":2}]"
+    },
+    {
+      "id": "existing-language-123",
+      "expression": "JSON(ShowColumns([{a: 1, b: 2}], a))",
+      "value": "[{\"a\":1}]"
+    },
+    {
+      "id": "existing-language-124",
+      "expression": "JSON(RenameColumns([{a: 1}], a, z))",
+      "value": "[{\"z\":1}]"
+    },
+    {
+      "id": "existing-language-125",
+      "expression": "Concat(ForAll(Sequence(3), Value * 2), Value, \",\")",
+      "value": "2,4,6"
+    },
+    {
+      "id": "existing-language-126",
+      "expression": "CountRows(ForAll([1, 2], If(Value = 1, Blank(), Value)))",
+      "value": 2
+    },
+    {
+      "id": "existing-language-127",
+      "expression": "Concat(ForAll(Sequence(2) As Rank, Concat(ForAll(Sequence(2) As File, If(Mod(Rank.Value + File.Value, 2) = 1, \"X\", \".\")), Value) & \"|\"), Value)",
+      "value": ".X|X.|"
+    },
+    {
+      "id": "existing-language-128",
+      "expression": "With({x: 2}, x * ThisRecord.x)",
+      "value": 4
+    },
+    {
+      "id": "existing-language-129",
+      "expression": "CountRows(Table({a: 1}, {a: 2}))",
+      "value": 2
+    },
+    {
+      "id": "existing-language-130",
+      "expression": "Concat(Filter([{v: 1}, {v: 2}] As R, R.v > 1), v)",
+      "value": "2"
+    },
+    {
+      "id": "existing-language-131",
+      "expression": "Sum(Filter([{v: 1}, {v: 5}], v > 1), v)",
+      "value": 5
+    },
+    {
+      "id": "existing-language-132",
+      "expression": "JSON({a: 1, b: [1, 2]}, JSONFormat.FlattenValueTables)",
+      "value": "{\"a\":1,\"b\":[1,2]}"
+    },
+    {
+      "id": "existing-language-133",
+      "expression": "JSON(Date(2019, 3, 31))",
+      "value": "\"2019-03-31\""
+    },
+    {
+      "id": "existing-language-134",
+      "expression": "Value(ParseJSON(\"{\"\"a\"\": {\"\"b\"\": 5}}\").a.b) + 1",
+      "value": 6
+    },
+    {
+      "id": "existing-language-135",
+      "expression": "Text(Index(ParseJSON(\"[\"\"x\"\",\"\"y\"\"]\"), 2))",
+      "value": "y"
+    },
+    {
+      "id": "existing-language-136",
+      "expression": "CountRows(Table(ParseJSON(\"[1,2,3]\")))",
+      "value": 3
+    },
+    {
+      "id": "existing-language-137",
+      "expression": "IsError(ParseJSON(\"{\"))",
+      "value": true
+    },
+    {
+      "id": "existing-language-138",
+      "expression": "Boolean(ParseJSON(\"true\"))",
+      "value": true
+    },
+    {
+      "id": "existing-language-140",
+      "expression": "Len(Text(GUID()))",
+      "value": 36
+    },
+    {
+      "id": "existing-language-149",
+      "expression": "DateDiff(TimeValue(\"09:45:00\"), TimeValue(\"10:15:36\"), TimeUnit.Hours)",
+      "value": 1
+    },
+    {
+      "id": "existing-language-150",
+      "expression": "DateDiff(TimeValue(\"09:45:00\"), TimeValue(\"10:15:36\"), TimeUnit.Minutes)/60",
+      "value": 0.5
+    },
+    {
+      "id": "existing-language-151",
+      "expression": "Round(DateDiff(TimeValue(\"09:45:00\"), TimeValue(\"10:15:36\"), TimeUnit.Seconds)/3600, 2)",
+      "value": 0.51
+    },
+    {
+      "id": "existing-language-152",
+      "expression": "DateDiff(Date(2024, 1, 1), Date(2025, 1, 1), TimeUnit.Quarters)",
+      "value": 4
+    },
+    {
+      "id": "existing-language-163",
+      "expression": "Year(Date(2024, 2, 30)) * 100 + Month(Date(2024, 2, 30))",
+      "value": 202403
+    },
+    {
+      "id": "existing-language-164",
+      "expression": "Weekday(Date(2024, 1, 1))",
+      "value": 2
+    },
+    {
+      "id": "existing-language-165",
+      "expression": "Weekday(Date(2024, 1, 1), StartOfWeek.Monday)",
+      "value": 1
+    },
+    {
+      "id": "existing-language-167",
+      "expression": "WeekNum(Date(2021, 1, 3))",
+      "value": 2
+    },
+    {
+      "id": "existing-language-168",
+      "expression": "Text(DateTimeValue(\"2024-01-02T03:04:05Z\"), DateTimeFormat.UTC)",
+      "value": "2024-01-02T03:04:05.000Z"
+    },
+    {
+      "id": "existing-language-170",
+      "expression": "Text(Date(2024, 3, 5), \"mmmm d, yyyy\")",
+      "value": "March 5, 2024"
+    },
+    {
+      "id": "existing-language-177",
+      "expression": "Patch({a: 1, b: 2}, {b: 3}).b",
+      "value": 3
+    },
+    {
+      "id": "existing-language-185",
+      "expression": "RandBetween(2,2)",
+      "value": 2
+    },
+    {
+      "id": "existing-language-186",
+      "expression": "EncodeUrl(\"a b\")",
+      "value": "a%20b"
+    },
+    {
+      "id": "existing-language-190",
+      "expression": "CountRows(Search([{Name:\"Alpha\"},{Name:\"Beta\"}],\"PH\",Name))",
+      "value": 1
+    }
+  ],
+  "unqualified": [
+    {
+      "id": "existing-language-17",
+      "expression": "[1, 2].Value",
+      "reason": "table-host-value-representation"
+    },
+    {
+      "id": "existing-language-54",
+      "expression": "Value(\"$ 12.34\")",
+      "reason": "error",
+      "reference": {
+        "id": "existing-language-54",
+        "kind": "error",
+        "message": "The value '$ 12.34' cannot be converted to a number."
+      }
+    },
+    {
+      "id": "existing-language-71",
+      "expression": "IfError(1e300 * 1e300, 0)",
+      "reason": "compile-error",
+      "reference": {
+        "id": "existing-language-71",
+        "kind": "compile-error",
+        "messages": [
+          "Line 70: Error 8-13: Numeric value is too large.",
+          "Line 70: Error 16-21: Numeric value is too large.",
+          "Line 70: Error 8-13: Invalid argument type. Expecting one of the following: Decimal, Number, Text, Boolean, Date, Time, DateTimeNoTimeZone, DateTime, Dynamic.",
+          "Line 70: Error 16-21: Invalid argument type. Expecting one of the following: Decimal, Number, Text, Boolean, Date, Time, DateTimeNoTimeZone, DateTime, Dynamic."
+        ]
+      }
+    },
+    {
+      "id": "existing-language-73",
+      "expression": "IfError(1e400, 2)",
+      "reason": "compile-error",
+      "reference": {
+        "id": "existing-language-73",
+        "kind": "compile-error",
+        "messages": [
+          "Line 72: Error 8-13: Numeric value is too large.",
+          "Line 72: Error 8-13: Incompatible type. We can't evaluate your formula because of a type error.",
+          "Line 72: Error 0-7: The function 'IfError' has some invalid arguments."
+        ]
+      }
+    },
+    {
+      "id": "existing-language-78",
+      "expression": "IfError(ForAll([1, 0], 1/Value), FirstError.Kind)",
+      "reason": "unrepresented",
+      "reference": {
+        "id": "existing-language-78",
+        "kind": "unrepresented",
+        "parseError": "Missing result for existing-language-78.",
+        "outputSha256": "d7a16089e53cef72ae03089d12f8b46e2a5d777dcffca7507d571390c00c0203"
+      }
+    },
+    {
+      "id": "existing-language-109",
+      "expression": "IsError(IsMatch(\"a\", \"(\"))",
+      "reason": "compile-error",
+      "reference": {
+        "id": "existing-language-109",
+        "kind": "compile-error",
+        "messages": [
+          "Line 108: Error 21-24: Invalid regular expression: Unclosed groups, too few closing parenthesis.",
+          "Line 108: Error 8-15: The function 'IsMatch' has some invalid arguments."
+        ]
+      }
+    },
+    {
+      "id": "existing-language-139",
+      "expression": "GUID(\"77777777-7777-4777-8777-777777777777\") = GUID(\"{77777777777747778777777777777777}\")",
+      "reason": "semantic-error-qualified-in-separate-fixture"
+    },
+    {
+      "id": "existing-language-141",
+      "expression": "Language()",
+      "reason": "fixed-clock-or-host-language"
+    },
+    {
+      "id": "existing-language-142",
+      "expression": "Text(DateAdd(Now(), 3), \"dd-mm-yyyy hh:mm\")",
+      "reason": "fixed-clock-or-host-language"
+    },
+    {
+      "id": "existing-language-143",
+      "expression": "Text(DateAdd(Now(), 4, TimeUnit.Hours), \"dd-mm-yyyy hh:mm\")",
+      "reason": "fixed-clock-or-host-language"
+    },
+    {
+      "id": "existing-language-144",
+      "expression": "Text(DateAdd(Today(), 1, TimeUnit.Months), \"dd-mm-yyyy hh:mm\")",
+      "reason": "fixed-clock-or-host-language"
+    },
+    {
+      "id": "existing-language-145",
+      "expression": "Text(DateAdd(Now(), -30, TimeUnit.Minutes), \"dd-mm-yyyy hh:mm\")",
+      "reason": "fixed-clock-or-host-language"
+    },
+    {
+      "id": "existing-language-146",
+      "expression": "DateDiff(Now(), DateValue(\"1/1/2014\"))",
+      "reason": "fixed-clock-or-host-language"
+    },
+    {
+      "id": "existing-language-147",
+      "expression": "DateDiff(Now(), DateValue(\"1/1/2014\"), TimeUnit.Months)",
+      "reason": "fixed-clock-or-host-language"
+    },
+    {
+      "id": "existing-language-148",
+      "expression": "DateDiff(Now(), Today(), TimeUnit.Minutes)",
+      "reason": "fixed-clock-or-host-language"
+    },
+    {
+      "id": "existing-language-153",
+      "expression": "TimeZoneOffset()",
+      "reason": "fixed-clock-or-host-language"
+    },
+    {
+      "id": "existing-language-154",
+      "expression": "Text(DateAdd(Now(), TimeZoneOffset(), TimeUnit.Minutes), \"dd-mm-yyyy hh:mm\")",
+      "reason": "fixed-clock-or-host-language"
+    },
+    {
+      "id": "existing-language-155",
+      "expression": "Hour(UTCNow())",
+      "reason": "fixed-clock-or-host-language"
+    },
+    {
+      "id": "existing-language-156",
+      "expression": "Hour(Now())",
+      "reason": "fixed-clock-or-host-language"
+    },
+    {
+      "id": "existing-language-157",
+      "expression": "Minute(Now()) + Second(Now())",
+      "reason": "fixed-clock-or-host-language"
+    },
+    {
+      "id": "existing-language-158",
+      "expression": "Day(UTCToday())",
+      "reason": "fixed-clock-or-host-language"
+    },
+    {
+      "id": "existing-language-159",
+      "expression": "Month(Today())",
+      "reason": "fixed-clock-or-host-language"
+    },
+    {
+      "id": "existing-language-160",
+      "expression": "IsToday(Now()) && !IsToday(DateAdd(Now(), 12))",
+      "reason": "fixed-clock-or-host-language"
+    },
+    {
+      "id": "existing-language-161",
+      "expression": "IsUTCToday(UTCNow())",
+      "reason": "fixed-clock-or-host-language"
+    },
+    {
+      "id": "existing-language-162",
+      "expression": "Text(Now(), \"mm/dd/yyyy hh:mm:ss\")",
+      "reason": "fixed-clock-or-host-language"
+    },
+    {
+      "id": "existing-language-166",
+      "expression": "ISOWeekNum(Date(2021, 1, 1))",
+      "reason": "compile-error",
+      "reference": {
+        "id": "existing-language-166",
+        "kind": "compile-error",
+        "messages": [
+          "Line 146: Error 0-28: 'ISOWeekNum' is an unknown or unsupported function."
+        ]
+      }
+    },
+    {
+      "id": "existing-language-169",
+      "expression": "Hour(DateTimeValue(\"2024-01-02T03:04:05Z\"))",
+      "reason": "fixed-clock-or-host-language"
+    },
+    {
+      "id": "existing-language-171",
+      "expression": "Text(Time(14, 5, 0), \"h:mm AM/PM\")",
+      "reason": "difference",
+      "reference": {
+        "id": "existing-language-171",
+        "kind": "value",
+        "value": "2:05 pm"
+      }
+    },
+    {
+      "id": "existing-language-172",
+      "expression": "Text(Date(2024, 3, 5), DateTimeFormat.LongDate)",
+      "reason": "difference",
+      "reference": {
+        "id": "existing-language-172",
+        "kind": "value",
+        "value": "Tuesday, 5 March 2024"
+      }
+    },
+    {
+      "id": "existing-language-173",
+      "expression": "Set(x, 5); x * 2",
+      "reason": "unrepresented",
+      "reference": {
+        "id": "existing-language-173",
+        "kind": "unrepresented",
+        "parseError": "Unsupported output for existing-language-173.",
+        "outputSha256": "e818fcf7ee4406534ad33f75e4cd275d0223480403eb89cd82dac406f5cca930"
+      }
+    },
+    {
+      "id": "existing-language-174",
+      "expression": "Collect(c, {a: 1}); Collect(c, {a: 2}); CountRows(c)",
+      "reason": "compile-error",
+      "reference": {
+        "id": "existing-language-174",
+        "kind": "compile-error",
+        "messages": [
+          "Line 1: Error 8-9: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 0-7: The function 'Collect' has some invalid arguments.",
+          "Line 1: Error 11-17: The specified column 'a' does not exist.",
+          "Line 1: Error 28-29: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 20-27: The function 'Collect' has some invalid arguments.",
+          "Line 1: Error 31-37: The specified column 'a' does not exist.",
+          "Line 1: Error 50-51: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 40-49: The function 'CountRows' has some invalid arguments."
+        ]
+      }
+    },
+    {
+      "id": "existing-language-175",
+      "expression": "ClearCollect(c, {a: 9}); First(c).a",
+      "reason": "compile-error",
+      "reference": {
+        "id": "existing-language-175",
+        "kind": "compile-error",
+        "messages": [
+          "Line 1: Error 13-14: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 0-12: The function 'ClearCollect' has some invalid arguments.",
+          "Line 1: Error 16-22: The specified column 'a' does not exist.",
+          "Line 1: Error 31-32: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 25-30: The function 'First' has some invalid arguments.",
+          "Line 1: Error 33-35: The '.' operator cannot be used on Error values."
+        ]
+      }
+    },
+    {
+      "id": "existing-language-176",
+      "expression": "Collect(c, {a: 1}); Clear(c); CountRows(c)",
+      "reason": "compile-error",
+      "reference": {
+        "id": "existing-language-176",
+        "kind": "compile-error",
+        "messages": [
+          "Line 1: Error 8-9: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 0-7: The function 'Collect' has some invalid arguments.",
+          "Line 1: Error 11-17: The specified column 'a' does not exist.",
+          "Line 1: Error 26-27: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 20-25: The function 'Clear' has some invalid arguments.",
+          "Line 1: Error 40-41: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 30-39: The function 'CountRows' has some invalid arguments."
+        ]
+      }
+    },
+    {
+      "id": "existing-language-178",
+      "expression": "Collect(c, {a: 1}); Patch(c, First(c), {a: 5}); First(c).a",
+      "reason": "compile-error",
+      "reference": {
+        "id": "existing-language-178",
+        "kind": "compile-error",
+        "messages": [
+          "Line 1: Error 8-9: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 0-7: The function 'Collect' has some invalid arguments.",
+          "Line 1: Error 11-17: The specified column 'a' does not exist.",
+          "Line 1: Error 26-27: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 35-36: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 29-34: The function 'First' has some invalid arguments.",
+          "Line 1: Error 20-25: The function 'Patch' has some invalid arguments.",
+          "Line 1: Error 29-37: Invalid argument type (Error). Expecting a Record value instead.",
+          "Line 1: Error 54-55: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 48-53: The function 'First' has some invalid arguments.",
+          "Line 1: Error 56-58: The '.' operator cannot be used on Error values."
+        ]
+      }
+    },
+    {
+      "id": "existing-language-179",
+      "expression": "Collect(c, {a: 1}, {a: 2}); Remove(c, {a: 1}); Concat(c, a)",
+      "reason": "compile-error",
+      "reference": {
+        "id": "existing-language-179",
+        "kind": "compile-error",
+        "messages": [
+          "Line 1: Error 8-9: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 0-7: The function 'Collect' has some invalid arguments.",
+          "Line 1: Error 11-17: The specified column 'a' does not exist.",
+          "Line 1: Error 19-25: The specified column 'a' does not exist.",
+          "Line 1: Error 35-36: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 38-44: The specified column 'a' does not exist.",
+          "Line 1: Error 28-34: The function 'Remove' has some invalid arguments.",
+          "Line 1: Error 54-55: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 47-53: The function 'Concat' has some invalid arguments.",
+          "Line 1: Error 57-58: Name isn't valid. 'a' isn't recognized."
+        ]
+      }
+    },
+    {
+      "id": "existing-language-180",
+      "expression": "Collect(c, [1, 2, 3]); RemoveIf(c, Value > 1); CountRows(c)",
+      "reason": "compile-error",
+      "reference": {
+        "id": "existing-language-180",
+        "kind": "compile-error",
+        "messages": [
+          "Line 1: Error 8-9: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 0-7: The function 'Collect' has some invalid arguments.",
+          "Line 1: Error 11-20: The specified column 'Value' does not exist.",
+          "Line 1: Error 23-45: 'RemoveIf' is a recognized but not supported function.",
+          "Line 1: Error 32-33: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 35-40: Name isn't valid. 'Value' isn't recognized.",
+          "Line 1: Error 57-58: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 47-56: The function 'CountRows' has some invalid arguments."
+        ]
+      }
+    },
+    {
+      "id": "existing-language-181",
+      "expression": "Collect(c, {a: 1}, {a: 2}); UpdateIf(c, a > 1, {a: a + 3}); Sum(c, a)",
+      "reason": "compile-error",
+      "reference": {
+        "id": "existing-language-181",
+        "kind": "compile-error",
+        "messages": [
+          "Line 1: Error 8-9: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 0-7: The function 'Collect' has some invalid arguments.",
+          "Line 1: Error 11-17: The specified column 'a' does not exist.",
+          "Line 1: Error 19-25: The specified column 'a' does not exist.",
+          "Line 1: Error 28-58: 'UpdateIf' is a recognized but not supported function.",
+          "Line 1: Error 37-38: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 40-41: Name isn't valid. 'a' isn't recognized.",
+          "Line 1: Error 51-52: Name isn't valid. 'a' isn't recognized.",
+          "Line 1: Error 64-65: Name isn't valid. 'c' isn't recognized.",
+          "Line 1: Error 67-68: Name isn't valid. 'a' isn't recognized.",
+          "Line 1: Error 60-63: The function 'Sum' has some invalid arguments."
+        ]
+      }
+    },
+    {
+      "id": "existing-language-182",
+      "expression": "UpdateContext({n: 4}); n + 1",
+      "reason": "native-canvas-host-function"
+    },
+    {
+      "id": "existing-language-183",
+      "expression": "JSON(Defaults([1]))",
+      "reason": "native-canvas-host-function"
+    },
+    {
+      "id": "existing-language-184",
+      "expression": "Trace(\"invented\")",
+      "reason": "native-canvas-host-function"
+    },
+    {
+      "id": "existing-language-187",
+      "expression": "RGBA(255,0,128,0.5)",
+      "reason": "canvas-css-color-representation"
+    },
+    {
+      "id": "existing-language-188",
+      "expression": "ColorValue(\"Red\")",
+      "reason": "canvas-css-color-representation"
+    },
+    {
+      "id": "existing-language-189",
+      "expression": "ColorFade(RGBA(100,150,200,1),0.5)",
+      "reason": "canvas-css-color-representation"
+    },
+    {
+      "id": "existing-language-191",
+      "expression": "DataSourceInfo([], DataSourceInfo.Required, Name)",
+      "reason": "native-canvas-host-function"
+    },
+    {
+      "id": "existing-language-192",
+      "expression": "IsError(Choices([{x:1}].x))",
+      "reason": "native-canvas-host-function"
+    },
+    {
+      "id": "existing-language-193",
+      "expression": "IsError(Errors([1]))",
+      "reason": "native-canvas-host-function"
+    }
+  ]
+}

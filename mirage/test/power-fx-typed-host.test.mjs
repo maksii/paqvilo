@@ -1,3 +1,4 @@
+// @test-kind unproven: Mixed typed-host behavior remains unqualified; conditional official callback evidence awaits host-context review.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {

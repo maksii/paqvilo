@@ -1,3 +1,4 @@
+// @test-kind unproven: held or unreviewed platform-sensitive behavior has no native proof in this review.
 // Solution security roles and field security profiles become rows of the security tables; a managed import replaces a
 // custom role's privileges.
 import test from 'node:test';

@@ -171,6 +171,7 @@ export const CORE = Object.freeze([
   'personaCatalog',
   'dataFiles',
   'webApiErrorTemplates',
+  'dataverseErrorTemplates',
   'dataset',
   'profiles',
   'parity',

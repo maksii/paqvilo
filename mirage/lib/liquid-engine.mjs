@@ -1126,7 +1126,12 @@ class AssignTag extends Tag {
       context.engine.runtimeCompatibility === 'observed' &&
       !this.from.filters.length &&
       context.isEncodedVariable(this.from.name);
-    context.assignGlobal(this.to, await this.from.evaluate(context));
+    const value = await this.from.evaluate(context);
+    if (context.engine.runtimeCompatibility === 'observed' && this.from.name === 'blank' && !this.from.filters.length)
+      throw new LiquidSyntaxError(
+        "Object 'DotLiquid.Util.Symbol' is invalid because it is neither a built-in type nor implements ILiquidizable",
+      );
+    context.assignGlobal(this.to, value);
     const fragment = !this.from.filters.length ? context.variableFragments?.get(this.from) : null;
     if (fragment) setBindingFragment(context.outerScope, this.to, fragment);
     if (encoded) context.markEncodedAssignment(this.to);

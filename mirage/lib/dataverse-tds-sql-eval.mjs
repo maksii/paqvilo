@@ -665,6 +665,8 @@ function arithMeta(op, a, b) {
   if (a.type === 'null') return b.type === 'null' ? { type: 'int' } : b;
   if (b.type === 'null') return a;
   if (a.type === 'datetime' || b.type === 'datetime') return dateArithMeta(op);
+  if (op === '+' && ((a.type === 'varbinary' && b.type === 'int') || (b.type === 'varbinary' && a.type === 'int')))
+    return { type: 'int' };
   if (STRING_TYPES.has(a.type) || STRING_TYPES.has(b.type)) return stringArithMeta(op, a, b);
   if (!NUMERIC_PRECEDENCE[a.type] || !NUMERIC_PRECEDENCE[b.type]) return null;
   return numericArithMeta(op, a, b);
@@ -1560,6 +1562,14 @@ function isZeroDivisor(kind, y) {
 function arith(op, a, b, ma = null, mb = null, hints = {}) {
   if (isNull(a) || isNull(b)) return null;
   if (op === '+' && typeof a === 'string' && typeof b === 'string') return a + b;
+  if (op === '+' && Buffer.isBuffer(a) && mb?.type === 'int') {
+    a = castValue(a, 'int');
+    ma = { type: 'int' };
+  }
+  if (op === '+' && Buffer.isBuffer(b) && ma?.type === 'int') {
+    b = castValue(b, 'int');
+    mb = { type: 'int' };
+  }
   rejectBinaryArithmetic(op, a, b);
   if (a instanceof Date || b instanceof Date) return dateArith(op, a, b);
   assertArithmeticOperator(op);
@@ -1865,7 +1875,7 @@ function singleColumn(result) {
       const value = await evalExpr(node.operand, env, st);
       const spec = typeText(node.targetType);
       if (node.tryCast) return callFunction('TRY_CONVERT', [spec, value], st.ctx);
-      return castValue(value, spec, { fromType: typeOf(node.operand, env, st)?.type });
+      return castValue(value, spec, { fromType: textTypeOf(node.operand, env, st) });
     }
     case 'Convert': {
       const value = await evalExpr(node.operand, env, st);
@@ -1873,7 +1883,7 @@ function singleColumn(result) {
       const style = node.style ? await evalExpr(node.style, env, st) : undefined;
       if (node.tryConvert)
         return callFunction('TRY_CONVERT', style === undefined ? [spec, value] : [spec, value, style], st.ctx);
-      return castValue(value, spec, { style, fromType: typeOf(node.operand, env, st)?.type });
+      return castValue(value, spec, { style, fromType: textTypeOf(node.operand, env, st) });
     }
     case 'FunctionCall': {
       const name = node.name.toUpperCase();

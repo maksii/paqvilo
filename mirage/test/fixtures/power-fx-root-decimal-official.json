@@ -1,0 +1,275 @@
+{
+  "package": {
+    "id": "Microsoft.PowerApps.CLI",
+    "version": "2.13.1",
+    "sha256": "07654af406781c1676d1bc5712c393fab2276e54f15ff10bb74a1bdef0d27d3f",
+    "source": "https://api.nuget.org/v3-flatcontainer/microsoft.powerapps.cli/2.13.1/microsoft.powerapps.cli.2.13.1.nupkg"
+  },
+  "scope": "Exact inputs evaluated with official Check before Eval. Unsupported bare-interpreter functions and float literal check failure remain observations of this host, not Canvas claims.",
+  "producer": {
+    "sourceSha256": "050a1858dac29150e495c46f0862bccb910ab9895f235c9255d05c79ac2e9184",
+    "projectSha256": "c280a3d3e4adda5dde8394ea9adfcde102b70eeabd048c92265957daa8393eda",
+    "dllSha256": "34f3d283a9d52ed23fc98cf7b92d56ae28ca7eea80db52cd2625d2d955097fbf",
+    "official": [
+      {
+        "FullName": "Microsoft.PowerFx.Interpreter, Version=1.99.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35",
+        "ModuleVersionId": "c00830f1-cff1-4ce9-97a2-c7d759869bac",
+        "sha256": "f06ed03f9599741990e2db49bbb495b88b5655faab89d5a5017dbec9c75ac780"
+      },
+      {
+        "FullName": "Microsoft.PowerFx.Core, Version=1.99.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35",
+        "ModuleVersionId": "79d79918-0479-450c-915a-1f34bac32028",
+        "sha256": "a9e79158c58284ae99b958f285a7ef81a345b1553a2db5df06a0d52612bf170b"
+      }
+    ]
+  },
+  "inputSha256": "5649f28bc64d44449266473dd5a763e18647c45a1a91414a0c9e32650425e9f8",
+  "input": [
+    {
+      "expression": "IfError(1e400, 2)",
+      "numberIsFloat": false
+    },
+    {
+      "expression": "IfError(1e29, 2)",
+      "numberIsFloat": false
+    },
+    {
+      "expression": "Text(79228162514264337593543950335)",
+      "numberIsFloat": false
+    },
+    {
+      "expression": "IfError(79228162514264337593543950336, 2)",
+      "numberIsFloat": false
+    },
+    {
+      "expression": "IfError(1e-400, 2)",
+      "numberIsFloat": false
+    },
+    {
+      "expression": "IfError(0e400, 2)",
+      "numberIsFloat": false
+    }
+  ],
+  "runs": [
+    {
+      "rawSha256": "465faae4c79dc354078fb2013de201faba785d6e7de9520436f33c1cb57dc797",
+      "processId": 67588,
+      "utcNow": "2026-11-08T18:59:29.8833481Z",
+      "host": {
+        "culture": "en-US",
+        "timeZone": "Pacific Standard Time"
+      },
+      "results": [
+        {
+          "expression": "IfError(1e400, 2)",
+          "phase": "check",
+          "success": false,
+          "diagnostics": [
+            {
+              "message": "Numeric value is too large.",
+              "severity": "Critical"
+            },
+            {
+              "message": "Incompatible type. We can't evaluate your formula because of a type error.",
+              "severity": "Critical"
+            },
+            {
+              "message": "The function 'IfError' has some invalid arguments.",
+              "severity": "Severe"
+            },
+            {
+              "message": "Argument type mismatch. The types of all result arguments must agree with or be coercible to the first result argument.",
+              "severity": "Critical"
+            }
+          ]
+        },
+        {
+          "expression": "IfError(1e29, 2)",
+          "phase": "check",
+          "success": false,
+          "diagnostics": [
+            {
+              "message": "Numeric value is too large.",
+              "severity": "Critical"
+            },
+            {
+              "message": "Incompatible type. We can't evaluate your formula because of a type error.",
+              "severity": "Critical"
+            },
+            {
+              "message": "The function 'IfError' has some invalid arguments.",
+              "severity": "Severe"
+            },
+            {
+              "message": "Argument type mismatch. The types of all result arguments must agree with or be coercible to the first result argument.",
+              "severity": "Critical"
+            }
+          ]
+        },
+        {
+          "expression": "Text(79228162514264337593543950335)",
+          "phase": "evaluation",
+          "success": true,
+          "diagnostics": [],
+          "valueType": "StringValue",
+          "kind": "value",
+          "value": "79228162514264337593543950335",
+          "errors": null
+        },
+        {
+          "expression": "IfError(79228162514264337593543950336, 2)",
+          "phase": "check",
+          "success": false,
+          "diagnostics": [
+            {
+              "message": "Numeric value is too large.",
+              "severity": "Critical"
+            },
+            {
+              "message": "Incompatible type. We can't evaluate your formula because of a type error.",
+              "severity": "Critical"
+            },
+            {
+              "message": "The function 'IfError' has some invalid arguments.",
+              "severity": "Severe"
+            },
+            {
+              "message": "Argument type mismatch. The types of all result arguments must agree with or be coercible to the first result argument.",
+              "severity": "Critical"
+            }
+          ]
+        },
+        {
+          "expression": "IfError(1e-400, 2)",
+          "phase": "evaluation",
+          "success": true,
+          "diagnostics": [],
+          "valueType": "DecimalValue",
+          "kind": "value",
+          "value": 0,
+          "errors": null
+        },
+        {
+          "expression": "IfError(0e400, 2)",
+          "phase": "evaluation",
+          "success": true,
+          "diagnostics": [],
+          "valueType": "DecimalValue",
+          "kind": "value",
+          "value": 0,
+          "errors": null
+        }
+      ]
+    },
+    {
+      "rawSha256": "fa88b4235fdbcdcf31480eb9d8f34c6d6ed42c9ded7dd3314d2389262bcd65e5",
+      "processId": 21376,
+      "utcNow": "2026-11-08T18:59:30.1264451Z",
+      "host": {
+        "culture": "en-US",
+        "timeZone": "Pacific Standard Time"
+      },
+      "results": [
+        {
+          "expression": "IfError(1e400, 2)",
+          "phase": "check",
+          "success": false,
+          "diagnostics": [
+            {
+              "message": "Numeric value is too large.",
+              "severity": "Critical"
+            },
+            {
+              "message": "Incompatible type. We can't evaluate your formula because of a type error.",
+              "severity": "Critical"
+            },
+            {
+              "message": "The function 'IfError' has some invalid arguments.",
+              "severity": "Severe"
+            },
+            {
+              "message": "Argument type mismatch. The types of all result arguments must agree with or be coercible to the first result argument.",
+              "severity": "Critical"
+            }
+          ]
+        },
+        {
+          "expression": "IfError(1e29, 2)",
+          "phase": "check",
+          "success": false,
+          "diagnostics": [
+            {
+              "message": "Numeric value is too large.",
+              "severity": "Critical"
+            },
+            {
+              "message": "Incompatible type. We can't evaluate your formula because of a type error.",
+              "severity": "Critical"
+            },
+            {
+              "message": "The function 'IfError' has some invalid arguments.",
+              "severity": "Severe"
+            },
+            {
+              "message": "Argument type mismatch. The types of all result arguments must agree with or be coercible to the first result argument.",
+              "severity": "Critical"
+            }
+          ]
+        },
+        {
+          "expression": "Text(79228162514264337593543950335)",
+          "phase": "evaluation",
+          "success": true,
+          "diagnostics": [],
+          "valueType": "StringValue",
+          "kind": "value",
+          "value": "79228162514264337593543950335",
+          "errors": null
+        },
+        {
+          "expression": "IfError(79228162514264337593543950336, 2)",
+          "phase": "check",
+          "success": false,
+          "diagnostics": [
+            {
+              "message": "Numeric value is too large.",
+              "severity": "Critical"
+            },
+            {
+              "message": "Incompatible type. We can't evaluate your formula because of a type error.",
+              "severity": "Critical"
+            },
+            {
+              "message": "The function 'IfError' has some invalid arguments.",
+              "severity": "Severe"
+            },
+            {
+              "message": "Argument type mismatch. The types of all result arguments must agree with or be coercible to the first result argument.",
+              "severity": "Critical"
+            }
+          ]
+        },
+        {
+          "expression": "IfError(1e-400, 2)",
+          "phase": "evaluation",
+          "success": true,
+          "diagnostics": [],
+          "valueType": "DecimalValue",
+          "kind": "value",
+          "value": 0,
+          "errors": null
+        },
+        {
+          "expression": "IfError(0e400, 2)",
+          "phase": "evaluation",
+          "success": true,
+          "diagnostics": [],
+          "valueType": "DecimalValue",
+          "kind": "value",
+          "value": 0,
+          "errors": null
+        }
+      ]
+    }
+  ]
+}

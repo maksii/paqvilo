@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "scope": "Two native owned-resource URI template relations. Exact source request entity-set and key roles, validated GUID and independent GET; no origin equivalence or error-message substitution.",
+  "source": {
+    "postAssertionSha256": "d5c6aaedd0ac772ffe424b406fb2b7c6bebab88d4b92d79343b66eac22b1416c",
+    "postRequestAstSha256": "2c69fcbe444365914dc40ae056594ca6afc0ab4102aa00249c9bed556b297394",
+    "patchAssertionSha256": "9bcff08b5744701957970a1ad874cb0e5b70fcef6bf42cb3357adb0eb4b0e8fb",
+    "patchRequestAstSha256": "0550699c6d6da187c6dd54885775bf59d0af12edb0e0c395f808974a671734e7",
+    "patchIdBindingAstSha256": "d2d212129e2cc38e7c0cd3cc3518b9a228088fff45ae0e24c9d8a8fa7a068301",
+    "fixtureMappingAstSha256": "1a2fb855a7795fc0ca2c99cd1e1fb736fb50b4382c0383eb86bd70423474e55e"
+  },
+  "captures": [
+    {
+      "runSha256": "47495eea4cfc35b2bca8577cc92e2539503c6bfaecbe6a081c0f5cac0eb41eb7",
+      "raw": {
+        "postRequestSha256": "df2ccc1bc9b012d426c38eb40274a2d7dcc751b2e91b5df133010c110bac2c8e",
+        "postResponseSha256": "b7b186c6b45bbc7b8a045493f249fceea78188870b22caeb5af7f2b44d733c3c",
+        "postReadRequestSha256": "be0c44e6d54cac53c21d9a1e00b705842b0583b1d0b2982f6d36f85c90228e89",
+        "postReadResponseSha256": "0bdad1b881084e614a78716897efeb6f17a176f1a9edc3d3b32c90d5d80c9a62",
+        "patchRequestSha256": "8bb7a2d0a099dd8ce18af435c9398ec620eed6acea9cee84a6c783ec5a3acce1",
+        "patchResponseSha256": "0d9c4a62d692b15cd1d10673147e2f6268aafeb8ba0151766f57cc2a7e9bcf87",
+        "patchReadRequestSha256": "3ba3addbc97e8e0dfed7414ca506479e82df7c4d2dcddde9416d721e1658b430",
+        "patchReadResponseSha256": "fe9a7ad34c7a41b7811d19ac87de91a32ea63744d9b0d06b3f60cbc7037511fb",
+        "metadataSha256": "5554400e19555e37c7392aeb08fe32cedac75e6f21bdfe66aa16cf755561eac5",
+        "csdlSha256": "0eb8add6f4e61e1d42e416de0b64ea9a50930ac5b8366627b4d374b8b01854de"
+      },
+      "facts": {
+        "postEntityIdMatchesRequestedSetAndVerifiedId": true,
+        "patchLocationMatchesRequestedKeyAndVerifiedId": true
+      }
+    },
+    {
+      "runSha256": "4c188dbad279c20f0d6ce2035e8ac570f8c6ccdf7f1605c7eb330b3f5d8c306f",
+      "raw": {
+        "postRequestSha256": "df2ccc1bc9b012d426c38eb40274a2d7dcc751b2e91b5df133010c110bac2c8e",
+        "postResponseSha256": "1d0162eb2a15dd3e24ba63bccc00bf05b5a4fb2d23cc0eb4dd97e0c7c9a40beb",
+        "postReadRequestSha256": "9759a050bb9306b0ad2b3fb2ab0a5aeae93a3ba9b020cb4c003971d1c268d042",
+        "postReadResponseSha256": "c4744486f391f1cd2377dfd29b1674a4efcea4557e6ab075ff8e991d0df0ed3d",
+        "patchRequestSha256": "d0b0c11328e365532be3756ed5a2dc818123b2acffef93d7dd548184bd2a9104",
+        "patchResponseSha256": "e14eb8bfa3a5805745eaab8db1ce6fbd9e3ff52a0d11a69af76c78cc27e65b32",
+        "patchReadRequestSha256": "c7f648d5c1228379665b0c211142589a4d64bdd105bf6173fc639e2bd4d7e661",
+        "patchReadResponseSha256": "f2a393856402f9a6b456224feabb7869bf737b2b57a18c40ee10721bf8803836",
+        "metadataSha256": "5554400e19555e37c7392aeb08fe32cedac75e6f21bdfe66aa16cf755561eac5",
+        "csdlSha256": "0eb8add6f4e61e1d42e416de0b64ea9a50930ac5b8366627b4d374b8b01854de"
+      },
+      "facts": {
+        "postEntityIdMatchesRequestedSetAndVerifiedId": true,
+        "patchLocationMatchesRequestedKeyAndVerifiedId": true
+      }
+    }
+  ]
+}

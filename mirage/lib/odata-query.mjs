@@ -764,6 +764,8 @@ export function compileODataPredicate(ast, mapping, ctx) {
             return leftNull && rightNull;
           if (node.op === 'ne' && (node.left.kind === 'null' || node.right.kind === 'null'))
             return !(leftNull && rightNull);
+          if (ctx.odataNullEquality && (leftNull || rightNull) && ['eq', 'ne'].includes(node.op))
+            return node.op === 'eq' ? leftNull && rightNull : !(leftNull && rightNull);
           // SQL semantics: a comparison with a null operand is unknown, so neither it
           // nor its negation matches.
           if (leftNull || rightNull) return null;

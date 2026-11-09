@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "scope": "Only owner/owninguser/owningbusinessunit annotation names and presence on a UserOwned record. No actual identity values, display names or role-access behavior are exported or claimed.",
+  "producerSha256": "464988dbeeb0d6b1e252e56bdb11b76a370704c131fb9526f02864d616dfd0d1",
+  "captures": [
+    {
+      "source": "dataverse-native-1794134489551",
+      "runSha256": "0e9461f99f2956719746247305f4f9cee8a97eb8ffa7ebe5e5236d1861c2e6aa",
+      "planSha256": "7f563681e6ba73556bd54ebf6c3a502c3188116a859cf19624c8a0df29a49c97",
+      "cases": [
+        {
+          "id": "headers.prefer-malformed",
+          "status": 200,
+          "nativeBodySha256": "c73f1c7ed46c0ba06566dcd62dc8980035ebc931cf259ab7b120d0b089aabdf2",
+          "facts": {
+            "ownerNavigation": "ownerid",
+            "owningUserHasNavigation": false,
+            "owningUserHasFormatted": false,
+            "owningUserType": "systemuser",
+            "owningBusinessUnitNavigation": "owningbusinessunit"
+          }
+        },
+        {
+          "id": "values.pqwp_text.0.create",
+          "status": 201,
+          "nativeBodySha256": "53568f194423418f664ad0e01dc0f9894e273cc3026328bc318564545207ec43",
+          "facts": {
+            "ownerNavigation": "ownerid",
+            "owningUserHasNavigation": false,
+            "owningUserHasFormatted": false,
+            "owningUserType": "systemuser",
+            "owningBusinessUnitNavigation": "owningbusinessunit"
+          }
+        },
+        {
+          "id": "values.pqwp_text.0.patch",
+          "status": 200,
+          "nativeBodySha256": "48013c7f6dd2b3a3ce7f933a4c169425461e0eb25b977150d0cb360f0775dffc",
+          "facts": {
+            "ownerNavigation": "ownerid",
+            "owningUserHasNavigation": false,
+            "owningUserHasFormatted": false,
+            "owningUserType": "systemuser",
+            "owningBusinessUnitNavigation": "owningbusinessunit"
+          }
+        }
+      ]
+    },
+    {
+      "source": "dataverse-native-1794135645404",
+      "runSha256": "089dba4316b3d686fcac87671bbe4fc26a7e6f1d25af64ee00f9268e282e6f58",
+      "planSha256": "36c13dcd26944a69916a125e98a1222389a5bfd3b2050fc02934b17d48beac01",
+      "cases": [
+        {
+          "id": "headers.prefer-malformed",
+          "status": 200,
+          "nativeBodySha256": "2a4d68af3afd23b85d38ec96d70dbbf133706bc4358089c70e2a9ca5e8982ad2",
+          "facts": {
+            "ownerNavigation": "ownerid",
+            "owningUserHasNavigation": false,
+            "owningUserHasFormatted": false,
+            "owningUserType": "systemuser",
+            "owningBusinessUnitNavigation": "owningbusinessunit"
+          }
+        },
+        {
+          "id": "values.pqwp_text.0.create",
+          "status": 201,
+          "nativeBodySha256": "33475ccb538f6d53d1b1733d71a57aff3fe75089f48be3d7b7921d8ca8b4d81f",
+          "facts": {
+            "ownerNavigation": "ownerid",
+            "owningUserHasNavigation": false,
+            "owningUserHasFormatted": false,
+            "owningUserType": "systemuser",
+            "owningBusinessUnitNavigation": "owningbusinessunit"
+          }
+        },
+        {
+          "id": "values.pqwp_text.0.patch",
+          "status": 200,
+          "nativeBodySha256": "dcaf5d5ba842f2f7e52ce4a1ad5ba58539a12b87c6dad2fc09fbacbf08aff4ad",
+          "facts": {
+            "ownerNavigation": "ownerid",
+            "owningUserHasNavigation": false,
+            "owningUserHasFormatted": false,
+            "owningUserType": "systemuser",
+            "owningBusinessUnitNavigation": "owningbusinessunit"
+          }
+        }
+      ]
+    }
+  ]
+}

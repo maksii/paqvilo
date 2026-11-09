@@ -172,7 +172,10 @@ async function open(t, origin, { clock = false } = {}) {
   // Installing a fake clock alone still advances with wall time. Pause before
   // navigation so only explicit test ticks can trigger the dashboard's 5 s poll.
   if (clock) {
-    await page.clock.install({ time: DASHBOARD_TIME });
+    await page.clock.install({ time: new Date(DASHBOARD_TIME.getTime() - 86_400_000) });
+    // Reproduce the install/pause scheduling gap: pausing at the installation time
+    // fails once even 1 ms has elapsed. No application timers exist before navigation.
+    await page.clock.runFor(1);
     await page.clock.pauseAt(DASHBOARD_TIME);
   }
   const errors = [];

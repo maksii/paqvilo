@@ -508,8 +508,10 @@ const semanticCases = [
     [['3.500000']],
   ],
   ['int overflow is 8115', 'SELECT 2147483647 + 1 AS d', { error: 8115 }],
-  ['bigint overflow is 8115', 'SELECT 9223372036854775807 + 1 AS d', { error: 8115 }],
-  ['bigint product in range', 'SELECT 2147483647 * 4294967296 AS d', [['9223372032559808512n']]],
+  // @parity-evidence: fixtures/tds-root-sql-server-expressions-v1.json records two SQL Server engine executions.
+  ['bigint overflow is 8115', 'SELECT 9223372036854775807 + 1 AS d', [['9223372036854775808']]],
+  // @parity-evidence: fixtures/tds-root-sql-server-expressions-v1.json records two SQL Server engine executions.
+  ['bigint product in range', 'SELECT 2147483647 * 4294967296 AS d', [['9223372032559808512']]],
   [
     'decimal overflow is 8115',
     "SELECT CAST('99999999999999999999999999999999999999' AS decimal(38,0)) * 10 AS d",
@@ -521,13 +523,17 @@ const semanticCases = [
   ['non-numeric string in arithmetic is 245', "SELECT 'x' + 1 AS d", { error: 245 }],
   ['string with a fraction against int is 245', "SELECT '2.5' * 2 AS d", { error: 245 }],
   ['string against decimal converts to decimal', "SELECT '2.5' * 2.0 AS d", [['5.00']]],
-  ['string compares with int', "SELECT 1 = '1' AS d", [[true]]],
-  ['string compares with decimal', "SELECT 2.5 = '2.50' AS d", [[true]]],
-  ['non-numeric string compared with int is 245', "SELECT 'abc' = 1 AS d", { error: 245 }],
+  // @parity-evidence: fixtures/tds-root-sql-server-expressions-v1.json records two SQL Server engine executions.
+  ['string compares with int', "SELECT 1 = '1' AS d", { error: 102 }],
+  // @parity-evidence: fixtures/tds-root-sql-server-expressions-v1.json records two SQL Server engine executions.
+  ['string compares with decimal', "SELECT 2.5 = '2.50' AS d", { error: 102 }],
+  // @parity-evidence: fixtures/tds-root-sql-server-expressions-v1.json records two SQL Server engine executions.
+  ['non-numeric string compared with int is 245', "SELECT 'abc' = 1 AS d", { error: 156 }],
+  // @parity-evidence: fixtures/tds-root-sql-server-expressions-v1.json records two SQL Server engine executions.
   [
     'malformed date string compared with datetime is 241',
     "SELECT '2020-13-01' = CAST('2020-01-01' AS datetime) AS d",
-    { error: 241 },
+    { error: 156 },
   ],
   // 3. Declared types
   ['DECLARE int converts the string', "DECLARE @n int = '5'; SELECT @n AS n", [[5]]],
@@ -566,10 +572,12 @@ const semanticCases = [
   ['datetime plus days past 9999 is 517', "DECLARE @d datetime = '9999-12-31'; SELECT @d + 1 AS d", { error: 517 }],
   ['datetime times int is 8117', "DECLARE @d datetime = '2020-01-01'; SELECT @d * 2 AS d", { error: 8117 }],
   ['datetime plus datetime is 206', "DECLARE @d datetime = '2020-01-01'; SELECT @d + @d AS d", { error: 206 }],
-  ['binary literal equals the int it encodes', 'SELECT 0x0102 = 258 AS d', [[true]]],
+  // @parity-evidence: fixtures/tds-root-sql-server-expressions-v1.json records two SQL Server engine executions.
+  ['binary literal equals the int it encodes', 'SELECT 0x0102 = 258 AS d', { error: 102 }],
   ["CAST binary to int reads two's complement", 'SELECT CAST(0xFFFFFFFF AS int) AS d', [[-1]]],
   ['odd-length binary literal pads with a zero', 'SELECT CAST(0x1 AS int) AS d', [[1]]],
-  ['binary arithmetic is 402', 'SELECT 0x41 + 1 AS d', { error: 402 }],
+  // @parity-evidence: fixtures/tds-root-sql-server-expressions-v1.json records two SQL Server engine executions.
+  ['binary arithmetic is 402', 'SELECT 0x41 + 1 AS d', [[66]]],
   // 6. DISTINCT and ORDER BY
   [
     'DISTINCT with ORDER BY a column outside the list is 145',
@@ -1041,10 +1049,11 @@ const orderedCases = [
     'SELECT w.contoso_status AS st FROM contoso_widget w GROUP BY w.contoso_status HAVING COUNT_BIG(*) > 1',
     [[1]],
   ],
+  // @parity-evidence: fixtures/tds-root-sql-server-expressions-v1.json records two SQL Server engine executions.
   [
     'CAST text to varbinary and back to nvarchar',
     "SELECT CAST(CAST('ab' AS varbinary(8)) AS nvarchar(10)) AS s",
-    [['ab']],
+    [['扡']],
   ],
   ['binary bytes read as a big-endian int', 'SELECT CONVERT(int, CAST(0x00000102 AS binary(4))) AS n', [[258]]],
   ['DECLAREd binary pads a short literal', 'DECLARE @x binary(4) = 0x01; SELECT CAST(@x AS int) AS n', [[16777216]]],

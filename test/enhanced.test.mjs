@@ -1,3 +1,4 @@
+// @test-kind unproven: held or unreviewed platform-sensitive behavior has no native proof in this review.
 // The enhanced data model layout (unpacked solution): powerpagecomponents/<id>/powerpagecomponent.xml
 import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -501,6 +502,7 @@ test('enhanced multistep titles expose localized literal leaves while preserving
   );
 });
 
+// @test-kind security+contract: enhanced attachment names cannot leave filecontent or point to directories
 test('enhanced attachment names cannot leave filecontent or point to directories', () => {
   fs.writeFileSync(path.join(dir, 'outside.js'), 'private local file');
   put(
@@ -549,6 +551,7 @@ test('enhanced CDATA content is parsed and inactive components are not overlaid'
   assert.ok(!model.inlineSources.some((s) => s.rel.includes('/inactive/')));
 });
 
+// @test-kind contract: enhanced content parsing respects CDATA boundaries, comments and split CDATA
 test('enhanced content parsing respects CDATA boundaries, comments and split CDATA', () => {
   const value = 'const closing = "</content>"; const split = "]]>"; const entity = "&amp;";';
   const json = JSON.stringify({ source: value });

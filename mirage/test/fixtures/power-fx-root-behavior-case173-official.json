@@ -1,0 +1,164 @@
+{
+  "scope": "Case173 exact original expression; genuine official PowerFx REPL behavior host, not native Canvas. Remaining eight unchanged expressions fail official checking.",
+  "baseline": "1171cccc8baed9218f7fd7689afae4abdc89252b",
+  "caseIndex": 173,
+  "baselineTupleSha256": "98ebbd58e9020a7a807f7f00ef5e3250b83ef2eb20939bb5ef9b23315ecf2500",
+  "expression": "Set(x, 5); x * 2",
+  "expected": 10,
+  "inputSha256": "a54ed56e92c089d2b0cc960ecd1bd624fd80397e3a41bed4990edd2bc6986049",
+  "producerSourceSha256": "3bb22753f8b8eb0e6ace2e148718e9be960d2005e81222bb7fd8e5a0dc4976eb",
+  "producerProjectSha256": "8d63897d590ca7f8a0e9ecb57fdfebae1c0408228937cf5d0197a8bc8c4f3d3a",
+  "producerDllSha256": "f3402b0326bc6baee679c9abe91f0b833c684246e76949a9bd859aaf34948825",
+  "launcherSha256": "ce828a4d38f8dc16c96dc2e9d47027526e56173dff6aabe7ec1370f78fb19059",
+  "archiveBindingsSha256": "2e3aaab8e9a1410192a14a17e42184857e0fb81509a58a34cac89e7eef25434e",
+  "package": {
+    "id": "Microsoft.PowerApps.CLI",
+    "version": "2.13.1",
+    "sha256": "07654af406781c1676d1bc5712c393fab2276e54f15ff10bb74a1bdef0d27d3f",
+    "source": "https://api.nuget.org/v3-flatcontainer/microsoft.powerapps.cli/2.13.1/microsoft.powerapps.cli.2.13.1.nupkg"
+  },
+  "runs": [
+    {
+      "rawSha256": "454679f7fd5b69b72f0073b2a12f84563ce4eb03370603606a227af115157542",
+      "processId": 461,
+      "hostProcessId": 58692,
+      "before": {
+        "local": "2013-07-15T13:02:00.0000000-07:00",
+        "utc": "2013-07-15T20:02:00.0000000Z",
+        "localZone": "America/Los_Angeles"
+      },
+      "after": {
+        "local": "2013-07-15T13:02:00.0000000-07:00",
+        "utc": "2013-07-15T20:02:00.0000000Z"
+      },
+      "host": {
+        "timeZone": "America/Los_Angeles",
+        "culture": "en-US",
+        "numberIsFloat": false,
+        "allowsSideEffects": true,
+        "mutationFunctions": "official EnableMutationFunctions",
+        "setDefinitions": "official PowerFxREPL AllowSetDefinitions",
+        "freshEnginePerCase": true,
+        "explicitPredeclaredVariables": 0
+      },
+      "processSecurity": {
+        "uid": "Uid:\t65534\t65534\t65534\t65534",
+        "capabilitiesEffective": "CapEff:\t0000000000000000"
+      },
+      "producerSha256": "f3402b0326bc6baee679c9abe91f0b833c684246e76949a9bd859aaf34948825",
+      "inputSha256": "a54ed56e92c089d2b0cc960ecd1bd624fd80397e3a41bed4990edd2bc6986049",
+      "shimSha256": "7ac8a1cdff1b627548de11513fddedd75014f5b041e9ae9054a634bb04aa7982",
+      "assemblies": [
+        {
+          "FullName": "Microsoft.PowerFx.Interpreter, Version=1.99.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35",
+          "ModuleVersionId": "c00830f1-cff1-4ce9-97a2-c7d759869bac",
+          "sha256": "f06ed03f9599741990e2db49bbb495b88b5655faab89d5a5017dbec9c75ac780"
+        },
+        {
+          "FullName": "Microsoft.PowerFx.Core, Version=1.99.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35",
+          "ModuleVersionId": "79d79918-0479-450c-915a-1f34bac32028",
+          "sha256": "a9e79158c58284ae99b958f285a7ef81a345b1553a2db5df06a0d52612bf170b"
+        },
+        {
+          "FullName": "Microsoft.PowerFx.Repl, Version=1.99.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35",
+          "ModuleVersionId": "278e051a-3ef6-44f9-b862-7ba409447524",
+          "sha256": "83cc9bbbceff088bb0035951486fe75f342dca571669eaf17153c76e0f6ec27e"
+        }
+      ],
+      "result": {
+        "index": 173,
+        "expression": "Set(x, 5); x * 2",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 10,
+        "errors": null,
+        "diagnostics": [],
+        "output": [],
+        "beforeSymbols": {
+          "x": false,
+          "c": false,
+          "n": false
+        },
+        "afterSymbols": {
+          "x": true,
+          "c": false,
+          "n": false
+        },
+        "xAfter": 5,
+        "declared": []
+      }
+    },
+    {
+      "rawSha256": "a6ce51d77b4d537e559cba276c243bc5f73b7a46bc8ede307d97cd780f7844cc",
+      "processId": 1071,
+      "hostProcessId": 87872,
+      "before": {
+        "local": "2013-07-15T13:02:00.0000000-07:00",
+        "utc": "2013-07-15T20:02:00.0000000Z",
+        "localZone": "America/Los_Angeles"
+      },
+      "after": {
+        "local": "2013-07-15T13:02:00.0000000-07:00",
+        "utc": "2013-07-15T20:02:00.0000000Z"
+      },
+      "host": {
+        "timeZone": "America/Los_Angeles",
+        "culture": "en-US",
+        "numberIsFloat": false,
+        "allowsSideEffects": true,
+        "mutationFunctions": "official EnableMutationFunctions",
+        "setDefinitions": "official PowerFxREPL AllowSetDefinitions",
+        "freshEnginePerCase": true,
+        "explicitPredeclaredVariables": 0
+      },
+      "processSecurity": {
+        "uid": "Uid:\t65534\t65534\t65534\t65534",
+        "capabilitiesEffective": "CapEff:\t0000000000000000"
+      },
+      "producerSha256": "f3402b0326bc6baee679c9abe91f0b833c684246e76949a9bd859aaf34948825",
+      "inputSha256": "a54ed56e92c089d2b0cc960ecd1bd624fd80397e3a41bed4990edd2bc6986049",
+      "shimSha256": "7ac8a1cdff1b627548de11513fddedd75014f5b041e9ae9054a634bb04aa7982",
+      "assemblies": [
+        {
+          "FullName": "Microsoft.PowerFx.Interpreter, Version=1.99.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35",
+          "ModuleVersionId": "c00830f1-cff1-4ce9-97a2-c7d759869bac",
+          "sha256": "f06ed03f9599741990e2db49bbb495b88b5655faab89d5a5017dbec9c75ac780"
+        },
+        {
+          "FullName": "Microsoft.PowerFx.Core, Version=1.99.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35",
+          "ModuleVersionId": "79d79918-0479-450c-915a-1f34bac32028",
+          "sha256": "a9e79158c58284ae99b958f285a7ef81a345b1553a2db5df06a0d52612bf170b"
+        },
+        {
+          "FullName": "Microsoft.PowerFx.Repl, Version=1.99.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35",
+          "ModuleVersionId": "278e051a-3ef6-44f9-b862-7ba409447524",
+          "sha256": "83cc9bbbceff088bb0035951486fe75f342dca571669eaf17153c76e0f6ec27e"
+        }
+      ],
+      "result": {
+        "index": 173,
+        "expression": "Set(x, 5); x * 2",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "DecimalValue",
+        "value": 10,
+        "errors": null,
+        "diagnostics": [],
+        "output": [],
+        "beforeSymbols": {
+          "x": false,
+          "c": false,
+          "n": false
+        },
+        "afterSymbols": {
+          "x": true,
+          "c": false,
+          "n": false
+        },
+        "xAfter": 5,
+        "declared": []
+      }
+    }
+  ]
+}

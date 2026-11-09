@@ -238,11 +238,14 @@ export function createWebApiFormatter({ store, identity: _identity = {}, metadat
     const stored = storedRow(mapping, projected[mapping.idColumn]);
     const out = {};
     if (etag && stored) out['@odata.etag'] = store.etag(stored);
+    if (formatting.primaryKeyFirst && !isPrivate(mapping.idColumn) && own(projected, mapping.idColumn))
+      formatEntityProperty(out, mapping.idColumn, projected[mapping.idColumn], mapping, stored, new Map());
     // Only navigation properties named in $expand are expanded entities; a
     // single-valued navigation may share its name with the lookup column.
     const expanded = new Map((expand ?? []).map((spec) => [spec.navigation, spec]));
     for (const key of Object.keys(projected)) {
       if (isPrivate(key) || key.includes('@')) continue;
+      if (formatting.primaryKeyFirst && key === mapping.idColumn) continue;
       const value = projected[key];
       formatEntityProperty(out, key, value, mapping, stored, expanded);
     }

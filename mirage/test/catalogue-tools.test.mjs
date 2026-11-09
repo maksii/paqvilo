@@ -87,6 +87,7 @@ test('generated output rejects the installed package and a junction back into it
   );
 });
 
+// @test-kind contract: catalogue option tables produce registry help accepted by each parser and execute outside the project cwd
 test('catalogue option tables produce registry help accepted by each parser and execute outside the project cwd', async (t) => {
   const { root, config } = await fixture(t);
   const runs = [];
@@ -118,6 +119,7 @@ test('catalogue option tables produce registry help accepted by each parser and 
   assert.ok((await fs.readdir(path.join(root, '.paqvilo/portal-matrix'))).length);
 });
 
+// @test-kind contract: parity and conformance help name their real required plan options
 test('parity and conformance help name their real required plan options', async (t) => {
   const { root, config } = await fixture(t);
   const missing = path.join(root, 'missing-plan.json');

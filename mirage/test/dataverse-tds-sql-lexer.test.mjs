@@ -101,7 +101,8 @@ test('numbers: int widens to bigint and decimal, decimals, exponents and 0x bina
   const cases = [
     ['42', 'int'],
     ['2147483647', 'int'],
-    ['2147483648', 'bigint'],
+    // @parity-evidence: fixtures/tds-root-sql-server-expressions-v1.json records two SQL Server engine executions.
+    ['2147483648', 'decimal'],
     ['9223372036854775808', 'decimal'],
     ['1.5', 'decimal'],
     ['.5', 'decimal'],

@@ -1,3 +1,4 @@
+// @test-kind unproven: local review has not established every held or unreviewed platform-sensitive behavior.
 import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -326,6 +327,7 @@ test('new snippet expressions refuse differing language Values but allow identic
   assert.equal(rewrite(body).html, '<nav>English</nav>');
 });
 
+// @test-kind security+contract: script-looking text inside comments and raw-text elements is left intact
 test('script-looking text inside comments and raw-text elements is left intact', () => {
   script('form.js', 'old();', 'new();');
   const inert =
@@ -333,6 +335,7 @@ test('script-looking text inside comments and raw-text elements is left intact',
   assert.equal(rewrite(`${inert}<script>old();</script>`).html, `${inert}<script>new();</script>`);
 });
 
+// @test-kind security+contract: HTML malformed-comment recovery matches browser script boundaries
 test('HTML malformed-comment recovery matches browser script boundaries', () => {
   script('form.js', 'old();', 'new();');
   for (const comment of ['<!-->', '<!--->', '<!-- example --!>', '<?probe <script>old();</script>']) {
@@ -340,12 +343,14 @@ test('HTML malformed-comment recovery matches browser script boundaries', () => 
   }
 });
 
+// @test-kind security+contract: quoted > characters and src-like attribute text do not confuse script detection
 test('quoted > characters and src-like attribute text do not confuse script detection', () => {
   script('form.js', 'old();', 'new();');
   const opening = '<SCRIPT data-note="x > y; src=example" type="text/javascript">';
   assert.equal(rewrite(`${opening}old();</SCRIPT >`).html, `${opening}new();</SCRIPT >`);
 });
 
+// @test-kind security+contract: HTML script boundaries accept closing-tag attributes without confusing custom elements
 test('HTML script boundaries accept closing-tag attributes without confusing custom elements', () => {
   script('form.js', 'old();', 'new();');
   for (const closing of ['</script ignored>', '</script/>', '</script data-note="x > y">']) {
@@ -355,6 +360,7 @@ test('HTML script boundaries accept closing-tag attributes without confusing cus
   assert.equal(rewrite(custom).html, '<script.foo>old();</script.foo><script>new();</script>');
 });
 
+// @test-kind security+contract: HTML double-escaped script text does not end the executable block early
 test('HTML double-escaped script text does not end the executable block early', () => {
   const before = "const a = '<!--<script>';\nconst b = '</script>';\nwindow.probe = 1;";
   const after = before.replace('probe = 1', 'probe = 2');
@@ -362,6 +368,7 @@ test('HTML double-escaped script text does not end the executable block early', 
   assert.equal(rewrite(`<script>${before}</script>`).html, `<script>${after}</script>`);
 });
 
+// @test-kind security+contract: script double-escaped --!> stays script text rather than using normal comment recovery
 test('script double-escaped --!> stays script text rather than using normal comment recovery', () => {
   const before = "const a = '<!--<script>--!>';\nconst b = '</script>';\nwindow.probe = 1;";
   const after = before.replace('probe = 1', 'probe = 2');
@@ -369,6 +376,7 @@ test('script double-escaped --!> stays script text rather than using normal comm
   assert.equal(rewrite(`<script>${before}</script><p>After</p>`).html, `<script>${after}</script><p>After</p>`);
 });
 
+// @test-kind security+contract: local inline code cannot close its HTML element early or hide its closing tag
 test('local inline code cannot close its HTML element early or hide its closing tag', () => {
   for (const after of ['const label = "</script>";', 'const label = "<!--<script>";']) {
     sources = [];
@@ -392,6 +400,7 @@ test('local inline code cannot close its HTML element early or hide its closing 
   assert.equal(rewrite(body).html, body);
 });
 
+// @test-kind security+contract: new page blocks with HTML closing-boundary text are diagnosed before injection
 test('new page blocks with HTML closing-boundary text are diagnosed before injection', () => {
   source('page.js', '', 'const label = "</script>";', { kind: 'page-js', mode: 'block', tag: 'script', pageUrl: '/' });
   const body = '<html><body></body></html>';
@@ -402,6 +411,7 @@ test('new page blocks with HTML closing-boundary text are diagnosed before injec
   assert.match(rewrite(body, '/', { sourceMaps: true }).html, /src="\/__paqvilo\/inline\/page.js"/);
 });
 
+// @test-kind contract: unterminated tags are consumed once even when they contain many apparent tag starts
 test('unterminated tags are consumed once even when they contain many apparent tag starts', { timeout: 5000 }, () => {
   script('form.js', 'old();', 'new();');
   const rewriter = makeRewriter();
@@ -410,6 +420,7 @@ test('unterminated tags are consumed once even when they contain many apparent t
   }
 });
 
+// @test-kind security+contract: browser-supported script MIME and language values are recognized after HTML decoding
 test('browser-supported script MIME and language values are recognized after HTML decoding', () => {
   script('form.js', 'old();', 'new();');
   for (const attrs of [
@@ -427,6 +438,7 @@ test('browser-supported script MIME and language values are recognized after HTM
   assert.equal(rewrite(inert).html, inert);
 });
 
+// @test-kind contract: an empty script type is JavaScript, while external scripts and non-CSS styles remain intact
 test('an empty script type is JavaScript, while external scripts and non-CSS styles remain intact', () => {
   script('form.js', 'old();', 'new();');
   source('style.css', '.old {}', '.new {}', { kind: 'page-css', mode: 'block', tag: 'style', pageUrl: '/' });
@@ -435,6 +447,7 @@ test('an empty script type is JavaScript, while external scripts and non-CSS sty
   assert.equal(rewrite(body).html, body);
 });
 
+// @test-kind contract: source maps keep inline modules in place to preserve relative import URLs
 test('source maps keep inline modules in place to preserve relative import URLs', () => {
   script('form.js', 'import "./module.js";', 'import "./new-module.js";');
   const body = '<script type="module" async>import "./module.js";</script>';
@@ -444,6 +457,7 @@ test('source maps keep inline modules in place to preserve relative import URLs'
   );
 });
 
+// @test-kind contract: source maps preserve relative dynamic imports in existing and newly injected classic scripts
 test('source maps preserve relative dynamic imports in existing and newly injected classic scripts', () => {
   script('form.js', 'import("./module.js");', 'import /* comment */ ("./new-module.js");');
   const body = '<script>import("./module.js");</script>';
@@ -458,12 +472,14 @@ test('source maps preserve relative dynamic imports in existing and newly inject
   );
 });
 
+// @test-kind contract: externalising a classic script preserves async-like text inside other attributes
 test('externalising a classic script preserves async-like text inside other attributes', () => {
   script('form.js', 'old();', 'new();');
   const result = rewrite('<script data-note="use async mode" async defer>old();</script>', '/', { sourceMaps: true });
   assert.equal(result.html, '<script data-note="use async mode" src="/__paqvilo/inline/form.js"></script>');
 });
 
+// @test-kind contract: externalising a classic script removes integrity that only becomes active with src
 test('externalising a classic script removes integrity that only becomes active with src', () => {
   script('form.js', 'old();', 'new();');
   const result = rewrite(
@@ -477,6 +493,7 @@ test('externalising a classic script removes integrity that only becomes active 
   );
 });
 
+// @test-kind contract: every repeated snippet is patched, including occurrences past 200
 test('every repeated snippet is patched, including occurrences past 200', () => {
   source('snippet.html', 'Original repeated snippet', 'Updated repeated snippet', { kind: 'content-snippet' });
   const result = rewrite('<p>Original repeated snippet</p>\r\n'.repeat(1_000));
@@ -484,6 +501,7 @@ test('every repeated snippet is patched, including occurrences past 200', () => 
   assert.equal(result.applied[0].action, 'patched 1000 changes');
 });
 
+// @test-kind contract: equally matching clones with different local contents are reported instead of guessed
 test('equally matching clones with different local contents are reported instead of guessed', () => {
   script('first.js', 'shared();', 'local();');
   script('second.js', 'shared();', 'shared();');
@@ -493,6 +511,7 @@ test('equally matching clones with different local contents are reported instead
   assert.match(result.notes[0].reason, /multiple local sources/);
 });
 
+// @test-kind contract: new page scripts are inserted at a real body closing tag, not one printed in a comment
 test('new page scripts are inserted at a real body closing tag, not one printed in a comment', () => {
   source('page.js', '', 'fresh();', { kind: 'page-js', mode: 'block', tag: 'script', pageUrl: '/' });
   const body = '<html><head></head><body>content</body></html><!-- example: </body> -->';
@@ -504,6 +523,7 @@ test('new page scripts are inserted at a real body closing tag, not one printed 
   assert.equal(rewrite(fragment).html, fragment);
 });
 
+// @test-kind contract: incremental refresh reads only saved files; full refresh invalidates every source
 test('incremental refresh reads only saved files; full refresh invalidates every source', () => {
   for (let i = 0; i < 100; i++) script(`form-${i}.js`, `before${i}();`, `after${i}();`);
   const rewriter = makeRewriter();
@@ -529,6 +549,7 @@ test('incremental refresh reads only saved files; full refresh invalidates every
   }
 });
 
+// @test-kind contract: enhanced sources sharing a file share the raw read but retain separate extracted fields
 test('enhanced sources sharing a file share the raw read but retain separate extracted fields', () => {
   const file = path.join(dir, 'component.xml');
   fs.writeFileSync(file, JSON.stringify({ js: 'changed();', copy: '<p>Changed copy</p>' }));
@@ -566,6 +587,7 @@ test('enhanced sources sharing a file share the raw read but retain separate ext
   );
 });
 
+// @test-kind security+contract: cached source reads reject a directory replaced by an external junction
 test('cached source reads reject a directory replaced by an external junction', () => {
   script('mapped/form.js', 'original();', 'local();');
   const rewriter = makeRewriter({ model: { sourceDir: dir, inlineSources: sources } });
@@ -585,6 +607,7 @@ test('cached source reads reject a directory replaced by an external junction', 
   }
 });
 
+// @test-kind contract: unchanged derived lines are reused, and a formerly identical baseline still matches after a rewrite
 test('unchanged derived lines are reused, and a formerly identical baseline still matches after a rewrite', () => {
   script('form.js', 'original();', 'original();');
   const rewriter = makeRewriter();
@@ -613,6 +636,7 @@ test('large markup files keep safe distant edits separate from unchanged Liquid 
   assert.equal(result.applied[0].action, 'patched 2 changes');
 });
 
+// @test-kind contract: async construction preloads stable sources with bounded concurrency and shared changed state
 test('async construction preloads stable sources with bounded concurrency and shared changed state', async () => {
   for (let i = 0; i < 40; i++) script(`form-${i}.js`, `original${i}();`, `local${i}();`);
   const changed = new Set(versions.keys());
@@ -669,6 +693,7 @@ test('async construction preloads stable sources with bounded concurrency and sh
   }
 });
 
+// @test-kind contract: async construction retries a source that finishes saving during prefetch
 test('async construction retries a source that finishes saving during prefetch', async () => {
   script('form.js', 'original();', 'firstLocal();');
   const openedFile = await fs.promises.realpath(sources[0].file);
@@ -708,6 +733,7 @@ test('async construction retries a source that finishes saving during prefetch',
   }
 });
 
+// @test-kind contract: async construction revalidates early files after other reads finish
 test('async construction revalidates early files after other reads finish', async () => {
   script('first.js', 'firstOriginal();', 'firstLocal();');
   script('second.js', 'secondOriginal();', 'secondLocal();');
@@ -760,6 +786,7 @@ test('async construction revalidates early files after other reads finish', asyn
   }
 });
 
+// @test-kind contract: explicit source revalidation invalidates only stale bytes and follows the shared changed snapshot
 test('explicit source revalidation invalidates only stale bytes and follows the shared changed snapshot', (t) => {
   // The reuse assertions below concern files written moments ago.
   settleFileTimes(t);

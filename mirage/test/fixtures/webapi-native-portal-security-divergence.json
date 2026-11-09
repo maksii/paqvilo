@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "date": "2026-11-08",
+  "kind": "native-security-divergence",
+  "scope": "An encoded JSON object string containing a known String column absent from exported Webapi/table/fields was accepted natively and changed the exact owned row in two authenticated rounds. Independent intended provisioning reads verify the consumer before/after; this is not inferred from204. Source column/schema/site/identity are private and represented by invented secret/probe aliases.",
+  "source": {
+    "exportedSettingsSha256": "ee2c2182514056574c5227ffd7de040d73bba84068cbdafaa578e0f90c1b9eaf",
+    "nativeCsdlSha256": "0eb8add6f4e61e1d42e416de0b64ea9a50930ac5b8366627b4d374b8b01854de",
+    "knownStringColumn": true,
+    "webApiEnabledColumn": false
+  },
+  "captures": [
+    {
+      "planSha256": "e2b4fbf0520df351248c51777c3f4ab9c19b95f10d6e32a600554e54c3836ecc",
+      "runSha256": "9f750fbb49f274987a10bffe3bac8d36ea4720b835177c238f936559fedf6b15",
+      "journalSha256": "cdd83f13b63ea3e6da042cc7af7b274f3e999f62f5cf5e41e5f39328a78811b7",
+      "beforeConsumerSha256": "bfa74ece6e76e3ac32ce21a029db05d0dac4a85e6b7f3d550866a85993971637",
+      "afterConsumerSha256": "714a91ee50c582ed390c3ae00cab2d0bee4536c35f80562402e9b27315e4cfd0",
+      "nativeResponseSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "nativeStatus": 204,
+      "ownedInitialValue": null,
+      "ownedSubmittedValueSha256": "933614db3be15c2ab60c4ac79ed638db870fe6b05754d7a397b510d26584f05f",
+      "independentlyVerifiedStoredValueEqualsSubmitted": true
+    },
+    {
+      "planSha256": "1073da0f310a54e4244bfa056bcf1be85f6bfe79a224e71d8cf9bf11e6af1d11",
+      "runSha256": "29d8ec8cca8c2188ae47e513a38001be82c70d46ee063923cb6521dc1d260f8e",
+      "journalSha256": "73ac9403eef772b5e1b9b71cd5b5ec11a6fa177ffe7be07664d625631ed9b569",
+      "beforeConsumerSha256": "f9f3f38b77890095541a9e21558a2a4fca9ae521609dc5ef05f34ffd9d6cc848",
+      "afterConsumerSha256": "6ca4568dc94182d7df9b1c23bb4390204451842409e01b9d947f5980f8874185",
+      "nativeResponseSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "nativeStatus": 204,
+      "ownedInitialValue": null,
+      "ownedSubmittedValueSha256": "61fa6fa1d5de2cd925a983379fd2473a2a0b334094a6fc26a662259e28045e00",
+      "independentlyVerifiedStoredValueEqualsSubmitted": true
+    }
+  ],
+  "requiredLocalPolicy": {
+    "status": 403,
+    "unchangedOwnedData": true,
+    "protection": "Decoding a string never bypasses table/column/field/row guards. This native behavior is intentionally not emulated."
+  }
+}

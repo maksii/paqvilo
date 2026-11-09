@@ -59,6 +59,11 @@ For a hand-built Mirage integration, import the Mirage adapter explicitly. The V
 
 Call `configure({ app: '<name>' })` before the first call. Use the same host name (`localhost` or `127.0.0.1`) for the dev server and Mirage, so the browser sends the staff-session cookie.
 
+Like the official SDK, `getContext()` retains its resolved object, including caller mutations to its
+query parameters. Calling `configure()` clears that cache for the new local app session. The
+[package evidence](../test/fixtures/canvas-code-apps-package-evidence.md) records the reproduced
+SDK guarantee; host context fields and host transport require separate native qualification.
+
 An explicit `origin` must be an HTTP(S) root origin on the current browser origin, without credentials, a path, query or fragment. A trailing slash is normalized. Entity-set arguments must be Dataverse identifiers (a leading letter followed by letters, digits or underscores); use the SDK executor's `entitySets` mapping for generated source aliases.
 
 Reconfiguration rejects pending results from the previous app configuration. A write already sent to the server cannot be rolled back by this check. Inspect the local records before manually repeating a write whose result was interrupted.

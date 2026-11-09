@@ -1,3 +1,4 @@
+// @test-kind unproven: held or unreviewed platform-sensitive behavior has no native proof in this review.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -8,6 +9,7 @@ import { inspectionFixture, addNativeInspectionFixture } from './source-inspecti
 import { settleFileTimes } from '../mirage/test/support/file-times.mjs';
 import { assemblyXml, stepXml, pluginId } from '../mirage/test/plugin-fixture.mjs';
 
+// @test-kind contract: the serialized browser collector retains its public function identity
 test('the serialized browser collector retains its public function identity', () => {
   assert.equal(inspectRenderedPage.name, 'inspectRenderedPage');
   assert.equal(inspectRenderedPage.length, 0);
@@ -49,6 +51,7 @@ test('list action modal forms and Web API column candidates come from the select
   assert.ok(report.columns.some((row) => row.entity === 'fx_widget' && row.name === 'fx_title'));
 });
 
+// @test-kind contract: element candidates preserve page, template, snippet and script source identity without runtime ownership claims
 test('element candidates preserve page, template, snippet and script source identity without runtime ownership claims', async (t) => {
   const fx = inspectionFixture();
   t.after(fx.cleanup);
@@ -113,6 +116,7 @@ test('platform routes index the website shell includes while authored bare-shell
   );
 });
 
+// @test-kind contract: source inspection retains markup from the 900th of a thousand referenced snippets and declares oversized bodies
 test('source inspection retains markup from the 900th of a thousand referenced snippets and declares oversized bodies', async (t) => {
   const fx = inspectionFixture();
   t.after(fx.cleanup);
@@ -156,6 +160,7 @@ test('a rendered classic list adds its configured view and columns even without 
   assert.ok(report.columns.some((row) => row.entity === 'fx_widget' && row.name === 'fx_title'));
 });
 
+// @test-kind contract: repeated enrichment keeps unresolved diagnostics stable and rejects absent reports clearly
 test('repeated enrichment keeps unresolved diagnostics stable and rejects absent reports clearly', async (t) => {
   const fx = inspectionFixture();
   t.after(fx.cleanup);
@@ -337,6 +342,7 @@ test('live inspection selects exported route languages and matching snippet sour
   assert.equal((await inspector.inspect('/zz-ZZ/')).report.page, null);
 });
 
+// @test-kind contract: asset inspection follows relative declared references with exact browser path matching
 test('asset inspection follows relative declared references with exact browser path matching', async (t) => {
   const fx = inspectionFixture();
   t.after(fx.cleanup);
@@ -530,6 +536,7 @@ test('project-selected Solution metadata provides exact FormXml and field paths;
   assert.equal((await inspector.inspect('/')).report.snippets[0].value, 'Fresh banner');
 });
 
+// @test-kind contract: missing or mismatched Solution configuration preserves portal inspection and does not select an unrelated project
 test('missing or mismatched Solution configuration preserves portal inspection and does not select an unrelated project', async (t) => {
   const fx = inspectionFixture();
   t.after(fx.cleanup);
@@ -546,6 +553,7 @@ test('missing or mismatched Solution configuration preserves portal inspection a
   assert.equal(mismatched.diagnostics[0].code, 'INSPECT_PROJECT_UNAVAILABLE');
 });
 
+// @test-kind contract: the rendered-page reader runs self-contained in a page realm and keeps only same-origin Web API set names
 test('the rendered-page reader runs self-contained in a page realm and keeps only same-origin Web API set names', () => {
   // page.evaluate serializes the function, so module-scope helpers would be missing in the browser.
   const page = {

@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "scope": "Conditional official typed host does not invoke a registered Decimal-parameter callback for the original division-by-zero expression; successful direct call verifies admission. The original JavaScript typed callback has no declared parameter signature and returns a Promise. Dispatch/type-validation equivalence, toolkit FxError class and asynchronous policy remain unproven; this capsule alone cannot qualify the original assertion.",
+  "package": {
+    "id": "Microsoft.PowerApps.CLI",
+    "version": "2.13.1",
+    "sha256": "07654af406781c1676d1bc5712c393fab2276e54f15ff10bb74a1bdef0d27d3f",
+    "source": "https://api.nuget.org/v3-flatcontainer/microsoft.powerapps.cli/2.13.1/microsoft.powerapps.cli.2.13.1.nupkg"
+  },
+  "producer": {
+    "sourceSha256": "ed968e6c325a4098d00f06ed0117cbe3ae592c2b9250bdbb53c8897e4e31aeb1",
+    "projectSha256": "460c5b9baf16f0e60397deb3033eb4ebb288b803980c2ebf17c41b36d4ffd7c3",
+    "assemblySha256": "5a6548935c694d667684252e9ab40d431b28a620caaaf4c3e040b3ead7ee4f01",
+    "officialAssemblies": [
+      {
+        "FullName": "Microsoft.PowerFx.Interpreter, Version=1.99.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35",
+        "ModuleVersionId": "c00830f1-cff1-4ce9-97a2-c7d759869bac",
+        "sha256": "f06ed03f9599741990e2db49bbb495b88b5655faab89d5a5017dbec9c75ac780"
+      },
+      {
+        "FullName": "Microsoft.PowerFx.Core, Version=1.99.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35",
+        "ModuleVersionId": "79d79918-0479-450c-915a-1f34bac32028",
+        "sha256": "a9e79158c58284ae99b958f285a7ef81a345b1553a2db5df06a0d52612bf170b"
+      }
+    ]
+  },
+  "input": {
+    "sha256": "a21e9f552b2d39ef1e88a7ccaa1f1bb49d80999e44a863a072572224b0ce5fc6",
+    "cases": [
+      {
+        "expression": "Test.Typed(1/0)"
+      },
+      {
+        "expression": "Test.Typed(1)"
+      }
+    ]
+  },
+  "runs": [
+    {
+      "receiptSha256": "8db98bf635ab144592c94a5a6ade92295ffff41fb4ed97defc1f1e0ad18f9de6",
+      "processId": 14476,
+      "inputSha256": "a21e9f552b2d39ef1e88a7ccaa1f1bb49d80999e44a863a072572224b0ce5fc6",
+      "results": [
+        {
+          "expression": "Test.Typed(1/0)",
+          "kind": "error",
+          "calls": 0,
+          "value": null,
+          "errors": [
+            {
+              "kind": "Div0",
+              "Message": "Invalid operation: division by zero."
+            }
+          ]
+        },
+        {
+          "expression": "Test.Typed(1)",
+          "kind": "value",
+          "calls": 1,
+          "value": 1,
+          "errors": null
+        }
+      ]
+    },
+    {
+      "receiptSha256": "892cc72f291331a37190f49a2822e5870b044c4caab4d5425bba6545d7fb3ea3",
+      "processId": 84140,
+      "inputSha256": "a21e9f552b2d39ef1e88a7ccaa1f1bb49d80999e44a863a072572224b0ce5fc6",
+      "results": [
+        {
+          "expression": "Test.Typed(1/0)",
+          "kind": "error",
+          "calls": 0,
+          "value": null,
+          "errors": [
+            {
+              "kind": "Div0",
+              "Message": "Invalid operation: division by zero."
+            }
+          ]
+        },
+        {
+          "expression": "Test.Typed(1)",
+          "kind": "value",
+          "calls": 1,
+          "value": 1,
+          "errors": null
+        }
+      ]
+    }
+  ],
+  "original": {
+    "baseline": "1171cccc8baed9218f7fd7689afae4abdc89252b",
+    "baselineId": "mirage/test/power-fx-typed-host.test.mjs:62:0",
+    "assertionAstSha256": "130d2932687d9a18ae0a616481d9246052739bd5c86bdd3c7deb41846de91e90",
+    "titleExpressionSha256": "d4c85632055988318b0f9ab0ab1aaa177603f7c69189c0921a9b7ed4c52a5c78",
+    "sourceSha256": "d8c148e186d4b369e3975c200e22c445fb4e947472629e95580e8d0098a86a8c"
+  }
+}

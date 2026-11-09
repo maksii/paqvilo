@@ -1,3 +1,4 @@
+// @test-kind unproven: held or unreviewed platform-sensitive behavior has no native proof in this review.
 import test from 'node:test';
 import { qualificationMutationIntent } from '../portal-security/qualification-native-adapters.mjs';
 import assert from 'node:assert/strict';

@@ -1,8 +1,10 @@
+// @test-kind contract: running-runtime session clients and owned shell-capture lifecycle.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import http from 'node:http';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
@@ -48,8 +50,25 @@ test('running-runtime client signs a Playwright context in and out with the conf
   }
 });
 
-test('shell capture owns an anonymous temporary CDP browser and closes it after local capture', async () => {
+// @test-kind contract+security: the owned anonymous browser starts without cookies and its CDP listener closes after capture.
+test('shell capture owns an anonymous temporary CDP browser and closes it after local capture', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-owned-capture-'));
+  const echo = http.createServer((request, response) => {
+    if (request.url === '/issue') response.setHeader('set-cookie', 'invented-session=owned; Path=/; HttpOnly');
+    response.setHeader('content-type', 'application/json');
+    response.end(
+      JSON.stringify({ cookie: request.headers.cookie ?? null, authorization: request.headers.authorization ?? null }),
+    );
+  });
+  await new Promise((resolve) => echo.listen(0, '127.0.0.1', resolve));
+  t.after(
+    () =>
+      new Promise((resolve) => {
+        echo.closeAllConnections();
+        echo.close(resolve);
+      }),
+  );
+  const echoUrl = `http://127.0.0.1:${echo.address().port}`;
   let attached, endpoint;
   const bridge = {
     origin: 'https://invented.example.test',
@@ -65,7 +84,14 @@ test('shell capture owns an anonymous temporary CDP browser and closes it after 
       attached = await chromium.connectOverCDP(cdp);
       assert.equal(attached.contexts().length, 1);
       this.context = attached.contexts()[0];
-      assert.deepEqual(await this.context.cookies(), []);
+      // Preserve the zero-cookie assertion without dumping credentials if Edge implicitly signs the profile in.
+      assert.equal((await this.context.cookies()).length, 0, 'the owned capture browser must begin without cookies');
+      assert.deepEqual(await (await this.context.request.get(echoUrl)).json(), { cookie: null, authorization: null });
+      await this.context.request.get(echoUrl + '/issue');
+      assert.deepEqual(await (await this.context.request.get(echoUrl)).json(), {
+        cookie: 'invented-session=owned',
+        authorization: null,
+      });
       return this.status();
     },
     async close() {

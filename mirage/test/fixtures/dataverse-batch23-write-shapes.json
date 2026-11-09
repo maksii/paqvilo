@@ -1,0 +1,169 @@
+{
+  "schemaVersion": 1,
+  "scope": "Two independently executed owned Dataverse write-shape cohorts. Nonempty visible headers, statuses, typed body values and key/property predicates only. No header absence, exact original entity-set path or identity/privilege equivalence is asserted.",
+  "context": {
+    "schemaRoles": [
+      "published owned entity set",
+      "primary name and ID",
+      "optional nullable string",
+      "money and derived base field"
+    ],
+    "transport": "native HTTP",
+    "sourceLayer": "original records handler; equivalence review required",
+    "cleanup": "five task-owned rows independently absent twice in each cohort"
+  },
+  "captures": [
+    {
+      "runSha256": "47495eea4cfc35b2bca8577cc92e2539503c6bfaecbe6a081c0f5cac0eb41eb7",
+      "sourceProvenanceSha256": "0f061b2fcdec815d1df9cc7abed162775ad6fe78b8c4b048ca0b231961b7c383",
+      "cleanupJournalSha256": "4923c85e053d235148a0e507ad64ebe36bd3e30a6e096b7317b67cf65ccd60ae",
+      "raw": [
+        {
+          "id": "plainCreate",
+          "requestSha256": "df2ccc1bc9b012d426c38eb40274a2d7dcc751b2e91b5df133010c110bac2c8e",
+          "responseSha256": "b7b186c6b45bbc7b8a045493f249fceea78188870b22caeb5af7f2b44d733c3c",
+          "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "id": "representedCreate",
+          "requestSha256": "52a22c24d5aa76fbff2cfa1d28168accdee3f9c897a7918f10fa7976306e4000",
+          "responseSha256": "63d64052ec00993acefe0508a37490ae3558a9b7e6da3fe2948aaecc9bfdcb42",
+          "bodySha256": "17661c8915c6256e4595f4e1a65020ee6b5da1f56ef8d727d2f7eac54bd68a95"
+        },
+        {
+          "id": "fullCreate",
+          "requestSha256": "7daf5212d1fe60a79a7b7765f982ea60d5f96e47b34e70b5d1f4d9ca6d8ae93d",
+          "responseSha256": "123057db8769b6bb72325d56c7e7ee3feeee4ed7d2b88f77aad69f74f7fc2461",
+          "bodySha256": "701d95391d180a9b006304db44b15dac46ca8c25bbee8c7d6319562fa326758f"
+        },
+        {
+          "id": "narrowCreate",
+          "requestSha256": "e717a34457d5e29ab5ff4ab39a44c263d24c0d584d742944cfd726a577d2fcca",
+          "responseSha256": "0488eb43638dadb61f67f3e7267d890461b83c35003ab6d0b317e1baee06b3e7",
+          "bodySha256": "6b37e2e82cfd3221b61c8311cf775f48d3107c4bd0ea7bb4f1cf5a3200e5e22e"
+        },
+        {
+          "id": "plainPatch",
+          "requestSha256": "8bb7a2d0a099dd8ce18af435c9398ec620eed6acea9cee84a6c783ec5a3acce1",
+          "responseSha256": "0d9c4a62d692b15cd1d10673147e2f6268aafeb8ba0151766f57cc2a7e9bcf87",
+          "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "id": "representedPatch",
+          "requestSha256": "1cbe1a30ec7861ba59e1584d98517900940a096ece273bc674e1d0cc327b316c",
+          "responseSha256": "840adb0cc300939d67eeaf72586af3ec7897a000344b17d7ded785db22b70afa",
+          "bodySha256": "a79a34ce3852e3eb35af6fff57416face1eb83e875ddefdf414903920ec1d29d"
+        }
+      ],
+      "facts": {
+        "plainCreate": {
+          "status": 204,
+          "nonemptyEntityIdEqualsLocation": true
+        },
+        "representedCreate": {
+          "status": 201,
+          "preferenceApplied": "return=representation"
+        },
+        "fullCreate": {
+          "status": 201,
+          "name": "Full",
+          "nullableStringPresentAndNull": true,
+          "moneyPresentAndNull": true,
+          "preferenceApplied": "return=representation"
+        },
+        "narrowCreate": {
+          "nonAnnotationKeysAreNameAndId": true
+        },
+        "plainPatch": {
+          "status": 204,
+          "nonemptyEntityIdEqualsLocation": true
+        },
+        "representedPatch": {
+          "status": 200,
+          "etagHasWeakPrefix": true,
+          "preferenceApplied": "return=representation",
+          "nullableStringAbsent": true,
+          "nullableStringFormattedAbsent": true,
+          "name": "Shown",
+          "moneyBasePropertyPresent": true
+        }
+      }
+    },
+    {
+      "runSha256": "4c188dbad279c20f0d6ce2035e8ac570f8c6ccdf7f1605c7eb330b3f5d8c306f",
+      "sourceProvenanceSha256": "0f061b2fcdec815d1df9cc7abed162775ad6fe78b8c4b048ca0b231961b7c383",
+      "cleanupJournalSha256": "abec6acfe4367c0a5d54082d7778d189113a9bc4542e2c3af127810e183eaeae",
+      "raw": [
+        {
+          "id": "plainCreate",
+          "requestSha256": "df2ccc1bc9b012d426c38eb40274a2d7dcc751b2e91b5df133010c110bac2c8e",
+          "responseSha256": "1d0162eb2a15dd3e24ba63bccc00bf05b5a4fb2d23cc0eb4dd97e0c7c9a40beb",
+          "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "id": "representedCreate",
+          "requestSha256": "52a22c24d5aa76fbff2cfa1d28168accdee3f9c897a7918f10fa7976306e4000",
+          "responseSha256": "476d843dfeb9462cce3b76a7cd2d9e21d55ff35096d724efbb39de946bf28b6a",
+          "bodySha256": "c78d18ab2291b5b128a538ddadd166b2c75c5d65aad6eeb35b0db4c12cecb3c0"
+        },
+        {
+          "id": "fullCreate",
+          "requestSha256": "7daf5212d1fe60a79a7b7765f982ea60d5f96e47b34e70b5d1f4d9ca6d8ae93d",
+          "responseSha256": "3fd264c37b049188b0fed6654974e35ba8f2c5373606e3aaa6907ba2a6053545",
+          "bodySha256": "b077c7b0a9ae40da0f2c58b19864379427167ffd5d870f67c363762e10abc0ad"
+        },
+        {
+          "id": "narrowCreate",
+          "requestSha256": "e717a34457d5e29ab5ff4ab39a44c263d24c0d584d742944cfd726a577d2fcca",
+          "responseSha256": "42eac1616b758a988b8e347b85e98dbbdd9f192bbeb3c97b214fce1beeb9b4af",
+          "bodySha256": "73b8a5b76e10efc67fc3bc8cfb9907c88242b908ace5f128229d19ca8f6af4b8"
+        },
+        {
+          "id": "plainPatch",
+          "requestSha256": "d0b0c11328e365532be3756ed5a2dc818123b2acffef93d7dd548184bd2a9104",
+          "responseSha256": "e14eb8bfa3a5805745eaab8db1ce6fbd9e3ff52a0d11a69af76c78cc27e65b32",
+          "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "id": "representedPatch",
+          "requestSha256": "1797e7fa0fa6ca1d844f897272e93aa9d7965b02fb2a2c2388d179a3368d62db",
+          "responseSha256": "c8abc67b4f690fb3ffa0d1a02f950148067ea2fb22bb47e91c043b3ceadf8055",
+          "bodySha256": "01b13f9f435e514d25d0cd4e3b96c2bf4f894ca4d4b85cf63411a59a3c7134f1"
+        }
+      ],
+      "facts": {
+        "plainCreate": {
+          "status": 204,
+          "nonemptyEntityIdEqualsLocation": true
+        },
+        "representedCreate": {
+          "status": 201,
+          "preferenceApplied": "return=representation"
+        },
+        "fullCreate": {
+          "status": 201,
+          "name": "Full",
+          "nullableStringPresentAndNull": true,
+          "moneyPresentAndNull": true,
+          "preferenceApplied": "return=representation"
+        },
+        "narrowCreate": {
+          "nonAnnotationKeysAreNameAndId": true
+        },
+        "plainPatch": {
+          "status": 204,
+          "nonemptyEntityIdEqualsLocation": true
+        },
+        "representedPatch": {
+          "status": 200,
+          "etagHasWeakPrefix": true,
+          "preferenceApplied": "return=representation",
+          "nullableStringAbsent": true,
+          "nullableStringFormattedAbsent": true,
+          "name": "Shown",
+          "moneyBasePropertyPresent": true
+        }
+      }
+    }
+  ]
+}

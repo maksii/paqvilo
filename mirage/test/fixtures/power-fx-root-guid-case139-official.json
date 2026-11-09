@@ -1,0 +1,191 @@
+{
+  "version": 1,
+  "scope": "Exact original GUID formula ErrorValue InvalidArgument kind25 and IfError catchability under official package; local implementation bridge observes FxError to DataError/PowerFxError 400/details25. No message equality, arbitrary exception mapping or native Canvas claim.",
+  "sourceReceiptSha256": "8df0a6708028b9e8c2da2206976e22c82e3125d966220ee056147bf8d843cfe0",
+  "baseline": "1171cccc8baed9218f7fd7689afae4abdc89252b",
+  "baselineSourceSha256": "f28d696944a17b3785e497e50767ddb534ab0e232a859bf9bcfe09018481bc86",
+  "currentSourceSha256": "ef18ac5901e2d55bc9da8eb0c5bffb683eb65cb57afe939c55b8e0964a7aaab6",
+  "originalTuple": {
+    "expression": "GUID(\"77777777-7777-4777-8777-777777777777\") = GUID(\"{77777777777747778777777777777777}\")",
+    "expected": true,
+    "astSha256": "97f47aed2d0b9c1a6079fbec190c84e352fea938bf5d3fb20022a1658eda3753"
+  },
+  "currentTuple": {
+    "expression": "GUID(\"77777777-7777-4777-8777-777777777777\") = GUID(\"{77777777777747778777777777777777}\")",
+    "expected": {
+      "errorKind": 25
+    },
+    "astSha256": "cab98c42daad12091b6cacada8b8a499b33c0fad605162bc3f926860eb750971"
+  },
+  "protectedGuidBranchSha256": "3ace3ef7315923e7f649572a1fea29fb2df7bc94d1fbfb494c1403c11df808fe",
+  "protectedGuidAssertions": [
+    {
+      "method": "equal",
+      "sha256": "5d37c9b2672ba08be09a144efd7956386f6874c9d2653627941134357052d681"
+    },
+    {
+      "method": "equal",
+      "sha256": "0f8b923e2abba29eebf9d06db9f403df9638936a369e1cbde2098a4259156012"
+    },
+    {
+      "method": "equal",
+      "sha256": "9b8602419d3ee5a5c0dda91b082be7dbd0f4b21228acf1ea81b5c5db640c031d"
+    },
+    {
+      "method": "equal",
+      "sha256": "31b9df63712d5f1a1fceab4f5ef0731eebd1645cffac72fbfd31cb6e714c5a87"
+    },
+    {
+      "method": "equal",
+      "sha256": "a5cfb4e93137d8bc9bfa578d761524fd84e37b92ec9834ca0a6515b220eb98e2"
+    },
+    {
+      "method": "deepEqual",
+      "sha256": "2c51fbf295558349b0e4f5467b2bc75f9723b1a3098efcbcc66352f7c8724e0a"
+    },
+    {
+      "method": "throws",
+      "sha256": "017fe726e32d7b5a7c826d2b91bcfa89786dade676dc41154dfeb4cfca7ce9f3"
+    }
+  ],
+  "inputSha256": "4debecae048ff59c3d4444b4898f66807dd8fd955e8689f80c06a0bd90fe806d",
+  "sourceSha256": "22748b1ad5870393133b1363772d43663f46b751c7df24801dfcc3e33eee7a48",
+  "projectSha256": "21271ed61516bdd05af5040d3380abc5cf48df04bd30f3d508754d7559279709",
+  "producerDllSha256": "71bb94700df769268086b87887ccff602795c26637a8e3928c3d61cf9ac495a1",
+  "archiveBindingsSha256": "2e3aaab8e9a1410192a14a17e42184857e0fb81509a58a34cac89e7eef25434e",
+  "package": {
+    "id": "Microsoft.PowerApps.CLI",
+    "version": "2.13.1",
+    "sha256": "07654af406781c1676d1bc5712c393fab2276e54f15ff10bb74a1bdef0d27d3f",
+    "source": "https://api.nuget.org/v3-flatcontainer/microsoft.powerapps.cli/2.13.1/microsoft.powerapps.cli.2.13.1.nupkg"
+  },
+  "runs": [
+    {
+      "rawSha256": "f49e4befb18ea482a230b534d315b754365ffb105d14e0eed4114e3fc886c11a",
+      "processId": 561,
+      "hostProcessId": 79268,
+      "host": {
+        "fixedClock": "2013-07-15T20:02:00.0000000Z",
+        "timeZone": "America/Los_Angeles",
+        "culture": "en-US",
+        "numberIsFloat": false,
+        "dontFakeMonotonic": "1"
+      },
+      "before": {
+        "local": "2013-07-15T13:02:00.0000000-07:00",
+        "utc": "2013-07-15T20:02:00.0000000Z",
+        "localZone": "America/Los_Angeles",
+        "localOffset": "-07:00:00"
+      },
+      "after": {
+        "local": "2013-07-15T13:02:00.0000000-07:00",
+        "utc": "2013-07-15T20:02:00.0000000Z"
+      },
+      "processSecurity": {
+        "uid": "Uid:\t65534\t65534\t65534\t65534",
+        "capabilitiesEffective": "CapEff:\t0000000000000000"
+      },
+      "inputSha256": "4debecae048ff59c3d4444b4898f66807dd8fd955e8689f80c06a0bd90fe806d",
+      "producerSha256": "71bb94700df769268086b87887ccff602795c26637a8e3928c3d61cf9ac495a1",
+      "shimSha256": "7ac8a1cdff1b627548de11513fddedd75014f5b041e9ae9054a634bb04aa7982",
+      "assemblies": [
+        {
+          "FullName": "Microsoft.PowerFx.Interpreter, Version=1.99.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35",
+          "ModuleVersionId": "c00830f1-cff1-4ce9-97a2-c7d759869bac",
+          "sha256": "f06ed03f9599741990e2db49bbb495b88b5655faab89d5a5017dbec9c75ac780"
+        },
+        {
+          "FullName": "Microsoft.PowerFx.Core, Version=1.99.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35",
+          "ModuleVersionId": "79d79918-0479-450c-915a-1f34bac32028",
+          "sha256": "a9e79158c58284ae99b958f285a7ef81a345b1553a2db5df06a0d52612bf170b"
+        }
+      ],
+      "facts": [
+        {
+          "expression": "GUID(\"77777777-7777-4777-8777-777777777777\") = GUID(\"{77777777777747778777777777777777}\")",
+          "phase": "evaluation",
+          "kind": "error",
+          "type": "ErrorValue",
+          "errorKind": 25,
+          "errorKindName": "InvalidArgument"
+        },
+        {
+          "expression": "IfError(GUID(\"77777777-7777-4777-8777-777777777777\") = GUID(\"{77777777777747778777777777777777}\"),FirstError.Kind=25)",
+          "phase": "evaluation",
+          "kind": "value",
+          "type": "BooleanValue",
+          "value": true
+        }
+      ]
+    },
+    {
+      "rawSha256": "d78ddba78f2030faec4035dd10a0e005387c4c0a1a4d2a9170be51104720cd70",
+      "processId": 1010,
+      "hostProcessId": 69932,
+      "host": {
+        "fixedClock": "2013-07-15T20:02:00.0000000Z",
+        "timeZone": "America/Los_Angeles",
+        "culture": "en-US",
+        "numberIsFloat": false,
+        "dontFakeMonotonic": "1"
+      },
+      "before": {
+        "local": "2013-07-15T13:02:00.0000000-07:00",
+        "utc": "2013-07-15T20:02:00.0000000Z",
+        "localZone": "America/Los_Angeles",
+        "localOffset": "-07:00:00"
+      },
+      "after": {
+        "local": "2013-07-15T13:02:00.0000000-07:00",
+        "utc": "2013-07-15T20:02:00.0000000Z"
+      },
+      "processSecurity": {
+        "uid": "Uid:\t65534\t65534\t65534\t65534",
+        "capabilitiesEffective": "CapEff:\t0000000000000000"
+      },
+      "inputSha256": "4debecae048ff59c3d4444b4898f66807dd8fd955e8689f80c06a0bd90fe806d",
+      "producerSha256": "71bb94700df769268086b87887ccff602795c26637a8e3928c3d61cf9ac495a1",
+      "shimSha256": "7ac8a1cdff1b627548de11513fddedd75014f5b041e9ae9054a634bb04aa7982",
+      "assemblies": [
+        {
+          "FullName": "Microsoft.PowerFx.Interpreter, Version=1.99.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35",
+          "ModuleVersionId": "c00830f1-cff1-4ce9-97a2-c7d759869bac",
+          "sha256": "f06ed03f9599741990e2db49bbb495b88b5655faab89d5a5017dbec9c75ac780"
+        },
+        {
+          "FullName": "Microsoft.PowerFx.Core, Version=1.99.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35",
+          "ModuleVersionId": "79d79918-0479-450c-915a-1f34bac32028",
+          "sha256": "a9e79158c58284ae99b958f285a7ef81a345b1553a2db5df06a0d52612bf170b"
+        }
+      ],
+      "facts": [
+        {
+          "expression": "GUID(\"77777777-7777-4777-8777-777777777777\") = GUID(\"{77777777777747778777777777777777}\")",
+          "phase": "evaluation",
+          "kind": "error",
+          "type": "ErrorValue",
+          "errorKind": 25,
+          "errorKindName": "InvalidArgument"
+        },
+        {
+          "expression": "IfError(GUID(\"77777777-7777-4777-8777-777777777777\") = GUID(\"{77777777777747778777777777777777}\"),FirstError.Kind=25)",
+          "phase": "evaluation",
+          "kind": "value",
+          "type": "BooleanValue",
+          "value": true
+        }
+      ]
+    }
+  ],
+  "localBridge": {
+    "captureSha256": "bf6e970bde02a4c25d84460cdb02991383fac4f5bb2fcaf7849b752301f283c9",
+    "rawType": "FxError",
+    "rawErrorKind": 25,
+    "apiKind": "throw",
+    "apiType": "DataError",
+    "apiCode": "PowerFxError",
+    "apiStatus": 400,
+    "apiDetailsErrorKind": 25,
+    "ifErrorValue": true
+  }
+}

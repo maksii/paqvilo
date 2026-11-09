@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "recordedDate": "2026-11-08",
+  "scope": "Only unsupported query-option status/code/message; owned private table name is replaced by invented specimen mapping. No response-body normalization.",
+  "collectorSha256": "67a5989223211cf7a8ae0cbd080e3ca70e1565574171124abdcbee92fa223bbc",
+  "planSha256": "cffa6e709a1219e0a5e5794d3e0fd5d4521045ef7b544af62081763872f7a8bb",
+  "cases": [
+    {
+      "id": "unknown-0",
+      "key": "$invented_option",
+      "value": "authored-invented-value-0",
+      "status": 400,
+      "body": {
+        "error": {
+          "code": "0x80060888",
+          "message": "The query parameter [REDACTED] is not supported"
+        }
+      },
+      "nativeBodySha256": [
+        "aae8f60065297d815f198fe04c1d7462ac56f180e1ce2ceb09d87abeb1044b60",
+        "aae8f60065297d815f198fe04c1d7462ac56f180e1ce2ceb09d87abeb1044b60"
+      ]
+    },
+    {
+      "id": "unknown-1",
+      "key": "another_option",
+      "value": "authored-invented-value-1",
+      "status": 400,
+      "body": {
+        "error": {
+          "code": "0x80060888",
+          "message": "The query parameter [REDACTED] is not supported"
+        }
+      },
+      "nativeBodySha256": [
+        "aae8f60065297d815f198fe04c1d7462ac56f180e1ce2ceb09d87abeb1044b60",
+        "aae8f60065297d815f198fe04c1d7462ac56f180e1ce2ceb09d87abeb1044b60"
+      ]
+    },
+    {
+      "id": "unknown-2",
+      "key": "$CUSTOM",
+      "value": "authored-invented-value-2",
+      "status": 400,
+      "body": {
+        "error": {
+          "code": "0x80060888",
+          "message": "The query parameter [REDACTED] is not supported"
+        }
+      },
+      "nativeBodySha256": [
+        "aae8f60065297d815f198fe04c1d7462ac56f180e1ce2ceb09d87abeb1044b60",
+        "aae8f60065297d815f198fe04c1d7462ac56f180e1ce2ceb09d87abeb1044b60"
+      ]
+    }
+  ]
+}

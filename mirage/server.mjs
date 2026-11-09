@@ -306,6 +306,7 @@ import { createFrameReadiness } from './lib/frame-readiness.mjs';
 import { formWriteError } from './lib/form-error-presentation.mjs';
 import { assertPortalSource, portalSourceDir } from './lib/source-dialect.mjs';
 import { collectWebApiErrorTemplates } from './lib/webapi-error-templates.mjs';
+import { collectDataverseErrorTemplates } from './lib/dataverse-error-templates.mjs';
 import {
   injectRuntime,
   renderComponent,
@@ -527,7 +528,7 @@ const logSeverity = (level) => {
   if (level === 'Error') return 'error';
   return level === 'Warn' ? 'warning' : 'info';
 };
-function json(res, status, value, headers = {}, { chunks } = {}) {
+function json(res, status, value, headers = {}, { chunks, wireText, omitContentType } = {}) {
   let rowCount;
   if (Array.isArray(value?.value)) rowCount = value.value.length;
   else if (Array.isArray(value)) rowCount = value.length;
@@ -536,13 +537,17 @@ function json(res, status, value, headers = {}, { chunks } = {}) {
     rowCount,
     error: value?.error,
   };
-  res.writeHead(status, {
+  const responseHeaders = {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
     ...headers,
-  });
+  };
+  if (omitContentType === true)
+    for (const name of Object.keys(responseHeaders))
+      if (name.toLowerCase() === 'content-type') delete responseHeaders[name];
+  res.writeHead(status, responseHeaders);
   if (chunks && status !== 204) return writeJsonChunks(res, chunks);
-  res.end(status === 204 ? undefined : stringifyExactJson(value));
+  res.end(status === 204 ? undefined : typeof wireText === 'string' ? wireText : stringifyExactJson(value));
 }
 
 const RECORD_OWNERS = Symbol('owned record storage');
@@ -885,6 +890,7 @@ export async function createSimulator(options = {}) {
     return endpoint.pattern.exec(pathname);
   };
   const registeredWebApiErrorTemplates = collectWebApiErrorTemplates(projectPacks ?? []);
+  const registeredDataverseErrorTemplates = collectDataverseErrorTemplates(projectPacks ?? []);
   const operationPortal = () => withSolutionOperations(portal, solutionOperations);
   const bootstrapOptions = () => ({ origin, metadata: solutionData, ...(projectPacks ? { packs: projectPacks } : {}) });
   const presetLibraryStarted = performance.now();
@@ -7095,6 +7101,8 @@ export async function createSimulator(options = {}) {
       // The Arc challenge's secret files sit beside the project state (.paqvilo/mirage/); other shapes need no secret directory.
       dataverse = await organizationHost.startApi({
         host,
+        observed: portal.observed,
+        errorTemplates: registeredDataverseErrorTemplates,
         tls: dataverseCertificate ? { key: dataverseCertificate.key, cert: dataverseCertificate.cert } : null,
         beforeListen: () => storageAdapter?.activate(store.state),
         managedIdentities: managedIdentityList,

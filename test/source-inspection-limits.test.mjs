@@ -1,3 +1,4 @@
+// @test-kind unproven: local review has not established every held or unreviewed platform-sensitive behavior.
 // Declared inspection budgets: rendered candidates, script notes and
 // oversized markup are bounded and reported, never silently attributed.
 import test from 'node:test';
@@ -32,6 +33,7 @@ test('rendered shape selects unreferenced snippet candidates and declares the ex
   assert.equal(report.elementSourceLimits.truncated, true);
 });
 
+// @test-kind contract: truncated script notes use the same root-relative display path as their source row
 test('truncated script notes use the same root-relative display path as their source row', async (t) => {
   const fx = inspectionFixture();
   t.after(fx.cleanup);
@@ -75,6 +77,7 @@ test('direct rendered IDs precede broad class buckets when the additional candid
   assert.equal(report.elementSources.filter((row) => row.name?.startsWith('Crowded ')).length, 1199);
 });
 
+// @test-kind contract: oversized referenced and unreferenced markup marks the export index incomplete without source attribution
 test('oversized referenced and unreferenced markup marks the export index incomplete without source attribution', async (t) => {
   const fx = inspectionFixture();
   t.after(fx.cleanup);
@@ -120,6 +123,7 @@ test('oversized referenced and unreferenced markup marks the export index incomp
   assert.equal(referenced.elementSourceLimits.truncated, true);
 });
 
+// @test-kind contract: export-wide omission summary counts all skipped sources but bounds display names and preserves the source-size boundary
 test('export-wide omission summary counts all skipped sources but bounds display names and preserves the source-size boundary', async (t) => {
   const fx = inspectionFixture();
   t.after(fx.cleanup);

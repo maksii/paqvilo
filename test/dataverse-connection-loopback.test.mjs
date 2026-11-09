@@ -1,3 +1,4 @@
+// @test-kind unproven: local review has not established every held or unreviewed platform-sensitive behavior.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { tokenProvider } from '../lense/dataverse/connection.mjs';
@@ -26,6 +27,7 @@ function recordingFetch(calls) {
   };
 }
 
+// @test-kind security+contract: a loopback authorityHost is used only when loopback is allowed
 test('a loopback authorityHost is used only when loopback is allowed', async () => {
   const calls = [];
   const token = tokenProvider(connection(LOOPBACK_ENV, { authorityHost: 'http://127.0.0.1:4010' }), {
@@ -37,6 +39,7 @@ test('a loopback authorityHost is used only when loopback is allowed', async () 
   assert.equal(calls[0].scope, `${LOOPBACK_ENV}/.default`, 'the scope resource stays the environment origin');
 });
 
+// @test-kind security+contract: a loopback authorityHost is ignored, and a loopback environment rejected, without allowLoopback
 test('a loopback authorityHost is ignored, and a loopback environment rejected, without allowLoopback', async () => {
   const calls = [];
   const token = tokenProvider(connection(PRODUCTION_ENV, { authorityHost: 'http://127.0.0.1:4010' }), {
@@ -50,6 +53,7 @@ test('a loopback authorityHost is ignored, and a loopback environment rejected, 
   );
 });
 
+// @test-kind security+contract: a non-loopback authorityHost is rejected even when loopback is allowed
 test('a non-loopback authorityHost is rejected even when loopback is allowed', () => {
   for (const authorityHost of [
     'https://evil.example',
@@ -77,6 +81,7 @@ test('the default authority is the Microsoft login host', async () => {
   assert.equal(calls[0].scope, `${PRODUCTION_ENV}/.default`);
 });
 
+// @test-kind security+contract: connectedClient passes allowLoopback to the client and the token provider
 test('connectedClient passes allowLoopback to the client and the token provider', () => {
   assert.equal(connectedClient(connection(LOOPBACK_ENV), { allowLoopback: true }).origin, LOOPBACK_ENV);
   assert.throws(() => connectedClient(connection(LOOPBACK_ENV)), /Environment must be an HTTPS organisation origin/);

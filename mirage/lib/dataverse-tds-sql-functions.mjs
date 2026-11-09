@@ -885,8 +885,13 @@ def('CHARINDEX', 2, 3, INT, ([find, s, start], ctx) => {
 });
 def('PATINDEX', 2, 2, INT, ([pattern, s], ctx) => {
   if (anyNull(pattern, s)) return null;
-  // Leading % wildcards do not move the reported start: '%[0-9]%' reports the first digit.
-  const re = likeToRegExp(textOf(pattern).replace(/^%+/, ''), ctx);
+  // Leading % permits a search without contributing to the reported start position.
+  const original = textOf(pattern);
+  const leadingWildcard = original.startsWith('%');
+  const remaining = original.replace(/^%+/, '');
+  if (leadingWildcard && remaining === '') return 1;
+  const match = likeToRegExp(remaining, ctx);
+  const re = new RegExp(`${leadingWildcard ? '' : '^'}${match.source}$`, match.flags);
   const m = re.exec(textOf(s));
   return m ? m.index + 1 : 0;
 });
@@ -919,14 +924,13 @@ def('TRIM', 1, 2, TEXT_OF_FIRST, (args) => {
   while (b > a && set.includes(str[b - 1])) b -= 1;
   return str.slice(a, b);
 });
-// CONCAT treats NULL as an empty string; CONCAT_WS skips NULL arguments and returns NULL for a NULL separator.
+// CONCAT treats NULL as an empty string; CONCAT_WS skips NULL values and uses an empty NULL separator.
 def('CONCAT', 2, 254, TEXT, (args) => args.map((v) => (v === null ? '' : textOf(v))).join(''));
 def('CONCAT_WS', 3, 254, TEXT, ([sep, ...rest]) => {
-  if (sep === null) return null;
   return rest
     .filter((v) => v !== null)
     .map((v) => textOf(v))
-    .join(textOf(sep));
+    .join(sep === null ? '' : textOf(sep));
 });
 def('STUFF', 4, 4, TEXT, ([s, start, len, ins]) => {
   if (anyNull(s, start, len, ins)) return null;

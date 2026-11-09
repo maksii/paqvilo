@@ -1467,6 +1467,8 @@ function hostLifecycle(c) {
     /** Starts the Dataverse API (and managed identity endpoints) over the organization. */
     async startApi({
       host: listenHost,
+      observed,
+      errorTemplates,
       tls = null,
       beforeListen,
       managedIdentities = () => [],
@@ -1475,6 +1477,8 @@ function hostLifecycle(c) {
     }) {
       c.dataverse = await startDataverseApi({
         organization: c.organization,
+        observed,
+        errorTemplates,
         traces: c.traces,
         host: listenHost,
         tls,

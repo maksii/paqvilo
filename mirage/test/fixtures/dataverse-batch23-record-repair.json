@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "scope": "Repeated two-owned-row unordered selection, nonempty patch readback, and exact raw value wire bytes. Entity, origin, owned IDs, and authored values are parameters. Filter narrows the shared native table; one-row count and wire BOM absence are not asserted.",
+  "producerSha256": "6957513ec0793d97f56691c106c6a0d37d72889b329a7838d5d7d1604beede45",
+  "captures": [
+    {
+      "source": "batch23-20261108-native-1794164370672",
+      "planSha256": "2aa64d809c04af64a4f92d366b44b35f440cfe3f33cb60eb3234a31ff49dd026",
+      "runSha256": "333a3a4ca6e5b0c3841cd5cd7b23c1942bdeb789362223684f931bf8affac4e2",
+      "metadataSha256": "0eb8add6f4e61e1d42e416de0b64ea9a50930ac5b8366627b4d374b8b01854de",
+      "cases": [
+        {
+          "id": "collection.two",
+          "bodySha256": "2de9db5b3d64eb4711cd0b2d34aa4bab8ed60925f68056aaa32c3f4592aeb401",
+          "facts": {
+            "status": 200,
+            "exactSelectedContext": true,
+            "rows": 2,
+            "bothOwnedIds": true,
+            "includesFirstCreated": true,
+            "selectedNonAnnotationKeysOnly": true,
+            "eachHasEtag": true,
+            "noFormattedAnnotations": true,
+            "noNextLink": true,
+            "orderbyAbsent": true
+          }
+        },
+        {
+          "id": "patch.change-and-read",
+          "patchBodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "readBodySha256": "9c0bcc833c534905257419f33e2f87bba7f7ca130ad8eca52019c76418c57b2c",
+          "facts": {
+            "patchStatus": 204,
+            "readStatus": 200,
+            "readContextMatchesSelectedEntity": true,
+            "readEqualsAuthoredValue": true
+          }
+        },
+        {
+          "id": "property.value",
+          "bodySha256": "fae7b64ad02a57abcde0d31fd7935d69d63c2ac4f40c55c0d707dbe030630c12",
+          "facts": {
+            "status": 200,
+            "wireBytesEqualUtf8BomThenAuthoredValue": true
+          }
+        }
+      ]
+    },
+    {
+      "source": "batch23-20261108-native-1794164404568",
+      "planSha256": "c47a26e682d0a61f515e3b450e733e3bb78f992e754bb02be555de373af05b3c",
+      "runSha256": "0304121c7a26bcb989d50274cab754488005db0d5b0306f16add0442b6549f93",
+      "metadataSha256": "0eb8add6f4e61e1d42e416de0b64ea9a50930ac5b8366627b4d374b8b01854de",
+      "cases": [
+        {
+          "id": "collection.two",
+          "bodySha256": "58e2b3225ef5f515fc007c9eb9aaea6751e2956e29912d2c538e7f1dd4473472",
+          "facts": {
+            "status": 200,
+            "exactSelectedContext": true,
+            "rows": 2,
+            "bothOwnedIds": true,
+            "includesFirstCreated": true,
+            "selectedNonAnnotationKeysOnly": true,
+            "eachHasEtag": true,
+            "noFormattedAnnotations": true,
+            "noNextLink": true,
+            "orderbyAbsent": true
+          }
+        },
+        {
+          "id": "patch.change-and-read",
+          "patchBodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "readBodySha256": "434d617792ad0153f8e265d8cfdaa13d7a45e1b671193bacb9f03d342e83f355",
+          "facts": {
+            "patchStatus": 204,
+            "readStatus": 200,
+            "readContextMatchesSelectedEntity": true,
+            "readEqualsAuthoredValue": true
+          }
+        },
+        {
+          "id": "property.value",
+          "bodySha256": "d8367db5a1c0fbd53f377cefb108d4475f84a20c9de5b7d619b9486aa84a9755",
+          "facts": {
+            "status": 200,
+            "wireBytesEqualUtf8BomThenAuthoredValue": true
+          }
+        }
+      ]
+    }
+  ]
+}

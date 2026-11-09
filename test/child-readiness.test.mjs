@@ -28,6 +28,7 @@ function fixture() {
   return { child, controller, wait };
 }
 
+// @test-kind contract: browser setup may cross the former sub-deadline without being mistaken for readiness or failure
 test('browser setup may cross the former sub-deadline without being mistaken for readiness or failure', async (t) => {
   const { child, wait } = fixture();
   let now = 0,
@@ -52,6 +53,7 @@ test('browser setup may cross the former sub-deadline without being mistaken for
   assert.equal(child.listenerCount('error'), 0);
 });
 
+// @test-kind contract: a failed or cancelled child never reports successful readiness
 test('a failed or cancelled child never reports successful readiness', async () => {
   for (const mode of ['exit', 'error', 'abort', 'already-exited', 'already-aborted']) {
     const { child, controller, wait } = fixture();

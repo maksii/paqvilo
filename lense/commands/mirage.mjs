@@ -1105,7 +1105,16 @@ function identityMatches(left, right) {
 }
 
 // ---- start
-async function start(cfg, args, { paths = miragePaths(cfg, args), command = 'mirage start' } = {}) {
+export async function start(
+  cfg,
+  args,
+  {
+    paths = miragePaths(cfg, args),
+    command = 'mirage start',
+    spawnRuntime = spawn,
+    identityOf = processIdentityAsync,
+  } = {},
+) {
   let interrupted = false,
     child,
     cleanup;
@@ -1129,6 +1138,8 @@ async function start(cfg, args, { paths = miragePaths(cfg, args), command = 'mir
   try {
     return await startRuntime(cfg, args, paths, {
       command,
+      spawnRuntime,
+      identityOf,
       check,
       signal: controller.signal,
       cancelled: () => interrupted,
@@ -1245,7 +1256,7 @@ async function start(cfg, args, { paths = miragePaths(cfg, args), command = 'mir
       command: startup.command,
       ...(cfg.configFile ? { site: cfg.catalogueSite ?? cfg.siteName } : {}),
     });
-    child = spawn(process.execPath, [cli, ...values], {
+    child = startup.spawnRuntime(process.execPath, [cli, ...values], {
       cwd: cfg.configDir ?? process.cwd(),
       detached: true,
       stdio: ['ignore', logHandle.fd, logHandle.fd],
@@ -1272,12 +1283,17 @@ async function start(cfg, args, { paths = miragePaths(cfg, args), command = 'mir
       }).catch(() => {});
   });
   args.startup?.phase('process ownership', cfg.siteName);
-  const childIdentity = await processIdentityAsync(child.pid, { signal: startup.signal });
+  const childIdentity = await startup.identityOf(child.pid, { signal: startup.signal });
   startup.check();
-  if (!childIdentity)
-    throw new Error(
-      `Could not verify the starting Mirage process ownership; the child was stopped. See startup log: ${log}`,
-    );
+  if (!childIdentity) {
+    const error = !isAlive(child.pid)
+      ? await exitedBeforeReady(log, paths.logRoot)
+      : new Error(
+          `Could not verify the starting Mirage process ownership; the child was stopped. See startup log: ${log}`,
+        );
+    error.writesFiles = [log];
+    throw error;
+  }
   // Recorded before readiness, so `mirage stop` can end a process that hangs while importing.
   await updateOwnedSessions(
     paths,
@@ -1394,10 +1410,7 @@ async function start(cfg, args, { paths = miragePaths(cfg, args), command = 'mir
       }
       if (!isAlive(child.pid)) {
         await abandon();
-        const output = await readLocalFile(log, { root: paths.logRoot, encoding: 'utf8' }).catch(() => '');
-        const logOutput = output.trim();
-        const details = logOutput ? '\n' + logOutput.slice(-3000) : '';
-        throw new Error(`Mirage exited before it became ready. See startup log: ${log}${details}`);
+        throw await exitedBeforeReady(log, paths.logRoot);
       }
       await delay(150, undefined, { signal: startup.signal });
     }
@@ -1409,6 +1422,12 @@ async function start(cfg, args, { paths = miragePaths(cfg, args), command = 'mir
     error.writesFiles = [log, paths.ownershipFile].filter((file) => fsSync.existsSync(file));
     throw error;
   }
+}
+
+async function exitedBeforeReady(log, logRoot) {
+  const output = await readLocalFile(log, { root: logRoot, encoding: 'utf8' }).catch(() => '');
+  const details = output.trim() ? '\n' + output.trim().slice(-3000) : '';
+  return new Error(`Mirage exited before it became ready. See startup log: ${log}${details}`);
 }
 
 function validateProjectLaunchArguments(projectInfo, args) {

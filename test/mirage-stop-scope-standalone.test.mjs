@@ -1,3 +1,4 @@
+// @test-kind unproven: local review has not established every held or unreviewed platform-sensitive behavior.
 // Standalone runtimes: stop and init hints keep their ownership directory and runtime from another
 // cwd, a failed hint stops what it started, and shared hint payloads outlive unverified targets.
 import test from 'node:test';
@@ -12,6 +13,7 @@ import { persistCommandPayload } from '../lense/command-payload.mjs';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { workspace, cli, alive, stopped } from './mirage-stop-workspace.mjs';
 
+// @test-kind contract: hint preparation failure stops newly started single/group sessions and preserves a reused sibling
 test(
   'hint preparation failure stops newly started single/group sessions and preserves a reused sibling',
   { timeout: 90000 },
@@ -54,6 +56,7 @@ test(
   },
 );
 
+// @test-kind contract: projectless standalone stop and init next preserve ownership cwd and runtime from another empty directory
 test(
   'projectless standalone stop and init next preserve ownership cwd and runtime from another empty directory',
   { timeout: 60000 },
@@ -97,6 +100,7 @@ test(
   },
 );
 
+// @test-kind contract: standalone project with external configuration replays both inferred and explicit runtimes from another cwd
 test(
   'standalone project with external configuration replays both inferred and explicit runtimes from another cwd',
   { timeout: 90000 },
@@ -148,6 +152,7 @@ test(
   },
 );
 
+// @test-kind contract: shared hint payload stays while a target is unverified and is removed after the final owned target stops
 test(
   'shared hint payload stays while a target is unverified and is removed after the final owned target stops',
   { timeout: 180_000 },

@@ -1,0 +1,359 @@
+{
+  "version": 1,
+  "scope": "Repeated native HTTP routing/admission facts only. Known logical EntityType versus EntitySet role is independently witnessed by pre-plan CSDL. Unknown segment/schema names are aliases; code, punctuation, casing rules, HTTP methods and other selected literals remain exact. No unrecorded correlation/Location/CORS facts are claimed.",
+  "producerSha256": "307436605ac2046a1d5a0b7eb6fc63960524879d3fe318c6553fa4f9a21531ea",
+  "captures": [
+    {
+      "source": "dataverse-native-1794134489551",
+      "runSha256": "0e9461f99f2956719746247305f4f9cee8a97eb8ffa7ebe5e5236d1861c2e6aa",
+      "planSha256": "7f563681e6ba73556bd54ebf6c3a502c3188116a859cf19624c8a0df29a49c97",
+      "csdlSha256": "0eb8add6f4e61e1d42e416de0b64ea9a50930ac5b8366627b4d374b8b01854de",
+      "cases": [
+        {
+          "id": "headers.odata-old",
+          "method": "GET",
+          "nativeBodySha256": "8446edb86df04f59426ce1faf5feaf5602e5cf619b1e1503645e017d5c56b1e2",
+          "facts": {
+            "status": 412,
+            "error": {
+              "code": "0x80060888",
+              "message": "The value '3.0' of the OData-Version HTTP header is invalid. Only '4.0' and '4.01' are supported as values for the OData-Version header."
+            }
+          }
+        },
+        {
+          "id": "headers.odata-new",
+          "method": "GET",
+          "nativeBodySha256": "038dc844ce89a410d2c43253a28e173989a8dc94698c0c0a3c15943bc1c099ec",
+          "facts": {
+            "status": 200
+          }
+        },
+        {
+          "id": "errors.method-head",
+          "method": "HEAD",
+          "nativeBodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "facts": {
+            "status": 405,
+            "emptyBody": true
+          }
+        },
+        {
+          "id": "errors.payload-text",
+          "method": "PATCH",
+          "nativeBodySha256": "4e18d8a10a4c346c522be1397be580303a4fa0a6c30852c792507917f47d80cc",
+          "facts": {
+            "status": 415,
+            "error": {
+              "code": "",
+              "message": "The request entity's media type 'text/plain' is not supported for this resource."
+            }
+          }
+        },
+        {
+          "id": "crud.patch-empty",
+          "method": "PATCH",
+          "nativeBodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "facts": {
+            "status": 204
+          }
+        },
+        {
+          "id": "errors.method-put",
+          "method": "PUT",
+          "nativeBodySha256": "f5ee0573caadc0527c66357b3d0f9047e506053b9e114e465203a954239dc982",
+          "facts": {
+            "status": 405,
+            "error": {
+              "code": "0x80060888",
+              "message": "Operation not supported on __ENTITY__"
+            }
+          }
+        },
+        {
+          "id": "errors.method-post",
+          "method": "POST",
+          "nativeBodySha256": "b9548afdbc1e189dee5f0c789e5ba6fa8d73fce008d3d1357408acbf68282bd6",
+          "facts": {
+            "status": 405,
+            "error": {
+              "code": "0x80060888",
+              "message": "Unmapped Request found, PathTemplate:~/entityset/key, HttpVerb:POST"
+            }
+          }
+        },
+        {
+          "id": "errors.bad-path",
+          "method": "GET",
+          "nativeBodySha256": "43db07dd400d6ca134a683fbf6fdea4f58f617b348942dc23490b8c7fd8d7f89",
+          "facts": {
+            "status": 400,
+            "error": {
+              "code": "0x80060888",
+              "message": "Bad Request - Error in query syntax."
+            }
+          }
+        },
+        {
+          "id": "errors.unknown-set",
+          "method": "GET",
+          "nativeBodySha256": "3ef4eacb1faf05612159b17a5a8bbcd6003ebac098cbe41447a53a6fd65233ec",
+          "facts": {
+            "status": 404,
+            "error": {
+              "code": "0x80060888",
+              "message": "Resource not found for the segment '__SEGMENT__'."
+            }
+          }
+        },
+        {
+          "id": "documentation.singular-lower",
+          "method": "GET",
+          "nativeBodySha256": "b8f781727cb181371c19ebfa0936f212a13ad1398daf386ac6e0465ae1cbad24",
+          "facts": {
+            "status": 404,
+            "error": {
+              "code": "0x80060888",
+              "message": "Resource not found for the segment '__SEGMENT__'."
+            }
+          }
+        },
+        {
+          "id": "documentation.plural-titlecase",
+          "method": "GET",
+          "nativeBodySha256": "92cc9967c01c0a4c87b261d10ed527cd559840933628febb1ce941741985f527",
+          "facts": {
+            "status": 404,
+            "error": {
+              "code": "0x80060888",
+              "message": "Resource not found for the segment '__SEGMENT__'."
+            }
+          }
+        },
+        {
+          "id": "documentation.custom-uppercase",
+          "method": "GET",
+          "nativeBodySha256": "15df7755ba7a54772176dfd704cff4262b45d90f9ad64d940b096f52c2886ca0",
+          "facts": {
+            "status": 404,
+            "error": {
+              "code": "0x80060888",
+              "message": "Resource not found for the segment '__SEGMENT__'."
+            }
+          }
+        },
+        {
+          "id": "property.unknown",
+          "method": "GET",
+          "nativeBodySha256": "89cdf90b3f4911016310b5fd198c4d2f677116b9d8bb35c1fdfa7cbd02c3811c",
+          "facts": {
+            "status": 404,
+            "error": {
+              "code": "0x80060888",
+              "message": "Resource not found for the segment '__SEGMENT__'"
+            }
+          }
+        },
+        {
+          "id": "metadata.invalid-name",
+          "method": "GET",
+          "nativeBodySha256": "b6fb8290e4d93bfce786c25ed1b8a4c104c4fadde4795b37e55be27bdd72ae29",
+          "facts": {
+            "status": 404,
+            "error": {
+              "code": "0x80060888",
+              "message": "EntityMetadata With Id = LogicalName='__LOGICAL_NAME__' does not exist."
+            }
+          }
+        },
+        {
+          "id": "headers.impersonation-invalid",
+          "method": "GET",
+          "nativeBodySha256": "3c6e1bb52052cbd95213c0b1b6295b85a9d420dc099276ebcf3d7b536fe3aabd",
+          "facts": {
+            "status": 404,
+            "code": "0x80040217",
+            "title": "Record Is Unavailable",
+            "errorCode": -2147220969
+          }
+        }
+      ]
+    },
+    {
+      "source": "dataverse-native-1794135645404",
+      "runSha256": "089dba4316b3d686fcac87671bbe4fc26a7e6f1d25af64ee00f9268e282e6f58",
+      "planSha256": "36c13dcd26944a69916a125e98a1222389a5bfd3b2050fc02934b17d48beac01",
+      "csdlSha256": "0eb8add6f4e61e1d42e416de0b64ea9a50930ac5b8366627b4d374b8b01854de",
+      "cases": [
+        {
+          "id": "headers.odata-old",
+          "method": "GET",
+          "nativeBodySha256": "8446edb86df04f59426ce1faf5feaf5602e5cf619b1e1503645e017d5c56b1e2",
+          "facts": {
+            "status": 412,
+            "error": {
+              "code": "0x80060888",
+              "message": "The value '3.0' of the OData-Version HTTP header is invalid. Only '4.0' and '4.01' are supported as values for the OData-Version header."
+            }
+          }
+        },
+        {
+          "id": "headers.odata-new",
+          "method": "GET",
+          "nativeBodySha256": "43774a8225b99157b099b8bff6cf8e4c50ead9aa730c7323d9a7fd1753954740",
+          "facts": {
+            "status": 200
+          }
+        },
+        {
+          "id": "errors.method-head",
+          "method": "HEAD",
+          "nativeBodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "facts": {
+            "status": 405,
+            "emptyBody": true
+          }
+        },
+        {
+          "id": "errors.payload-text",
+          "method": "PATCH",
+          "nativeBodySha256": "4e18d8a10a4c346c522be1397be580303a4fa0a6c30852c792507917f47d80cc",
+          "facts": {
+            "status": 415,
+            "error": {
+              "code": "",
+              "message": "The request entity's media type 'text/plain' is not supported for this resource."
+            }
+          }
+        },
+        {
+          "id": "crud.patch-empty",
+          "method": "PATCH",
+          "nativeBodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "facts": {
+            "status": 204
+          }
+        },
+        {
+          "id": "errors.method-put",
+          "method": "PUT",
+          "nativeBodySha256": "f5ee0573caadc0527c66357b3d0f9047e506053b9e114e465203a954239dc982",
+          "facts": {
+            "status": 405,
+            "error": {
+              "code": "0x80060888",
+              "message": "Operation not supported on __ENTITY__"
+            }
+          }
+        },
+        {
+          "id": "errors.method-post",
+          "method": "POST",
+          "nativeBodySha256": "b9548afdbc1e189dee5f0c789e5ba6fa8d73fce008d3d1357408acbf68282bd6",
+          "facts": {
+            "status": 405,
+            "error": {
+              "code": "0x80060888",
+              "message": "Unmapped Request found, PathTemplate:~/entityset/key, HttpVerb:POST"
+            }
+          }
+        },
+        {
+          "id": "errors.bad-path",
+          "method": "GET",
+          "nativeBodySha256": "43db07dd400d6ca134a683fbf6fdea4f58f617b348942dc23490b8c7fd8d7f89",
+          "facts": {
+            "status": 400,
+            "error": {
+              "code": "0x80060888",
+              "message": "Bad Request - Error in query syntax."
+            }
+          }
+        },
+        {
+          "id": "errors.unknown-set",
+          "method": "GET",
+          "nativeBodySha256": "3ef4eacb1faf05612159b17a5a8bbcd6003ebac098cbe41447a53a6fd65233ec",
+          "facts": {
+            "status": 404,
+            "error": {
+              "code": "0x80060888",
+              "message": "Resource not found for the segment '__SEGMENT__'."
+            }
+          }
+        },
+        {
+          "id": "documentation.singular-lower",
+          "method": "GET",
+          "nativeBodySha256": "b8f781727cb181371c19ebfa0936f212a13ad1398daf386ac6e0465ae1cbad24",
+          "facts": {
+            "status": 404,
+            "error": {
+              "code": "0x80060888",
+              "message": "Resource not found for the segment '__SEGMENT__'."
+            }
+          }
+        },
+        {
+          "id": "documentation.plural-titlecase",
+          "method": "GET",
+          "nativeBodySha256": "92cc9967c01c0a4c87b261d10ed527cd559840933628febb1ce941741985f527",
+          "facts": {
+            "status": 404,
+            "error": {
+              "code": "0x80060888",
+              "message": "Resource not found for the segment '__SEGMENT__'."
+            }
+          }
+        },
+        {
+          "id": "documentation.custom-uppercase",
+          "method": "GET",
+          "nativeBodySha256": "15df7755ba7a54772176dfd704cff4262b45d90f9ad64d940b096f52c2886ca0",
+          "facts": {
+            "status": 404,
+            "error": {
+              "code": "0x80060888",
+              "message": "Resource not found for the segment '__SEGMENT__'."
+            }
+          }
+        },
+        {
+          "id": "property.unknown",
+          "method": "GET",
+          "nativeBodySha256": "89cdf90b3f4911016310b5fd198c4d2f677116b9d8bb35c1fdfa7cbd02c3811c",
+          "facts": {
+            "status": 404,
+            "error": {
+              "code": "0x80060888",
+              "message": "Resource not found for the segment '__SEGMENT__'"
+            }
+          }
+        },
+        {
+          "id": "metadata.invalid-name",
+          "method": "GET",
+          "nativeBodySha256": "b6fb8290e4d93bfce786c25ed1b8a4c104c4fadde4795b37e55be27bdd72ae29",
+          "facts": {
+            "status": 404,
+            "error": {
+              "code": "0x80060888",
+              "message": "EntityMetadata With Id = LogicalName='__LOGICAL_NAME__' does not exist."
+            }
+          }
+        },
+        {
+          "id": "headers.impersonation-invalid",
+          "method": "GET",
+          "nativeBodySha256": "1b1377f3202347ff113b002aa47b53e1416203eb95de8ea6597b21b5eaee5b6f",
+          "facts": {
+            "status": 404,
+            "code": "0x80040217",
+            "title": "Record Is Unavailable",
+            "errorCode": -2147220969
+          }
+        }
+      ]
+    }
+  ]
+}

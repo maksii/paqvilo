@@ -1,0 +1,1869 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-08",
+  "scope": "Native authenticated gateway reader semantics, complete selected error JSON before CLR suffix and accepted empty-object PATCH status. Individual input variants share a twice-reproduced reader-family guarantee; exact request/error bytes remain in private native journals. Source/field aliases preserve primitive types and enabled-field membership. No native permission bypass is admitted.",
+  "captures": [
+    {
+      "runSha256": "d1214a1bce0122fc65486b0f6ca015b6373b7d4822cb9853c4cb80e5cbc3b5b6",
+      "planSha256": "f4e43b9fae49c7246f236cf0cd0b2245c60781511881e2e6f6297210d126af3c",
+      "journalSha256": "433538ca6999ea7b35008349d9e084853ac429e1deea6eb6755daef5fdce9b1d",
+      "executedPhaseSources": [
+        {
+          "sha256": "8086f28a8ccbf3f1f547c58926c930d6be3f9104e0f202d937783eb375dd1c45",
+          "completion": "returned"
+        },
+        {
+          "sha256": "97b69b4b79e55ee0a36ba1c5715775b3d53a4ff2961f5c4a0dd08f06f0c3e07b",
+          "completion": "returned"
+        },
+        {
+          "sha256": "9396348ff8de3f821946f88aedda400b646f62d24d3ad1f28052529aac2cb5fa",
+          "completion": "returned"
+        },
+        {
+          "sha256": "c6cbeb038de31e06cb13a4e94b93e72f62ff27cbc220a06f9adca4efae097976",
+          "completion": "returned"
+        },
+        {
+          "sha256": "eb0821cae683d07db49390b0460f93e1b7dc9558eb73d40ef08a8becccf34d8f",
+          "completion": "returned"
+        },
+        {
+          "sha256": "459989bd6330835c0077574cbb6f6f1c90d13261d027debae5f9157be578321c",
+          "completion": "returned"
+        },
+        {
+          "sha256": "ee4cf0c64b12c2e52a1f572e3227989cbea3c629ae213046c95e25c57678713a",
+          "completion": "returned"
+        }
+      ]
+    },
+    {
+      "runSha256": "7cc4c0c104e5347e17beff0e8a4171a0c72a37cb73e3e4edb3687b84647e844e",
+      "planSha256": "2fcdfb121e35c060124c17bd4363c3acf28925ecce3d6807ab42e1ff7d8b844a",
+      "journalSha256": "da7ddd815f147f949d9248ec5eb87af70fbae1c89d79b45fe8aa4f1a5083da61",
+      "executedPhaseSources": [
+        {
+          "sha256": "a44a2b2bbb8926fc15866f8c0965dc910dd9eab891ffd90694c87f33d0197a0e",
+          "completion": "returned"
+        },
+        {
+          "sha256": "c8dee3ca2671d5eabd78526f3c15f00afe7f29cc1fd22b09e3589a4b71f3c1d2",
+          "completion": "returned"
+        },
+        {
+          "sha256": "61d398271f6c5de9d746288f193ad4d8d219df4afd4bb0e731ae753631971695",
+          "completion": "returned"
+        },
+        {
+          "sha256": "441655cff4cd8a4635d7cfee58803fcb207a3013d92b47ae10af56bc2210da3c",
+          "completion": "returned"
+        },
+        {
+          "sha256": "5da871a2d5396e3df33bfb0d392d878e616d484ea52d262b60a7b4ff1caf0a3f",
+          "completion": "returned"
+        },
+        {
+          "sha256": "f892539334591c5ea90c8f46a14927710985013a5c00f2210bcfc66f6295f6ce",
+          "completion": "returned"
+        },
+        {
+          "sha256": "4a6d75415b4c6a07313f426131435c448fd3a09bed8fa39705e907e38bda44b2",
+          "completion": "returned"
+        }
+      ]
+    },
+    {
+      "runSha256": "a07140c9351c920f80a0279ce70cc87db4484c1afeea86e624ec94333edba47a",
+      "planSha256": "49dc448ca11e2d2bc91a033d05bd90c5a741af118303a75c898c73d986c73c37",
+      "journalSha256": "e7ea7b177850a63de7a3553fe974f4b5e7b76287d245cd32309853adfd460fe7",
+      "executedPhaseSources": [
+        {
+          "sha256": "a6d7fd19102b24e471d0e307f22f06fb1bf9b45889925020f450b9ff803665e5",
+          "completion": "returned"
+        },
+        {
+          "sha256": "0af39f5d333334963ae0cdbfe9c24e5d3b74bd784b803be83d61063476ee9617",
+          "completion": "returned"
+        },
+        {
+          "sha256": "e2cfd178bd69a1df9b2767a11af82ff11ba3db0269a4432e43ec0166aa6499cc",
+          "completion": "returned"
+        }
+      ]
+    },
+    {
+      "runSha256": "49a2c0511fe9a6593a1413b3aa2e6a40d9624980ed37288047665f4a866c239e",
+      "planSha256": "16d5936b96ae012f66de951cce05e3d0bedd410b6833d4acb4d09224171bd183",
+      "journalSha256": "f597757682ca6b19159ab5929f6be864675c900141e8a108dc9f31ceef635d49",
+      "executedPhaseSources": [
+        {
+          "sha256": "29003c150a7194b275a822356866fdea327e53bdbb1645012ee536a62d79640a",
+          "completion": "returned"
+        },
+        {
+          "sha256": "77889bc3032b59d55e37e5054ab62690f5d813949fe8f2171a79e48e4a369846",
+          "completion": "returned"
+        },
+        {
+          "sha256": "0fffc0a9296dbbee2657080161f6ae2bb897affbfe93919a3e0f046129159643",
+          "completion": "returned"
+        }
+      ]
+    },
+    {
+      "runSha256": "9e5d551f6f68e4f533b75d0c0317307e125de4fd40da68801c6402303cf50d4d",
+      "planSha256": "653261a8bd1b2fc791d9a5ed6edff1f1881fc230544abbf16d001fcdf5e767fe",
+      "journalSha256": "8920c9583d390f9dd4792bcf28e246824e09a9f2995e63f50fe2b53d675c757b",
+      "executedPhaseSources": [
+        {
+          "sha256": "decd4da5d2b553ed063f7634a8b596bf5ffbfacadcf1590ff97cba3ac9609274",
+          "completion": "returned"
+        },
+        {
+          "sha256": "f5fcf2c4b70a746b8ccadb12b2ca2a6589d4419fc877dbea32e9fcfd4b7ebe57",
+          "completion": "returned"
+        },
+        {
+          "sha256": "1a2e352808a836c74486ebfe47e4b48bcee462fec98fba0ee866b7e1da5a1ba8",
+          "completion": "returned"
+        },
+        {
+          "sha256": "82b772c0cf8a2efc7f1687ec7f736a63255ca322329c2e6909ac3713d885e306",
+          "completion": "returned"
+        },
+        {
+          "sha256": "6bcce25e5df3f624a9eb8e0d5124eecf178c5ed17e40a151f863a228fe88b327",
+          "completion": "returned"
+        },
+        {
+          "sha256": "be1f1896f0f583975d2bfaf5c7dd1bb296237de58e373afc16b795e5734b1e88",
+          "completion": "returned"
+        },
+        {
+          "sha256": "441ff260ec65a1e24790a522436207cc077a5ae0da39502d693d06e610707e9b",
+          "completion": "returned"
+        },
+        {
+          "sha256": "5e5b27125fda20a00a94769ebb509716fc0a5b85099aa864793a5413a0f3a176",
+          "completion": "returned"
+        },
+        {
+          "sha256": "8d3543a49e56ea0ae335c4bb11e40eae98a8c61776d8695bf18e1e3942c0396a",
+          "completion": "returned"
+        },
+        {
+          "sha256": "1ade62ee6fe725c9b388d01580515065cabbd903170451c1a269c101c9fd2eeb",
+          "completion": "returned"
+        },
+        {
+          "sha256": "06c69ca54fdbd777fa60fe0a982aff632ee54cf8ac91230e45ee865fee2a39a1",
+          "completion": "returned"
+        },
+        {
+          "sha256": "bcf1e49bbfdd9a625d7656912e2dbecd60ae05bcd7551fe837719179836faf06",
+          "completion": "returned"
+        },
+        {
+          "sha256": "462c23c9a05157602421d910aaa09c9ee1c1a8942974976bc9d5ee760151daed",
+          "completion": "returned"
+        },
+        {
+          "sha256": "0ceb4259eb51489a00d90f73f3edab5a4ea358277791d316846567be0d191017",
+          "completion": "returned"
+        },
+        {
+          "sha256": "5cd75a8926fa3f93ded6adca1a283bf4e96c0b3976083a4c34c6e30b5478c7fe",
+          "completion": "returned"
+        },
+        {
+          "sha256": "8b171e258e49e6ea89bc6df6773114298643e0ab29fa5e84d6c5561d96b0f2b0",
+          "completion": "returned"
+        },
+        {
+          "sha256": "7170be7d91d9edb01de1b11f82e1ac34a4612a628821547991382dfc92762711",
+          "completion": "returned"
+        },
+        {
+          "sha256": "2da8dd720f7ad9ca1b1bab6655a9f83f37d41e6198a1bfeba55d4aa8856901fe",
+          "completion": "returned"
+        },
+        {
+          "sha256": "f1c45b40cca414ff3f1b24c7a37f99831be26ccb1018243d4b9a83fe85c96ab7",
+          "completion": "returned"
+        },
+        {
+          "sha256": "fc23a743a7d5664b12ab66ffbbd1bc2c1b025f1255a8e6216ce1da26fda61e5c",
+          "completion": "returned"
+        },
+        {
+          "sha256": "32419eaf64f19cf9cd56cb49958866d1d47dcb374807ca87c759cf209f822304",
+          "completion": "returned"
+        },
+        {
+          "sha256": "a5ba7e61220eb10b1bf2a130fc146fbd2d66e067db947ac5b372bb2c678d9d72",
+          "completion": "returned"
+        },
+        {
+          "sha256": "873c76f9371ea0646da6caca5bd8e83cb66cf4692d23594dc66a30335e8880fb",
+          "completion": "returned"
+        },
+        {
+          "sha256": "04d3e5b4cfb6dcd1496435a54dcd490961d12acd16b80381eb5d9222f82239fd",
+          "completion": "returned"
+        },
+        {
+          "sha256": "37e7a06b1eeb56fd70c06717a9ab7b6cb31b8278a943282d7c8d752df6469d10",
+          "completion": "returned"
+        },
+        {
+          "sha256": "4745cc4f4ac14dafedeb3b4d292665192943b2f9844d8e03c3ce8b0ce64af9be",
+          "completion": "returned"
+        },
+        {
+          "sha256": "29ed3553850ed1309e2f757fad248bcdc9c64cda2dbb38a704c30c5f79540dda",
+          "completion": "returned"
+        },
+        {
+          "sha256": "c11e100294fd89f4241904185feefa796cdee26a47dc792424e4e535c17f3d7b",
+          "completion": "returned"
+        },
+        {
+          "sha256": "75da982c4d1179e77d03b34654f4e1dc0bd56b5a54ee88acb82641cbd1e7dac9",
+          "completion": "returned"
+        },
+        {
+          "sha256": "a0ee581171b0367fdcb38303d61d9749b9e7bd274776e04ec3dc87b926179937",
+          "completion": "returned"
+        },
+        {
+          "sha256": "b2c2a81257effb88a0d5010d7435ed99447e1b81cd3b4721c1241dc3689086d8",
+          "completion": "returned"
+        },
+        {
+          "sha256": "e4bf6682809435b7b7d393bd9f27464f8f9b4c8472f8d9d3f11b3f40649ea486",
+          "completion": "returned"
+        },
+        {
+          "sha256": "d5c488d3ee508e1292fb859af67c0c8fede76a439fffd8f2fd3d9f0d1fdc3f38",
+          "completion": "returned"
+        },
+        {
+          "sha256": "3cba62e854d763612214a6268904d321a0242785b060f619c6583dff6d54ac4c",
+          "completion": "returned"
+        },
+        {
+          "sha256": "2b3cc71a3c102dfa3171abcb9842248e5091c047ca3420a38d4c5685445f5a85",
+          "completion": "returned"
+        },
+        {
+          "sha256": "ed99e67d975bcb38d98b3fa9cbd286d489eca1a64e769f03e060756412a3cb66",
+          "completion": "returned"
+        },
+        {
+          "sha256": "50784f929cab8b6560e8a857aa50a975f682a817f66b78f262e8585ae3e97766",
+          "completion": "returned"
+        },
+        {
+          "sha256": "9f4e11543b46e3a91822756616443a639ad190203c3ca2929b0637faa9c499f8",
+          "completion": "returned"
+        },
+        {
+          "sha256": "a2357a523b1c4e41e082570e2cebef6de0b349594189077a01bd2785daf56fe5",
+          "completion": "returned"
+        },
+        {
+          "sha256": "0d4d20dbb5c1f013865c9fd1bf6320c11a5722c405275062710ab02691a6123f",
+          "completion": "returned"
+        },
+        {
+          "sha256": "a3eb1c63c11150dd0ca8896ce9e5f76bbf27397c930b8043c386d2f05ddc0828",
+          "completion": "returned"
+        },
+        {
+          "sha256": "f6f1c79a54f3c5cfd4c1c40d430e2ccfa5a885ede23ed75f624705b14a6bfcd6",
+          "completion": "returned"
+        },
+        {
+          "sha256": "0e511f07284819a80074cb2bf97d8adfb42fd393d26ffb0084419ee5ada61eeb",
+          "completion": "returned"
+        },
+        {
+          "sha256": "97f2768f6bbccb05f8a67ed1f11ffc2e0830c776148a592dd344023e9fb392af",
+          "completion": "returned"
+        },
+        {
+          "sha256": "af58abe9954e14e908f5d4f71125c1995ed97046f502a1bd0dc16bf1bacfb05f",
+          "completion": "returned"
+        },
+        {
+          "sha256": "d4d3831f0182c158ea111bba708a6049f174e45afdae8140f58123acabfe4fa2",
+          "completion": "returned"
+        },
+        {
+          "sha256": "5b5c3728837f0f64b80973fc9d4f7942bdffa4b7ddc2581a637d40360d1678c7",
+          "completion": "returned"
+        },
+        {
+          "sha256": "6e4282bf37e631a545747d823dbce0bfd29e3ada03ecbc0e977c69333bfa1f0f",
+          "completion": "returned"
+        },
+        {
+          "sha256": "28f5f20e83f5bf1b80687998824963102afaca83f8bef2cc9a2223d7b64cc10b",
+          "completion": "returned"
+        },
+        {
+          "sha256": "03b9d0cc8fd2f673901693ea69f7a326ca70c5a1107a58b0dc495e5d5a4d4644",
+          "completion": "returned"
+        },
+        {
+          "sha256": "e081b502f7c966b1f7ac079145c21576a1d007f5e6a985cac0e3dc7eb307e1e4",
+          "completion": "returned"
+        },
+        {
+          "sha256": "d4b17f8957bc48cc7d954339e4ab8279d3ce8ce3f536d8672b7e092df97989f1",
+          "completion": "returned"
+        },
+        {
+          "sha256": "76c9891fe375a56c3e91d200ce1653cb438241de16dd271be8a45f45ebf7b88b",
+          "completion": "returned"
+        },
+        {
+          "sha256": "b3e894d85606dc83a8fd250b242a5efc12dd8cd03a0103ac0084ba3aef8c4706",
+          "completion": "returned"
+        },
+        {
+          "sha256": "2143db4660c5d4495d672920d2bd9d9d75161b32964685185491749c222257a6",
+          "completion": "returned"
+        },
+        {
+          "sha256": "951b7de8ad31a70303285aa6458e64d5a3e3deb3c70cc8169b4eb8d0587e5a1e",
+          "completion": "returned"
+        }
+      ]
+    },
+    {
+      "runSha256": "d10fc6af219cfe2f595990f1fd3b3fb32f202490f3e13b814576ea0d30bcd63c",
+      "planSha256": "00e6c965949089b0aea91470c5a5663c721f6ff6aaba9a5a9420a50d5fe50b70",
+      "journalSha256": "8aad3952a56227423bb2fcfd0de8eb8de073a7cb9d3402f3d88c9854069c0dd6",
+      "executedPhaseSources": [
+        {
+          "sha256": "f8f4257ad679aadf331747f40a57f25d6db8ad3487f6d6eb5dd90780a769ce60",
+          "completion": "returned"
+        },
+        {
+          "sha256": "4539da672f804b16bf4c24f27e60ca7e2de8d8fc7a5a14f66cff5ac6d0637136",
+          "completion": "returned"
+        },
+        {
+          "sha256": "13a8ffd7250a82703c11f62ea15e006d1bad416aa7f79223ee721e9602591e17",
+          "completion": "returned"
+        },
+        {
+          "sha256": "41e79de0287be02f0662e54dd43f632036c87a9b424ed3760fac7e0545fc5034",
+          "completion": "returned"
+        },
+        {
+          "sha256": "0b78c9eb6ff6073fffeae7627f5e6fc6a1965adf9df50d4e16b0fdc9bf98f875",
+          "completion": "returned"
+        },
+        {
+          "sha256": "54ddf5886a7d56bfe567ba750edcb546c9f449f2753425f55b10542ded92659b",
+          "completion": "returned"
+        },
+        {
+          "sha256": "9ad9adccfaa6c277fa7d4b123c6369faf337f472656e5ae0c5df86ed9b44182f",
+          "completion": "returned"
+        },
+        {
+          "sha256": "07fb72ebe2d76783e1b85158ccdaad5ca982912426a56e7f64b2573c831f84c3",
+          "completion": "returned"
+        },
+        {
+          "sha256": "cf88713f7093f084e303c380d0533afb97e96bdde1f91ab8ed137db536fcabd0",
+          "completion": "returned"
+        },
+        {
+          "sha256": "9e736321f04d77fcd668e4c11193a75613181ece757f215ac9146d3887190cb9",
+          "completion": "returned"
+        },
+        {
+          "sha256": "8fdc3ad9f3ead3e62c87a533ec889af4635cd8f462a7be46c907cbd71a43311d",
+          "completion": "returned"
+        },
+        {
+          "sha256": "b308b37a5ff692c67cb9e4d80caa86fcf8a10ee4a5c3f1c35443c1a4df45097e",
+          "completion": "returned"
+        },
+        {
+          "sha256": "99547a0fb3b1c1de22034c45eb23092a3ba6878f1f3a38f0dd014f52a7993156",
+          "completion": "returned"
+        },
+        {
+          "sha256": "718f9ac92f5cdc6c87a5af4cb16f9fb0b03ec4a7369f75177b1ed501027ad03c",
+          "completion": "returned"
+        },
+        {
+          "sha256": "45e84980511b608ddd4b8474914074a7f2c71fad352565d48c623afb656c306f",
+          "completion": "returned"
+        },
+        {
+          "sha256": "cf45491d625fcc6be9d1f6ecf030ec4203b1881ccdbdf749f7b55d2f4def32c2",
+          "completion": "returned"
+        },
+        {
+          "sha256": "ad2a3a0017e5c4321124865b376ba30fdcf4935c35494e3ecf4d9dd9f3f80625",
+          "completion": "returned"
+        },
+        {
+          "sha256": "7f154929027c9537dc0e48cd883e71d98344b28590cfd5a056a72027d626d652",
+          "completion": "returned"
+        },
+        {
+          "sha256": "210cdce954323d4c9b174bd77d7fa0174f403b2001c736dbb032c601be21daf3",
+          "completion": "returned"
+        },
+        {
+          "sha256": "82a5eb6801f44e0754118bf8f31806ad7e51305fb09726a6fb8b794943c9bcd6",
+          "completion": "returned"
+        },
+        {
+          "sha256": "62e4c663809fa086d7a57934e95c1385a0b7f46a40ae711fc9f4a594b75cc7a8",
+          "completion": "returned"
+        },
+        {
+          "sha256": "bcbd7c0b38ac2a9b2c5492c334757fe049d4bb4b12febf55ed926dc3cbe338d4",
+          "completion": "returned"
+        },
+        {
+          "sha256": "4d1b0c9c71dcf0a3d50039ac119d87b2cd292f57d4ca04c6abd9a0ceed6e1fc2",
+          "completion": "returned"
+        },
+        {
+          "sha256": "c3db2e318f1acea0ca223f9314e63d6b28f7f54e69a3b648807a15b6ae007cba",
+          "completion": "returned"
+        },
+        {
+          "sha256": "d30a168c7d424a93649eb84d0b8cca83dcc4466e0e7cbd234b653531cca5c757",
+          "completion": "returned"
+        },
+        {
+          "sha256": "29af31bc37f7cbc407c976323b82c9f0c5dd5a400318c3db451bc3d4ffbbaebc",
+          "completion": "returned"
+        },
+        {
+          "sha256": "81f88b7ef4f3adf47fd414c7e688c71cbdb53751c3e0bc8e44b4de67dad1fd58",
+          "completion": "returned"
+        },
+        {
+          "sha256": "557b8c5eaf8ba2818deb289315f44fad838af9133459f67b6ca18c341195349e",
+          "completion": "returned"
+        },
+        {
+          "sha256": "e5dc83fae7d38589c95dce4da49ae3217ea6e90930c7101383386d0be902527e",
+          "completion": "returned"
+        },
+        {
+          "sha256": "dd5d0d36aa658d5f8d6693043ca7c2a4f7b30ee1b198a5c436d1e5bf922e3282",
+          "completion": "returned"
+        },
+        {
+          "sha256": "89ed147606b61e3706ee50d67ae4a3dacdda6544b28b27974ed399d1ad1c66d7",
+          "completion": "returned"
+        },
+        {
+          "sha256": "f10f98ab9b9494a4899f3c2359fc6fb5bff648d1a176e9d64bef0b3ca5b25014",
+          "completion": "returned"
+        },
+        {
+          "sha256": "b23987b0af3ca15c1247a3954e7603236ea25cec49c734aa6e496c8ba41d66d5",
+          "completion": "returned"
+        },
+        {
+          "sha256": "48321ffe0dc19e038eea62dc1b011f6474094f6eaa0649fdf67737d595acb902",
+          "completion": "returned"
+        },
+        {
+          "sha256": "641f44486e860ca6c71372f9ce246278e97c5ac4fdac73cf6293787450120ed7",
+          "completion": "returned"
+        },
+        {
+          "sha256": "b45167bc5a3ac3a59b2ee221025fe167ca826248c96dbcd82841cba1fd22235e",
+          "completion": "returned"
+        },
+        {
+          "sha256": "32d53b94b62f09d2b99d2d52f9a4bf041a9dfba5671b1298459576694a103930",
+          "completion": "returned"
+        },
+        {
+          "sha256": "9900f8c88b7d86ce24d137593fab136a8cda2c8da2549aa781552bc7d70308f9",
+          "completion": "returned"
+        },
+        {
+          "sha256": "b78c488767ff15894c823d6049a38c336cce913d13e9c31e33db1e76b631201b",
+          "completion": "returned"
+        },
+        {
+          "sha256": "87bd10ebbfef047c53c7eee713d9cc52b53afc66598bb3ec145c247531ea3563",
+          "completion": "returned"
+        },
+        {
+          "sha256": "c944e8c14e4925fc577d2f6087c089882ef987d8559681e6f729cf7f9798bff2",
+          "completion": "returned"
+        },
+        {
+          "sha256": "36b8e97548efc0a10dd4287e03089b196f68d56d9c1204118ca3ecdf0d79c2a5",
+          "completion": "returned"
+        },
+        {
+          "sha256": "8fd3422c92ef6e13accb14279cf9e9ae88766e1441dc0be0f78573f770ff4589",
+          "completion": "returned"
+        },
+        {
+          "sha256": "64a7e2bd20bba40a5b4b403b37231be37017dc3d42b89a85a4fc29ab535c54c0",
+          "completion": "returned"
+        },
+        {
+          "sha256": "d5b060a302ccc06cfef5d899c6207bc2f536ee27baf2cfc3691293f5e3033b1d",
+          "completion": "returned"
+        },
+        {
+          "sha256": "e0cfcf6f5c30ad9fbfa85957811c3d7290856695b32f60e33a72fcc12afe4c96",
+          "completion": "returned"
+        },
+        {
+          "sha256": "ee06eae7870e7a75aa234ded13fe122e0bc241d66a2c06add1ae177d3ca7e5f7",
+          "completion": "returned"
+        },
+        {
+          "sha256": "3b4c0043ee7c1e8c703f0fb92be7cf5c675ee82adabfbd02a110ce8fb82cd19d",
+          "completion": "returned"
+        },
+        {
+          "sha256": "7edd267ca52a3ce96615bf3710b40ff2717432bd899dd523e50776ce6fb4f738",
+          "completion": "interrupted-with-durable-native-results"
+        },
+        {
+          "sha256": "5cdf0a82e3d85b2a7036a886fde29e165d2d9d78859d0e1523be356fa1352541",
+          "completion": "returned"
+        },
+        {
+          "sha256": "9c68bc868ade0b7b80331314c1987db0fef3530f7b26afd03b8d25391fdfe596",
+          "completion": "returned"
+        },
+        {
+          "sha256": "1f80b811b14f455094637132d78b486d60d8a480ceb4fd18ae70477800e672bc",
+          "completion": "returned"
+        },
+        {
+          "sha256": "e7be430415a8a30eb56b1177a2c2a85c0a28dd9fbd4d0aa5268c577e625a9e04",
+          "completion": "returned"
+        },
+        {
+          "sha256": "bda15684f855bcbf87343a6c94ecc6f466aa8dd2480d54ad7929f94d139087ff",
+          "completion": "returned"
+        },
+        {
+          "sha256": "4a13835463bb89c6aacf09019d0038305b46f170d6e01e9797f4b12d1373259e",
+          "completion": "returned"
+        },
+        {
+          "sha256": "4c489bc741c2b86caf2f5eb63e3d3831cea41169980b6897c8d44f2e5972e4c6",
+          "completion": "returned"
+        },
+        {
+          "sha256": "0fe0c9e6f9a66b4e7c96511ab4bcad292514c8373aedade727f192a1f1a6f32d",
+          "completion": "returned"
+        },
+        {
+          "sha256": "0879bab3df7393fe80661f98e0be2f081b53c1bfaaec96d12d59496678f9df9e",
+          "completion": "returned"
+        }
+      ],
+      "readOnlyRecoveryReceiptSha256": "36cb36540f341d40da745c909f46eb4bc626867c806186d96fa35fe18804998e"
+    }
+  ],
+  "cases": [
+    {
+      "id": "case-0",
+      "method": "PATCH",
+      "raw": "\"textOne\"",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Invalid JSON. Unexpected token 'textOne'."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 0,
+          "sourceCaseId": "lexer.string-0",
+          "nativeResponseSha256": "e2bb38f79911c79ad5ad6aba4be5d3979ba732fbcbe8a46ff3c0362f28b758da"
+        }
+      ]
+    },
+    {
+      "id": "case-1",
+      "method": "PATCH",
+      "raw": "\"frobOne\"",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Invalid JSON. Unexpected token 'frobOne'."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 0,
+          "sourceCaseId": "lexer.string-1",
+          "nativeResponseSha256": "517980e4b78e36fe3387e9412cb0222c986db0a4294c12d3f0245865751c9c4e"
+        }
+      ]
+    },
+    {
+      "id": "case-2",
+      "method": "PATCH",
+      "raw": "\"noneOne\"",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'PrimitiveValue' node was found when reading from the JSON reader. A 'StartObject' node was expected."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 0,
+          "sourceCaseId": "lexer.string-2",
+          "nativeResponseSha256": "ee98e496787aa6527cd0c24e6183f8b8eb981c42501de3b29b5026efd2eb37b2"
+        }
+      ]
+    },
+    {
+      "id": "case-3",
+      "method": "PATCH",
+      "raw": "\"anotherOne\"",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Invalid JSON. A token was not recognized in the JSON content."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 0,
+          "sourceCaseId": "lexer.string-3",
+          "nativeResponseSha256": "c5d63504a1c4cac69e3c1140d52e803c4e006fbd51827a894e1bc170ac6c18d7"
+        }
+      ]
+    },
+    {
+      "id": "case-4",
+      "method": "PATCH",
+      "raw": "\"true\"",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'PrimitiveValue' node was found when reading from the JSON reader. A 'StartObject' node was expected."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 0,
+          "sourceCaseId": "lexer.string-4",
+          "nativeResponseSha256": "ee98e496787aa6527cd0c24e6183f8b8eb981c42501de3b29b5026efd2eb37b2"
+        },
+        {
+          "capture": 1,
+          "sourceCaseId": "lexer.string-4",
+          "nativeResponseSha256": "ee98e496787aa6527cd0c24e6183f8b8eb981c42501de3b29b5026efd2eb37b2"
+        }
+      ]
+    },
+    {
+      "id": "case-5",
+      "method": "PATCH",
+      "raw": "\"false\"",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'PrimitiveValue' node was found when reading from the JSON reader. A 'StartObject' node was expected."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 0,
+          "sourceCaseId": "lexer.string-5",
+          "nativeResponseSha256": "ee98e496787aa6527cd0c24e6183f8b8eb981c42501de3b29b5026efd2eb37b2"
+        },
+        {
+          "capture": 1,
+          "sourceCaseId": "lexer.string-5",
+          "nativeResponseSha256": "ee98e496787aa6527cd0c24e6183f8b8eb981c42501de3b29b5026efd2eb37b2"
+        }
+      ]
+    },
+    {
+      "id": "case-6",
+      "method": "PATCH",
+      "raw": "\"null\"",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'PrimitiveValue' node was found when reading from the JSON reader. A 'StartObject' node was expected."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 0,
+          "sourceCaseId": "lexer.string-6",
+          "nativeResponseSha256": "ee98e496787aa6527cd0c24e6183f8b8eb981c42501de3b29b5026efd2eb37b2"
+        },
+        {
+          "capture": 1,
+          "sourceCaseId": "lexer.string-6",
+          "nativeResponseSha256": "ee98e496787aa6527cd0c24e6183f8b8eb981c42501de3b29b5026efd2eb37b2"
+        }
+      ]
+    },
+    {
+      "id": "case-7",
+      "method": "PATCH",
+      "raw": "\"True\"",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Invalid JSON. A token was not recognized in the JSON content."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 0,
+          "sourceCaseId": "lexer.string-7",
+          "nativeResponseSha256": "c5d63504a1c4cac69e3c1140d52e803c4e006fbd51827a894e1bc170ac6c18d7"
+        },
+        {
+          "capture": 1,
+          "sourceCaseId": "lexer.string-7",
+          "nativeResponseSha256": "c5d63504a1c4cac69e3c1140d52e803c4e006fbd51827a894e1bc170ac6c18d7"
+        }
+      ]
+    },
+    {
+      "id": "case-8",
+      "method": "PATCH",
+      "raw": "\"False\"",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Invalid JSON. A token was not recognized in the JSON content."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 0,
+          "sourceCaseId": "lexer.string-8",
+          "nativeResponseSha256": "c5d63504a1c4cac69e3c1140d52e803c4e006fbd51827a894e1bc170ac6c18d7"
+        },
+        {
+          "capture": 1,
+          "sourceCaseId": "lexer.string-8",
+          "nativeResponseSha256": "c5d63504a1c4cac69e3c1140d52e803c4e006fbd51827a894e1bc170ac6c18d7"
+        }
+      ]
+    },
+    {
+      "id": "case-9",
+      "method": "PATCH",
+      "raw": "\"Null\"",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Invalid JSON. A token was not recognized in the JSON content."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 0,
+          "sourceCaseId": "lexer.string-9",
+          "nativeResponseSha256": "c5d63504a1c4cac69e3c1140d52e803c4e006fbd51827a894e1bc170ac6c18d7"
+        },
+        {
+          "capture": 1,
+          "sourceCaseId": "lexer.string-9",
+          "nativeResponseSha256": "c5d63504a1c4cac69e3c1140d52e803c4e006fbd51827a894e1bc170ac6c18d7"
+        }
+      ]
+    },
+    {
+      "id": "case-10",
+      "method": "PATCH",
+      "raw": "\"  text\"",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Invalid JSON. Unexpected token 'text'."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 0,
+          "sourceCaseId": "lexer.string-10",
+          "nativeResponseSha256": "d4fba8a1e595f2f4672e7a7683bd08a6252568ad86ce22602a92af8cd7d8462c"
+        },
+        {
+          "capture": 1,
+          "sourceCaseId": "lexer.string-10",
+          "nativeResponseSha256": "d4fba8a1e595f2f4672e7a7683bd08a6252568ad86ce22602a92af8cd7d8462c"
+        }
+      ]
+    },
+    {
+      "id": "case-11",
+      "method": "PATCH",
+      "raw": "\"17\"",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'PrimitiveValue' node was found when reading from the JSON reader. A 'StartObject' node was expected."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 0,
+          "sourceCaseId": "lexer.string-11",
+          "nativeResponseSha256": "ee98e496787aa6527cd0c24e6183f8b8eb981c42501de3b29b5026efd2eb37b2"
+        },
+        {
+          "capture": 1,
+          "sourceCaseId": "lexer.string-11",
+          "nativeResponseSha256": "ee98e496787aa6527cd0c24e6183f8b8eb981c42501de3b29b5026efd2eb37b2"
+        }
+      ]
+    },
+    {
+      "id": "case-12",
+      "method": "PATCH",
+      "raw": "\"-17\"",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'PrimitiveValue' node was found when reading from the JSON reader. A 'StartObject' node was expected."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 0,
+          "sourceCaseId": "lexer.string-12",
+          "nativeResponseSha256": "ee98e496787aa6527cd0c24e6183f8b8eb981c42501de3b29b5026efd2eb37b2"
+        },
+        {
+          "capture": 1,
+          "sourceCaseId": "lexer.string-12",
+          "nativeResponseSha256": "ee98e496787aa6527cd0c24e6183f8b8eb981c42501de3b29b5026efd2eb37b2"
+        }
+      ]
+    },
+    {
+      "id": "case-13",
+      "method": "PATCH",
+      "raw": "\"1.5\"",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'PrimitiveValue' node was found when reading from the JSON reader. A 'StartObject' node was expected."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 0,
+          "sourceCaseId": "lexer.string-13",
+          "nativeResponseSha256": "ee98e496787aa6527cd0c24e6183f8b8eb981c42501de3b29b5026efd2eb37b2"
+        },
+        {
+          "capture": 1,
+          "sourceCaseId": "lexer.string-13",
+          "nativeResponseSha256": "ee98e496787aa6527cd0c24e6183f8b8eb981c42501de3b29b5026efd2eb37b2"
+        }
+      ]
+    },
+    {
+      "id": "case-14",
+      "method": "PATCH",
+      "raw": "\"[]\"",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'StartArray' node was found when reading from the JSON reader. A 'StartObject' node was expected."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 0,
+          "sourceCaseId": "lexer.string-14",
+          "nativeResponseSha256": "945e45d6506a7a7c99d3feb7ece716fe4b7256dd92b2c270868dd0b85b320d0b"
+        },
+        {
+          "capture": 1,
+          "sourceCaseId": "lexer.string-14",
+          "nativeResponseSha256": "945e45d6506a7a7c99d3feb7ece716fe4b7256dd92b2c270868dd0b85b320d0b"
+        }
+      ]
+    },
+    {
+      "id": "case-15",
+      "method": "PATCH",
+      "raw": "\"[1]\"",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'StartArray' node was found when reading from the JSON reader. A 'StartObject' node was expected."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 0,
+          "sourceCaseId": "lexer.string-15",
+          "nativeResponseSha256": "945e45d6506a7a7c99d3feb7ece716fe4b7256dd92b2c270868dd0b85b320d0b"
+        },
+        {
+          "capture": 1,
+          "sourceCaseId": "lexer.string-15",
+          "nativeResponseSha256": "945e45d6506a7a7c99d3feb7ece716fe4b7256dd92b2c270868dd0b85b320d0b"
+        }
+      ]
+    },
+    {
+      "id": "case-16",
+      "method": "PATCH",
+      "raw": "\"{}\"",
+      "expected": {
+        "status": 204,
+        "body": null
+      },
+      "proof": [
+        {
+          "capture": 0,
+          "sourceCaseId": "lexer.string-16",
+          "nativeResponseSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "capture": 1,
+          "sourceCaseId": "lexer.string-16",
+          "nativeResponseSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      ]
+    },
+    {
+      "id": "case-17",
+      "method": "PATCH",
+      "raw": "\"{\\\"invented_unknown_lexer\\\":1}\"",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.Crm.CrmException: Invalid property 'invented_unknown_lexer' was found in entity 'Microsoft.Dynamics.CRM.probe'. ---> Microsoft.OData.ODataException: The property 'invented_unknown_lexer' does not exist on type 'Microsoft.Dynamics.CRM.probe'. Make sure to only use property names that are defined by the type."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 0,
+          "sourceCaseId": "lexer.string-17",
+          "nativeResponseSha256": "01dc20f98b38d978c6c34a097b09666145ee9b8cd585750f7dcccccc2feb0da2"
+        },
+        {
+          "capture": 1,
+          "sourceCaseId": "lexer.string-17",
+          "nativeResponseSha256": "01dc20f98b38d978c6c34a097b09666145ee9b8cd585750f7dcccccc2feb0da2"
+        }
+      ]
+    },
+    {
+      "id": "case-18",
+      "method": "PATCH",
+      "raw": "\"\\\"nested\\\"\"",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'PrimitiveValue' node was found when reading from the JSON reader. A 'StartObject' node was expected."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 0,
+          "sourceCaseId": "lexer.string-18",
+          "nativeResponseSha256": "ee98e496787aa6527cd0c24e6183f8b8eb981c42501de3b29b5026efd2eb37b2"
+        },
+        {
+          "capture": 1,
+          "sourceCaseId": "lexer.string-18",
+          "nativeResponseSha256": "ee98e496787aa6527cd0c24e6183f8b8eb981c42501de3b29b5026efd2eb37b2"
+        }
+      ]
+    },
+    {
+      "id": "case-19",
+      "method": "PATCH",
+      "raw": "\"\"",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'EndOfInput' node was found when reading from the JSON reader. A 'StartObject' node was expected."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 0,
+          "sourceCaseId": "lexer.string-19",
+          "nativeResponseSha256": "a206f3892322bfa6556cce5aac73b71c77d3b746112b8fd0632ed16f9e2390b8"
+        },
+        {
+          "capture": 1,
+          "sourceCaseId": "lexer.string-19",
+          "nativeResponseSha256": "a206f3892322bfa6556cce5aac73b71c77d3b746112b8fd0632ed16f9e2390b8"
+        }
+      ]
+    },
+    {
+      "id": "case-20",
+      "method": "PATCH",
+      "raw": "true",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Invalid JSON. A token was not recognized in the JSON content."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 0,
+          "sourceCaseId": "lexer.raw-0",
+          "nativeResponseSha256": "c5d63504a1c4cac69e3c1140d52e803c4e006fbd51827a894e1bc170ac6c18d7"
+        },
+        {
+          "capture": 1,
+          "sourceCaseId": "lexer.raw-0",
+          "nativeResponseSha256": "c5d63504a1c4cac69e3c1140d52e803c4e006fbd51827a894e1bc170ac6c18d7"
+        }
+      ]
+    },
+    {
+      "id": "case-21",
+      "method": "PATCH",
+      "raw": "false",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Invalid JSON. A token was not recognized in the JSON content."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 0,
+          "sourceCaseId": "lexer.raw-1",
+          "nativeResponseSha256": "c5d63504a1c4cac69e3c1140d52e803c4e006fbd51827a894e1bc170ac6c18d7"
+        },
+        {
+          "capture": 1,
+          "sourceCaseId": "lexer.raw-1",
+          "nativeResponseSha256": "c5d63504a1c4cac69e3c1140d52e803c4e006fbd51827a894e1bc170ac6c18d7"
+        }
+      ]
+    },
+    {
+      "id": "case-22",
+      "method": "PATCH",
+      "raw": "null",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'EndOfInput' node was found when reading from the JSON reader. A 'StartObject' node was expected."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 0,
+          "sourceCaseId": "lexer.raw-2",
+          "nativeResponseSha256": "a206f3892322bfa6556cce5aac73b71c77d3b746112b8fd0632ed16f9e2390b8"
+        },
+        {
+          "capture": 1,
+          "sourceCaseId": "lexer.raw-2",
+          "nativeResponseSha256": "a206f3892322bfa6556cce5aac73b71c77d3b746112b8fd0632ed16f9e2390b8"
+        }
+      ]
+    },
+    {
+      "id": "case-23",
+      "method": "PATCH",
+      "raw": "17",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'PrimitiveValue' node was found when reading from the JSON reader. A 'StartObject' node was expected."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 0,
+          "sourceCaseId": "lexer.raw-3",
+          "nativeResponseSha256": "ee98e496787aa6527cd0c24e6183f8b8eb981c42501de3b29b5026efd2eb37b2"
+        },
+        {
+          "capture": 1,
+          "sourceCaseId": "lexer.raw-3",
+          "nativeResponseSha256": "ee98e496787aa6527cd0c24e6183f8b8eb981c42501de3b29b5026efd2eb37b2"
+        }
+      ]
+    },
+    {
+      "id": "case-24",
+      "method": "PATCH",
+      "raw": "[]",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'EndOfInput' node was found when reading from the JSON reader. A 'StartObject' node was expected."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 0,
+          "sourceCaseId": "lexer.raw-4",
+          "nativeResponseSha256": "a206f3892322bfa6556cce5aac73b71c77d3b746112b8fd0632ed16f9e2390b8"
+        },
+        {
+          "capture": 1,
+          "sourceCaseId": "lexer.raw-4",
+          "nativeResponseSha256": "a206f3892322bfa6556cce5aac73b71c77d3b746112b8fd0632ed16f9e2390b8"
+        }
+      ]
+    },
+    {
+      "id": "case-25",
+      "method": "POST",
+      "raw": "{\"amount\":[7]}",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'probes', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'StartArray' node was found when reading from the JSON reader. A 'PrimitiveValue' node was expected."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 0,
+          "sourceCaseId": "holdout.property-array.POST",
+          "nativeResponseSha256": "26e0f6aa3312a8e10db48dee054def31b2dab70ee398498fb7b6516c6326d8e0"
+        }
+      ]
+    },
+    {
+      "id": "case-26",
+      "method": "PATCH",
+      "raw": "{\"amount\":[7]}",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'StartArray' node was found when reading from the JSON reader. A 'PrimitiveValue' node was expected."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 0,
+          "sourceCaseId": "holdout.property-array.PATCH",
+          "nativeResponseSha256": "194124643eeac25b1457a780ecb81c0d18d29e02940df3827a9daf94874160e1"
+        }
+      ]
+    },
+    {
+      "id": "case-27",
+      "method": "PATCH",
+      "raw": "\"textTwo\"",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Invalid JSON. Unexpected token 'textTwo'."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 1,
+          "sourceCaseId": "lexer.string-0",
+          "nativeResponseSha256": "2e5029cb7fe908f93f4c3784ccb1f437f427ee22c4b466f665455c5e84420271"
+        }
+      ]
+    },
+    {
+      "id": "case-28",
+      "method": "PATCH",
+      "raw": "\"frobTwo\"",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Invalid JSON. Unexpected token 'frobTwo'."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 1,
+          "sourceCaseId": "lexer.string-1",
+          "nativeResponseSha256": "5863ad32a9ea560a3d39037bb54dfd01df40331904293ec1cde38d6126d82d3c"
+        }
+      ]
+    },
+    {
+      "id": "case-29",
+      "method": "PATCH",
+      "raw": "\"noneTwo\"",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'PrimitiveValue' node was found when reading from the JSON reader. A 'StartObject' node was expected."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 1,
+          "sourceCaseId": "lexer.string-2",
+          "nativeResponseSha256": "ee98e496787aa6527cd0c24e6183f8b8eb981c42501de3b29b5026efd2eb37b2"
+        }
+      ]
+    },
+    {
+      "id": "case-30",
+      "method": "PATCH",
+      "raw": "\"anotherTwo\"",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Invalid JSON. A token was not recognized in the JSON content."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 1,
+          "sourceCaseId": "lexer.string-3",
+          "nativeResponseSha256": "c5d63504a1c4cac69e3c1140d52e803c4e006fbd51827a894e1bc170ac6c18d7"
+        }
+      ]
+    },
+    {
+      "id": "case-31",
+      "method": "POST",
+      "raw": "{\"amount\":[8]}",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'probes', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'StartArray' node was found when reading from the JSON reader. A 'PrimitiveValue' node was expected."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 1,
+          "sourceCaseId": "holdout.property-array.POST",
+          "nativeResponseSha256": "26e0f6aa3312a8e10db48dee054def31b2dab70ee398498fb7b6516c6326d8e0"
+        }
+      ]
+    },
+    {
+      "id": "case-32",
+      "method": "PATCH",
+      "raw": "{\"amount\":[8]}",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'StartArray' node was found when reading from the JSON reader. A 'PrimitiveValue' node was expected."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 1,
+          "sourceCaseId": "holdout.property-array.PATCH",
+          "nativeResponseSha256": "194124643eeac25b1457a780ecb81c0d18d29e02940df3827a9daf94874160e1"
+        }
+      ]
+    },
+    {
+      "id": "case-33",
+      "method": "POST",
+      "raw": "{\"amount\":{\"title\":\"first-object\"}}",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'probes', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'StartObject' node was found for property named 'amount' when reading from the JSON reader. A 'PrimitiveValue' node was expected."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 2,
+          "sourceCaseId": "holdout.allowed-object.POST",
+          "nativeResponseSha256": "091c3b7cee39146673ca485542a8e679258b9d75e6ffa4c2cca65c2ca82ff804"
+        }
+      ]
+    },
+    {
+      "id": "case-34",
+      "method": "PATCH",
+      "raw": "{\"amount\":{\"title\":\"first-object\"}}",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'StartObject' node was found for property named 'amount' when reading from the JSON reader. A 'PrimitiveValue' node was expected."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 2,
+          "sourceCaseId": "holdout.allowed-object.PATCH",
+          "nativeResponseSha256": "c120bfe6fd8c85ab02f9ab810dfc6d6adb283f54b086c4791852192d486c4649"
+        }
+      ]
+    },
+    {
+      "id": "case-35",
+      "method": "POST",
+      "raw": "{\"amount\":{\"title\":\"second-object\"}}",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'probes', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'StartObject' node was found for property named 'amount' when reading from the JSON reader. A 'PrimitiveValue' node was expected."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 3,
+          "sourceCaseId": "holdout.allowed-object.POST",
+          "nativeResponseSha256": "091c3b7cee39146673ca485542a8e679258b9d75e6ffa4c2cca65c2ca82ff804"
+        }
+      ]
+    },
+    {
+      "id": "case-36",
+      "method": "PATCH",
+      "raw": "{\"amount\":{\"title\":\"second-object\"}}",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'StartObject' node was found for property named 'amount' when reading from the JSON reader. A 'PrimitiveValue' node was expected."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 3,
+          "sourceCaseId": "holdout.allowed-object.PATCH",
+          "nativeResponseSha256": "c120bfe6fd8c85ab02f9ab810dfc6d6adb283f54b086c4791852192d486c4649"
+        }
+      ]
+    }
+  ],
+  "originalRoots": [
+    {
+      "id": "case-0",
+      "method": "PATCH",
+      "raw": "{",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : System.ArgumentException: Stream was not readable."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 4,
+          "sourceCaseId": "raw-0",
+          "nativeResponseSha256": "b6488ff3e0931ffc234880a87e5c85221749b965e7192eda875145ea48edbe40"
+        },
+        {
+          "capture": 5,
+          "sourceCaseId": "raw-0",
+          "nativeResponseSha256": "b6488ff3e0931ffc234880a87e5c85221749b965e7192eda875145ea48edbe40"
+        }
+      ]
+    },
+    {
+      "id": "case-1",
+      "method": "PATCH",
+      "raw": "{\"title\":",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : System.ArgumentException: Stream was not readable."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 4,
+          "sourceCaseId": "raw-1",
+          "nativeResponseSha256": "b6488ff3e0931ffc234880a87e5c85221749b965e7192eda875145ea48edbe40"
+        },
+        {
+          "capture": 5,
+          "sourceCaseId": "raw-1",
+          "nativeResponseSha256": "b6488ff3e0931ffc234880a87e5c85221749b965e7192eda875145ea48edbe40"
+        }
+      ]
+    },
+    {
+      "id": "case-2",
+      "method": "PATCH",
+      "raw": "null",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'EndOfInput' node was found when reading from the JSON reader. A 'StartObject' node was expected."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 4,
+          "sourceCaseId": "raw-2",
+          "nativeResponseSha256": "a206f3892322bfa6556cce5aac73b71c77d3b746112b8fd0632ed16f9e2390b8"
+        },
+        {
+          "capture": 5,
+          "sourceCaseId": "raw-2",
+          "nativeResponseSha256": "a206f3892322bfa6556cce5aac73b71c77d3b746112b8fd0632ed16f9e2390b8"
+        }
+      ]
+    },
+    {
+      "id": "case-3",
+      "method": "PATCH",
+      "raw": "[]",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'EndOfInput' node was found when reading from the JSON reader. A 'StartObject' node was expected."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 4,
+          "sourceCaseId": "raw-3",
+          "nativeResponseSha256": "a206f3892322bfa6556cce5aac73b71c77d3b746112b8fd0632ed16f9e2390b8"
+        },
+        {
+          "capture": 5,
+          "sourceCaseId": "raw-3",
+          "nativeResponseSha256": "a206f3892322bfa6556cce5aac73b71c77d3b746112b8fd0632ed16f9e2390b8"
+        }
+      ]
+    },
+    {
+      "id": "case-4",
+      "method": "PATCH",
+      "raw": "\"text\"",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Invalid JSON. Unexpected token 'text'."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 4,
+          "sourceCaseId": "raw-4",
+          "nativeResponseSha256": "d4fba8a1e595f2f4672e7a7683bd08a6252568ad86ce22602a92af8cd7d8462c"
+        },
+        {
+          "capture": 5,
+          "sourceCaseId": "raw-4",
+          "nativeResponseSha256": "d4fba8a1e595f2f4672e7a7683bd08a6252568ad86ce22602a92af8cd7d8462c"
+        }
+      ]
+    },
+    {
+      "id": "case-5",
+      "method": "PATCH",
+      "raw": "42",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: An unexpected 'PrimitiveValue' node was found when reading from the JSON reader. A 'StartObject' node was expected."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 4,
+          "sourceCaseId": "raw-5",
+          "nativeResponseSha256": "ee98e496787aa6527cd0c24e6183f8b8eb981c42501de3b29b5026efd2eb37b2"
+        },
+        {
+          "capture": 5,
+          "sourceCaseId": "raw-5",
+          "nativeResponseSha256": "ee98e496787aa6527cd0c24e6183f8b8eb981c42501de3b29b5026efd2eb37b2"
+        }
+      ]
+    },
+    {
+      "id": "case-6",
+      "method": "PATCH",
+      "raw": "true",
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "9004010D",
+            "message": "Common Data Service error occurred.",
+            "cdscode": "0x80048d19",
+            "innererror": {
+              "code": "0x80048d19",
+              "message": "Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Invalid JSON. A token was not recognized in the JSON content."
+            }
+          }
+        }
+      },
+      "proof": [
+        {
+          "capture": 4,
+          "sourceCaseId": "raw-6",
+          "nativeResponseSha256": "c5d63504a1c4cac69e3c1140d52e803c4e006fbd51827a894e1bc170ac6c18d7"
+        },
+        {
+          "capture": 5,
+          "sourceCaseId": "raw-6",
+          "nativeResponseSha256": "c5d63504a1c4cac69e3c1140d52e803c4e006fbd51827a894e1bc170ac6c18d7"
+        }
+      ]
+    }
+  ],
+  "normalizations": [
+    "Native account entity/table aliases become invented probe/probes; name becomes title and decimal column becomes amount.",
+    "Only the exact CLR suffix beginning CRLF and three spaces plus at is omitted.",
+    "Both native error objects preserve property order; full native wire JSON remains private."
+  ]
+}

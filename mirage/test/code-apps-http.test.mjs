@@ -1,10 +1,14 @@
+// @test-kind unproven: mixed local host policies and native SDK/context shapes require per-guarantee proof; the exact reused native assertion below is scoped separately.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import { assertNoElements } from './assert-markup.mjs';
 import http from 'node:http';
 import { createCodeAppsHandler, authorityTokenIssuer } from '../lib/code-apps-http.mjs';
 import { createAuthority } from '../lib/dataverse-auth.mjs';
 import { sequentialIds } from '../lib/runtime-clock.mjs';
+import { captureCodeAppContextContract } from '../testing/code-apps-contract.mjs';
 
 const STAFF = '77777777-7777-4777-8777-777777777777';
 const SYSTEM = '66666666-6666-4666-8666-666666666666';
@@ -125,7 +129,25 @@ test('context returns the documented IContext shape from the staff session', asy
     tenantId: TENANT,
     userPrincipalName: row.domainname,
   });
-  assert.match(context.host.sessionId, /^[0-9a-f-]{36}$/);
+  // @test-kind parity: the original host.sessionId GUID-shape assertion is reproduced by two published native Code Apps context captures; other parent assertions stay unproven.
+  // @parity-evidence: reuse the checksum-bound native13-row fixture and exact serialized probe; both native raw captures agree on host.sessionId.guid=true.
+  await t.test('existing context session ID has the reproduced native GUID shape', () => {
+    const bytes = fs.readFileSync(new URL('./fixtures/code-apps-context-native.json', import.meta.url));
+    const hash = (value) => createHash('sha256').update(value).digest('hex');
+    assert.equal(hash(bytes), '9ba4e056aca60036e840d81bfe8cf65abece4a5ce529f111994fac17aac81b3b');
+    const evidence = JSON.parse(bytes);
+    assert.equal(hash(captureCodeAppContextContract.toString()), evidence.probeFunctionSha256);
+    assert.equal(evidence.captures.length, 2);
+    assert.equal(evidence.captures[0].sha256, evidence.captures[1].sha256);
+    assert.deepEqual(
+      evidence.rows.find((row) => row.id === 'host.sessionId.guid'),
+      {
+        id: 'host.sessionId.guid',
+        value: true,
+      },
+    );
+    assert.match(context.host.sessionId, /^[0-9a-f-]{36}$/);
+  });
   assert.equal((await json(await request('/_apps/code/bare/context'), 200)).app.environmentId, 'env-org');
 });
 

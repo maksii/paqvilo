@@ -455,6 +455,7 @@ test('Power Pages dashboard connects code components to the pages that host them
   assert.equal((await fetch(`${sim.url}/__sim/dashboard-map.mjs`)).headers.get('cache-control'), 'no-store');
 });
 
+// @test-kind contract+unproven: dashboard policy is local; model-driven execution behavior is not native-qualified
 test('standalone dashboard connects each part to what really calls it, and draws the connections of a switched-off part switched off', async (t) => {
   const sim = await standalone(t);
   const body = await json(await fetch(`${sim.url}/_sim/api/dashboard`));
@@ -495,6 +496,7 @@ test('standalone dashboard connects each part to what really calls it, and draws
   assert.match(nodes.get('org:dataverse-addon-handlers')?.detail.note ?? '', /startup/);
 });
 
+// @test-kind contract+unproven: dashboard policy is local; model-driven execution behavior is not native-qualified
 test('with the Web API listener off, Web API messages still run from the model-driven in-app Web API', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'sim-dashboard-md-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));

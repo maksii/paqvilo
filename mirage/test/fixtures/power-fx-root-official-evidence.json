@@ -1,0 +1,496 @@
+{
+  "package": {
+    "id": "Microsoft.PowerApps.CLI",
+    "version": "2.13.1",
+    "sha256": "07654af406781c1676d1bc5712c393fab2276e54f15ff10bb74a1bdef0d27d3f",
+    "source": "https://api.nuget.org/v3-flatcontainer/microsoft.powerapps.cli/2.13.1/microsoft.powerapps.cli.2.13.1.nupkg"
+  },
+  "scope": "Exact input expressions and two independent official Microsoft Power Fx interpreter runs. Error results are runtime ErrorValue results; original raw transcript hashes retain process output. Host paths are omitted.",
+  "producer": {
+    "sourceSha256": "50ccc197d4b8192564cf91cc1aa60fb7ec520c2867781b0340453ed70d8813ae",
+    "projectSha256": "c280a3d3e4adda5dde8394ea9adfcde102b70eeabd048c92265957daa8393eda",
+    "dllSha256": "c2fecb90c50258f489a3200221f2095eb683914a6ee71fa196af5ac7ff1ef969",
+    "official": [
+      {
+        "FullName": "Microsoft.PowerFx.Interpreter, Version=1.99.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35",
+        "ModuleVersionId": "c00830f1-cff1-4ce9-97a2-c7d759869bac",
+        "sha256": "f06ed03f9599741990e2db49bbb495b88b5655faab89d5a5017dbec9c75ac780"
+      },
+      {
+        "FullName": "Microsoft.PowerFx.Core, Version=1.99.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35",
+        "ModuleVersionId": "79d79918-0479-450c-915a-1f34bac32028",
+        "sha256": "a9e79158c58284ae99b958f285a7ef81a345b1553a2db5df06a0d52612bf170b"
+      }
+    ]
+  },
+  "corpora": [
+    {
+      "name": "correction-holdouts",
+      "inputSha256": "bb3c076b13fa310d7490a11177fd0367375b32fb08a155528f6d2bba5424d5d4",
+      "inputs": [
+        {
+          "expression": "TrimEnds(Char(133) & \"x\" & Char(133))"
+        },
+        {
+          "expression": "TrimEnds(\"﻿x﻿\")"
+        },
+        {
+          "expression": "Value(\"1.5\", \"es-ES\")"
+        },
+        {
+          "expression": "Value(\"1,,23\")"
+        },
+        {
+          "expression": "Value(\",123\")"
+        },
+        {
+          "expression": "Value(\"1,23,\")"
+        },
+        {
+          "expression": "Value(\"1,23.4,5\")"
+        }
+      ],
+      "runs": [
+        {
+          "rawSha256": "3cc12a4fe5e201f458862e236f2155aecfb91ecebb2d8d34d497dfae57011cd8",
+          "processId": 68208,
+          "utcNow": "2026-11-08T18:22:14.7199492Z",
+          "host": {
+            "clock": "2013-07-15T20:02:00Z",
+            "timeZone": "Pacific Standard Time",
+            "culture": "en-US",
+            "numberIsFloat": false
+          },
+          "results": [
+            {
+              "expression": "TrimEnds(Char(133) & \"x\" & Char(133))",
+              "kind": "value",
+              "value": "x",
+              "errors": null
+            },
+            {
+              "expression": "TrimEnds(\"﻿x﻿\")",
+              "kind": "value",
+              "value": "﻿x﻿",
+              "errors": null
+            },
+            {
+              "expression": "Value(\"1.5\", \"es-ES\")",
+              "kind": "value",
+              "value": 15,
+              "errors": null
+            },
+            {
+              "expression": "Value(\"1,,23\")",
+              "kind": "value",
+              "value": 123,
+              "errors": null
+            },
+            {
+              "expression": "Value(\",123\")",
+              "kind": "error",
+              "value": null,
+              "errors": [
+                {
+                  "kind": "InvalidArgument",
+                  "Message": "The value ',123' cannot be converted to a number."
+                }
+              ]
+            },
+            {
+              "expression": "Value(\"1,23,\")",
+              "kind": "value",
+              "value": 123,
+              "errors": null
+            },
+            {
+              "expression": "Value(\"1,23.4,5\")",
+              "kind": "error",
+              "value": null,
+              "errors": [
+                {
+                  "kind": "InvalidArgument",
+                  "Message": "The value '1,23.4,5' cannot be converted to a number."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "rawSha256": "882f1a6741045ca7707fcacfad7ffb3ef4c40ea6f099840e77346c81db6c7dac",
+          "processId": 74820,
+          "utcNow": "2026-11-08T18:22:14.9651956Z",
+          "host": {
+            "clock": "2013-07-15T20:02:00Z",
+            "timeZone": "Pacific Standard Time",
+            "culture": "en-US",
+            "numberIsFloat": false
+          },
+          "results": [
+            {
+              "expression": "TrimEnds(Char(133) & \"x\" & Char(133))",
+              "kind": "value",
+              "value": "x",
+              "errors": null
+            },
+            {
+              "expression": "TrimEnds(\"﻿x﻿\")",
+              "kind": "value",
+              "value": "﻿x﻿",
+              "errors": null
+            },
+            {
+              "expression": "Value(\"1.5\", \"es-ES\")",
+              "kind": "value",
+              "value": 15,
+              "errors": null
+            },
+            {
+              "expression": "Value(\"1,,23\")",
+              "kind": "value",
+              "value": 123,
+              "errors": null
+            },
+            {
+              "expression": "Value(\",123\")",
+              "kind": "error",
+              "value": null,
+              "errors": [
+                {
+                  "kind": "InvalidArgument",
+                  "Message": "The value ',123' cannot be converted to a number."
+                }
+              ]
+            },
+            {
+              "expression": "Value(\"1,23,\")",
+              "kind": "value",
+              "value": 123,
+              "errors": null
+            },
+            {
+              "expression": "Value(\"1,23.4,5\")",
+              "kind": "error",
+              "value": null,
+              "errors": [
+                {
+                  "kind": "InvalidArgument",
+                  "Message": "The value '1,23.4,5' cannot be converted to a number."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "iferror-and-text",
+      "inputSha256": "7ec3ce427968300e0d845610062a20a981941aed1e3390f23619286d40e3ddeb",
+      "inputs": [
+        {
+          "expression": "IfError(1/0, \"x\")"
+        },
+        {
+          "expression": "IfError(1/0, \"2\")"
+        },
+        {
+          "expression": "IfError(Float(\"bad\"), \"0.1\")"
+        },
+        {
+          "expression": "Text(IfError(1/0, \"1234567890123456789012345678\"))"
+        },
+        {
+          "expression": "IfError(Text(1/0), \"x\")"
+        },
+        {
+          "expression": "IfError(Text(1/0), 42)"
+        },
+        {
+          "expression": "IfError(Value(\"bad\"), true)"
+        },
+        {
+          "expression": "IfError(Boolean(\"bad\"), \"true\")"
+        },
+        {
+          "expression": "IfError(DateValue(\"bad\"), \"2026-01-02\")"
+        },
+        {
+          "expression": "IfError(1/0, Blank())"
+        },
+        {
+          "expression": "IfError(1, \"bad\", \"2\")"
+        },
+        {
+          "expression": "IfError(1, \"z\", Text(1/0), 42)"
+        },
+        {
+          "expression": "IfError(\"s\", \"z\", 1/0, \"3\")"
+        },
+        {
+          "expression": "IfError(Error(\"bad\"), \"fallback\")"
+        },
+        {
+          "expression": "Text(1234.5,\"#,##0.00\",\"de-DE\")"
+        },
+        {
+          "expression": "Text(1234.5,\"#,##0.00\",\"fr-FR\")"
+        },
+        {
+          "expression": "Text(1234.5,\"#,##0.00\",\"x-invalid-@\")"
+        }
+      ],
+      "runs": [
+        {
+          "rawSha256": "c579a06c940491b7ccd00874104d97b58c1480b0676f27f60e1b312aa713261b",
+          "processId": 57900,
+          "utcNow": "2026-11-08T18:49:52.543557Z",
+          "host": {
+            "clock": "2013-07-15T20:02:00Z",
+            "timeZone": "Pacific Standard Time",
+            "culture": "en-US",
+            "numberIsFloat": false
+          },
+          "results": [
+            {
+              "expression": "IfError(1/0, \"x\")",
+              "kind": "error",
+              "value": null,
+              "errors": [
+                {
+                  "kind": "InvalidArgument",
+                  "Message": "The value 'x' cannot be converted to a number."
+                }
+              ]
+            },
+            {
+              "expression": "IfError(1/0, \"2\")",
+              "kind": "value",
+              "value": 2,
+              "errors": null
+            },
+            {
+              "expression": "IfError(Float(\"bad\"), \"0.1\")",
+              "kind": "value",
+              "value": 0.1,
+              "errors": null
+            },
+            {
+              "expression": "Text(IfError(1/0, \"1234567890123456789012345678\"))",
+              "kind": "value",
+              "value": "1234567890123456789012345678",
+              "errors": null
+            },
+            {
+              "expression": "IfError(Text(1/0), \"x\")",
+              "kind": "value",
+              "value": "x",
+              "errors": null
+            },
+            {
+              "expression": "IfError(Text(1/0), 42)",
+              "kind": "value",
+              "value": "42",
+              "errors": null
+            },
+            {
+              "expression": "IfError(Value(\"bad\"), true)",
+              "kind": "value",
+              "value": 1,
+              "errors": null
+            },
+            {
+              "expression": "IfError(Boolean(\"bad\"), \"true\")",
+              "kind": "value",
+              "value": true,
+              "errors": null
+            },
+            {
+              "expression": "IfError(DateValue(\"bad\"), \"2026-01-02\")",
+              "kind": "value",
+              "value": "2026-01-02T00:00:00",
+              "errors": null
+            },
+            {
+              "expression": "IfError(1/0, Blank())",
+              "kind": "value",
+              "value": null,
+              "errors": null
+            },
+            {
+              "expression": "IfError(1, \"bad\", \"2\")",
+              "kind": "value",
+              "value": "2",
+              "errors": null
+            },
+            {
+              "expression": "IfError(1, \"z\", Text(1/0), 42)",
+              "kind": "value",
+              "value": "42",
+              "errors": null
+            },
+            {
+              "expression": "IfError(\"s\", \"z\", 1/0, \"3\")",
+              "kind": "value",
+              "value": 3,
+              "errors": null
+            },
+            {
+              "expression": "IfError(Error(\"bad\"), \"fallback\")",
+              "kind": "value",
+              "value": "fallback",
+              "errors": null
+            },
+            {
+              "expression": "Text(1234.5,\"#,##0.00\",\"de-DE\")",
+              "kind": "value",
+              "value": "1.234,50",
+              "errors": null
+            },
+            {
+              "expression": "Text(1234.5,\"#,##0.00\",\"fr-FR\")",
+              "kind": "value",
+              "value": "1 234,50",
+              "errors": null
+            },
+            {
+              "expression": "Text(1234.5,\"#,##0.00\",\"x-invalid-@\")",
+              "kind": "error",
+              "value": null,
+              "errors": [
+                {
+                  "kind": "BadLanguageCode",
+                  "Message": "Language code 'x-invalid-@' not supported."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "rawSha256": "54c137dfaf5759714f03efed00cdad50e7cc883d4f25da488f9b3b9bc957e806",
+          "processId": 68412,
+          "utcNow": "2026-11-08T18:49:52.8671375Z",
+          "host": {
+            "clock": "2013-07-15T20:02:00Z",
+            "timeZone": "Pacific Standard Time",
+            "culture": "en-US",
+            "numberIsFloat": false
+          },
+          "results": [
+            {
+              "expression": "IfError(1/0, \"x\")",
+              "kind": "error",
+              "value": null,
+              "errors": [
+                {
+                  "kind": "InvalidArgument",
+                  "Message": "The value 'x' cannot be converted to a number."
+                }
+              ]
+            },
+            {
+              "expression": "IfError(1/0, \"2\")",
+              "kind": "value",
+              "value": 2,
+              "errors": null
+            },
+            {
+              "expression": "IfError(Float(\"bad\"), \"0.1\")",
+              "kind": "value",
+              "value": 0.1,
+              "errors": null
+            },
+            {
+              "expression": "Text(IfError(1/0, \"1234567890123456789012345678\"))",
+              "kind": "value",
+              "value": "1234567890123456789012345678",
+              "errors": null
+            },
+            {
+              "expression": "IfError(Text(1/0), \"x\")",
+              "kind": "value",
+              "value": "x",
+              "errors": null
+            },
+            {
+              "expression": "IfError(Text(1/0), 42)",
+              "kind": "value",
+              "value": "42",
+              "errors": null
+            },
+            {
+              "expression": "IfError(Value(\"bad\"), true)",
+              "kind": "value",
+              "value": 1,
+              "errors": null
+            },
+            {
+              "expression": "IfError(Boolean(\"bad\"), \"true\")",
+              "kind": "value",
+              "value": true,
+              "errors": null
+            },
+            {
+              "expression": "IfError(DateValue(\"bad\"), \"2026-01-02\")",
+              "kind": "value",
+              "value": "2026-01-02T00:00:00",
+              "errors": null
+            },
+            {
+              "expression": "IfError(1/0, Blank())",
+              "kind": "value",
+              "value": null,
+              "errors": null
+            },
+            {
+              "expression": "IfError(1, \"bad\", \"2\")",
+              "kind": "value",
+              "value": "2",
+              "errors": null
+            },
+            {
+              "expression": "IfError(1, \"z\", Text(1/0), 42)",
+              "kind": "value",
+              "value": "42",
+              "errors": null
+            },
+            {
+              "expression": "IfError(\"s\", \"z\", 1/0, \"3\")",
+              "kind": "value",
+              "value": 3,
+              "errors": null
+            },
+            {
+              "expression": "IfError(Error(\"bad\"), \"fallback\")",
+              "kind": "value",
+              "value": "fallback",
+              "errors": null
+            },
+            {
+              "expression": "Text(1234.5,\"#,##0.00\",\"de-DE\")",
+              "kind": "value",
+              "value": "1.234,50",
+              "errors": null
+            },
+            {
+              "expression": "Text(1234.5,\"#,##0.00\",\"fr-FR\")",
+              "kind": "value",
+              "value": "1 234,50",
+              "errors": null
+            },
+            {
+              "expression": "Text(1234.5,\"#,##0.00\",\"x-invalid-@\")",
+              "kind": "error",
+              "value": null,
+              "errors": [
+                {
+                  "kind": "BadLanguageCode",
+                  "Message": "Language code 'x-invalid-@' not supported."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -811,11 +811,11 @@
       case has('datetime'):
         return 'DateTime';
       case element.type === 'email':
-        return 'Email';
+        return 'EmailString';
       case has('tickersymbol'):
-        return 'TickerSymbol';
+        return 'TickerSymbolString';
       case element.type === 'url':
-        return 'URL';
+        return 'UrlString';
     }
     for (const [name, type] of [
       ['integer', 'Integer'],
@@ -864,7 +864,10 @@
     const modal = type === 'Lookup' && element?.tagName !== 'SELECT';
     const isReadOnly = (box) =>
       Boolean(box && (box.disabled || box.readOnly || box.classList.contains('readonly') || box.closest('[readonly]')));
-    const readOnly = () => isReadOnly(element);
+    const readOnly = () =>
+      type === 'AddressComposite' && element.hasAttribute('data-editable')
+        ? element.getAttribute('data-editable') === 'False'
+        : isReadOnly(element);
     const maxFileSize = () =>
       Number(
         /(?:fileLoad\(this, '[^']*'|imageLoad\(this, '\d+'), '(\d+)'/.exec(
@@ -1118,7 +1121,10 @@
       getDisabled: () => Boolean(element?.disabled),
       getRequired: () => Boolean(info?.classList.contains('required') || requiredBy.has(cell)),
       getVisible: () => shown(holder),
-      getName: () => name,
+      getName: () =>
+        type === 'Memo'
+          ? (element.getAttribute('aria-label') ?? '')
+          : [...holder.querySelectorAll('.field-label')].map((node) => node.textContent).join(''),
       // Learn's control type list has no rich text type, so the rich text control answers undefined (a guess).
       getType: () => (type === 'RichText' ? undefined : type),
       getLogicalName: () => name,
@@ -1165,8 +1171,13 @@
         custom.clear();
       },
     };
-    Object.defineProperty(control, 'isReadOnly', { get: readOnly, enumerable: true });
+    if (!['Money', 'Picklist', 'Lookup'].includes(type))
+      Object.defineProperty(control, 'isReadOnly', {
+        get: type === 'AddressComposite' ? () => element.getAttribute('data-editable') === 'False' : readOnly,
+        enumerable: true,
+      });
     if (type === 'Money') Object.defineProperty(control, 'readOnly', { get: readOnly, enumerable: true });
+    if (type === 'Lookup') Object.defineProperty(control, 'isReadonly', { get: readOnly, enumerable: true });
     if (type === 'DateTime')
       Object.defineProperties(control, {
         isDisabled: { get: () => Boolean(element.disabled || element.readOnly), enumerable: true },

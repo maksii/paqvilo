@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo hot-source revision keys govern its own session cache, inert reads, legacy reuse and retirement; these are not native app publication guarantees.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createCanvasRuntime } from '../lib/canvas-runtime.mjs';
@@ -15,6 +16,7 @@ function app(revision, onStart = '=Set(starts, Coalesce(starts, 0) + 1)') {
   };
 }
 
+// The marker counts local session initialization so an inventory read cannot accidentally start a replacement revision.
 test('source revisions evict stale sessions without starting a replacement on read', async () => {
   let current = app('one');
   const runtime = createCanvasRuntime({ apps: () => [current], evaluator: createPowerFxEvaluator() });
@@ -33,6 +35,7 @@ test('source revisions evict stale sessions without starting a replacement on re
   assert.equal(runtime.existing('invented', principal), second);
 });
 
+// Undefined revisions deliberately preserve the toolkit's legacy cache key until the configured app is removed.
 test('undefined revisions keep legacy reuse and removed apps evict sessions', async () => {
   let apps = [app(undefined)];
   const runtime = createCanvasRuntime({ apps: () => apps, evaluator: createPowerFxEvaluator() });
@@ -43,6 +46,7 @@ test('undefined revisions keep legacy reuse and removed apps evict sessions', as
   assert.equal(runtime.existing('invented', null), null);
 });
 
+// @test-kind contract+security: a controlled old-revision failure cannot retire a newer Paqvilo session after the source cache has changed owners.
 test('a failed old start cannot delete a newer revision session', async () => {
   let unblock, signal;
   const entered = new Promise((resolve) => {

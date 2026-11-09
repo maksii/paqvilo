@@ -8,6 +8,7 @@ import {
   sharedMaskOf,
 } from './plugin-platform-messages.mjs';
 import { dataverseHttpReaderContext } from './dataverse-scalar-reader.mjs';
+import { dataverseAttributeErrorContext } from './dataverse-attribute-context.mjs';
 // Dataverse HTTP listeners: STS, discovery, SOAP and the Web API router.
 // Table rows are delegated to dataverse-records.mjs; metadata to dataverse-metadata.mjs.
 // Order in the router: managed identity, STS, Prefer, extension routes (bearer first), discovery, SOAP, then the Web API.
@@ -871,7 +872,7 @@ export function metadataRead(c, metadata, route) {
   if (set === 'RelationshipDefinitions') return relationshipMetadata(contextState);
   if (key == null) {
     let entities = metadata.entities();
-    if (expand.length) entities = entities.map((entity) => metadata.entity(entity.LogicalName, { expand }));
+    if (expand.length) entities = entities.map((entity) => metadata.entity(entity.LogicalName, { expand, http: true }));
     return collection(shape(entities), select ? `${set}(${select})` : set);
   }
   return entityMetadata(contextState);
@@ -901,7 +902,7 @@ function relationshipMetadata({ set, key, cast, select, metadata, collection, si
 
 function entityMetadata(state) {
   const { set, key, segment, select, expand, metadata, single, missing } = state;
-  const entity = metadata.entity(key, { expand });
+  const entity = metadata.entity(key, { expand, http: true });
   if (!entity && set === 'EntityDefinitions' && !segment) {
     // Native names the metadata id it looked for, under 0x80060888 (not the segment error).
     throw new DataError(`EntityMetadata With Id = ${key} does not exist.`, 404, 'NotFound', {
@@ -948,7 +949,7 @@ function entityMetadataSegment({
   }
   switch (segment) {
     case 'Attributes': {
-      const list = metadata.attributes(key, { cast, key: segmentKey, select, expand }) ?? missing(set);
+      const list = metadata.attributes(key, { cast, key: segmentKey, select, expand, http: true }) ?? missing(set);
       if (segmentKey != null) return list[0] ? single(list[0], `${set}/Attributes/$entity`) : missing('Attributes');
       const castContext = cast ? `/Microsoft.Dynamics.CRM.${cast}` : '';
       return collection(
@@ -1371,27 +1372,45 @@ function bypassRequestSettings(d, headers, caller) {
   return { bypassCustomPlugins, bypassCustomAsync, bypassStepIds, systemParameters };
 }
 
+function metadataNotModified(etag) {
+  return {
+    status: 304,
+    headers: {
+      expires: undefined,
+      ETag: etag,
+      'content-type': 'text/html; charset=utf-8',
+      Allow: 'OPTIONS,GET,HEAD,POST',
+    },
+  };
+}
+
 function dispatchTaggedRoute(d, c, route, common, body) {
   const { method, origin, url, prefer } = c;
   switch (route.kind) {
-    case 'service':
+    case 'service': {
       // Native omits Expires on the service document and $metadata (see baseHeaders).
+      const etag = d.metadata.etag();
+      if (method === 'GET' && c.req.headers['if-none-match'] === etag) return metadataNotModified(etag);
       return method === 'GET'
         ? {
             status: 200,
-            headers: { expires: undefined, ETag: d.metadata.etag() },
+            headers: { expires: undefined, ETag: etag },
             body: d.metadata.serviceDocument(origin, route.version),
           }
         : methodNotAllowed(c);
-    case 'metadata':
+    }
+    case 'metadata': {
       if (method !== 'GET') return methodNotAllowed(c);
+      const etag = d.metadata.etag();
+      if (c.req.headers['if-none-match'] === etag) return metadataNotModified(etag);
       return {
         status: 200,
-        headers: { 'content-type': 'application/xml', expires: undefined, ETag: d.metadata.etag() },
+        headers: { 'content-type': 'application/xml', expires: undefined, ETag: etag },
         body: d.metadata.csdl(origin, {
           annotations: url.searchParams.get('annotations') === 'true' || prefer.annotations === '*',
         }),
       };
+    }
     case 'batch':
       return batchCall(d, c, common);
     case 'function':
@@ -1629,6 +1648,9 @@ async function batchCall(d, c, common) {
         tenantId: d.tenantId,
         logical: error?.details?.logical,
         method: part.method,
+        errorStacks: d.observed?.dataverseErrorStacks,
+        errorTemplates: d.errorTemplates,
+        attributeErrorContext: dataverseAttributeErrorContext(error, d.observed, d.store),
       });
       // Native answers a route-resolution failure inside a batch without REQ_ID (only Content-Type and OData-Version are left).
       if (error?.details?.route && result.headers) delete result.headers.REQ_ID;
@@ -1913,6 +1935,9 @@ export function createDataverseHandler(deps) {
         tenantId: d.tenantId,
         logical: error?.details?.logical,
         method: c.method,
+        errorStacks: d.observed?.dataverseErrorStacks,
+        errorTemplates: d.errorTemplates,
+        attributeErrorContext: dataverseAttributeErrorContext(error, d.observed, d.store),
       });
       log('dataverse request failed', {
         requestId,
@@ -1936,7 +1961,15 @@ export function createDataverseHandler(deps) {
       res,
       log,
       () => requestId,
-      () => ({ prefer, requestId, origin, tenantId: d.tenantId, method: c.method }),
+      () => ({
+        prefer,
+        requestId,
+        origin,
+        tenantId: d.tenantId,
+        method: c.method,
+        errorStacks: d.observed?.dataverseErrorStacks,
+        errorTemplates: d.errorTemplates,
+      }),
     );
   };
   // serve never rejects here: whatever escapes it still gets an answer or a dropped connection.
@@ -1976,7 +2009,8 @@ export async function startDataverseApi({
   host = '127.0.0.1',
   schema = () => null,
   metadataFields = () => undefined,
-  observed: _observed = null,
+  observed = null,
+  errorTemplates = null,
   clock = () => Date.now(),
   tls = null,
   records = null,
@@ -2036,6 +2070,8 @@ export async function startDataverseApi({
     const requests = [];
     const handle = createDataverseHandler({
       store,
+      observed,
+      errorTemplates,
       change,
       settings,
       operations,

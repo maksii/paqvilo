@@ -1,3 +1,4 @@
+// @test-kind unproven: held or unreviewed platform-sensitive behavior has no native proof in this review.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -25,6 +26,7 @@ const witnesses = Object.fromEntries(requiredNativeWitnesses.map((name, index) =
 const build = (overrides) =>
   buildQualificationDomain({ blueprint, schema, catalogue, manifest: plans, witnesses, ...overrides });
 
+// @test-kind tooling: the source lattice enumerates all 4096 distinct role masks with one-role Gray-code transitions
 test('the source lattice enumerates all 4096 distinct role masks with one-role Gray-code transitions', () => {
   const domain = build(),
     combinations = [...qualificationRoleMasks(domain)];
@@ -89,6 +91,7 @@ test('cache expectations preserve role path multiplicity and drop inactive compl
   assert.deepEqual(expectedPrincipalFootprint(blueprint, schema, 'pqvd_equipment', []), []);
 });
 
+// @test-kind tooling: missing snapshots/cache/backend/context evidence, duplicates and source drift cannot produce a green campaign
 test('missing snapshots/cache/backend/context evidence, duplicates and source drift cannot produce a green campaign', () => {
   const domain = build(),
     cell = qualificationReadCells(domain, { masks: [1] }).next().value;
@@ -122,6 +125,7 @@ test('missing snapshots/cache/backend/context evidence, duplicates and source dr
   assert.throws(() => summarizeQualification(domain, [{ ...good, id: 'wrong' }]), /frozen/);
 });
 
+// @test-kind tooling: scope/hierarchy grammar names 2117 explicit configuration requirements without crediting unrecorded native coverage
 test('scope/hierarchy grammar names 2117 explicit configuration requirements without crediting unrecorded native coverage', () => {
   const domain = scopeHierarchyVariantDomain(),
     cases = [...scopeHierarchyVariantCases(domain)];
@@ -199,6 +203,7 @@ test('the deep graph uses eleven actual Parent edges and classic scope templates
   );
 });
 
+// @test-kind tooling: configuration proof counts actual role-mask cells and never credits a backend guard failure as a permission denial
 test('configuration proof counts actual role-mask cells and never credits a backend guard failure as a permission denial', () => {
   const variant = [...scopeHierarchyVariantCases()].find(
     (variant) => variant.family === 'alternative-grants' && variant.parameters.grants === 3,

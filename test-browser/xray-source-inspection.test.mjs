@@ -1,3 +1,4 @@
+// @test-kind unproven: held or unreviewed platform-sensitive behavior has no native proof in this review.
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -218,6 +219,7 @@ for (const clone of [false, true])
     }
   });
 
+// @test-kind contract: first trusted selection renders its card and clipped outline without reading geometry after the card rebuild
 test('first trusted selection renders its card and clipped outline without reading geometry after the card rebuild', async (t) => {
   const { page, inspect } = await fixture(
     t,
@@ -328,6 +330,7 @@ test('script-rendered unreferenced snippets remain attributable with bounded pag
   );
 });
 
+// @test-kind contract: script truncation notes and displayed source rows agree on root-relative forward-slash paths
 test('script truncation notes and displayed source rows agree on root-relative forward-slash paths', async (t) => {
   const { fx, page, inspect } = await fixture(t, '<button id="id0">Invented button</button>');
   fs.writeFileSync(
@@ -345,6 +348,7 @@ test('script truncation notes and displayed source rows agree on root-relative f
   assert.equal(/[A-Za-z]:\\/.test(text), false);
 });
 
+// @test-kind contract: rendered IDs match exported hints across CSS escaping styles
 test('rendered IDs match exported hints across CSS escaping styles', async (t) => {
   const markup = '<aside id="é:notice"><span>Invented notice</span></aside>';
   const { fx, page, inspect } = await fixture(t, markup);
@@ -363,6 +367,7 @@ test('rendered IDs match exported hints across CSS escaping styles', async (t) =
   );
 });
 
+// @test-kind security+contract: rendered markup hints exclude control values, page text, queries and arbitrary data attributes
 test('rendered markup hints exclude control values, page text, queries and arbitrary data attributes', async (t) => {
   const { page } = await fixture(
     t,
@@ -376,6 +381,7 @@ test('rendered markup hints exclude control values, page text, queries and arbit
   assert.ok(observed.markupTokens.includes('class:div:fixture'));
 });
 
+// @test-kind contract: rendered shape collection stops at its token budget and reports partial evidence
 test('rendered shape collection stops at its token budget and reports partial evidence', async (t) => {
   const { page } = await fixture(
     t,
@@ -386,6 +392,7 @@ test('rendered shape collection stops at its token budget and reports partial ev
   assert.equal(observed.truncated, true);
 });
 
+// @test-kind contract: shape budget does not hide later controls or assets within the bounded document walk
 test('shape budget does not hide later controls or assets within the bounded document walk', async (t) => {
   const { page } = await fixture(
     t,
@@ -402,6 +409,7 @@ test('shape budget does not hide later controls or assets within the bounded doc
   assert.equal(evidence.truncated, true);
 });
 
+// @test-kind contract: unreferenced snippets inserted in open shadow roots retain source candidates without collecting inspector internals
 test('unreferenced snippets inserted in open shadow roots retain source candidates without collecting inspector internals', async (t) => {
   const markup = '<aside id="dynamic-shadow" class="shadow-notice"><slot></slot></aside>';
   const { fx, page, inspect } = await fixture(t, '<section id="host"><b id="slotted-light">Invented</b></section>');
@@ -438,6 +446,7 @@ test('unreferenced snippets inserted in open shadow roots retain source candidat
   );
 });
 
+// @test-kind contract: an exact shadow ID remains attributable after an earlier common class reaches the candidate cap
 test('an exact shadow ID remains attributable after an earlier common class reaches the candidate cap', async (t) => {
   const { fx, page, inspect } = await fixture(
     t,
@@ -473,6 +482,7 @@ test('an exact shadow ID remains attributable after an earlier common class reac
   );
 });
 
+// @test-kind security+contract: X-ray warns about oversized unreferenced sources without presenting them as selected-element matches
 test('X-ray warns about oversized unreferenced sources without presenting them as selected-element matches', async (t) => {
   const { fx, page, inspect } = await fixture(t, '<aside id="oversize-visible">Invented</aside>');
   fs.writeFileSync(

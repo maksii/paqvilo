@@ -448,10 +448,9 @@ function readNumber(sql, start) {
   end = exponentEnd;
   if (float) return { end, numberType: 'float' };
   if (decimal) return { end, numberType: 'decimal' };
-  // Integer literals widen like SQL Server: int, then bigint, then numeric.
+  // SQL Server treats integer constants above int range as decimal, not bigint.
   const value = BigInt(sql.slice(start, end));
   if (value <= 2147483647n) return { end, numberType: 'int' };
-  if (value <= 9223372036854775807n) return { end, numberType: 'bigint' };
   return { end, numberType: 'decimal' };
 }
 

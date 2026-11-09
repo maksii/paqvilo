@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo local configuration, administration, storage or runtime behavior
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -251,7 +252,9 @@ test('one status poll shares its detached simulator snapshot across configuratio
 
 // Each route starts its own simulator and reloads it up to three times; the suite's hang guard bounds the whole test,
 // and each phase's elapsed time is reported so a slow host shows where the time went.
+// @test-kind contract+unproven: server behavior is local; portal or service behavior is not native-qualified
 test('HTTP: a source refresh during rendering retains the revision of the rendered source', async (t) => {
+  // @test-kind contract+unproven: server behavior is local; portal or service behavior is not native-qualified
   for (const route of ['/', '/SignIn/', '/_portal/modal-form-template-path/site?entityformid=modal-edit&id=one'])
     await t.test(route, async (t) => {
       const started = Date.now();
@@ -491,6 +494,7 @@ test('HTTP: summary omits database payloads and record pages preserve CRUD and s
   assert.equal(full.value.length, 2);
 });
 
+// @test-kind contract+unproven: server behavior is local; portal or service behavior is not native-qualified
 test('HTTP: Liquid and API share identity/data; admin CRUD is protected and persists', async (t) => {
   const { app, call, dir } = await setup(t);
   let response = await call('/');
@@ -551,6 +555,7 @@ test('HTTP: Liquid and API share identity/data; admin CRUD is protected and pers
   assert.equal((await call('/_api/contacts(missing)/fullname')).status, 404);
 });
 
+// @test-kind contract+unproven: server behavior is local; portal or service behavior is not native-qualified
 test('HTTP: Liquid AJAX POST reads form parameters without mutating records', async (t) => {
   const { app, dir } = await setup(t);
   await fs.writeFile(
@@ -652,6 +657,7 @@ test('HTTP: origin/host isolation, prototype protection, configuration validatio
   });
   assert.equal(status, 403);
 });
+// @test-kind contract+unproven: server behavior is local; portal or service behavior is not native-qualified
 test('HTTP: declarative plugins enforce validation and atomic secondary side effects', async (t) => {
   const { call } = await setup(t);
   await call('/__sim/api/permissions', 'POST', {
@@ -745,6 +751,7 @@ test('HTTP: an empty Liquid endpoint remains a valid empty response', async (t) 
   assert.equal(response.status, 200);
   assert.equal(await response.text(), '');
 });
+// @test-kind contract+unproven: server behavior is local; portal or service behavior is not native-qualified
 test('HTTP: the current Liquid user reflects contact edits and explicit role switches', async (t) => {
   const { app, call, dir } = await setup(t);
   await call('/__sim/api/records/contact/one', 'PATCH', {
@@ -790,6 +797,7 @@ test('HTTP: built-in presets are discoverable and apply to an older persisted st
   assert.equal(response.status, 200);
   assert.equal((await response.json()).config.permissionMode, 'permissive');
 });
+// @test-kind contract+unproven: server behavior is local; portal or service behavior is not native-qualified
 test('HTTP: forms, lists, lookups, and Liquid use the selected live data provider', async (t) => {
   const requests = [];
   const liveBridge = {
@@ -892,6 +900,7 @@ test('HTTP: forms, lists, lookups, and Liquid use the selected live data provide
   assert.match(await response.text(), /Live data read returned HTTP 403/);
 });
 
+// @test-kind contract+unproven: server behavior is local; portal or service behavior is not native-qualified
 test('HTTP: explicit live page endpoints preserve request bytes, content type, and Prefer', async (t) => {
   const requests = [];
   const liveBridge = {
@@ -939,6 +948,7 @@ test('HTTP: explicit live page endpoints preserve request bytes, content type, a
   assert.equal(response.status, 413);
   assert.equal(requests.length, 1);
 });
+// @test-kind contract+unproven: server behavior is local; portal or service behavior is not native-qualified
 test('HTTP: explicit stylesheet observation preserves profile on partial failure and yields immediately to local edits', async (t) => {
   const requests = [];
   const liveBridge = {
@@ -1001,6 +1011,7 @@ test('HTTP: explicit stylesheet observation preserves profile on partial failure
   assert.ok(requests.every((request) => request.method === 'GET' && request.url === '/theme.css'));
 });
 
+// @test-kind contract+unproven: server behavior is local; portal or service behavior is not native-qualified
 test('HTTP: explicit snippet composition keeps source gates, preserves profiles on failure and yields to source edits', async (t) => {
   const requests = [];
   let broken = false;
@@ -1072,6 +1083,7 @@ test('HTTP: explicit snippet composition keeps source gates, preserves profiles 
   assert.ok(requests.every((request) => request.url === '/' && request.method === 'GET'));
 });
 
+// @test-kind contract+unproven: server behavior is local; portal or service behavior is not native-qualified
 test('HTTP: shell capture persists a complete profile and preserves it on capture failure', async (t) => {
   const requests = [];
   const managedStyle = '/_pcfwebresource/11111111-1111-1111-1111-111111111111?v=2';

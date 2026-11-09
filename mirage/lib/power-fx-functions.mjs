@@ -1175,7 +1175,16 @@ export const FUNCTIONS = {
   Upper: textual((t) => t.toUpperCase()),
   Proper: textual((t) => t.toLowerCase().replace(/(^|[^\p{L}])(\p{L})/gu, (m, a, b) => a + b.toUpperCase())),
   Trim: textual((t) => stripTrailingCharacter(t.replace(/^ +/, ''), ' ').replace(/ {2,}/g, ' ')),
-  TrimEnds: textual((t) => stripTrailingCharacter(t.replace(/^ +/, ''), ' ')),
+  TrimEnds: textual((text) => {
+    // .NET whitespace includes NEL and excludes BOM. Scan boundaries once so a
+    // long interior space run cannot trigger a quadratic end-anchored regex.
+    const whitespace = /\p{White_Space}/u;
+    let start = 0,
+      end = text.length;
+    while (start < end && whitespace.test(text[start])) start++;
+    while (end > start && whitespace.test(text[end - 1])) end--;
+    return text.slice(start, end);
+  }),
   Left: {
     min: 2,
     max: 2,
@@ -1332,9 +1341,12 @@ export const FUNCTIONS = {
         return new FxGuid(typeof fx.host.guid === 'function' ? fx.host.guid() : crypto.randomUUID());
       const t = text(fx, value);
       if (t instanceof FxError) return t;
-      const m = /^\{?([0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12})\}?$/i.exec(t.trim());
+      const m =
+        /^(?:([0-9a-f]{32})|([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})|\{([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\})$/i.exec(
+          t.trim(),
+        );
       if (!m) return fail('InvalidArgument', `'${t}' is not a GUID.`);
-      const hex = m[1].replaceAll('-', '');
+      const hex = (m[1] ?? m[2] ?? m[3]).replaceAll('-', '');
       return new FxGuid(
         `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
       );
@@ -1554,7 +1566,7 @@ export const FUNCTIONS = {
         low > high ||
         maximum - minimum >= Number.MAX_SAFE_INTEGER
       )
-        return fail('InvalidArgument', 'Lower value cannot be greater than upper value or exceed the supported range.');
+        return fail('Numeric', 'Lower value cannot be greater than upper value or exceed the supported range.');
       const value = (fx.host.random ?? Math.random)();
       if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value >= 1)
         return fail('InvalidArgument', 'The random source returned an invalid value.');
@@ -1953,8 +1965,8 @@ export const FUNCTIONS = {
       if (table.value instanceof FxError) return table.value;
       const rows = rowsOf(fx, table.value, 'ForAll');
       if (rows instanceof FxError) return rows;
-      // Learn "ForAll": a blank result adds no record; records stay records, other values go in a Value column.
-      const results = rows.map((row) => inRow(fx, row, table, () => fx.ev(args[1]))).filter((value) => !isBlank(value));
+      // The official package retains a blank scalar result as a blank Value cell; native Canvas reproduces the row count.
+      const results = rows.map((row) => inRow(fx, row, table, () => fx.ev(args[1])));
       // An element that failed (a refused Patch, an Error()) makes ForAll an error value, so a behaviour formula sees the
       // failure and IfError/IsError still handle it. Assumed: native surfaces such element errors to the caller.
       const failed = results.filter((value) => value instanceof FxError);

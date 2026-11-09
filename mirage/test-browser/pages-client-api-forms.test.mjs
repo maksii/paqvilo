@@ -1,3 +1,4 @@
+// @test-kind unproven: broad form/value/validator/file and hosted-component models; finite source-bound native control guarantees are qualified separately.
 // $pages forms, tabs, sections and controls over a rendered native basic form, and the file-column methods over the
 // portal Web API.
 import test, { before, after } from 'node:test';
@@ -189,8 +190,9 @@ test('$pages forms bind to the rendered basic form: tabs, sections, values, visi
     ['x_flag', 'MultipleChoice'],
   ]);
   assert.deepEqual(read.tabs, [
-    ['general', [['main', ['x_name', 'x_count', 'x_kind']]]],
-    ['more', [['extra', ['x_note', 'x_flag']]]],
+    // @parity-evidence: repeated2026-11-08 native diagnostics and Microsoft getName method source establish rendered labels rather than logical names; all26 source-label relations replay exactly.
+    ['general', [['main', ['Name', 'Count', 'Kind']]]],
+    ['more', [['extra', ['Note', 'Flag']]]],
   ]);
   assert.deepEqual(read.values, ['Changed', 'Changed', '2', 'Dropdown', true, true]);
   assert.match(read.tooLong, /maximum length 20/);

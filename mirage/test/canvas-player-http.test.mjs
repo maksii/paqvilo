@@ -1,3 +1,4 @@
+// @test-kind contract: local Canvas player HTTP admission, capability diagnostics and source-asset routing are Paqvilo-specific policies, not native rendering claims.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -12,6 +13,7 @@ const closeServer = (server) => {
   return new Promise((resolve) => server.close(resolve));
 };
 
+// @test-kind security+contract: local GET/inspection is inert; explicit starts require CSRF, bounded inputs and the current source revision before the runtime stub is called.
 test('player GET is inert, assets are same-origin and start requires CSRF', async (t) => {
   let starts = 0;
   let launchOptions;
@@ -98,6 +100,7 @@ test('player GET is inert, assets are same-origin and start requires CSRF', asyn
   assert.match(inspect, /Headless app/);
 });
 
+// Source-coverage levels and bounded-player wording are explicit local inventory contracts; this test never invokes native controls.
 test('partial canvas sources remain playable but list and inventory report incomplete coverage', async (t) => {
   const source = {
     app: { name: 'Partial' },
@@ -127,6 +130,7 @@ test('partial canvas sources remain playable but list and inventory report incom
   assert.doesNotMatch(html, /Canvas apps are not rendered/);
 });
 
+// @test-kind security+contract: a locally diagnosed name collision is inspected without evaluation and refused before executing an admitted formula; native collision handling is not asserted.
 test('collision source is inventoried without starting, and real runtime refuses start before OnStart', async (t) => {
   const archive = writeSolutionAssetEntries([
     { name: 'Src/App.pa.yaml', data: Buffer.from('App:\n  Properties:\n    OnStart: =Set(marker, true)\n') },
@@ -179,6 +183,7 @@ test('collision source is inventoried without starting, and real runtime refuses
   assert.equal(evaluations, 0);
 });
 
+// @test-kind security: local archive asset routes expose only admitted image bytes and refuse HTML, traversal and writes under same-origin response headers.
 test('canvas archive media is served only through bounded same-origin asset routes', async (t) => {
   const archive = writeSolutionAssetEntries([
     { name: 'Src/Home.pa.yaml', data: Buffer.from('Screens:\n  Home: {}\n') },

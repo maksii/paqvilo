@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "scope": "One-to-many selected collection response and source-bound single child identity. N:N association/count/delete, ordering beyond one child and audit semantics excluded.",
+  "producerSha256": "e5a598eeccb0a9f661dd7dccb096d5bf6bba2a857d511c7e917f85dd311e8bc8",
+  "captures": [
+    {
+      "source": "dataverse-native-1794134489551",
+      "planSha256": "7f563681e6ba73556bd54ebf6c3a502c3188116a859cf19624c8a0df29a49c97",
+      "runSha256": "0e9461f99f2956719746247305f4f9cee8a97eb8ffa7ebe5e5236d1861c2e6aa",
+      "metadataSha256": "0eb8add6f4e61e1d42e416de0b64ea9a50930ac5b8366627b4d374b8b01854de",
+      "bodySha256": "083daec7ba08465108a5c0e331fc31d162b970c361ce7d1667ade96a759fdfc5",
+      "facts": {
+        "status": 200,
+        "seedChildBoundToParent": true,
+        "requestedSelectedParentCollection": true,
+        "onlySeedChildReturned": true,
+        "selectedCollectionContextExact": true
+      }
+    },
+    {
+      "source": "dataverse-native-1794135645404",
+      "planSha256": "36c13dcd26944a69916a125e98a1222389a5bfd3b2050fc02934b17d48beac01",
+      "runSha256": "089dba4316b3d686fcac87671bbe4fc26a7e6f1d25af64ee00f9268e282e6f58",
+      "metadataSha256": "0eb8add6f4e61e1d42e416de0b64ea9a50930ac5b8366627b4d374b8b01854de",
+      "bodySha256": "aad538901bb29df1ffeb1a789c8c507a56e989bd3fd919a1eabce88c563132a3",
+      "facts": {
+        "status": 200,
+        "seedChildBoundToParent": true,
+        "requestedSelectedParentCollection": true,
+        "onlySeedChildReturned": true,
+        "selectedCollectionContextExact": true
+      }
+    }
+  ]
+}

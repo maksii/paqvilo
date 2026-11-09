@@ -42,6 +42,7 @@ import {
 } from './odata-query.mjs';
 import { assertExpand, assertExpandText, childLinks } from './dataverse-expand.mjs';
 import { FORMATTED, NAVIGATION, createWebApiFormatter } from './webapi-format.mjs';
+import { orderODataProperties } from './odata-property-order.mjs';
 import { baseCurrencyRow, ownershipOf, privilegeDeniedError, privilegeName, uuidV5 } from './dataverse-security.mjs';
 import { dateTimeBehavior, fieldKind, formattedValue, guidKey, isDateOnlyField, isoUtc } from './dataverse-values.mjs';
 import { fixedScaleNumeric } from './exact-numeric.mjs';
@@ -222,9 +223,14 @@ function checkQuery(url, { nativeSyntax = false } = {}) {
         });
       if (name === '$search')
         throw new DataError('The "$search" query parameter isn\'t supported.', 501, 'UnsupportedQueryFunction');
-      throw new DataError(`The query parameter ${name} is not supported`, 400, 'UnsupportedQuery', {
-        innerCode: '0x80060888',
-      });
+      throw new DataError(
+        `The query parameter ${nativeSyntax ? '[REDACTED]' : name} is not supported`,
+        400,
+        'UnsupportedQuery',
+        {
+          innerCode: '0x80060888',
+        },
+      );
     }
   }
 }
@@ -758,6 +764,7 @@ export function createRecordHandlers({
   const secured = (c, extra = {}) =>
     queryOptions({
       bypassCustomPlugins: c.bypassCustomPlugins === true,
+      odataNullEquality: Boolean(c.dataverseHttpReader) && !c.portal,
       ...extra,
       ...rowsOptionsOf(c),
     });
@@ -1087,12 +1094,12 @@ export function createRecordHandlers({
       assertUnmaskedQuery(c, mapping, { filter, orderby: params.get('$orderby'), expand: items }, aliases);
   }
 
-  function shapeOrganizationLookup(c, mapping, formatted) {
+  function shapeOrganizationLookup(c, mapping, formatted, single = false) {
     const organizationId = organizationRecord(store)?.organizationid;
     const selected = parseSelect(c.url.searchParams.get('$select'));
     if (
       organizationId &&
-      (selected == null || selected.includes('_organizationid_value')) &&
+      (single || selected == null || selected.includes('_organizationid_value')) &&
       formatted._organizationid_value === undefined &&
       ownershipOf(mapping.logicalName, undefined, mapping) === 'org'
     )
@@ -1125,8 +1132,9 @@ export function createRecordHandlers({
     )
       delete formatted[CURRENCY];
     shapeOwnerAnnotations(formatted);
-    // Organization-owned rows answer the organization lookup when no $select is given or the $select names it.
-    shapeOrganizationLookup(c, mapping, formatted);
+    // Keyed organization-owned reads retain their organization lookup under $select;
+    // a collection only includes it when selected or when reading every column.
+    shapeOrganizationLookup(c, mapping, formatted, options?.single === true);
     // A picklist value with no option still answers its FormattedValue, as null (a value of -1, for example).
     shapeChoiceFormatted(mapping, formatted);
     const named = options?.single === true && moneyNamed(c, mapping);
@@ -1139,7 +1147,24 @@ export function createRecordHandlers({
     if (options?.expand?.length)
       pageExpansions(c, mapping, row, formatted, options.expand, { collection: options.single !== true });
     projectRow(c, mapping, formatted, options?.expand, options?.single === true);
-    return formatted;
+    return orderHttpRow(c, mapping, formatted, options?.expand);
+  }
+
+  // Only entity rows and explicitly declared expanded relationships participate.
+  // Run after row/column projection so metadata order cannot admit a hidden field.
+  function orderHttpRow(c, mapping, formatted, expand = []) {
+    if (!c.dataverseHttpReader || !metadata?.httpPropertyOrder) return formatted;
+    const result = orderODataProperties(formatted, metadata.httpPropertyOrder(mapping.logicalName));
+    for (const spec of expand) {
+      const rel = navigationOf(mapping, spec.navigation),
+        value = result[spec.navigation];
+      if (!rel || value == null || typeof value !== 'object') continue;
+      const target = store.resolveMapping(rel.entity);
+      result[spec.navigation] = Array.isArray(value)
+        ? value.map((row) => orderHttpRow(c, target, row, spec.expand))
+        : orderHttpRow(c, target, value, spec.expand);
+    }
+    return result;
   }
 
   function selectedSystemValues(c, mapping, projected, formatted) {
@@ -1261,7 +1286,7 @@ export function createRecordHandlers({
   }
 
   // An expanded collection holds at most PAGE_CAP rows; its nav@odata.nextLink pages on through the navigation (nested paging).
-  // A collection query links every expanded collection (short or empty too); a child row carries its parent's lookup; a
+  // A collection query links every expanded collection (short or empty too); its child row carries the parent's lookup; a
   // child with no $select carries every column; a single-valued expansion carries its etag.
   function pageExpansion(c, mapping, row, formatted, item, collection) {
     const rel = navigationOf(mapping, item.navigation);
@@ -1273,7 +1298,7 @@ export function createRecordHandlers({
       if (stored) value['@odata.etag'] = store.etag(stored);
       return;
     }
-    if (rel.many !== false) for (const child of value) shapeChild(c, mapping, row, rel, child, item);
+    if (rel.many !== false) for (const child of value) shapeChild(c, mapping, row, rel, child, item, collection);
     if (value.length <= PAGE_CAP) {
       if (collection) {
         const link = childLinks(c.origin, c.version, mapping.entitySet, row[mapping.idColumn], item.navigation, item);
@@ -1302,10 +1327,10 @@ export function createRecordHandlers({
   }
 
   // One expanded child of a collection: its referencing lookup, and every column when the expansion selects none.
-  function shapeChild(c, mapping, row, rel, child, item) {
-    if (item.select) return;
-    if (rel.to && rel.from && child[`_${rel.to}_value`] === undefined)
+  function shapeChild(c, mapping, row, rel, child, item, collection) {
+    if (collection && !rel.intersect && rel.to && rel.from && child[`_${rel.to}_value`] === undefined)
       child[`_${rel.to}_value`] = row[rel.from] ?? null;
+    if (item.select) return;
     const target = store.resolveMapping(rel.entity);
     for (const name of columnNamesOf(target).names) if (!(name in child)) child[name] = null;
     const organizationId = organizationRecord(store)?.organizationid;
@@ -2309,16 +2334,19 @@ export function createRecordHandlers({
       ...odataToSdkQuery(mapping.logicalName, params, store),
       columnSet: { allColumns: false, columns: [] },
     };
-    const target = recordToSdkEntity(
-      store,
-      mapping.logicalName,
-      store.normalizeRecord(mapping, payload(mapping, structuredClone(body))),
-      {
-        allColumns: true,
-        submitted: true,
-        target: true,
-      },
-    );
+    const submitted = payload(mapping, structuredClone(body));
+    for (const [name, value] of Object.entries(submitted))
+      if (name.endsWith(BIND) && value !== null) for (const reference of [].concat(value)) refOf(reference);
+    const input = store.normalizeRecord(mapping, submitted);
+    // HTTP primitives must pass the HTTP reader before the existence pipeline
+    // constructs an SDK Target. Invalid Double/choice inputs otherwise escape
+    // as unsupported SDK values instead of the native payload validation fault.
+    store.coerceRecord(mapping, structuredClone(input), writeOptions({ dataverseHttpReader: c.dataverseHttpReader }));
+    const target = recordToSdkEntity(store, mapping.logicalName, input, {
+      allColumns: true,
+      submitted: true,
+      target: true,
+    });
     target.id = key.alternate ? empty : key.id;
     if (key.alternate) target.keyAttributes = { ...key.alternate };
     store.query(mapping.logicalName, params, c.identity, null, {

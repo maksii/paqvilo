@@ -1,3 +1,4 @@
+// @test-kind unproven: local review has not established every held or unreviewed platform-sensitive behavior.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -25,6 +26,7 @@ const doctor = (cwd, ...args) =>
       ),
   );
 
+// @test-kind contract: export-wide profile lint warns on an unbound profile and binding it fails readiness
 test('export-wide profile lint warns on an unbound profile and binding it fails readiness', async (t) => {
   const fx = createFixture();
   t.after(fx.cleanup);
@@ -101,6 +103,7 @@ test('export-wide profile lint warns on an unbound profile and binding it fails 
   );
 });
 
+// @test-kind contract: duplicate source keys gate Sources independently of Lense readiness
 test('duplicate source keys gate Sources independently of Lense readiness', async (t) => {
   const fx = createFixture();
   t.after(fx.cleanup);
@@ -153,6 +156,7 @@ test('duplicate source keys gate Sources independently of Lense readiness', asyn
   assert.match(answer.errors[0].message, /nosuch.*invented/);
 });
 
+// @test-kind contract: doctor JSON normalizes nested Mirage errors and aggregates only opted-in gating failures
 test('doctor JSON normalizes nested Mirage errors and aggregates only opted-in gating failures', async (t) => {
   const fx = createFixture();
   t.after(fx.cleanup);
@@ -188,6 +192,7 @@ test('doctor JSON normalizes nested Mirage errors and aggregates only opted-in g
   assert.ok(nested.every((error) => typeof error.code === 'string' && typeof error.message === 'string'));
 });
 
+// @test-kind contract: deployment-profile diagnostics use forward slashes for project-relative paths
 test('deployment-profile diagnostics use forward slashes for project-relative paths', async (t) => {
   const fx = createFixture();
   t.after(fx.cleanup);

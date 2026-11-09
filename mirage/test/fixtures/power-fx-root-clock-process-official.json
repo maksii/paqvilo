@@ -1,0 +1,268 @@
+{
+  "scope": "Repeated original formulas in genuine Microsoft interpreter with process-only virtualized wall clock; this is official-package behavior in the stated host, not a native Canvas capture.",
+  "package": {
+    "id": "Microsoft.PowerApps.CLI",
+    "version": "2.13.1",
+    "sha256": "07654af406781c1676d1bc5712c393fab2276e54f15ff10bb74a1bdef0d27d3f",
+    "source": "https://api.nuget.org/v3-flatcontainer/microsoft.powerapps.cli/2.13.1/microsoft.powerapps.cli.2.13.1.nupkg"
+  },
+  "original": {
+    "baselineCommit": "1171cccc8baed9218f7fd7689afae4abdc89252b",
+    "sourceSha256": "f28d696944a17b3785e497e50767ddb534ab0e232a859bf9bcfe09018481bc86",
+    "sourceListSha256": "c31310e92e6a70af8cceffd5c698b8f068c447c5d28926987c36371b438fdf4b",
+    "cases": [
+      {
+        "caseIndex": 153,
+        "expandedCaseId": "mirage/test/power-fx-language.test.mjs:236:2/case/152",
+        "expression": "TimeZoneOffset()",
+        "expected": 420
+      },
+      {
+        "caseIndex": 154,
+        "expandedCaseId": "mirage/test/power-fx-language.test.mjs:236:2/case/153",
+        "expression": "Text(DateAdd(Now(), TimeZoneOffset(), TimeUnit.Minutes), \"dd-mm-yyyy hh:mm\")",
+        "expected": "15-07-2013 20:02"
+      }
+    ]
+  },
+  "host": {
+    "injectedUtc": "2013-07-15T20:02:00.0000000Z",
+    "timeZone": "America/Los_Angeles",
+    "culture": "en-US",
+    "numberIsFloat": false,
+    "systemTimeModified": false,
+    "framework": ".NET 10.0.14"
+  },
+  "producer": {
+    "sourceSha256": "780455def94b560c5d28a29d139732b1d302f07ea22cdff388916bf643ef4dd6",
+    "projectSha256": "21271ed61516bdd05af5040d3380abc5cf48df04bd30f3d508754d7559279709",
+    "dllSha256": "66045610e58d5a4ae8c093485fe244c7b8437eba3bd6fa4051bf257a1a5b8a69",
+    "shimPackage": "Ubuntu libfaketime 0.9.10-2.1 amd64",
+    "shimPackageSha256": "25fc8987f1f700c58603f68edd93ac03a1b7dea35da1e84509f29f444d5b11e9",
+    "shimSha256": "7ac8a1cdff1b627548de11513fddedd75014f5b041e9ae9054a634bb04aa7982",
+    "monotonicVirtualizationDisabled": true,
+    "sourceBoundReceiptSha256": "77a99d6fe199b6fc4a67383241673a48f3bb779daa2b074b7079a193d51957dc",
+    "timedValidationSha256": "1d6aa3aa19181eb0c9500bd64684ad94a7dc6a0e0ea79c90c50df82c94a007fb",
+    "launcherSha256": "074d4a1d79863cae67511235b15ed5f8acc3632b7a1792b2eaa305ed1f3e6a9d",
+    "launchReceiptSha256": "a7b769e5c835c920356970869b6c420578733185d8340295ad01447e44e6873d",
+    "runtimeInfoSha256": "289acd453e8a559dd71d043e251638275919b9af095cbbcc84d17b1618ceb60c",
+    "systemBinaryHashesSha256": "4d1ec353811a28043ccadddbea56a261efdba2950b60d3251ad069a89744f1bc",
+    "assemblies": [
+      {
+        "FullName": "Microsoft.PowerFx.Interpreter, Version=1.99.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35",
+        "ModuleVersionId": "c00830f1-cff1-4ce9-97a2-c7d759869bac",
+        "sha256": "f06ed03f9599741990e2db49bbb495b88b5655faab89d5a5017dbec9c75ac780"
+      },
+      {
+        "FullName": "Microsoft.PowerFx.Core, Version=1.99.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35",
+        "ModuleVersionId": "79d79918-0479-450c-915a-1f34bac32028",
+        "sha256": "a9e79158c58284ae99b958f285a7ef81a345b1553a2db5df06a0d52612bf170b"
+      }
+    ]
+  },
+  "runs": [
+    {
+      "rawSha256": "48677ca8a62b0f3bc89f15624a0f5be86a2978ff9839dff6f0f709aea8f2b63a",
+      "processId": 290,
+      "wallBefore": {
+        "local": "2013-07-15T13:02:00.0000000-07:00",
+        "utc": "2013-07-15T20:02:00.0000000Z",
+        "localZone": "America/Los_Angeles",
+        "localOffset": "-07:00:00"
+      },
+      "wallAfter": {
+        "local": "2013-07-15T13:02:00.0000000-07:00",
+        "utc": "2013-07-15T20:02:00.0000000Z"
+      },
+      "capabilitiesEffective": "0000000000000000",
+      "uid": 65534,
+      "producerSha256": "66045610e58d5a4ae8c093485fe244c7b8437eba3bd6fa4051bf257a1a5b8a69",
+      "shimSha256": "7ac8a1cdff1b627548de11513fddedd75014f5b041e9ae9054a634bb04aa7982",
+      "inputSha256": "14c2a4d6c9810908658516416ed856c18581ae41fc089a3bed15146c795f5bd0",
+      "monotonicElapsedMilliseconds": 117.5498,
+      "outerMonotonicElapsedMilliseconds": 5870.7043,
+      "cases": [
+        {
+          "caseIndex": 153,
+          "expression": "TimeZoneOffset()",
+          "expected": 420,
+          "result": {
+            "expression": "TimeZoneOffset()",
+            "phase": "evaluation",
+            "kind": "value",
+            "type": "NumberValue",
+            "value": 420,
+            "errors": null,
+            "diagnostics": []
+          }
+        },
+        {
+          "caseIndex": 154,
+          "expression": "Text(DateAdd(Now(), TimeZoneOffset(), TimeUnit.Minutes), \"dd-mm-yyyy hh:mm\")",
+          "expected": "15-07-2013 20:02",
+          "result": {
+            "expression": "Text(DateAdd(Now(), TimeZoneOffset(), TimeUnit.Minutes), \"dd-mm-yyyy hh:mm\")",
+            "phase": "evaluation",
+            "kind": "value",
+            "type": "StringValue",
+            "value": "15-07-2013 20:02",
+            "errors": null,
+            "diagnostics": []
+          }
+        }
+      ],
+      "receiptSha256": "b24fa4ac39fdc66ddc170933b08c2ba9faf063c66c34cc2386762cc7cbd92fea"
+    },
+    {
+      "rawSha256": "a875d54ac6104299570615ce472c034c423b059120c99a808cdf23e6a6b07337",
+      "processId": 1054,
+      "wallBefore": {
+        "local": "2013-07-15T13:02:00.0000000-07:00",
+        "utc": "2013-07-15T20:02:00.0000000Z",
+        "localZone": "America/Los_Angeles",
+        "localOffset": "-07:00:00"
+      },
+      "wallAfter": {
+        "local": "2013-07-15T13:02:00.0000000-07:00",
+        "utc": "2013-07-15T20:02:00.0000000Z"
+      },
+      "capabilitiesEffective": "0000000000000000",
+      "uid": 65534,
+      "producerSha256": "66045610e58d5a4ae8c093485fe244c7b8437eba3bd6fa4051bf257a1a5b8a69",
+      "shimSha256": "7ac8a1cdff1b627548de11513fddedd75014f5b041e9ae9054a634bb04aa7982",
+      "inputSha256": "14c2a4d6c9810908658516416ed856c18581ae41fc089a3bed15146c795f5bd0",
+      "monotonicElapsedMilliseconds": 122.9878,
+      "outerMonotonicElapsedMilliseconds": 643.6479,
+      "cases": [
+        {
+          "caseIndex": 153,
+          "expression": "TimeZoneOffset()",
+          "expected": 420,
+          "result": {
+            "expression": "TimeZoneOffset()",
+            "phase": "evaluation",
+            "kind": "value",
+            "type": "NumberValue",
+            "value": 420,
+            "errors": null,
+            "diagnostics": []
+          }
+        },
+        {
+          "caseIndex": 154,
+          "expression": "Text(DateAdd(Now(), TimeZoneOffset(), TimeUnit.Minutes), \"dd-mm-yyyy hh:mm\")",
+          "expected": "15-07-2013 20:02",
+          "result": {
+            "expression": "Text(DateAdd(Now(), TimeZoneOffset(), TimeUnit.Minutes), \"dd-mm-yyyy hh:mm\")",
+            "phase": "evaluation",
+            "kind": "value",
+            "type": "StringValue",
+            "value": "15-07-2013 20:02",
+            "errors": null,
+            "diagnostics": []
+          }
+        }
+      ],
+      "receiptSha256": "b2a067a36f938dfdd221bb61e86052fc893eba584e659bb21ca32cc03edb19ea"
+    }
+  ],
+  "controls": [
+    {
+      "rawSha256": "6d4636027b1448a4a7777793c469569488c9eb95ba0f69375ffe75d0135b84d8",
+      "processId": 1094,
+      "wallBefore": {
+        "local": "2013-01-15T12:02:00.0000000-08:00",
+        "utc": "2013-01-15T20:02:00.0000000Z",
+        "localZone": "America/Los_Angeles",
+        "localOffset": "-08:00:00"
+      },
+      "wallAfter": {
+        "local": "2013-01-15T12:02:00.0000000-08:00",
+        "utc": "2013-01-15T20:02:00.0000000Z"
+      },
+      "uid": 65534,
+      "capabilitiesEffective": "0000000000000000",
+      "producerSha256": "66045610e58d5a4ae8c093485fe244c7b8437eba3bd6fa4051bf257a1a5b8a69",
+      "inputSha256": "14c2a4d6c9810908658516416ed856c18581ae41fc089a3bed15146c795f5bd0",
+      "offset": 480,
+      "composed": "15-07-2013 21:02",
+      "winterExplicit": 480,
+      "summerExplicit": 420,
+      "now": "2013-07-15T13:02:00"
+    },
+    {
+      "rawSha256": "7955aebf432b5caa44f1e67f740b718847f1d398d885379954aad668c859e931",
+      "processId": 1564,
+      "wallBefore": {
+        "local": "2013-01-15T12:02:00.0000000-08:00",
+        "utc": "2013-01-15T20:02:00.0000000Z",
+        "localZone": "America/Los_Angeles",
+        "localOffset": "-08:00:00"
+      },
+      "wallAfter": {
+        "local": "2013-01-15T12:02:00.0000000-08:00",
+        "utc": "2013-01-15T20:02:00.0000000Z"
+      },
+      "uid": 65534,
+      "capabilitiesEffective": "0000000000000000",
+      "producerSha256": "66045610e58d5a4ae8c093485fe244c7b8437eba3bd6fa4051bf257a1a5b8a69",
+      "inputSha256": "14c2a4d6c9810908658516416ed856c18581ae41fc089a3bed15146c795f5bd0",
+      "offset": 480,
+      "composed": "15-07-2013 21:02",
+      "winterExplicit": 480,
+      "summerExplicit": 420,
+      "now": "2013-07-15T13:02:00"
+    },
+    {
+      "rawSha256": "5d5900fb9dfb2aa1a6c0e056fdd6f3ac8862d7c792d29d187e64de6fdce28115",
+      "processId": 2013,
+      "wallBefore": {
+        "local": "2013-07-15T20:02:00.0000000+00:00",
+        "utc": "2013-07-15T20:02:00.0000000Z",
+        "localZone": "UTC",
+        "localOffset": "00:00:00"
+      },
+      "wallAfter": {
+        "local": "2013-07-15T20:02:00.0000000+00:00",
+        "utc": "2013-07-15T20:02:00.0000000Z"
+      },
+      "uid": 65534,
+      "capabilitiesEffective": "0000000000000000",
+      "producerSha256": "66045610e58d5a4ae8c093485fe244c7b8437eba3bd6fa4051bf257a1a5b8a69",
+      "inputSha256": "14c2a4d6c9810908658516416ed856c18581ae41fc089a3bed15146c795f5bd0",
+      "offset": 420,
+      "composed": "15-07-2013 20:02",
+      "winterExplicit": 480,
+      "summerExplicit": 420,
+      "now": "2013-07-15T13:02:00"
+    },
+    {
+      "rawSha256": "3dbf5f3aba7d23c11428ee4b34f4b215664d75b4b8cad4312e4ce04a1868739b",
+      "processId": 2422,
+      "wallBefore": {
+        "local": "2013-07-15T20:02:00.0000000+00:00",
+        "utc": "2013-07-15T20:02:00.0000000Z",
+        "localZone": "UTC",
+        "localOffset": "00:00:00"
+      },
+      "wallAfter": {
+        "local": "2013-07-15T20:02:00.0000000+00:00",
+        "utc": "2013-07-15T20:02:00.0000000Z"
+      },
+      "uid": 65534,
+      "capabilitiesEffective": "0000000000000000",
+      "producerSha256": "66045610e58d5a4ae8c093485fe244c7b8437eba3bd6fa4051bf257a1a5b8a69",
+      "inputSha256": "14c2a4d6c9810908658516416ed856c18581ae41fc089a3bed15146c795f5bd0",
+      "offset": 420,
+      "composed": "15-07-2013 20:02",
+      "winterExplicit": 480,
+      "summerExplicit": 420,
+      "now": "2013-07-15T13:02:00"
+    }
+  ],
+  "limits": [
+    "The original test remains a mixed 193-case matrix; this proof qualifies only cases 153 and 154, not the whole definition.",
+    "UTCNow, UTCToday and IsUTCToday remain unsupported by this installed interpreter.",
+    "Privileged preliminary runs are excluded."
+  ]
+}

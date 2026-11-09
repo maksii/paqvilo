@@ -17,6 +17,7 @@ import { mapLimit } from './solution-cache.mjs';
 import { importSolutionPlugins, resolvePluginSourceFiles } from './exported-plugins.mjs';
 import { matchingSystemForms, portalFormEligible } from './system-form-selection.mjs';
 import { advancedFormGraph } from './advanced-form-graph.mjs';
+import { standardFields } from './dataverse-standard.mjs';
 
 export { parseSolutionXml };
 
@@ -221,15 +222,16 @@ function quickFormCell(cell, control, quickForms, context) {
 }
 
 function fieldCell(cell, control, parameters, context, fields) {
-  const { metadata, lcid, componentBindings, richTextControls, known } = context;
+  const { metadata, lcid, componentBindings, richTextControls, known, referenceFields } = context;
   const name = norm(control.attrs.datafieldname);
   const lookupViewId = norm(text(parameters, 'DefaultViewId'));
   const lookupView = metadata.views.find((view) => view.id === lookupViewId);
   const controlDefinition = {
+    ...referenceFields[name],
     ...known[name],
     name,
     id: control.attrs.id ?? name,
-    label: label(child(cell, 'labels'), lcid) ?? known[name]?.label ?? name,
+    label: label(child(cell, 'labels'), lcid) ?? known[name]?.label ?? referenceFields[name]?.label ?? name,
     // Form XML read-only; column create/update validity (validForCreate/validForUpdate)
     // applies to the mode the form renders in (an inactive record renders read-only).
     readOnly: control.attrs.disabled === 'true',
@@ -669,7 +671,15 @@ function formSchema(form, definition, metadata, dependencyDepth = 0) {
   const fields = [];
   const layout = [];
   const known = metadata.entities[form.entity]?.fields ?? {};
-  const context = { metadata, lcid, componentBindings, richTextControls, dependencyDepth, known };
+  const context = {
+    metadata,
+    lcid,
+    componentBindings,
+    richTextControls,
+    dependencyDepth,
+    known,
+    referenceFields: standardFields(form.entity),
+  };
   for (const tab of chosen) {
     // Native portal controls omit systemform tabs explicitly marked invisible.
     // Their repeated bindings must not become extra required browser controls.

@@ -1,0 +1,170 @@
+{
+  "version": 1,
+  "scope": "Repeated owned native plug-in proves input DateTime ticks reach the plug-in unchanged while the same fixed CLR value retains seven digits as an explicitly returned String and loses fractions as a declared DateTime HTTP output. SDK internal values and input parsing must retain ticks; serialization applies only to the DateTime response property.",
+  "receiptSha256": "e81621b8e935ff47f98b2361124d07d7813c266e34d75f6098ea58a695a69278",
+  "pairedFactsSha256": "c196ca0c0ec4715464dde511a7d290eb7890773a693fbebbd9c2cd673bd9d49e",
+  "producer": {
+    "sourceSha256": "b07bcf82a367d16126d9bd1c85ba8725e068862b9f4973c8939f2e1899c59069",
+    "assemblySha256": "f4d0e0e6d1981f2e31a03aa95e26088cba97c1d39a0f36317a407b75cf7268ce",
+    "moduleVersionId": "6869ee7c-f3e9-4967-b409-4db3cf94ad93",
+    "csdlSha256": "865313beec70eb5fe19ef696f5d4a8ede7c5209f1258a59a5be0849e142a1ae7",
+    "controllerSha256": "02203e4ff8d89442be8a3106ab6ad62ee9c8c988d6dcf400523575eeede31ce7",
+    "publicationControllerSha256": "b4b5b48d6139b6520d3ffd22bae2796f8660473619752336e8f956479fb1d64c"
+  },
+  "expected": {
+    "inputUtcTicksRetained": true,
+    "dateTimeOutputFractionalDigits": 0,
+    "stringOutputTicksRetained": true
+  },
+  "rounds": [
+    [
+      {
+        "id": "precision.utc-seven-digits",
+        "input": {
+          "When": "2020-01-15T12:34:56.1234567Z"
+        },
+        "facts": {
+          "InputRoundtrip": {
+            "present": true,
+            "value": "2020-01-15T12:34:56.1234567Z"
+          },
+          "InputKind": {
+            "present": true,
+            "value": "Utc"
+          },
+          "FixedRoundtrip": {
+            "present": true,
+            "value": "2020-01-15T12:34:56.1234567Z"
+          },
+          "FixedReply": {
+            "present": true,
+            "value": "2020-01-15T12:34:56Z"
+          }
+        }
+      },
+      {
+        "id": "precision.utc-trailing-zeros",
+        "input": {
+          "When": "2020-01-15T12:34:56.1200000Z"
+        },
+        "facts": {
+          "InputRoundtrip": {
+            "present": true,
+            "value": "2020-01-15T12:34:56.1200000Z"
+          },
+          "InputKind": {
+            "present": true,
+            "value": "Utc"
+          },
+          "FixedRoundtrip": {
+            "present": true,
+            "value": "2020-01-15T12:34:56.1234567Z"
+          },
+          "FixedReply": {
+            "present": true,
+            "value": "2020-01-15T12:34:56Z"
+          }
+        }
+      },
+      {
+        "id": "precision.no-input-fixed-output",
+        "input": {},
+        "facts": {
+          "InputRoundtrip": {
+            "present": true,
+            "value": "0001-01-01T00:00:00.0000000"
+          },
+          "InputKind": {
+            "present": true,
+            "value": "Unspecified"
+          },
+          "FixedRoundtrip": {
+            "present": true,
+            "value": "2020-01-15T12:34:56.1234567Z"
+          },
+          "FixedReply": {
+            "present": true,
+            "value": "2020-01-15T12:34:56Z"
+          }
+        }
+      }
+    ],
+    [
+      {
+        "id": "precision.utc-seven-digits",
+        "input": {
+          "When": "2020-01-15T12:34:56.1234567Z"
+        },
+        "facts": {
+          "InputRoundtrip": {
+            "present": true,
+            "value": "2020-01-15T12:34:56.1234567Z"
+          },
+          "InputKind": {
+            "present": true,
+            "value": "Utc"
+          },
+          "FixedRoundtrip": {
+            "present": true,
+            "value": "2020-01-15T12:34:56.1234567Z"
+          },
+          "FixedReply": {
+            "present": true,
+            "value": "2020-01-15T12:34:56Z"
+          }
+        }
+      },
+      {
+        "id": "precision.utc-trailing-zeros",
+        "input": {
+          "When": "2020-01-15T12:34:56.1200000Z"
+        },
+        "facts": {
+          "InputRoundtrip": {
+            "present": true,
+            "value": "2020-01-15T12:34:56.1200000Z"
+          },
+          "InputKind": {
+            "present": true,
+            "value": "Utc"
+          },
+          "FixedRoundtrip": {
+            "present": true,
+            "value": "2020-01-15T12:34:56.1234567Z"
+          },
+          "FixedReply": {
+            "present": true,
+            "value": "2020-01-15T12:34:56Z"
+          }
+        }
+      },
+      {
+        "id": "precision.no-input-fixed-output",
+        "input": {},
+        "facts": {
+          "InputRoundtrip": {
+            "present": true,
+            "value": "0001-01-01T00:00:00.0000000"
+          },
+          "InputKind": {
+            "present": true,
+            "value": "Unspecified"
+          },
+          "FixedRoundtrip": {
+            "present": true,
+            "value": "2020-01-15T12:34:56.1234567Z"
+          },
+          "FixedReply": {
+            "present": true,
+            "value": "2020-01-15T12:34:56Z"
+          }
+        }
+      }
+    ]
+  ],
+  "cleanup": {
+    "ownedComponentAbsences": 8,
+    "ownedActionAbsent": true,
+    "originalAssemblyAndStepStateUnchanged": true
+  }
+}

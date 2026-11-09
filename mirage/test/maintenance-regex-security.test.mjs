@@ -15,6 +15,7 @@ import { AssetCache } from '../lib/asset-cache.mjs';
 import { LiquidContext, LiquidEngine } from '../lib/liquid-engine.mjs';
 import { subgridActionApplies } from '../lib/subgrid-actions.mjs';
 
+// @test-kind contract+security: editable parsing retries starts inside a malformed quoted candidate
 test('editable parsing retries starts inside a malformed quoted candidate', () => {
   const renderer = createPortalRenderer({ templates: {}, snippets: {}, records: [], pages: [], website: {} });
   const Editable = renderer.engine.tags.get('editable');
@@ -129,6 +130,7 @@ test('subgrid filters retain the final viable entity name and exact inserted tag
   );
 });
 
+// @test-kind security+contract: query token redaction skips long malformed candidates without changing protected fields
 test('query token redaction skips long malformed candidates without changing protected fields', () => {
   const prefix = '?'.repeat(50000);
   const text = prefix + '&base64SecureConfiguration=invented&ordinary=keep';
@@ -151,6 +153,7 @@ test('Power Fx currency suffix handling rejects long interior whitespace and pre
   assert.deepEqual(invariantNumberText('1 \t$'), { text: '1', percent: false });
 });
 
+// @test-kind contract+security: public CSS capture ignores unterminated URL candidates and still follows valid dependencies
 test('public CSS capture ignores unterminated URL candidates and still follows valid dependencies', async (t) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-css-scan-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));

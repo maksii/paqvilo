@@ -32,6 +32,7 @@ const manifest = (withTable = false) => ({
     : [],
 });
 
+// @test-kind contract: online planning resumes table lookup before the next microtask marker
 test('online planning resumes table lookup before the next microtask marker', async () => {
   const events = [];
   const client = {
@@ -51,6 +52,7 @@ test('online planning resumes table lookup before the next microtask marker', as
   assert.deepEqual(events.slice(0, 3), ['optional', 'publisher-list', 'marker']);
 });
 
+// @test-kind contract: empty solution scoping starts its list calls before the next microtask marker
 test('empty solution scoping starts its list calls before the next microtask marker', async () => {
   const events = [];
   const client = {
@@ -73,6 +75,7 @@ test('empty solution scoping starts its list calls before the next microtask mar
   assert.deepEqual(events, ['solution-list', 'component-list', 'marker']);
 });
 
+// @test-kind contract: apply reports its first created component before a queued metadata callback
 test('apply reports its first created component before a queued metadata callback', async () => {
   const events = [],
     sentinel = new Error('stop after first progress');

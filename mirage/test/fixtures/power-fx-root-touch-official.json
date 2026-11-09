@@ -1,0 +1,125 @@
+{
+  "package": {
+    "id": "Microsoft.PowerApps.CLI",
+    "version": "2.13.1",
+    "sha256": "07654af406781c1676d1bc5712c393fab2276e54f15ff10bb74a1bdef0d27d3f",
+    "source": "https://api.nuget.org/v3-flatcontainer/microsoft.powerapps.cli/2.13.1/microsoft.powerapps.cli.2.13.1.nupkg"
+  },
+  "scope": "Microsoft Power Fx ReflectionFunction returns Decimal 1 and increments a counter; the official interpreter implements IfError without replacement. The original host Touch returns numeric 1 and increments a call list.",
+  "producer": {
+    "sourceSha256": "3785386a7c7af71f074b316a35fafb25f4c248f9f174167f5c6e83001f5657c1",
+    "projectSha256": "fc8696488ce369e47e953a321cb8cb20a8634100964c918ef81f252c38bfaf40",
+    "dllSha256": "d5de81a36145acf76631d896653f85f518f50fcc3fac7ff150895d9bcebbea7a",
+    "official": [
+      {
+        "FullName": "Microsoft.PowerFx.Interpreter, Version=1.99.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35",
+        "ModuleVersionId": "c00830f1-cff1-4ce9-97a2-c7d759869bac",
+        "sha256": "f06ed03f9599741990e2db49bbb495b88b5655faab89d5a5017dbec9c75ac780"
+      },
+      {
+        "FullName": "Microsoft.PowerFx.Core, Version=1.99.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35",
+        "ModuleVersionId": "79d79918-0479-450c-915a-1f34bac32028",
+        "sha256": "a9e79158c58284ae99b958f285a7ef81a345b1553a2db5df06a0d52612bf170b"
+      }
+    ]
+  },
+  "inputSha256": "ea0da65c022064e70ac376832e27d087a2014fbb9145a1f75ed92e66b8e5215f",
+  "input": [
+    {
+      "expression": "IfError(1/0, \"2\", Touch(), 3)"
+    },
+    {
+      "expression": "Touch()"
+    },
+    {
+      "expression": "IfError(1, 2, Touch())"
+    },
+    {
+      "expression": "IfError(Touch()/0, 2)"
+    }
+  ],
+  "runs": [
+    {
+      "rawSha256": "3632e05fee71ddb31f9f0e8ba36646f0036db80cc83d7f10c1a424700a8ad03e",
+      "processId": 84756,
+      "utcNow": "2026-11-08T18:55:39.4227043Z",
+      "host": {
+        "clock": "2013-07-15T20:02:00Z",
+        "timeZone": "Pacific Standard Time",
+        "culture": "en-US",
+        "numberIsFloat": false
+      },
+      "results": [
+        {
+          "expression": "IfError(1/0, \"2\", Touch(), 3)",
+          "calls": 0,
+          "kind": "value",
+          "value": 2,
+          "errors": null
+        },
+        {
+          "expression": "Touch()",
+          "calls": 1,
+          "kind": "value",
+          "value": 1,
+          "errors": null
+        },
+        {
+          "expression": "IfError(1, 2, Touch())",
+          "calls": 1,
+          "kind": "value",
+          "value": 1,
+          "errors": null
+        },
+        {
+          "expression": "IfError(Touch()/0, 2)",
+          "calls": 1,
+          "kind": "value",
+          "value": 2,
+          "errors": null
+        }
+      ]
+    },
+    {
+      "rawSha256": "ee4a5d74f5b77257b4b6154029abe9fbb99013df2b4f0831834a4961bb30de76",
+      "processId": 85256,
+      "utcNow": "2026-11-08T18:55:39.6917317Z",
+      "host": {
+        "clock": "2013-07-15T20:02:00Z",
+        "timeZone": "Pacific Standard Time",
+        "culture": "en-US",
+        "numberIsFloat": false
+      },
+      "results": [
+        {
+          "expression": "IfError(1/0, \"2\", Touch(), 3)",
+          "calls": 0,
+          "kind": "value",
+          "value": 2,
+          "errors": null
+        },
+        {
+          "expression": "Touch()",
+          "calls": 1,
+          "kind": "value",
+          "value": 1,
+          "errors": null
+        },
+        {
+          "expression": "IfError(1, 2, Touch())",
+          "calls": 1,
+          "kind": "value",
+          "value": 1,
+          "errors": null
+        },
+        {
+          "expression": "IfError(Touch()/0, 2)",
+          "calls": 1,
+          "kind": "value",
+          "value": 2,
+          "errors": null
+        }
+      ]
+    }
+  ]
+}

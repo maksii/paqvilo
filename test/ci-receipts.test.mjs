@@ -322,6 +322,42 @@ test('validation concurrency follows the contributor setting, else the machine, 
     assert.throws(() => validationJobs({ PAQ_CI_JOBS: value }), /positive integer/, value);
 });
 
+// @test-kind tooling: real validation subprocesses share the machine budget rather than each multiplying its process pool.
+test('parallel validation budgets fixture processes across every lane and command', async (t) => {
+  const { runSteps } = await import('../scripts/ci.mjs');
+  const directory = tempDirSync('paq-ci-process-budget-');
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const helper = new URL('../mirage/test/process-slots.mjs', import.meta.url).href;
+  fs.writeFileSync(
+    path.join(directory, 'probe.mjs'),
+    `
+    import assert from 'node:assert/strict';
+    import fs from 'node:fs';
+    import { withProcessSlot, PROCESS_SLOTS } from ${JSON.stringify(helper)};
+    assert.equal(process.env.PAQ_TEST_PROCESS_SLOTS, '1');
+    assert.equal(PROCESS_SLOTS, 1);
+    const gate = Promise.withResolvers(), starts = [];
+    const first = withProcessSlot(() => { starts.push('first'); return gate.promise; });
+    const second = withProcessSlot(() => { starts.push('second'); });
+    const beforeRelease = [...starts];
+    gate.resolve();
+    await Promise.all([first, second]);
+    assert.deepEqual(beforeRelease, ['first']);
+    assert.deepEqual(starts, ['first', 'second']);
+    fs.writeFileSync(process.argv[2], 'finished');
+  `,
+  );
+  const steps = ['alpha', 'beta'].map((label) => ({
+    label,
+    commands: [1, 2].map((command) => ['probe.mjs', `${label}-${command}.done`]),
+  }));
+  await runSteps(steps, 2, { cwd: directory, logs: path.join(directory, 'logs'), cpus: 8 });
+  for (const label of ['alpha', 'beta'])
+    for (const command of [1, 2])
+      assert.equal(fs.readFileSync(path.join(directory, `${label}-${command}.done`), 'utf8'), 'finished');
+});
+
+// @test-kind tooling: the validation runner preserves parallel execution, all lanes and failure diagnostics.
 test('parallel validation runs every step concurrently and reports each failure with its log', async (t) => {
   const { runSteps } = await import('../scripts/ci.mjs');
   const directory = tempDirSync('paq-ci-steps-');

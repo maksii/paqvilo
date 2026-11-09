@@ -28,7 +28,7 @@
 //   row, an automated plug-in's target); host.variables (Set, Collect collections) and host.context (UpdateContext) objects;
 //   host.dataSource(name) -> FxDataSource | undefined; host.navigate/back/notify/trace callbacks; host.user (a record for
 //   User()); host.language (Language(), default "en-US"); host.timeZone (IANA name for local date/time parts, default
-//   "UTC"); host.now() (ms, default Date.now); host.guid() (GUID() text, default crypto.randomUUID); host.dataRowLimit (non-delegated reads, default 500); host.diagnostic(entry)
+//   "UTC"); host.numberIsFloat (optional explicit Power Fx numeric literal mode); host.now() (ms, default Date.now); host.guid() (GUID() text, default crypto.randomUUID); host.dataRowLimit (non-delegated reads, default 500); host.diagnostic(entry)
 //   (delegation warnings); host.self / host.parent records; host.app ('canvas' makes IsMatch default to Complete).
 import { DataError } from './data-error.mjs';
 import { canvasColorNames } from './power-fx-colors.mjs';
@@ -314,29 +314,38 @@ function parseIsoDateText(value) {
 }
 const DMY_DATE_PATTERN = String.raw`^(\d{1,2})\/(\d{1,2})\/(\d{2,4})`;
 const DMY_TIME_PATTERN = String.raw`(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?)?$`;
-function parseDmyDateText(value) {
+function parseDmyDateText(value, kind, app) {
   const match = new RegExp(DMY_DATE_PATTERN + DMY_TIME_PATTERN, 'i').exec(value);
   if (!match) return null;
   let hour = +(match[4] ?? 0);
   if (match[7]) hour = (hour % 12) + (match[7].toUpperCase() === 'PM' ? 12 : 0);
   const year = match[3].length === 2 ? 2000 + Number(match[3]) : Number(match[3]);
-  return { wall: wallOfParts(year, +match[1], +match[2], hour, +(match[5] ?? 0), +(match[6] ?? 0)), zoned: null };
+  // Native Canvas normalizes numeric slash-date parts: en-US13/01/2024 is January1,2025, rather than a parse error.
+  return {
+    wall:
+      kind === 'date' && app === 'canvas'
+        ? Date.UTC(year, +match[1] - 1, +match[2], hour, +(match[5] ?? 0), +(match[6] ?? 0))
+        : wallOfParts(year, +match[1], +match[2], hour, +(match[5] ?? 0), +(match[6] ?? 0)),
+    zoned: null,
+  };
 }
 function parseTimeDateText(value, kind) {
   const match = /^(\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?\s*(AM|PM)?$/i.exec(value);
   if (!match) return null;
   let hour = Number(match[1]);
   if (match[5]) hour = (hour % 12) + (match[5].toUpperCase() === 'PM' ? 12 : 0);
+  // TimeValue accepts hours beyond a day and returns their time of day (official PAC: 25:00 -> 01:00).
+  if (kind === 'time' && !match[5]) hour %= 24;
   return {
     wall: wallOfParts(1970, 1, 1, hour, +match[2], +(match[3] ?? 0), Number(String(match[4] ?? '0').padEnd(3, '0'))),
     zoned: null,
     invalidForDateTime: kind === 'datetime',
   };
 }
-function parseDateText(text, kind, timeZone) {
+function parseDateText(text, kind, timeZone, app) {
   const value = String(text).trim();
   if (!value) return null;
-  let parsed = parseIsoDateText(value) ?? parseDmyDateText(value) ?? parseTimeDateText(value, kind);
+  let parsed = parseIsoDateText(value) ?? parseDmyDateText(value, kind, app) ?? parseTimeDateText(value, kind);
   if (!parsed) {
     const timestamp = Date.parse(value);
     if (Number.isNaN(timestamp)) return null;
@@ -433,13 +442,9 @@ function numberSeparators(language = 'en-US') {
   } catch {
     return null;
   }
-  // Group widths come from the same parts: en-IN 12,34,567 is primary 3, secondary 2.
-  const widths = parts.filter((part) => part.type === 'integer').map((part) => part.value.length);
   return {
     decimal: parts.find((part) => part.type === 'decimal')?.value ?? '.',
     group: parts.find((part) => part.type === 'group')?.value ?? ',',
-    primary: widths.at(-1) ?? 3,
-    secondary: widths.length > 2 ? widths.at(-2) : (widths.at(-1) ?? 3),
   };
 }
 // The invariant (en-US) form of number text in a language: { text, percent } or an FxError.
@@ -449,7 +454,7 @@ function stripTrailingCurrency(value) {
 export function invariantNumberText(text, language = 'en-US') {
   let value = String(text).trim();
   const separators = numberSeparators(language);
-  if (!separators) return fxError(ErrorKind.InvalidArgument, `The language tag '${language}' is not valid.`);
+  if (!separators) return fxError(ErrorKind.BadLanguageCode, `The language tag '${language}' is not valid.`);
   let percent = false;
   if (value.endsWith('%')) {
     percent = true;
@@ -464,11 +469,11 @@ export function invariantNumberText(text, language = 'en-US') {
   let group = separators.group.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
   if (/^\s$/.test(separators.group)) group = String.raw`[\s\u00a0\u202f]`;
   else if (/^['’]$/.test(separators.group)) group = "['’]";
-  // Groups are removed only where they follow the language's widths (secondary groups, then the primary group last).
-  const { primary, secondary } = separators;
-  value = value.replace(
-    new RegExp(String.raw`^([+-]?)(\d{1,${secondary}}(?:${group}\d{${secondary}})*${group}\d{${primary}})(?!\d)`),
-    (_, sign, digits) => sign + digits.replace(new RegExp(group, 'g'), ''),
+  // The Microsoft reader accepts noncanonical group widths, repeated groups and
+  // trailing groups after an integer digit. A leading group or a group inside
+  // the fractional/exponent part remains invalid.
+  value = value.replace(new RegExp(String.raw`^([+-]?\d(?:\d|${group})*)`), (digits) =>
+    digits.replace(new RegExp(group, 'g'), ''),
   );
   // With a non-period decimal separator a remaining period is not part of a number in that language.
   if (separators.decimal !== '.') value = value.replaceAll('.', 'x').split(separators.decimal).join('.');
@@ -487,7 +492,7 @@ export function invariantNumberText(text, language = 'en-US') {
       throw new RangeError('Decimal range');
     exact = exactNumeric(parsed.text, 'Decimal');
   } catch {
-    return fxError(ErrorKind.Numeric, `The value '${text}' is out of range.`);
+    return fxError(ErrorKind.InvalidArgument, `The value '${text}' is out of range.`);
   }
   return parsed.percent ? decimalArithmetic('/', exact, 100) : exact;
 }
@@ -544,7 +549,7 @@ export function toDate(v, kind, fx) {
   if (typeof v === 'string' || v instanceof FxUntyped) {
     const text = v instanceof FxUntyped ? v.raw : v;
     if (text === null) return null;
-    const parsed = parseDateText(text, kind === 'any' ? 'datetime' : kind, fx?.timeZone);
+    const parsed = parseDateText(text, kind === 'any' ? 'datetime' : kind, fx?.timeZone, fx?.host?.app);
     return parsed ?? fxError(ErrorKind.InvalidArgument, `The value '${text}' cannot be converted to a date/time.`);
   }
   if (typeof v === 'number') return new FxDate(kind === 'any' ? 'datetime' : kind, v);
@@ -754,12 +759,38 @@ const OPERATORS = [
   '>',
 ];
 
-function lexNumberToken(text, start) {
+function lexNumberToken(text, start, numberIsFloat) {
   const match = /^(\d*\.?\d*)(e[+-]?\d+)?/i.exec(text.slice(start));
   let value;
+  if (numberIsFloat === true) {
+    const number = Number(match[0]);
+    if (!Number.isFinite(number)) throw new FxSyntaxError('Numeric value is too large', start);
+    return { token: { k: 'num', v: new FxFloat(number), at: start }, end: start + match[0].length };
+  }
   try {
     value = exactNumeric((match[0].startsWith('.') ? '0' : '') + match[0], 'Decimal');
-  } catch {
+    if (numberIsFloat === false) {
+      const parts = decimalParts(value);
+      if (parts.scale > 28) {
+        const divisor = 10n ** BigInt(parts.scale - 28);
+        let rounded = parts.coefficient / divisor;
+        const remainder = parts.coefficient % divisor;
+        if (remainder * 2n > divisor || (remainder * 2n === divisor && rounded % 2n !== 0n)) rounded++;
+        value = exactNumeric(decimalText({ coefficient: rounded, scale: 28 }), 'Decimal', { collapse: false });
+      }
+    }
+    if (numberIsFloat === false && compareNumeric(value, '79228162514264337593543950335') > 0)
+      throw new FxSyntaxError('Numeric value is too large', start);
+  } catch (error) {
+    if (numberIsFloat === false) {
+      if (error instanceof FxSyntaxError) throw error;
+      const number = Number(match[0]);
+      if (number === 0 || (number > 0 && number < 1e-128))
+        return { token: { k: 'num', v: 0, at: start }, end: start + match[0].length };
+      if (!Number.isFinite(number) || number > 7.922816251426434e28)
+        throw new FxSyntaxError('Numeric value is too large', start);
+      throw error;
+    }
     value = fxError(ErrorKind.Numeric, `The number ${match[0]} is out of range.`);
   }
   return { token: { k: 'num', v: value, at: start }, end: start + match[0].length };
@@ -800,12 +831,13 @@ function lexQuotedIdentifier(text, start) {
   }
   return { token: { k: 'id', v: value, quoted: true, at: start }, end: i };
 }
-function lexToken(text, start) {
+function lexToken(text, start, numberIsFloat) {
   const ch = text[start];
-  if (/\d/.test(ch) || (ch === '.' && /\d/.test(text[start + 1] ?? ''))) return lexNumberToken(text, start);
+  if (/\d/.test(ch) || (ch === '.' && /\d/.test(text[start + 1] ?? '')))
+    return lexNumberToken(text, start, numberIsFloat);
   if (ch === '"') return lexStringToken(text, start);
   if (ch === '$' && text[start + 1] === '"') {
-    const { parts, end } = lexInterpolation(text, start + 2);
+    const { parts, end } = lexInterpolation(text, start + 2, numberIsFloat);
     return { token: { k: 'interp', parts, at: start }, end };
   }
   if (ch === "'") return lexQuotedIdentifier(text, start);
@@ -818,7 +850,7 @@ function lexToken(text, start) {
   if (!op) throw new FxSyntaxError(`Unexpected character '${ch}'`, start);
   return { token: { k: 'op', v: op, at: start }, end: start + op.length };
 }
-function lex(text) {
+function lex(text, numberIsFloat) {
   const tokens = [];
   let i = 0;
   while (i < text.length) {
@@ -837,7 +869,7 @@ function lex(text) {
       i = end + 2;
       continue;
     }
-    const next = lexToken(text, i);
+    const next = lexToken(text, i, numberIsFloat);
     tokens.push(next.token);
     i = next.end;
   }
@@ -866,7 +898,7 @@ function interpolationEscape(text, index, ch) {
   if (ch === '}' && text[index + 1] === '}') return '}';
   return null;
 }
-function lexInterpolation(text, from) {
+function lexInterpolation(text, from, numberIsFloat) {
   const parts = [];
   let literal = '';
   let i = from;
@@ -887,7 +919,7 @@ function lexInterpolation(text, from) {
       if (literal) parts.push(literal);
       literal = '';
       const j = interpolationIslandEnd(text, i);
-      parts.push({ node: parse(text.slice(i + 1, j - 1)) });
+      parts.push({ node: parse(text.slice(i + 1, j - 1), { numberIsFloat }) });
       i = j;
       continue;
     }
@@ -937,9 +969,10 @@ function dottedName(node) {
   }
   return null;
 }
-export function parse(text) {
-  if (parsed.has(text)) return parsed.get(text);
-  const tokens = lex(String(text));
+export function parse(text, { numberIsFloat } = {}) {
+  const cacheKey = `${numberIsFloat === true ? 'float' : numberIsFloat === false ? 'decimal' : 'default'}:${text}`;
+  if (parsed.has(cacheKey)) return parsed.get(cacheKey);
+  const tokens = lex(String(text), numberIsFloat);
   let pos = 0;
   const peek = () => tokens[pos];
   const next = () => tokens[pos++];
@@ -979,7 +1012,8 @@ export function parse(text) {
         left = { t: 'as', e: left, name: identifier() };
         continue;
       }
-      const right = expression(BINARY[op] + 1);
+      // Official PAC evaluates 2^3^2 as 2^(3^2); every other binary operator stays left-associative.
+      const right = expression(BINARY[op] + (op === '^' ? 0 : 1));
       let operator = op;
       if (op === 'Or') operator = '||';
       else if (op === 'And') operator = '&&';
@@ -1119,7 +1153,7 @@ export function parse(text) {
   const ast = chain();
   if (peek().k !== 'eof') throw new FxSyntaxError(`Unexpected '${peek().v ?? peek().k}'`, peek().at);
   if (parsed.size > 2000) parsed.clear(); // ponytail: bounded parse cache, cleared wholesale; an LRU if formulas churn.
-  parsed.set(text, ast);
+  parsed.set(cacheKey, ast);
   return ast;
 }
 
@@ -1673,7 +1707,7 @@ function callFunction(fx, node) {
 /** Evaluates text against values and host; answers the Power Fx value (an FxError for an error value). */
 export function evaluateFx(expression, { values = {}, host = {} } = {}) {
   const fx = new Fx({ values, host });
-  return { value: fx.ev(parse(expression)), fx };
+  return { value: fx.ev(parse(expression, { numberIsFloat: host.numberIsFloat })), fx };
 }
 
 export function functionNames() {
@@ -1710,7 +1744,7 @@ export const powerFxEngine = Object.freeze({
   },
   checkSync(expression, { host = {} } = {}) {
     try {
-      const ast = parse(expression);
+      const ast = parse(expression, { numberIsFloat: host.numberIsFloat });
       const unknown = [...calledNames(ast)].filter(
         (name) => !Object.hasOwn(FUNCTIONS, name) && typeof host.functions?.[name] !== 'function',
       );

@@ -402,6 +402,16 @@ function parseSelectList(s, starts) {
       columns.push({ kind: 'Assign', name: tok.value, expr: expr(s) });
     } else {
       const e = expr(s);
+      if (e.type === 'Binary' && e.operator === '=') {
+        if (tok.type === 'string' && isKeyword(peek(s), 'AS')) {
+          const near = peek(s);
+          throw new TdsSqlError(156, "Incorrect syntax near the keyword 'AS'.", { pos: near.pos, line: near.line });
+        }
+        const equal = s.tokens
+          .slice(starts.at(-1) ? s.tokens.indexOf(starts.at(-1)) : 0, s.pos)
+          .find((t) => isOperator(t, '='));
+        throw syntaxError(equal);
+      }
       columns.push({ kind: 'Expr', expr: e, alias: parseAlias(s) });
     }
   } while (eatPunct(s, ','));

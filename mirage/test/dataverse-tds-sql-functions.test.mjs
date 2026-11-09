@@ -1,3 +1,5 @@
+// @test-kind unproven: Original function cases contain a mix of local contracts and independently evidenced SQL behavior.
+// @parity-evidence: Repeated Microsoft SQL Server 2022 engine captures, mirage/test/fixtures/dataverse-sql-server-function-facts.json SHA-256 e6aa0995861d943219e153b10df0815bd8d62ad7b5c07978f008b02f2f01c9f5; CONCAT_WS NULL separator and PATINDEX anchoring.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { FUNCTIONS, callFunction, castValue, returnType, systemVariable } from '../lib/dataverse-tds-sql-functions.mjs';
@@ -92,7 +94,7 @@ const cases = [
   ['ROUND', [dec('1.5'), null], null],
   ['CONCAT', ['a', null, 'b'], 'ab'],
   ['CONCAT_WS', [',', 'a', null, 'b'], 'a,b'],
-  ['CONCAT_WS', [null, 'a', 'b'], null],
+  ['CONCAT_WS', [null, 'a', 'b'], 'ab'],
   ['ISNULL', [null, 'x'], 'x'],
   ['ISNULL', ['y', 'x'], 'y'],
   ['COALESCE', [null, null, 3], 3],
@@ -126,7 +128,7 @@ const cases = [
   ['CHARINDEX', ['TEST', 'This is a Test'], 11],
   ['CHARINDEX', ['TEST', 'This is a Test', 1], 0, { caseSensitive: true }],
   ['PATINDEX', ['%[0-9]%', 'abc4'], 4],
-  ['PATINDEX', ['a_c', 'zabc'], 2],
+  ['PATINDEX', ['a_c', 'zabc'], 0],
   ['PATINDEX', ['%x%', 'abc'], 0],
   ['REPLACE', ['abcabc', 'B', 'X'], 'aXcaXc'],
   ['REPLACE', ['abcabc', 'B', 'X'], 'abcabc', { caseSensitive: true }],

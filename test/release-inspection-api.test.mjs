@@ -1,3 +1,4 @@
+// @test-kind unproven: local review has not established every held or unreviewed platform-sensitive behavior.
 import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -111,6 +112,7 @@ const full = () => ({
   unresolved: [],
 });
 
+// @test-kind contract: inspection API preserves summary HTTP errors and rejects malformed full reports with recoverable errors
 test('inspection API preserves summary HTTP errors and rejects malformed full reports with recoverable errors', async (t) => {
   let mode = 'summary-error',
     malformed = null;
@@ -137,6 +139,7 @@ test('inspection API preserves summary HTTP errors and rejects malformed full re
   assert.equal(result.report.path, '/scripts');
 });
 
+// @test-kind contract: late inspection responses cannot replace the current navigation report or source-open index
 test('late inspection responses cannot replace the current navigation report or source-open index', async (t) => {
   let release, started;
   const pending = new Promise((resolve) => {
@@ -168,6 +171,7 @@ test('late inspection responses cannot replace the current navigation report or 
   assert.equal((await call('open', { rel: 'web-templates/header/Header.webtemplate.yml' })).ok, false);
 });
 
+// @test-kind security+contract: runtime-reported roots cannot widen the source editor boundary when no launch roots were supplied
 test('runtime-reported roots cannot widen the source editor boundary when no launch roots were supplied', async (t) => {
   const outside = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-untrusted-report-')),
     file = path.join(outside, 'invented.txt');

@@ -26,6 +26,7 @@ const operation = {
   pqvd_markeroperation: 'CO-OP:11111111-1111-4111-8111-111111111111',
 };
 
+// @test-kind tooling: async reconciliation retains late multipart packets and waits for a stable complete operation
 test('async reconciliation retains late multipart packets and waits for a stable complete operation', async () => {
   const { sha256 } = await import('./core.mjs');
   let time = 0,
@@ -57,6 +58,7 @@ test('async reconciliation retains late multipart packets and waits for a stable
   assert.equal(result.elapsedMs, 3);
 });
 
+// @test-kind tooling: async reconciliation aborts an unresponsive transport within its deadline
 test('async reconciliation aborts an unresponsive transport within its deadline', async () => {
   let signal;
   const result = await reconcileBackendArtifact({
@@ -73,6 +75,7 @@ test('async reconciliation aborts an unresponsive transport within its deadline'
   assert.deepEqual(result.events, []);
 });
 
+// @test-kind tooling: default async deadline admits the observed late queue and retains a finite timeout for longer queues
 test('default async deadline admits the observed late queue and retains a finite timeout for longer queues', async () => {
   const { sha256 } = await import('./core.mjs');
   const packet = {
@@ -99,6 +102,7 @@ test('default async deadline admits the observed late queue and retains a finite
   }
 });
 
+// @test-kind tooling: async reconciliation retains partial failures and never qualifies missing, corrupt, paged or cancelled evidence
 test('async reconciliation retains partial failures and never qualifies missing, corrupt, paged or cancelled evidence', async () => {
   const { sha256 } = await import('./core.mjs'),
     event = {
@@ -295,12 +299,14 @@ test('canonical parity keeps null, empty, dates, tuples and duplicate multiplici
   );
   assert.equal(compareResults({ complete: false }, { complete: true }), 'incomplete');
 });
+// @test-kind tooling: full terminal page needs extra proof when provider omits more-record metadata
 test('full terminal page needs extra proof when provider omits more-record metadata', () => {
   assert.equal(pageComplete({ rowCount: 50, pageSize: 50 }), false);
   assert.equal(pageComplete({ rowCount: 0, pageSize: 50 }), true);
   assert.equal(pageComplete({ rowCount: 50, pageSize: 50, more: false }), true);
   assert.equal(pageComplete({ rowCount: 0, pageSize: 50, more: true }), false);
 });
+// @test-kind tooling: chunking reconstructs exactly and never splits surrogate pairs
 test('chunking reconstructs exactly and never splits surrogate pairs', () => {
   const text = 'ab😀c'.repeat(30),
     parts = splitPayload(text, 7);
@@ -308,6 +314,7 @@ test('chunking reconstructs exactly and never splits surrogate pairs', () => {
   assert.ok(parts.every((p) => p.length <= 7));
   assert.ok(parts.every((p) => !/[\uD800-\uDBFF]$/.test(p)));
 });
+// @test-kind tooling: artifact transport preserves original Unicode and API URLs through memo rewriting and rejects tampering
 test('artifact transport preserves original Unicode and API URLs through memo rewriting and rejects tampering', async () => {
   const original = 'https://portal.example.test/_api/$metadata\r\n東京😀'.repeat(15000),
     encoded = await encodeArtifact(original, 'application/xml'),
@@ -360,6 +367,7 @@ test('per-run artifact transport overflow records incomplete persistence before 
   assert.equal(calls.filter((c) => c.url === '/_api/pqvd_testresults').length, 0);
   assert.equal(calls.at(-1).body.pqvd_runstate, manifest.choices.pqvd_runstate.Incomplete);
 });
+// @test-kind tooling: reusable runner rejects overlap and starts each sequential run with its own budget and evidence
 test('reusable runner rejects overlap and starts each sequential run with its own budget and evidence', async () => {
   let release,
     firstPost = true;
@@ -443,6 +451,7 @@ test('disjoint request fragments retain every fixture and joined row multiplicit
   }
   assert.equal(manifest.cases.find((c) => c.id === 'R31').fragments, undefined);
 });
+// @test-kind tooling: empty failed lanes retain differing HTTP and platform outcome classes
 test('empty failed lanes retain differing HTTP and platform outcome classes', () => {
   const plan = { primaryId: 'id', fields: [{ name: 'id', type: 'guid' }] },
     previous = {

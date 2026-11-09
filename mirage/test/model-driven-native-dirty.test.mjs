@@ -1,0 +1,80 @@
+// @test-kind parity: two native dirty82 captures and repeated Boolean-first/email/quantity/saved-row isolation on2026-11-08; exact exported-app replay and sources bound in frontend-parity-evidence.json.
+// @parity-evidence: dirty-native-{1,2}.json reproduce dirty-local.json82/82; dirty-diagnostic.json/dirty-isolation.json reproduce45/39 snapshots, with0 active native business rules and matching exported form script.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { createHash } from 'node:crypto';
+import { captureModelDrivenDirtyContract } from '../testing/model-driven-dirty.mjs';
+import { presentationFixture } from './fixtures/model-driven-presentation.mjs';
+
+assert.equal(
+  createHash('sha256').update(captureModelDrivenDirtyContract.toString()).digest('hex'),
+  '62c403234c10bd3e1c8ec4dd15ea3496f672fc76d3324f1b5a2fcce1d7420177',
+);
+const bytes = fs.readFileSync(new URL('./fixtures/model-driven-dirty-expected.json', import.meta.url));
+assert.equal(
+  createHash('sha256').update(bytes).digest('hex'),
+  'a82c85e6df0f66ea9c0297b2ef87fdb1a83d32f51b9e7851e8a1252b219b7c93',
+);
+const fixture = presentationFixture({ falseBooleanDefault: true });
+const actual = await captureModelDrivenDirtyContract(
+  {
+    fields: [
+      { role: 'text', name: 'x_email', value: 'dirty@example.invalid' },
+      { role: 'memo', name: 'x_memo', value: 'Invented dirty memo' },
+      { role: 'number', name: 'x_quantity', value: 7 },
+      { role: 'choice', name: 'x_choice', value: 198720001 },
+      { role: 'multi', name: 'x_multi', value: [198720001, 198720000] },
+      { role: 'boolean', name: 'x_boolean', value: true },
+      { role: 'date', name: 'x_date', kind: 'date', value: '2026-12-09T09:30:00.000Z' },
+      {
+        role: 'lookup',
+        name: 'x_lookup',
+        value: [{ id: 'aaaaaaaa-1111-4111-8111-111111111111', name: 'Invented parent', entityType: 'x_contract' }],
+      },
+    ],
+  },
+  fixture.runtime.formContext,
+);
+for (const [index, expected] of JSON.parse(bytes).entries()) {
+  test(`native model-driven dirty state: ${expected.id}`, () => assert.deepEqual(actual[index], expected));
+}
+
+for (const field of ['x_email', 'x_quantity']) {
+  test(`native false-default Boolean stays pending after isolated ${field} restore`, () => {
+    const fixture = presentationFixture({ falseBooleanDefault: true }),
+      form = fixture.runtime.formContext;
+    const bool = form.getAttribute('x_boolean'),
+      other = form.getAttribute(field),
+      original = other.getValue();
+    const snapshots = [];
+    const read = () =>
+      snapshots.push([
+        bool.getValue(),
+        bool.getInitialValue(),
+        bool.getIsDirty(),
+        form.data.entity.getIsDirty(),
+        form.data.getIsDirty(),
+        other.getIsDirty(),
+      ]);
+    read();
+    other.setValue(field === 'x_email' ? 'isolation@example.invalid' : 7);
+    read();
+    other.setValue(original);
+    read();
+    bool.setValue(false);
+    read();
+    bool.setValue(true);
+    read();
+    bool.setValue(false);
+    read();
+    assert.deepEqual(snapshots, [
+      [false, 0, false, false, false, false],
+      [false, 0, true, true, true, true],
+      [false, 0, true, true, true, false],
+      [false, 0, true, true, true, false],
+      [true, 0, true, true, true, false],
+      [false, 0, false, true, true, false],
+    ]);
+  });
+}

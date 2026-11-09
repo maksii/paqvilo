@@ -1,3 +1,8 @@
+// @test-kind unproven: Unselected original tests have not been independently qualified.
+import {
+  assertParityBindings as __paqParityBindings,
+  assertParityBindingsFromSource as __paqParitySourceBindings,
+} from '../../scripts/qualify-parity.mjs';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -22,9 +27,11 @@ describe('dataverse API router', () => {
   let token;
   let appUserId;
   let makerUserId;
+  let previousSecret;
   const recordCalls = [];
 
   before(async () => {
+    previousSecret = process.env[SECRET_VAR];
     process.env[SECRET_VAR] = 'test-secret-value';
     const state = emptyState();
     state.mappings = {
@@ -64,7 +71,7 @@ describe('dataverse API router', () => {
         return { status: 200, body: { echo: ctx.route.kind, user: ctx.user.systemuserid } };
       },
     };
-    api = await startDataverseApi({ store, change: (fn) => fn(), settings, records, log: () => {} });
+    api = await startDataverseApi({ store, change: (fn) => fn(), settings, records, host: '127.0.0.1', log: () => {} });
     origin = api.origin;
     tenantId = api.tenantId;
     organizationId = api.organizationId;
@@ -84,8 +91,12 @@ describe('dataverse API router', () => {
   });
 
   after(async () => {
-    delete process.env[SECRET_VAR];
-    await api?.close();
+    try {
+      await api?.close();
+    } finally {
+      if (previousSecret === undefined) delete process.env[SECRET_VAR];
+      else process.env[SECRET_VAR] = previousSecret;
+    }
   });
 
   const auth = () => ({ authorization: `Bearer ${token}` });
@@ -612,7 +623,103 @@ describe('dataverse API router', () => {
     assert.equal(await raw.text(), 'raw value');
   });
 
+  // @test-kind parity: Two independently captured authenticated keyed requests with existing owned-row controls and exact original supported method facts.
+  // @parity-evidence: Manifest guarantee batch23-v8-existing-row-615; exact capsule/run/fact/source bindings are asserted below.
   it("lists the keyed record's verbs in Allow on a HEAD or OPTIONS 405", async () => {
+    __paqParityBindings(import.meta.url, [
+      {
+        baselineId: 'mirage/test/dataverse-api.test.mjs:615:2',
+        repositoryRoot: '../..',
+        titleExpressionSha256: '7748fd3f8b48d2f98c9cf7a93af454ccc0850f584fd90ae78bd180263b9febdb',
+        originalAssertions: [
+          'f74d2c412a67797b3b7f870fac9f2b356769f99a7a2babd386c9c30ea26c0848',
+          'f45421626c7d1ae9d5ec22357444ce99bfb51a1f95d5e2478c472fb49fbc0dda',
+          '97a0be6b7d5d0418dfcc14911c1a6abb6702241ce05723f1393889c591a87e88',
+          '1d0f1f32255c6f9f53d2643dca16a24d2d6839b7c5f320f02b92a6f332de73b0',
+        ],
+        originalBodyAstSha256: '4289a505e314b14d2e5da358b42bf9f00917a71283309a19d93b07ee065f8606',
+        originalGuardHashes: [],
+        moduleContextAstSha256: '451960fe4493bac0b3debaee0bdc6a755d1f96b0da718ee31f8b2a3f86f1f578',
+        isolationRegistrationsAstSha256: 'f5bd7407c922240674a0b0456b9d3bf77303729c622d390450e966d467f348d5',
+        importRoles: [
+          {
+            source: '../lib/data.mjs',
+            role: 'implementation-under-test',
+            reviewedBy: '/root/api_qualify',
+            reason:
+              'Toolkit implementation used by the original API, record, security, or data behavior; independently reviewed source context remains required.',
+          },
+          {
+            source: '../lib/dataverse-settings.mjs',
+            role: 'implementation-under-test',
+            reviewedBy: '/root/api_qualify',
+            reason:
+              'Toolkit implementation used by the original API, record, security, or data behavior; independently reviewed source context remains required.',
+          },
+          {
+            source: '../lib/dataverse-api.mjs',
+            role: 'implementation-under-test',
+            reviewedBy: '/root/api_qualify',
+            reason:
+              'Toolkit implementation used by the original API, record, security, or data behavior; independently reviewed source context remains required.',
+          },
+          {
+            source: '../lib/dataverse-auth.mjs',
+            role: 'implementation-under-test',
+            reviewedBy: '/root/api_qualify',
+            reason:
+              'Toolkit implementation used by the original API, record, security, or data behavior; independently reviewed source context remains required.',
+          },
+          {
+            source: '../lib/dataverse-security.mjs',
+            role: 'implementation-under-test',
+            reviewedBy: '/root/api_qualify',
+            reason:
+              'Toolkit implementation used by the original API, record, security, or data behavior; independently reviewed source context remains required.',
+          },
+          {
+            source: '../lib/dataverse-soap-xml.mjs',
+            role: 'implementation-under-test',
+            reviewedBy: '/root/api_qualify',
+            reason:
+              'Toolkit implementation used by the original API, record, security, or data behavior; independently reviewed source context remains required.',
+          },
+        ],
+        runtimeInputs: [],
+        inputDependencies: [],
+        sourceBindings: [],
+        loopHeaders: [],
+        caseUniverse: {
+          count: 1,
+          cases: ["lists the keyed record's verbs in Allow on a HEAD or OPTIONS 405"],
+          casesSha256: '043172cb17c63e5ba18b9b2ba9638d52bab33ddaaf7bc4b5ec3ccc748eae6464',
+          sourceBindings: [],
+          ancestorLoops: [],
+        },
+        proofs: [
+          {
+            path: 'mirage/test/fixtures/dataverse-batch23-existing-row-methods.json',
+            sha256: 'e830ef7e2ed1257ae0a7046650af606152c20228d2d86f4135088640190b7e22',
+            mode: 'reproduced-native',
+            capturePointers: ['/captures/0/runSha256', '/captures/1/runSha256'],
+            facts: [
+              {
+                id: 'method-0',
+                pointer: '/captures/0/cases/0/facts',
+                sha256: '544190d79f32c2b9043b4e10a27de57ca92612150a16ef80bce1e421d4c62e9f',
+                replicatedPointers: ['/captures/0/cases/0/facts', '/captures/1/cases/0/facts'],
+              },
+              {
+                id: 'method-1',
+                pointer: '/captures/0/cases/1/facts',
+                sha256: '9f200d6f6d5e9536d4417e6591d610f16c3430991edd1eaf35cd3ec42c8f9475',
+                replicatedPointers: ['/captures/0/cases/1/facts', '/captures/1/cases/1/facts'],
+              },
+            ],
+          },
+        ],
+      },
+    ]);
     const path = `${origin}${apiPath('widgets(aaaaaaaa-0000-0000-0000-000000000001)')}`;
     const head = await fetch(path, { method: 'HEAD', headers: auth() });
     assert.equal(head.status, 405);
@@ -1461,4 +1568,9 @@ describe('dataverse API change tracking and shares inside batches', () => {
     assert.equal(expired.status, 400);
     assert.equal((await expired.json()).error.code, '0x80044352');
   });
+});
+
+// @test-kind tooling: Shared source guard reads expected bindings from protected parity bodies and runs independently of their generators; no baseline closure credit.
+it('parity source bindings 1e214a8acdbcfc67', () => {
+  __paqParitySourceBindings(import.meta.url);
 });

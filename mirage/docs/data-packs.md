@@ -37,9 +37,24 @@ export default {
 
 Required exports are `id`, `name`, `description`, `matches({ portal })` and `presets({ portal, metadata, options })`. A configuration-only pack that declares `configurationPresets` may omit `presets`; it contributes no data presets. Optional `generators`, `personas`, `plugins`, `expressionOperators`, `endpoints`, `shell`, `parity` and dataset helpers provide project behavior. Pack/preset IDs are validated; duplicate definitions fail. Matching filters a pack per imported portal.
 
+A table mapping may supply `odataPropertyOrder`, an ordered array of structural
+property names from that table's independently captured native CSDL `EntityType`.
+Keep its source and hash in the project evidence. Lookup properties use their
+HTTP names, such as `_sample_owner_value`. The same order applies to generated
+CSDL properties and projected Dataverse HTTP entity rows, including declared
+expanded entities. Known formatted-value and lookup annotations precede their
+property; navigation continuation links follow their navigation value. This
+setting only reorders admitted properties: it cannot add columns, bypass a
+projection or change SDK attribute registration order. Unlisted properties retain
+the existing metadata fallback order. Supply a dense array of 1–4096 unique
+structural names using explicit data properties; accessors, reserved names and
+annotation names are rejected.
+
 A trusted pack may provide `webApiErrorTemplates: { version: 1, evidence, templates }` for explicitly captured response formatting. Each template contains an evidenced `method` (`POST` or `PATCH`), a value-free `descriptor` (reader `kind`, relevant Edm types or JSON node kinds), exact CRLF `suffix`, `suffixSha256`, `capturedSourceSha256`, and `qualifiedVariationSha256`. The project must verify those captures and fresh variations for the site's source/version and method before exporting the templates. Mirage validates bounded suffix bytes, exact hashes and unique method/descriptor keys. Matching packs cannot define the same key twice; lazy accessors are rejected. An uncaptured method keeps the existing diagnostic.
 
 This capability applies only with site evidence and both `observed.webApiErrorDetails: "odata-wrapper"` and `observed.webApiErrorStacks: "response-template"`. Source `Webapi/error/innererror` must also enable the inner message. Unsupported reader descriptors keep the existing diagnostic. Templates alter the Web API error message only; they do not execute CLR code, qualify native exception generation or permission behavior, alter accepted writes, or appear in SDK/flow errors. Default mode is `diagnostic`. Keep real captured suffixes and all response comparisons in the external project. Entire JSON serialization and current POST/PATCH variation evidence remain separate from suffix equality.
+
+Dataverse `/api/data/v9.x/` uses a separate `dataverseErrorTemplates` pack capability and `observed.dataverseErrorStacks: "response-template"`. Each template has the same evidence/hash fields and exact CRLF suffix, an evidenced `POST`, `PATCH` or `PUT` method, and a finite descriptor with `target: "record" | "operation"`, reader `kind`, and the relevant Edm types or JSON nodes. The target keeps action-parameter stacks separate from record-reader stacks. Template keys cannot contain case identifiers, submitted literals, schema names or routes. Capability records, templates and descriptors must use plain explicit data properties. Capture repeated native responses and changed-input holdouts before registering a descriptor; retain the raw comparisons in the external project. Defaults stay diagnostic, and a missing descriptor never falls back to another method or target. These templates format supported HTTP reader errors only; they do not change successful writes, security or SDK exception behavior.
 
 Presets can return bodies or `{ name, description, load() }` descriptors. Body generation is memoized and listing does not generate rows. Stored builtin descriptors resolve using the explicitly supplied portal library. An unavailable project descriptor is reported, never silently replaced. Do not import `data.mjs` or `presets.mjs` at pack module top level if that creates a registry cycle; generators may import runtime utilities lazily.
 

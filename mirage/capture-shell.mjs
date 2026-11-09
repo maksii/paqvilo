@@ -35,7 +35,7 @@ export function captureCdpUrl(value) {
 const removeProfile = (directory) =>
   fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 
-/** A headless browser on a temporary profile with a loopback CDP port; close() removes the profile. */
+/** An anonymous headless guest browser with a loopback CDP port; close() removes its owned temporary profile. */
 export async function launchCaptureBrowser(channel) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-shell-'));
   let context;
@@ -49,7 +49,8 @@ export async function launchCaptureBrowser(channel) {
       windowsLaunchOptions({
         headless: true,
         ...(channel !== 'chromium' ? { channel } : {}),
-        args: [`--remote-debugging-port=${port}`],
+        // Guest mode prevents Edge's OS-backed profile sign-in in this explicitly anonymous, owned browser.
+        args: ['--guest', `--remote-debugging-port=${port}`],
       }),
     );
     return {

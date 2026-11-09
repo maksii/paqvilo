@@ -1,3 +1,4 @@
+// @test-kind unproven: held or unreviewed platform-sensitive behavior has no native proof in this review.
 // CLI subprocess acceptance: disposable exports and explicit solution roots.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -128,6 +129,7 @@ async function run(t, args, cwd) {
   });
 }
 
+// @test-kind contract: runtime ports accept decimal integers from 0 to 65535 and reject empty and non-decimal spellings
 test('runtime ports accept decimal integers from 0 to 65535 and reject empty and non-decimal spellings', () => {
   for (const [value, port] of [
     [undefined, 8787],
@@ -140,6 +142,7 @@ test('runtime ports accept decimal integers from 0 to 65535 and reject empty and
     assert.throws(() => runtimePort(value), /--port must be an integer from 0 to 65535/, JSON.stringify(value));
 });
 
+// @test-kind contract: CLI: invalid serve ports fail before starting or writing simulation state
 test('CLI: invalid serve ports fail before starting or writing simulation state', { timeout: 60_000 }, async (t) => {
   const directory = await fixture(t, {
     'portal/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n',
@@ -174,6 +177,7 @@ test('CLI: invalid serve ports fail before starting or writing simulation state'
   await assert.rejects(fs.stat(path.join(directory, 'first')), { code: 'ENOENT' });
 });
 
+// @test-kind contract: CLI: multi-portal serve closes its runtime after browser attachment fails
 test('CLI: multi-portal serve closes its runtime after browser attachment fails', async (t) => {
   const directory = await fixture(t, {
     'portal/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n',

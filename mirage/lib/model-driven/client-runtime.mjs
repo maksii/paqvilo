@@ -58,22 +58,22 @@ function* matchingRegisteredHandlers(host, name, attribute) {
     if (matchingClientEvent(event, name, attribute))
       for (const handler of event.handlers ?? []) if (enabledClientHandler(handler)) yield handler;
 }
-const bounded = (value, path) =>
+const bounded = (value, path, absent = new Set()) =>
   new Proxy(value, {
     get(target, key) {
       if (typeof key === 'symbol' || key === 'then') return Reflect.get(target, key);
-      if (!Object.hasOwn(target, key)) return unsupported(`${path}.${key}`);
+      if (!Object.hasOwn(target, key)) return absent.has(key) ? undefined : unsupported(`${path}.${key}`);
       return target[key];
     },
   });
-const collection = (items, matches = (item, key) => item.getName() === key) =>
+const collection = (items, matches = (item, key) => item.getName() === key, missing) =>
   bounded(
     {
       get: (key) => {
         if (key === undefined) return items;
-        if (typeof key === 'number') return items[key];
+        if (typeof key === 'number') return key >= items.length ? null : items[key];
         if (typeof key === 'function') return items.filter(key);
-        return items.find((item) => matches(item, key));
+        return items.find((item) => matches(item, key)) ?? missing;
       },
       getLength: () => items.length,
       forEach: (callback) => items.forEach(callback),
@@ -603,7 +603,7 @@ export function createFormClientRuntime(host) {
   const assertLive = () => {
     if (!live) throw new Error('This form context has been disposed.');
   };
-  const client = (value, path) =>
+  const client = (value, path, absent) =>
     bounded(
       Object.fromEntries(
         Object.entries(value).map(([key, entry]) => [
@@ -617,20 +617,26 @@ export function createFormClientRuntime(host) {
         ]),
       ),
       path,
+      absent,
     );
   const events = new Map(),
+    eventOrdinals = new Map(),
     notifications = new Set(),
-    initial = structuredClone(host.record);
+    submitModes = new Map(),
+    invalidNumberReads = new Map(),
+    initial = structuredClone(host.initialRecord ?? host.record);
   const add = (key, callback) => {
     if (typeof callback !== 'function') throw new Error('Client event handler must be a function.');
     const handlers = events.get(key) ?? [];
-    handlers.push(callback);
+    const ordinal = eventOrdinals.get(key) ?? 0;
+    handlers.push({ callback, ordinal });
+    eventOrdinals.set(key, ordinal + 1);
     events.set(key, handlers);
   };
   const remove = (key, callback) =>
     events.set(
       key,
-      (events.get(key) ?? []).filter((handler) => handler !== callback),
+      (events.get(key) ?? []).filter((handler) => handler.callback !== callback),
     );
   const saveForm = (close) => {
     assertLive();
@@ -648,7 +654,36 @@ export function createFormClientRuntime(host) {
     assertLive();
     return host.read(name);
   };
-  const clientValue = (name, value) => {
+  const attributeValue = (name) => {
+    // Native UCI retains the previous getter snapshot for an out-of-range assignment while the draft is invalid.
+    const value = fieldValue(name),
+      invalid = invalidNumberReads.get(name);
+    if (invalid && Object.is(value, invalid.input)) return invalid.previous;
+    invalidNumberReads.delete(name);
+    return value;
+  };
+  const choiceOptions = new Map();
+  const choiceBlank = new Map();
+  const controlOptions = (name, fieldName) =>
+    host.controlState?.(name, 'options') ??
+    choiceOptions.get(fieldName) ??
+    (host.table.fields[fieldName]?.options ?? []).map((option) => ({ text: option.label, value: option.value }));
+  const hasChoiceBlank = (name, fieldName) =>
+    host.controlState?.(name, 'optionPlaceholder') ?? choiceBlank.get(fieldName) ?? true;
+  const setControlOptions = (name, fieldName, options, blank = hasChoiceBlank(name, fieldName)) => {
+    host.controlState(name, 'options', options);
+    choiceOptions.set(fieldName, options);
+    choiceBlank.set(fieldName, blank);
+    host.syncChoiceOptions?.(name, fieldName, options, blank);
+  };
+  const layoutLabels = new Map();
+  const layoutLabel = (item) => layoutLabels.get(item) ?? host.layoutLabel?.(item) ?? item.label;
+  const setLayoutLabel = (item, value) => {
+    const label = String(value);
+    layoutLabels.set(item, label);
+    host.setLayoutLabel?.(item, label);
+  };
+  const clientValue = (name, value, source = host.record) => {
     if (value == null) return null;
     const field = host.table.fields[name];
     if (field.type === 'date') return new Date(value);
@@ -664,10 +699,31 @@ export function createFormClientRuntime(host) {
         {
           id: `{${String(value.id ?? value).replace(/[{}]/g, '')}}`,
           name: value.name ?? '',
-          entityType: value.entity ?? value.logicalName ?? field.targets?.[0],
+          entityType:
+            value.entity ??
+            value.logicalName ??
+            source?.[`${name}@Microsoft.Dynamics.CRM.lookuplogicalname`] ??
+            field.targets?.[0],
         },
       ];
     return value;
+  };
+  const sameAttributeValue = (name, left, right) => {
+    const a = clientValue(name, left),
+      b = clientValue(name, right, initial);
+    if (host.table.fields[name].type === 'lookup') {
+      const identity = (value) =>
+        value?.map(({ id, entityType }) => [bareId(id), String(entityType ?? '').toLowerCase()]) ?? null;
+      return JSON.stringify(identity(a)) === JSON.stringify(identity(b));
+    }
+    return (
+      a === b ||
+      (a !== null &&
+        b !== null &&
+        typeof a === 'object' &&
+        typeof b === 'object' &&
+        JSON.stringify(a) === JSON.stringify(b))
+    );
   };
   // formContext.data.entity.attributes: only columns added to the form are available. The form's bindings
   // (body, header, footer) are host.form.attributes; a form without them exposes its controls' columns.
@@ -685,6 +741,7 @@ export function createFormClientRuntime(host) {
     .map((field) => {
       const name = field.name;
       const metadataNumber = (property, method) => {
+        if (property === 'precision' && ['int', 'integer', 'bigint'].includes(field.dataverseType)) return 0;
         const value = field[property];
         if (typeof value !== 'number' || !Number.isFinite(value))
           unsupported(`attribute(${name}).${method} without imported numeric ${property} metadata`);
@@ -693,20 +750,77 @@ export function createFormClientRuntime(host) {
       return client(
         {
           getName: () => name,
-          getValue: () => clientValue(name, fieldValue(name)),
-          getInitialValue: () => clientValue(name, initial[name]),
+          getValue: () => clientValue(name, attributeValue(name)),
+          getInitialValue: () =>
+            field.type === 'boolean' && initial[name] != null
+              ? Number(initial[name])
+              : clientValue(name, initial[name]),
           setValue: (value) => {
             assertLive();
+            const previous = fieldValue(name);
             let next;
             if (field.type === 'date' && value instanceof Date) next = value.toISOString();
             else if (field.type === 'lookup' && Array.isArray(value))
               next = value.length
                 ? { id: String(value[0].id).replace(/[{}]/g, ''), entity: value[0].entityType, name: value[0].name }
                 : null;
-            else next = value;
-            host.write(name, next);
+            else if (['text', 'textarea'].includes(field.type) && value === '') next = null;
+            else if (field.type === 'multiselect' && Array.isArray(value)) {
+              const primary = host.controlNames(name)[0];
+              next = controlOptions(primary, name)
+                .filter((option) => value.includes(option.value))
+                .map((option) => option.value)
+                .sort((a, b) => a - b);
+              if (!next.length) next = null;
+            } else if (field.type === 'number' && Array.isArray(field.options) && value !== null) {
+              const offered = host.controlNames(name).flatMap((control) => controlOptions(control, name));
+              if (
+                !field.options.some((option) => option.value === value) &&
+                !offered.some((option) => option.value === value)
+              ) {
+                const error = new Error(`Invalid value ${value} for OptionSetValue`);
+                error.name = 'UciError';
+                throw error;
+              }
+              next = value;
+            } else next = value;
+            host.write(name, next, { changed: !sameAttributeValue(name, previous, next) });
+            if (
+              field.type === 'number' &&
+              !Array.isArray(field.options) &&
+              typeof next === 'number' &&
+              (next < field.minValue || next > field.maxValue)
+            )
+              invalidNumberReads.set(name, { input: next, previous });
+            else invalidNumberReads.delete(name);
           },
-          getIsDirty: () => host.isDirty(name),
+          getFormat: () => {
+            if (field.format) return String(field.format).toLowerCase();
+            if (field.type === 'textarea') return 'textarea';
+            if (field.type === 'text') return 'text';
+            if (
+              field.type === 'lookup' ||
+              (field.type === 'number' &&
+                !Array.isArray(field.options) &&
+                !['decimal', 'double', 'float', 'money'].includes(field.dataverseType))
+            )
+              return 'none';
+            if (field.type === 'date') return 'datetime';
+            return null;
+          },
+          getIsDirty: () => {
+            // Native new forms activate an untouched false default after another
+            // column changes. A real edit to this Boolean settles that default;
+            // restoring its value then clears only its attribute dirty flag.
+            const pendingFalseDefault =
+              !initial[host.table.idColumn] &&
+              field.type === 'boolean' &&
+              field.defaultValue === false &&
+              initial[name] === false &&
+              host.isDirty() &&
+              !host.isDirty(name);
+            return pendingFalseDefault || !sameAttributeValue(name, fieldValue(name), initial[name]);
+          },
           ...(field.type === 'number' && !Array.isArray(field.options)
             ? {
                 getMin: () => metadataNumber('minValue', 'getMin'),
@@ -728,7 +842,11 @@ export function createFormClientRuntime(host) {
               date: 'datetime',
               multiselect: 'multiselectoptionset',
             })[field.type] ?? field.type,
-          getOptions: () => (field.options ?? []).map((option) => ({ text: option.label, value: option.value })),
+          getOptions: () =>
+            (field.type === 'boolean'
+              ? [...(field.options ?? [])].sort((a, b) => a.value - b.value)
+              : (field.options ?? [])
+            ).map((option) => ({ text: option.label, value: option.value })),
           getOption: (value) => {
             const option = (field.options ?? []).find((option) =>
               typeof value === 'number' ? option.value === value : option.label === value,
@@ -751,9 +869,10 @@ export function createFormClientRuntime(host) {
             if (!['none', 'required', 'recommended'].includes(value)) throw new Error('Invalid required level.');
             host.required?.(name, value);
           },
-          getSubmitMode: () => 'dirty',
+          getSubmitMode: () => submitModes.get(name) ?? 'dirty',
           setSubmitMode: (mode) => {
-            if (mode !== 'dirty') unsupported(`attribute.setSubmitMode(${mode})`);
+            if (!['dirty', 'always', 'never'].includes(mode)) throw new Error('Invalid submit mode.');
+            submitModes.set(name, mode);
           },
           addOnChange: (callback) => add(`onchange:${name}`, callback),
           removeOnChange: (callback) => remove(`onchange:${name}`, callback),
@@ -761,49 +880,92 @@ export function createFormClientRuntime(host) {
           controls: collection(host.controlNames(name).map((controlName) => makeControl(controlName, name))),
         },
         `attribute(${name})`,
+        new Set(
+          ['text', 'textarea'].includes(field.type)
+            ? ['getMin', 'getMax', 'getPrecision']
+            : field.type === 'number' &&
+                !Array.isArray(field.options) &&
+                ['int', 'integer', 'decimal'].includes(field.dataverseType)
+              ? ['getMaxLength']
+              : [],
+        ),
       );
     });
   function makeControl(name, fieldName = host.controlField(name)) {
     const field = host.table.fields[fieldName];
-    const options = () =>
-      host.controlState(name, 'options') ??
-      (field.options ?? []).map((option) => ({ text: option.label, value: option.value }));
+    const options = () => controlOptions(name, fieldName);
     return client(
       {
         getName: () => name,
         getAttribute: () => attributes.find((attribute) => attribute.getName() === fieldName) ?? null,
+        getControlType: () =>
+          field?.type === 'multiselect'
+            ? 'multiselectoptionset'
+            : field?.type === 'lookup'
+              ? 'lookup'
+              : field?.type === 'number' && Array.isArray(field.options)
+                ? 'optionset'
+                : 'standard',
+        getParent: () => {
+          for (const tab of host.form?.tabs ?? []) {
+            const index = (tab.sections ?? []).findIndex((section) =>
+              (section.fields ?? []).some((cell) => (cell.sourceControl?.id ?? cell.name) === name),
+            );
+            if (index !== -1) return formContext.ui.tabs.get(tab.id).sections.get(index);
+          }
+          return null;
+        },
         getDisabled: () => host.controlState(name, 'disabled'),
-        setDisabled: (value) => host.controlState(name, 'disabled', Boolean(value)),
+        setDisabled: (value) => {
+          host.controlState(name, 'disabled', Boolean(value));
+        },
         getVisible: () => !host.controlState(name, 'hidden'),
-        setVisible: (value) => host.controlState(name, 'hidden', !value),
+        setVisible: (value) => {
+          host.controlState(name, 'hidden', !value);
+        },
         getLabel: () => host.controlState(name, 'label'),
-        setLabel: (value) => host.controlState(name, 'label', String(value)),
+        setLabel: (value) => {
+          host.controlState(name, 'label', String(value));
+        },
         setFocus: () => host.controlState(name, 'focus', true),
-        setNotification: (message, id = 'default') => host.controlState(name, `notification:${id}`, String(message)),
-        clearNotification: (id = 'default') => host.controlState(name, `notification:${id}`, null),
+        setNotification: (message, id = 'default') => {
+          host.controlState(name, `notification:${id}`, String(message));
+          return true;
+        },
+        clearNotification: (id = 'default') => {
+          const present = host.controlState(name, `notification:${id}`) != null;
+          host.controlState(name, `notification:${id}`, null);
+          return present;
+        },
         ...(field?.type === 'multiselect' || (field?.type === 'number' && Array.isArray(field.options))
           ? {
+              getOptions: () => [
+                ...(hasChoiceBlank(name, fieldName) ? [{ text: '', value: NaN }] : []),
+                ...options().map((option) => ({ ...option })),
+              ],
               addOption: (option, index) => {
-                if (!option || typeof option.text !== 'string' || !Number.isSafeInteger(option.value))
-                  throw new Error('addOption requires text and a safe integer option value.');
+                if (!option || typeof option.text !== 'string')
+                  throw new Error('addOption requires text and a numeric option value.');
+                if (typeof option.value !== 'number') {
+                  const error = new Error('Value should be of type: number: Parameter Name: optionSetItem.value');
+                  error.name = 'UciError';
+                  throw error;
+                }
                 const next = options().map((entry) => ({ ...entry }));
-                if (next.some((entry) => entry.value === option.value))
-                  throw new Error(`Option value ${option.value} is already present on control ${name}.`);
-                const at = index === undefined ? next.length : index;
-                if (!Number.isInteger(at) || at < 0 || at > next.length)
-                  throw new Error('addOption index must be an integer within the control options.');
+                const numericIndex = Number(index);
+                const at =
+                  index === undefined || !Number.isInteger(numericIndex) ? next.length : Math.max(0, numericIndex - 1);
                 next.splice(at, 0, { text: option.text, value: option.value });
-                host.controlState(name, 'options', next);
+                setControlOptions(name, fieldName, next, host.isPcfControl?.(name) ? undefined : true);
               },
               removeOption: (value) => {
-                if (!Number.isSafeInteger(value)) throw new Error('removeOption requires a safe integer option value.');
-                host.controlState(
-                  name,
-                  'options',
-                  options().filter((option) => option.value !== value),
-                );
+                const next = options().slice();
+                const index = next.findIndex((option) => option.value === value);
+                if (index !== -1) next.splice(index, 1);
+                const blank = host.isPcfControl?.(name) && index !== -1 && !next.length ? false : undefined;
+                setControlOptions(name, fieldName, next, blank);
               },
-              clearOptions: () => host.controlState(name, 'options', []),
+              clearOptions: () => setControlOptions(name, fieldName, [], !host.isPcfControl?.(name)),
             }
           : {}),
       },
@@ -813,7 +975,15 @@ export function createFormClientRuntime(host) {
   const controls = host.controlNames().map((name) => makeControl(name));
   const formItem = client(
     {
-      getId: () => (host.form?.id ? `{${String(host.form.id).replace(/[{}]/g, '')}}` : null),
+      getId: () => {
+        const id = host.form?.id;
+        if (!id) return null;
+        const text = String(id),
+          candidate = text.startsWith('{') && text.endsWith('}') ? text.slice(1, -1) : text;
+        return /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i.test(candidate)
+          ? candidate.toLowerCase()
+          : `{${text.replace(/[{}]/g, '')}}`;
+      },
       getLabel: () => host.form?.name ?? '',
       navigate: () => unsupported('formSelector item.navigate'),
     },
@@ -858,7 +1028,7 @@ export function createFormClientRuntime(host) {
           formSelector: client(
             {
               getCurrentItem: () => formItem,
-              items: collection(host.form?.id ? [formItem] : [], (item, key) => bareId(item.getId()) === bareId(key)),
+              items: collection(host.form?.id ? [formItem] : [], (item, key) => item.getId() === key, null),
             },
             'formContext.ui.formSelector',
           ),
@@ -868,17 +1038,24 @@ export function createFormClientRuntime(host) {
               client(
                 {
                   getName: () => tab.id,
-                  getLabel: () => tab.label,
+                  getLabel: () => layoutLabel(tab),
+                  setLabel: (value) => setLayoutLabel(tab, value),
                   getVisible: () => host.layoutVisible?.(tab) ?? tab.visible !== false,
-                  setVisible: (visible) => host.setLayoutVisible(tab, Boolean(visible)),
+                  setVisible: (visible) => {
+                    host.setLayoutVisible(tab, Boolean(visible));
+                  },
                   sections: collection(
                     (tab.sections ?? []).map((section) =>
                       client(
                         {
                           getName: () => section.name ?? null,
-                          getLabel: () => section.label,
+                          getLabel: () => layoutLabel(section),
+                          setLabel: (value) => setLayoutLabel(section, value),
+                          getParent: () => formContext.ui.tabs.get(tab.id),
                           getVisible: () => host.layoutVisible?.(section) ?? section.visible !== false,
-                          setVisible: (visible) => host.setLayoutVisible(section, Boolean(visible)),
+                          setVisible: (visible) => {
+                            host.setLayoutVisible(section, Boolean(visible));
+                          },
                         },
                         'formContext.ui.tab.section',
                       ),
@@ -895,9 +1072,9 @@ export function createFormClientRuntime(host) {
             return true;
           },
           clearFormNotification: (id = 'default') => {
-            notifications.delete(id);
+            const present = notifications.delete(id);
             host.notification(null, null, id);
-            return true;
+            return present;
           },
           close: () => host.close(),
         },
@@ -942,23 +1119,27 @@ export function createFormClientRuntime(host) {
       },
       'eventArgs',
     );
-    const context = client(
-      {
-        getFormContext: () => formContext,
-        getEventSource: () => (attribute ? formContext.getAttribute(attribute) : formContext.data.entity),
-        getEventArgs: () => eventArgs,
-        getDepth: () => Math.max(1, depth),
-      },
-      'executionContext',
-    );
+    const context = (ordinal) =>
+      client(
+        {
+          getFormContext: () => formContext,
+          getEventSource: () => (attribute ? formContext.getAttribute(attribute) : formContext.data.entity),
+          getEventArgs: () => eventArgs,
+          getDepth: () => ordinal,
+        },
+        'executionContext',
+      );
     try {
-      for (const handler of matchingRegisteredHandlers(host, name, attribute))
+      let ordinal = 0;
+      for (const handler of matchingRegisteredHandlers(host, name, attribute)) {
         await call(handler, [
-          ...(handler.passExecutionContext ? [context] : []),
+          ...(handler.passExecutionContext ? [context(ordinal)] : []),
           ...parseHandlerParameters(handler.parameters),
         ]);
+        ordinal++;
+      }
       /* NOSONAR */ for (const handler of [...(events.get(name === 'onchange' ? `onchange:${attribute}` : name) ?? [])])
-        await call(handler, [context]);
+        await call(handler.callback, [context(ordinal + handler.ordinal)]);
       return { prevented };
     } finally {
       const count = activeEvents.get(name) - 1;
@@ -1207,6 +1388,9 @@ export function createFormClientRuntime(host) {
     destroy() {
       live = false;
       events.clear();
+      eventOrdinals.clear();
+      invalidNumberReads.clear();
+      layoutLabels.clear();
       for (const id of notifications) host.notification(null, null, id);
     },
   };

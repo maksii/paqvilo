@@ -71,7 +71,7 @@ export function debugMarkup(source, file, { onEdits } = {}) {
   if (debugging.getStore() === false) return source;
   if (!source || !file || !/<script\b/i.test(String(source))) return source;
   const text = String(source),
-    tree = parseFragment(text, { sourceCodeLocationInfo: true }),
+    tree = parseFragment(markupOutsideLiquid(text), { sourceCodeLocationInfo: true }),
     patches = [];
   let inline = 0;
   const visit = (node) => {
@@ -100,4 +100,58 @@ export function debugMarkup(source, file, { onEdits } = {}) {
   for (const patch of patches) result = result.slice(0, patch.from) + patch.body + result.slice(patch.to);
   onEdits?.(patches);
   return result;
+}
+
+// HTML-like strings inside Liquid expressions/tags are data, not inline scripts.
+// Mask tokens only for HTML parsing, retaining every offset and newline so
+// executable script locations still map to the unmodified authored source.
+function markupOutsideLiquid(text) {
+  const chunks = [];
+  const endRaw = /\{%-?\s*endraw\s*-?%\}/g;
+  let from = 0,
+    cursor = 0,
+    raw = false;
+  while (cursor < text.length) {
+    if (raw) {
+      // Raw termination has its own grammar; quotes/unmatched tokens in its
+      // literal body cannot swallow endraw or turn later expressions into HTML.
+      endRaw.lastIndex = cursor;
+      const closing = endRaw.exec(text);
+      if (!closing) break;
+      chunks.push(text.slice(from, closing.index), closing[0].replace(/[^\r\n]/g, ' '));
+      cursor = from = closing.index + closing[0].length;
+      raw = false;
+      continue;
+    }
+    const begin = text.indexOf('{', cursor);
+    if (begin < 0) break;
+    const kind = text[begin + 1];
+    if (kind !== '{' && kind !== '%') {
+      cursor = begin + 1;
+      continue;
+    }
+    const end = liquidTokenEnd(text, begin + 2, kind);
+    const finish = end < 0 ? text.length : end + 2;
+    const name =
+      kind === '%' ? /^-?\s*(\w+)/.exec(text.slice(begin + 2, end < 0 ? text.length : end))?.[1]?.toLowerCase() : null;
+    if (name === 'raw') raw = true;
+    chunks.push(text.slice(from, begin), text.slice(begin, finish).replace(/[^\r\n]/g, ' '));
+    cursor = from = finish;
+  }
+  chunks.push(text.slice(from));
+  return chunks.join('');
+}
+
+// Match the Liquid parser's quote semantics: a quoted fragment runs to the next
+// matching quote. Backslashes are literal; they do not escape that closing quote.
+function liquidTokenEnd(text, cursor, kind) {
+  while (cursor < text.length) {
+    const character = text[cursor++];
+    if (character === '"' || character === "'") {
+      const quote = text.indexOf(character, cursor);
+      if (quote < 0) return -1;
+      cursor = quote + 1;
+    } else if (character === (kind === '{' ? '}' : '%') && text[cursor] === '}') return cursor - 1;
+  }
+  return -1;
 }
