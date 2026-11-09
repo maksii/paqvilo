@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "scope": "Two repeated SQL Server engine captures for one fixed FORMAT error; no TDS claim.",
+  "package": {
+    "ecosystem": "microsoft-oci",
+    "id": "mssql/server",
+    "sha256": "cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718",
+    "source": "https://mcr.microsoft.com/v2/mssql/server/manifests/sha256:cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718",
+    "bodyBase64": "eyJzY2hlbWFWZXJzaW9uIjoyLCJtZWRpYVR5cGUiOiJhcHBsaWNhdGlvbi92bmQuZG9ja2VyLmRpc3RyaWJ1dGlvbi5tYW5pZmVzdC52Mitqc29uIiwiY29uZmlnIjp7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuY29udGFpbmVyLmltYWdlLnYxK2pzb24iLCJzaXplIjozMzcwLCJkaWdlc3QiOiJzaGEyNTY6N2ZiMjEzOTM0MTcxNWU4YTcxODQzY2ZjMmYwMmJhYjZlOTVmMWM1MmMwZmE5ZjlhNmIyZTdiNzYxZjA2MDc4MCJ9LCJsYXllcnMiOlt7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuaW1hZ2Uucm9vdGZzLmRpZmYudGFyLmd6aXAiLCJzaXplIjozMTU1OTQwMCwiZGlnZXN0Ijoic2hhMjU2OmNiNWUzNzRiZTY2MmE1NjJiODI3MTE1ODYzOWU5MThiOWM2MzRhYTRkZmRjOGIzYWEzMWNjZmM5OWNmOGMwNzcifSx7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuaW1hZ2Uucm9vdGZzLmRpZmYudGFyLmd6aXAiLCJzaXplIjo1MDIxMjIzODQsImRpZ2VzdCI6InNoYTI1NjpjZjc2ZTQ3YzIzN2Y5YmZkZThjNzM4ZmQzZTNmYTgzMWI1M2E2MmFlNTI2OTQ0MTYwMGQ0MTM4OTAwNTVkOGFlIn0seyJtZWRpYVR5cGUiOiJhcHBsaWNhdGlvbi92bmQuZG9ja2VyLmltYWdlLnJvb3Rmcy5kaWZmLnRhci5nemlwIiwic2l6ZSI6OTMwMjcwMDMsImRpZ2VzdCI6InNoYTI1NjoxNmU4NDM2YzBjYmFlN2RmNWEzODEzMTE2MWU4OGYxMGE0OTdhZjZlMjRhOWVlNmRjYzcwMDY3ZThjYjI4YWU3In1dfQ=="
+  },
+  "runs": [
+    {
+      "runSha256": "83ac15c6360018cf192655b27e3cba122b008d800b630b0727472fca6c502532",
+      "runnerSha256": "d3720ecee266ad25e88f831e8baa697cf809d4a872c0f88980609798542b9c9a",
+      "inventorySha256": "c367ce486675e6be36f9d4e8ac7d950e32c5d4b281a25360441d4bb8076800dd",
+      "facts": {
+        "sql-function-remediation-82": {
+          "caseIndex": 82,
+          "baselineId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#82",
+          "baselineTupleAstSha256": "9c313b68874975c403483d1f011cfb6d24163b031ce3eb62452fe5b58828618f",
+          "currentTupleAstSha256": "d43747fdfd3ee59c40fd2695be7a4e1bcb1bc11db48555f0eac37a937a5aa9e8",
+          "assertionSha256": [
+            "cf60392995a11111755931aae17b92b36e4d1cf1447f3103b43baf642efd3dab"
+          ],
+          "semanticReviewSha256": "665fad33f3eb098cfb67819c0ce6e803e6c91e6790d2242ebf5624cd14b80ff6",
+          "priorExpected": null,
+          "currentExpected": {
+            "sqlError": 9818
+          },
+          "query": "SELECT FORMAT(CAST(N'1234.5' AS float), CAST(N'N2' AS nvarchar(2)), CAST(N'not a culture' AS nvarchar(13))) AS [value]",
+          "typedOutcome": {
+            "outcome": "sql-error",
+            "query": "SELECT FORMAT(CAST(N'1234.5' AS float), CAST(N'N2' AS nvarchar(2)), CAST(N'not a culture' AS nvarchar(13))) AS [value]",
+            "errors": [
+              {
+                "severity": 16,
+                "line": 1,
+                "number": 9818,
+                "message": "The culture parameter 'not a culture' provided in the function call is not supported.",
+                "state": 1
+              }
+            ],
+            "id": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#82"
+          },
+          "context": {
+            "sourceInventorySha256": "c367ce486675e6be36f9d4e8ac7d950e32c5d4b281a25360441d4bb8076800dd",
+            "matrixMappingSha256": "688c2e742fe8b00fa02f5bca767afab96b629bd0390184f5b4fd8e15444b65b4",
+            "reviewReceiptSha256": "f703883a4e26d8b6a0ba6f455388f2d0aaececff050a2c91beb18bfc5bd5b45c",
+            "binarySha256": "35299486743d9f126940617b5152d9a584861879811357fabec74202154fbd4d",
+            "binaryScope": "Original engine container; later missing-function container binary not separately hashed"
+          }
+        }
+      }
+    },
+    {
+      "runSha256": "d6c8647cefd648df9b4add07fbcee6ef14c0e09c7b1ceeb659302a0d0757747c",
+      "runnerSha256": "d3720ecee266ad25e88f831e8baa697cf809d4a872c0f88980609798542b9c9a",
+      "inventorySha256": "c367ce486675e6be36f9d4e8ac7d950e32c5d4b281a25360441d4bb8076800dd",
+      "facts": {
+        "sql-function-remediation-82": {
+          "caseIndex": 82,
+          "baselineId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#82",
+          "baselineTupleAstSha256": "9c313b68874975c403483d1f011cfb6d24163b031ce3eb62452fe5b58828618f",
+          "currentTupleAstSha256": "d43747fdfd3ee59c40fd2695be7a4e1bcb1bc11db48555f0eac37a937a5aa9e8",
+          "assertionSha256": [
+            "cf60392995a11111755931aae17b92b36e4d1cf1447f3103b43baf642efd3dab"
+          ],
+          "semanticReviewSha256": "665fad33f3eb098cfb67819c0ce6e803e6c91e6790d2242ebf5624cd14b80ff6",
+          "priorExpected": null,
+          "currentExpected": {
+            "sqlError": 9818
+          },
+          "query": "SELECT FORMAT(CAST(N'1234.5' AS float), CAST(N'N2' AS nvarchar(2)), CAST(N'not a culture' AS nvarchar(13))) AS [value]",
+          "typedOutcome": {
+            "outcome": "sql-error",
+            "query": "SELECT FORMAT(CAST(N'1234.5' AS float), CAST(N'N2' AS nvarchar(2)), CAST(N'not a culture' AS nvarchar(13))) AS [value]",
+            "errors": [
+              {
+                "severity": 16,
+                "line": 1,
+                "number": 9818,
+                "message": "The culture parameter 'not a culture' provided in the function call is not supported.",
+                "state": 1
+              }
+            ],
+            "id": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#82"
+          },
+          "context": {
+            "sourceInventorySha256": "c367ce486675e6be36f9d4e8ac7d950e32c5d4b281a25360441d4bb8076800dd",
+            "matrixMappingSha256": "688c2e742fe8b00fa02f5bca767afab96b629bd0390184f5b4fd8e15444b65b4",
+            "reviewReceiptSha256": "f703883a4e26d8b6a0ba6f455388f2d0aaececff050a2c91beb18bfc5bd5b45c",
+            "binarySha256": "35299486743d9f126940617b5152d9a584861879811357fabec74202154fbd4d",
+            "binaryScope": "Original engine container; later missing-function container binary not separately hashed"
+          }
+        }
+      }
+    }
+  ]
+}

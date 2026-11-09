@@ -11,6 +11,26 @@ const __paqParityShared = __paqParityFreeze([
     repositoryRoot: '../..',
     titleExpressionSha256: 'be581c65831be7753511428b9af41aa34354fb1a1d0c095c3ff0d7a9c9f6f7d7',
     sqlEvaluator: true,
+    sqlOrderedWitness: { baselineId: 'mirage/test/dataverse-tds-sql-eval.test.mjs:1063:2', caseIndex: 11 },
+    sqlExtraEvaluatorCases: {
+      cases: [
+        { binding: 'cases', index: 23 },
+        { binding: 'cases', index: 24 },
+        { binding: 'cases', index: 28 },
+        { binding: 'cases', index: 29 },
+        { binding: 'cases', index: 30 },
+        { binding: 'cases', index: 31 },
+        { binding: 'cases', index: 32 },
+        { binding: 'cases', index: 45 },
+        { binding: 'cases', index: 46 },
+        { binding: 'cases', index: 47 },
+        { binding: 'orderedCases', index: 12 },
+        { binding: 'orderedCases', index: 15 },
+      ],
+      reviewPath: 'mirage/test/fixtures/dataverse-sql-server-evaluator-extra-review-v1.json',
+      reviewSha256: 'a198d007525b36d966dea0d5888d5c90bf9a8b2f274bc1fd804e7f307fd2952b',
+      sourceReceiptSha256: '05e81b935c5397da72c240070333297b6eb5709963623872e5d348801725a564',
+    },
     originalCallbackExpression: true,
     conciseSpecs: [
       {
@@ -165,8 +185,20 @@ const __paqParityShared = __paqParityFreeze([
     runtimeInputs: [],
     inputDependencies: [
       {
+        path: 'mirage/test/fixtures/dataverse-sql-server-evaluator-corrected-review-v1.json',
+        sha256: '0d8a9ba1abe3d22c4c59eeb3b3311785baf228595b5e1fc3f5a0ada77c08bb7c',
+      },
+      {
         path: 'mirage/test/fixtures/dataverse-sql-server-evaluator-corrections-review-v1.json',
         sha256: '81f25a82d097c19a2245951d6083cb6acdd0a2ab8369a1888abe64a1bee0f52c',
+      },
+      {
+        path: 'mirage/test/fixtures/dataverse-sql-server-evaluator-extra-review-v1.json',
+        sha256: 'a198d007525b36d966dea0d5888d5c90bf9a8b2f274bc1fd804e7f307fd2952b',
+      },
+      {
+        path: 'mirage/test/fixtures/dataverse-sql-server-evaluator-new7-review-v1.json',
+        sha256: 'f9aa9bb9f6c9438c34c27a2701e9d2e22aff940f1a39acbaddf77f5c780acb1b',
       },
       {
         path: 'mirage/test/fixtures/dataverse-sql-server-evaluator-review-v1.json',
@@ -265,18 +297,33 @@ const __paqParityShared = __paqParityFreeze([
         { caseIndex: 6, factIds: ['sql-eval-semantic-6'] },
         { caseIndex: 7, factIds: ['sql-eval-semantic-7'] },
         { caseIndex: 8, factIds: ['sql-eval-semantic-8'] },
+        { caseIndex: 9, factIds: ['sql-eval-new7-9'] },
         { caseIndex: 10, factIds: ['sql-eval-semantic-10'] },
+        { caseIndex: 11, factIds: ['sql-eval-corrected-11'] },
+        { caseIndex: 12, factIds: ['sql-eval-corrected-12'] },
         { caseIndex: 13, factIds: ['sql-eval-semantic-13'] },
         { caseIndex: 14, factIds: ['sql-eval-semantic-14'] },
         { caseIndex: 15, factIds: ['sql-eval-semantic-15'] },
         { caseIndex: 16, factIds: ['sql-eval-semantic-16'] },
         { caseIndex: 17, factIds: ['sql-eval-semantic-17'] },
         { caseIndex: 18, factIds: ['sql-eval-semantic-18'] },
+        { caseIndex: 19, factIds: ['sql-eval-corrected-19'] },
+        { caseIndex: 20, factIds: ['sql-eval-corrected-20'] },
+        { caseIndex: 21, factIds: ['sql-eval-corrected-21'] },
+        { caseIndex: 22, factIds: ['sql-eval-corrected-22'] },
+        { caseIndex: 23, factIds: ['sql-eval-new7-23'] },
+        { caseIndex: 24, factIds: ['sql-eval-new7-24'] },
+        { caseIndex: 25, factIds: ['sql-eval-new7-25'] },
+        { caseIndex: 26, factIds: ['sql-eval-new7-26'] },
+        { caseIndex: 27, factIds: ['sql-eval-new7-27'] },
+        { caseIndex: 28, factIds: ['sql-eval-new7-28'] },
         { caseIndex: 30, factIds: ['sql-eval-semantic-30'] },
         { caseIndex: 31, factIds: ['sql-eval-semantic-31'] },
         { caseIndex: 34, factIds: ['sql-eval-semantic-34'] },
+        { caseIndex: 41, factIds: ['sql-eval-corrected-41'] },
         { caseIndex: 42, factIds: ['sql-eval-semantic-42'] },
         { caseIndex: 43, factIds: ['sql-eval-semantic-43'] },
+        { caseIndex: 44, factIds: ['sql-eval-corrected-44'] },
       ],
       encoding: 'sql-eval-v1',
       bindings: [
@@ -709,10 +756,239 @@ const __paqParityShared = __paqParityFreeze([
           },
         ],
       },
+      {
+        path: 'mirage/test/fixtures/dataverse-sql-server-evaluator-corrected-facts-v1.json',
+        sha256: 'dbb8d1d1d911884f7e4efe67021af79d9e5128fe13f87b89074e5fe992ba21f6',
+        mode: 'official-package',
+        package: {
+          ecosystem: 'microsoft-oci',
+          id: 'mssql/server',
+          sha256: 'cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718',
+          source:
+            'https://mcr.microsoft.com/v2/mssql/server/manifests/sha256:cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718',
+          bodyBase64:
+            'eyJzY2hlbWFWZXJzaW9uIjoyLCJtZWRpYVR5cGUiOiJhcHBsaWNhdGlvbi92bmQuZG9ja2VyLmRpc3RyaWJ1dGlvbi5tYW5pZmVzdC52Mitqc29uIiwiY29uZmlnIjp7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuY29udGFpbmVyLmltYWdlLnYxK2pzb24iLCJzaXplIjozMzcwLCJkaWdlc3QiOiJzaGEyNTY6N2ZiMjEzOTM0MTcxNWU4YTcxODQzY2ZjMmYwMmJhYjZlOTVmMWM1MmMwZmE5ZjlhNmIyZTdiNzYxZjA2MDc4MCJ9LCJsYXllcnMiOlt7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuaW1hZ2Uucm9vdGZzLmRpZmYudGFyLmd6aXAiLCJzaXplIjozMTU1OTQwMCwiZGlnZXN0Ijoic2hhMjU2OmNiNWUzNzRiZTY2MmE1NjJiODI3MTE1ODYzOWU5MThiOWM2MzRhYTRkZmRjOGIzYWEzMWNjZmM5OWNmOGMwNzcifSx7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuaW1hZ2Uucm9vdGZzLmRpZmYudGFyLmd6aXAiLCJzaXplIjo1MDIxMjIzODQsImRpZ2VzdCI6InNoYTI1NjpjZjc2ZTQ3YzIzN2Y5YmZkZThjNzM4ZmQzZTNmYTgzMWI1M2E2MmFlNTI2OTQ0MTYwMGQ0MTM4OTAwNTVkOGFlIn0seyJtZWRpYVR5cGUiOiJhcHBsaWNhdGlvbi92bmQuZG9ja2VyLmltYWdlLnJvb3Rmcy5kaWZmLnRhci5nemlwIiwic2l6ZSI6OTMwMjcwMDMsImRpZ2VzdCI6InNoYTI1NjoxNmU4NDM2YzBjYmFlN2RmNWEzODEzMTE2MWU4OGYxMGE0OTdhZjZlMjRhOWVlNmRjYzcwMDY3ZThjYjI4YWU3In1dfQ==',
+        },
+        packagePointer: '/package',
+        capturePointers: ['/runs/0/runSha256', '/runs/1/runSha256'],
+        facts: [
+          {
+            id: 'sql-eval-corrected-11',
+            pointer: '/runs/0/facts/sql-eval-corrected-11',
+            replicatedPointers: ['/runs/0/facts/sql-eval-corrected-11', '/runs/1/facts/sql-eval-corrected-11'],
+            sha256: 'f8e5bd3ce0e56320613cb8fcebefd20edc2aed4500632213679f9762f1a97686',
+          },
+          {
+            id: 'sql-eval-corrected-12',
+            pointer: '/runs/0/facts/sql-eval-corrected-12',
+            replicatedPointers: ['/runs/0/facts/sql-eval-corrected-12', '/runs/1/facts/sql-eval-corrected-12'],
+            sha256: '6ec10e775b67d7bf1b2b56a8a65c815a8f2dd29df29516f50cbb497cf54c23b4',
+          },
+          {
+            id: 'sql-eval-corrected-19',
+            pointer: '/runs/0/facts/sql-eval-corrected-19',
+            replicatedPointers: ['/runs/0/facts/sql-eval-corrected-19', '/runs/1/facts/sql-eval-corrected-19'],
+            sha256: '160ff429d13985eab43413241600884b497e96f5610f3990776a1ccfb9f868d0',
+          },
+          {
+            id: 'sql-eval-corrected-20',
+            pointer: '/runs/0/facts/sql-eval-corrected-20',
+            replicatedPointers: ['/runs/0/facts/sql-eval-corrected-20', '/runs/1/facts/sql-eval-corrected-20'],
+            sha256: 'f7cde69a4cbbd16f1a96cce6fd784216c1a6a58ffd0eff0d38a2bccc8e8bc1aa',
+          },
+          {
+            id: 'sql-eval-corrected-21',
+            pointer: '/runs/0/facts/sql-eval-corrected-21',
+            replicatedPointers: ['/runs/0/facts/sql-eval-corrected-21', '/runs/1/facts/sql-eval-corrected-21'],
+            sha256: '85e96fa785726bad15635c0c1654d5b89380d2eff8575f40b240b985c334f745',
+          },
+          {
+            id: 'sql-eval-corrected-22',
+            pointer: '/runs/0/facts/sql-eval-corrected-22',
+            replicatedPointers: ['/runs/0/facts/sql-eval-corrected-22', '/runs/1/facts/sql-eval-corrected-22'],
+            sha256: '5f99e8b3731e162925a41f7583b908b281cbcea890be2fb199241becfab4c81f',
+          },
+          {
+            id: 'sql-eval-corrected-41',
+            pointer: '/runs/0/facts/sql-eval-corrected-41',
+            replicatedPointers: ['/runs/0/facts/sql-eval-corrected-41', '/runs/1/facts/sql-eval-corrected-41'],
+            sha256: '7ae2cab321d13e520b73d591f092b83b5639ec5411c01a0c86043c20863ca4fd',
+          },
+          {
+            id: 'sql-eval-corrected-44',
+            pointer: '/runs/0/facts/sql-eval-corrected-44',
+            replicatedPointers: ['/runs/0/facts/sql-eval-corrected-44', '/runs/1/facts/sql-eval-corrected-44'],
+            sha256: 'b9720fec4b0ce8712ec775244184ea2a650c2bb7978b652737915f841f8f03c2',
+          },
+        ],
+      },
+      {
+        path: 'mirage/test/fixtures/dataverse-sql-server-evaluator-extra-facts-v1.json',
+        sha256: '619226468506ed09eae32f53cd52389c14b9d7521a874ba6c003acdebb8e7f42',
+        mode: 'official-package',
+        package: {
+          ecosystem: 'microsoft-oci',
+          id: 'mssql/server',
+          sha256: 'cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718',
+          source:
+            'https://mcr.microsoft.com/v2/mssql/server/manifests/sha256:cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718',
+          bodyBase64:
+            'eyJzY2hlbWFWZXJzaW9uIjoyLCJtZWRpYVR5cGUiOiJhcHBsaWNhdGlvbi92bmQuZG9ja2VyLmRpc3RyaWJ1dGlvbi5tYW5pZmVzdC52Mitqc29uIiwiY29uZmlnIjp7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuY29udGFpbmVyLmltYWdlLnYxK2pzb24iLCJzaXplIjozMzcwLCJkaWdlc3QiOiJzaGEyNTY6N2ZiMjEzOTM0MTcxNWU4YTcxODQzY2ZjMmYwMmJhYjZlOTVmMWM1MmMwZmE5ZjlhNmIyZTdiNzYxZjA2MDc4MCJ9LCJsYXllcnMiOlt7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuaW1hZ2Uucm9vdGZzLmRpZmYudGFyLmd6aXAiLCJzaXplIjozMTU1OTQwMCwiZGlnZXN0Ijoic2hhMjU2OmNiNWUzNzRiZTY2MmE1NjJiODI3MTE1ODYzOWU5MThiOWM2MzRhYTRkZmRjOGIzYWEzMWNjZmM5OWNmOGMwNzcifSx7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuaW1hZ2Uucm9vdGZzLmRpZmYudGFyLmd6aXAiLCJzaXplIjo1MDIxMjIzODQsImRpZ2VzdCI6InNoYTI1NjpjZjc2ZTQ3YzIzN2Y5YmZkZThjNzM4ZmQzZTNmYTgzMWI1M2E2MmFlNTI2OTQ0MTYwMGQ0MTM4OTAwNTVkOGFlIn0seyJtZWRpYVR5cGUiOiJhcHBsaWNhdGlvbi92bmQuZG9ja2VyLmltYWdlLnJvb3Rmcy5kaWZmLnRhci5nemlwIiwic2l6ZSI6OTMwMjcwMDMsImRpZ2VzdCI6InNoYTI1NjoxNmU4NDM2YzBjYmFlN2RmNWEzODEzMTE2MWU4OGYxMGE0OTdhZjZlMjRhOWVlNmRjYzcwMDY3ZThjYjI4YWU3In1dfQ==',
+        },
+        packagePointer: '/package',
+        capturePointers: ['/runs/0/runSha256', '/runs/1/runSha256'],
+        facts: [
+          {
+            id: 'sql-eval-extra-cases-23',
+            pointer: '/runs/0/facts/sql-eval-extra-cases-23',
+            replicatedPointers: ['/runs/0/facts/sql-eval-extra-cases-23', '/runs/1/facts/sql-eval-extra-cases-23'],
+            sha256: '1311616e1152765339face8f57330461eddcce11495b5665ddf7029dfa031ab9',
+          },
+          {
+            id: 'sql-eval-extra-cases-24',
+            pointer: '/runs/0/facts/sql-eval-extra-cases-24',
+            replicatedPointers: ['/runs/0/facts/sql-eval-extra-cases-24', '/runs/1/facts/sql-eval-extra-cases-24'],
+            sha256: '71cf81d035d61353cb3f976f7dc45776b24ebe99ab89e578ab180fe3257472c4',
+          },
+          {
+            id: 'sql-eval-extra-cases-28',
+            pointer: '/runs/0/facts/sql-eval-extra-cases-28',
+            replicatedPointers: ['/runs/0/facts/sql-eval-extra-cases-28', '/runs/1/facts/sql-eval-extra-cases-28'],
+            sha256: '6765b574422bd5f916cbc8e322c047090de905c946743f64d3ee89b459d39c66',
+          },
+          {
+            id: 'sql-eval-extra-cases-29',
+            pointer: '/runs/0/facts/sql-eval-extra-cases-29',
+            replicatedPointers: ['/runs/0/facts/sql-eval-extra-cases-29', '/runs/1/facts/sql-eval-extra-cases-29'],
+            sha256: '587a21356f5088d6a0a518c9452a8d19654cfb8617ab28ef90e7fab2c8b6b598',
+          },
+          {
+            id: 'sql-eval-extra-cases-30',
+            pointer: '/runs/0/facts/sql-eval-extra-cases-30',
+            replicatedPointers: ['/runs/0/facts/sql-eval-extra-cases-30', '/runs/1/facts/sql-eval-extra-cases-30'],
+            sha256: 'ba4a814a69bab6d3a86d8977ea4958d1fa2aab0a61086ebb4529571dbadaec10',
+          },
+          {
+            id: 'sql-eval-extra-cases-31',
+            pointer: '/runs/0/facts/sql-eval-extra-cases-31',
+            replicatedPointers: ['/runs/0/facts/sql-eval-extra-cases-31', '/runs/1/facts/sql-eval-extra-cases-31'],
+            sha256: '89db00fd7c5643dc7143b83f3917a391489ce338a39a6774bff6b27e2f8d7bbb',
+          },
+          {
+            id: 'sql-eval-extra-cases-32',
+            pointer: '/runs/0/facts/sql-eval-extra-cases-32',
+            replicatedPointers: ['/runs/0/facts/sql-eval-extra-cases-32', '/runs/1/facts/sql-eval-extra-cases-32'],
+            sha256: 'af6077dd2b08272803c0b7352e3ba06fccd4d89ed039e310d458022f45e090e4',
+          },
+          {
+            id: 'sql-eval-extra-cases-45',
+            pointer: '/runs/0/facts/sql-eval-extra-cases-45',
+            replicatedPointers: ['/runs/0/facts/sql-eval-extra-cases-45', '/runs/1/facts/sql-eval-extra-cases-45'],
+            sha256: 'fa0f9d2f1e9e5baa2f624f4acb2f7a5a14e829bc8d6ca9caca7ea20880eab180',
+          },
+          {
+            id: 'sql-eval-extra-cases-46',
+            pointer: '/runs/0/facts/sql-eval-extra-cases-46',
+            replicatedPointers: ['/runs/0/facts/sql-eval-extra-cases-46', '/runs/1/facts/sql-eval-extra-cases-46'],
+            sha256: '62f4898ed8cdcdf31aef67fbaf8184b486a1b05830cf4a977118650e34f4cbec',
+          },
+          {
+            id: 'sql-eval-extra-cases-47',
+            pointer: '/runs/0/facts/sql-eval-extra-cases-47',
+            replicatedPointers: ['/runs/0/facts/sql-eval-extra-cases-47', '/runs/1/facts/sql-eval-extra-cases-47'],
+            sha256: 'fc97e31d6227416a16ac9be9a448dcdbaca833b0ecfd2a93bbef8c0f82cd7ba8',
+          },
+          {
+            id: 'sql-eval-extra-orderedCases-12',
+            pointer: '/runs/0/facts/sql-eval-extra-orderedCases-12',
+            replicatedPointers: [
+              '/runs/0/facts/sql-eval-extra-orderedCases-12',
+              '/runs/1/facts/sql-eval-extra-orderedCases-12',
+            ],
+            sha256: '3bcdbc2240899ba252fb24eefbf13a97ab56f76b449a31dd7895f9ba4f81b3eb',
+          },
+          {
+            id: 'sql-eval-extra-orderedCases-15',
+            pointer: '/runs/0/facts/sql-eval-extra-orderedCases-15',
+            replicatedPointers: [
+              '/runs/0/facts/sql-eval-extra-orderedCases-15',
+              '/runs/1/facts/sql-eval-extra-orderedCases-15',
+            ],
+            sha256: '0bb3f635e52e7ddb220593f526d892965f0ce167b925196027d9ed1b427f10e1',
+          },
+        ],
+      },
+      {
+        path: 'mirage/test/fixtures/dataverse-sql-server-evaluator-new7-facts-v1.json',
+        sha256: '76b481a14d4742d0101b577ea6f47130296b189cf26b76f223be92e08572fc3e',
+        mode: 'official-package',
+        package: {
+          ecosystem: 'microsoft-oci',
+          id: 'mssql/server',
+          sha256: 'cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718',
+          source:
+            'https://mcr.microsoft.com/v2/mssql/server/manifests/sha256:cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718',
+          bodyBase64:
+            'eyJzY2hlbWFWZXJzaW9uIjoyLCJtZWRpYVR5cGUiOiJhcHBsaWNhdGlvbi92bmQuZG9ja2VyLmRpc3RyaWJ1dGlvbi5tYW5pZmVzdC52Mitqc29uIiwiY29uZmlnIjp7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuY29udGFpbmVyLmltYWdlLnYxK2pzb24iLCJzaXplIjozMzcwLCJkaWdlc3QiOiJzaGEyNTY6N2ZiMjEzOTM0MTcxNWU4YTcxODQzY2ZjMmYwMmJhYjZlOTVmMWM1MmMwZmE5ZjlhNmIyZTdiNzYxZjA2MDc4MCJ9LCJsYXllcnMiOlt7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuaW1hZ2Uucm9vdGZzLmRpZmYudGFyLmd6aXAiLCJzaXplIjozMTU1OTQwMCwiZGlnZXN0Ijoic2hhMjU2OmNiNWUzNzRiZTY2MmE1NjJiODI3MTE1ODYzOWU5MThiOWM2MzRhYTRkZmRjOGIzYWEzMWNjZmM5OWNmOGMwNzcifSx7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuaW1hZ2Uucm9vdGZzLmRpZmYudGFyLmd6aXAiLCJzaXplIjo1MDIxMjIzODQsImRpZ2VzdCI6InNoYTI1NjpjZjc2ZTQ3YzIzN2Y5YmZkZThjNzM4ZmQzZTNmYTgzMWI1M2E2MmFlNTI2OTQ0MTYwMGQ0MTM4OTAwNTVkOGFlIn0seyJtZWRpYVR5cGUiOiJhcHBsaWNhdGlvbi92bmQuZG9ja2VyLmltYWdlLnJvb3Rmcy5kaWZmLnRhci5nemlwIiwic2l6ZSI6OTMwMjcwMDMsImRpZ2VzdCI6InNoYTI1NjoxNmU4NDM2YzBjYmFlN2RmNWEzODEzMTE2MWU4OGYxMGE0OTdhZjZlMjRhOWVlNmRjYzcwMDY3ZThjYjI4YWU3In1dfQ==',
+        },
+        packagePointer: '/package',
+        capturePointers: ['/runs/0/runSha256', '/runs/1/runSha256'],
+        facts: [
+          {
+            id: 'sql-eval-new7-9',
+            pointer: '/runs/0/facts/sql-eval-new7-9',
+            replicatedPointers: ['/runs/0/facts/sql-eval-new7-9', '/runs/1/facts/sql-eval-new7-9'],
+            sha256: '900f412ffc19f6b018de2bebc4a6c1e9074639f2405d39ca4b554c1af1fecfa5',
+          },
+          {
+            id: 'sql-eval-new7-23',
+            pointer: '/runs/0/facts/sql-eval-new7-23',
+            replicatedPointers: ['/runs/0/facts/sql-eval-new7-23', '/runs/1/facts/sql-eval-new7-23'],
+            sha256: 'c2b29712347daf7b6e57d5678f3ff55cb76fe0b214989966b9c5f8627419b0a3',
+          },
+          {
+            id: 'sql-eval-new7-24',
+            pointer: '/runs/0/facts/sql-eval-new7-24',
+            replicatedPointers: ['/runs/0/facts/sql-eval-new7-24', '/runs/1/facts/sql-eval-new7-24'],
+            sha256: 'fe7b394b0fda51d21932a34003370e4def25274a0763723ed1774fabab729319',
+          },
+          {
+            id: 'sql-eval-new7-25',
+            pointer: '/runs/0/facts/sql-eval-new7-25',
+            replicatedPointers: ['/runs/0/facts/sql-eval-new7-25', '/runs/1/facts/sql-eval-new7-25'],
+            sha256: '26389899c050adaa53af6cfe9c5d06419a7cf87103f240d5621b32da31f3ea79',
+          },
+          {
+            id: 'sql-eval-new7-26',
+            pointer: '/runs/0/facts/sql-eval-new7-26',
+            replicatedPointers: ['/runs/0/facts/sql-eval-new7-26', '/runs/1/facts/sql-eval-new7-26'],
+            sha256: '8d9f94c97733745ac4fc195b46536deaaa623ae726c021302414adecbfb8904f',
+          },
+          {
+            id: 'sql-eval-new7-27',
+            pointer: '/runs/0/facts/sql-eval-new7-27',
+            replicatedPointers: ['/runs/0/facts/sql-eval-new7-27', '/runs/1/facts/sql-eval-new7-27'],
+            sha256: 'c04d3ec80e02c62cb692779fd63f3df9fb76977fcc474ccd81cc5787dbc40289',
+          },
+          {
+            id: 'sql-eval-new7-28',
+            pointer: '/runs/0/facts/sql-eval-new7-28',
+            replicatedPointers: ['/runs/0/facts/sql-eval-new7-28', '/runs/1/facts/sql-eval-new7-28'],
+            sha256: 'a454a0b76ed00c983240f0598da26834cb5ef7c282c34c2ad900d534eb428b04',
+          },
+        ],
+      },
     ],
   },
 ]);
 __paqParityBindings(import.meta.url, __paqParityShared);
+// @parity-evidence: Existing region assertions and exact reviewed proof bindings are preserved during cumulative qualification.
+
+// @parity-evidence: Existing region assertions and exact reviewed proof bindings are preserved during cumulative qualification.
+
+// @parity-evidence: Existing region assertions and exact reviewed proof bindings are preserved during cumulative qualification.
+
+// @parity-evidence: Existing region assertions and exact reviewed proof bindings are preserved during cumulative qualification.
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -1338,7 +1614,10 @@ for (const [label, sql, expected] of semanticCases) {
     __paqParityCaseBindings(
       import.meta.url,
       semanticCases,
-      [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 13, 14, 15, 16, 17, 18, 30, 31, 34, 42, 43],
+      [
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 30,
+        31, 34, 41, 42, 43, 44,
+      ],
       { label, sql, expected },
       __paqParityShared,
     );

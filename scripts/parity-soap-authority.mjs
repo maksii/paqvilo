@@ -32,6 +32,9 @@ export function soapAuthorityContains(newer, older) {
     (older.binding.namespaceRegions ?? []).every((region) =>
       (newer.binding.namespaceRegions ?? []).some((item) => same(item, region)),
     ) &&
+    (older.binding.valueRegions ?? []).every((region) =>
+      (newer.binding.valueRegions ?? []).some((item) => same(item, region)),
+    ) &&
     older.binding.proofs.every((proof) => newer.binding.proofs.some((item) => same(item, proof)))
   );
 }
@@ -64,7 +67,7 @@ export function soapPriorFactsPreserved(previous, next, fresh) {
 // The old proof remains intact. A new capsule needs only its newly mapped
 // facts in the runtime guard; preflight still verifies its complete fact set.
 export function compactSoapProof(fresh, priorProofs) {
-  const oldFacts = new Set(priorProofs.flatMap((proof) => proof.facts.map(digest)));
+  const oldFacts = new Set(priorProofs.flatMap((proof) => proof.facts.map((fact) => digest(fact))));
   const novel = fresh.facts.filter((fact) => !oldFacts.has(digest(fact)));
   return { ...fresh, facts: novel.length ? novel : fresh.facts.slice(0, 1) };
 }

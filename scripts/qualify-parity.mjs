@@ -31,6 +31,7 @@ import {
   soapNamespaceRegionsValid,
   soapPriorFactsPreserved,
 } from './parity-soap-authority.mjs';
+import { soapValueRegionsValid } from './parity-soap-value-regions.mjs';
 import { queryUniverse } from './parity-query-universe.mjs';
 import { typedCaseIndex } from './parity-typed-case.mjs';
 import { extract as extractTypedSqlSource } from './parity-sql-source.mjs';
@@ -38,6 +39,13 @@ import { verifyQueryMessageBridge, verifyQueryMessageBridgeCase } from './parity
 import { routeQueryWitnesses } from './parity-query-witness-routing.mjs';
 import { assertFrozenQueryAuthority, assertQueryWriteAuthority } from './parity-query-frozen-authority.mjs';
 import { resolveGitExecutable } from './trusted-git.mjs';
+import {
+  verifySqlFormat82Call,
+  verifyCurrentSqlFormat82Call,
+  verifySqlFormat82Outcome,
+} from './parity-sql-format82.mjs';
+import { verifySqlOrderedSource } from './parity-sql-ordered-witness.mjs';
+import { SQL_EXTRA_EVALUATOR_CASES, verifySqlMainSource } from './parity-sql-main-witness.mjs';
 
 const require = createRequire(import.meta.url);
 const { parse } = require('espree');
@@ -1733,7 +1741,7 @@ function sqlEvaluatorBindings(model) {
   let references = 0;
   function visit(node) {
     if (node.type === 'Identifier' && node.name === 'semanticCases') references++;
-    childNodes(node).forEach(visit);
+    childNodes(node).forEach((child) => visit(child));
   }
   visit(model.ast);
   check(references === 2, 'sql-eval-universe');
@@ -2018,7 +2026,7 @@ function verifyInternalLoopModule(model) {
         ),
       'unsupported-assertion-loop',
     );
-    childNodes(node).forEach(visit);
+    childNodes(node).forEach((child) => visit(child));
   }
   visit(model.ast);
 }
@@ -2400,6 +2408,18 @@ function verifyPartial(oldModel, currentModel, spec, factIds, moduleDelta, gener
   check(old && old.titleExpressionSha256 === spec.titleExpressionSha256, 'stale-baseline-id');
   const current = registration(currentModel, spec);
   check((spec.sqlEvaluator === true) === (spec.caseUniverse?.encoding === 'sql-eval-v1'), 'sql-eval-configuration');
+  check(
+    spec.sqlOrderedWitness !== true ||
+      (spec.sqlEvaluator === true && spec.baselineId === 'mirage/test/dataverse-tds-sql-eval.test.mjs:613:2'),
+    'sql-ordered-witness-invalid',
+  );
+  check(
+    spec.sqlExtraEvaluatorCases !== true ||
+      (spec.sqlEvaluator === true &&
+        spec.sqlOrderedWitness === true &&
+        spec.baselineId === 'mirage/test/dataverse-tds-sql-eval.test.mjs:613:2'),
+    'sql-extra-witness-invalid',
+  );
   if (spec.sqlEvaluator === true) {
     attachSqlEvaluatorAssertion(oldModel, old);
     attachSqlEvaluatorAssertion(currentModel, current);
@@ -3196,7 +3216,7 @@ function reviewRuntimeInputs(model, file, selected, generated) {
     function collectDateChecks(node) {
       if (node.type === 'BinaryExpression' && node.operator === 'instanceof' && node.right?.name === 'Date')
         evaluatorDateChecks.add(node.right);
-      childNodes(node).forEach(collectDateChecks);
+      childNodes(node).forEach((child) => collectDateChecks(child));
     }
     collectDateChecks(plain);
     check(evaluatorDateChecks.size === 1, 'changed-sql-evaluator-helper');
@@ -3970,13 +3990,23 @@ function reviewFixtureCorrections({
       'invalid-fixture-correction',
     );
     literalCaseValue(oldEntry.elements[0]);
-    literalCaseValue(oldEntry.elements[correction.expectedIndex ?? 1]);
-    literalCaseValue(currentEntry.elements[correction.expectedIndex ?? 1]);
+    if (file.typedCaseCorrections === true && correction.binding === 'cases' && correction.expectedIndex === 2) {
+      const originalTyped = extractTypedSqlSource(oldModel.source),
+        currentTyped = extractTypedSqlSource(currentModel.source);
+      check(
+        originalTyped.rowAstSha256[correction.index] === correction.oldAstSha256 &&
+          currentTyped.rowAstSha256[correction.index] === correction.currentAstSha256,
+        'invalid-fixture-correction',
+      );
+    } else {
+      literalCaseValue(oldEntry.elements[correction.expectedIndex ?? 1]);
+      literalCaseValue(currentEntry.elements[correction.expectedIndex ?? 1]);
+    }
     const uses = (row) => {
       let found = false;
       function visit(node) {
         if (node.type === 'Identifier' && node.name === correction.binding) found = true;
-        childNodes(node).forEach(visit);
+        childNodes(node).forEach((child) => visit(child));
       }
       visit(row.callback.body);
       return (
@@ -4178,6 +4208,55 @@ function reviewedModuleDeltas(
     replacements,
     used,
   });
+  if (file.sqlFormat82Migration === true) {
+    const migration = review.sqlFormat82Migration;
+    const guarantee = file.guarantees?.find((item) => item.id === migration?.guaranteeId);
+    const specs =
+      guarantee?.tests?.filter(
+        (item) => item.baselineId === 'mirage/test/dataverse-tds-sql-functions.test.mjs:238:2',
+      ) ?? [];
+    check(
+      file.path === 'mirage/test/dataverse-tds-sql-functions.test.mjs' &&
+        migration?.caseIndex === 82 &&
+        migration.factId === 'sql-function-remediation-82' &&
+        typeof migration.reviewedBy === 'string' &&
+        migration.reviewedBy.length > 0 &&
+        typeof migration.reason === 'string' &&
+        migration.reason.length >= 20 &&
+        specs.length === 1 &&
+        specs[0].sqlFormat82Migration === true &&
+        specs[0].caseSelection?.selected.some(
+          (item) => item.caseIndex === 82 && jsonHash(item.factIds) === jsonHash([migration.factId]),
+        ) &&
+        review.fixtureCorrections.some(
+          (item) =>
+            item.binding === 'cases' && item.index === 82 && jsonHash(item.factIds) === jsonHash([migration.factId]),
+        ),
+      'sql-format82-migration-invalid',
+    );
+    const rows = extractTypedSqlSource(currentModel.source).rows;
+    const input = ({ value }) => jsonHash([value[0], value[1], value[3] ?? { type: 'undefined' }]);
+    const expectedInput = jsonHash([
+      { type: 'string', value: 'FORMAT' },
+      {
+        type: 'array',
+        value: [
+          { type: 'number', value: 1234.5 },
+          { type: 'string', value: 'N2' },
+          { type: 'string', value: 'not a culture' },
+        ],
+      },
+      { type: 'undefined' },
+    ]);
+    check(
+      rows.length === 140 &&
+        input(rows[82]) === expectedInput &&
+        rows.filter((row) => input(row) === expectedInput).length === 1,
+      'sql-format82-migration-invalid',
+    );
+    const wrapper = verifySqlFormat82Call(oldModel.ast, currentModel.ast);
+    replacements.set(wrapper.after, wrapper.before);
+  } else check(!review.sqlFormat82Migration, 'sql-format82-migration-invalid');
   reviewAddedTests({ review, oldModel, currentModel, fixtureSlice, ignored });
   reviewEnumBinding({ enumBindings, currentModel, ignored });
   check(
@@ -4667,13 +4746,105 @@ function compactTypedUniverse(universe) {
     ...(currentCaseBindings ? { currentCaseBindingsSha256: jsonHash(currentCaseBindings) } : {}),
   };
 }
-function preserveExistingCase(prior, next) {
-  check(prior.length === 1 && next.length === 1, 'existing-case-definition-omitted');
-  const old = prior[0],
-    current = next[0];
+function withoutTypedCorrections(value) {
+  return Object.fromEntries(
+    Object.entries(value).filter(([key]) => key !== 'fixtureCorrections' && key !== 'sqlFormat82Migration'),
+  );
+}
+function preserveTypedCorrectionReview(old, current, changed) {
+  if (!old.moduleReview) return;
+  check(
+    jsonHash(withoutTypedCorrections(old.moduleReview)) === jsonHash(withoutTypedCorrections(current.moduleReview)),
+    'existing-case-binding-changed',
+  );
+  if (old.moduleReview.sqlFormat82Migration)
+    check(
+      jsonHash(old.moduleReview.sqlFormat82Migration) === jsonHash(current.moduleReview.sqlFormat82Migration),
+      'existing-case-binding-changed',
+    );
+  else if (current.moduleReview.sqlFormat82Migration)
+    check(current.sqlFormat82Migration === true && changed.includes(82), 'existing-case-correction-invalid');
+}
+function preserveCorrectedTypedCase(old, current, review, replacements) {
+  check(
+    old.caseSelection?.encoding === 'typed-v1' && current.caseSelection?.encoding === 'typed-v1',
+    'existing-case-binding-changed',
+  );
+  const oldCorrections = old.moduleReview?.fixtureCorrections ?? [],
+    newCorrections = current.moduleReview?.fixtureCorrections ?? [],
+    additions = newCorrections.filter(
+      (item) => !oldCorrections.some((previous) => jsonHash(previous) === jsonHash(item)),
+    ),
+    oldSelected = new Set(old.caseSelection.selected.map((item) => item.caseIndex)),
+    changed = old.caseSelection.bindings.flatMap((item, index) =>
+      jsonHash(item) === jsonHash(current.caseSelection.bindings[index]) ? [] : [index],
+    );
+  check(
+    Array.isArray(review?.fixtureCorrections) &&
+      replacements?.size > 0 &&
+      old.caseSelection.bindings.length === current.caseSelection.bindings.length &&
+      new Set(newCorrections.map((item) => `${item.binding}:${item.index}`)).size === newCorrections.length &&
+      oldCorrections.every((item) => newCorrections.some((candidate) => jsonHash(item) === jsonHash(candidate))) &&
+      additions.length === changed.length &&
+      additions.length > 0 &&
+      new Set(additions.map((item) => item.index)).size === additions.length &&
+      additions.every(
+        (item) =>
+          item.binding === 'cases' &&
+          item.expectedIndex === 2 &&
+          changed.includes(item.index) &&
+          !oldSelected.has(item.index) &&
+          review.fixtureCorrections.some((entry) => jsonHash(entry) === jsonHash(item)) &&
+          [...replacements].some(
+            ([nextNode, oldNode]) =>
+              parityAstHash(oldNode) === item.oldAstSha256 && parityAstHash(nextNode) === item.currentAstSha256,
+          ) &&
+          current.caseSelection.selected.some(
+            (entry) => entry.caseIndex === item.index && jsonHash(entry.factIds) === jsonHash(item.factIds),
+          ),
+      ),
+    'existing-case-correction-invalid',
+  );
+  preserveTypedCorrectionReview(old, current, changed);
+  for (const index of changed) {
+    const before = old.caseSelection.bindings[index],
+      after = current.caseSelection.bindings[index];
+    check(
+      before && after && jsonHash({ ...before, expected: null }) === jsonHash({ ...after, expected: null }),
+      'existing-case-correction-invalid',
+    );
+  }
+  const mutable = new Set([
+    'proofs',
+    'caseSelection',
+    'caseUniverse',
+    'moduleReview',
+    'moduleContextAstSha256',
+    'sourceBindings',
+    'inputDependencies',
+  ]);
   for (const [key, value] of Object.entries(old)) {
+    if (!mutable.has(key)) check(jsonHash(value) === jsonHash(current[key]), 'existing-case-binding-changed');
+  }
+  for (const [key, value] of Object.entries(old.caseUniverse)) {
+    if (key !== 'currentCaseBindingsSha256')
+      check(jsonHash(value) === jsonHash(current.caseUniverse[key]), 'existing-case-binding-changed');
+  }
+  for (const [key, value] of Object.entries(old.caseSelection)) {
+    if (key !== 'selected' && key !== 'bindings')
+      check(jsonHash(value) === jsonHash(current.caseSelection[key]), 'existing-case-binding-changed');
+  }
+}
+
+function preserveExistingCaseMetadata(old, current, correction) {
+  for (const [key, value] of Object.entries(old)) {
+    if (
+      correction &&
+      (key === 'caseUniverse' || key === 'moduleReview' || key === 'moduleContextAstSha256' || key === 'sourceBindings')
+    )
+      continue;
     if (key === 'proofs' || key === 'caseSelection') continue;
-    if (key === 'inputDependencies' && old.caseSelection?.encoding === 'typed-v1') {
+    if (key === 'inputDependencies' && ['typed-v1', 'sql-eval-v1'].includes(old.caseSelection?.encoding)) {
       const dependencies = current.inputDependencies;
       check(
         Array.isArray(dependencies) &&
@@ -4689,9 +4860,16 @@ function preserveExistingCase(prior, next) {
       'existing-case-binding-changed',
     );
   }
+}
+function preserveExistingCase(prior, next, correction = null) {
+  check(prior.length === 1 && next.length === 1, 'existing-case-definition-omitted');
+  const old = prior[0],
+    current = next[0];
+  if (correction) preserveCorrectedTypedCase(old, current, correction.review, correction.replacements);
+  preserveExistingCaseMetadata(old, current, correction);
   check(current.caseSelection, 'existing-case-definition-omitted');
   for (const [key, value] of Object.entries(old.caseSelection))
-    if (key !== 'selected')
+    if (key !== 'selected' && !(correction && key === 'bindings'))
       check(jsonHash(value) === jsonHash(current.caseSelection[key]), 'existing-case-binding-changed');
   const priorSelections = old.caseSelection.selected.map(jsonHash);
   const newSelections = new Set(current.caseSelection.selected.map(jsonHash));
@@ -6407,7 +6585,7 @@ function prepareRecordsMixed(
 
 function descriptorPart0(
   { root, file, caseMigration, conciseSpecs, correctedAssertions },
-  { spec, old },
+  { spec, old, guarantee },
   _selectedIndex,
 ) {
   return {
@@ -6416,6 +6594,20 @@ function descriptorPart0(
     titleExpressionSha256: spec.titleExpressionSha256,
     ...(spec.parentTitleExpressionSha256 ? { parentTitleExpressionSha256: spec.parentTitleExpressionSha256 } : {}),
     ...(spec.sqlEvaluator === true ? { sqlEvaluator: true } : {}),
+    ...(spec.sqlOrderedWitness === true
+      ? { sqlOrderedWitness: { baselineId: 'mirage/test/dataverse-tds-sql-eval.test.mjs:1063:2', caseIndex: 11 } }
+      : {}),
+    ...(spec.sqlExtraEvaluatorCases === true
+      ? {
+          sqlExtraEvaluatorCases: {
+            cases: SQL_EXTRA_EVALUATOR_CASES,
+            reviewPath: guarantee.context.extraEvaluatorReviewPath,
+            reviewSha256: guarantee.context.extraEvaluatorReviewSha256,
+            sourceReceiptSha256: guarantee.context.extraEvaluatorSourceSha256,
+          },
+        }
+      : {}),
+    ...(file.sqlFormat82Migration === true ? { sqlFormat82Migration: true } : {}),
     ...(old.callback.expression && !caseMigration ? { originalCallbackExpression: true } : {}),
     ...(conciseSpecs.length ? { conciseSpecs } : {}),
     originalAssertions: old.assertions.map((item) => correctedAssertions.get(item.node) ?? item.sha256),
@@ -6630,37 +6822,39 @@ function validateSoapPriorAuthority(root, file, previous, proofContext) {
     'changed-soap-prior-authority',
   );
 }
+function preserveSoapQualification(previous, result, before) {
+  const old = previous.descriptor,
+    next = result.descriptor;
+  const fresh = result.binding;
+  check(soapPriorFactsPreserved(previous, next, fresh), 'changed-soap-prior-proof');
+  const existing = previous.binding.proofs.some((proof) => sameSoapProofIdentity(proof, fresh.proofs[0]));
+  if (existing && jsonHash(old) === jsonHash(next)) {
+    result.after = before;
+    result.binding = previous.binding;
+  } else {
+    result.binding = {
+      ...fresh,
+      ...(previous.binding.namespaceRegions ? { namespaceRegions: previous.binding.namespaceRegions } : {}),
+      ...(previous.binding.valueRegions ? { valueRegions: previous.binding.valueRegions } : {}),
+      proofs: existing
+        ? previous.binding.proofs
+        : [...previous.binding.proofs, compactSoapProof(fresh.proofs[0], previous.binding.proofs)],
+    };
+    const generated = JSON.stringify([fresh]);
+    check(result.after.includes(generated), 'invalid-soap-bindings');
+    result.after = result.after.replace(generated, JSON.stringify([result.binding]));
+    result.after =
+      '// @parity-evidence: Reproduced official SDK results and every previously protected SOAP assertion and proof remain bound by the cumulative guard.\n' +
+      result.after;
+  }
+}
 function dispatchSoapQualification({ root, file, original, before, oldModel, currentModel, proofContext, report }) {
   const previous = restoreSoapLoop(root, file, before);
   if (previous) validateSoapPriorAuthority(root, file, previous, proofContext);
   const restored = previous?.source ?? before;
   const model = previous ? describeParitySource(restored, file.path) : currentModel;
   const result = qualifySoapLoop(root, file, original, restored, oldModel, model, proofContext);
-  if (previous) {
-    const old = previous.descriptor,
-      next = result.descriptor;
-    const fresh = result.binding;
-    check(soapPriorFactsPreserved(previous, next, fresh), 'changed-soap-prior-proof');
-    const existing = previous.binding.proofs.some((proof) => sameSoapProofIdentity(proof, fresh.proofs[0]));
-    if (existing && jsonHash(old) === jsonHash(next)) {
-      result.after = before;
-      result.binding = previous.binding;
-    } else {
-      result.binding = {
-        ...fresh,
-        ...(previous.binding.namespaceRegions ? { namespaceRegions: previous.binding.namespaceRegions } : {}),
-        proofs: existing
-          ? previous.binding.proofs
-          : [...previous.binding.proofs, compactSoapProof(fresh.proofs[0], previous.binding.proofs)],
-      };
-      const generated = JSON.stringify([fresh]);
-      check(result.after.includes(generated), 'invalid-soap-bindings');
-      result.after = result.after.replace(generated, JSON.stringify([result.binding]));
-      result.after =
-        '// @parity-evidence: Reproduced official SDK results and every previously protected SOAP assertion and proof remain bound by the cumulative guard.\n' +
-        result.after;
-    }
-  }
+  if (previous) preserveSoapQualification(previous, result, before);
   report.files.push({
     path: file.path,
     originalDefinitions: 0,
@@ -7781,8 +7975,36 @@ function typedSqlCapturedValue(cell, column) {
   fail('typed-output-unsupported');
 }
 
-function verifyTypedSqlFacts(root, guarantee, spec, oldModel, currentModel, baseline) {
+function verifyTypedSqlResult(fact, beforeValue, afterValue, errorCase) {
+  if (errorCase) {
+    verifySqlFormat82Outcome(beforeValue, afterValue, fact);
+    return;
+  }
+  const resultSets = fact.typedOutcome.resultSets;
+  check(
+    Array.isArray(resultSets) &&
+      resultSets.length === 1 &&
+      resultSets[0].columns?.length === 1 &&
+      resultSets[0].rows?.length === 1 &&
+      resultSets[0].rows[0]?.length === 1,
+    'typed-output-unsupported',
+  );
+  const before = typedSqlExpectedValue(beforeValue),
+    after = typedSqlExpectedValue(afterValue),
+    actual = typedSqlCapturedValue(resultSets[0].rows[0][0], resultSets[0].columns[0]);
+  check(
+    jsonHash(before) === jsonHash(fact.priorExpected) &&
+      jsonHash(after) === jsonHash(fact.currentExpected) &&
+      (after !== null && typeof after === 'object' ? jsonHash(actual) === jsonHash(after) : Object.is(actual, after)),
+    'typed-case-output-mismatch',
+  );
+}
+function verifyTypedSqlFacts(root, guarantee, spec, oldModel, currentModel, baseline, file) {
   if (spec.caseUniverse?.encoding !== 'typed-v1') return;
+  check(
+    (file.sqlFormat82Migration === true) === (spec.sqlFormat82Migration === true),
+    'sql-format82-migration-invalid',
+  );
   const reviewRows = typedReviewRows(root, guarantee.context, baseline);
   const old = extractTypedSqlSource(oldModel.source),
     current = extractTypedSqlSource(currentModel.source);
@@ -7801,6 +8023,7 @@ function verifyTypedSqlFacts(root, guarantee, spec, oldModel, currentModel, base
       index = selection.caseIndex,
       reviewed = reviewRows.get(index),
       review = reviewed?.row;
+    const errorCase = file.sqlFormat82Migration === true && index === 82;
     check(
       fact &&
         review?.originalId === `${spec.baselineId}#${index}` &&
@@ -7815,27 +8038,10 @@ function verifyTypedSqlFacts(root, guarantee, spec, oldModel, currentModel, base
         fact.semanticReviewSha256 === reviewed.sourceReceiptSha256 &&
         typeof fact.query === 'string' &&
         fact.typedOutcome?.query === fact.query &&
-        fact.typedOutcome?.outcome === 'result',
+        fact.typedOutcome?.outcome === (errorCase ? 'sql-error' : 'result'),
       'typed-case-fact-mismatch',
     );
-    const resultSets = fact.typedOutcome.resultSets;
-    check(
-      Array.isArray(resultSets) &&
-        resultSets.length === 1 &&
-        resultSets[0].columns?.length === 1 &&
-        resultSets[0].rows?.length === 1 &&
-        resultSets[0].rows[0]?.length === 1,
-      'typed-output-unsupported',
-    );
-    const before = typedSqlExpectedValue(old.rows[index].value[2]),
-      after = typedSqlExpectedValue(current.rows[index].value[2]),
-      actual = typedSqlCapturedValue(resultSets[0].rows[0][0], resultSets[0].columns[0]);
-    check(
-      jsonHash(before) === jsonHash(fact.priorExpected) &&
-        jsonHash(after) === jsonHash(fact.currentExpected) &&
-        (after !== null && typeof after === 'object' ? jsonHash(actual) === jsonHash(after) : Object.is(actual, after)),
-      'typed-case-output-mismatch',
-    );
+    verifyTypedSqlResult(fact, old.rows[index].value[2], current.rows[index].value[2], errorCase);
   }
 }
 
@@ -7870,8 +8076,117 @@ function verifySqlEvaluatorOutcome(outcome, expected) {
   check(isDeepStrictEqual(actual, expected), 'sql-eval-outcome-mismatch');
 }
 
+function verifyOrderedWitnessSources(spec, oldModel, currentModel) {
+  if (spec.sqlOrderedWitness !== true) return;
+  check(spec.baselineId === 'mirage/test/dataverse-tds-sql-eval.test.mjs:613:2', 'sql-ordered-witness-invalid');
+  verifySqlOrderedSource(oldModel.ast, true);
+  verifySqlOrderedSource(currentModel.ast);
+  verifySqlEvaluatorHelpers(oldModel);
+  verifySqlEvaluatorHelpers(currentModel);
+}
+function verifyOrderedWitnessCorrection(spec, corrections) {
+  if (spec.sqlOrderedWitness !== true) return;
+  const ordered = corrections.filter((item) => item.binding === 'orderedCases' && item.index === 11);
+  check(
+    ordered.length === 1 && jsonHash(ordered[0].factIds) === jsonHash(['sql-eval-correction-orderedCases-11']),
+    'sql-ordered-witness-invalid',
+  );
+}
+function extraEvaluatorId(binding, index) {
+  const registration = binding === 'cases' ? '489' : '1063';
+  return `mirage/test/dataverse-tds-sql-eval.test.mjs:${registration}:2#${index}`;
+}
+function verifySqlExtraEvaluatorCases(root, proofs, witness, model) {
+  check(
+    witness &&
+      jsonHash(witness.cases) === jsonHash(SQL_EXTRA_EVALUATOR_CASES) &&
+      witness.reviewPath === 'mirage/test/fixtures/dataverse-sql-server-evaluator-extra-review-v1.json' &&
+      SHA.test(witness.reviewSha256) &&
+      SHA.test(witness.sourceReceiptSha256),
+    'sql-extra-witness-invalid',
+  );
+  const main = verifySqlMainSource(model.ast),
+    ordered = verifySqlOrderedSource(model.ast);
+  verifySqlEvaluatorHelpers(model);
+  const reviewBytes = fs.readFileSync(confined(root, witness.reviewPath));
+  check(parityHash(reviewBytes) === witness.reviewSha256, 'sql-extra-witness-invalid');
+  const review = JSON.parse(reviewBytes);
+  check(
+    review.baseline === '1171cccc8baed9218f7fd7689afae4abdc89252b' &&
+      review.sourceReceiptSha256 === witness.sourceReceiptSha256 &&
+      Array.isArray(review.cases) &&
+      review.cases.length === SQL_EXTRA_EVALUATOR_CASES.length &&
+      new Set(review.cases.map((item) => item.originalId)).size === review.cases.length,
+    'sql-extra-witness-invalid',
+  );
+  const verifiedProofs = new Set();
+  for (const item of SQL_EXTRA_EVALUATOR_CASES) {
+    const id = `sql-eval-extra-${item.binding}-${item.index}`;
+    const matches = proofs.flatMap((proof) =>
+      proof.facts.filter((fact) => fact.id === id).map((fact) => ({ proof, fact })),
+    );
+    const reviewed = review.cases.find((entry) => entry.originalId === extraEvaluatorId(item.binding, item.index));
+    const tuple = (item.binding === 'cases' ? main.array : ordered.array).elements[item.index];
+    const values = literalCaseValue(tuple);
+    check(
+      matches.length === 1 && reviewed && Array.isArray(values) && values.length === 3,
+      'sql-extra-witness-invalid',
+    );
+    const proof = matches[0].proof,
+      fact = pointer(JSON.parse(fs.readFileSync(confined(root, proof.path), 'utf8')), matches[0].fact.pointer);
+    check(
+      fact?.binding === item.binding &&
+        fact.index === item.index &&
+        fact.baselineId === reviewed.originalId &&
+        reviewed.binding === item.binding &&
+        reviewed.index === item.index &&
+        reviewed.tupleSha256 === parityAstHash(tuple) &&
+        fact.baselineTupleAstSha256 === reviewed.tupleSha256 &&
+        fact.currentTupleAstSha256 === reviewed.tupleSha256 &&
+        fact.query === values[1] &&
+        reviewed.sql === values[1] &&
+        fact.typedOutcome?.query === values[1] &&
+        isDeepStrictEqual(fact.expected, values[2]) &&
+        isDeepStrictEqual(reviewed.expected, values[2]) &&
+        fact.semanticReviewSha256 === witness.sourceReceiptSha256 &&
+        jsonHash(fact.context) === '0f3e3330c91fc5376c65533a0a77403620cac3df71e3f2883de5b44a6f64a3a8',
+      'sql-extra-witness-invalid',
+    );
+    verifySqlEvaluatorOutcome(fact.typedOutcome, values[2]);
+    if (!verifiedProofs.has(proof.path)) {
+      verifySqlOrderedCaptureContext({ proofs }, root, proof);
+      verifiedProofs.add(proof.path);
+    }
+  }
+}
 function verifySqlEvaluatorFacts(root, guarantee, spec, oldModel, currentModel, baseline, file) {
   if (spec.sqlEvaluator !== true || spec.caseUniverse?.encoding !== 'sql-eval-v1') return;
+  verifyOrderedWitnessSources(spec, oldModel, currentModel);
+  if (spec.sqlExtraEvaluatorCases === true) {
+    const before = {
+      cases: verifySqlMainSource(oldModel.ast).array,
+      orderedCases: verifySqlOrderedSource(oldModel.ast, true).array,
+    };
+    const after = {
+      cases: verifySqlMainSource(currentModel.ast).array,
+      orderedCases: verifySqlOrderedSource(currentModel.ast).array,
+    };
+    check(
+      SQL_EXTRA_EVALUATOR_CASES.every(
+        (item) =>
+          parityAstHash(before[item.binding].elements[item.index]) ===
+          parityAstHash(after[item.binding].elements[item.index]),
+      ),
+      'sql-extra-witness-invalid',
+    );
+    const witness = {
+      cases: SQL_EXTRA_EVALUATOR_CASES,
+      reviewPath: guarantee.context.extraEvaluatorReviewPath,
+      reviewSha256: guarantee.context.extraEvaluatorReviewSha256,
+      sourceReceiptSha256: guarantee.context.extraEvaluatorSourceSha256,
+    };
+    verifySqlExtraEvaluatorCases(root, guarantee.proofs, witness, currentModel);
+  }
   const reviewRows = typedReviewRows(root, guarantee.context, baseline),
     oldRows = sqlEvaluatorBindings(oldModel),
     currentRows = sqlEvaluatorBindings(currentModel);
@@ -7892,10 +8207,20 @@ function verifySqlEvaluatorFacts(root, guarantee, spec, oldModel, currentModel, 
       row = reviewed?.row,
       oldHash = parityAstHash(original.initializer.elements[index]),
       currentHash = parityAstHash(current.initializer.elements[index]);
+    const correction = (file.moduleReview?.fixtureCorrections ?? []).find(
+      (item) => item.binding === 'semanticCases' && item.index === index,
+    );
+    const corrected = oldHash !== currentHash;
     check(
       fact &&
         row &&
-        oldHash === currentHash &&
+        (!corrected ||
+          (correction &&
+            correction.oldAstSha256 === oldHash &&
+            correction.currentAstSha256 === currentHash &&
+            correction.guaranteeId === guarantee.id &&
+            row.currentTupleSha256 === currentHash &&
+            isDeepStrictEqual(fact.priorExpected, oldRows[index].expected))) &&
         row.originalId === `${spec.baselineId}#${index}` &&
         row.tupleSha256 === oldHash &&
         row.sql === oldRows[index].sql &&
@@ -7906,11 +8231,12 @@ function verifySqlEvaluatorFacts(root, guarantee, spec, oldModel, currentModel, 
         fact.query === row.sql &&
         fact.typedOutcome?.query === row.sql &&
         fact.semanticReviewSha256 === reviewed.sourceReceiptSha256 &&
-        isDeepStrictEqual(fact.expected, oldRows[index].expected) &&
-        isDeepStrictEqual(currentRows[index], oldRows[index]),
+        isDeepStrictEqual(fact.expected, currentRows[index].expected) &&
+        isDeepStrictEqual({ ...currentRows[index], expected: null }, { ...oldRows[index], expected: null }) &&
+        (corrected || isDeepStrictEqual(currentRows[index], oldRows[index])),
       'sql-eval-fact-mismatch',
     );
-    verifySqlEvaluatorOutcome(fact.typedOutcome, oldRows[index].expected);
+    verifySqlEvaluatorOutcome(fact.typedOutcome, currentRows[index].expected);
   }
   const corrections = file.moduleReview?.fixtureCorrections ?? [];
   let certificate;
@@ -7980,6 +8306,7 @@ function verifySqlEvaluatorFacts(root, guarantee, spec, oldModel, currentModel, 
     );
     verifySqlEvaluatorOutcome(fact.typedOutcome, literalCaseValue(currentEntry.elements[2]));
   }
+  verifyOrderedWitnessCorrection(spec, corrections);
 }
 function typedSemanticReviews(root, context) {
   const primary = {
@@ -8049,7 +8376,7 @@ function collectQualificationGuarantees({
       );
       check(new Set(facts).size === facts.length, 'ambiguous-fact-id');
       for (const spec of guarantee.tests) {
-        verifyTypedSqlFacts(root, guarantee, spec, oldModel, currentModel, baseline);
+        verifyTypedSqlFacts(root, guarantee, spec, oldModel, currentModel, baseline, file);
         verifySqlEvaluatorFacts(root, guarantee, spec, oldModel, currentModel, baseline, file);
       }
       const matched = guarantee.tests.map((spec) =>
@@ -8076,6 +8403,8 @@ function addTypedSemanticReviewDependencies(root, imports, selected) {
       const reviews = typedSemanticReviews(root, context);
       if (item.spec.sqlEvaluator === true && context.correctionReviewPath)
         reviews.push({ path: context.correctionReviewPath, sha256: context.correctionReviewSha256 });
+      if (item.spec.sqlExtraEvaluatorCases === true)
+        reviews.push({ path: context.extraEvaluatorReviewPath, sha256: context.extraEvaluatorReviewSha256 });
       return reviews;
     });
   if (semanticReviews.length) {
@@ -8258,6 +8587,26 @@ function prepareQualificationWorkSource({
   }
   return { workSource, workModel, recordsOriginalBodies, isolationRegistrationsAstSha256 };
 }
+function preserveExistingQualification(partialBefore, selected, descriptors, file, moduleDelta, reviewedCandidateFile) {
+  if (!partialBefore) return;
+  check(
+    selected.every((item) => item.partial),
+    'existing-partial-requires-cumulative-manifest',
+  );
+  if (partialBefore.caseGuard) {
+    const correction =
+      file.typedCaseCorrections === true && jsonHash(partialBefore.descriptors) !== jsonHash(descriptors)
+        ? { review: file.moduleReview, replacements: moduleDelta?.replacements }
+        : null;
+    preserveExistingCase(partialBefore.descriptors, descriptors, correction);
+  } else {
+    preserveExistingPartial(
+      partialBefore.descriptors,
+      descriptors,
+      reviewedCandidateFile ? moduleDelta?.replacements : null,
+    );
+  }
+}
 function renderQualificationCandidate({
   partialBefore,
   selected,
@@ -8274,19 +8623,7 @@ function renderQualificationCandidate({
 }) {
   let after;
   try {
-    if (partialBefore) {
-      check(
-        selected.every((item) => item.partial),
-        'existing-partial-requires-cumulative-manifest',
-      );
-      if (partialBefore.caseGuard) preserveExistingCase(partialBefore.descriptors, descriptors);
-      else
-        preserveExistingPartial(
-          partialBefore.descriptors,
-          descriptors,
-          reviewedCandidateFile ? moduleDelta?.replacements : null,
-        );
-    }
+    preserveExistingQualification(partialBefore, selected, descriptors, file, moduleDelta, reviewedCandidateFile);
     after = selected[0].partial
       ? generatePartial(root, file, workSource, workModel, selected, descriptors)
       : generate(root, file, workSource, workModel, selected, descriptors);
@@ -8524,7 +8861,11 @@ function recordQualificationResult({
   report.newOriginalDefinitions += newWhole.length;
   report.newExpandedOriginalCases += newWhole.reduce((count, item) => count + item.spec.caseUniverse.count, 0);
   const qualifiedOriginalCases = selected.reduce(
-    (count, item) => count + (item.spec.caseSelection?.selected.length ?? 0),
+    (count, item) =>
+      count +
+      (item.spec.caseSelection?.selected.length ?? 0) +
+      Number(item.spec.sqlOrderedWitness === true) +
+      (item.spec.sqlExtraEvaluatorCases === true ? SQL_EXTRA_EVALUATOR_CASES.length : 0),
     0,
   );
   report.qualifiedOriginalCases += qualifiedOriginalCases;
@@ -8534,7 +8875,10 @@ function recordQualificationResult({
       caseMigration.verified.historicalIndices.includes(item.caseIndex),
     ).length;
   else if (partialBefore?.caseGuard)
-    previouslyQualifiedCases = partialBefore.descriptors[0].caseSelection.selected.length;
+    previouslyQualifiedCases =
+      partialBefore.descriptors[0].caseSelection.selected.length +
+      Number(Boolean(partialBefore.descriptors[0].sqlOrderedWitness)) +
+      (partialBefore.descriptors[0].sqlExtraEvaluatorCases?.cases.length ?? 0);
   report.newQualifiedOriginalCases += qualifiedOriginalCases - previouslyQualifiedCases;
   report.files.push({
     path: file.path,
@@ -9499,6 +9843,114 @@ function verifyRegionAssertions({ descriptor, row }) {
   check(jsonHash(hashes) === jsonHash(descriptor.regionHashes), 'changed-region-set');
 }
 
+function verifySqlFormat82Descriptor(descriptor, model) {
+  if (descriptor.sqlFormat82Migration !== true) return;
+  check(
+    descriptor.baselineId === 'mirage/test/dataverse-tds-sql-functions.test.mjs:238:2' &&
+      descriptor.caseSelection?.selected.some(
+        (item) => item.caseIndex === 82 && jsonHash(item.factIds) === jsonHash(['sql-function-remediation-82']),
+      ),
+    'sql-format82-migration-invalid',
+  );
+  verifyCurrentSqlFormat82Call(model.ast);
+}
+function verifySqlOrderedCaptureContext(descriptor, root, correctionProof) {
+  const carriers = descriptor.proofs.flatMap((proof) =>
+    proof.facts.filter((fact) => fact.id === 'sql-eval-semantic-0').map((fact) => ({ proof, fact })),
+  );
+  check(carriers.length === 1, 'sql-ordered-context-invalid');
+  const carrier = JSON.parse(fs.readFileSync(confined(root, carriers[0].proof.path), 'utf8'));
+  const corrections = JSON.parse(fs.readFileSync(confined(root, correctionProof.path), 'utf8'));
+  check(
+    carrier.package?.sha256 === corrections.package?.sha256 &&
+      Array.isArray(carrier.runs) &&
+      carrier.runs.length === 2 &&
+      Array.isArray(corrections.runs) &&
+      corrections.runs.length === 2 &&
+      carrier.runs.every(
+        (run, index) =>
+          run.runSha256 === corrections.runs[index].runSha256 &&
+          jsonHash(run.facts?.['sql-eval-semantic-0']?.context) ===
+            '0f3e3330c91fc5376c65533a0a77403620cac3df71e3f2883de5b44a6f64a3a8',
+      ),
+    'sql-ordered-context-invalid',
+  );
+}
+function verifyRuntimeSqlOrderedWitness(descriptor, model, root) {
+  if (!descriptor.sqlOrderedWitness) return;
+  const id = 'sql-eval-correction-orderedCases-11';
+  check(
+    descriptor.sqlEvaluator === true &&
+      descriptor.baselineId === 'mirage/test/dataverse-tds-sql-eval.test.mjs:613:2' &&
+      jsonHash(descriptor.sqlOrderedWitness) ===
+        jsonHash({ baselineId: 'mirage/test/dataverse-tds-sql-eval.test.mjs:1063:2', caseIndex: 11 }),
+    'sql-ordered-witness-invalid',
+  );
+  const orderedSource = verifySqlOrderedSource(model.ast);
+  verifySqlEvaluatorHelpers(model);
+  const corrections =
+    descriptor.moduleReview?.fixtureCorrections?.filter(
+      (item) => item.binding === 'orderedCases' && item.index === 11,
+    ) ?? [];
+  const proofFacts = descriptor.proofs.flatMap((proof) =>
+    proof.facts.filter((fact) => fact.id === id).map((fact) => ({ proof, fact })),
+  );
+  const reviewPath = 'mirage/test/fixtures/dataverse-sql-server-evaluator-corrections-review-v1.json';
+  const dependencies = descriptor.inputDependencies.filter((item) => item.path === reviewPath);
+  check(
+    corrections.length === 1 &&
+      jsonHash(corrections[0].factIds) === jsonHash([id]) &&
+      proofFacts.length === 1 &&
+      dependencies.length === 1,
+    'sql-ordered-witness-invalid',
+  );
+  const bytes = fs.readFileSync(confined(root, reviewPath));
+  check(parityHash(bytes) === dependencies[0].sha256, 'sql-ordered-witness-invalid');
+  const certificate = JSON.parse(bytes),
+    fact = pointer(
+      JSON.parse(fs.readFileSync(confined(root, proofFacts[0].proof.path), 'utf8')),
+      proofFacts[0].fact.pointer,
+    );
+  const reviewed =
+    certificate.cases?.filter((item) => item.id === 'mirage/test/dataverse-tds-sql-eval.test.mjs:1063:2#11') ?? [];
+  const query = "SELECT CAST(CAST('ab' AS varbinary(8)) AS nvarchar(10)) AS s";
+  check(
+    certificate.baseline === '1171cccc8baed9218f7fd7689afae4abdc89252b' &&
+      certificate.sourceReceiptSha256 === '20e750e7f2e303a51156b6119d652096ac05e15774b0882a1b485fe840bf4dce' &&
+      reviewed.length === 1 &&
+      reviewed[0].sql === query &&
+      isDeepStrictEqual(reviewed[0].baselineExpected, [['ab']]) &&
+      isDeepStrictEqual(reviewed[0].currentExpected, [['扡']]) &&
+      fact?.baselineId === reviewed[0].id &&
+      fact.binding === 'orderedCases' &&
+      fact.index === 11 &&
+      fact.query === query &&
+      fact.typedOutcome?.query === query &&
+      fact.semanticReviewSha256 === certificate.sourceReceiptSha256 &&
+      fact.oldTupleSha256 === reviewed[0].baselineTupleAstSha256 &&
+      fact.currentTupleSha256 === reviewed[0].currentTupleAstSha256 &&
+      fact.oldTupleSha256 === '18405a7ef4796ae3910241cad90366755dc5428db680dfbcc01daa6044d9d3f0' &&
+      fact.currentTupleSha256 === parityAstHash(orderedSource.tuple) &&
+      fact.oldTupleSha256 === corrections[0].oldAstSha256 &&
+      fact.currentTupleSha256 === corrections[0].currentAstSha256,
+    'sql-ordered-witness-invalid',
+  );
+  verifySqlOrderedCaptureContext(descriptor, root, proofFacts[0].proof);
+  verifySqlEvaluatorOutcome(fact.typedOutcome, [['扡']]);
+}
+function verifyRuntimeExtraEvaluatorCases(descriptor, model, root) {
+  if (!descriptor.sqlExtraEvaluatorCases) return;
+  const witness = descriptor.sqlExtraEvaluatorCases;
+  check(
+    descriptor.sqlEvaluator === true &&
+      descriptor.sqlOrderedWitness &&
+      descriptor.inputDependencies.some(
+        (item) => item.path === witness.reviewPath && item.sha256 === witness.reviewSha256,
+      ),
+    'sql-extra-witness-invalid',
+  );
+  verifySqlExtraEvaluatorCases(root, descriptor.proofs, witness, model);
+}
 function verifyRuntimeDescriptor({ descriptor, model, file, moduleUrl, legacyOriginalGuards }) {
   check(
     typeof descriptor.repositoryRoot === 'string' && !path.isAbsolute(descriptor.repositoryRoot),
@@ -9518,7 +9970,10 @@ function verifyRuntimeDescriptor({ descriptor, model, file, moduleUrl, legacyOri
     'reviewed-import-roles-required',
   );
   verifyRuntimeProofs({ descriptor, root });
+  verifyRuntimeSqlOrderedWitness(descriptor, model, root);
+  verifyRuntimeExtraEvaluatorCases(descriptor, model, root);
   const row = registration(model, descriptor);
+  verifySqlFormat82Descriptor(descriptor, model);
   if (descriptor.sqlEvaluator === true) attachSqlEvaluatorAssertion(model, row);
   if (descriptor.recordsReviewSha256)
     check(
@@ -9932,6 +10387,15 @@ export function assertSoapNamespaceProof(moduleUrl, factId) {
     'invalid-soap-namespace-guard',
   );
 }
+export function assertSoapValueProof(moduleUrl, factId) {
+  const file = fileURLToPath(moduleUrl),
+    descriptors = soapBindingsFromSource(fs.readFileSync(file, 'utf8'));
+  assertSoapParityBindings(moduleUrl, descriptors);
+  check(
+    descriptors[0].valueRegions?.some((region) => region.factId === factId),
+    'invalid-soap-value-guard',
+  );
+}
 function verifySoapParitySource(moduleUrl, descriptors, source) {
   check(
     Array.isArray(descriptors) && descriptors.length === 1 && descriptors[0]?.kind === 'soap-assertion-loop-v1',
@@ -10012,6 +10476,19 @@ function verifySoapParitySource(moduleUrl, descriptors, source) {
       (proof) => JSON.parse(fs.readFileSync(confined(root, proof.path), 'utf8')),
     ),
     'changed-soap-namespace-guard',
+  );
+  check(
+    soapValueRegionsValid(
+      model,
+      descriptor,
+      file,
+      TOOL,
+      parityAstHash,
+      (from, specifier) =>
+        specifier.startsWith('file:') ? fileURLToPath(specifier) : path.resolve(path.dirname(from), specifier),
+      (proof) => JSON.parse(fs.readFileSync(confined(root, proof.path), 'utf8')),
+    ),
+    'changed-soap-value-guard',
   );
 }
 export function assertScalarParityBindings(moduleUrl, descriptors) {

@@ -10,10 +10,11 @@ const __paqParityShared = __paqParityFreeze([
     baselineId: 'mirage/test/dataverse-tds-sql-functions.test.mjs:238:2',
     repositoryRoot: '../..',
     titleExpressionSha256: '0870482be29bf0e30e431409cbca95af5aafc15c1745c1d1678b505605d18d1b',
+    sqlFormat82Migration: true,
     originalAssertions: ['cf60392995a11111755931aae17b92b36e4d1cf1447f3103b43baf642efd3dab'],
     originalBodyAstSha256: '2610f9fc4de036a2b0045876356b6746ab864f7175c005d11fc09e931b2d7f4c',
     originalGuardHashes: [],
-    moduleContextAstSha256: '9174faa0c21934be8a7f3d008f432441c855d545ec32785ecbe42aac6b775316',
+    moduleContextAstSha256: '214b41bb2177b5f3cc1c1594a82b03741e71e52564cbf6be3f49debedae24857',
     moduleReview: {
       reviewedBy: 'sql_parity',
       reason:
@@ -46,8 +47,51 @@ const __paqParityShared = __paqParityFreeze([
           reason:
             'Repeated official SQL Server engine controls on the same input support the separately audited expected-value correction in the fixed captured context.',
         },
+        {
+          binding: 'cases',
+          index: 81,
+          expectedIndex: 2,
+          oldAstSha256: '0da6e4be1132737b22b8c1b297396d46574e41e6efc4cf01e72959e4699b9348',
+          currentAstSha256: '647eae95c35f582b2a854c0b4f776026aad2c8a63b1fd5dbd60d8649dd10f686',
+          sameGuarantee: true,
+          guaranteeId: 'sql-server-function-fixed-primitive-cases',
+          factIds: ['sql-function-remediation-81'],
+          reviewedBy: 'ci_diagnostics',
+          reason: 'Repeated SQL Server engine controls support the corrected exact-input expected result.',
+        },
+        {
+          binding: 'cases',
+          index: 133,
+          expectedIndex: 2,
+          oldAstSha256: 'f3d8dc71d7d9dab20e83fc8e9dfdac38e52ce7815f87b6d4c13f07d18c8371a2',
+          currentAstSha256: '7bee6da0954c36496f3acb54770faed0c164ea2528f7ebad3ba6adb13e55d152',
+          sameGuarantee: true,
+          guaranteeId: 'sql-server-function-fixed-primitive-cases',
+          factIds: ['sql-function-remediation-133'],
+          reviewedBy: 'ci_diagnostics',
+          reason: 'Repeated SQL Server engine controls support the corrected exact-input expected result.',
+        },
+        {
+          binding: 'cases',
+          index: 82,
+          expectedIndex: 2,
+          oldAstSha256: '9c313b68874975c403483d1f011cfb6d24163b031ce3eb62452fe5b58828618f',
+          currentAstSha256: 'd43747fdfd3ee59c40fd2695be7a4e1bcb1bc11db48555f0eac37a937a5aa9e8',
+          sameGuarantee: true,
+          guaranteeId: 'sql-server-function-fixed-primitive-cases',
+          factIds: ['sql-function-remediation-82'],
+          reviewedBy: 'ci_diagnostics',
+          reason: 'Repeated SQL Server captures prove error 9818 for the unchanged original input.',
+        },
       ],
       addedTests: [],
+      sqlFormat82Migration: {
+        caseIndex: 82,
+        factId: 'sql-function-remediation-82',
+        guaranteeId: 'sql-server-function-fixed-primitive-cases',
+        reviewedBy: 'ci_diagnostics',
+        reason: 'The exact original input raises SQL error 9818 in both official engine captures.',
+      },
     },
     importRoles: [
       {
@@ -91,9 +135,17 @@ const __paqParityShared = __paqParityFreeze([
         path: 'mirage/test/fixtures/dataverse-sql-server-primitive-review-v1.json',
         sha256: 'eb325d95299b7c0bd25372d4696c92f2b0633b5c517c24e8b177d1229a9b6835',
       },
+      {
+        path: 'mirage/test/fixtures/dataverse-sql-server-remediation81-133-review-v1.json',
+        sha256: '57e4a8a4f479fd796dc29bcc7fba57982d3edf172c28dc7441ab2d8114758725',
+      },
+      {
+        path: 'mirage/test/fixtures/dataverse-sql-server-remediation82-review-v1.json',
+        sha256: '7e1c120e63598994655c3fa39fbbc64dc598dce0d47bc3ee1ab0c76024897228',
+      },
     ],
     sourceBindings: [
-      { name: 'cases', initializerAstSha256: 'a42c4716a392c37e0024fdd94bf9c4689a5654dcf318d9ab360c64eec04b6303' },
+      { name: 'cases', initializerAstSha256: '620612cada79eda0cdc416b7778ce8d2940c79fa00a3977305c8f193b489f0b2' },
     ],
     baselineSourceBindings: [
       { name: 'cases', initializerAstSha256: '702f55fa89e8479b8b577ee3905d812ef16dac9c15e1a10f9675e78c7014bcbe' },
@@ -249,7 +301,7 @@ const __paqParityShared = __paqParityFreeze([
       ],
       ancestorLoops: [{ headerAstSha256: 'cf403e9be96e7dc44dc62aedb699c2e7e5e2e467bc3bc79fd577cb0e772e9447' }],
       encoding: 'typed-v1',
-      currentCaseBindingsSha256: '9206c2ef7441edf607f6c5e2f9a16df5de4c8801a8ffb5b9264549947d5cf15e',
+      currentCaseBindingsSha256: '2cc6d90d7d92d5a8abdba9f71a7f6b8cb5f8ba9a25019b3218f825aa71dc197f',
       caseBindingsSha256: '4f7afb0e73ae157e23a87cc3319baba7cf49dd6e7cd17244ada5b31dea65c056',
     },
     caseSelection: {
@@ -328,6 +380,8 @@ const __paqParityShared = __paqParityFreeze([
         { caseIndex: 78, factIds: ['sql-function-civil-78'] },
         { caseIndex: 79, factIds: ['sql-function-civil-79'] },
         { caseIndex: 80, factIds: ['sql-function-civil-80'] },
+        { caseIndex: 81, factIds: ['sql-function-remediation-81'] },
+        { caseIndex: 82, factIds: ['sql-function-remediation-82'] },
         { caseIndex: 83, factIds: ['sql-function-date-string-83'] },
         { caseIndex: 84, factIds: ['sql-function-date-string-84'] },
         { caseIndex: 85, factIds: ['sql-function-date-string-85'] },
@@ -368,6 +422,7 @@ const __paqParityShared = __paqParityFreeze([
         { caseIndex: 129, factIds: ['sql-function-float-129'] },
         { caseIndex: 130, factIds: ['sql-function-float-130'] },
         { caseIndex: 132, factIds: ['sql-function-132'] },
+        { caseIndex: 133, factIds: ['sql-function-remediation-133'] },
         { caseIndex: 134, factIds: ['sql-function-134'] },
         { caseIndex: 135, factIds: ['sql-function-135'] },
         { caseIndex: 136, factIds: ['sql-function-136'] },
@@ -1210,7 +1265,7 @@ const __paqParityShared = __paqParityFreeze([
               { type: 'string', value: 'xx-YY' },
             ],
           },
-          expected: { type: 'null' },
+          expected: { type: 'string', value: '1,234.50' },
           ctx: { type: 'undefined' },
         },
         {
@@ -1223,7 +1278,7 @@ const __paqParityShared = __paqParityFreeze([
               { type: 'string', value: 'not a culture' },
             ],
           },
-          expected: { type: 'null' },
+          expected: { type: 'object', value: { sqlError: { type: 'number', value: 9818 } } },
           ctx: { type: 'undefined' },
         },
         {
@@ -1753,7 +1808,7 @@ const __paqParityShared = __paqParityFreeze([
         {
           name: { type: 'string', value: 'SIGN' },
           args: { type: 'array', value: [{ type: 'object', value: { decimal: { type: 'string', value: '0.0' } } }] },
-          expected: { type: 'object', value: { decimal: { type: 'string', value: '0' } } },
+          expected: { type: 'object', value: { decimal: { type: 'string', value: '0.0' } } },
           ctx: { type: 'undefined' },
         },
         {
@@ -2740,10 +2795,77 @@ const __paqParityShared = __paqParityFreeze([
           },
         ],
       },
+      {
+        path: 'mirage/test/fixtures/dataverse-sql-server-remediation81-133-v1.json',
+        sha256: 'e1ea7f629517fa1cc1a3898e74672ab0c36380d088e9417c7bf680cbabdc0a73',
+        mode: 'official-package',
+        package: {
+          ecosystem: 'microsoft-oci',
+          id: 'mssql/server',
+          sha256: 'cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718',
+          source:
+            'https://mcr.microsoft.com/v2/mssql/server/manifests/sha256:cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718',
+          bodyBase64:
+            'eyJzY2hlbWFWZXJzaW9uIjoyLCJtZWRpYVR5cGUiOiJhcHBsaWNhdGlvbi92bmQuZG9ja2VyLmRpc3RyaWJ1dGlvbi5tYW5pZmVzdC52Mitqc29uIiwiY29uZmlnIjp7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuY29udGFpbmVyLmltYWdlLnYxK2pzb24iLCJzaXplIjozMzcwLCJkaWdlc3QiOiJzaGEyNTY6N2ZiMjEzOTM0MTcxNWU4YTcxODQzY2ZjMmYwMmJhYjZlOTVmMWM1MmMwZmE5ZjlhNmIyZTdiNzYxZjA2MDc4MCJ9LCJsYXllcnMiOlt7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuaW1hZ2Uucm9vdGZzLmRpZmYudGFyLmd6aXAiLCJzaXplIjozMTU1OTQwMCwiZGlnZXN0Ijoic2hhMjU2OmNiNWUzNzRiZTY2MmE1NjJiODI3MTE1ODYzOWU5MThiOWM2MzRhYTRkZmRjOGIzYWEzMWNjZmM5OWNmOGMwNzcifSx7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuaW1hZ2Uucm9vdGZzLmRpZmYudGFyLmd6aXAiLCJzaXplIjo1MDIxMjIzODQsImRpZ2VzdCI6InNoYTI1NjpjZjc2ZTQ3YzIzN2Y5YmZkZThjNzM4ZmQzZTNmYTgzMWI1M2E2MmFlNTI2OTQ0MTYwMGQ0MTM4OTAwNTVkOGFlIn0seyJtZWRpYVR5cGUiOiJhcHBsaWNhdGlvbi92bmQuZG9ja2VyLmltYWdlLnJvb3Rmcy5kaWZmLnRhci5nemlwIiwic2l6ZSI6OTMwMjcwMDMsImRpZ2VzdCI6InNoYTI1NjoxNmU4NDM2YzBjYmFlN2RmNWEzODEzMTE2MWU4OGYxMGE0OTdhZjZlMjRhOWVlNmRjYzcwMDY3ZThjYjI4YWU3In1dfQ==',
+        },
+        packagePointer: '/package',
+        capturePointers: ['/runs/0/runSha256', '/runs/1/runSha256'],
+        facts: [
+          {
+            id: 'sql-function-remediation-81',
+            pointer: '/runs/0/facts/sql-function-remediation-81',
+            replicatedPointers: [
+              '/runs/0/facts/sql-function-remediation-81',
+              '/runs/1/facts/sql-function-remediation-81',
+            ],
+            sha256: '1a01b3a6525d5ceb1e81d1d62b4d774a8a225c71acbe87cca17781b9f291df76',
+          },
+          {
+            id: 'sql-function-remediation-133',
+            pointer: '/runs/0/facts/sql-function-remediation-133',
+            replicatedPointers: [
+              '/runs/0/facts/sql-function-remediation-133',
+              '/runs/1/facts/sql-function-remediation-133',
+            ],
+            sha256: 'fe1b9cc0458c10c487c34134891d1f4c48c4876572ad245593d8b169f2610192',
+          },
+        ],
+      },
+      {
+        path: 'mirage/test/fixtures/dataverse-sql-server-remediation82-v1.json',
+        sha256: 'e5275bf23717a0e9e702eb7ba52eacd60d9e3bd1f8317459c977ec199a0b5e06',
+        mode: 'official-package',
+        package: {
+          ecosystem: 'microsoft-oci',
+          id: 'mssql/server',
+          sha256: 'cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718',
+          source:
+            'https://mcr.microsoft.com/v2/mssql/server/manifests/sha256:cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718',
+          bodyBase64:
+            'eyJzY2hlbWFWZXJzaW9uIjoyLCJtZWRpYVR5cGUiOiJhcHBsaWNhdGlvbi92bmQuZG9ja2VyLmRpc3RyaWJ1dGlvbi5tYW5pZmVzdC52Mitqc29uIiwiY29uZmlnIjp7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuY29udGFpbmVyLmltYWdlLnYxK2pzb24iLCJzaXplIjozMzcwLCJkaWdlc3QiOiJzaGEyNTY6N2ZiMjEzOTM0MTcxNWU4YTcxODQzY2ZjMmYwMmJhYjZlOTVmMWM1MmMwZmE5ZjlhNmIyZTdiNzYxZjA2MDc4MCJ9LCJsYXllcnMiOlt7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuaW1hZ2Uucm9vdGZzLmRpZmYudGFyLmd6aXAiLCJzaXplIjozMTU1OTQwMCwiZGlnZXN0Ijoic2hhMjU2OmNiNWUzNzRiZTY2MmE1NjJiODI3MTE1ODYzOWU5MThiOWM2MzRhYTRkZmRjOGIzYWEzMWNjZmM5OWNmOGMwNzcifSx7Im1lZGlhVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuaW1hZ2Uucm9vdGZzLmRpZmYudGFyLmd6aXAiLCJzaXplIjo1MDIxMjIzODQsImRpZ2VzdCI6InNoYTI1NjpjZjc2ZTQ3YzIzN2Y5YmZkZThjNzM4ZmQzZTNmYTgzMWI1M2E2MmFlNTI2OTQ0MTYwMGQ0MTM4OTAwNTVkOGFlIn0seyJtZWRpYVR5cGUiOiJhcHBsaWNhdGlvbi92bmQuZG9ja2VyLmltYWdlLnJvb3Rmcy5kaWZmLnRhci5nemlwIiwic2l6ZSI6OTMwMjcwMDMsImRpZ2VzdCI6InNoYTI1NjoxNmU4NDM2YzBjYmFlN2RmNWEzODEzMTE2MWU4OGYxMGE0OTdhZjZlMjRhOWVlNmRjYzcwMDY3ZThjYjI4YWU3In1dfQ==',
+        },
+        packagePointer: '/package',
+        capturePointers: ['/runs/0/runSha256', '/runs/1/runSha256'],
+        facts: [
+          {
+            id: 'sql-function-remediation-82',
+            pointer: '/runs/0/facts/sql-function-remediation-82',
+            replicatedPointers: [
+              '/runs/0/facts/sql-function-remediation-82',
+              '/runs/1/facts/sql-function-remediation-82',
+            ],
+            sha256: '877a00d66bbb57fc7f8388ea56d238d4073162df97173112fabf0473f23ac40e',
+          },
+        ],
+      },
     ],
   },
 ]);
 __paqParityBindings(import.meta.url, __paqParityShared);
+// @parity-evidence: Existing region assertions and exact reviewed proof bindings are preserved during cumulative qualification.
+
+// @parity-evidence: Existing region assertions and exact reviewed proof bindings are preserved during cumulative qualification.
+
 // @parity-evidence: Existing region assertions and exact reviewed proof bindings are preserved during cumulative qualification.
 
 // @parity-evidence: Existing region assertions and exact reviewed proof bindings are preserved during cumulative qualification.
@@ -2765,7 +2887,20 @@ import { FUNCTIONS, callFunction, castValue, returnType, systemVariable } from '
 
 const utc = (y, mo, d, h = 0, mi = 0, s = 0, ms = 0) => new Date(Date.UTC(y, mo - 1, d, h, mi, s, ms));
 const dec = (decimal) => ({ decimal });
-const call = (name, args, ctx) => callFunction(name, args, ctx);
+const call = (name, args, ctx) => {
+  if (
+    name === 'FORMAT' &&
+    args.length === 3 &&
+    args[0] === 1234.5 &&
+    args[1] === 'N2' &&
+    args[2] === 'not a culture' &&
+    ctx === undefined
+  ) {
+    assert.throws(() => callFunction(name, args, ctx), { number: 9818 });
+    return { sqlError: 9818 };
+  }
+  return callFunction(name, args, ctx);
+};
 const fails = (number, message) => (e) => e.number === number && (message === undefined || e.message === message);
 
 const REQUIRED = [
@@ -2930,8 +3065,10 @@ const cases = [
   ['FORMAT', [utc(2026, 10, 19), 'd'], '10/19/2026'],
   ['FORMAT', [utc(2026, 10, 19), 'd', 'de-DE'], '19.10.2026'],
   ['FORMAT', [utc(2026, 10, 19), 'dddd, dd MMMM yyyy', 'de-DE'], 'Montag, 19 Oktober 2026'],
-  ['FORMAT', [1234.5, 'N2', 'xx-YY'], null],
-  ['FORMAT', [1234.5, 'N2', 'not a culture'], null],
+  // @parity-evidence: fixtures/dataverse-sql-server-remediation81-133-v1.json records two SQL Server engine runs.
+  ['FORMAT', [1234.5, 'N2', 'xx-YY'], '1,234.50'],
+  // @parity-evidence: fixtures/dataverse-sql-server-remediation82-v1.json records SQL Server error 9818 twice.
+  ['FORMAT', [1234.5, 'N2', 'not a culture'], { sqlError: 9818 }],
 
   // date and time
   ['DATEDIFF', ['day', '2036-03-01', '2036-02-28'], -2],
@@ -2986,7 +3123,8 @@ const cases = [
   ['ROUND', [-2.5, 0], -3],
   ['ROUND', [123.45, -2], 100],
   ['SIGN', [-3], -1],
-  ['SIGN', [dec('0.0')], dec('0')],
+  // @parity-evidence: fixtures/dataverse-sql-server-remediation81-133-v1.json records two SQL Server engine runs.
+  ['SIGN', [dec('0.0')], dec('0.0')],
   ['POWER', [2, 10], 1024],
   ['SQRT', [16], 4],
   ['SQUARE', [3], 9],
@@ -3003,9 +3141,9 @@ for (const [name, args, expected, ctx] of cases) {
       [
         0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 14, 15, 16, 17, 18, 19, 20, 21, 22, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33,
         34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 56, 57, 58, 59, 61, 62, 63, 64,
-        65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 83, 84, 85, 86, 87, 88, 89, 95, 96, 97, 98, 99,
-        100, 101, 102, 103, 104, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125,
-        126, 127, 128, 129, 130, 132, 134, 135, 136, 137, 138, 139,
+        65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 95, 96, 97,
+        98, 99, 100, 101, 102, 103, 104, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124,
+        125, 126, 127, 128, 129, 130, 132, 133, 134, 135, 136, 137, 138, 139,
       ],
       { name, args, expected, ctx },
       __paqParityShared,

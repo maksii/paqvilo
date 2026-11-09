@@ -261,18 +261,33 @@ test('selected original callback', callback);
   );
   fs.writeFileSync(path.join(root, file), guarded);
   const proofPath = path.join(root, 'proof.json');
-  const proofBytes = fs.readFileSync(proofPath);
-  const proofStat = fs.statSync(proofPath);
-  const changedProof = Buffer.from(proofBytes);
-  changedProof[changedProof.length - 2] ^= 1;
-  fs.writeFileSync(proofPath, changedProof);
-  fs.utimesSync(proofPath, proofStat.atime, proofStat.mtime);
-  assert.equal(fs.statSync(proofPath).size, proofStat.size);
-  assert.throws(
-    () => assertParityBindings(pathToFileURL(path.join(root, file)), qualified.changes[0].bindings),
-    /stale-proof-sha/,
-  );
-  fs.writeFileSync(proofPath, proofBytes);
+  const proofFd = fs.openSync(proofPath, 'r+');
+  try {
+    const initial = fs.fstatSync(proofFd);
+    fs.futimesSync(proofFd, initial.atime, initial.mtime);
+    const proofBytes = fs.readFileSync(proofFd),
+      proofStat = fs.fstatSync(proofFd),
+      changedProof = Buffer.from(proofBytes);
+    changedProof[changedProof.length - 2] ^= 1;
+    assert.equal(changedProof.length, proofBytes.length);
+    assert.equal(changedProof.equals(proofBytes), false);
+    const write = (content) => assert.equal(fs.writeSync(proofFd, content, 0, content.length, 0), content.length);
+    try {
+      write(changedProof);
+      fs.futimesSync(proofFd, proofStat.atime, proofStat.mtime);
+      const after = fs.fstatSync(proofFd);
+      assert.equal(after.size, proofStat.size);
+      assert.equal(after.mtimeMs, proofStat.mtimeMs);
+      assert.throws(
+        () => assertParityBindings(pathToFileURL(path.join(root, file)), qualified.changes[0].bindings),
+        /stale-proof-sha/,
+      );
+    } finally {
+      write(proofBytes);
+    }
+  } finally {
+    fs.closeSync(proofFd);
+  }
   assertParityBindings(pathToFileURL(path.join(root, file)), qualified.changes[0].bindings);
   fs.writeFileSync(path.join(root, file), source);
   for (const run of capsule.runs) run.facts.fact.typedOutcome.resultSets[0].rows[0][0].exact = '3.500001';
@@ -376,6 +391,61 @@ test('selected original callback', callback);
     correctionSourceSha256: correctionReview.sourceReceiptSha256,
   });
   assert.deepEqual(run().pending, []);
+  const selectedReview = {
+    baseline: review.baseline,
+    sourceReceiptSha256: correctionReview.sourceReceiptSha256,
+    review: {
+      cases: [
+        {
+          index: 11,
+          originalId: correctionId,
+          tupleSha256: correction.baselineTupleAstSha256,
+          currentTupleSha256: correction.currentTupleAstSha256,
+          sql: correction.sql,
+        },
+      ],
+    },
+  };
+  const selectedReviewPath = path.join(root, 'selected-review.json');
+  fs.writeFileSync(selectedReviewPath, JSON.stringify(selectedReview));
+  guarantee.context.additionalSemanticReviews = [
+    {
+      path: 'selected-review.json',
+      sha256: parityHash(fs.readFileSync(selectedReviewPath)),
+      sourceReceiptSha256: selectedReview.sourceReceiptSha256,
+    },
+  ];
+  const selectedFact = {
+    caseIndex: 11,
+    baselineId: correctionId,
+    baselineTupleAstSha256: correction.baselineTupleAstSha256,
+    currentTupleAstSha256: correction.currentTupleAstSha256,
+    query: correction.sql,
+    priorExpected: correction.baselineExpected,
+    expected: correction.currentExpected,
+    typedOutcome: correctionFact.typedOutcome,
+    semanticReviewSha256: selectedReview.sourceReceiptSha256,
+  };
+  for (const item of capsule.runs) item.facts.selectedCorrection = selectedFact;
+  proof.facts.push({
+    id: 'selectedCorrection',
+    pointer: '/runs/0/facts/selectedCorrection',
+    replicatedPointers: ['/runs/0/facts/selectedCorrection', '/runs/1/facts/selectedCorrection'],
+    sha256: hashJson(selectedFact),
+  });
+  saveProof();
+  spec.caseSelection.selected.push({ caseIndex: 11, factIds: ['selectedCorrection'] });
+  assert.deepEqual(run().pending, []);
+  spec.caseSelection.selected[1].factIds = ['fact'];
+  assert.equal(run().pending[0].reason, 'sql-eval-fact-required');
+  spec.caseSelection.selected[1].factIds = ['selectedCorrection'];
+  selectedReview.review.cases[0].currentTupleSha256 = 'a'.repeat(64);
+  fs.writeFileSync(selectedReviewPath, JSON.stringify(selectedReview));
+  guarantee.context.additionalSemanticReviews[0].sha256 = parityHash(fs.readFileSync(selectedReviewPath));
+  assert.equal(run().pending[0].reason, 'sql-eval-fact-mismatch');
+  selectedReview.review.cases[0].currentTupleSha256 = correction.currentTupleAstSha256;
+  fs.writeFileSync(selectedReviewPath, JSON.stringify(selectedReview));
+  guarantee.context.additionalSemanticReviews[0].sha256 = parityHash(fs.readFileSync(selectedReviewPath));
   correctionReview.cases[0].sql = 'SELECT unrelated';
   fs.writeFileSync(correctionReviewPath, JSON.stringify(correctionReview));
   guarantee.context.correctionReviewSha256 = parityHash(fs.readFileSync(correctionReviewPath));

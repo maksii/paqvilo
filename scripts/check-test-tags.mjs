@@ -1,5 +1,6 @@
 import { sharedParityDescriptor, SHARED } from './parity-shared-descriptor.mjs';
 import { sharedPartialDescriptors } from './parity-shared-partial.mjs';
+import { SQL_EXTRA_EVALUATOR_CASES } from './parity-sql-main-witness.mjs';
 // Enforces docs/test-kinds.md on test files a change adds or modifies.
 //   node scripts/check-test-tags.mjs --staged          pre-commit: the index against HEAD
 //   node scripts/check-test-tags.mjs --base <rev>      a branch against <rev> (merge base)
@@ -216,6 +217,92 @@ function appendSqlEvaluatorHelperRegions(ast, descriptor, arrayName, regions) {
   }
 }
 
+function appendSqlFormat82HelperRegion(ast, descriptor, arrayName, regions) {
+  if (property(descriptor, 'sqlFormat82Migration')?.value !== true) return;
+  if (arrayName !== 'cases') throw new Error('invalid SQL FORMAT error guard');
+  const declarations = ast.body.filter(
+    (item) =>
+      item.type === 'VariableDeclaration' &&
+      item.kind === 'const' &&
+      item.declarations.some((entry) => entry.id?.name === 'call'),
+  );
+  if (declarations.length !== 1) throw new Error('invalid SQL FORMAT error helper');
+  regions.push({
+    start: declarations[0].loc.start.line,
+    end: declarations[0].loc.end.line,
+    kinds: ['parity'],
+    partial: true,
+  });
+}
+
+function appendSqlWitnessArrayRegions(ast, binding, indices, count, regions) {
+  const declarations = ast.body.flatMap((node) =>
+    node.type === 'VariableDeclaration' && node.kind === 'const'
+      ? node.declarations.filter((item) => item.id?.name === binding)
+      : [],
+  );
+  const loops = ast.body.filter((node) => node.type === 'ForOfStatement' && node.right?.name === binding);
+  const entries = indices.map((index) => declarations[0]?.init?.elements?.[index]),
+    test = loops[0]?.body?.body?.[0]?.expression;
+  const callback = test?.arguments?.[1];
+  if (
+    declarations.length !== 1 ||
+    loops.length !== 1 ||
+    declarations[0].init?.elements?.length !== count ||
+    entries.some((entry) => !entry) ||
+    entries.some((entry) =>
+      declarations[0].init.elements.some(
+        (other, index) =>
+          !indices.includes(index) &&
+          other.loc.start.line <= entry.loc.end.line &&
+          other.loc.end.line >= entry.loc.start.line,
+      ),
+    ) ||
+    test?.callee?.name !== 'test' ||
+    callback?.type !== 'ArrowFunctionExpression'
+  )
+    throw new Error('invalid SQL evaluator witness');
+  for (const node of [...entries, callback.body])
+    regions.push({ start: node.loc.start.line, end: node.loc.end.line, kinds: ['parity'], partial: true });
+}
+
+function appendSqlOrderedWitnessRegions(ast, descriptor, regions) {
+  const witness = property(descriptor, 'sqlOrderedWitness');
+  if (!witness) return;
+  if (
+    property(witness, 'baselineId')?.value !== 'mirage/test/dataverse-tds-sql-eval.test.mjs:1063:2' ||
+    property(witness, 'caseIndex')?.value !== 11
+  )
+    throw new Error('invalid SQL ordered witness');
+  appendSqlWitnessArrayRegions(ast, 'orderedCases', [11], 16, regions);
+}
+function appendSqlExtraWitnessRegions(ast, descriptor, regions) {
+  const witness = property(descriptor, 'sqlExtraEvaluatorCases');
+  if (!witness) return;
+  const list = property(witness, 'cases');
+  if (list?.type !== 'ArrayExpression') throw new Error('invalid SQL extra witness');
+  const values = list.elements.map((item) => ({
+    binding: property(item, 'binding')?.value,
+    index: property(item, 'index')?.value,
+  }));
+  if (JSON.stringify(values) !== JSON.stringify(SQL_EXTRA_EVALUATOR_CASES))
+    throw new Error('invalid SQL extra witness');
+  appendSqlWitnessArrayRegions(
+    ast,
+    'cases',
+    values.filter((item) => item.binding === 'cases').map((item) => item.index),
+    74,
+    regions,
+  );
+  appendSqlWitnessArrayRegions(
+    ast,
+    'orderedCases',
+    values.filter((item) => item.binding === 'orderedCases').map((item) => item.index),
+    16,
+    regions,
+  );
+}
+
 function appendCaseGuard(ast, node, index, call, regions) {
   const statement = node.body[index],
     arrayName = call.arguments[1]?.name,
@@ -269,6 +356,9 @@ function appendCaseGuard(ast, node, index, call, regions) {
   for (const entry of [statement, protectedAssertion, ...numbers.map((number) => entries[number])])
     regions.push({ start: entry.loc.start.line, end: entry.loc.end.line, kinds: ['parity'], partial: true });
   appendSqlEvaluatorHelperRegions(ast, descriptor, arrayName, regions);
+  appendSqlFormat82HelperRegion(ast, descriptor, arrayName, regions);
+  appendSqlOrderedWitnessRegions(ast, descriptor, regions);
+  appendSqlExtraWitnessRegions(ast, descriptor, regions);
   appendRetainedAssertions(node, descriptor, regions);
 }
 
@@ -502,18 +592,15 @@ function soapGuardMarkers(ast) {
   return { marked, loop };
 }
 
-function appendSoapNamespaceRegions(ast, guard, regions) {
+function appendSoapSiblingRegions(ast, guard, regions, regionProperty, marker) {
   const descriptor = guard.expression.arguments[1].elements[0],
-    metadata = property(descriptor, 'namespaceRegions');
+    metadata = property(descriptor, regionProperty);
   const imports = ast.body.filter(
-    (node) =>
-      node.type === 'ImportDeclaration' &&
-      node.specifiers.some((item) => item.local.name === '__paqSoapNamespaceProof'),
+    (node) => node.type === 'ImportDeclaration' && node.specifiers.some((item) => item.local.name === marker),
   );
   const blocks = [];
   function visit(node) {
-    if (node.type === 'BlockStatement' && node.body[0]?.expression?.callee?.name === '__paqSoapNamespaceProof')
-      blocks.push(node);
+    if (node.type === 'BlockStatement' && node.body[0]?.expression?.callee?.name === marker) blocks.push(node);
     for (const value of Object.values(node))
       for (const child of Array.isArray(value) ? value : [value]) if (child?.type) visit(child);
   }
@@ -556,7 +643,8 @@ function appendSoapRegions({ hasMarker, text, lines, regions, errors }) {
       const { imports, helperImports, guards, declarations, values, numbers } = soapGuardDeclarations(ast);
       appendSoapUniverse(values, numbers, regions);
       const { marked, loop } = soapGuardMarkers(ast);
-      appendSoapNamespaceRegions(ast, guards[0], regions);
+      appendSoapSiblingRegions(ast, guards[0], regions, 'namespaceRegions', '__paqSoapNamespaceProof');
+      appendSoapSiblingRegions(ast, guards[0], regions, 'valueRegions', '__paqSoapValueProof');
       for (const node of [
         imports[0],
         helperImports[0],

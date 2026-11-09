@@ -231,29 +231,29 @@ export function qualifySoapNamespaces({ root, loopManifest, proof, authorityFile
   };
 }
 
-function main(args) {
+export function runSoapQualification(args, { name, qualify, proofOption }) {
   const option = (name) => {
     const index = args.indexOf(name);
     return index < 0 ? undefined : args[index + 1];
   };
   if (args.includes('--help')) {
     process.stdout.write(
-      'Usage: node scripts/qualify-soap-namespace.mjs --root <repo> --loop-manifest <json> --namespace-proof <json> --authority-file <json> --authority-sha256 <sha256> [--write]\n',
+      `Usage: node scripts/${name} --root <repo> --loop-manifest <json> ${proofOption} <json> --authority-file <json> --authority-sha256 <sha256> [--write]\n`,
     );
     return;
   }
   const root = path.resolve(option('--root') ?? path.dirname(path.dirname(TOOL)));
-  const report = qualifySoapNamespaces({
+  const report = qualify({
     root,
     loopManifest: JSON.parse(fs.readFileSync(option('--loop-manifest'), 'utf8')),
-    proof: JSON.parse(fs.readFileSync(option('--namespace-proof'), 'utf8')),
+    proof: JSON.parse(fs.readFileSync(option(proofOption), 'utf8')),
     authorityFile: option('--authority-file'),
     authoritySha256: option('--authority-sha256'),
   });
   const target = path.resolve(root, report.path);
   if (args.includes('--write') && report.after !== report.before) {
     requireCondition(fs.readFileSync(target, 'utf8') === report.before, 'source changed before write');
-    const directory = fs.mkdtempSync(path.join(path.dirname(target), '.qualify-soap-namespace-')),
+    const directory = fs.mkdtempSync(path.join(path.dirname(target), '.qualify-soap-')),
       temporary = path.join(directory, 'content');
     try {
       fs.writeFileSync(temporary, report.after, { flag: 'wx' });
@@ -281,7 +281,11 @@ function main(args) {
 }
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
   try {
-    main(process.argv.slice(2));
+    runSoapQualification(process.argv.slice(2), {
+      name: 'qualify-soap-namespace.mjs',
+      qualify: qualifySoapNamespaces,
+      proofOption: '--namespace-proof',
+    });
   } catch (error) {
     process.stderr.write(JSON.stringify({ error: error.message }) + '\n');
     process.exitCode = 1;

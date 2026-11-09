@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "baseline": "1171cccc8baed9218f7fd7689afae4abdc89252b",
+  "sourceReceiptSha256": "9d4b7acb533eec63883289f59627226ed7c2f8fc286d288f280544c485c34130",
+  "scope": "Fixed original inputs and corrected outputs only; no general culture or transport claim.",
+  "review": {
+    "cases": [
+      {
+        "index": 81,
+        "originalId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#81",
+        "sourceTupleSha256": "0da6e4be1132737b22b8c1b297396d46574e41e6efc4cf01e72959e4699b9348",
+        "currentTupleSha256": "647eae95c35f582b2a854c0b4f776026aad2c8a63b1fd5dbd60d8649dd10f686",
+        "sql": "SELECT FORMAT(CAST(N'1234.5' AS float), CAST(N'N2' AS nvarchar(2)), CAST(N'xx-YY' AS nvarchar(5))) AS [value]"
+      },
+      {
+        "index": 133,
+        "originalId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#133",
+        "sourceTupleSha256": "f3d8dc71d7d9dab20e83fc8e9dfdac38e52ce7815f87b6d4c13f07d18c8371a2",
+        "currentTupleSha256": "7bee6da0954c36496f3acb54770faed0c164ea2528f7ebad3ba6adb13e55d152",
+        "sql": "SELECT SIGN(CAST(N'0.0' AS decimal(1,1))) AS [value]"
+      }
+    ]
+  }
+}

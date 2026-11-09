@@ -3429,14 +3429,32 @@ test('shared partial descriptors bind each ordered region and retain immutable p
     );
   }
   fs.writeFileSync(file, written);
-  const proof = fs.readFileSync(f.proofFile, 'utf8');
-  const stat = fs.statSync(f.proofFile);
-  const changedProof = proof.replaceAll('200', '201');
-  assert.notEqual(changedProof, proof);
-  assert.equal(Buffer.byteLength(changedProof), Buffer.byteLength(proof));
-  fs.writeFileSync(f.proofFile, changedProof);
-  fs.utimesSync(f.proofFile, stat.atime, stat.mtime);
-  assert.throws(() => assertParityBindings(pathToFileURL(file), report.changes[0].bindings));
+  const proofFd = fs.openSync(f.proofFile, 'r+');
+  try {
+    const initial = fs.fstatSync(proofFd);
+    fs.futimesSync(proofFd, initial.atime, initial.mtime);
+    const proof = fs.readFileSync(proofFd, 'utf8'),
+      stat = fs.fstatSync(proofFd),
+      changedProof = proof.replaceAll('200', '201');
+    assert.notEqual(changedProof, proof);
+    assert.equal(Buffer.byteLength(changedProof), Buffer.byteLength(proof));
+    const write = (content) => {
+      const bytes = Buffer.from(content);
+      assert.equal(fs.writeSync(proofFd, bytes, 0, bytes.length, 0), bytes.length);
+    };
+    try {
+      write(changedProof);
+      fs.futimesSync(proofFd, stat.atime, stat.mtime);
+      const after = fs.fstatSync(proofFd);
+      assert.equal(after.size, stat.size);
+      assert.equal(after.mtimeMs, stat.mtimeMs);
+      assert.throws(() => assertParityBindings(pathToFileURL(file), report.changes[0].bindings));
+    } finally {
+      write(proof);
+    }
+  } finally {
+    fs.closeSync(proofFd);
+  }
 });
 
 test('shared partial descriptors cannot be swapped across original registrations', (t) => {

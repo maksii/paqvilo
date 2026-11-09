@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "baseline": "1171cccc8baed9218f7fd7689afae4abdc89252b",
+  "sourceReceiptSha256": "665fad33f3eb098cfb67819c0ce6e803e6c91e6790d2242ebf5624cd14b80ff6",
+  "scope": "Exact original FORMAT input and SQL error number only; no general culture or TDS claim.",
+  "review": {
+    "cases": [
+      {
+        "index": 82,
+        "originalId": "mirage/test/dataverse-tds-sql-functions.test.mjs:238:2#82",
+        "sourceTupleSha256": "9c313b68874975c403483d1f011cfb6d24163b031ce3eb62452fe5b58828618f",
+        "currentTupleSha256": "d43747fdfd3ee59c40fd2695be7a4e1bcb1bc11db48555f0eac37a937a5aa9e8",
+        "sql": "SELECT FORMAT(CAST(N'1234.5' AS float), CAST(N'N2' AS nvarchar(2)), CAST(N'not a culture' AS nvarchar(13))) AS [value]"
+      }
+    ]
+  }
+}

@@ -132,6 +132,22 @@ test('SOAP loop checker protects selected inputs and markers without tagging hel
   assert.ok(
     parseTestKinds(sibling.replace("__paqSoapNamespaceProof(import.meta.url, 'namespace');", '')).errors.length,
   );
+  const valueSibling = sibling
+    .replaceAll('SoapNamespaceProof', 'SoapValueProof')
+    .replace('namespaceRegions', 'valueRegions');
+  const valueTags = parseTestKinds(valueSibling),
+    valueLines = valueSibling.split('\n');
+  assert.deepEqual(valueTags.errors, []);
+  assert.deepEqual(kindsAt(valueTags, valueLines.findIndex((line) => line.includes('assert.ok(localOnly)')) + 1), [
+    'compatibility',
+  ]);
+  assert.deepEqual(
+    kindsAt(valueTags, valueLines.findIndex((line) => line.includes('assert.equal(actualNamespace')) + 1),
+    ['parity'],
+  );
+  assert.ok(
+    parseTestKinds(valueSibling.replace("__paqSoapValueProof(import.meta.url, 'namespace');", '')).errors.length,
+  );
   assert.ok(
     parseTestKinds(lines.join('\n').replace('  __paqSoapComplete(index, __paqSoapDescriptor);', '')).errors.length,
   );

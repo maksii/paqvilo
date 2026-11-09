@@ -1,3 +1,4 @@
+// @parity-evidence: Repeated official SDK deserialization proves only these fixed-input value projections.
 // @parity-evidence: Two independent official Microsoft.Xrm.Sdk DataContractSerializer processes establish the exact namespace URI assertions for the same EntityReference and OrganizationServiceFault inputs.
 // @parity-evidence: Reproduced official SDK results and every previously protected SOAP assertion and proof remain bound by the cumulative guard.
 // @test-kind compatibility: documented Organization service SOAP/DataContract wire formats (namespaces, member order, faults) from Microsoft SDK docs and samples
@@ -813,7 +814,7 @@ __paqSoapBindings(import.meta.url, [
   {
     kind: 'soap-assertion-loop-v1',
     repositoryRoot: '../..',
-    sourceAstSha256: 'd72a55685a82aa1ace8e4b0b535a1d64b3f14d9ebad71a227c73452a3a0496d3',
+    sourceAstSha256: '567632061142131ea32e34e34018f77625bd31fd8e88e806e8c64a01628a144e',
     loopDescriptorSha256: '28ecc84cabacb8970bc911f9383e95304758e58c2037e76ef6e76e6d306b2754',
     helperSha256: 'cce389a6db4c1cf9d57683cba2bfd9fd82e50f0a27f80f2d2420a25f11b075a7',
     proofs: [
@@ -1156,6 +1157,41 @@ __paqSoapBindings(import.meta.url, [
           },
         ],
       },
+      {
+        path: 'mirage/test/fixtures/dataverse-soap-sdk-values-20261109.json',
+        sha256: 'cedfac8035eb90d53bf7ea356edc6fcdf122a95dba7aa71f24298f806edcc847',
+        mode: 'official-package',
+        capturePointers: ['/runs/0/receiptSha256', '/runs/1/receiptSha256'],
+        package: {
+          id: 'Microsoft.CrmSdk.CoreAssemblies',
+          version: '9.0.2.60',
+          sha256: '59650574cdc89c1f506fabd7275fe6325a59a8bae9fa9f92c5b5c2cbe31d5e1f',
+          source:
+            'https://api.nuget.org/v3-flatcontainer/microsoft.crmsdk.coreassemblies/9.0.2.60/microsoft.crmsdk.coreassemblies.9.0.2.60.nupkg',
+          signatureVerified: false,
+        },
+        packagePointer: '/package',
+        facts: [
+          {
+            id: 'sdk-value-406',
+            pointer: '/runs/0/facts/0',
+            sha256: '3dc746eefb1d9baac359f50e266c7a0a187d13816a06a7a859b54c53b5cd54b4',
+            replicatedPointers: ['/runs/0/facts/0', '/runs/1/facts/0'],
+          },
+          {
+            id: 'sdk-value-531',
+            pointer: '/runs/0/facts/1',
+            sha256: '06dfaaa426b14135262192426e28505c5f5b9b2dccc11f4c01969362816ac766',
+            replicatedPointers: ['/runs/0/facts/1', '/runs/1/facts/1'],
+          },
+          {
+            id: 'sdk-value-602',
+            pointer: '/runs/0/facts/2',
+            sha256: '7596d15b3adccdfd77c37157f7287455615976c5f9d1f2f4435d6cbc3af86628',
+            replicatedPointers: ['/runs/0/facts/2', '/runs/1/facts/2'],
+          },
+        ],
+      },
     ],
     namespaceRegions: [
       {
@@ -1179,8 +1215,45 @@ __paqSoapBindings(import.meta.url, [
         namespace: 'http://schemas.microsoft.com/xrm/2011/Contracts',
       },
     ],
+    valueRegions: [
+      {
+        baselineId: 'mirage/test/dataverse-soap-xml.test.mjs:406:0',
+        baselineCommit: '1171cccc8baed9218f7fd7689afae4abdc89252b',
+        baselineSourceSha256: 'f9714a545510a9a6eeec463c04d866cbd42015f8acafef5f48e5f0f4c32440cf',
+        titleExpressionSha256: '9fab0646dd5ce3992a4ae51088a016e789af2714f689df752b99929dfad18322',
+        originalBodyAstSha256: 'da28134cceced27f1d317890a18b51d68b878ea3a0ddef01bd3599b5355722a4',
+        assertionSha256: '172fed872ac7205d4e1b032135116e8fc96d85d42628e27b13a2b6f125a42a9f',
+        assertionIndex: 1,
+        factId: 'sdk-value-406',
+        expected: { type: 'OptionSetValueCollection', values: [1, 3] },
+      },
+      {
+        baselineId: 'mirage/test/dataverse-soap-xml.test.mjs:531:0',
+        baselineCommit: '1171cccc8baed9218f7fd7689afae4abdc89252b',
+        baselineSourceSha256: 'f9714a545510a9a6eeec463c04d866cbd42015f8acafef5f48e5f0f4c32440cf',
+        titleExpressionSha256: '2b3d9dee0b2223e53f05fd27c07b97e916145792e669e4ecabc9f81ae91d86f2',
+        originalBodyAstSha256: '1fc556fc92f1b4c737e7c58d7f2e32c14027242ff98ab02aa098f4001a4b58af',
+        assertionSha256: '1c36fb87a0f8b9f3d47587a3f3cec5f3859b794719ddc8e22a5b24aa2034d3fd',
+        assertionIndex: 1,
+        factId: 'sdk-value-531',
+        expected: { type: 'ColumnSet', allColumns: true, columns: ['name'] },
+      },
+      {
+        baselineId: 'mirage/test/dataverse-soap-xml.test.mjs:602:0',
+        baselineCommit: '1171cccc8baed9218f7fd7689afae4abdc89252b',
+        baselineSourceSha256: 'f9714a545510a9a6eeec463c04d866cbd42015f8acafef5f48e5f0f4c32440cf',
+        titleExpressionSha256: '11db693ca5490b5d69a526825f015273784770edce83a00785c37797620d8230',
+        originalBodyAstSha256: '71b2d0f1d247150faf9838548e815c840dd8721d6875acb1992ac34e6c1337a1',
+        assertionSha256: 'c2568360b28cdb0a02ab00551a6058f86f7264b2692130ada62f314e0ae52177',
+        assertionIndex: 1,
+        factId: 'sdk-value-602',
+        expected: { type: 'long', value: '9007199254740993' },
+      },
+    ],
   },
 ]);
+import { assertSoapValueProof as __paqSoapValueProof } from '../../scripts/qualify-parity.mjs';
+
 import { assertSoapNamespaceProof as __paqSoapNamespaceProof } from '../../scripts/qualify-parity.mjs';
 
 // @parity-evidence: Microsoft.CrmSdk.CoreAssemblies 9.0.2.60 writes and reads the corrected held Entity related-graph XML; the 44 previously selected assertion inputs and bindings are unchanged.
@@ -1609,12 +1682,15 @@ test('untyped a:Value decodes OptionSetValue and its collection as int, and Mone
     type: 'OptionSetValue',
     value: 1,
   });
-  assert.deepStrictEqual(
-    sdkValue(
-      `<v ${head} xmlns:x9="${NS.x9}" i:type="x9:OptionSetValueCollection"><x9:OptionSetValue><a:Value>1</a:Value></x9:OptionSetValue><x9:OptionSetValue><a:Value>3</a:Value></x9:OptionSetValue></v>`,
-    ),
-    { type: 'OptionSetValueCollection', values: [1, 3] },
-  );
+  {
+    __paqSoapValueProof(import.meta.url, 'sdk-value-406');
+    assert.deepStrictEqual(
+      sdkValue(
+        `<v ${head} xmlns:x9="${NS.x9}" i:type="x9:OptionSetValueCollection"><x9:OptionSetValue><a:Value>1</a:Value></x9:OptionSetValue><x9:OptionSetValue><a:Value>3</a:Value></x9:OptionSetValue></v>`,
+      ),
+      { type: 'OptionSetValueCollection', values: [1, 3] },
+    );
+  }
   assert.deepStrictEqual(sdkValue(`<v ${head} i:type="a:Money"><a:Value>12.50</a:Value></v>`), {
     type: 'Money',
     value: '12.50',
@@ -1737,7 +1813,10 @@ test('ColumnSet encodes AllColumns and string Columns in the arrays namespace, a
   const node = sdkNode(
     `<v ${head} i:type="a:ColumnSet"><a:AllColumns>true</a:AllColumns><a:Columns><f:string>name</f:string></a:Columns></v>`,
   );
-  assert.deepStrictEqual(decodeValue(node), { type: 'ColumnSet', allColumns: true, columns: ['name'] });
+  {
+    __paqSoapValueProof(import.meta.url, 'sdk-value-531');
+    assert.deepStrictEqual(decodeValue(node), { type: 'ColumnSet', allColumns: true, columns: ['name'] });
+  }
   assert.equal(byName(node, 'Columns').children[0].ns, SDK_ARRAYS);
 });
 
@@ -1808,10 +1887,13 @@ test('a long beyond 2^53 is a decimal string, and a safe long stays a Number', (
     encodeValue('v', { type: 'long', value: '9007199254740993' }),
     '<v i:type="c:long">9007199254740993</v>',
   );
-  assert.deepStrictEqual(sdkValue(`<v xmlns:i="${NS.i}" xmlns:c="${NS.c}" i:type="c:long">9007199254740993</v>`), {
-    type: 'long',
-    value: '9007199254740993',
-  });
+  {
+    __paqSoapValueProof(import.meta.url, 'sdk-value-602');
+    assert.deepStrictEqual(sdkValue(`<v xmlns:i="${NS.i}" xmlns:c="${NS.c}" i:type="c:long">9007199254740993</v>`), {
+      type: 'long',
+      value: '9007199254740993',
+    });
+  }
   assert.deepStrictEqual(sdkValue(`<v xmlns:i="${NS.i}" xmlns:c="${NS.c}" i:type="c:long">-42</v>`), {
     type: 'long',
     value: -42,

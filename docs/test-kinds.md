@@ -156,6 +156,14 @@ Use `scripts/qualify-soap-namespace.mjs --help` for the required manifest,
 proof and accepted-authority inputs. The regions add assertion-level coverage,
 not whole-test or Dataverse dispatch credit.
 
+Fixed-input SOAP value assertions use separate sibling regions. Their writer
+checks the original assertion and complete test body, the previously accepted
+SOAP authority, and the repeated official SDK inputs and typed results. The
+reviewed class-to-JavaScript projections apply only to those selected inputs;
+lexical and other sibling assertions retain their existing kind. Use
+`scripts/qualify-soap-values.mjs --help` for the manifest, proof and accepted
+prior-authority inputs. These regions confer assertion-level coverage only.
+
 The bounded query-reader matrix supports selected proven cases in an unchanged
 63-case async subtest loop. Its literal spread/map inputs are evaluated from
 source, and each awaited child checks its original binding and ordered index.

@@ -187,6 +187,189 @@ test('typed selections reject swapped facts and rehashed wrong SQL', (t) => {
   f.proof.facts[0].sha256 = h(capsule.runs[0].facts['fact-0']);
   assert.equal(f.run().pending[0].reason, 'typed-case-output-mismatch');
 });
+
+test('typed cumulative corrections preserve every earlier selection and reject changed inputs', (t) => {
+  const correctionSource = defaultSource.replace("['LEFT', [null, 2], null]", "['LEFT', [null, 2], dec('0')]");
+  const f = setup(t, correctionSource);
+  const file = f.manifest.files[0],
+    guarantee = file.guarantees[0],
+    spec = guarantee.tests[0];
+  f.review.review.cases = f.review.review.cases.slice(0, 1);
+  fs.writeFileSync(path.join(f.root, 'review.json'), JSON.stringify(f.review));
+  guarantee.context.semanticReviewCertificateSha256 = parityHash(fs.readFileSync(path.join(f.root, 'review.json')));
+  spec.caseSelection.selected = spec.caseSelection.selected.slice(0, 1);
+  const initial = f.run();
+  assert.deepEqual(initial.pending, []);
+  writeParityQualification(initial, { root: f.root });
+  const guarded = fs.readFileSync(path.join(f.root, 'sample.test.mjs'), 'utf8');
+  const candidate = guarded.replace("['LEFT', [null, 2], dec('0')]", "['LEFT', [null, 2], dec('0.0')]");
+  assert.notEqual(candidate, guarded);
+  const candidatePath = path.join(f.root, 'candidate.mjs');
+  fs.writeFileSync(candidatePath, candidate);
+  const original = extract(correctionSource),
+    updated = extract(correctionSource.replace("['LEFT', [null, 2], dec('0')]", "['LEFT', [null, 2], dec('0.0')]"));
+  const correctionReview = {
+    baseline: f.manifest.baseline,
+    sourceReceiptSha256: 'e'.repeat(64),
+    review: {
+      cases: [
+        {
+          index: 1,
+          originalId: `${spec.baselineId}#1`,
+          sourceTupleSha256: original.rowAstSha256[1],
+          currentTupleSha256: updated.rowAstSha256[1],
+          sql: 'SELECT 1 AS [value]',
+        },
+      ],
+    },
+  };
+  const reviewPath = path.join(f.root, 'correction-review.json');
+  fs.writeFileSync(reviewPath, JSON.stringify(correctionReview));
+  guarantee.context.additionalSemanticReviews = [
+    {
+      path: 'correction-review.json',
+      sha256: parityHash(fs.readFileSync(reviewPath)),
+      sourceReceiptSha256: correctionReview.sourceReceiptSha256,
+    },
+  ];
+  const correctionFact = {
+    caseIndex: 1,
+    baselineId: `${spec.baselineId}#1`,
+    baselineTupleAstSha256: original.rowAstSha256[1],
+    currentTupleAstSha256: updated.rowAstSha256[1],
+    assertionSha256: spec.regions[0].assertions.map((item) => item.sha256),
+    semanticReviewSha256: correctionReview.sourceReceiptSha256,
+    priorExpected: { decimal: '0' },
+    currentExpected: { decimal: '0.0' },
+    query: 'SELECT 1 AS [value]',
+    typedOutcome: {
+      query: 'SELECT 1 AS [value]',
+      outcome: 'result',
+      resultSets: [
+        {
+          columns: [{ name: 'value', sqlType: 'decimal', precision: 2, scale: 1 }],
+          rows: [
+            [
+              {
+                kind: 'sql-decimal',
+                exact: '0.0',
+                positive: true,
+                precision: 2,
+                scale: 1,
+                words: ['0', '0', '0', '0'],
+              },
+            ],
+          ],
+        },
+      ],
+    },
+  };
+  const capsule = {
+    package: f.proof.package,
+    runs: [
+      { runSha256: '3'.repeat(64), facts: { correction: correctionFact } },
+      { runSha256: '4'.repeat(64), facts: { correction: correctionFact } },
+    ],
+  };
+  fs.writeFileSync(path.join(f.root, 'correction-proof.json'), JSON.stringify(capsule));
+  guarantee.proofs.push({
+    path: 'correction-proof.json',
+    sha256: parityHash(fs.readFileSync(path.join(f.root, 'correction-proof.json'))),
+    mode: 'official-package',
+    package: f.proof.package,
+    packagePointer: '/package',
+    capturePointers: ['/runs/0/runSha256', '/runs/1/runSha256'],
+    facts: [
+      {
+        id: 'correction',
+        pointer: '/runs/0/facts/correction',
+        replicatedPointers: ['/runs/0/facts/correction', '/runs/1/facts/correction'],
+        sha256: h(correctionFact),
+      },
+    ],
+  });
+  const correction = {
+    binding: 'cases',
+    index: 1,
+    expectedIndex: 2,
+    oldAstSha256: original.rowAstSha256[1],
+    currentAstSha256: updated.rowAstSha256[1],
+    sameGuarantee: true,
+    guaranteeId: guarantee.id,
+    factIds: ['correction'],
+    reviewedBy: 'test',
+    reason: 'Invented repeated evidence checks the original expectation migration.',
+  };
+  file.moduleReview = {
+    reviewedBy: 'test',
+    reason: 'Invented correction preserves all original input and test assertions.',
+    corrections: [],
+    addedTests: [],
+    fixtureCorrections: [correction],
+  };
+  file.typedCaseCorrections = true;
+  file.currentSha256 = parityHash(candidate);
+  const names = ['name', 'args', 'expected', 'ctx'];
+  const bindings = updated.rows.map(({ value }) =>
+    Object.fromEntries(names.map((name, i) => [name, value[i] ?? { type: 'undefined' }])),
+  );
+  spec.caseUniverse.currentCaseBindings = bindings;
+  spec.caseUniverse.currentCaseBindingsSha256 = h(bindings);
+  spec.caseSelection.selected.push({ caseIndex: 1, factIds: ['correction'] });
+  const run = () =>
+    qualifyParityManifest(f.manifest, {
+      root: f.root,
+      readBaseline: () => correctionSource,
+      reviewedCandidateFile: candidatePath,
+    });
+  assert.deepEqual(run().pending, []);
+  const selected = spec.caseSelection.selected;
+  spec.caseSelection.selected = selected.slice(1);
+  assert.equal(run().pending[0].reason, 'existing-case-fact-mapping-omitted');
+  spec.caseSelection.selected = selected;
+  const priorProof = guarantee.proofs.shift();
+  assert.equal(run().pending[0].reason, 'typed-case-fact-mismatch');
+  guarantee.proofs.unshift(priorProof);
+  const oldReviewPath = guarantee.context.semanticReviewPath;
+  guarantee.context.semanticReviewPath = 'correction-review.json';
+  assert.equal(run().pending[0].reason, 'typed-semantic-review-required');
+  delete guarantee.context.semanticReviewPath;
+  assert.equal(run().pending[0].reason, 'typed-semantic-review-required');
+  guarantee.context.semanticReviewPath = oldReviewPath;
+  const savedSourceHash = spec.caseUniverse.sourceBindings[0].initializerAstSha256;
+  spec.caseUniverse.sourceBindings[0].initializerAstSha256 = 'd'.repeat(64);
+  assert.equal(run().pending[0].reason, 'changed-source-binding');
+  spec.caseUniverse.sourceBindings[0].initializerAstSha256 = savedSourceHash;
+  const proofFile = path.join(f.root, 'proof.json'),
+    proofBytes = fs.readFileSync(proofFile),
+    altered = Buffer.from(proofBytes);
+  altered[altered.length - 2] ^= 1;
+  fs.writeFileSync(proofFile, altered);
+  assert.equal(run().pending[0].reason, 'stale-proof-sha');
+  fs.writeFileSync(proofFile, proofBytes);
+  const changedContext = candidate.replace(
+    'const call = (name, args, ctx) => null;',
+    'const call = (name, args, ctx) => 1;',
+  );
+  fs.writeFileSync(candidatePath, changedContext);
+  file.currentSha256 = parityHash(changedContext);
+  assert.equal(run().pending[0].reason, 'changed-module-context');
+  fs.writeFileSync(candidatePath, candidate);
+  file.currentSha256 = parityHash(candidate);
+  const changedInput = candidate.replace("['LEFT', [null, 2], dec('0.0')]", "['LEFT', [null, 3], dec('0.0')]");
+  fs.writeFileSync(candidatePath, changedInput);
+  file.currentSha256 = parityHash(changedInput);
+  assert.equal(run().pending[0].reason, 'invalid-fixture-correction');
+  fs.writeFileSync(candidatePath, candidate);
+  file.currentSha256 = parityHash(candidate);
+  const written = run();
+  assert.deepEqual(written.pending, []);
+  writeParityQualification(written, { root: f.root });
+  file.currentSha256 = parityHash(fs.readFileSync(path.join(f.root, 'sample.test.mjs')));
+  const rerun = qualifyParityManifest(f.manifest, { root: f.root, readBaseline: () => correctionSource });
+  assert.deepEqual(rerun.pending, []);
+  assert.equal(rerun.newQualifiedOriginalCases, 0);
+});
 test('cached typed guard rechecks full live universe, source, proof and review bytes', (t) => {
   const f = setup(t),
     report = f.run();

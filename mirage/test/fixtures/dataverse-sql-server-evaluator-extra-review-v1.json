@@ -1,0 +1,156 @@
+{
+  "version": 1,
+  "baseline": "1171cccc8baed9218f7fd7689afae4abdc89252b",
+  "sourceReceiptSha256": "05e81b935c5397da72c240070333297b6eb5709963623872e5d348801725a564",
+  "scope": "Twelve exact FROM-less original evaluator rows/errors in the captured SQL Server context; no TDS claim.",
+  "cases": [
+    {
+      "binding": "cases",
+      "index": 23,
+      "originalId": "mirage/test/dataverse-tds-sql-eval.test.mjs:489:2#23",
+      "tupleSha256": "db8c84db08b4749ba1bd1111bfe184c2c3ae5afa371034e3eb3bb3f4c2750cde",
+      "sql": "SELECT TRY_CAST('abc' AS int) AS v",
+      "expected": [
+        [
+          null
+        ]
+      ]
+    },
+    {
+      "binding": "cases",
+      "index": 24,
+      "originalId": "mirage/test/dataverse-tds-sql-eval.test.mjs:489:2#24",
+      "tupleSha256": "6daf11be7dbabab85e9ef8514c203670a703a0e192e0d1243ffb9b01557bfd3c",
+      "sql": "SELECT CONVERT(int, '42') AS v",
+      "expected": [
+        [
+          42
+        ]
+      ]
+    },
+    {
+      "binding": "cases",
+      "index": 28,
+      "originalId": "mirage/test/dataverse-tds-sql-eval.test.mjs:489:2#28",
+      "tupleSha256": "fe8b782c8b3379c07cc0845c11c272133d80224d6d5219c82d865188d7c14077",
+      "sql": "SELECT 1 + 2 AS total, 'x' + 'y' AS s",
+      "expected": [
+        [
+          3,
+          "xy"
+        ]
+      ]
+    },
+    {
+      "binding": "cases",
+      "index": 29,
+      "originalId": "mirage/test/dataverse-tds-sql-eval.test.mjs:489:2#29",
+      "tupleSha256": "be48f4df33a6e6a4c89d75f70d9326c122acfeecc2d03aff44087f97414dd279",
+      "sql": "SELECT 7 / 2 AS q, -7 % 3 AS m",
+      "expected": [
+        [
+          3,
+          -1
+        ]
+      ]
+    },
+    {
+      "binding": "cases",
+      "index": 30,
+      "originalId": "mirage/test/dataverse-tds-sql-eval.test.mjs:489:2#30",
+      "tupleSha256": "3c8150cd9d0377514d68d0b03c4376f91cf22bc3c7bd22069f6a285406e9fa0b",
+      "sql": "SELECT 1 / 0 AS x",
+      "expected": {
+        "error": 8134
+      }
+    },
+    {
+      "binding": "cases",
+      "index": 31,
+      "originalId": "mirage/test/dataverse-tds-sql-eval.test.mjs:489:2#31",
+      "tupleSha256": "103ea3554ca2744c16761ad65519439587ecc82fdcbd3765e1391825cf27a060",
+      "sql": "SELECT CAST(5 AS bigint) + 1 AS b",
+      "expected": [
+        [
+          "6n"
+        ]
+      ]
+    },
+    {
+      "binding": "cases",
+      "index": 32,
+      "originalId": "mirage/test/dataverse-tds-sql-eval.test.mjs:489:2#32",
+      "tupleSha256": "c09e31c1924c6e87499a5879a166e83767706110cd365665534ef344ef8bb984",
+      "sql": "SELECT 1.50 AS d",
+      "expected": [
+        [
+          "1.50"
+        ]
+      ]
+    },
+    {
+      "binding": "cases",
+      "index": 45,
+      "originalId": "mirage/test/dataverse-tds-sql-eval.test.mjs:489:2#45",
+      "tupleSha256": "f1115308f630fdb5a6783b6592ff1045b1873d6aae4b7d6dcb0db0d54b386688",
+      "sql": "SELECT 1 AS a UNION ALL SELECT 1 AS a",
+      "expected": [
+        [
+          1
+        ],
+        [
+          1
+        ]
+      ]
+    },
+    {
+      "binding": "cases",
+      "index": 46,
+      "originalId": "mirage/test/dataverse-tds-sql-eval.test.mjs:489:2#46",
+      "tupleSha256": "a0fae0f421172ef05736f967c2bbcea3d831fb23bd0ab62afbb8d2d3a8d467e1",
+      "sql": "SELECT 2 AS a UNION SELECT 1 AS a ORDER BY 1",
+      "expected": [
+        [
+          1
+        ],
+        [
+          2
+        ]
+      ]
+    },
+    {
+      "binding": "cases",
+      "index": 47,
+      "originalId": "mirage/test/dataverse-tds-sql-eval.test.mjs:489:2#47",
+      "tupleSha256": "54e1cbf503046926d4dd649f68ba4ad7f048138c2cbe2d74a4dd935ad14104f5",
+      "sql": "SELECT 1 AS a UNION SELECT 1 AS a, 2 AS b",
+      "expected": {
+        "error": 205
+      }
+    },
+    {
+      "binding": "orderedCases",
+      "index": 12,
+      "originalId": "mirage/test/dataverse-tds-sql-eval.test.mjs:1063:2#12",
+      "tupleSha256": "7a582f64f0d249b9109a3ed2cf414d5b76e8c196afb346832df74774894622a4",
+      "sql": "SELECT CONVERT(int, CAST(0x00000102 AS binary(4))) AS n",
+      "expected": [
+        [
+          258
+        ]
+      ]
+    },
+    {
+      "binding": "orderedCases",
+      "index": 15,
+      "originalId": "mirage/test/dataverse-tds-sql-eval.test.mjs:1063:2#15",
+      "tupleSha256": "435331b7755b201ad42111fa23c4b199ec8684aa15d75a2243b14c2b9a258937",
+      "sql": "SELECT CASE WHEN CAST(1 AS binary(4)) = 0x00000001 THEN 'y' ELSE 'n' END AS s",
+      "expected": [
+        [
+          "y"
+        ]
+      ]
+    }
+  ]
+}

@@ -21,7 +21,9 @@ import { groupDigitRuns } from './group-digit-runs.mjs';
 // Guesses: error numbers other than 245 (documented for CAST/CONVERT) follow SQL Server from memory, including
 // FORMATMESSAGE's missing-parameter 2787; unsupported functions raise 195 with a plain message (no documented text);
 // DATALENGTH of decimals is fixed at 17 bytes; ISNUMERIC accepts plain numeric text only; an empty CHARINDEX or
-// REPLACE pattern returns 0 and the input. FORMAT currency codes cover common regions only.
+// REPLACE pattern returns 0 and the input. FORMAT currency codes cover common regions only;
+// well-formed cultures unsupported by Intl use en-US as an approximation, and Intl's
+// culture-name grammar does not establish SQL Server behavior for every name.
 import { randomUUID } from 'node:crypto';
 
 const DAY = 86400000;
@@ -957,8 +959,8 @@ def('STR', 1, 3, TEXT, ([f, length, dec]) => {
   const text = toFloat(f, 'nvarchar').toFixed(Number(places));
   return text.length > Number(width) ? '*'.repeat(Number(width)) : text.padStart(Number(width));
 });
-// FORMAT(value, format [, culture]). Culture defaults to en-US. A NULL argument, or a culture Intl does not
-// recognise, gives NULL. Standard formats N, C, P (numbers) and d, D (dates) plus custom patterns are culture-aware.
+// FORMAT(value, format [, culture]). Culture defaults to en-US; Intl-rejected culture tags raise 9818.
+// Standard formats N, C, P (numbers) and d, D (dates) plus custom patterns are culture-aware.
 const NUMBER_STANDARD = /^([NCP])(\d{0,2})$/i;
 const DATE_STANDARD = {
   d: { year: 'numeric', month: '2-digit', day: '2-digit' },
@@ -994,9 +996,9 @@ const cultureOf = (name) => {
   try {
     [tag] = Intl.getCanonicalLocales(String(name).trim());
   } catch (_e) {
-    return null;
+    fail(9818, `The culture parameter '${name}' provided in the function call is not supported.`);
   }
-  return Intl.NumberFormat.supportedLocalesOf(tag).length ? tag : null;
+  return Intl.NumberFormat.supportedLocalesOf(tag).length ? tag : 'en-US';
 };
 function separators(locale) {
   const parts = new Intl.NumberFormat(locale).formatToParts(1000.5);
@@ -1017,7 +1019,6 @@ function standardNumber(n, letter, precision, locale) {
 def('FORMAT', 2, 3, TEXT, ([v, fmt, culture]) => {
   if (v === null || fmt === null || culture === null) return null;
   const locale = cultureOf(culture === undefined ? 'en-US' : textOf(culture));
-  if (!locale) return null;
   const pattern = textOf(fmt);
   if (v instanceof Date) {
     return Object.hasOwn(DATE_STANDARD, pattern)
@@ -1246,12 +1247,12 @@ def('FLOOR', 1, 1, NUMERIC, ([x]) => roundToInteger(x, 'floor'));
     return 0n;
   }
   if (typeof v === 'number') return Math.sign(v) || 0;
-  const { coef } = parseDecimal(v.decimal);
-  let sign;
-  if (coef > 0n) sign = '1';
-  else if (coef < 0n) sign = '-1';
-  else sign = '0';
-  return { decimal: sign };
+  const { coef, scale } = parseDecimal(v.decimal);
+  const unit = 10n ** BigInt(scale);
+  let sign = 0n;
+  if (coef > 0n) sign = unit;
+  else if (coef < 0n) sign = -unit;
+  return { decimal: formatDecimal({ coef: sign, scale }) };
 });
 def('POWER', 2, 2, FLOAT, ([x, y]) =>
   anyNull(x, y) ? null : floatOut(toFloat(x, 'nvarchar') ** toFloat(y, 'nvarchar')),
