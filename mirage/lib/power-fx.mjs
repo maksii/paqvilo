@@ -759,6 +759,24 @@ const OPERATORS = [
   '>',
 ];
 
+function roundDecimalToken(value) {
+  const parts = decimalParts(value);
+  if (parts.scale <= 28) return value;
+  const divisor = 10n ** BigInt(parts.scale - 28);
+  let rounded = parts.coefficient / divisor;
+  const remainder = parts.coefficient % divisor;
+  if (remainder * 2n > divisor || (remainder * 2n === divisor && rounded % 2n !== 0n)) rounded++;
+  return exactNumeric(decimalText({ coefficient: rounded, scale: 28 }), 'Decimal', { collapse: false });
+}
+function decimalTokenFailure(error, text, start) {
+  if (error instanceof FxSyntaxError) throw error;
+  const number = Number(text);
+  if (number === 0 || (number > 0 && number < 1e-128))
+    return { token: { k: 'num', v: 0, at: start }, end: start + text.length };
+  if (!Number.isFinite(number) || number > 7.922816251426434e28)
+    throw new FxSyntaxError('Numeric value is too large', start);
+  throw error;
+}
 function lexNumberToken(text, start, numberIsFloat) {
   const match = /^(\d*\.?\d*)(e[+-]?\d+)?/i.exec(text.slice(start));
   let value;
@@ -769,28 +787,11 @@ function lexNumberToken(text, start, numberIsFloat) {
   }
   try {
     value = exactNumeric((match[0].startsWith('.') ? '0' : '') + match[0], 'Decimal');
-    if (numberIsFloat === false) {
-      const parts = decimalParts(value);
-      if (parts.scale > 28) {
-        const divisor = 10n ** BigInt(parts.scale - 28);
-        let rounded = parts.coefficient / divisor;
-        const remainder = parts.coefficient % divisor;
-        if (remainder * 2n > divisor || (remainder * 2n === divisor && rounded % 2n !== 0n)) rounded++;
-        value = exactNumeric(decimalText({ coefficient: rounded, scale: 28 }), 'Decimal', { collapse: false });
-      }
-    }
+    if (numberIsFloat === false) value = roundDecimalToken(value);
     if (numberIsFloat === false && compareNumeric(value, '79228162514264337593543950335') > 0)
       throw new FxSyntaxError('Numeric value is too large', start);
   } catch (error) {
-    if (numberIsFloat === false) {
-      if (error instanceof FxSyntaxError) throw error;
-      const number = Number(match[0]);
-      if (number === 0 || (number > 0 && number < 1e-128))
-        return { token: { k: 'num', v: 0, at: start }, end: start + match[0].length };
-      if (!Number.isFinite(number) || number > 7.922816251426434e28)
-        throw new FxSyntaxError('Numeric value is too large', start);
-      throw error;
-    }
+    if (numberIsFloat === false) return decimalTokenFailure(error, match[0], start);
     value = fxError(ErrorKind.Numeric, `The number ${match[0]} is out of range.`);
   }
   return { token: { k: 'num', v: value, at: start }, end: start + match[0].length };
@@ -970,7 +971,10 @@ function dottedName(node) {
   return null;
 }
 export function parse(text, { numberIsFloat } = {}) {
-  const cacheKey = `${numberIsFloat === true ? 'float' : numberIsFloat === false ? 'decimal' : 'default'}:${text}`;
+  let mode = 'default';
+  if (numberIsFloat === true) mode = 'float';
+  else if (numberIsFloat === false) mode = 'decimal';
+  const cacheKey = `${mode}:${text}`;
   if (parsed.has(cacheKey)) return parsed.get(cacheKey);
   const tokens = lex(String(text), numberIsFloat);
   let pos = 0;

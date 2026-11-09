@@ -169,10 +169,10 @@ const ENGLISH_MONTHS = new Map(
 );
 /* NOSONAR */ export function portalMonthFirstDate(value, { twoDigitYearMax = 2049 } = {}) {
   if (typeof value !== 'string') return null;
-  let text = value.trim();
-  const named = /^([a-z]+)\s+(\d{1,2}),?\s+(\d{4})(.*)$/i.exec(text);
-  if (named) text = namedMonthDate(named);
-  if (text === null) return null;
+  const trimmed = value.trim();
+  const named = /^([a-z]+)\s+(\d{1,2}),?\s+(\d{4})(.*)$/i.exec(trimmed);
+  const text = named ? namedMonthDate(named) : trimmed;
+  if (!text) return null;
   const match = MONTH_FIRST_DATE.exec(text);
   if (!match) return null;
   if (!Number.isInteger(twoDigitYearMax) || twoDigitYearMax < 99 || twoDigitYearMax > 9999) return null;

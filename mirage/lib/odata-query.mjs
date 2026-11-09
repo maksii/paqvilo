@@ -116,7 +116,7 @@ function tokenize(source, { nativeSyntax = false } = {}) {
         continue;
       }
     }
-    const [kind, value] = Object.entries(match.groups).find(([, v]) => v !== undefined);
+    const [kind, value] = Object.entries(match.groups).find(([, v]) => v);
     tokens.push({ kind, value, at: index });
     index = TOKEN.lastIndex;
   }

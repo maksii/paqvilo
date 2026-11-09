@@ -15,6 +15,41 @@ const check = (value) => {
 };
 // The shared XML parser does not reject duplicate attributes or nested comment
 // openers. Reject those here before using its tree for evidence verification.
+function evidenceTagEnd(source, start) {
+  let end = start + 1,
+    quote = null;
+  for (; end < source.length; end++) {
+    const char = source[end];
+    if (quote) {
+      check(char !== '<');
+      if (char === quote) quote = null;
+    } else if (char === '"' || char === "'") quote = char;
+    else if (char === '>') break;
+    else check(char !== '<');
+  }
+  check(end < source.length && !quote);
+  return end;
+}
+function validateEvidenceTag(tag) {
+  if (!tag.startsWith('/')) {
+    const name = /^[\w:.-]+/u.exec(tag);
+    check(name);
+    let pos = name[0].length;
+    const seen = new Set(),
+      attribute = /([\w:.-]+)\s*=\s*(?:"[^"]*"|'[^']*')/uy;
+    while (pos < tag.length) {
+      const beforeWhitespace = pos;
+      while (pos < tag.length && /\s/u.test(tag[pos])) pos++;
+      if (pos === tag.length || (tag[pos] === '/' && pos === tag.length - 1)) break;
+      check(pos > beforeWhitespace);
+      attribute.lastIndex = pos;
+      const match = attribute.exec(tag);
+      check(match && !seen.has(match[1]));
+      seen.add(match[1]);
+      pos = attribute.lastIndex;
+    }
+  }
+}
 export function parseEvidenceCsdl(source) {
   let at = 0;
   while (at < source.length) {
@@ -34,37 +69,8 @@ export function parseEvidenceCsdl(source) {
     }
     // CSDL evidence does not need declarations, entity expansion, or CDATA.
     check(!source.startsWith('<!', start));
-    let end = start + 1,
-      quote = null;
-    for (; end < source.length; end++) {
-      const char = source[end];
-      if (quote) {
-        check(char !== '<');
-        if (char === quote) quote = null;
-      } else if (char === '"' || char === "'") quote = char;
-      else if (char === '>') break;
-      else check(char !== '<');
-    }
-    check(end < source.length && !quote);
-    const tag = source.slice(start + 1, end);
-    if (!tag.startsWith('/')) {
-      const name = /^[\w:.-]+/u.exec(tag);
-      check(name);
-      let pos = name[0].length;
-      const seen = new Set(),
-        attribute = /([\w:.-]+)\s*=\s*(?:"[^"]*"|'[^']*')/uy;
-      while (pos < tag.length) {
-        const beforeWhitespace = pos;
-        while (pos < tag.length && /\s/u.test(tag[pos])) pos++;
-        if (pos === tag.length || (tag[pos] === '/' && pos === tag.length - 1)) break;
-        check(pos > beforeWhitespace);
-        attribute.lastIndex = pos;
-        const match = attribute.exec(tag);
-        check(match && !seen.has(match[1]));
-        seen.add(match[1]);
-        pos = attribute.lastIndex;
-      }
-    }
+    const end = evidenceTagEnd(source, start);
+    validateEvidenceTag(source.slice(start + 1, end));
     at = end + 1;
   }
   try {
@@ -154,7 +160,7 @@ export function verifyQueryMessageBridge({ evidenceRoot, witness, capsule, expec
       index.namespaces?.length === 2,
   );
   const packages = new Map();
-  for (const pkg of index.packages) {
+  const verifyPackage = (pkg) => {
     check(
       /^Microsoft\.OData\.(Core|Edm)$/u.test(pkg.name) &&
         pkg.version === '8.3.0' &&
@@ -170,9 +176,10 @@ export function verifyQueryMessageBridge({ evidenceRoot, witness, capsule, expec
         hash(extracted) === pkg.extractedDll.sha256,
     );
     packages.set(pkg.name, pkg);
-  }
+  };
+  for (const pkg of index.packages) verifyPackage(pkg);
   const sources = new Map();
-  for (const namespace of index.namespaces) {
+  const verifyNamespace = (namespace) => {
     check(
       ['original-input', 'adapted-input'].includes(namespace.name) &&
         !sources.has(namespace.name) &&
@@ -212,7 +219,9 @@ export function verifyQueryMessageBridge({ evidenceRoot, witness, capsule, expec
           run.stderr.sha256 === recorded.stderrSha256 &&
           stderr.includes(`HOST_PID=${run.linuxPid}`) &&
           /Uid:\s+65534\s+65534\s+65534\s+65534/u.test(stderr) &&
-          ['CapEff', 'CapPrm', 'CapAmb'].every((key) => new RegExp(`${key}:\\s+0000000000000000`, 'u').test(stderr)) &&
+          ['CapEff', 'CapPrm', 'CapAmb'].every((key) =>
+            new RegExp(String.raw`${key}:\s+0000000000000000`, 'u').test(stderr),
+          ) &&
           Array.isArray(parsed.results),
       );
       for (const pkg of packages.values()) {
@@ -235,7 +244,8 @@ export function verifyQueryMessageBridge({ evidenceRoot, witness, capsule, expec
         namespace.runs[0].launcherPid !== namespace.runs[1].launcherPid,
     );
     sources.set(namespace.name, results);
-  }
+  };
+  for (const namespace of index.namespaces) verifyNamespace(namespace);
   const cert = JSON.parse(readRef(index.parents.prospectiveCertificate)),
     bridge = JSON.parse(readRef(index.parents.rawBridge));
   const map = JSON.parse(readRef(index.parents.independentSourceMap));
@@ -305,7 +315,7 @@ export function verifyQueryMessageBridgeCase(authority, capsule, index, expected
   let cursor = 0,
     reconstructed = '',
     delta = 0;
-  for (const replacement of roles.replacements) {
+  const verifyRoleReplacement = (replacement) => {
     check(
       Number.isInteger(replacement.start) &&
         Number.isInteger(replacement.end) &&
@@ -319,13 +329,14 @@ export function verifyQueryMessageBridgeCase(authority, capsule, index, expected
     );
     reconstructed += expected.value.slice(cursor, replacement.start) + replacement.native;
     cursor = replacement.end;
-  }
+  };
+  for (const replacement of roles.replacements) verifyRoleReplacement(replacement);
   reconstructed += expected.value.slice(cursor);
   check(reconstructed === roles.mappedValue && hash(reconstructed) === map.adaptedValueSha256);
   const entitySet = candidate.relativePath.split('?')[0],
     selectedKey = new URLSearchParams(candidate.query).get('$select');
-  check(/^[A-Za-z_][A-Za-z0-9_]*$/u.test(entitySet) && /^[A-Za-z_][A-Za-z0-9_]*$/u.test(selectedKey ?? ''));
-  for (const document of parsedCsdl(authority)) {
+  check(/^[A-Za-z_]\w*$/u.test(entitySet) && /^[A-Za-z_]\w*$/u.test(selectedKey ?? ''));
+  const verifyCsdlDocument = (document) => {
     const children = (node, name) => node.children.filter((child) => child.name === name),
       data = children(document, 'edmx:DataServices');
     check(
@@ -369,12 +380,14 @@ export function verifyQueryMessageBridgeCase(authority, capsule, index, expected
     }
     const keyProperties = properties.filter((item) => item.attrs.Name === selectedKey);
     check(keyProperties.length === 1 && inEdmNamespace(keyProperties[0]) && keyProperties[0].attrs.Type === 'Edm.Guid');
-  }
+  };
+  for (const document of parsedCsdl(authority)) verifyCsdlDocument(document);
   const offset = roles.offsetEvidence[0];
-  for (const replacement of roles.replacements) {
+  const verifyReplacementSource = (replacement) => {
     check(!(replacement.start < offset.originalOffset && offset.originalOffset < replacement.end));
     if (replacement.end <= offset.originalOffset) delta += replacement.native.length - replacement.original.length;
-  }
+  };
+  for (const replacement of roles.replacements) verifyReplacementSource(replacement);
   check(
     Number.isInteger(offset.originalOffset) &&
       offset.originalOffset >= 0 &&
@@ -412,59 +425,62 @@ export function verifyQueryMessageBridgeCase(authority, capsule, index, expected
       json(map.roles) ===
         json(roles.replacements.map((item) => ({ source: item.original, native: item.native, type: item.type }))),
   );
-  for (let run = 0; run < 2; run++) {
-    const original = authority.original[run].filter((item) => item.index === index + 1),
-      adapted = authority.adapted[run].filter((item) => item.index === index);
-    check(
-      original.length === 1 &&
-        adapted.length === 1 &&
-        original[0].option === expected.option &&
-        original[0].value === expected.value &&
-        original[0].outcome === 'exception' &&
-        original[0].exceptionType === 'Microsoft.OData.ODataException' &&
-        original[0].message === expected.message &&
-        adapted[0].option === expected.option &&
-        adapted[0].value === roles.mappedValue &&
-        adapted[0].outcome === 'exception' &&
-        adapted[0].exceptionType === 'Microsoft.OData.ODataException' &&
-        adapted[0].message === predicted &&
-        first.originalSdkMessages[run] === original[0].message &&
-        first.adaptedSdkMessages[run] === adapted[0].message,
-    );
-    const native = authority.bridge.native[run],
-      record = native.rows.filter((item) => item.caseIndex === index),
-      capture = capsule.captures[run];
-    check(
-      record.length === 1 &&
-        native.receipt.sha256 === capture.runSha256 &&
-        native.provenance.sha256 === capture.provenanceSha256 &&
-        native.metadata.sha256 === capture.metadataSha256 &&
-        native.csdl.sha256 === capture.csdlSha256,
-    );
-    authority.readRef(native.receipt);
-    authority.readRef(native.provenance);
-    authority.readRef(native.metadata);
-    authority.readRef(native.csdl);
-    const request = JSON.parse(authority.readRef(record[0].request)),
-      response = JSON.parse(authority.readRef(record[0].response));
-    const params = new URLSearchParams(request.sourceQuery);
-    check(
-      request.caseIndex === index &&
-        request.method === 'GET' &&
-        request.relativePath === candidate.relativePath &&
-        request.sourceQuery === candidate.query &&
-        [...params].length === 2 &&
-        params.get('$select') === selectedKey &&
-        params.get(roles.mappedOption) === roles.mappedValue &&
-        record[0].request.sha256 === capture.cases.find((item) => item.caseIndex === index).requestSha256 &&
-        record[0].response.sha256 === capture.cases.find((item) => item.caseIndex === index).responseBodySha256 &&
-        record[0].truncated === false &&
-        record[0].status === expected.status &&
-        response.error?.code === record[0].code &&
-        response.error.message === predicted &&
-        record[0].message === predicted &&
-        capture.cases.find((item) => item.caseIndex === index).facts.message === predicted,
-    );
-  }
+  const verifyRuns = () => {
+    for (let run = 0; run < 2; run++) {
+      const original = authority.original[run].filter((item) => item.index === index + 1),
+        adapted = authority.adapted[run].filter((item) => item.index === index);
+      check(
+        original.length === 1 &&
+          adapted.length === 1 &&
+          original[0].option === expected.option &&
+          original[0].value === expected.value &&
+          original[0].outcome === 'exception' &&
+          original[0].exceptionType === 'Microsoft.OData.ODataException' &&
+          original[0].message === expected.message &&
+          adapted[0].option === expected.option &&
+          adapted[0].value === roles.mappedValue &&
+          adapted[0].outcome === 'exception' &&
+          adapted[0].exceptionType === 'Microsoft.OData.ODataException' &&
+          adapted[0].message === predicted &&
+          first.originalSdkMessages[run] === original[0].message &&
+          first.adaptedSdkMessages[run] === adapted[0].message,
+      );
+      const native = authority.bridge.native[run],
+        record = native.rows.filter((item) => item.caseIndex === index),
+        capture = capsule.captures[run];
+      check(
+        record.length === 1 &&
+          native.receipt.sha256 === capture.runSha256 &&
+          native.provenance.sha256 === capture.provenanceSha256 &&
+          native.metadata.sha256 === capture.metadataSha256 &&
+          native.csdl.sha256 === capture.csdlSha256,
+      );
+      authority.readRef(native.receipt);
+      authority.readRef(native.provenance);
+      authority.readRef(native.metadata);
+      authority.readRef(native.csdl);
+      const request = JSON.parse(authority.readRef(record[0].request)),
+        response = JSON.parse(authority.readRef(record[0].response));
+      const params = new URLSearchParams(request.sourceQuery);
+      check(
+        request.caseIndex === index &&
+          request.method === 'GET' &&
+          request.relativePath === candidate.relativePath &&
+          request.sourceQuery === candidate.query &&
+          [...params].length === 2 &&
+          params.get('$select') === selectedKey &&
+          params.get(roles.mappedOption) === roles.mappedValue &&
+          record[0].request.sha256 === capture.cases.find((item) => item.caseIndex === index).requestSha256 &&
+          record[0].response.sha256 === capture.cases.find((item) => item.caseIndex === index).responseBodySha256 &&
+          record[0].truncated === false &&
+          record[0].status === expected.status &&
+          response.error?.code === record[0].code &&
+          response.error.message === predicted &&
+          record[0].message === predicted &&
+          capture.cases.find((item) => item.caseIndex === index).facts.message === predicted,
+      );
+    }
+  };
+  verifyRuns();
   return true;
 }

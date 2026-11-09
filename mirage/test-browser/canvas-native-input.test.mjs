@@ -16,16 +16,22 @@ import { sharedBrowser } from './shared-browser.mjs';
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 // @parity-evidence: repeated source-bound native draft captures prove all 11 rows; fixture and serialized probe hashes prevent silent changes to the guarantee.
 const bytes = await fs.readFile(new URL('../test/fixtures/canvas-draft-input-native.json', import.meta.url));
-assert.equal(hash(bytes), '53da0137b56a0e32e4c224d8124719991cd1f984d1d1d9a6d7aab3cd9d489fbc');
+
 const evidence = JSON.parse(bytes);
-assert.equal(hash(captureCanvasDraftInputContract.toString()), evidence.probeFunctionSha256);
-assert.equal(
-  hash(await fs.readFile(new URL('../test/fixtures/canvas-draft-input.mjs', import.meta.url))),
-  'ebc17e797293adfcf514035194a2685a3af10979aa0a32e0890594554811d10b',
-  'invented source preserves the native form data source, omitted Item and nested custom input topology',
-);
-assert.deepEqual(canvasDraftInputFixture, evidence.fixture);
+
 const browser = sharedBrowser();
+
+// @parity-evidence: repeated native draft captures in canvas-draft-input-native.json bind the unchanged fixture and serialized probe. The same pinned setup checks run before the tests.
+test.before(async () => {
+  assert.equal(hash(bytes), '53da0137b56a0e32e4c224d8124719991cd1f984d1d1d9a6d7aab3cd9d489fbc');
+  assert.equal(hash(captureCanvasDraftInputContract.toString()), evidence.probeFunctionSha256);
+  assert.equal(
+    hash(await fs.readFile(new URL('../test/fixtures/canvas-draft-input.mjs', import.meta.url))),
+    'ebc17e797293adfcf514035194a2685a3af10979aa0a32e0890594554811d10b',
+    'invented source preserves the native form data source, omitted Item and nested custom input topology',
+  );
+  assert.deepEqual(canvasDraftInputFixture, evidence.fixture);
+});
 
 test('draft text, cancel confirmation, retained edits and reopen reset match the native Canvas player', async (t) => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'canvas-native-input-')));

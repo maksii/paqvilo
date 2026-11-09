@@ -1790,7 +1790,13 @@ function writeGuard({ origin, fulfil = [] }) {
     const send = proto.send;
     proto.open = function (method, url, async, ...rest) {
       this.__parity = { method, url: String(url), async: async !== false };
-      return open.call(this, method, url, async === undefined ? true : async, ...rest);
+      return open.call(
+        this,
+        method,
+        url,
+        /** @type {boolean | undefined} */ (async) === undefined ? true : async,
+        ...rest,
+      );
     };
     proto.send = function (...args) {
       const info = this.__parity;
@@ -2079,7 +2085,7 @@ export async function openCdpTabDriver({
       failedResponses: [],
       document: null,
       network: new Map(),
-      bodies: [],
+      bodies: /** @type {Promise<any>[]} */ ([]),
       assets: new Set(),
     };
     const listener = (message) =>

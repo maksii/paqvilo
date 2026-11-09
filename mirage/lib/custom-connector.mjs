@@ -499,7 +499,7 @@ export function rewrite(url, rewrites = {}) {
   const from = Object.keys(rewrites ?? {})
     .filter((prefix) => url.startsWith(prefix))
     .sort((a, b) => b.length - a.length)[0];
-  return from === undefined ? url : rewrites[from] + url.slice(from.length);
+  return from || from === '' ? rewrites[from] + url.slice(from.length) : url;
 }
 
 /** The answer after the operation's Response policies in order: setheader on the headers (`@headers('n')` reads the response

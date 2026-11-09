@@ -32,7 +32,9 @@ export const DISABLED_FEATURES = Object.freeze([
 export const DEFAULT_DISABLED_FEATURES = '--disable-features=' + DISABLED_FEATURES.join(',');
 export const BACKPORTED_DISABLED_FEATURES = DEFAULT_DISABLED_FEATURES + ',TcpPortRandomizationWin';
 
-/** Add the Windows loopback default to Playwright launch options, preserving caller overrides. */
+/** Add the Windows loopback default to Playwright launch options, preserving caller overrides.
+ * @param {unknown} options Invalid public input is forwarded unchanged for Playwright to validate.
+ */
 export function windowsLaunchOptions(options = {}, platform = process.platform) {
   if (platform !== 'win32' || options === null || typeof options !== 'object' || Array.isArray(options)) return options;
   // Invalid public-API input must reach Playwright unchanged. In particular,

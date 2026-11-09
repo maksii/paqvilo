@@ -2383,7 +2383,7 @@ function comparePanel(ctx, d) {
     caption: 'Matching steps, largest duration change first',
     items: result.matched
       .filter((item) => item.delta !== null)
-      .sort((x, y) => Math.abs(y.delta) - Math.abs(x.delta))
+      .sort((x, y) => Math.abs(/** @type {number} */ (y.delta)) - Math.abs(/** @type {number} */ (x.delta)))
       .slice(0, 20),
     emptyText: 'No matching step has ended in both activities.',
     columns: [

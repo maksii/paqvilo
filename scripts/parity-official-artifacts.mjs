@@ -55,7 +55,7 @@ function manifest(pkgManifest) {
       Array.isArray(control) ||
       control.library !== parsed.component ||
       typeof control.control !== 'string' ||
-      !/^\.\/[A-Za-z0-9_]+$/u.test(control.control)
+      !/^\.\/\w+$/u.test(control.control)
     )
       return null;
     const entry = entryUrl(control.remoteEntry, parsed.component);
@@ -85,7 +85,7 @@ function inventory(rows) {
     if (row.kind === 'other' && (row.source.startsWith(BASE) || /[\r\n]/u.test(row.source))) return null;
     ids.add(row.source);
   }
-  return rows.map(scriptKey).sort();
+  return new Set(rows.map(scriptKey));
 }
 /** Verify a scoped descriptor, published-read records and two independently bound offline runs. */
 export function validateMicrosoftCdnArtifact(pkg, publisherReads, runs) {
@@ -102,48 +102,54 @@ export function validateMicrosoftCdnArtifact(pkg, publisherReads, runs) {
       runs.length !== 2
     )
       return false;
-    const expectedReads = new Map();
-    const declared = new Set();
-    for (const item of pkg.manifests) {
-      const info = manifest(item);
-      if (!info || expectedReads.has(item.source)) return false;
-      expectedReads.set(item.source, { sha256: item.sha256, size: info.size });
-      for (const entry of info.entries) declared.add(entry);
-    }
-    const assets = new Map();
-    for (const item of pkg.executedSourceClosure) {
-      const parsed = controlUrl(item?.source);
-      if (
-        !parsed ||
-        !IMMUTABLE.test(parsed.name) ||
-        !SHA.test(item.sha256) ||
-        !validSize(item.size) ||
-        expectedReads.has(item.source)
-      )
-        return false;
-      assets.set(item.source, item);
-      expectedReads.set(item.source, item);
-    }
-    const components = new Set([...assets.keys()].map((source) => controlUrl(source).component));
-    for (const component of components)
-      if (![...declared].some((entry) => assets.has(entry) && controlUrl(entry).component === component)) return false;
-    if (publisherReads.length !== expectedReads.size) return false;
-    const seenReads = new Set();
-    for (const read of publisherReads) {
-      const expected = expectedReads.get(read?.source);
-      if (
-        !expected ||
-        seenReads.has(read.source) ||
-        read.status !== 200 ||
-        read.finalUrl !== read.source ||
-        read.sha256 !== expected.sha256 ||
-        read.size !== expected.size
-      )
-        return false;
-      seenReads.add(read.source);
-    }
+    const validatePublisher = () => {
+      const expectedReads = new Map();
+      const declared = new Set();
+      for (const item of pkg.manifests) {
+        const info = manifest(item);
+        if (!info || expectedReads.has(item.source)) return false;
+        expectedReads.set(item.source, { sha256: item.sha256, size: info.size });
+        for (const entry of info.entries) declared.add(entry);
+      }
+      const assets = new Map();
+      for (const item of pkg.executedSourceClosure) {
+        const parsed = controlUrl(item?.source);
+        if (
+          !parsed ||
+          !IMMUTABLE.test(parsed.name) ||
+          !SHA.test(item.sha256) ||
+          !validSize(item.size) ||
+          expectedReads.has(item.source)
+        )
+          return false;
+        assets.set(item.source, item);
+        expectedReads.set(item.source, item);
+      }
+      const components = new Set([...assets.keys()].map((source) => controlUrl(source).component));
+      for (const component of components)
+        if (![...declared].some((entry) => assets.has(entry) && controlUrl(entry).component === component))
+          return false;
+      if (publisherReads.length !== expectedReads.size) return false;
+      const seenReads = new Set();
+      for (const read of publisherReads) {
+        const expected = expectedReads.get(read?.source);
+        if (
+          !expected ||
+          seenReads.has(read.source) ||
+          read.status !== 200 ||
+          read.finalUrl !== read.source ||
+          read.sha256 !== expected.sha256 ||
+          read.size !== expected.size
+        )
+          return false;
+        seenReads.add(read.source);
+      }
+      return assets;
+    };
+    const assets = validatePublisher();
+    if (!assets) return false;
     let previous;
-    for (const run of runs) {
+    const validateRun = (run, previous) => {
       if (
         !run ||
         typeof run.id !== 'string' ||
@@ -171,11 +177,10 @@ export function validateMicrosoftCdnArtifact(pkg, publisherReads, runs) {
         return false;
       const input = inventory(run.input.executedScripts),
         result = inventory(run.result.executedScripts);
-      if (!input || !result || JSON.stringify(input) !== JSON.stringify(result)) return false;
+      if (!input || !result || input.size !== result.size || [...input].some((key) => !result.has(key))) return false;
       const policy = run.result.networkPolicy;
       if (
-        !policy ||
-        policy.contextOffline !== true ||
+        policy?.contextOffline !== true ||
         policy.proxyDeny !== true ||
         policy.allRequestsRouted !== true ||
         policy.serviceWorkersBlocked !== true ||
@@ -199,6 +204,10 @@ export function validateMicrosoftCdnArtifact(pkg, publisherReads, runs) {
           previous.inputSha256 !== run.inputSha256)
       )
         return false;
+      return true;
+    };
+    for (const run of runs) {
+      if (!validateRun(run, previous)) return false;
       previous = run;
     }
     return true;

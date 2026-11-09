@@ -774,6 +774,17 @@ function* searchFilterValues(text) {
 }
 
 // ---- Filter catalogue
+function validateObservedTimes(input, operand) {
+  const stringArray = Array.isArray(input) && input.length > 0 && input.every((item) => typeof item === 'string');
+  if ((numberKind(input) === 'int' && typeof operand === 'string') || (stringArray && numberKind(operand) === 'int'))
+    throw new LiquidError('Parameter count mismatch.', 'System.Reflection.TargetParameterCountException');
+  if (stringArray && numberKind(operand) === 'decimal')
+    throw new LiquidError(
+      "Unable to cast object of type 'System.String[]' to type 'System.IConvertible'.",
+      'System.InvalidCastException',
+    );
+}
+
 /** `this` is the LiquidContext for every filter. */
 export function createFilters(host = {}) {
   const filters = {
@@ -995,17 +1006,7 @@ export function createFilters(host = {}) {
       if (host.timesDispatch === 'observed') {
         if (numberKind(input) === 'decimal' && typeof operand === 'string')
           return mathOperation(input, toNetDecimal(operand), 'multiply');
-        const stringArray = Array.isArray(input) && input.length > 0 && input.every((item) => typeof item === 'string');
-        if (
-          (numberKind(input) === 'int' && typeof operand === 'string') ||
-          (stringArray && numberKind(operand) === 'int')
-        )
-          throw new LiquidError('Parameter count mismatch.', 'System.Reflection.TargetParameterCountException');
-        if (stringArray && numberKind(operand) === 'decimal')
-          throw new LiquidError(
-            "Unable to cast object of type 'System.String[]' to type 'System.IConvertible'.",
-            'System.InvalidCastException',
-          );
+        validateObservedTimes(input, operand);
       }
       // An observed portal can opt into decimal string conversion without changing
       // the pinned DotLiquid20 string repetition and operator contracts elsewhere.

@@ -335,7 +335,7 @@ export function createOfflineSessions({ webApi, catalogue, state = null }) {
   const sessions = new Map();
   let restored = !state;
   const restore = () => {
-    if (restored) return;
+    if (restored || !state) return;
     restored = true;
     for (const [key, value] of Object.entries(state.load() ?? {}))
       if (!sessions.has(key) && value && typeof value === 'object') sessions.set(key, revived(value));

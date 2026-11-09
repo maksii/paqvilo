@@ -753,6 +753,13 @@ function convertBufferOperand(value, other) {
 const isDecimalValue = (v) =>
   v !== null && typeof v === 'object' && !(v instanceof Date) && !Buffer.isBuffer(v) && 'decimal' in v;
 
+/**
+ * @param {unknown} a
+ * @param {unknown} b
+ * @param {object} ctx
+ * @param {string | null} typeA
+ * @param {string | null} typeB
+ */
 export function compareValues(a, b, ctx, typeA = null, typeB = null) {
   const ord = (x, y) => {
     if (x < y) return -1;

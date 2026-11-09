@@ -2,21 +2,11 @@
 // This checks preservation and reviewed bindings; it does not determine platform parity.
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
+import { hashAst as astHash } from './parity-ast-utils.mjs';
 
 const { parse } = createRequire(import.meta.url)('espree');
 const parseSource = (source) => parse(source, { ecmaVersion: 'latest', sourceType: 'module', range: true, loc: true });
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
-const normalize = (value) =>
-  Array.isArray(value)
-    ? value.map(normalize)
-    : !value || typeof value !== 'object'
-      ? value
-      : Object.fromEntries(
-          Object.entries(value)
-            .filter(([key]) => !['loc', 'range', 'start', 'end', 'raw'].includes(key))
-            .map(([key, item]) => [key, normalize(item)]),
-        );
-const astHash = (value) => digest(JSON.stringify(normalize(value)));
 export const caseMigrationAstHash = astHash;
 export const caseMigrationSourceHash = digest;
 const check = (value, reason) => {
@@ -123,33 +113,36 @@ function pointer(root, selector) {
  * Review data supplies explicit corrections and proof links, never a precomputed verifier result.
  */
 export function verifyCaseMigration({ baselineSource, currentSource, candidateSource, review, evidence }) {
-  for (const [source, expected] of [
-    [baselineSource, review?.baselineSha256],
-    [currentSource, review?.currentSha256],
-    [candidateSource, review?.candidateSha256],
-  ])
+  const verifyReviewSources = () => {
+    for (const [source, expected] of [
+      [baselineSource, review?.baselineSha256],
+      [currentSource, review?.currentSha256],
+      [candidateSource, review?.candidateSha256],
+    ])
+      check(
+        typeof source === 'string' && /^[a-f0-9]{64}$/u.test(expected) && digest(source) === expected,
+        'case-migration-source-hash',
+      );
+    proofReview(review, 'case-migration-review-required');
     check(
-      typeof source === 'string' && /^[a-f0-9]{64}$/u.test(expected) && digest(source) === expected,
-      'case-migration-source-hash',
+      review.caseCount === 193 &&
+        Array.isArray(review.partitions) &&
+        review.partitions.length === 3 &&
+        Array.isArray(review.corrections) &&
+        Array.isArray(review.moduleReplacements) &&
+        review.moduleReplacements.length <= 3 &&
+        Array.isArray(review.moduleAdditions) &&
+        review.moduleAdditions.length === 0 &&
+        Array.isArray(review.assertionReplacements) &&
+        Array.isArray(review.assertionAdditions) &&
+        Array.isArray(review.retainedRegistrations) &&
+        Array.isArray(review.metadataBindings) &&
+        Array.isArray(review.mustRetainAssertions) &&
+        review.mustRetainAssertions.length > 0,
+      'invalid-case-migration-review',
     );
-  proofReview(review, 'case-migration-review-required');
-  check(
-    review.caseCount === 193 &&
-      Array.isArray(review.partitions) &&
-      review.partitions.length === 3 &&
-      Array.isArray(review.corrections) &&
-      Array.isArray(review.moduleReplacements) &&
-      review.moduleReplacements.length <= 3 &&
-      Array.isArray(review.moduleAdditions) &&
-      review.moduleAdditions.length === 0 &&
-      Array.isArray(review.assertionReplacements) &&
-      Array.isArray(review.assertionAdditions) &&
-      Array.isArray(review.retainedRegistrations) &&
-      Array.isArray(review.metadataBindings) &&
-      Array.isArray(review.mustRetainAssertions) &&
-      review.mustRetainAssertions.length > 0,
-    'invalid-case-migration-review',
-  );
+  };
+  verifyReviewSources();
   const caseName = identifier(review.caseBinding),
     baseline = parseSource(baselineSource),
     current = parseSource(currentSource),
@@ -167,7 +160,7 @@ export function verifyCaseMigration({ baselineSource, currentSource, candidateSo
   });
   const cases = elements.map((rows) => rows.map(value));
   const corrections = new Map();
-  for (const item of review.corrections) {
+  const verifyCorrection = (item) => {
     proofReview(item, 'case-correction-review-required');
     check(
       Number.isInteger(item.caseIndex) &&
@@ -177,113 +170,126 @@ export function verifyCaseMigration({ baselineSource, currentSource, candidateSo
       'invalid-case-correction',
     );
     corrections.set(item.caseIndex, item);
-  }
-  for (let i = 0; i < 193; i++) {
-    for (const table of cases)
-      check(Array.isArray(table[i]) && table[i].length === 2 && typeof table[i][0] === 'string', 'invalid-case-row');
-    check(cases[0][i][0] === cases[1][i][0] && cases[0][i][0] === cases[2][i][0], 'case-migration-order');
-    const row = corrections.get(i),
-      changed =
-        astHash(elements[0][i]) !== astHash(elements[2][i]) || astHash(elements[1][i]) !== astHash(elements[2][i]);
-    if (changed) {
-      check(
-        row &&
-          row.baselineAstSha256 === astHash(elements[0][i]) &&
-          row.currentAstSha256 === astHash(elements[1][i]) &&
-          row.candidateAstSha256 === astHash(elements[2][i]),
-        'unreviewed-case-correction',
-      );
-    } else check(!row, 'unused-case-correction');
-  }
-  check(new Set(cases[2].map((row) => row[0])).size === 193, 'duplicate-case-expression');
-  proofReview(review.matrixBinding, 'case-matrix-binding-review');
-  check(
-    typeof review.matrixBinding.evidenceId === 'string' && Object.hasOwn(evidence, review.matrixBinding.evidenceId),
-    'case-matrix-evidence-required',
-  );
-  const matrixBytes = evidence[review.matrixBinding.evidenceId];
-  const matrixEvidence = JSON.parse(Buffer.from(matrixBytes).toString('utf8'));
-  check(
-    (typeof matrixBytes === 'string' || matrixBytes instanceof Uint8Array) &&
-      digest(matrixBytes) === review.matrixBinding.sha256 &&
-      pointer(matrixEvidence, review.matrixBinding.pointer) === digest(JSON.stringify(cases[2])),
-    'case-matrix-evidence-binding',
-  );
-  const loops = models.map(([ast]) =>
-    ast.body.filter(
-      (node) =>
-        node.type === 'ForOfStatement' &&
-        node.left?.declarations?.[0]?.id?.type === 'ArrayPattern' &&
-        (node.right?.name === caseName ||
-          (node.right?.type === 'CallExpression' &&
-            node.right.callee?.type === 'MemberExpression' &&
-            node.right.callee.object?.name === caseName)),
-    ),
-  );
-  check(loops[0].length === 1 && loops[1].length === 5 && loops[2].length === 1, 'case-migration-loop-count');
-  const originalLoop = loops[0][0],
-    pattern = originalLoop.left.declarations[0].id,
-    formula = identifier(pattern.elements[0]?.name),
-    expected = identifier(pattern.elements[1]?.name);
-  check(
-    pattern.elements.length === 2 &&
-      originalLoop.right.type === 'Identifier' &&
-      originalLoop.right.name === caseName &&
-      loops[1].every((loop) => astHash(loop.left) === astHash(originalLoop.left)) &&
-      astHash(loops[2][0].left) === astHash(originalLoop.left),
-    'case-migration-loop-binding',
-  );
-  const getCallback = (loop, snapshot = false) => {
-    check(
-      loop.body.type === 'BlockStatement' && loop.body.body.length === (snapshot ? 2 : 1),
-      'case-migration-registration',
-    );
-    const registration = loop.body.body[snapshot ? 1 : 0]?.expression;
-    check(
-      registration?.type === 'CallExpression' &&
-        registration.callee?.type === 'Identifier' &&
-        registration.arguments.length === 2 &&
-        registration.arguments[0]?.type === 'TemplateLiteral' &&
-        registration.arguments[1]?.type === 'ArrowFunctionExpression' &&
-        !registration.arguments[1].async &&
-        registration.arguments[1].params.length === 0,
-      'case-migration-registration',
-    );
-    return { registration, callback: registration.arguments[1] };
   };
-  const original = getCallback(originalLoop),
-    currentRows = loops[1].map((loop) => getCallback(loop)),
-    next = getCallback(loops[2][0], true);
-  check(
-    original.callback.expression && assertions(original.callback).length === 1,
-    'case-migration-original-assertion',
-  );
-  const originalAssert = original.callback.body,
-    originalCalls = assertions(original.callback);
-  check(
-    originalCalls[0] === originalAssert &&
-      originalAssert.callee?.property?.name === 'deepEqual' &&
-      originalAssert.arguments.length === 2 &&
-      originalAssert.arguments[0]?.type === 'CallExpression' &&
-      originalAssert.arguments[0].callee?.type === 'Identifier' &&
-      originalAssert.arguments[0].arguments.length === 1 &&
-      originalAssert.arguments[0].arguments[0]?.name === formula &&
-      originalAssert.arguments[1]?.name === expected,
-    'case-migration-original-assertion',
-  );
-  const sutName = identifier(originalAssert.arguments[0].callee.name),
-    testName = identifier(original.registration.callee.name);
-  for (const row of currentRows)
+  for (const item of review.corrections) verifyCorrection(item);
+  const verifyAllCases = () => {
+    for (let i = 0; i < 193; i++) {
+      for (const table of cases)
+        check(Array.isArray(table[i]) && table[i].length === 2 && typeof table[i][0] === 'string', 'invalid-case-row');
+      check(cases[0][i][0] === cases[1][i][0] && cases[0][i][0] === cases[2][i][0], 'case-migration-order');
+      const row = corrections.get(i),
+        changed =
+          astHash(elements[0][i]) !== astHash(elements[2][i]) || astHash(elements[1][i]) !== astHash(elements[2][i]);
+      if (changed) {
+        check(
+          row &&
+            row.baselineAstSha256 === astHash(elements[0][i]) &&
+            row.currentAstSha256 === astHash(elements[1][i]) &&
+            row.candidateAstSha256 === astHash(elements[2][i]),
+          'unreviewed-case-correction',
+        );
+      } else check(!row, 'unused-case-correction');
+    }
+  };
+  verifyAllCases();
+  check(new Set(cases[2].map((row) => row[0])).size === 193, 'duplicate-case-expression');
+  const verifyMatrixEvidence = () => {
+    proofReview(review.matrixBinding, 'case-matrix-binding-review');
     check(
-      row.registration.callee.name === testName &&
-        astHash(row.registration.arguments[0]) === astHash(original.registration.arguments[0]),
-      'case-migration-title',
+      typeof review.matrixBinding.evidenceId === 'string' && Object.hasOwn(evidence, review.matrixBinding.evidenceId),
+      'case-matrix-evidence-required',
     );
+    const matrixBytes = evidence[review.matrixBinding.evidenceId];
+    const matrixEvidence = JSON.parse(Buffer.from(matrixBytes).toString('utf8'));
+    check(
+      (typeof matrixBytes === 'string' || matrixBytes instanceof Uint8Array) &&
+        digest(matrixBytes) === review.matrixBinding.sha256 &&
+        pointer(matrixEvidence, review.matrixBinding.pointer) === digest(JSON.stringify(cases[2])),
+      'case-matrix-evidence-binding',
+    );
+    return matrixEvidence;
+  };
+  const matrixEvidence = verifyMatrixEvidence();
+  const verifyRegistrations = () => {
+    const loops = models.map(([ast]) =>
+      ast.body.filter(
+        (node) =>
+          node.type === 'ForOfStatement' &&
+          node.left?.declarations?.[0]?.id?.type === 'ArrayPattern' &&
+          (node.right?.name === caseName ||
+            (node.right?.type === 'CallExpression' &&
+              node.right.callee?.type === 'MemberExpression' &&
+              node.right.callee.object?.name === caseName)),
+      ),
+    );
+    check(loops[0].length === 1 && loops[1].length === 5 && loops[2].length === 1, 'case-migration-loop-count');
+    const originalLoop = loops[0][0],
+      pattern = originalLoop.left.declarations[0].id,
+      formula = identifier(pattern.elements[0]?.name),
+      expected = identifier(pattern.elements[1]?.name);
+    check(
+      pattern.elements.length === 2 &&
+        originalLoop.right.type === 'Identifier' &&
+        originalLoop.right.name === caseName &&
+        loops[1].every((loop) => astHash(loop.left) === astHash(originalLoop.left)) &&
+        astHash(loops[2][0].left) === astHash(originalLoop.left),
+      'case-migration-loop-binding',
+    );
+    const getCallback = (loop, snapshot = false) => {
+      check(
+        loop.body.type === 'BlockStatement' && loop.body.body.length === (snapshot ? 2 : 1),
+        'case-migration-registration',
+      );
+      const registration = loop.body.body[snapshot ? 1 : 0]?.expression;
+      check(
+        registration?.type === 'CallExpression' &&
+          registration.callee?.type === 'Identifier' &&
+          registration.arguments.length === 2 &&
+          registration.arguments[0]?.type === 'TemplateLiteral' &&
+          registration.arguments[1]?.type === 'ArrowFunctionExpression' &&
+          !registration.arguments[1].async &&
+          registration.arguments[1].params.length === 0,
+        'case-migration-registration',
+      );
+      return { registration, callback: registration.arguments[1] };
+    };
+    const original = getCallback(originalLoop),
+      currentRows = loops[1].map((loop) => getCallback(loop)),
+      next = getCallback(loops[2][0], true);
+    check(
+      original.callback.expression && assertions(original.callback).length === 1,
+      'case-migration-original-assertion',
+    );
+    const originalAssert = original.callback.body,
+      originalCalls = assertions(original.callback);
+    check(
+      originalCalls[0] === originalAssert &&
+        originalAssert.callee?.property?.name === 'deepEqual' &&
+        originalAssert.arguments.length === 2 &&
+        originalAssert.arguments[0]?.type === 'CallExpression' &&
+        originalAssert.arguments[0].callee?.type === 'Identifier' &&
+        originalAssert.arguments[0].arguments.length === 1 &&
+        originalAssert.arguments[0].arguments[0]?.name === formula &&
+        originalAssert.arguments[1]?.name === expected,
+      'case-migration-original-assertion',
+    );
+    const sutName = identifier(originalAssert.arguments[0].callee.name),
+      testName = identifier(original.registration.callee.name);
+    for (const row of currentRows)
+      check(
+        row.registration.callee.name === testName &&
+          astHash(row.registration.arguments[0]) === astHash(original.registration.arguments[0]),
+        'case-migration-title',
+      );
+    return { loops, originalLoop, formula, expected, original, currentRows, next, originalAssert, sutName, testName };
+  };
+  const { loops, originalLoop, formula, expected, original, currentRows, next, originalAssert, sutName, testName } =
+    verifyRegistrations();
   const maps = [],
     oldMaps = [],
     mapNames = [],
     evidenceHashes = {};
-  for (let i = 0; i < 3; i++) {
+  const verifyPartition = (i) => {
     const partition = review.partitions[i];
     proofReview(partition, 'case-partition-review-required');
     const mapName = identifier(partition.mapBinding),
@@ -376,7 +382,7 @@ export function verifyCaseMigration({ baselineSource, currentSource, candidateSo
     );
     check(
       typeof partition.relativePath === 'string' &&
-        /^\.\//u.test(partition.relativePath) &&
+        partition.relativePath.startsWith('./') &&
         !/[?#\\]/u.test(partition.relativePath),
       'case-evidence-path',
     );
@@ -386,7 +392,7 @@ export function verifyCaseMigration({ baselineSource, currentSource, candidateSo
     check(astHash(declaration(candidate, dataBinding)) === astHash(data), 'case-migration-evidence-binding');
     check(
       typeof partition.currentRelativePath === 'string' &&
-        /^\.\//u.test(partition.currentRelativePath) &&
+        partition.currentRelativePath.startsWith('./') &&
         !/[?#\\]/u.test(partition.currentRelativePath),
       'case-current-evidence-path',
     );
@@ -397,63 +403,71 @@ export function verifyCaseMigration({ baselineSource, currentSource, candidateSo
     maps.push(map);
     oldMaps.push(oldMap);
     mapNames.push(mapName);
-  }
+  };
+  for (let i = 0; i < 3; i++) verifyPartition(i);
+  const excludedMapChecks = mapNames.map((map) => `!${map}.has(${formula})`).join(' && ');
   const guidProperty = identifier(review.guidProperty),
     expectedFilters = [
       ...mapNames.map((map) => `${caseName}.filter(([${formula}]) => ${map}.has(${formula}))`),
       `${caseName}.filter(([, ${expected}]) => ${expected}?.${guidProperty})`,
-      `${caseName}.filter(([${formula}, ${expected}]) => ${mapNames.map((map) => `!${map}.has(${formula})`).join(' && ')} && !${expected}?.${guidProperty})`,
+      `${caseName}.filter(([${formula}, ${expected}]) => ${excludedMapChecks} && !${expected}?.${guidProperty})`,
     ];
-  for (const ast of [current, candidate]) {
-    const parents = new Map();
-    walk(ast, (node, parent) => parents.set(node, parent));
-    walk(ast, (node, parent) => {
-      if (node.type !== 'Identifier') return;
-      const grandparent = parents.get(parent);
-      if (mapNames.includes(node.name)) {
-        if ((parent?.type === 'VariableDeclarator' && parent.id === node) || parent?.type === 'SpreadElement') return;
+  const verifyCandidateSources = () => {
+    for (const ast of [current, candidate]) {
+      const parents = new Map();
+      walk(ast, (node, parent) => parents.set(node, parent));
+      const verifyCaseReference = (node, parent, grandparent) => {
+        if (node.name !== caseName) return;
+        if (
+          (parent?.type === 'VariableDeclarator' && parent.id === node) ||
+          (parent?.type === 'ForOfStatement' && parent.right === node)
+        )
+          return;
+        if (parent?.type === 'CallExpression' && parent.arguments.includes(node)) {
+          check(
+            parent.callee?.type === 'MemberExpression' &&
+              !parent.callee.computed &&
+              parent.callee.object?.name === 'JSON' &&
+              parent.callee.property.name === 'stringify',
+            'case-migration-case-escape',
+          );
+          return;
+        }
+        check(parent?.type === 'MemberExpression' && parent.object === node, 'case-migration-case-escape');
+        if (!parent.computed)
+          check(['filter', 'flatMap', 'length'].includes(parent.property.name), 'case-migration-case-mutation');
+        let target = parent,
+          ancestor = grandparent;
+        while (ancestor?.type === 'MemberExpression' && ancestor.object === target) {
+          target = ancestor;
+          ancestor = parents.get(ancestor);
+        }
         check(
-          parent?.type === 'MemberExpression' &&
-            parent.object === node &&
-            !parent.computed &&
-            ['has', 'get'].includes(parent.property.name) &&
-            grandparent?.type === 'CallExpression' &&
-            grandparent.callee === parent,
-          'case-migration-map-escape',
+          !(ancestor?.type === 'AssignmentExpression' && ancestor.left === target) &&
+            !(ancestor?.type === 'UpdateExpression' && ancestor.argument === target),
+          'case-migration-case-mutation',
         );
-      }
-      if (node.name !== caseName) return;
-      if (
-        (parent?.type === 'VariableDeclarator' && parent.id === node) ||
-        (parent?.type === 'ForOfStatement' && parent.right === node)
-      )
-        return;
-      if (parent?.type === 'CallExpression' && parent.arguments.includes(node)) {
-        check(
-          parent.callee?.type === 'MemberExpression' &&
-            !parent.callee.computed &&
-            parent.callee.object?.name === 'JSON' &&
-            parent.callee.property.name === 'stringify',
-          'case-migration-case-escape',
-        );
-        return;
-      }
-      check(parent?.type === 'MemberExpression' && parent.object === node, 'case-migration-case-escape');
-      if (!parent.computed)
-        check(['filter', 'flatMap', 'length'].includes(parent.property.name), 'case-migration-case-mutation');
-      let target = parent,
-        ancestor = grandparent;
-      while (ancestor?.type === 'MemberExpression' && ancestor.object === target) {
-        target = ancestor;
-        ancestor = parents.get(ancestor);
-      }
-      check(
-        !(ancestor?.type === 'AssignmentExpression' && ancestor.left === target) &&
-          !(ancestor?.type === 'UpdateExpression' && ancestor.argument === target),
-        'case-migration-case-mutation',
-      );
-    });
-  }
+      };
+      walk(ast, (node, parent) => {
+        if (node.type !== 'Identifier') return;
+        const grandparent = parents.get(parent);
+        if (mapNames.includes(node.name)) {
+          if ((parent?.type === 'VariableDeclarator' && parent.id === node) || parent?.type === 'SpreadElement') return;
+          check(
+            parent?.type === 'MemberExpression' &&
+              parent.object === node &&
+              !parent.computed &&
+              ['has', 'get'].includes(parent.property.name) &&
+              grandparent?.type === 'CallExpression' &&
+              grandparent.callee === parent,
+            'case-migration-map-escape',
+          );
+        }
+        verifyCaseReference(node, parent, grandparent);
+      });
+    }
+  };
+  verifyCandidateSources();
   for (let i = 0; i < 5; i++)
     check(
       astHash(loops[1][i].right) ===
@@ -472,169 +486,181 @@ export function verifyCaseMigration({ baselineSource, currentSource, candidateSo
     );
     return found[0];
   });
-  const guidBody = currentRows[3].callback.body,
-    guidAssertions = assertions(guidBody);
-  check(
-    guidBody.type === 'BlockStatement' &&
-      guidBody.body.length === 9 &&
-      guidBody.body[0].type === 'VariableDeclaration' &&
-      guidBody.body[2].type === 'VariableDeclaration' &&
-      guidBody.body.filter((statement) => statement.type === 'ExpressionStatement').length === 7 &&
-      guidAssertions.length === 7 &&
-      astHash(currentRows[4].callback.body) === astHash(originalAssert),
-    'case-migration-guid-path',
-  );
-  proofReview(review.guid, 'case-guid-review-required');
-  check(
-    typeof review.guid.evidenceId === 'string' &&
-      Object.hasOwn(evidence, review.guid.evidenceId) &&
-      /^[a-f0-9]{64}$/u.test(review.guid.sha256),
-    'case-guid-evidence-required',
-  );
-  const guidBytes = evidence[review.guid.evidenceId];
-  check(
-    (typeof guidBytes === 'string' || guidBytes instanceof Uint8Array) && digest(guidBytes) === review.guid.sha256,
-    'case-guid-evidence-hash',
-  );
-  const guidEvidence = JSON.parse(Buffer.from(guidBytes).toString('utf8'));
-  check(Number.isInteger(review.guid.captureIndex) && review.guid.captureIndex >= 0, 'case-guid-capture-index');
-  check(
-    Array.isArray(review.guid.factBindings) &&
-      review.guid.factBindings.length === 2 &&
-      review.guid.factBindings[0].pointer === `/captures/${review.guid.captureIndex}/results/0` &&
-      review.guid.factBindings[1].pointer === `/captures/${review.guid.captureIndex}/results/1`,
-    'case-guid-facts-required',
-  );
-  for (const fact of review.guid.factBindings)
+  const verifyGuidContract = () => {
+    const guidBody = currentRows[3].callback.body,
+      guidAssertions = assertions(guidBody);
     check(
-      typeof fact.factId === 'string' &&
-        fact.factId.length > 0 &&
-        /^[a-f0-9]{64}$/u.test(fact.sha256) &&
-        astHash(pointer(guidEvidence, fact.pointer)) === fact.sha256,
-      'case-guid-fact-binding',
+      guidBody.type === 'BlockStatement' &&
+        guidBody.body.length === 9 &&
+        guidBody.body[0].type === 'VariableDeclaration' &&
+        guidBody.body[2].type === 'VariableDeclaration' &&
+        guidBody.body.filter((statement) => statement.type === 'ExpressionStatement').length === 7 &&
+        guidAssertions.length === 7 &&
+        astHash(currentRows[4].callback.body) === astHash(originalAssert),
+      'case-migration-guid-path',
     );
-  evidenceHashes[review.guid.evidenceId] = review.guid.sha256;
-  const guidCases = cases[2].flatMap((row, index) =>
-    row[1] && typeof row[1] === 'object' && row[1][guidProperty] ? [index] : [],
-  );
-  check(
-    guidCases.length === 1 && guidCases[0] === 138 && cases[2][138][1][guidProperty] === 25,
-    'case-guid-correction-binding',
-  );
-  const guidExpression = cases[2][138][0],
-    capture = pointer(guidEvidence, `/captures/${review.guid.captureIndex}`);
-  check(
-    Array.isArray(capture.cases) &&
-      capture.cases.length === 2 &&
-      capture.cases[0]?.expression === guidExpression &&
-      capture.cases[1]?.expression === `IfError(${guidExpression},FirstError.Kind=25)` &&
-      Array.isArray(capture.results) &&
-      capture.results.length === 2 &&
-      capture.results[0]?.kind === 'error' &&
-      capture.results[1]?.kind === 'value' &&
-      capture.results[1].value === true,
-    'case-guid-semantic-facts',
-  );
-  check(
-    Array.isArray(capture.receipts) &&
-      capture.receipts.length === 2 &&
-      capture.receipts[0].run !== capture.receipts[1].run &&
-      capture.receipts.every(
-        (receipt) =>
-          receipt.emptyAuthenticationProfiles === true &&
-          /^[a-f0-9]{64}$/u.test(receipt.rawSha256) &&
-          /^[a-f0-9]{64}$/u.test(receipt.executableSha256),
-      ) &&
-      capture.receipts[0].rawSha256 === capture.receipts[1].rawSha256 &&
-      capture.receipts[0].executableSha256 === capture.receipts[1].executableSha256,
-    'case-guid-repeated-receipts',
-  );
-  check(
-    Array.isArray(matrixEvidence.runs) &&
-      matrixEvidence.runs.length === 2 &&
-      Array.isArray(matrixEvidence.captures) &&
-      matrixEvidence.captures.length === 2 &&
-      matrixEvidence.captures[0].processId !== matrixEvidence.captures[1].processId &&
-      matrixEvidence.runs[0].identitySha256 !== matrixEvidence.runs[1].identitySha256 &&
-      matrixEvidence.runs[0].resultsSha256 === matrixEvidence.runs[1].resultsSha256,
-    'case-guid-matrix-receipts',
-  );
-  for (let i = 0; i < 2; i++) {
-    const run = matrixEvidence.runs[i],
-      meta = matrixEvidence.captures[i],
-      result = run.results?.[138];
+    const verifyGuidCapture = () => {
+      proofReview(review.guid, 'case-guid-review-required');
+      check(
+        typeof review.guid.evidenceId === 'string' &&
+          Object.hasOwn(evidence, review.guid.evidenceId) &&
+          /^[a-f0-9]{64}$/u.test(review.guid.sha256),
+        'case-guid-evidence-required',
+      );
+      const guidBytes = evidence[review.guid.evidenceId];
+      check(
+        (typeof guidBytes === 'string' || guidBytes instanceof Uint8Array) && digest(guidBytes) === review.guid.sha256,
+        'case-guid-evidence-hash',
+      );
+      const guidEvidence = JSON.parse(Buffer.from(guidBytes).toString('utf8'));
+      check(Number.isInteger(review.guid.captureIndex) && review.guid.captureIndex >= 0, 'case-guid-capture-index');
+      check(
+        Array.isArray(review.guid.factBindings) &&
+          review.guid.factBindings.length === 2 &&
+          review.guid.factBindings[0].pointer === `/captures/${review.guid.captureIndex}/results/0` &&
+          review.guid.factBindings[1].pointer === `/captures/${review.guid.captureIndex}/results/1`,
+        'case-guid-facts-required',
+      );
+      for (const fact of review.guid.factBindings)
+        check(
+          typeof fact.factId === 'string' &&
+            fact.factId.length > 0 &&
+            /^[a-f0-9]{64}$/u.test(fact.sha256) &&
+            astHash(pointer(guidEvidence, fact.pointer)) === fact.sha256,
+          'case-guid-fact-binding',
+        );
+      evidenceHashes[review.guid.evidenceId] = review.guid.sha256;
+      const guidCases = cases[2].flatMap((row, index) =>
+        row[1] && typeof row[1] === 'object' && row[1][guidProperty] ? [index] : [],
+      );
+      check(
+        guidCases.length === 1 && guidCases[0] === 138 && cases[2][138][1][guidProperty] === 25,
+        'case-guid-correction-binding',
+      );
+      const guidExpression = cases[2][138][0],
+        capture = pointer(guidEvidence, `/captures/${review.guid.captureIndex}`);
+      check(
+        Array.isArray(capture.cases) &&
+          capture.cases.length === 2 &&
+          capture.cases[0]?.expression === guidExpression &&
+          capture.cases[1]?.expression === `IfError(${guidExpression},FirstError.Kind=25)` &&
+          Array.isArray(capture.results) &&
+          capture.results.length === 2 &&
+          capture.results[0]?.kind === 'error' &&
+          capture.results[1]?.kind === 'value' &&
+          capture.results[1].value === true,
+        'case-guid-semantic-facts',
+      );
+      check(
+        Array.isArray(capture.receipts) &&
+          capture.receipts.length === 2 &&
+          capture.receipts[0].run !== capture.receipts[1].run &&
+          capture.receipts.every(
+            (receipt) =>
+              receipt.emptyAuthenticationProfiles === true &&
+              /^[a-f0-9]{64}$/u.test(receipt.rawSha256) &&
+              /^[a-f0-9]{64}$/u.test(receipt.executableSha256),
+          ) &&
+          capture.receipts[0].rawSha256 === capture.receipts[1].rawSha256 &&
+          capture.receipts[0].executableSha256 === capture.receipts[1].executableSha256,
+        'case-guid-repeated-receipts',
+      );
+      check(
+        Array.isArray(matrixEvidence.runs) &&
+          matrixEvidence.runs.length === 2 &&
+          Array.isArray(matrixEvidence.captures) &&
+          matrixEvidence.captures.length === 2 &&
+          matrixEvidence.captures[0].processId !== matrixEvidence.captures[1].processId &&
+          matrixEvidence.runs[0].identitySha256 !== matrixEvidence.runs[1].identitySha256 &&
+          matrixEvidence.runs[0].resultsSha256 === matrixEvidence.runs[1].resultsSha256,
+        'case-guid-matrix-receipts',
+      );
+      const verifyGuidEvidence = () => {
+        for (let i = 0; i < 2; i++) {
+          const run = matrixEvidence.runs[i],
+            meta = matrixEvidence.captures[i],
+            result = run.results?.[138];
+          check(
+            meta.unprivilegedZeroCapabilities === true &&
+              meta.identitySha256 === run.identitySha256 &&
+              meta.resultsSha256 === run.resultsSha256 &&
+              result?.expression === guidExpression &&
+              result.kind === 'error' &&
+              result.type === 'ErrorValue' &&
+              Array.isArray(result.errors) &&
+              result.errors.some((error) => error.kind === 'InvalidArgument'),
+            'case-guid-matrix-error-value',
+          );
+        }
+      };
+      verifyGuidEvidence();
+      return capture;
+    };
+    const capture = verifyGuidCapture();
     check(
-      meta.unprivilegedZeroCapabilities === true &&
-        meta.identitySha256 === run.identitySha256 &&
-        meta.resultsSha256 === run.resultsSha256 &&
-        result?.expression === guidExpression &&
-        result.kind === 'error' &&
-        result.type === 'ErrorValue' &&
-        Array.isArray(result.errors) &&
-        result.errors.some((error) => error.kind === 'InvalidArgument'),
-      'case-guid-matrix-error-value',
+      typeof review.guid.relativePath === 'string' &&
+        review.guid.relativePath.startsWith('./') &&
+        !/[?#\\]/u.test(review.guid.relativePath),
+      'case-guid-evidence-path',
     );
-  }
-  check(
-    typeof review.guid.relativePath === 'string' &&
-      /^\.\//u.test(review.guid.relativePath) &&
-      !/[?#\\]/u.test(review.guid.relativePath),
-    'case-guid-evidence-path',
-  );
-  const guidBytesName = identifier(review.guid.bytesBinding),
-    guidHashName = identifier(review.guid.hashBinding),
-    guidProofName = identifier(review.guid.proofBinding);
-  const guidRead = parseSource(
-    `const ${guidBytesName} = fs.readFileSync(new URL(${JSON.stringify(review.guid.relativePath)}, import.meta.url));`,
-  ).body[0];
-  const guidHash = parseSource(
-    `assert.equal(${guidHashName}('sha256').update(${guidBytesName}).digest('hex'), ${JSON.stringify(review.guid.sha256)});`,
-  ).body[0].expression;
-  check(
-    astHash(guidBody.body[0]) === astHash(guidRead) && astHash(guidAssertions[0]) === astHash(guidHash),
-    'case-guid-source-evidence-binding',
-  );
-  check(/^[a-f0-9]{64}$/u.test(capture.captureScriptSha256), 'case-guid-capture-script');
-  const expectedProof = parseSource(
-    `const ${guidProofName} = JSON.parse(${guidBytesName}).captures[${review.guid.captureIndex}];`,
-  ).body[0];
-  check(astHash(guidBody.body[2]) === astHash(expectedProof), 'case-guid-proof-source');
-  const expectedGuidStatements = parseSource(
-    `assert.equal(${guidProofName}.captureScriptSha256, ${JSON.stringify(capture.captureScriptSha256)}); assert.equal(${guidProofName}.cases[0].expression, ${formula}); assert.equal(${guidProofName}.results[0].kind, 'error'); assert.equal(${guidProofName}.cases[1].expression, \`IfError(\${${formula}},FirstError.Kind=\${${expected}.${guidProperty}})\`); assert.deepEqual(${guidProofName}.results[1], { kind: 'value', value: true });`,
-  ).body.map((statement) => statement.expression);
-  check(
-    expectedGuidStatements.every((statement, index) => astHash(statement) === astHash(guidAssertions[index + 1])),
-    'case-guid-assertion-semantics',
-  );
-  check(
-    Array.isArray(review.guid.setupAstSha256) &&
-      review.guid.setupAstSha256.length === 2 &&
-      astHash(guidBody.body[0]) === review.guid.setupAstSha256[0] &&
-      astHash(guidBody.body[2]) === review.guid.setupAstSha256[1],
-    'case-migration-guid-setup',
-  );
-  const throws = guidAssertions[6],
-    throwCall = throws.arguments?.[0];
-  check(
-    throws.callee.property.name === 'throws' &&
-      throwCall?.type === 'ArrowFunctionExpression' &&
-      !throwCall.async &&
-      throwCall.params.length === 0 &&
-      throwCall.body?.type === 'CallExpression' &&
-      throwCall.body.callee?.name === sutName &&
-      throwCall.body.arguments.length === 1 &&
-      throwCall.body.arguments[0]?.name === formula,
-    'case-migration-guid-contract',
-  );
-  check(
-    Array.isArray(review.guidAssertionSha256) &&
-      review.guidAssertionSha256.length === 7 &&
-      guidAssertions.every((node, index) => astHash(node) === review.guidAssertionSha256[index]),
-    'case-migration-guid-binding',
-  );
+    const guidBytesName = identifier(review.guid.bytesBinding),
+      guidHashName = identifier(review.guid.hashBinding),
+      guidProofName = identifier(review.guid.proofBinding);
+    const guidRead = parseSource(
+      `const ${guidBytesName} = fs.readFileSync(new URL(${JSON.stringify(review.guid.relativePath)}, import.meta.url));`,
+    ).body[0];
+    const guidHash = parseSource(
+      `assert.equal(${guidHashName}('sha256').update(${guidBytesName}).digest('hex'), ${JSON.stringify(review.guid.sha256)});`,
+    ).body[0].expression;
+    check(
+      astHash(guidBody.body[0]) === astHash(guidRead) && astHash(guidAssertions[0]) === astHash(guidHash),
+      'case-guid-source-evidence-binding',
+    );
+    check(/^[a-f0-9]{64}$/u.test(capture.captureScriptSha256), 'case-guid-capture-script');
+    const expectedProof = parseSource(
+      `const ${guidProofName} = JSON.parse(${guidBytesName}).captures[${review.guid.captureIndex}];`,
+    ).body[0];
+    check(astHash(guidBody.body[2]) === astHash(expectedProof), 'case-guid-proof-source');
+    const expectedGuidStatements = parseSource(
+      `assert.equal(${guidProofName}.captureScriptSha256, ${JSON.stringify(capture.captureScriptSha256)}); assert.equal(${guidProofName}.cases[0].expression, ${formula}); assert.equal(${guidProofName}.results[0].kind, 'error'); assert.equal(${guidProofName}.cases[1].expression, \`IfError(\${${formula}},FirstError.Kind=\${${expected}.${guidProperty}})\`); assert.deepEqual(${guidProofName}.results[1], { kind: 'value', value: true });`,
+    ).body.map((statement) => statement.expression);
+    check(
+      expectedGuidStatements.every((statement, index) => astHash(statement) === astHash(guidAssertions[index + 1])),
+      'case-guid-assertion-semantics',
+    );
+    check(
+      Array.isArray(review.guid.setupAstSha256) &&
+        review.guid.setupAstSha256.length === 2 &&
+        astHash(guidBody.body[0]) === review.guid.setupAstSha256[0] &&
+        astHash(guidBody.body[2]) === review.guid.setupAstSha256[1],
+      'case-migration-guid-setup',
+    );
+    const throws = guidAssertions[6],
+      throwCall = throws.arguments?.[0];
+    check(
+      throws.callee.property.name === 'throws' &&
+        throwCall?.type === 'ArrowFunctionExpression' &&
+        !throwCall.async &&
+        throwCall.params.length === 0 &&
+        throwCall.body?.type === 'CallExpression' &&
+        throwCall.body.callee?.name === sutName &&
+        throwCall.body.arguments.length === 1 &&
+        throwCall.body.arguments[0]?.name === formula,
+      'case-migration-guid-contract',
+    );
+    check(
+      Array.isArray(review.guidAssertionSha256) &&
+        review.guidAssertionSha256.length === 7 &&
+        guidAssertions.every((node, index) => astHash(node) === review.guidAssertionSha256[index]),
+      'case-migration-guid-binding',
+    );
+    return { guidBody, guidAssertions };
+  };
+  const { guidBody, guidAssertions } = verifyGuidContract();
   const snapshotName = identifier(review.snapshotBinding);
+  const snapshotMapChecks = mapNames.map((map) => `${map}.has(${formula})`).join(', ');
   const expectedCandidate = parseSource(
-    `for (const [${formula}, ${expected}] of ${caseName}) { const ${snapshotName} = [${mapNames.map((map) => `${map}.has(${formula})`).join(', ')}, Boolean(${expected}?.${guidProperty})]; ${testName}(__title__, () => { if (${snapshotName}[0]) {} else if (${snapshotName}[1]) {} else if (${snapshotName}[2]) {} if (${snapshotName}[3]) { return; } return __original__; }); }`,
+    `for (const [${formula}, ${expected}] of ${caseName}) { const ${snapshotName} = [${snapshotMapChecks}, Boolean(${expected}?.${guidProperty})]; ${testName}(__title__, () => { if (${snapshotName}[0]) {} else if (${snapshotName}[1]) {} else if (${snapshotName}[2]) {} if (${snapshotName}[3]) { return; } return __original__; }); }`,
   ).body[0];
   const candidateRegistration = expectedCandidate.body.body[1].expression;
   candidateRegistration.arguments[0] = original.registration.arguments[0];
@@ -663,37 +689,40 @@ export function verifyCaseMigration({ baselineSource, currentSource, candidateSo
   let i = 0,
     j = 0;
   const moduleDelta = [];
-  while (i < oldNodes.length || j < newNodes.length) {
-    if (i < oldNodes.length && j < newNodes.length && astHash(oldNodes[i]) === astHash(newNodes[j])) {
-      i++;
+  const verifyModuleDelta = () => {
+    while (i < oldNodes.length || j < newNodes.length) {
+      if (i < oldNodes.length && j < newNodes.length && astHash(oldNodes[i]) === astHash(newNodes[j])) {
+        i++;
+        j++;
+        continue;
+      }
+      const replacement =
+        i < oldNodes.length &&
+        j < newNodes.length &&
+        review.moduleReplacements.find(
+          (item) => item.currentAstSha256 === astHash(oldNodes[i]) && item.candidateAstSha256 === astHash(newNodes[j]),
+        );
+      if (replacement) {
+        proofReview(replacement, 'case-module-replacement-review');
+        moduleDelta.push({
+          kind: 'replacement',
+          ...replacement,
+          currentSpan: oldNodes[i].range,
+          candidateSpan: newNodes[j].range,
+        });
+        i++;
+        j++;
+        continue;
+      }
+      const addition =
+        j < newNodes.length && review.moduleAdditions.find((item) => item.candidateAstSha256 === astHash(newNodes[j]));
+      check(addition, 'case-migration-module-change');
+      proofReview(addition, 'case-module-addition-review');
+      moduleDelta.push({ kind: 'addition', ...addition });
       j++;
-      continue;
     }
-    const replacement =
-      i < oldNodes.length &&
-      j < newNodes.length &&
-      review.moduleReplacements.find(
-        (item) => item.currentAstSha256 === astHash(oldNodes[i]) && item.candidateAstSha256 === astHash(newNodes[j]),
-      );
-    if (replacement) {
-      proofReview(replacement, 'case-module-replacement-review');
-      moduleDelta.push({
-        kind: 'replacement',
-        ...replacement,
-        currentSpan: oldNodes[i].range,
-        candidateSpan: newNodes[j].range,
-      });
-      i++;
-      j++;
-      continue;
-    }
-    const addition =
-      j < newNodes.length && review.moduleAdditions.find((item) => item.candidateAstSha256 === astHash(newNodes[j]));
-    check(addition, 'case-migration-module-change');
-    proofReview(addition, 'case-module-addition-review');
-    moduleDelta.push({ kind: 'addition', ...addition });
-    j++;
-  }
+  };
+  verifyModuleDelta();
   check(
     moduleDelta.filter((item) => item.kind === 'replacement').length === review.moduleReplacements.length &&
       moduleDelta.filter((item) => item.kind === 'addition').length === review.moduleAdditions.length,
@@ -705,7 +734,7 @@ export function verifyCaseMigration({ baselineSource, currentSource, candidateSo
     usedReplacements = new Set(),
     usedAdditions = new Set(),
     allowedAdditions = new Map();
-  for (const item of review.assertionReplacements) {
+  const verifyAssertionReplacement = (item) => {
     proofReview(item, 'case-assertion-replacement-review');
     check(
       typeof item.registration === 'string' && Number.isInteger(item.assertionIndex) && item.assertionIndex > 0,
@@ -714,68 +743,75 @@ export function verifyCaseMigration({ baselineSource, currentSource, candidateSo
     const key = `${item.registration}\0${item.assertionIndex}`;
     check(!allowedReplacements.has(key), 'duplicate-case-assertion-replacement');
     allowedReplacements.set(key, item);
-  }
-  for (const item of review.assertionAdditions) {
+  };
+  for (const item of review.assertionReplacements) verifyAssertionReplacement(item);
+  const verifyAssertionAddition = (item) => {
     proofReview(item, 'case-assertion-addition-review');
     check(!allowedAdditions.has(item.candidateAstSha256), 'duplicate-case-assertion-addition');
     allowedAdditions.set(item.candidateAstSha256, item);
-  }
+  };
+  for (const item of review.assertionAdditions) verifyAssertionAddition(item);
   const normalizedNodes = new Map();
   const removedNodes = new Set();
-  for (const entry of review.retainedRegistrations) {
-    proofReview(entry, 'case-retained-registration-review');
-    const find = (ast) =>
-      ast.body.filter(
-        (node) =>
-          node.type === 'ExpressionStatement' &&
-          node.expression?.callee?.name === testName &&
-          node.expression.arguments[0]?.value === entry.title,
+  const verifyRetainedRegistrations = () => {
+    for (const entry of review.retainedRegistrations) {
+      proofReview(entry, 'case-retained-registration-review');
+      const find = (ast) =>
+        ast.body.filter(
+          (node) =>
+            node.type === 'ExpressionStatement' &&
+            node.expression?.callee?.name === testName &&
+            node.expression.arguments[0]?.value === entry.title,
+        );
+      const before = find(current),
+        after = find(candidate);
+      check(before.length === 1 && after.length === 1, 'case-retained-registration');
+      const oldAssertions = assertions(before[0]),
+        newAssertions = assertions(after[0]);
+      check(
+        oldAssertions.length === entry.count && newAssertions.length >= oldAssertions.length,
+        'case-retained-assertion-count',
       );
-    const before = find(current),
-      after = find(candidate);
-    check(before.length === 1 && after.length === 1, 'case-retained-registration');
-    const oldAssertions = assertions(before[0]),
-      newAssertions = assertions(after[0]);
-    check(
-      oldAssertions.length === entry.count && newAssertions.length >= oldAssertions.length,
-      'case-retained-assertion-count',
-    );
-    let cursor = 0;
-    for (let assertionIndex = 0; assertionIndex < oldAssertions.length; assertionIndex++) {
-      const assertion = oldAssertions[assertionIndex];
-      const originalHash = astHash(assertion),
-        replacement = allowedReplacements.get(`${entry.title}\0${assertionIndex + 1}`),
-        target = replacement?.candidateAstSha256 ?? originalHash;
-      if (replacement) check(replacement.currentAstSha256 === originalHash, 'case-assertion-replacement-source');
-      while (cursor < newAssertions.length && astHash(newAssertions[cursor]) !== target) {
+      let cursor = 0;
+      const verifyOriginalAssertion = (assertionIndex) => {
+        const assertion = oldAssertions[assertionIndex];
+        const originalHash = astHash(assertion),
+          replacement = allowedReplacements.get(`${entry.title}\0${assertionIndex + 1}`),
+          target = replacement?.candidateAstSha256 ?? originalHash;
+        if (replacement) check(replacement.currentAstSha256 === originalHash, 'case-assertion-replacement-source');
+        while (cursor < newAssertions.length && astHash(newAssertions[cursor]) !== target) {
+          const addition = allowedAdditions.get(astHash(newAssertions[cursor]));
+          check(addition && !usedAdditions.has(addition), 'unreviewed-case-assertion-addition');
+          usedAdditions.add(addition);
+          cursor++;
+        }
+        check(cursor < newAssertions.length, 'case-retained-assertion-removed');
+        if (replacement) {
+          check(!usedReplacements.has(replacement), 'duplicate-case-assertion-replacement-use');
+          usedReplacements.add(replacement);
+          normalizedNodes.set(newAssertions[cursor], assertion);
+        }
+        retained.push({
+          title: entry.title,
+          currentAstSha256: originalHash,
+          candidateAstSha256: target,
+          currentSpan: assertion.range,
+          candidateSpan: newAssertions[cursor].range,
+        });
+        retainedCount++;
+        cursor++;
+      };
+      for (let assertionIndex = 0; assertionIndex < oldAssertions.length; assertionIndex++)
+        verifyOriginalAssertion(assertionIndex);
+      while (cursor < newAssertions.length) {
         const addition = allowedAdditions.get(astHash(newAssertions[cursor]));
         check(addition && !usedAdditions.has(addition), 'unreviewed-case-assertion-addition');
         usedAdditions.add(addition);
         cursor++;
       }
-      check(cursor < newAssertions.length, 'case-retained-assertion-removed');
-      if (replacement) {
-        check(!usedReplacements.has(replacement), 'duplicate-case-assertion-replacement-use');
-        usedReplacements.add(replacement);
-        normalizedNodes.set(newAssertions[cursor], assertion);
-      }
-      retained.push({
-        title: entry.title,
-        currentAstSha256: originalHash,
-        candidateAstSha256: target,
-        currentSpan: assertion.range,
-        candidateSpan: newAssertions[cursor].range,
-      });
-      retainedCount++;
-      cursor++;
     }
-    while (cursor < newAssertions.length) {
-      const addition = allowedAdditions.get(astHash(newAssertions[cursor]));
-      check(addition && !usedAdditions.has(addition), 'unreviewed-case-assertion-addition');
-      usedAdditions.add(addition);
-      cursor++;
-    }
-  }
+  };
+  verifyRetainedRegistrations();
   check(retainedCount === review.retainedAssertionCount, 'case-retained-total');
   check(
     usedReplacements.size === review.assertionReplacements.length &&
@@ -786,7 +822,7 @@ export function verifyCaseMigration({ baselineSource, currentSource, candidateSo
     currentParents = new Map();
   walk(candidate, (node, parent) => candidateParents.set(node, parent));
   walk(current, (node, parent) => currentParents.set(node, parent));
-  for (const item of review.mustRetainAssertions) {
+  const verifyRetainedAssertion = (item) => {
     proofReview(item, 'case-must-retain-review');
     const old = assertions(current).filter((node) => astHash(node) === item.astSha256),
       next = assertions(candidate).filter((node) => astHash(node) === item.astSha256);
@@ -804,7 +840,7 @@ export function verifyCaseMigration({ baselineSource, currentSource, candidateSo
     evidenceHashes[binding.evidenceId] = binding.sha256;
     check(
       typeof binding.relativePath === 'string' &&
-        /^\.\//u.test(binding.relativePath) &&
+        binding.relativePath.startsWith('./') &&
         !/[?#\\]/u.test(binding.relativePath),
       'case-retained-evidence-path',
     );
@@ -833,7 +869,8 @@ export function verifyCaseMigration({ baselineSource, currentSource, candidateSo
         oldEvidence.captures.every((capture) => capture[oldProperty] === true),
       'case-retained-evidence-semantics',
     );
-  }
+  };
+  for (const item of review.mustRetainAssertions) verifyRetainedAssertion(item);
   const registration = (ast, title) => {
     const tests = ast.body.filter(
       (node) =>
@@ -866,7 +903,7 @@ export function verifyCaseMigration({ baselineSource, currentSource, candidateSo
       arg = identifier(binding.hashArgument),
       crypto = identifier(binding.cryptoBinding);
     check(
-      typeof relativePath === 'string' && /^\.\//u.test(relativePath) && !/[?#\\]/u.test(relativePath),
+      typeof relativePath === 'string' && relativePath.startsWith('./') && !/[?#\\]/u.test(relativePath),
       'case-metadata-path',
     );
     const expected = parseSource(
@@ -881,7 +918,7 @@ export function verifyCaseMigration({ baselineSource, currentSource, candidateSo
     return body;
   };
   check(review.metadataBindings.length === review.assertionReplacements.length, 'case-metadata-binding-count');
-  for (const item of review.metadataBindings) {
+  const verifyMetadataBinding = (item) => {
     proofReview(item, 'case-metadata-review-required');
     const key = `${item.registration}\0${item.assertionIndex}`,
       replacement = allowedReplacements.get(key);
@@ -952,43 +989,48 @@ export function verifyCaseMigration({ baselineSource, currentSource, candidateSo
         astHash(newAssertion) === astHash(parseSource(expectedNew).body[0].expression),
       'case-metadata-assertion-semantics',
     );
-  }
+  };
+  for (const item of review.metadataBindings) verifyMetadataBinding(item);
   check(checkedMetadata.size === review.assertionReplacements.length, 'case-metadata-binding-count');
-  const capability = review.capabilityBinding;
-  proofReview(capability, 'case-capability-review');
-  const capabilityEvidence = evidenceObject(capability.evidenceId),
-    capabilityProperty = identifier(capability.property),
-    capabilityProof = identifier(capability.proofBinding);
-  check(
-    Array.isArray(capabilityEvidence.captures) &&
-      capabilityEvidence.captures.length === 2 &&
-      capabilityEvidence.captures.every((capture) => capture[capabilityProperty] === true),
-    'case-capability-evidence',
-  );
-  const capabilityBody = verifyContext(candidate, capability, capability.evidenceId, capability.relativePath);
-  const expectedCapability = parseSource(
-    `assert.ok(${capabilityProof}.captures.every(({ ${capabilityProperty} }) => ${capabilityProperty}));`,
-  ).body[0].expression;
-  check(
-    astHash(expectedCapability) === capability.assertionAstSha256 &&
-      capabilityBody.body.some(
-        (statement) =>
-          statement.type === 'ExpressionStatement' && astHash(statement.expression) === capability.assertionAstSha256,
-      ) &&
-      usedAdditions.size &&
-      review.assertionAdditions.some((item) => item.candidateAstSha256 === capability.assertionAstSha256),
-    'case-capability-assertion',
-  );
-  const capabilityStatement = capabilityBody.body.find(
-    (statement) =>
-      statement.type === 'ExpressionStatement' && astHash(statement.expression) === capability.assertionAstSha256,
-  );
-  removedNodes.add(capabilityStatement);
-  for (const partition of review.partitions) {
+  const verifyCapabilityEvidence = () => {
+    const capability = review.capabilityBinding;
+    proofReview(capability, 'case-capability-review');
+    const capabilityEvidence = evidenceObject(capability.evidenceId),
+      capabilityProperty = identifier(capability.property),
+      capabilityProof = identifier(capability.proofBinding);
+    check(
+      Array.isArray(capabilityEvidence.captures) &&
+        capabilityEvidence.captures.length === 2 &&
+        capabilityEvidence.captures.every((capture) => capture[capabilityProperty] === true),
+      'case-capability-evidence',
+    );
+    const capabilityBody = verifyContext(candidate, capability, capability.evidenceId, capability.relativePath);
+    const expectedCapability = parseSource(
+      `assert.ok(${capabilityProof}.captures.every(({ ${capabilityProperty} }) => ${capabilityProperty}));`,
+    ).body[0].expression;
+    check(
+      astHash(expectedCapability) === capability.assertionAstSha256 &&
+        capabilityBody.body.some(
+          (statement) =>
+            statement.type === 'ExpressionStatement' && astHash(statement.expression) === capability.assertionAstSha256,
+        ) &&
+        usedAdditions.size &&
+        review.assertionAdditions.some((item) => item.candidateAstSha256 === capability.assertionAstSha256),
+      'case-capability-assertion',
+    );
+    const capabilityStatement = capabilityBody.body.find(
+      (statement) =>
+        statement.type === 'ExpressionStatement' && astHash(statement.expression) === capability.assertionAstSha256,
+    );
+    removedNodes.add(capabilityStatement);
+  };
+  verifyCapabilityEvidence();
+  const verifyPartitionConsumption = (partition) => {
     const before = declaration(current, partition.evidenceBinding),
       after = declaration(candidate, partition.evidenceBinding);
     if (astHash(before) !== astHash(after)) normalizedNodes.set(after, before);
-  }
+  };
+  for (const partition of review.partitions) verifyPartitionConsumption(partition);
   check(review.moduleAdditions.length === 0, 'case-extra-module-addition');
   const normalize = (node) => {
     if (!node || typeof node !== 'object') return node;
@@ -1002,36 +1044,39 @@ export function verifyCaseMigration({ baselineSource, currentSource, candidateSo
   const rows = [],
     eligible = [],
     historicallyQualified = [];
-  for (let index = 0; index < 193; index++) {
-    const [expression, result] = cases[2][index],
-      flags = maps.map((map) => map.has(expression)),
-      oldFlags = oldMaps.map((map) => map.has(expression)),
-      guid = Boolean(result?.[guidProperty]);
-    check(astHash(flags) === astHash(oldFlags), 'case-migration-membership-changed');
-    check(flags.filter(Boolean).length + Number(guid) <= 1, 'case-migration-overlap');
-    const partition = flags.indexOf(true);
-    if (partition >= 0) {
-      check(
-        astHash(maps[partition].get(expression)) === astHash(result) &&
-          astHash(oldMaps[partition].get(expression)) === astHash(cases[1][index][1]),
-        'case-migration-proof-mismatch',
-      );
-      historicallyQualified.push(index);
+  const verifyCaseMembership = () => {
+    for (let index = 0; index < 193; index++) {
+      const [expression, result] = cases[2][index],
+        flags = maps.map((map) => map.has(expression)),
+        oldFlags = oldMaps.map((map) => map.has(expression)),
+        guid = Boolean(result?.[guidProperty]);
+      check(astHash(flags) === astHash(oldFlags), 'case-migration-membership-changed');
+      check(flags.filter(Boolean).length + Number(guid) <= 1, 'case-migration-overlap');
+      const partition = flags.indexOf(true);
+      if (partition >= 0) {
+        check(
+          astHash(maps[partition].get(expression)) === astHash(result) &&
+            astHash(oldMaps[partition].get(expression)) === astHash(cases[1][index][1]),
+          'case-migration-proof-mismatch',
+        );
+        historicallyQualified.push(index);
+      }
+      if (!guid) eligible.push(index);
+      rows.push({
+        caseIndex: index,
+        baselineValue: cases[0][index][1],
+        currentValue: cases[1][index][1],
+        candidateValue: result,
+        expressionSha256: digest(expression),
+        registrationSnapshot: [...flags, guid],
+        partition,
+        guid,
+        sutCalls: 1,
+        originalAssertionSha256: guid ? null : astHash(originalAssert),
+      });
     }
-    if (!guid) eligible.push(index);
-    rows.push({
-      caseIndex: index,
-      baselineValue: cases[0][index][1],
-      currentValue: cases[1][index][1],
-      candidateValue: result,
-      expressionSha256: digest(expression),
-      registrationSnapshot: [...flags, guid],
-      partition,
-      guid,
-      sutCalls: 1,
-      originalAssertionSha256: guid ? null : astHash(originalAssert),
-    });
-  }
+  };
+  verifyCaseMembership();
   check(
     Array.isArray(review.selected) &&
       new Set(review.selected).size === review.selected.length &&

@@ -1,24 +1,31 @@
 // @test-kind parity: two native UCI draft captures on 2026-11-08 reproduce control/layout APIs, dirty readbacks and notification results; fixtures/frontend-parity-evidence.md.
-import test from 'node:test';
+import test, { before } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import { captureModelDrivenPresentationContract } from '../testing/model-driven-presentation.mjs';
 import { presentationFixture } from './fixtures/model-driven-presentation.mjs';
 // @parity-evidence: both native captures executed this exact serialized function; native source plan and fixture hashes are retained separately.
-assert.equal(
-  createHash('sha256').update(captureModelDrivenPresentationContract.toString()).digest('hex'),
-  'd1d101c72488f3b03c7a83f0448e4b6f20450bc1b485e26a9199e2ed93d37992',
-);
+
 const bytes = fs.readFileSync(new URL('./fixtures/model-driven-presentation-expected.json', import.meta.url));
-assert.equal(
-  createHash('sha256').update(bytes).digest('hex'),
-  'da569c053dd3237e6dad9fc38a0d428df16eb581b1b47d0576ee02db6d7de325',
-);
+
 const expected = JSON.parse(bytes);
-const fixture = presentationFixture();
-const actual = await captureModelDrivenPresentationContract(fixture.input, fixture.runtime.formContext);
-fixture.runtime.destroy();
+let actual;
+// @parity-evidence: existing native fixture and probe SHA-256 pins are checked before any recorded case executes.
+before(async () => {
+  assert.equal(
+    createHash('sha256').update(captureModelDrivenPresentationContract.toString()).digest('hex'),
+    'd1d101c72488f3b03c7a83f0448e4b6f20450bc1b485e26a9199e2ed93d37992',
+  );
+  assert.equal(
+    createHash('sha256').update(bytes).digest('hex'),
+    'da569c053dd3237e6dad9fc38a0d428df16eb581b1b47d0576ee02db6d7de325',
+  );
+  const fixture = presentationFixture();
+  actual = await captureModelDrivenPresentationContract(fixture.input, fixture.runtime.formContext);
+  fixture.runtime.destroy();
+});
+
 for (const row of expected)
   test(`native presentation contract: ${row.id}`, () =>
     assert.deepEqual(

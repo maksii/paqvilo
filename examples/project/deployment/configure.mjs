@@ -52,7 +52,7 @@ try {
   const configuration = await fs.readFile(catalogue, 'utf8');
   const mappings = [
     ...configuration.matchAll(
-      /^([^\S\r\n\u2028\u2029]*)([0-9a-f-]{36})(:\s*exa_ExamplePages\.ExampleAccountFields\s*)$/gim,
+      /^((?:(?![\r\n\u2028\u2029])\s)*)([0-9a-f-]{36})(:\s*exa_ExamplePages\.ExampleAccountFields\s*)$/gim,
     ),
   ];
   if (mappings.length !== 1)
@@ -63,7 +63,7 @@ try {
     );
   editSource({ file: catalogue, sourceDir: root }, (text) =>
     text.replace(
-      /^([^\S\r\n\u2028\u2029]*)[0-9a-f-]{36}(:\s*exa_ExamplePages\.ExampleAccountFields\s*)$/gim,
+      /^((?:(?![\r\n\u2028\u2029])\s)*)[0-9a-f-]{36}(:\s*exa_ExamplePages\.ExampleAccountFields\s*)$/gim,
       '$1' + ids[0] + '$2',
     ),
   );

@@ -134,5 +134,6 @@ test('Power Fx Trim and TrimEnds handle long interior space runs', () => {
 
 // @test-kind tooling: Shared source guard reads expected bindings from protected parity bodies and runs independently of their generators; no baseline closure credit.
 test('parity source bindings 6b18ac79e18564fd', () => {
-  __paqParitySourceBindings(import.meta.url);
+  // @parity-evidence: Tooling-only exposure of the existing source/run/fact/case validator; the same helper and module URL execute once, with every protected binding unchanged.
+  assert.doesNotThrow(() => __paqParitySourceBindings(import.meta.url));
 });

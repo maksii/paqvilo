@@ -388,7 +388,7 @@ async function install(api, { storage, diagnostic } = {}) {
     diagnostic: diagnostic ?? null,
     diagnostics: [],
     pending: new Set(),
-    flushing: null,
+    flushing: /** @type {Promise<void> | null} */ (null),
     inflight: new Map(),
     missing: new Set(),
     // Provider puts started by beforeWrite, by row id: afterWrite awaits them (an async drive waits, a sync SDK drive defers

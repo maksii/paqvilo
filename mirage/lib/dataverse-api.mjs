@@ -1384,33 +1384,37 @@ function metadataNotModified(etag) {
   };
 }
 
+function dispatchMetadataRoute(d, c, route, { method, origin, url, prefer }) {
+  if (route.kind === 'service') {
+    // Native omits Expires on the service document and $metadata (see baseHeaders).
+    const etag = d.metadata.etag();
+    if (method === 'GET' && c.req.headers['if-none-match'] === etag) return metadataNotModified(etag);
+    return method === 'GET'
+      ? {
+          status: 200,
+          headers: { expires: undefined, ETag: etag },
+          body: d.metadata.serviceDocument(origin, route.version),
+        }
+      : methodNotAllowed(c);
+  }
+  if (method !== 'GET') return methodNotAllowed(c);
+  const etag = d.metadata.etag();
+  if (c.req.headers['if-none-match'] === etag) return metadataNotModified(etag);
+  return {
+    status: 200,
+    headers: { 'content-type': 'application/xml', expires: undefined, ETag: etag },
+    body: d.metadata.csdl(origin, {
+      annotations: url.searchParams.get('annotations') === 'true' || prefer.annotations === '*',
+    }),
+  };
+}
+
 function dispatchTaggedRoute(d, c, route, common, body) {
   const { method, origin, url, prefer } = c;
   switch (route.kind) {
-    case 'service': {
-      // Native omits Expires on the service document and $metadata (see baseHeaders).
-      const etag = d.metadata.etag();
-      if (method === 'GET' && c.req.headers['if-none-match'] === etag) return metadataNotModified(etag);
-      return method === 'GET'
-        ? {
-            status: 200,
-            headers: { expires: undefined, ETag: etag },
-            body: d.metadata.serviceDocument(origin, route.version),
-          }
-        : methodNotAllowed(c);
-    }
-    case 'metadata': {
-      if (method !== 'GET') return methodNotAllowed(c);
-      const etag = d.metadata.etag();
-      if (c.req.headers['if-none-match'] === etag) return metadataNotModified(etag);
-      return {
-        status: 200,
-        headers: { 'content-type': 'application/xml', expires: undefined, ETag: etag },
-        body: d.metadata.csdl(origin, {
-          annotations: url.searchParams.get('annotations') === 'true' || prefer.annotations === '*',
-        }),
-      };
-    }
+    case 'service':
+    case 'metadata':
+      return dispatchMetadataRoute(d, c, route, { method, origin, url, prefer });
     case 'batch':
       return batchCall(d, c, common);
     case 'function':
@@ -2033,6 +2037,7 @@ export async function startDataverseApi({
     log,
     extensions,
   });
+  const activeOrganization = organization;
   ({ store, settings, change, clock } = organization);
   const { api, principals, metadata, changes, routes, limits, tenantId, organizationId, environmentId } = organization;
   const operations = organization.registry,
@@ -2046,7 +2051,7 @@ export async function startDataverseApi({
         Promise.resolve().then(() => tds?.close()),
         ...servers.map(closeServer),
       ]);
-      if (ownsOrganization) await organization.close();
+      if (ownsOrganization) await activeOrganization.close();
       const failures = results.filter((result) => result.status === 'rejected').map((result) => result.reason);
       if (failures.length) throw new AggregateError(failures, 'Dataverse transport cleanup failed.');
     })());

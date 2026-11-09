@@ -575,7 +575,7 @@ export function observedConfig(value, label = 'observed') {
   const observed = {};
   if (Object.hasOwn(value, 'dataverseAttributeErrorContexts')) {
     const property = Object.getOwnPropertyDescriptor(value, 'dataverseAttributeErrorContexts');
-    if (!('value' in property)) throw Error(`${label}.dataverseAttributeErrorContexts requires explicit data`);
+    if (!('value' in property)) throw new Error(`${label}.dataverseAttributeErrorContexts requires explicit data`);
     observed.dataverseAttributeErrorContexts = validateDataverseAttributeErrorContexts(
       property.value,
       `${label}.dataverseAttributeErrorContexts`,

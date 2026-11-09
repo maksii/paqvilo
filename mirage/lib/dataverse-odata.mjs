@@ -195,7 +195,7 @@ function keyProblem(text) {
   const option = parts[3];
   if (
     parts.length === 4 &&
-    result.segment === 'Attributes' &&
+    second.name === 'Attributes' &&
     second.args !== undefined &&
     cast &&
     third.args === undefined &&
@@ -277,7 +277,7 @@ function resource(rest, path) {
   // One segment may also name an operation: the router resolves `candidate` against the registry before treating it as a set.
   if (head.args === '') return unknown;
   const key = head.args;
-  if (key !== undefined) {
+  if (key) {
     const problem = keyProblem(key);
     if (problem) return invalid(problem);
   }
@@ -565,8 +565,9 @@ export function skipTokenQueryValue(token) {
 export function decodeSkipToken(text) {
   let raw = String(text ?? '').trim();
   if (!raw.startsWith('<')) {
-    raw = decode(raw);
-    if (raw === null) return null;
+    const decoded = decode(raw);
+    if (!decoded) return null;
+    raw = decoded;
   }
   const outer = /<cookie\s+pagenumber="(\d+)"\s+pagingcookie="([^"]*)"/.exec(raw);
   if (!outer) return null;

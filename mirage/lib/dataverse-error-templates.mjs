@@ -37,32 +37,14 @@ function dataverseReaderTemplateKey(descriptor) {
     Object.keys(descriptor).length !== fields.length + 2 ||
     Object.keys(descriptor).some((key) => !['kind', 'target', ...fields].includes(key))
   )
-    throw Error('Finite Dataverse reader template descriptor required');
+    throw new Error('Finite Dataverse reader template descriptor required');
   for (const field of fields)
     if (!(field.endsWith('Type') ? TYPES : NODES).has(descriptor[field]))
-      throw Error('Unsupported Dataverse reader template type/node');
+      throw new Error('Unsupported Dataverse reader template type/node');
   return JSON.stringify(Object.fromEntries(['target', 'kind', ...fields].map((key) => [key, descriptor[key]])));
 }
 
-function dataverseReaderTemplateDescriptor(message, target = 'record') {
-  if (
-    typeof message !== 'string' ||
-    !message.startsWith('Error identified in Payload provided by the user for Entity :')
-  )
-    return null;
-  const separator = ' ---->  InnerException : ';
-  const at = message.indexOf(separator);
-  const detail = at < 0 ? null : message.slice(at + separator.length);
-  if (!detail) return null;
-  // Match the final canonical cause, never diagnostic-looking text inside a
-  // submitted literal. Literals can contain quotes, CRLF and this separator.
-  const literalMessage = detail.startsWith("Microsoft.OData.ODataException: Cannot convert the literal '");
-  let found = literalMessage
-    ? / ---> Microsoft\.OData\.ODataException: Cannot convert a value of type '(Edm\.\w+)' to the expected target type '(Edm\.\w+)'\.$/.exec(
-        detail,
-      )
-    : null;
-  if (found) return { target, kind: 'primitive-type', sourceType: found[1], expectedType: found[2] };
+function primitiveFormatDescriptor(detail, literalMessage, target) {
   const formatCauses = [
     ['Edm.Boolean', 'String was not recognized as a valid Boolean.'],
     ['Edm.Int32', 'Input string was not in a correct format.'],
@@ -91,6 +73,30 @@ function dataverseReaderTemplateDescriptor(message, target = 'record') {
     detail.includes("' to the expected type 'Edm.Date'. ---> System.FormatException: String '")
   )
     return { target, kind: 'primitive-format', expectedType: 'Edm.Date' };
+  return null;
+}
+
+function dataverseReaderTemplateDescriptor(message, target = 'record') {
+  if (
+    typeof message !== 'string' ||
+    !message.startsWith('Error identified in Payload provided by the user for Entity :')
+  )
+    return null;
+  const separator = ' ---->  InnerException : ';
+  const at = message.indexOf(separator);
+  const detail = at < 0 ? null : message.slice(at + separator.length);
+  if (!detail) return null;
+  // Match the final canonical cause, never diagnostic-looking text inside a
+  // submitted literal. Literals can contain quotes, CRLF and this separator.
+  const literalMessage = detail.startsWith("Microsoft.OData.ODataException: Cannot convert the literal '");
+  let found = literalMessage
+    ? / ---> Microsoft\.OData\.ODataException: Cannot convert a value of type '(Edm\.\w+)' to the expected target type '(Edm\.\w+)'\.$/.exec(
+        detail,
+      )
+    : null;
+  if (found) return { target, kind: 'primitive-type', sourceType: found[1], expectedType: found[2] };
+  const primitiveFormat = primitiveFormatDescriptor(detail, literalMessage, target);
+  if (primitiveFormat) return primitiveFormat;
   found =
     /^Microsoft\.OData\.ODataException: Cannot convert a value to target type '(Edm\.\w+)' because of conflict between input format string\/number and parameter 'IEEE754Compatible' false\/true\.$/.exec(
       detail,
@@ -131,19 +137,19 @@ export function validateDataverseErrorTemplates(value) {
     !value.evidence.trim() ||
     !Array.isArray(value.templates)
   )
-    throw Error('dataverseErrorTemplates requires version1, evidence and 1..128 templates');
+    throw new Error('dataverseErrorTemplates requires version1, evidence and 1..128 templates');
   const entries = templateDataArray(value.templates, { maximum: 128, label: 'Dataverse reader templates' });
   const keys = new Set();
   return entries.map((template) => {
     templateDataRecord(template, 'Dataverse reader templates');
     if (!['POST', 'PATCH', 'PUT'].includes(template?.method))
-      throw Error('Dataverse reader template requires evidenced POST/PATCH/PUT method');
+      throw new Error('Dataverse reader template requires evidenced POST/PATCH/PUT method');
     const key = template.method + ':' + dataverseReaderTemplateKey(template.descriptor);
-    if (keys.has(key)) throw Error('Duplicate Dataverse reader template descriptor');
+    if (keys.has(key)) throw new Error('Duplicate Dataverse reader template descriptor');
     keys.add(key);
     for (const field of ['capturedSourceSha256', 'qualifiedVariationSha256', 'suffixSha256'])
       if (typeof template[field] !== 'string' || !SHA.test(template[field]))
-        throw Error('Dataverse reader template requires source, variation and suffix SHA256');
+        throw new Error('Dataverse reader template requires source, variation and suffix SHA256');
     const suffix = template.suffix;
     if (
       typeof suffix !== 'string' ||
@@ -153,7 +159,7 @@ export function validateDataverseErrorTemplates(value) {
       Buffer.byteLength(suffix) > 131072 ||
       sha(suffix) !== template.suffixSha256
     )
-      throw Error('Dataverse reader template requires bounded exact CRLF suffix/hash');
+      throw new Error('Dataverse reader template requires bounded exact CRLF suffix/hash');
     return {
       key,
       suffix,
@@ -169,11 +175,11 @@ export function collectDataverseErrorTemplates(packs = []) {
   for (const pack of packs) {
     const property = Object.getOwnPropertyDescriptor(pack, 'dataverseErrorTemplates');
     if (!property) continue;
-    if (!('value' in property)) throw Error('dataverseErrorTemplates must be an explicit data property');
+    if (!('value' in property)) throw new Error('dataverseErrorTemplates must be an explicit data property');
     if (property.value === undefined) continue;
     for (const template of validateDataverseErrorTemplates(property.value)) {
       if (templates.has(template.key))
-        throw Error('Matching packs have duplicate Dataverse reader template descriptors');
+        throw new Error('Matching packs have duplicate Dataverse reader template descriptors');
       templates.set(template.key, Object.freeze({ ...template, packId: pack.id }));
     }
   }

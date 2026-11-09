@@ -10,29 +10,33 @@ const assets = {
   'win32-x64': {
     actionlint: [
       '1.7.12',
-      'https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_windows_amd64.zip',
+      'https://api.github.com/repos/rhysd/actionlint/releases/assets/384924919',
       '6e7241b51e6817ea6a047693d8e6fed13b31819c9a0dd6c5a726e1592d22f6e9',
       'actionlint.exe',
+      'actionlint_1.7.12_windows_amd64.zip',
     ],
     shellcheck: [
       '0.11.0',
-      'https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.zip',
+      'https://api.github.com/repos/koalaman/shellcheck/releases/assets/279056944',
       '8a4e35ab0b331c85d73567b12f2a444df187f483e5079ceffa6bda1faa2e740e',
       'shellcheck.exe',
+      'shellcheck-v0.11.0.zip',
     ],
   },
   'linux-x64': {
     actionlint: [
       '1.7.12',
-      'https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz',
+      'https://api.github.com/repos/rhysd/actionlint/releases/assets/384924896',
       '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8',
       'actionlint',
+      'actionlint_1.7.12_linux_amd64.tar.gz',
     ],
     shellcheck: [
       '0.11.0',
-      'https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.gz',
+      'https://api.github.com/repos/koalaman/shellcheck/releases/assets/336391469',
       'b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6',
       'shellcheck-v0.11.0/shellcheck',
+      'shellcheck-v0.11.0.linux.x86_64.tar.gz',
     ],
   },
 };
@@ -43,10 +47,10 @@ function execute(command, args, env = process.env) {
 }
 const digest = (file) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 async function provision(name, specification) {
-  const [version, url, expected, executable] = specification;
+  const [version, url, expected, executable, archiveName] = specification;
   const cache = path.resolve(process.env.PAQVILO_TOOL_CACHE ?? path.join(root, '.paqvilo/tools'));
   const directory = path.join(cache, `${name}-${version}-${process.platform}-${process.arch}`);
-  const archive = path.join(directory, path.basename(url));
+  const archive = path.join(directory, archiveName);
   const target = path.join(directory, 'unpacked', executable);
   const receipt = path.join(directory, 'verified.json');
   fs.mkdirSync(directory, { recursive: true });

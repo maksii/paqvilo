@@ -97,44 +97,47 @@ export function analyzeMemoryRendererSlice({ ast, selected, root, filePath, impl
         sut.defs[0].type === 'ImportBinding' &&
         implementationSources.includes(sut.defs[0].parent.source.value),
     );
-    for (const item of ast.body.filter((node) => node.type === 'ImportDeclaration')) {
-      const source = item.source.value;
-      if (['node:test', 'node:assert', 'node:assert/strict'].includes(source)) continue;
-      if (source === 'node:fs') {
+    const verifyImports = () => {
+      for (const item of ast.body.filter((node) => node.type === 'ImportDeclaration')) {
+        const source = item.source.value;
+        if (['node:test', 'node:assert', 'node:assert/strict'].includes(source)) continue;
+        if (source === 'node:fs') {
+          check(
+            item.specifiers.length === 1 &&
+              item.specifiers[0].type === 'ImportSpecifier' &&
+              item.specifiers[0].imported.name === 'readFileSync',
+          );
+          continue;
+        }
+        if (source === 'node:crypto') {
+          check(
+            item.specifiers.length === 1 &&
+              item.specifiers[0].type === 'ImportSpecifier' &&
+              item.specifiers[0].imported.name === 'createHash',
+          );
+          continue;
+        }
+        if (item === sut.defs[0].parent) {
+          check(item.specifiers.length === 1 && item.specifiers[0].type === 'ImportSpecifier');
+          continue;
+        }
         check(
-          item.specifiers.length === 1 &&
-            item.specifiers[0].type === 'ImportSpecifier' &&
-            item.specifiers[0].imported.name === 'readFileSync',
+          typeof root === 'string' &&
+            typeof filePath === 'string' &&
+            typeof source === 'string' &&
+            /^\.\.?\//u.test(source) &&
+            !/[?#\\]/u.test(source) &&
+            path.resolve(root, path.dirname(filePath), source) === path.resolve(root, 'scripts/qualify-parity.mjs') &&
+            item.specifiers.length > 0 &&
+            item.specifiers.every(
+              (part) =>
+                part.type === 'ImportSpecifier' &&
+                ['assertParityBindings', 'assertParityBindingsFromSource'].includes(part.imported.name),
+            ),
         );
-        continue;
       }
-      if (source === 'node:crypto') {
-        check(
-          item.specifiers.length === 1 &&
-            item.specifiers[0].type === 'ImportSpecifier' &&
-            item.specifiers[0].imported.name === 'createHash',
-        );
-        continue;
-      }
-      if (item === sut.defs[0].parent) {
-        check(item.specifiers.length === 1 && item.specifiers[0].type === 'ImportSpecifier');
-        continue;
-      }
-      check(
-        typeof root === 'string' &&
-          typeof filePath === 'string' &&
-          typeof source === 'string' &&
-          /^\.\.?\//u.test(source) &&
-          !/[?#\\]/u.test(source) &&
-          path.resolve(root, path.dirname(filePath), source) === path.resolve(root, 'scripts/qualify-parity.mjs') &&
-          item.specifiers.length > 0 &&
-          item.specifiers.every(
-            (part) =>
-              part.type === 'ImportSpecifier' &&
-              ['assertParityBindings', 'assertParityBindingsFromSource'].includes(part.imported.name),
-          ),
-      );
-    }
+    };
+    verifyImports();
     const registrations = ast.body.filter((node) => node.type === 'ExpressionStatement').map((node) => node.expression);
     const testImport = ast.body.filter(
       (node) => node.type === 'ImportDeclaration' && node.source.value === 'node:test',
@@ -146,13 +149,10 @@ export function analyzeMemoryRendererSlice({ ast, selected, root, filePath, impl
     );
     const testVar = moduleScope.variables.find((item) => item.name === testImport[0].specifiers[0].local.name);
     check(
-      testVar &&
-        testVar.references.every((ref) => {
-          const parent = parents.get(ref.identifier);
-          return (
-            parent?.type === 'CallExpression' && parent.callee === ref.identifier && registrations.includes(parent)
-          );
-        }),
+      testVar?.references.every((ref) => {
+        const parent = parents.get(ref.identifier);
+        return parent?.type === 'CallExpression' && parent.callee === ref.identifier && registrations.includes(parent);
+      }),
     );
     check(registrations.every((registration) => registration.arguments[1].params.length === 0));
     check(
@@ -161,59 +161,64 @@ export function analyzeMemoryRendererSlice({ ast, selected, root, filePath, impl
         return parent?.type === 'CallExpression' && parent.callee === ref.identifier;
       }),
     );
-    walk(ast, (node) => {
-      check(!['AssignmentExpression', 'UpdateExpression', 'ImportExpression'].includes(node.type));
-      if (node.type === 'MemberExpression') {
-        check(!node.computed || node.property.type === 'Literal');
-        check(
-          !['constructor', 'prototype', '__proto__'].includes(node.computed ? node.property.value : node.property.name),
-        );
-      }
-      if (node.type === 'ObjectPattern')
-        for (const property of node.properties)
+    const verifyReferences = () => {
+      walk(ast, (node) => {
+        check(!['AssignmentExpression', 'UpdateExpression', 'ImportExpression'].includes(node.type));
+        if (node.type === 'MemberExpression') {
+          check(!node.computed || node.property.type === 'Literal');
           check(
-            property.type === 'RestElement' ||
-              (property.type === 'Property' &&
-                !property.computed &&
-                !['constructor', 'prototype', '__proto__'].includes(property.key.name ?? property.key.value)),
+            !['constructor', 'prototype', '__proto__'].includes(
+              node.computed ? node.property.value : node.property.name,
+            ),
           );
-    });
-    for (const [identifier, variable] of refs) {
-      if (variable) continue;
-      const parent = parents.get(identifier),
-        grandparent = parents.get(parent);
-      if (identifier.name === 'undefined') continue;
-      if (identifier.name === 'JSON') {
-        check(
-          parent?.type === 'MemberExpression' &&
-            !parent.computed &&
-            parent.object === identifier &&
-            parent.property.name === 'parse' &&
-            grandparent?.type === 'CallExpression' &&
-            grandparent.callee === parent,
-        );
-        continue;
+        }
+        if (node.type === 'ObjectPattern')
+          for (const property of node.properties)
+            check(
+              property.type === 'RestElement' ||
+                (property.type === 'Property' &&
+                  !property.computed &&
+                  !['constructor', 'prototype', '__proto__'].includes(property.key.name ?? property.key.value)),
+            );
+      });
+      for (const [identifier, variable] of refs) {
+        if (variable) continue;
+        const parent = parents.get(identifier),
+          grandparent = parents.get(parent);
+        if (identifier.name === 'undefined') continue;
+        if (identifier.name === 'JSON') {
+          check(
+            parent?.type === 'MemberExpression' &&
+              !parent.computed &&
+              parent.object === identifier &&
+              parent.property.name === 'parse' &&
+              grandparent?.type === 'CallExpression' &&
+              grandparent.callee === parent,
+          );
+          continue;
+        }
+        if (identifier.name === 'URL') {
+          check(
+            parent?.type === 'NewExpression' &&
+              parent.callee === identifier &&
+              parent.arguments.length === 2 &&
+              parent.arguments[0]?.type === 'Literal' &&
+              typeof parent.arguments[0].value === 'string' &&
+              parent.arguments[0].value.startsWith('./') &&
+              !/[?#\\]/u.test(parent.arguments[0].value) &&
+              parent.arguments[1]?.type === 'MemberExpression' &&
+              !parent.arguments[1].computed &&
+              parent.arguments[1].property.name === 'url' &&
+              parent.arguments[1].object?.type === 'MetaProperty' &&
+              parent.arguments[1].object.meta.name === 'import' &&
+              parent.arguments[1].object.property.name === 'meta',
+          );
+          continue;
+        }
+        fail();
       }
-      if (identifier.name === 'URL') {
-        check(
-          parent?.type === 'NewExpression' &&
-            parent.callee === identifier &&
-            parent.arguments.length === 2 &&
-            parent.arguments[0]?.type === 'Literal' &&
-            typeof parent.arguments[0].value === 'string' &&
-            parent.arguments[0].value.startsWith('./') &&
-            !/[?#\\]/u.test(parent.arguments[0].value) &&
-            parent.arguments[1]?.type === 'MemberExpression' &&
-            !parent.arguments[1].computed &&
-            parent.arguments[1].property.name === 'url' &&
-            parent.arguments[1].object?.type === 'MetaProperty' &&
-            parent.arguments[1].object.meta.name === 'import' &&
-            parent.arguments[1].object.property.name === 'meta',
-        );
-        continue;
-      }
-      fail();
-    }
+    };
+    verifyReferences();
     const assertions = new Set(
       ast.body
         .filter(
@@ -225,7 +230,7 @@ export function analyzeMemoryRendererSlice({ ast, selected, root, filePath, impl
         ),
     );
     const fixtures = [];
-    for (const item of selected) {
+    const certifySelected = (item) => {
       const row = item.old,
         callback = row.callback;
       check(
@@ -282,7 +287,9 @@ export function analyzeMemoryRendererSlice({ ast, selected, root, filePath, impl
         inputSha256: hash(input.arguments[0]),
         selectedBodySha256: hash(callback.body),
       });
-    }
+    };
+    for (const item of selected) certifySelected(item);
+
     return { ...empty(), fixtures, requiresAllRegistrations: true };
   } catch {
     return empty();

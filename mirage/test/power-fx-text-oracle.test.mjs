@@ -7,11 +7,16 @@ import { createPowerFxEvaluator } from '../lib/canvas-power-fx.mjs';
 
 // @parity-evidence: two fresh official PAC executions confirm every existing expression/expected pair without changing any assertion.
 const evidenceBytes = fs.readFileSync(new URL('./fixtures/power-fx-text-official-evidence.json', import.meta.url));
-assert.equal(
-  createHash('sha256').update(evidenceBytes).digest('hex'),
-  'd617ce55a499dbbbcb3211566e6df1be96ff357aa0a63e9cfa36a537a7af5263',
-);
+
 const native = new Map(JSON.parse(evidenceBytes).cases.map((row) => [row.expression, row.value]));
+
+// @parity-evidence: the two official PAC captures in power-fx-text-official-evidence.json bind the unchanged numeric Text cases. The same pinned setup checks run before the tests.
+test.before(() => {
+  assert.equal(
+    createHash('sha256').update(evidenceBytes).digest('hex'),
+    'd617ce55a499dbbbcb3211566e6df1be96ff357aa0a63e9cfa36a537a7af5263',
+  );
+});
 
 test('Text formats exact Decimal and Float values like the PAC numeric probes', () => {
   const fx = createPowerFxEvaluator();

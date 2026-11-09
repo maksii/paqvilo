@@ -906,10 +906,12 @@ export function createCanvasApp({
           dataRowLimit: CANVAS_DATA_ROW_LIMIT,
           dataSource: (name) => {
             if (scope.component && !scope.component.accessAppScope) return undefined;
+            // A records host is created only from a context built with api and caller.
             const entry = dataSources.get(name),
-              table = entry?.table ?? name;
+              table = entry?.table ?? name,
+              recordApi = /** @type {{store?: {state?: {mappings?: Record<string, {entitySet?: string}>}}}} */ (api);
             // By entity set: a store mapping keyed by logical name need not repeat its logicalName.
-            const found = records?.dataSource(api.store?.state?.mappings?.[table]?.entitySet ?? table);
+            const found = records?.dataSource(recordApi.store?.state?.mappings?.[table]?.entitySet ?? table);
             if (found) return new FxDataSource(name, journaledAdapter(found.adapter, name));
             if (entry && String(entry.kind).toLowerCase() === 'table') {
               const message = `Canvas data source ${name} is declared but has no configured local table.`;

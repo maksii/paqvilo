@@ -6,7 +6,8 @@ import { pathToFileURL } from 'node:url';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
-import test from 'node:test';
+import test, { before } from 'node:test';
+import { check, kindsAt, parseTestKinds } from '../scripts/check-test-tags.mjs';
 import {
   describeParitySource,
   parityHash,
@@ -25,7 +26,87 @@ function walk(n) {
   for (const v of Object.values(n)) for (const c of Array.isArray(v) ? v : [v]) if (c?.type) walk(c);
 }
 walk(ast);
-assert.ok(transport);
+before(() => assert.ok(transport));
+test('legacy marker detection preserves comment whitespace and word boundaries', () => {
+  const file = 'legacy.test.mjs';
+  const legacy = new Set([file]);
+  const inspect = (source) => check({ files: [file], newText: () => source, legacy });
+  assert.match(
+    inspect("//\n @test-kind tooling: misplaced marker\ntest('x', () => {}); ").join('\n'),
+    /test has no @test-kind/,
+  );
+  assert.deepEqual(inspect("// @test-kindx\ntest('x', () => {});"), []);
+});
+test('declaration scopes retain kinds for loops and indented awaited subtests', () => {
+  const source = [
+    '// @test-kind unproven: invented parent behavior remains unverified.',
+    "import test from 'node:test';",
+    "test('parent', async (t) => {",
+    '  // @test-kind security: invented child boundary is enforced.',
+    "  await t.test('child', async () => {});",
+    '});',
+    '// @test-kind contract: invented loop cases retain their common contract.',
+    "['one', 'two'].forEach((name) => test(name, () => {}));",
+    "it.only('next', () => {});",
+  ].join('\n');
+  const parsed = parseTestKinds(source);
+  assert.deepEqual(parsed.errors, []);
+  assert.deepEqual(kindsAt(parsed, 5), ['security']);
+  assert.deepEqual(kindsAt(parsed, 8), ['contract']);
+  assert.deepEqual(kindsAt(parsed, 9), ['unproven']);
+});
+test('only the bound assertion wrapper preserves the original source guard', () => {
+  const old = `// @test-kind unproven: invented source guard fixture.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { assertParityBindingsFromSource as __paqParitySourceBindings } from './guard.mjs';
+test('parity source bindings 0123456789abcdef', () => { __paqParitySourceBindings(import.meta.url); });`;
+  const wrapped = old.replace(
+    '__paqParitySourceBindings(import.meta.url);',
+    'assert.doesNotThrow(() => __paqParitySourceBindings(import.meta.url));',
+  );
+  const problems = (next) =>
+    check({ files: ['sample.test.mjs'], oldText: () => old, newText: () => next, diffOf: () => '@@ -0,0 +1 @@\n+x\n' });
+  assert.deepEqual(problems(wrapped), []);
+  const two = `${old}\ntest('parity source bindings fedcba9876543210', () => { __paqParitySourceBindings(import.meta.url); });`;
+  const twoWrapped = two.replaceAll(
+    '__paqParitySourceBindings(import.meta.url);',
+    'assert.doesNotThrow(() => __paqParitySourceBindings(import.meta.url));',
+  );
+  const twoProblems = (next) =>
+    check({ files: ['sample.test.mjs'], oldText: () => two, newText: () => next, diffOf: () => '@@ -0,0 +1 @@\n+x\n' });
+  assert.deepEqual(twoProblems(twoWrapped), []);
+  assert.match(
+    twoProblems(
+      twoWrapped.replace("test('parity source bindings fed", "unknown(); test('parity source bindings fed"),
+    ).join('\n'),
+    /no longer executed at module level/,
+  );
+  for (const next of [
+    wrapped.replace("import assert from 'node:assert/strict';", "import assert from './forged.mjs';"),
+    wrapped.replace('() => { assert.doesNotThrow', '() => { const assert = fake; assert.doesNotThrow'),
+    wrapped.replace('assert.doesNotThrow(() =>', 'assert.doesNotThrow(async () =>'),
+    wrapped.replace('assert.doesNotThrow(() =>', 'assert.doesNotThrow((value) =>'),
+    wrapped.replace('import.meta.url', "'other'"),
+    wrapped.replace('assert.doesNotThrow(() =>', 'assert.doesNotThrow(1, () =>'),
+    wrapped.replace('); });', '); __paqParitySourceBindings(import.meta.url); });'),
+    wrapped.replace('assert.doesNotThrow(() => __paqParitySourceBindings(import.meta.url));', ''),
+    wrapped.replace("test('parity source", "const leaked = assert; test('parity source"),
+  ]) {
+    assert.notEqual(next, wrapped);
+    assert.match(problems(next).join('\n'), /no longer executed at module level/);
+  }
+  let calls = 0;
+  assert.throws(
+    () =>
+      assert.doesNotThrow(() => {
+        calls++;
+        throw new Error('invented guard failure');
+      }),
+    /invented guard failure/,
+  );
+  assert.equal(calls, 1);
+});
 const lines = [
   '// @test-kind unproven: Invented fixture for qualifier tooling.',
   "import { describe, it, before, after } from 'node:test'; import assert from 'node:assert/strict'; import { request } from 'node:http'; import { emptyState, start } from './sut.mjs';",

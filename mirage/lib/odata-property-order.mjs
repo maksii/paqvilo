@@ -19,8 +19,8 @@ export function validateODataPropertyOrder(value, label = 'odataPropertyOrder') 
       name.startsWith('__') ||
       reserved.has(name.toLowerCase())
     )
-      throw Error(`${label} requires explicit structural property names`);
-    if (names.has(name)) throw Error(`${label} contains a duplicate property`);
+      throw new Error(`${label} requires explicit structural property names`);
+    if (names.has(name)) throw new Error(`${label} contains a duplicate property`);
     names.add(name);
   }
   return order;
@@ -30,7 +30,7 @@ export function mappedODataPropertyOrder(mapping) {
   if (!mapping || typeof mapping !== 'object') return undefined;
   const property = Object.getOwnPropertyDescriptor(mapping, 'odataPropertyOrder');
   if (!property) return undefined;
-  if (!('value' in property)) throw Error('odataPropertyOrder requires an own data property');
+  if (!('value' in property)) throw new Error('odataPropertyOrder requires an own data property');
   return validateODataPropertyOrder(property.value);
 }
 
@@ -58,12 +58,10 @@ export function orderODataProperties(value, order) {
     // Unknown annotations retain their original order and side of the base.
     return entry.index < (bases.get(entry.group) ?? Infinity) ? 0 : 4;
   };
-  entries.sort((a, b) =>
-    a.rank === b.rank
-      ? groups.get(a.group) - groups.get(b.group) || withinGroup(a) - withinGroup(b) || a.index - b.index
-      : a.rank < b.rank
-        ? -1
-        : 1,
-  );
+  entries.sort((a, b) => {
+    if (a.rank === b.rank)
+      return groups.get(a.group) - groups.get(b.group) || withinGroup(a) - withinGroup(b) || a.index - b.index;
+    return a.rank < b.rank ? -1 : 1;
+  });
   return Object.fromEntries(entries.map(({ key, item }) => [key, item]));
 }

@@ -3,22 +3,9 @@
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { assertPureFixtureBootstrap } from './parity-generated-fixtures.mjs';
+import { hashAst as digest } from './parity-ast-utils.mjs';
 
 const { analyze } = createRequire(import.meta.url)('eslint-scope');
-const clean = (value) =>
-  Array.isArray(value)
-    ? value.map(clean)
-    : !value || typeof value !== 'object'
-      ? value
-      : Object.fromEntries(
-          Object.entries(value)
-            .filter(([key]) => !['loc', 'range', 'start', 'end', 'raw'].includes(key))
-            .map(([key, item]) => [key, clean(item)]),
-        );
-const digest = (value) =>
-  createHash('sha256')
-    .update(JSON.stringify(clean(value)))
-    .digest('hex');
 const fail = (reason) => {
   throw Object.assign(new Error(reason), { qualificationCode: reason });
 };
@@ -69,12 +56,7 @@ function bootstrap(ast) {
     ...ast,
     body: ast.body.filter((x) => {
       const call = x.type === 'ExpressionStatement' && x.expression;
-      if (
-        !call ||
-        call.type !== 'CallExpression' ||
-        call.callee.type !== 'Identifier' ||
-        !allowed.has(call.callee.name)
-      )
+      if (call?.type !== 'CallExpression' || call.callee.type !== 'Identifier' || !allowed.has(call.callee.name))
         return true;
       const meta = call.arguments[0];
       check(
@@ -236,8 +218,7 @@ export function certifyMemoryContextSlice({
     const variable = refs.get(node),
       def = variable?.defs?.[0];
     check(
-      variable &&
-        variable.scope.block === old.callback &&
+      variable?.scope.block === old.callback &&
         variable.defs.length === 1 &&
         def.type === 'Variable' &&
         def.parent.kind === 'const' &&
@@ -250,74 +231,79 @@ export function certifyMemoryContextSlice({
     check(value?.type === 'Literal' && typeof value.value === 'string');
     return value.value;
   }
-  const receiver = call.callee.object;
-  let input,
-    engine = null;
-  if (receiver.type === 'CallExpression') input = construction(receiver);
-  else {
-    check(receiver.type === 'Identifier');
-    engine = refs.get(receiver);
+  function inspectEngineReference(ref, engine) {
+    const member = parents.get(ref.identifier),
+      invoke = parents.get(member);
     check(
-      engine &&
-        engine.scope.block === old.callback &&
-        engine.defs.length === 1 &&
-        engine.defs[0].type === 'Variable' &&
-        engine.defs[0].parent.kind === 'const' &&
-        !engine.references.some((r) => r.isWrite() && !r.init),
+      member?.type === 'MemberExpression' &&
+        !member.computed &&
+        member.object === ref.identifier &&
+        ['renderString', 'contextForPage'].includes(member.property.name) &&
+        invoke?.type === 'CallExpression' &&
+        invoke.callee === member &&
+        !invoke.optional,
     );
-    input = construction(engine.defs[0].node.init);
-    for (const ref of engine.references.filter((r) => !r.init)) {
-      const member = parents.get(ref.identifier),
-        invoke = parents.get(member);
-      check(
-        member?.type === 'MemberExpression' &&
-          !member.computed &&
-          member.object === ref.identifier &&
-          ['renderString', 'contextForPage'].includes(member.property.name) &&
-          invoke?.type === 'CallExpression' &&
-          invoke.callee === member &&
-          !invoke.optional,
-      );
-      if (member.property.name === 'contextForPage') {
-        check(invoke.arguments.length > 0 && invoke.arguments.every(literal));
-      } else {
-        check(parents.get(invoke)?.type === 'AwaitExpression');
-        check(invoke.arguments.length >= 1 && invoke.arguments.length <= 2);
-        staticSource(invoke.arguments[0]);
-        if (invoke.arguments.length === 2 && !literal(invoke.arguments[1])) {
-          const { variable, init } = localConstant(invoke.arguments[1]);
+    if (member.property.name === 'contextForPage') {
+      check(invoke.arguments.length > 0 && invoke.arguments.every(literal));
+    } else {
+      check(parents.get(invoke)?.type === 'AwaitExpression');
+      check(invoke.arguments.length >= 1 && invoke.arguments.length <= 2);
+      staticSource(invoke.arguments[0]);
+      if (invoke.arguments.length === 2 && !literal(invoke.arguments[1])) {
+        const { variable, init } = localConstant(invoke.arguments[1]);
+        check(
+          init?.type === 'CallExpression' &&
+            init.callee?.type === 'MemberExpression' &&
+            !init.callee.computed &&
+            init.callee.property.name === 'contextForPage' &&
+            init.callee.object.type === 'Identifier' &&
+            refs.get(init.callee.object) === engine &&
+            init.arguments.length > 0 &&
+            init.arguments.every(literal),
+        );
+        for (const use of variable.references.filter((r) => !r.init)) {
+          const parent = parents.get(use.identifier),
+            memberUse = parent?.callee;
           check(
-            init?.type === 'CallExpression' &&
-              init.callee?.type === 'MemberExpression' &&
-              !init.callee.computed &&
-              init.callee.property.name === 'contextForPage' &&
-              init.callee.object.type === 'Identifier' &&
-              refs.get(init.callee.object) === engine &&
-              init.arguments.length > 0 &&
-              init.arguments.every(literal),
+            parent?.type === 'CallExpression' &&
+              parent.arguments.includes(use.identifier) &&
+              memberUse?.type === 'MemberExpression' &&
+              !memberUse.computed &&
+              memberUse.property.name === 'renderString' &&
+              memberUse.object.type === 'Identifier' &&
+              refs.get(memberUse.object) === engine,
           );
-          for (const use of variable.references.filter((r) => !r.init)) {
-            const parent = parents.get(use.identifier),
-              memberUse = parent?.callee;
-            check(
-              parent?.type === 'CallExpression' &&
-                parent.arguments.includes(use.identifier) &&
-                memberUse?.type === 'MemberExpression' &&
-                !memberUse.computed &&
-                memberUse.property.name === 'renderString' &&
-                memberUse.object.type === 'Identifier' &&
-                refs.get(memberUse.object) === engine,
-            );
-          }
         }
       }
     }
   }
+  function resolveReceiver() {
+    const receiver = call.callee.object;
+    let input,
+      engine = null;
+    if (receiver.type === 'CallExpression') input = construction(receiver);
+    else {
+      check(receiver.type === 'Identifier');
+      engine = refs.get(receiver);
+      check(
+        engine &&
+          engine.scope.block === old.callback &&
+          engine.defs.length === 1 &&
+          engine.defs[0].type === 'Variable' &&
+          engine.defs[0].parent.kind === 'const' &&
+          !engine.references.some((r) => r.isWrite() && !r.init),
+      );
+      input = construction(engine.defs[0].node.init);
+      for (const ref of engine.references.filter((r) => !r.init)) inspectEngineReference(ref, engine);
+    }
+    return { input, engine };
+  }
+  const { input, engine } = resolveReceiver();
   const sourceValue = staticSource(call.arguments[0]);
   const statement = old.callback.body.body.find(
     (s) => s.range[0] <= assertion.range[0] && s.range[1] >= assertion.range[1],
   );
-  check(statement && statement.type === 'ExpressionStatement' && statement.expression === assertion);
+  check(statement?.type === 'ExpressionStatement' && statement.expression === assertion);
   const prefix = old.callback.body.body.slice(0, old.callback.body.body.indexOf(statement));
   return Object.freeze({
     kind: 'unchanged-memory-context-input',

@@ -9,7 +9,10 @@ const bytes = readFileSync(new URL('./fixtures/power-fx-root-decimal-official.js
 const evidence = JSON.parse(bytes);
 // @test-kind tooling: keep the captured universe and repeated process binding fixed.
 test('decimal corpus is bound to independent processes', () => {
-  assertCorpusProof(bytes, evidence, '488c6fb45307aa8273be4fcdb507b15ca79fefa471c082638111c70fb1819fc0');
+  // @parity-evidence: Tooling-only exposure of the existing pinned corpus digest, distinct processes, matching results and complete expression universe; helper inputs are unchanged.
+  assert.doesNotThrow(() =>
+    assertCorpusProof(bytes, evidence, '488c6fb45307aa8273be4fcdb507b15ca79fefa471c082638111c70fb1819fc0'),
+  );
 });
 for (const expected of evidence.runs[0].results) {
   test(`official decimal parser: ${expected.expression}`, () => {

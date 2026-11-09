@@ -105,6 +105,10 @@ export function debugMarkup(source, file, { onEdits } = {}) {
 // HTML-like strings inside Liquid expressions/tags are data, not inline scripts.
 // Mask tokens only for HTML parsing, retaining every offset and newline so
 // executable script locations still map to the unmodified authored source.
+function liquidTagName(text, begin, end, kind) {
+  if (kind !== '%') return null;
+  return /^-?\s*(\w+)/.exec(text.slice(begin + 2, end < 0 ? text.length : end))?.[1]?.toLowerCase();
+}
 function markupOutsideLiquid(text) {
   const chunks = [];
   const endRaw = /\{%-?\s*endraw\s*-?%\}/g;
@@ -132,8 +136,7 @@ function markupOutsideLiquid(text) {
     }
     const end = liquidTokenEnd(text, begin + 2, kind);
     const finish = end < 0 ? text.length : end + 2;
-    const name =
-      kind === '%' ? /^-?\s*(\w+)/.exec(text.slice(begin + 2, end < 0 ? text.length : end))?.[1]?.toLowerCase() : null;
+    const name = liquidTagName(text, begin, end, kind);
     if (name === 'raw') raw = true;
     chunks.push(text.slice(from, begin), text.slice(begin, finish).replace(/[^\r\n]/g, ' '));
     cursor = from = finish;

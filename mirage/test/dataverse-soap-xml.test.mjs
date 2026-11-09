@@ -799,7 +799,8 @@ __paqSoapBindings(import.meta.url, [
     repositoryRoot: '../..',
     sourceAstSha256: '2493d96ebe4f291610f10f5662a149bf89022e9a024c4177438c036b232c4540',
     loopDescriptorSha256: '8c19f450a09cb29d8238e3425bd9449f38f2e2c9920e7e2a11bea4bff0d40475',
-    helperSha256: '3af7fd505f518d02d0a570718d2d9e9afea274dbddf86f87d841422459d83c75',
+    // @parity-evidence: Two fresh independent Microsoft.CrmSdk.CoreAssemblies 9.0.2.60 SDK runs match all 44 selected original assertions; receipt SHA-256 6bc4b940111bb8ddd1ad77e0d4d4ec64c8fdabc898974ff46bbda3d2b803c2b9, assertion binding SHA-256 4ede2fc3d2cfea7b5d3d39d2eab3ac69e5b04f92d1208e33e4bdf759f3af4329.
+    helperSha256: 'cce389a6db4c1cf9d57683cba2bfd9fd82e50f0a27f80f2d2420a25f11b075a7',
     proofs: [
       {
         path: 'mirage/test/fixtures/dataverse-soap-sdk-interop-20261109.json',

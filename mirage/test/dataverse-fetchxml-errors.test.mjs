@@ -400,5 +400,6 @@ test('the portal FetchXML keeps its own operator message and ignores an unverifi
 
 // @test-kind tooling: Shared source guard reads expected bindings from protected parity bodies and runs independently of their generators; no baseline closure credit.
 test('parity source bindings aaa79e8217bcdfe2', () => {
-  __paqParitySourceBindings(import.meta.url);
+  // @parity-evidence: Tooling-only exposure of the existing source/run/fact/case validator; the same helper and module URL execute once, with every protected binding unchanged.
+  assert.doesNotThrow(() => __paqParitySourceBindings(import.meta.url));
 });

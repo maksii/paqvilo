@@ -812,7 +812,7 @@ export function install(api) {
     entity,
     id,
     column,
-    size = null,
+    size = /** @type {unknown} */ (null),
     content = null,
     fileName = null,
     contentType = null,

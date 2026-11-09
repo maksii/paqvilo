@@ -20,18 +20,16 @@ const AFTER_AST = {
 const TITLE = "lists the keyed record's verbs in Allow on a HEAD or OPTIONS 405";
 const TARGET = 'widgets(aaaaaaaa-0000-0000-0000-000000000001)';
 const ROW = 'aaaaaaaa-0000-0000-0000-000000000001';
-const normalize = (x) =>
-  typeof x === 'bigint'
-    ? { $bigint: String(x) }
-    : Array.isArray(x)
-      ? x.map(normalize)
-      : !x || typeof x !== 'object'
-        ? x
-        : Object.fromEntries(
-            Object.entries(x)
-              .filter(([k]) => !['loc', 'range', 'start', 'end', 'raw'].includes(k))
-              .map(([k, v]) => [k, normalize(v)]),
-          );
+function normalize(x) {
+  if (typeof x === 'bigint') return { $bigint: String(x) };
+  if (Array.isArray(x)) return x.map(normalize);
+  if (!x || typeof x !== 'object') return x;
+  return Object.fromEntries(
+    Object.entries(x)
+      .filter(([k]) => !['loc', 'range', 'start', 'end', 'raw'].includes(k))
+      .map(([k, v]) => [k, normalize(v)]),
+  );
+}
 export const apiRouterSliceAstHash = (value) =>
   createHash('sha256')
     .update(JSON.stringify(normalize(value)))

@@ -14,33 +14,36 @@ const read = (name, checksum) => {
   assert.equal(createHash('sha256').update(bytes).digest('hex'), checksum);
   return JSON.parse(bytes);
 };
-assert.equal(
-  createHash('sha256').update(capturePowerPagesControlContract.toString()).digest('hex'),
-  '17827c2b3477e64afaeee43edbbffea0d165ed30e1f9769f52413f2f99399171',
-);
-assert.equal(
-  createHash('sha256').update(capturePowerPagesClientContract.toString()).digest('hex'),
-  'e7c6f5f00060bb4462c9793fc1b73c1e67e8c6c8f447653c49f73a82a170fc7a',
-);
-const controls = read(
-  'power-pages-controls-expected.json',
-  '6497bea4d8e3307073c5dacfeb6d74ee679bf4b3799153bd83afd2cfc2271d78',
-);
-const client = read(
-  'power-pages-client-expected.json',
-  '7c380709e7abaee657543aeb4815a6bcd8eec7eeb478e6c7354d5c3e7dcc1779',
-);
-const properties = read(
-  'power-pages-client-properties-expected.json',
-  'ccec9eaec7c1083f9b3a2aee8f65021880d369593040a226d29c9c1b76589e73',
-);
-const manifest = JSON.parse(
-  fs.readFileSync(new URL('../test/fixtures/frontend-parity-evidence.json', import.meta.url)),
-);
-assert.equal(
-  manifest.suites.find((suite) => suite.id === 'power-pages-rendered-controls').propertiesProbeFunctionSha256,
-  '0470b713c237c14997d9b2623a052a708a9fd8f63d76eb3edc0de0168e8431dd',
-);
+
+let controls, client, properties;
+
+// @parity-evidence: frontend-parity-evidence.json and the repeated native controls/client/property captures bind the original probes and expected fixtures. The same pinned setup checks run before the tests.
+test.before(() => {
+  assert.equal(
+    createHash('sha256').update(capturePowerPagesControlContract.toString()).digest('hex'),
+    '17827c2b3477e64afaeee43edbbffea0d165ed30e1f9769f52413f2f99399171',
+  );
+  assert.equal(
+    createHash('sha256').update(capturePowerPagesClientContract.toString()).digest('hex'),
+    'e7c6f5f00060bb4462c9793fc1b73c1e67e8c6c8f447653c49f73a82a170fc7a',
+  );
+  controls = read(
+    'power-pages-controls-expected.json',
+    '6497bea4d8e3307073c5dacfeb6d74ee679bf4b3799153bd83afd2cfc2271d78',
+  );
+  client = read('power-pages-client-expected.json', '7c380709e7abaee657543aeb4815a6bcd8eec7eeb478e6c7354d5c3e7dcc1779');
+  properties = read(
+    'power-pages-client-properties-expected.json',
+    'ccec9eaec7c1083f9b3a2aee8f65021880d369593040a226d29c9c1b76589e73',
+  );
+  const manifest = JSON.parse(
+    fs.readFileSync(new URL('../test/fixtures/frontend-parity-evidence.json', import.meta.url)),
+  );
+  assert.equal(
+    manifest.suites.find((suite) => suite.id === 'power-pages-rendered-controls').propertiesProbeFunctionSha256,
+    '0470b713c237c14997d9b2623a052a708a9fd8f63d76eb3edc0de0168e8431dd',
+  );
+});
 
 test('rendered Power Pages controls, authored input feedback and client context reproduce native results', async (t) => {
   const fixture = await powerPagesControlsFixture(t),

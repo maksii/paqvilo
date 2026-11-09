@@ -715,7 +715,9 @@ export function hostSurfaces({ host = 'standalone', dataverseApi = false } = {})
   };
 }
 
-/** Whether a host's Dataverse HTTP API is enabled, from the raw `dataverse` option, as each host validates it. */
+/** Whether a host's Dataverse HTTP API is enabled, from the raw `dataverse` option, as each host validates it.
+ * @param {{host?: string, runtime?: any, dataverse?: any}} [options]
+ */
 function dataverseApiEnabled({ host = 'standalone', runtime, dataverse = null } = {}) {
   const input = dataverse && typeof dataverse === 'object' && !Array.isArray(dataverse) ? dataverse : null;
   if (host === 'power-pages')

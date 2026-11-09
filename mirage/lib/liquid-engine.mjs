@@ -782,8 +782,8 @@ export class LiquidContext {
     notifyNotFound,
   ) {
     const parts = scan(markup, VARIABLE_PARSER);
+    if (parts.length === 0) return null;
     let first = parts[0];
-    if (first === undefined) return null;
     if (first.startsWith('[')) {
       // Context.TryGetVariable calls Resolve(...).ToString(): a root bracket that resolves to nil throws.
       const resolved = await this.resolve(first.slice(1, -1));

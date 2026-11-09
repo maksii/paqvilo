@@ -852,6 +852,44 @@
   // own part boxes when the form renders them (<id><part> or <id>_<part>), else the form's firstname/middlename/lastname
   // cells, which carry the parts on submit. The native composite part box ids are not known.
   const NAME_PARTS = { firstName: 'firstname', middleName: 'middlename', lastName: 'lastname' };
+  const ownDatasetValue = (element, name) => (Object.hasOwn(element.dataset, name) ? element.dataset[name] : undefined);
+  function configureReadOnlyProperties({ control, type, element, readOnly }) {
+    if (!['Money', 'Picklist', 'Lookup'].includes(type))
+      Object.defineProperty(control, 'isReadOnly', {
+        get: type === 'AddressComposite' ? () => ownDatasetValue(element, 'editable') === 'False' : readOnly,
+        enumerable: true,
+      });
+    if (type === 'Money') Object.defineProperty(control, 'readOnly', { get: readOnly, enumerable: true });
+    if (type === 'Lookup') Object.defineProperty(control, 'isReadonly', { get: readOnly, enumerable: true });
+    if (type === 'DateTime')
+      Object.defineProperties(control, {
+        isDisabled: { get: () => Boolean(element.disabled || element.readOnly), enumerable: true },
+        dataType: { value: element.getAttribute('data-type') ?? null, enumerable: true }, // NOSONAR: actual attributes exclude inherited dataset values
+      });
+  }
+  function configureControlProperties({ control, type, element, readOnly, modal, setValue, maxFileSize, setFile }) {
+    configureReadOnlyProperties({ control, type, element, readOnly });
+    if (type === 'Lookup')
+      Object.assign(
+        control,
+        modal
+          ? {
+              isModal: true,
+              clearValue: () => {
+                setValue({ id: '', name: '', entityType: '' });
+              },
+            }
+          : { isDropdown: true },
+      );
+    if (type === 'Picklist') {
+      if (element.tagName === 'SELECT') control.subType = 'Dropdown';
+      else if (element.classList.contains('vertical')) control.subType = 'VerticalRadioButton';
+      else control.subType = 'HorizontalRadioButton';
+    }
+    if (type === 'File' || type === 'Image')
+      Object.assign(control, { maxFileSizeInByte: maxFileSize(), removeFile: () => setFile(new DataTransfer().files) });
+    return control;
+  }
   function createControl(cell, form) {
     const name = cell.getAttribute('data-logical-name') ?? null; // NOSONAR: actual attributes exclude inherited dataset values
     const holder = cell.closest('td.cell, .form-group') ?? cell;
@@ -865,8 +903,8 @@
     const isReadOnly = (box) =>
       Boolean(box && (box.disabled || box.readOnly || box.classList.contains('readonly') || box.closest('[readonly]')));
     const readOnly = () =>
-      type === 'AddressComposite' && element.hasAttribute('data-editable')
-        ? element.getAttribute('data-editable') === 'False'
+      type === 'AddressComposite' && ownDatasetValue(element, 'editable') !== undefined
+        ? ownDatasetValue(element, 'editable') === 'False'
         : isReadOnly(element);
     const maxFileSize = () =>
       Number(
@@ -1171,38 +1209,7 @@
         custom.clear();
       },
     };
-    if (!['Money', 'Picklist', 'Lookup'].includes(type))
-      Object.defineProperty(control, 'isReadOnly', {
-        get: type === 'AddressComposite' ? () => element.getAttribute('data-editable') === 'False' : readOnly,
-        enumerable: true,
-      });
-    if (type === 'Money') Object.defineProperty(control, 'readOnly', { get: readOnly, enumerable: true });
-    if (type === 'Lookup') Object.defineProperty(control, 'isReadonly', { get: readOnly, enumerable: true });
-    if (type === 'DateTime')
-      Object.defineProperties(control, {
-        isDisabled: { get: () => Boolean(element.disabled || element.readOnly), enumerable: true },
-        dataType: { value: element.getAttribute('data-type') ?? null, enumerable: true }, // NOSONAR: actual attributes exclude inherited dataset values
-      });
-    if (type === 'Lookup')
-      Object.assign(
-        control,
-        modal
-          ? {
-              isModal: true,
-              clearValue: () => {
-                setValue({ id: '', name: '', entityType: '' });
-              },
-            }
-          : { isDropdown: true },
-      );
-    if (type === 'Picklist') {
-      if (element.tagName === 'SELECT') control.subType = 'Dropdown';
-      else if (element.classList.contains('vertical')) control.subType = 'VerticalRadioButton';
-      else control.subType = 'HorizontalRadioButton';
-    }
-    if (type === 'File' || type === 'Image')
-      Object.assign(control, { maxFileSizeInByte: maxFileSize(), removeFile: () => setFile(new DataTransfer().files) });
-    return control;
+    return configureControlProperties({ control, type, element, readOnly, modal, setValue, maxFileSize, setFile });
   }
   const visibleArea = (element, title) => ({
     getVisible: () => shown(element),

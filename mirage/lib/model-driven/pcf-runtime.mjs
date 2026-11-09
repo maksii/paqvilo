@@ -86,7 +86,7 @@ export function staffFormatting(staff = ANONYMOUS_STAFF_CONTEXT) {
     formatCurrency: (value, precision = currency?.precision ?? 2, symbol = currency?.symbol ?? '') =>
       new Intl.NumberFormat(locale, {
         style: 'currency',
-        currency: /^[A-Z]{3}$/.test(currency?.isoCode ?? '') ? currency.isoCode : 'XXX',
+        currency: /^[A-Z]{3}$/.test(currency?.isoCode ?? '') ? currency?.isoCode : 'XXX',
         minimumFractionDigits: precision,
         maximumFractionDigits: precision,
       })

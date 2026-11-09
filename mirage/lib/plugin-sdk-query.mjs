@@ -129,7 +129,9 @@ export function queryExpressionToFetch(query, store) {
   // ColumnSet.AttributeExpressions (XrmAttributeExpression: XrmAggregateType None 0, Count 1, CountColumn 2, Sum 3, Avg 4,
   // Min 5, Max 6; XrmDateTimeGrouping None 0, Day 1, Week 2, Month 3, Quarter 4, Year 5, FiscalPeriod 6, FiscalYear 7) are the
   // FetchXML aggregate attributes; the query is then an aggregate fetch.
+  /** @type {Array<string | null | undefined>} */
   const AGGREGATES = [null, 'count', 'countcolumn', 'sum', 'avg', 'min', 'max'];
+  /** @type {Array<string | null | undefined>} */
   const GROUPINGS = [null, 'day', 'week', 'month', 'quarter', 'year', 'fiscal-period', 'fiscal-year'];
   const member = (expression, key) => {
     const value = expression?.members?.[key];

@@ -1391,35 +1391,38 @@ async function getProperty(t, raw) {
 
 // ---- writes
 
+function decodePortalClassicBody(t, body) {
+  let decoded;
+  try {
+    decoded = JSON.parse(body);
+  } catch {
+    /* The OData token classifier formats rejected primitive roots. */
+  }
+  if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)) return body;
+  const source = body;
+  body = attachODataJsonSource(parseExactJson(source, { allowFiniteDouble: true }), source);
+  // Decoding changes only transport representation. All ordinary write and entity policies still run below.
+  const unknown = rejectedGatewayProperty(body, {
+    mapping: t.mapping,
+    fields: t.policy.fields,
+    metadataFields: [t.deps.portal?.webApiEntities?.[t.mapping.logicalName]?.fields],
+    assertWrite: t.policy.assertWrite,
+    operation: t.req.method === 'POST' ? 'create' : 'update',
+  });
+  if (unknown)
+    throw attachODataReaderDetails(badRequest(`Unknown property '${unknown}'.`, 'InvalidRequest', '0x80048d19'), {
+      kind: 'unknown-property',
+      property: unknown,
+      logicalName: t.mapping.logicalName,
+    });
+  return body;
+}
+
 async function readBody(t) {
   const observed = t.deps.portal?.observed?.webApiErrorDetails === 'odata-wrapper';
   let body = await t.deps.jsonBody(t.req, { allowEmpty: false, odataErrorDetails: observed });
-  if (t.deps.portal?.observed?.webApiRequestBody === 'portal-classic' && typeof body === 'string') {
-    let decoded;
-    try {
-      decoded = JSON.parse(body);
-    } catch {
-      /* The OData token classifier formats rejected primitive roots. */
-    }
-    if (decoded && typeof decoded === 'object' && !Array.isArray(decoded)) {
-      const source = body;
-      body = attachODataJsonSource(parseExactJson(source, { allowFiniteDouble: true }), source);
-      // Decoding changes only transport representation. All ordinary write and entity policies still run below.
-      const unknown = rejectedGatewayProperty(body, {
-        mapping: t.mapping,
-        fields: t.policy.fields,
-        metadataFields: [t.deps.portal?.webApiEntities?.[t.mapping.logicalName]?.fields],
-        assertWrite: t.policy.assertWrite,
-        operation: t.req.method === 'POST' ? 'create' : 'update',
-      });
-      if (unknown)
-        throw attachODataReaderDetails(badRequest(`Unknown property '${unknown}'.`, 'InvalidRequest', '0x80048d19'), {
-          kind: 'unknown-property',
-          property: unknown,
-          logicalName: t.mapping.logicalName,
-        });
-    }
-  }
+  if (t.deps.portal?.observed?.webApiRequestBody === 'portal-classic' && typeof body === 'string')
+    body = decodePortalClassicBody(t, body);
   // The parsed body is the webapi span's input (captured, redacted, only at level full).
   t.span?.setInput(() => body);
   t.odataNumberLexemes = observed ? odataNumberLexemes(body) : undefined;

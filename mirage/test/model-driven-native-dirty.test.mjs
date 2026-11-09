@@ -1,41 +1,47 @@
 // @test-kind parity: two native dirty82 captures and repeated Boolean-first/email/quantity/saved-row isolation on2026-11-08; exact exported-app replay and sources bound in frontend-parity-evidence.json.
 // @parity-evidence: dirty-native-{1,2}.json reproduce dirty-local.json82/82; dirty-diagnostic.json/dirty-isolation.json reproduce45/39 snapshots, with0 active native business rules and matching exported form script.
-import test from 'node:test';
+import test, { before } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import { captureModelDrivenDirtyContract } from '../testing/model-driven-dirty.mjs';
 import { presentationFixture } from './fixtures/model-driven-presentation.mjs';
 
-assert.equal(
-  createHash('sha256').update(captureModelDrivenDirtyContract.toString()).digest('hex'),
-  '62c403234c10bd3e1c8ec4dd15ea3496f672fc76d3324f1b5a2fcce1d7420177',
-);
 const bytes = fs.readFileSync(new URL('./fixtures/model-driven-dirty-expected.json', import.meta.url));
-assert.equal(
-  createHash('sha256').update(bytes).digest('hex'),
-  'a82c85e6df0f66ea9c0297b2ef87fdb1a83d32f51b9e7851e8a1252b219b7c93',
-);
-const fixture = presentationFixture({ falseBooleanDefault: true });
-const actual = await captureModelDrivenDirtyContract(
-  {
-    fields: [
-      { role: 'text', name: 'x_email', value: 'dirty@example.invalid' },
-      { role: 'memo', name: 'x_memo', value: 'Invented dirty memo' },
-      { role: 'number', name: 'x_quantity', value: 7 },
-      { role: 'choice', name: 'x_choice', value: 198720001 },
-      { role: 'multi', name: 'x_multi', value: [198720001, 198720000] },
-      { role: 'boolean', name: 'x_boolean', value: true },
-      { role: 'date', name: 'x_date', kind: 'date', value: '2026-12-09T09:30:00.000Z' },
-      {
-        role: 'lookup',
-        name: 'x_lookup',
-        value: [{ id: 'aaaaaaaa-1111-4111-8111-111111111111', name: 'Invented parent', entityType: 'x_contract' }],
-      },
-    ],
-  },
-  fixture.runtime.formContext,
-);
+
+let actual;
+// @parity-evidence: existing native fixture and probe SHA-256 pins are checked before any recorded case executes.
+before(async () => {
+  assert.equal(
+    createHash('sha256').update(captureModelDrivenDirtyContract.toString()).digest('hex'),
+    '62c403234c10bd3e1c8ec4dd15ea3496f672fc76d3324f1b5a2fcce1d7420177',
+  );
+  assert.equal(
+    createHash('sha256').update(bytes).digest('hex'),
+    'a82c85e6df0f66ea9c0297b2ef87fdb1a83d32f51b9e7851e8a1252b219b7c93',
+  );
+  const fixture = presentationFixture({ falseBooleanDefault: true });
+  actual = await captureModelDrivenDirtyContract(
+    {
+      fields: [
+        { role: 'text', name: 'x_email', value: 'dirty@example.invalid' },
+        { role: 'memo', name: 'x_memo', value: 'Invented dirty memo' },
+        { role: 'number', name: 'x_quantity', value: 7 },
+        { role: 'choice', name: 'x_choice', value: 198720001 },
+        { role: 'multi', name: 'x_multi', value: [198720001, 198720000] },
+        { role: 'boolean', name: 'x_boolean', value: true },
+        { role: 'date', name: 'x_date', kind: 'date', value: '2026-12-09T09:30:00.000Z' },
+        {
+          role: 'lookup',
+          name: 'x_lookup',
+          value: [{ id: 'aaaaaaaa-1111-4111-8111-111111111111', name: 'Invented parent', entityType: 'x_contract' }],
+        },
+      ],
+    },
+    fixture.runtime.formContext,
+  );
+});
+
 for (const [index, expected] of JSON.parse(bytes).entries()) {
   test(`native model-driven dirty state: ${expected.id}`, () => assert.deepEqual(actual[index], expected));
 }

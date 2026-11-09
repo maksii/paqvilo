@@ -100,6 +100,7 @@ function zoneFormat(iana) {
 
 // The zone's offset from UTC at an instant, in minutes (positive east of Greenwich).
 export function offsetMinutes(iana, utcMs) {
+  /** @type {Record<string, string | undefined>} */
   const parts = Object.fromEntries(
     zoneFormat(iana)
       .formatToParts(new Date(utcMs))

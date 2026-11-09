@@ -837,8 +837,11 @@ export function createFlowTriggerRunner({
       });
       return;
     }
+    // A supported connector trigger was admitted only after inspecting this registry.
     const raw = Object.values(definition.triggers)[0],
-      entry = connectors.flowTriggers(trigger.connectorId, trigger.operationId);
+      entry = /** @type {{flowTriggers: (connectorId: string, operationId: string | null) => any}} */ (
+        connectors
+      ).flowTriggers(trigger.connectorId, trigger.operationId);
     Object.assign(host, {
       connectorId: trigger.connectorId,
       operationId: trigger.operationId,

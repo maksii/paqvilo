@@ -9,7 +9,10 @@ const bytes = readFileSync(new URL('./fixtures/power-fx-root-round-official.json
 const evidence = JSON.parse(bytes);
 // @test-kind tooling: bind all captured cases to distinct repeated runs.
 test('decimal rounding corpus is bound to both official processes', () => {
-  assertCorpusProof(bytes, evidence, 'a048ef909fd07c543fc2e858a6c4555171606caef5740352b69610c4146734ab');
+  // @parity-evidence: Tooling-only exposure of the existing pinned corpus digest, distinct processes, matching results and complete expression universe; helper inputs are unchanged.
+  assert.doesNotThrow(() =>
+    assertCorpusProof(bytes, evidence, 'a048ef909fd07c543fc2e858a6c4555171606caef5740352b69610c4146734ab'),
+  );
 });
 for (const expected of evidence.runs[0].results) {
   test(`official decimal rounding: ${expected.expression}`, () => {

@@ -7,25 +7,25 @@ const guid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 export function validateDataverseAttributeErrorContexts(value, label = 'dataverseAttributeErrorContexts') {
   templateDataRecord(value, label);
   const names = Reflect.ownKeys(value);
-  if (!names.length || names.length > 1000) throw Error(`${label} requires 1..1000 entity contexts`);
+  if (!names.length || names.length > 1000) throw new Error(`${label} requires 1..1000 entity contexts`);
   const result = Object.create(null);
   for (const name of names) {
-    if (typeof name !== 'string' || !logicalName.test(name)) throw Error(`${label} has an invalid entity name`);
+    if (typeof name !== 'string' || !logicalName.test(name)) throw new Error(`${label} has an invalid entity name`);
     const context = value[name];
     templateDataRecord(context, `${label}.${name}`);
     if (Reflect.ownKeys(context).some((key) => !['organizationIndex', 'metadataId'].includes(key)))
-      throw Error(`${label}.${name} has an unknown context key`);
+      throw new Error(`${label}.${name} has an unknown context key`);
     if (
       !Number.isInteger(context.organizationIndex) ||
       context.organizationIndex < 0 ||
       context.organizationIndex > 2147483647
     )
-      throw Error(`${label}.${name}.organizationIndex must be an integer from 0 to 2147483647`);
+      throw new Error(`${label}.${name}.organizationIndex must be an integer from 0 to 2147483647`);
     if (
       Object.hasOwn(context, 'metadataId') &&
       (typeof context.metadataId !== 'string' || !guid.test(context.metadataId))
     )
-      throw Error(`${label}.${name}.metadataId must be a GUID`);
+      throw new Error(`${label}.${name}.metadataId must be a GUID`);
     result[name] = { organizationIndex: context.organizationIndex };
     if (context.metadataId) result[name].metadataId = context.metadataId.toLowerCase();
   }

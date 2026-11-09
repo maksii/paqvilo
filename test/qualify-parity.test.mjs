@@ -281,6 +281,46 @@ test('shared guard catches an empty/shortened generator outside an unexecuted ca
   fs.writeFileSync(file, written);
   assert.throws(() => assertParityBindings(pathToFileURL(file), report.changes[0].bindings), /changed-loop-header/);
 });
+test('source guard accepts a bound doesNotThrow wrapper and rejects forged wrappers', (t) => {
+  const f = fixture(t),
+    report = f.run();
+  assert.deepEqual(report.pending, []);
+  writeParityQualification(report, { root: f.root });
+  const file = path.join(f.root, 'sample.test.mjs');
+  const wrapped = fs.readFileSync(file, 'utf8');
+  const direct = wrapped.replace(
+    'assert.doesNotThrow(() => __paqParitySourceBindings(import.meta.url));',
+    '__paqParitySourceBindings(import.meta.url);',
+  );
+  assert.notEqual(wrapped, direct);
+  fs.writeFileSync(file, direct);
+  assertParityBindingsFromSource(pathToFileURL(file));
+  f.updateCurrent(wrapped);
+  assertParityBindingsFromSource(pathToFileURL(file));
+  assert.deepEqual(f.run().pending, []);
+  for (const altered of [
+    wrapped.replace(
+      'assert.doesNotThrow(() => __paqParitySourceBindings(import.meta.url));',
+      'assert.doesNotThrow(() => {});',
+    ),
+    wrapped.replace(
+      'assert.doesNotThrow(() => __paqParitySourceBindings(import.meta.url));',
+      'assert.doesNotThrow(() => __paqParitySourceBindings(import.meta.url), "extra");',
+    ),
+    wrapped.replace(
+      'assert.doesNotThrow(() => __paqParitySourceBindings(import.meta.url));',
+      'assert.doesNotThrow(() => { __paqParitySourceBindings(import.meta.url); process.exitCode = 1; });',
+    ),
+    wrapped.replace("import assert from 'node:assert/strict';", "import assert from './fake-assert.mjs';"),
+    wrapped.replace(
+      'assert.doesNotThrow(() => __paqParitySourceBindings(import.meta.url));',
+      'const assert = { doesNotThrow() {} }; assert.doesNotThrow(() => __paqParitySourceBindings(import.meta.url));',
+    ),
+  ]) {
+    fs.writeFileSync(file, altered);
+    assert.throws(() => assertParityBindingsFromSource(pathToFileURL(file)));
+  }
+});
 test('existing security kind survives promotion and all source checks finish before write', (t) => {
   const securitySource = source.replace('@test-kind unproven:', '@test-kind security:');
   const f = fixture(t, securitySource),
@@ -1042,6 +1082,12 @@ test('official npm provenance requires exact registry, namespace, integrity and 
     return f.run();
   };
   assert.deepEqual(run(original).pending, []);
+  const prerelease = {
+    ...original,
+    version: '1.2.3-rc.1-x',
+    source: original.source.replace('1.2.3.tgz', '1.2.3-rc.1-x.tgz'),
+  };
+  assert.deepEqual(run(prerelease).pending, []);
   for (const changed of [
     { ...original, id: '@evil/invented-fixture' },
     { ...original, source: original.source.replace('registry.npmjs.org', 'registry.npmjs.org.attacker.invalid') },
@@ -1049,6 +1095,7 @@ test('official npm provenance requires exact registry, namespace, integrity and 
     { ...original, integrity: 'sha512-AAAA' },
     { ...original, integrity: 'sha256-' + Buffer.alloc(64, 1).toString('base64') },
     { ...original, version: 'latest' },
+    { ...original, version: '1.02.3', source: original.source.replace('1.2.3.tgz', '1.02.3.tgz') },
     { ...original, executedSourceClosure: [] },
     { ...original, executedSourceClosure: [{ path: '../main.js', sha256: '4'.repeat(64) }] },
     { ...original, executedSourceClosure: [{ path: 'dist/main.js', sha256: 'oops' }] },

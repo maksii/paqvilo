@@ -32,7 +32,10 @@ const expectedGuard = parse(
   { ecmaVersion: 'latest', sourceType: 'module' },
 ).body[0];
 function children(node) {
-  return Object.values(node).flatMap((v) => (Array.isArray(v) ? v.filter((x) => x?.type) : v?.type ? [v] : []));
+  return Object.values(node).flatMap((v) => {
+    if (Array.isArray(v)) return v.filter((x) => x?.type);
+    return v?.type ? [v] : [];
+  });
 }
 function walk(node, visit, parent = null) {
   visit(node, parent);
@@ -69,8 +72,7 @@ export function analyzeIncludedRendererSlice({ ast, selected, implementationSour
     check(
       (!helper.length || helperVar) &&
         plainVar &&
-        renderer &&
-        renderer.defs.length === 1 &&
+        renderer?.defs.length === 1 &&
         renderer.defs[0].type === 'ImportBinding',
     );
     const binding = renderer.defs[0];
@@ -79,11 +81,11 @@ export function analyzeIncludedRendererSlice({ ast, selected, implementationSour
         binding.node.imported.name === 'createPortalRenderer' &&
         implementationSources.includes(binding.parent.source.value),
     );
-    check(!helperVar || !helperVar.references.some((ref) => ref.isWrite() && !ref.init));
+    check(!helperVar?.references.some((ref) => ref.isWrite() && !ref.init));
     check(!plainVar.references.some((ref) => ref.isWrite() && !ref.init));
     const allowedHelperUses = new Set();
     const fixtures = [];
-    for (const { old: row } of selected) {
+    const certifySelected = ({ old: row }) => {
       const callback = row?.callback;
       check(
         callback?.type === 'ArrowFunctionExpression' &&
@@ -159,7 +161,9 @@ export function analyzeIncludedRendererSlice({ ast, selected, implementationSour
         selectedBodySha256: hash(callback.body),
         calls,
       });
-    }
+    };
+    for (const item of selected) certifySelected(item);
+
     // The selected cohort must contain every use; the caller must also bind every
     // registration and the module context before crediting any selected test.
     for (const ref of helperVar?.references ?? []) {

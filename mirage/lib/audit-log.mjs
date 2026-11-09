@@ -172,7 +172,7 @@ export class AuditLog {
       visitorId: visitorId ? limitText(visitorId, 100) : null,
       sessionKey: sessionKey ? limitText(sessionKey, 140) : null,
       query: auditQuery(query),
-      status: null,
+      status: /** @type {number | null} */ (null),
       rowCount: null,
       outcome: 'pending',
       durationMs: null,

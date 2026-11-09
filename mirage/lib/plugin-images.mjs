@@ -55,7 +55,9 @@ export const primaryNameSide = (operation) => {
  * `steps` are the stage's registrations in execution order ({ images, asynchronous }), `seed` the entries the stage
  * starts with. The primary-name image is added after the first queued asynchronous step's own images, or, for
  * pre-image messages, first when any asynchronous step is queued (native crud Delete: [primary name, pre]).
- * Answers { pre, post }: alias -> registered image, or { platform } for the platform's entries. */
+ * Answers { pre, post }: alias -> registered image, or { platform } for the platform's entries.
+ * @param {{ stage: number, steps: Array<{ asynchronous?: boolean, images?: Array<any> }>, upTo?: number, seed?: Record<string, any>, primaryName?: 'pre' | 'post' | null }} options
+ */
 export function stageImageSet({ stage, steps, upTo = steps.length - 1, seed = {}, primaryName = null }) {
   const pre = { ...seed },
     post = {};

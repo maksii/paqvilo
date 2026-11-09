@@ -208,6 +208,30 @@ const executeError = (message, status, code) =>
     ...(/^0x[\da-f]+$/i.test(String(code ?? '')) ? { errorCode: Number.parseInt(code, 16) } : {}),
   });
 const boundaryOf = (value) => /boundary=("?)([^";\r\n]+)\1/i.exec(String(value ?? ''))?.[2];
+function embeddedBatchResponse(response) {
+  const status = /^HTTP\/1\.1 (\d{3})([^\r\n]*)/.exec(response);
+  if (!status) return null;
+  const tail = response.slice(status[0].length);
+  const lineEnding = /^\r?\n/.exec(tail);
+  if (tail && !lineEnding) return null;
+  const remainder = tail.slice(lineEnding?.[0].length ?? 0);
+  const separator = /\r?\n\r?\n/.exec(remainder);
+  const headers = separator ? remainder.slice(0, separator.index) : remainder;
+  return {
+    status: Number(status[1]),
+    statusText: status[2].trim(),
+    headers: Object.fromEntries(
+      headers
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((line) => [
+          line.slice(0, line.indexOf(':')).trim().toLowerCase(),
+          line.slice(line.indexOf(':') + 1).trim(),
+        ]),
+    ),
+    body: separator ? remainder.slice(separator.index + separator[0].length) : '',
+  };
+}
 /** The embedded responses of a $batch answer, split on the declared boundaries only (a nested change set recurses):
  * each is "HTTP/1.1 <status> <text>", its headers, a blank line and its body. */
 export function batchResponses(body, boundary) {
@@ -224,23 +248,8 @@ export function batchResponses(body, boundary) {
       result.push(...batchResponses(rest, nested));
       continue;
     }
-    // NOSONAR: anchored header scan is linear; its final body alternative accepts every remaining character, so no suffix can force repeated delimiter rescans.
-    const match = /^HTTP\/1\.1 (\d{3})([^\r\n]*)(?:\r?\n([\s\S]*?))?(?:\r?\n\r?\n([\s\S]*))?$/.exec(rest);
-    if (match)
-      result.push({
-        status: Number(match[1]),
-        statusText: match[2].trim(),
-        headers: Object.fromEntries(
-          String(match[3] ?? '')
-            .split(/\r?\n/)
-            .filter(Boolean)
-            .map((line) => [
-              line.slice(0, line.indexOf(':')).trim().toLowerCase(),
-              line.slice(line.indexOf(':') + 1).trim(),
-            ]),
-        ),
-        body: match[4] ?? '',
-      });
+    const parsed = embeddedBatchResponse(rest);
+    if (parsed) result.push(parsed);
   }
   return result;
 }
@@ -725,6 +734,44 @@ export function createFormClientRuntime(host) {
         JSON.stringify(a) === JSON.stringify(b))
     );
   };
+  const multiselectAssignment = (name, value) => {
+    const primary = host.controlNames(name)[0];
+    const next = controlOptions(primary, name)
+      .filter((option) => value.includes(option.value))
+      .map((option) => option.value)
+      .sort((a, b) => a - b);
+    return next.length ? next : null;
+  };
+  const validateChoiceAssignment = (field, name, value) => {
+    const offered = host.controlNames(name).flatMap((control) => controlOptions(control, name));
+    if (!field.options.some((option) => option.value === value) && !offered.some((option) => option.value === value)) {
+      const error = new Error(`Invalid value ${value} for OptionSetValue`);
+      error.name = 'UciError';
+      throw error;
+    }
+  };
+  const assignedValue = (field, name, value) => {
+    if (field.type === 'date' && value instanceof Date) return value.toISOString();
+    if (field.type === 'lookup' && Array.isArray(value))
+      return value.length
+        ? { id: String(value[0].id).replace(/[{}]/g, ''), entity: value[0].entityType, name: value[0].name }
+        : null;
+    if (['text', 'textarea'].includes(field.type) && value === '') return null;
+    if (field.type === 'multiselect' && Array.isArray(value)) return multiselectAssignment(name, value);
+    if (field.type === 'number' && Array.isArray(field.options) && value !== null)
+      validateChoiceAssignment(field, name, value);
+    return value;
+  };
+  const unavailableAttributeMethods = (field) => {
+    if (['text', 'textarea'].includes(field.type)) return new Set(['getMin', 'getMax', 'getPrecision']);
+    if (
+      field.type === 'number' &&
+      !Array.isArray(field.options) &&
+      ['int', 'integer', 'decimal'].includes(field.dataverseType)
+    )
+      return new Set(['getMaxLength']);
+    return new Set();
+  };
   // formContext.data.entity.attributes: only columns added to the form are available. The form's bindings
   // (body, header, footer) are host.form.attributes; a form without them exposes its controls' columns.
   const formNames = host.form?.attributes ?? [
@@ -757,33 +804,8 @@ export function createFormClientRuntime(host) {
               : clientValue(name, initial[name]),
           setValue: (value) => {
             assertLive();
-            const previous = fieldValue(name);
-            let next;
-            if (field.type === 'date' && value instanceof Date) next = value.toISOString();
-            else if (field.type === 'lookup' && Array.isArray(value))
-              next = value.length
-                ? { id: String(value[0].id).replace(/[{}]/g, ''), entity: value[0].entityType, name: value[0].name }
-                : null;
-            else if (['text', 'textarea'].includes(field.type) && value === '') next = null;
-            else if (field.type === 'multiselect' && Array.isArray(value)) {
-              const primary = host.controlNames(name)[0];
-              next = controlOptions(primary, name)
-                .filter((option) => value.includes(option.value))
-                .map((option) => option.value)
-                .sort((a, b) => a - b);
-              if (!next.length) next = null;
-            } else if (field.type === 'number' && Array.isArray(field.options) && value !== null) {
-              const offered = host.controlNames(name).flatMap((control) => controlOptions(control, name));
-              if (
-                !field.options.some((option) => option.value === value) &&
-                !offered.some((option) => option.value === value)
-              ) {
-                const error = new Error(`Invalid value ${value} for OptionSetValue`);
-                error.name = 'UciError';
-                throw error;
-              }
-              next = value;
-            } else next = value;
+            const previous = fieldValue(name),
+              next = assignedValue(field, name, value);
             host.write(name, next, { changed: !sameAttributeValue(name, previous, next) });
             if (
               field.type === 'number' &&
@@ -880,15 +902,7 @@ export function createFormClientRuntime(host) {
           controls: collection(host.controlNames(name).map((controlName) => makeControl(controlName, name))),
         },
         `attribute(${name})`,
-        new Set(
-          ['text', 'textarea'].includes(field.type)
-            ? ['getMin', 'getMax', 'getPrecision']
-            : field.type === 'number' &&
-                !Array.isArray(field.options) &&
-                ['int', 'integer', 'decimal'].includes(field.dataverseType)
-              ? ['getMaxLength']
-              : [],
-        ),
+        unavailableAttributeMethods(field),
       );
     });
   function makeControl(name, fieldName = host.controlField(name)) {
@@ -898,14 +912,12 @@ export function createFormClientRuntime(host) {
       {
         getName: () => name,
         getAttribute: () => attributes.find((attribute) => attribute.getName() === fieldName) ?? null,
-        getControlType: () =>
-          field?.type === 'multiselect'
-            ? 'multiselectoptionset'
-            : field?.type === 'lookup'
-              ? 'lookup'
-              : field?.type === 'number' && Array.isArray(field.options)
-                ? 'optionset'
-                : 'standard',
+        getControlType: () => {
+          if (field?.type === 'multiselect') return 'multiselectoptionset';
+          if (field?.type === 'lookup') return 'lookup';
+          if (field?.type === 'number' && Array.isArray(field.options)) return 'optionset';
+          return 'standard';
+        },
         getParent: () => {
           for (const tab of host.form?.tabs ?? []) {
             const index = (tab.sections ?? []).findIndex((section) =>
@@ -940,7 +952,7 @@ export function createFormClientRuntime(host) {
         ...(field?.type === 'multiselect' || (field?.type === 'number' && Array.isArray(field.options))
           ? {
               getOptions: () => [
-                ...(hasChoiceBlank(name, fieldName) ? [{ text: '', value: NaN }] : []),
+                ...(hasChoiceBlank(name, fieldName) ? [{ text: '', value: Number.NaN }] : []),
                 ...options().map((option) => ({ ...option })),
               ],
               addOption: (option, index) => {

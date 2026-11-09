@@ -225,7 +225,8 @@ function replaceDelimited(text, open, close, replacement, standalone = false) {
       continue;
     }
     let end = text.indexOf(close, start + open.length);
-    while (standalone && end >= 0 && !/[\s/>]/.test(text[end + close.length] ?? '')) end = text.indexOf(close, end + 1);
+    if (standalone)
+      while (end >= 0 && !/[\s/>]/.test(text[end + close.length] ?? '')) end = text.indexOf(close, end + 1);
     if (end < 0) break;
     parts.push(text.slice(cursor, start), replacement);
     cursor = end + close.length;

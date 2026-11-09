@@ -64,6 +64,19 @@ function seal(data) {
 }
 const valid = (x) => validateMicrosoftCdnArtifact(x.pkg, x.publisherReads, x.runs);
 test('accepts complete bound invented CDN receipts', () => assert.equal(valid(fixture()), true));
+test('compares script inventories independently of ordering without changing source spelling', () => {
+  const data = fixture();
+  for (const run of data.runs) {
+    run.input.executedScripts.push({ kind: 'other', source: 'inline:Ω', sha256: sha('unicode'), size: 7 });
+    run.result.executedScripts.push({ kind: 'other', source: 'inline:Ω', sha256: sha('unicode'), size: 7 });
+    run.result.executedScripts.reverse();
+  }
+  seal(data);
+  assert.equal(valid(data), true);
+  data.runs[0].result.executedScripts[0].source = 'inline:ω';
+  seal(data);
+  assert.equal(valid(data), false);
+});
 test('accepts a correctly bound federated manifest entry', () => {
   const x = fixture();
   const body = Buffer.from(

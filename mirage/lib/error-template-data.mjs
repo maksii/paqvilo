@@ -6,16 +6,16 @@ export function templateDataRecord(value, label) {
     Array.isArray(value) ||
     ![Object.prototype, null].includes(Object.getPrototypeOf(value))
   )
-    throw Error(label + ' require plain explicit data properties');
+    throw new Error(label + ' require plain explicit data properties');
   const properties = Object.getOwnPropertyDescriptors(value);
   if (Reflect.ownKeys(properties).some((key) => !('value' in properties[key])))
-    throw Error(label + ' require plain explicit data properties');
+    throw new Error(label + ' require plain explicit data properties');
 }
 
 /** Snapshot dense own data slots without calling an overridden map or iterator. */
 export function templateDataArray(value, { maximum, label }) {
   const fail = () => {
-    throw Error(label + ' requires a dense plain array of explicit data properties');
+    throw new Error(label + ' requires a dense plain array of explicit data properties');
   };
   if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) fail();
   const properties = Object.getOwnPropertyDescriptors(value);

@@ -107,7 +107,13 @@ export function createTdsServer({
   // One TLS-wrapped (or strict) connection. Messages are handled in order; ATTENTION is answered at once.
   function session(stream, strict) {
     stream.on('error', () => stream.destroy());
-    const conn = { loggedIn: false, principal: undefined, pendingLogin: null, running: null, queue: Promise.resolve() };
+    const conn = {
+      loggedIn: false,
+      principal: undefined,
+      pendingLogin: null,
+      running: /** @type {AbortController | null} */ (null),
+      queue: Promise.resolve(),
+    };
     const reply = (...tokens) => {
       if (!stream.destroyed) writeMessage(stream, TDS.TABULAR, Buffer.concat(tokens), packetSize);
     };

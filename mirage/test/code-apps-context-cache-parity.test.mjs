@@ -9,9 +9,14 @@ import { captureCodeAppContextCacheContract } from '../testing/code-apps-contrac
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 // @parity-evidence: two independent official SDK 1.5.0 executions against an authored powerAppsBridge response; exact source, capture and probe hashes in the bound fixture. This proves SDK caching, not native host fields or transport.
 const bytes = fs.readFileSync(new URL('./fixtures/code-apps-context-cache-official.json', import.meta.url));
-assert.equal(sha256(bytes), '7da08c77ae071d62f4e18d9b20385cb8623bb612c04b8265026fa56251d85695');
+
 const evidence = JSON.parse(bytes);
-assert.equal(sha256(captureCodeAppContextCacheContract.toString()), evidence.probeFunctionSha256);
+
+// @parity-evidence: two official Microsoft Power Apps SDK runs in code-apps-context-cache-official.json bind the unchanged cache probe. The same pinned setup checks run before the tests.
+test.before(() => {
+  assert.equal(sha256(bytes), '7da08c77ae071d62f4e18d9b20385cb8623bb612c04b8265026fa56251d85695');
+  assert.equal(sha256(captureCodeAppContextCacheContract.toString()), evidence.probeFunctionSha256);
+});
 
 test('resolved context preserves object identity and client-side query mutations like the official SDK', async (t) => {
   const original = globalThis.fetch;

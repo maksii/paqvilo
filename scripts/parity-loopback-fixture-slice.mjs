@@ -103,10 +103,10 @@ function inspect(ast, row) {
   requireProof(
     hookReferences.get(names.it).every((identifier) => directTests.some((call) => call.callee === identifier)),
   );
-  const selectedHookIds = [suite.callee, before.callee, after.callee];
+  const selectedHookIds = new Set([suite.callee, before.callee, after.callee]);
   const otherHooks = [names.describe, names.before, names.after]
     .flatMap((name) => hookReferences.get(name))
-    .filter((identifier) => !selectedHookIds.includes(identifier));
+    .filter((identifier) => !selectedHookIds.has(identifier));
   return { suite, before, after, testImport, names, otherHooks };
 }
 /** Validate exact baseline-to-current hook strengthening. Callers must separately validate source closure and pin full registration context. */
@@ -229,13 +229,16 @@ export function analyzeLoopbackFixtureSlice({ baselineAst, currentAst, selected,
   const references = scopeManager.scopes
     .flatMap((scope) => scope.references)
     .filter((ref) => hookNodes.has(ref.identifier));
-  for (const ref of references) {
-    if (ref.identifier.name === 'process') requireProof(!ref.resolved);
-    if (ref.identifier.name === secret)
-      requireProof(ref.resolved?.defs.length === 1 && ref.resolved.defs[0].parent === secretDecl[0]);
-    if (ref.identifier.name === previous)
-      requireProof(ref.resolved?.defs.length === 1 && ref.resolved.defs[0].parent === currentDeclarations[0]);
-  }
+  const verifySecretReferences = () => {
+    for (const ref of references) {
+      if (ref.identifier.name === 'process') requireProof(!ref.resolved);
+      if (ref.identifier.name === secret)
+        requireProof(ref.resolved?.defs.length === 1 && ref.resolved.defs[0].parent === secretDecl[0]);
+      if (ref.identifier.name === previous)
+        requireProof(ref.resolved?.defs.length === 1 && ref.resolved.defs[0].parent === currentDeclarations[0]);
+    }
+  };
+  verifySecretReferences();
   walk(old.before, (node) => {
     if (
       node.type === 'CallExpression' &&
@@ -265,38 +268,43 @@ export function analyzeLoopbackFixtureSlice({ baselineAst, currentAst, selected,
   );
   const api = close.expression.argument.expression?.callee?.object?.name;
   requireProof(api && same(close, parseStatement(`await ${api}?.close();`)));
-  for (const [version, start, ast] of [
-    [old, startOld, baselineAst],
-    [current, startCurrent, currentAst],
-  ]) {
-    let parent, grandparent;
-    walk(version.before, (node, p) => {
-      if (node === start) parent = p;
-    });
-    walk(version.before, (node, p) => {
-      if (node === parent) grandparent = p;
-    });
-    requireProof(
-      parent?.type === 'AwaitExpression' &&
-        grandparent?.type === 'AssignmentExpression' &&
-        grandparent.operator === '=' &&
-        grandparent.left?.name === api &&
-        grandparent.right === parent,
-    );
-    const refs = analyze(ast, { ecmaVersion: 2022, sourceType: 'module' }).scopes.flatMap((scope) => scope.references);
-    const assigned = refs.find((ref) => ref.identifier === grandparent.left)?.resolved;
-    const closeRefs = [];
-    walk(version.after, (node) => {
-      if (node.type === 'Identifier' && node.name === api) closeRefs.push(refs.find((ref) => ref.identifier === node));
-    });
-    requireProof(
-      assigned &&
-        assigned.defs.length === 1 &&
-        assigned.defs[0].type === 'Variable' &&
-        closeRefs.length === 1 &&
-        closeRefs[0]?.resolved === assigned,
-    );
-  }
+  const verifyBothStartupClosures = () => {
+    for (const [version, start, ast] of [
+      [old, startOld, baselineAst],
+      [current, startCurrent, currentAst],
+    ]) {
+      let parent, grandparent;
+      walk(version.before, (node, p) => {
+        if (node === start) parent = p;
+      });
+      walk(version.before, (node, p) => {
+        if (node === parent) grandparent = p;
+      });
+      requireProof(
+        parent?.type === 'AwaitExpression' &&
+          grandparent?.type === 'AssignmentExpression' &&
+          grandparent.operator === '=' &&
+          grandparent.left?.name === api &&
+          grandparent.right === parent,
+      );
+      const refs = analyze(ast, { ecmaVersion: 2022, sourceType: 'module' }).scopes.flatMap(
+        (scope) => scope.references,
+      );
+      const assigned = refs.find((ref) => ref.identifier === grandparent.left)?.resolved;
+      const closeRefs = [];
+      walk(version.after, (node) => {
+        if (node.type === 'Identifier' && node.name === api)
+          closeRefs.push(refs.find((ref) => ref.identifier === node));
+      });
+      requireProof(
+        assigned?.defs.length === 1 &&
+          assigned.defs[0].type === 'Variable' &&
+          closeRefs.length === 1 &&
+          closeRefs[0]?.resolved === assigned,
+      );
+    }
+  };
+  verifyBothStartupClosures();
   const expectedAfter = parseStatement(
     `try { await ${api}?.close(); } finally { if (${previous} === undefined) delete process.env[${secret}]; else process.env[${secret}] = ${previous}; }`,
   );
@@ -504,10 +512,7 @@ export function analyzeRoutingComponents({ baselineAst, currentAst, selected, im
   const state = analyzeLiteralStateProducer({ baselineAst, currentAst, producerName: 'schema', implementationSources });
   const transport = analyzeOwnedHttpTransport({ baselineAst, currentAst, selected });
   const certificates = [];
-  for (const [ast, row, fixture, producer, forwarder] of [
-    [baselineAst, selected[0].old, hooks.old, state.baseline, transport.baseline],
-    [currentAst, selected[0].current, hooks.current, state.current, transport.current],
-  ]) {
+  const verifyRoutingVersion = ([ast, row, fixture, producer, forwarder]) => {
     const suite = suiteFor(ast, row, 'describe'),
       body = suite.arguments[1].body.body;
     const before = body.find(
@@ -558,67 +563,73 @@ export function analyzeRoutingComponents({ baselineAst, currentAst, selected, im
       refs = scopes.scopes.flatMap((scope) => scope.references);
     const parentMap = new Map();
     walk(ast, (node, parent) => parentMap.set(node, parent));
-    for (const name of ['api', 'token']) {
-      const decls = body.filter(
-        (s) =>
-          s.type === 'VariableDeclaration' &&
-          s.kind === 'let' &&
-          s.declarations.length === 1 &&
-          s.declarations[0].id?.name === name &&
-          !s.declarations[0].init,
-      );
-      requireProof(decls.length === 1);
-      const variable = scopes.scopes
-        .flatMap((scope) => scope.variables)
-        .find((v) => v.identifiers.includes(decls[0].declarations[0].id));
-      const writes = variable?.references.filter((ref) => ref.isWrite());
-      requireProof(writes?.length === 1);
-      let inBefore = false;
-      walk(before, (node) => {
-        if (node === writes[0].identifier) inBefore = true;
-      });
-      requireProof(inBefore);
-      for (const ref of variable.references.filter((r) => r.isRead())) {
-        const parent = parentMap.get(ref.identifier);
-        if (name === 'api') {
-          requireProof(
-            parent?.type === 'MemberExpression' &&
-              parent.object === ref.identifier &&
-              !parent.computed &&
-              ['origin', 'tenantId', 'close'].includes(parent.property.name),
-          );
-          const owner = parentMap.get(parent);
-          requireProof(
-            !(owner?.type === 'AssignmentExpression' && owner.left === parent) &&
-              owner?.type !== 'UpdateExpression' &&
-              !(owner?.type === 'UnaryExpression' && owner.operator === 'delete'),
-          );
-          if (parent.property.name === 'close') {
-            let inAfter = false;
-            walk(after, (node) => {
-              if (node === parent) inAfter = true;
+    const verifyStateIdentifiers = () => {
+      for (const name of ['api', 'token']) {
+        const decls = body.filter(
+          (s) =>
+            s.type === 'VariableDeclaration' &&
+            s.kind === 'let' &&
+            s.declarations.length === 1 &&
+            s.declarations[0].id?.name === name &&
+            !s.declarations[0].init,
+        );
+        requireProof(decls.length === 1);
+        const variable = scopes.scopes
+          .flatMap((scope) => scope.variables)
+          .find((v) => v.identifiers.includes(decls[0].declarations[0].id));
+        const writes = variable?.references.filter((ref) => ref.isWrite());
+        requireProof(writes?.length === 1);
+        let inBefore = false;
+        walk(before, (node) => {
+          if (node === writes[0].identifier) inBefore = true;
+        });
+        requireProof(inBefore);
+        for (const ref of variable.references.filter((r) => r.isRead())) {
+          const parent = parentMap.get(ref.identifier);
+          if (name === 'api') {
+            requireProof(
+              parent?.type === 'MemberExpression' &&
+                parent.object === ref.identifier &&
+                !parent.computed &&
+                ['origin', 'tenantId', 'close'].includes(parent.property.name),
+            );
+            const owner = parentMap.get(parent);
+            requireProof(
+              !(owner?.type === 'AssignmentExpression' && owner.left === parent) &&
+                owner?.type !== 'UpdateExpression' &&
+                !(owner?.type === 'UnaryExpression' && owner.operator === 'delete'),
+            );
+            if (parent.property.name === 'close') {
+              let inAfter = false;
+              walk(after, (node) => {
+                if (node === parent) inAfter = true;
+              });
+              requireProof(inAfter);
+            }
+          } else {
+            let inSend = false;
+            walk(forwarder.declaration, (node) => {
+              if (node === ref.identifier) inSend = true;
             });
-            requireProof(inAfter);
+            requireProof(inSend);
           }
-        } else {
-          let inSend = false;
-          walk(forwarder.declaration, (node) => {
-            if (node === ref.identifier) inSend = true;
-          });
-          requireProof(inSend);
         }
       }
-    }
-    for (const id of [rec.body.expressions[0], rec.params[0].right]) {
-      const ref = refs.find((r) => r.identifier === id);
-      requireProof(
-        ref?.resolved?.defs.length === 1 &&
-          ref.resolved.defs[0].type === 'Variable' &&
-          ref.resolved.defs[0].parent.kind === 'const' &&
-          ref.resolved.defs[0].node.init?.type === 'Literal' &&
-          !ref.resolved.references.some((r) => r.isWrite() && !r.init),
-      );
-    }
+    };
+    verifyStateIdentifiers();
+    const verifyRecordBindings = () => {
+      for (const id of [rec.body.expressions[0], rec.params[0].right]) {
+        const ref = refs.find((r) => r.identifier === id);
+        requireProof(
+          ref?.resolved?.defs.length === 1 &&
+            ref.resolved.defs[0].type === 'Variable' &&
+            ref.resolved.defs[0].parent.kind === 'const' &&
+            ref.resolved.defs[0].node.init?.type === 'Literal' &&
+            !ref.resolved.references.some((r) => r.isWrite() && !r.init),
+        );
+      }
+    };
+    verifyRecordBindings();
     const callback = row.callback ?? row.node.arguments[1];
     const insideCallback = new Set();
     walk(callback, (node) => insideCallback.add(node));
@@ -628,38 +639,39 @@ export function analyzeRoutingComponents({ baselineAst, currentAst, selected, im
       requireProof(a.length * b.length <= 256);
       return a.flatMap((left) => b.map((right) => left + right));
     };
+    const evaluateIdentifier = (node, overrides) => {
+      if (overrides.has(node.name)) return overrides.get(node.name);
+      const ref = refs.find((item) => item.identifier === node),
+        variable = ref?.resolved,
+        def = variable?.defs[0];
+      requireProof(
+        variable?.defs.length === 1 &&
+          def?.type === 'Variable' &&
+          def.node.id?.type === 'Identifier' &&
+          def.node.id.name === node.name &&
+          def.parent?.kind === 'const' &&
+          def.parent.declarations.length === 1 &&
+          !variable.references.some((item) => item.isWrite() && !item.init),
+      );
+      if (def.node.init?.type === 'Literal' && typeof def.node.init.value === 'string') return [def.node.init.value];
+      const loop = parentMap.get(def.parent);
+      requireProof(
+        !def.node.init &&
+          loop?.type === 'ForOfStatement' &&
+          !loop.await &&
+          loop.left === def.parent &&
+          insideCallback.has(loop) &&
+          loop.right?.type === 'ArrayExpression' &&
+          loop.right.elements.length > 0 &&
+          loop.right.elements.length <= 64 &&
+          loop.right.elements.every((item) => item?.type === 'Literal' && typeof item.value === 'string'),
+      );
+      provenLoops.add(loop);
+      return loop.right.elements.map((item) => item.value);
+    };
     const evaluate = (node, overrides = new Map()) => {
       if (node?.type === 'Literal' && typeof node.value === 'string') return [node.value];
-      if (node?.type === 'Identifier') {
-        if (overrides.has(node.name)) return overrides.get(node.name);
-        const ref = refs.find((item) => item.identifier === node),
-          variable = ref?.resolved,
-          def = variable?.defs[0];
-        requireProof(
-          variable?.defs.length === 1 &&
-            def?.type === 'Variable' &&
-            def.node.id?.type === 'Identifier' &&
-            def.node.id.name === node.name &&
-            def.parent?.kind === 'const' &&
-            def.parent.declarations.length === 1 &&
-            !variable.references.some((item) => item.isWrite() && !item.init),
-        );
-        if (def.node.init?.type === 'Literal' && typeof def.node.init.value === 'string') return [def.node.init.value];
-        const loop = parentMap.get(def.parent);
-        requireProof(
-          !def.node.init &&
-            loop?.type === 'ForOfStatement' &&
-            !loop.await &&
-            loop.left === def.parent &&
-            insideCallback.has(loop) &&
-            loop.right?.type === 'ArrayExpression' &&
-            loop.right.elements.length > 0 &&
-            loop.right.elements.length <= 64 &&
-            loop.right.elements.every((item) => item?.type === 'Literal' && typeof item.value === 'string'),
-        );
-        provenLoops.add(loop);
-        return loop.right.elements.map((item) => item.value);
-      }
+      if (node?.type === 'Identifier') return evaluateIdentifier(node, overrides);
       if (node?.type === 'TemplateLiteral') {
         requireProof(
           node.quasis.length === node.expressions.length + 1 &&
@@ -695,8 +707,8 @@ export function analyzeRoutingComponents({ baselineAst, currentAst, selected, im
               (value) =>
                 value.startsWith('/') &&
                 !value.startsWith('//') &&
-                !value.includes(String.fromCharCode(92)) &&
-                ![...value].some((character) => character.charCodeAt(0) <= 32 || character.charCodeAt(0) === 127) &&
+                !value.includes(String.fromCodePoint(92)) &&
+                ![...value].some((character) => character.codePointAt(0) <= 32 || character.codePointAt(0) === 127) &&
                 new URL('http://127.0.0.1:4321' + value).origin === 'http://127.0.0.1:4321',
             ),
         );
@@ -705,7 +717,8 @@ export function analyzeRoutingComponents({ baselineAst, currentAst, selected, im
     });
     requireProof(paths.length > 0);
     const loopCertificates = [];
-    if (provenLoops.size) {
+    const validateProvenLoops = () => {
+      if (!provenLoops.size) return;
       const dangerous = new Set([
         'Array',
         'Object',
@@ -717,35 +730,40 @@ export function analyzeRoutingComponents({ baselineAst, currentAst, selected, im
         'Function',
         'eval',
       ]);
-      walk(ast, (node) => {
-        requireProof(!['ImportExpression', 'WithStatement', 'ClassDeclaration', 'ClassExpression'].includes(node.type));
-        if (node.type === 'Identifier') requireProof(!dangerous.has(node.name));
-        if (node.type === 'Property')
+      validateLoopEnvironment();
+      function validateLoopEnvironment() {
+        walk(ast, (node) => {
           requireProof(
-            !node.computed && !['prototype', '__proto__', 'constructor'].includes(node.key.name ?? node.key.value),
+            !['ImportExpression', 'WithStatement', 'ClassDeclaration', 'ClassExpression'].includes(node.type),
           );
-        if (node.type === 'MemberExpression') {
-          let key;
-          if (!node.computed) key = node.property.name;
-          else if (node.property.type === 'Literal') key = node.property.value;
-          else if (node.property.type === 'Identifier') {
-            const ref = refs.find((item) => item.identifier === node.property),
-              variable = ref?.resolved,
-              def = variable?.defs[0];
+          if (node.type === 'Identifier') requireProof(!dangerous.has(node.name));
+          if (node.type === 'Property')
             requireProof(
-              variable?.defs.length === 1 &&
-                def?.type === 'Variable' &&
-                def.node.id?.type === 'Identifier' &&
-                def.parent?.kind === 'const' &&
-                def.node.init?.type === 'Literal' &&
-                typeof def.node.init.value === 'string' &&
-                !variable.references.some((item) => item.isWrite() && !item.init),
+              !node.computed && !['prototype', '__proto__', 'constructor'].includes(node.key.name ?? node.key.value),
             );
-            key = def.node.init.value;
-          } else requireProof(false);
-          requireProof(!['prototype', '__proto__', 'constructor'].includes(key));
-        }
-      });
+          if (node.type === 'MemberExpression') {
+            let key;
+            if (!node.computed) key = node.property.name;
+            else if (node.property.type === 'Literal') key = node.property.value;
+            else if (node.property.type === 'Identifier') {
+              const ref = refs.find((item) => item.identifier === node.property),
+                variable = ref?.resolved,
+                def = variable?.defs[0];
+              requireProof(
+                variable?.defs.length === 1 &&
+                  def?.type === 'Variable' &&
+                  def.node.id?.type === 'Identifier' &&
+                  def.parent?.kind === 'const' &&
+                  def.node.init?.type === 'Literal' &&
+                  typeof def.node.init.value === 'string' &&
+                  !variable.references.some((item) => item.isWrite() && !item.init),
+              );
+              key = def.node.init.value;
+            } else requireProof(false);
+            requireProof(!['prototype', '__proto__', 'constructor'].includes(key));
+          }
+        });
+      }
       const assertionImports = ast.body.filter(
         (node) =>
           node.type === 'ImportDeclaration' &&
@@ -763,7 +781,7 @@ export function analyzeRoutingComponents({ baselineAst, currentAst, selected, im
         errors.length === 1 &&
           same(errors[0], parseStatement('const error = async (response) => (await response.json()).error;')),
       );
-      for (const loop of provenLoops) {
+      const validateLoop = (loop) => {
         const parts = loop.body?.type === 'BlockStatement' ? loop.body.body : [];
         requireProof(
           parts.length === 3 &&
@@ -837,8 +855,7 @@ export function analyzeRoutingComponents({ baselineAst, currentAst, selected, im
           .flatMap((scope) => scope.variables)
           .find((variable) => variable.identifiers.includes(declaration.id));
         requireProof(
-          responseVar &&
-            responseVar.references.filter((ref) => ref.isRead()).length === 2 &&
+          responseVar?.references.filter((ref) => ref.isRead()).length === 2 &&
             !responseVar.references.some((ref) => ref.isWrite() && !ref.init),
         );
         const nameVar = refs.find((ref) => ref.identifier === first.arguments[2])?.resolved;
@@ -853,20 +870,25 @@ export function analyzeRoutingComponents({ baselineAst, currentAst, selected, im
           casesSha256: hash(loop.right.elements.map((item) => item.value)),
           caseCount: loop.right.elements.length,
         });
-      }
-    }
+      };
+      for (const loop of provenLoops) validateLoop(loop);
+    };
+    validateProvenLoops();
     const selectedNodes = new Set();
     walk(callback, (node) => selectedNodes.add(node));
-    for (const ref of refs.filter(
-      (r) => selectedNodes.has(r.identifier) && ['send', 'record'].includes(r.identifier.name),
-    )) {
-      requireProof(
-        ref.resolved?.defs.length === 1 &&
-          (ref.identifier.name === 'send'
-            ? ref.resolved.defs[0].node === forwarder.declaration
-            : ref.resolved.defs[0].node === record[0].declarations[0]),
-      );
-    }
+    const verifySelectedReferences = () => {
+      for (const ref of refs.filter(
+        (r) => selectedNodes.has(r.identifier) && ['send', 'record'].includes(r.identifier.name),
+      )) {
+        requireProof(
+          ref.resolved?.defs.length === 1 &&
+            (ref.identifier.name === 'send'
+              ? ref.resolved.defs[0].node === forwarder.declaration
+              : ref.resolved.defs[0].node === record[0].declarations[0]),
+        );
+      }
+    };
+    verifySelectedReferences();
 
     const schemaRefs = refs.filter((ref) => ref.resolved?.defs.some((def) => def.node === producer.node));
     requireProof(
@@ -891,7 +913,12 @@ export function analyzeRoutingComponents({ baselineAst, currentAst, selected, im
     });
     fixture.transportImport = forwarder.importNode;
     fixture.transportIdentifier = forwarder.requestIdentifier;
-  }
+  };
+  for (const version of [
+    [baselineAst, selected[0].old, hooks.old, state.baseline, transport.baseline],
+    [currentAst, selected[0].current, hooks.current, state.current, transport.current],
+  ])
+    verifyRoutingVersion(version);
   requireProof(same(certificates[0], certificates[1]));
   return { ...hooks, routing: certificates[0] };
 }
@@ -1046,6 +1073,22 @@ export function analyzeRoutingInputSlice(args) {
     const parents = new Map();
     walk(ast, (node, parent) => parents.set(node, parent));
     const recognizedExternalInputs = new Set();
+    function inspectEnvironment(node) {
+      const env = parents.get(node),
+        key = parents.get(env);
+      requireProof(
+        hookNodes.has(node) &&
+          env?.type === 'MemberExpression' &&
+          env.object === node &&
+          !env.computed &&
+          env.property.name === 'env' &&
+          key?.type === 'MemberExpression' &&
+          key.object === env &&
+          key.computed &&
+          key.property?.name === exchange.secretName,
+      );
+      recognizedExternalInputs.add(env);
+    }
     function inspect(node) {
       if (!node?.type) return;
       if (node.type === 'CallExpression' && node.callee?.name === 'it' && node !== row.node) return;
@@ -1053,22 +1096,7 @@ export function analyzeRoutingInputSlice(args) {
         requireProof(node === exchange.fetchIdentifier);
         recognizedExternalInputs.add(node);
       }
-      if (node.type === 'Identifier' && node.name === 'process') {
-        const env = parents.get(node),
-          key = parents.get(env);
-        requireProof(
-          hookNodes.has(node) &&
-            env?.type === 'MemberExpression' &&
-            env.object === node &&
-            !env.computed &&
-            env.property.name === 'env' &&
-            key?.type === 'MemberExpression' &&
-            key.object === env &&
-            key.computed &&
-            key.property?.name === exchange.secretName,
-        );
-        recognizedExternalInputs.add(env);
-      }
+      if (node.type === 'Identifier' && node.name === 'process') inspectEnvironment(node);
       for (const value of Object.values(node))
         for (const child of Array.isArray(value) ? value : [value]) if (child?.type) inspect(child);
     }

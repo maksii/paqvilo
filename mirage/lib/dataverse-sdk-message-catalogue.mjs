@@ -7,6 +7,7 @@
 // the exported Solution or a project's evidence-backed observed.sdkMessages, never from here.
 // Row: [name, sdkmessageid, isprivate, availability, autotransact, workflowsdkstepenabled, none allowed, none availability];
 // the last two only for a message with a 'none' (no table) sdkmessagefilter, iscustomprocessingstepallowed and availability.
+/** @type {Array<[string, string, number, number, number, number, number?, number?]>} */
 const ROWS = [
   ['ApplyRecordCreationAndUpdateRule', 'b8c5bc44-f2cb-4a1a-99b0-f35802de0a6a', 0, 0, 0, 0, 1, 0],
   ['Archive', 'd1b4b049-36f7-4788-93e1-21fa36b3a544', 1, 2, 1, 0],

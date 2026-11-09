@@ -36,7 +36,7 @@ export function redactEmbeddedQueryValues(text) {
       return raw;
     }
     const hash = plain.indexOf('#', question);
-    const query = plain.slice(question + 1, hash < 0 ? undefined : hash);
+    const query = plain.slice(question + 1, hash < 0 ? plain.length : hash);
     const fragment = hash < 0 ? '' : plain.slice(hash);
     const safe = query
       .split('&')

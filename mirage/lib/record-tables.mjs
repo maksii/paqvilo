@@ -908,6 +908,8 @@ class PagedRecords {
     this.scannedChunks = 0;
     this.rows = new Map();
     this.aliases = false;
+    // Older persisted descriptors may omit this value when restored.
+    /** @type {number | undefined} */
     this.versionHighWatermark = 0;
     this.looseBraceKeys = false;
     this.target = [];

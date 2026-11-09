@@ -2,6 +2,7 @@
 // This certifies neither the implementation under test nor native behavior by itself.
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
+import { hashAst as hash } from './parity-ast-utils.mjs';
 const { parse } = createRequire(import.meta.url)('espree');
 const fail = () => {
   throw Object.assign(new Error('unsupported-assertion-loop'), { qualificationCode: 'unsupported-assertion-loop' });
@@ -9,20 +10,6 @@ const fail = () => {
 const check = (value) => {
   if (!value) fail();
 };
-const normalize = (v) =>
-  Array.isArray(v)
-    ? v.map(normalize)
-    : !v || typeof v !== 'object'
-      ? v
-      : Object.fromEntries(
-          Object.entries(v)
-            .filter(([k]) => !['loc', 'range', 'start', 'end', 'raw'].includes(k))
-            .map(([k, x]) => [k, normalize(x)]),
-        );
-const hash = (v) =>
-  createHash('sha256')
-    .update(JSON.stringify(normalize(v)))
-    .digest('hex');
 const jsonHash = (v) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 function declaration(ast, name) {
@@ -36,25 +23,23 @@ function declaration(ast, name) {
   check(found.length === 1);
   return found[0];
 }
+function encodedNumber(value) {
+  if (Object.is(value, -0)) return '-0';
+  if (Number.isNaN(value)) return 'NaN';
+  if (value === Infinity) return 'Infinity';
+  if (value === -Infinity) return '-Infinity';
+  return String(value);
+}
 function encoded(value, seen = new Set()) {
   if (value === null) return ['null'];
   if (value === undefined) return ['undefined'];
   if (typeof value === 'string' || typeof value === 'boolean') return [typeof value, value];
-  if (typeof value === 'number')
-    return [
-      'number',
-      Object.is(value, -0)
-        ? '-0'
-        : Number.isNaN(value)
-          ? 'NaN'
-          : value === Infinity
-            ? 'Infinity'
-            : value === -Infinity
-              ? '-Infinity'
-              : String(value),
-    ];
+  if (typeof value === 'number') return ['number', encodedNumber(value)];
   check(typeof value === 'object' && !seen.has(value));
   seen.add(value);
+  return encodeComposite(value, seen);
+}
+function encodeComposite(value, seen) {
   let out;
   if (Array.isArray(value)) {
     check(Object.getPrototypeOf(value) === Array.prototype);
@@ -96,6 +81,7 @@ function encoded(value, seen = new Set()) {
   seen.delete(value);
   return out;
 }
+
 function sidecar(value) {
   if (Array.isArray(value)) return value.map(sidecar);
   if (value && typeof value === 'object') {
@@ -119,94 +105,101 @@ function evaluate(ast, node, dependencies, locals = new Map()) {
     typeof node.argument.value === 'number'
   )
     return -node.argument.value;
-  if (node?.type === 'Identifier') {
-    if (locals.has(node.name)) return locals.get(node.name);
-    if (node.name === 'Infinity') return Infinity;
-    const d = declaration(ast, node.name);
-    dependencies.set(node.name, d);
-    const n = d.declarations[0].init;
-    check(n?.type === 'Literal' && typeof n.value === 'string');
-    return n.value;
-  }
-  if (node?.type === 'ArrayExpression') {
-    const result = [];
-    for (const x of node.elements) {
-      check(x);
-      if (x.type === 'SpreadElement') {
-        const call = x.argument,
-          member = call?.callee,
-          arrow = call?.arguments?.[0];
-        check(
-          call?.type === 'CallExpression' &&
-            call.arguments.length === 1 &&
-            member?.type === 'MemberExpression' &&
-            !member.computed &&
-            member.property.name === 'map' &&
-            member.object?.type === 'ArrayExpression' &&
-            arrow?.type === 'ArrowFunctionExpression' &&
-            !arrow.async &&
-            arrow.params.length === 1 &&
-            arrow.params[0].type === 'Identifier' &&
-            arrow.body.type === 'ObjectExpression',
-        );
-        const source = evaluate(ast, member.object, dependencies, locals);
-        for (const item of source) {
-          const inner = new Map(locals);
-          inner.set(arrow.params[0].name, item);
-          result.push(evaluate(ast, arrow.body, dependencies, inner));
-        }
-      } else result.push(evaluate(ast, x, dependencies, locals));
-    }
-    return result;
-  }
-  if (node?.type === 'ObjectExpression') {
-    const pairs = node.properties.map((p) => {
-      check(
-        p.type === 'Property' &&
-          p.kind === 'init' &&
-          !p.computed &&
-          !p.method &&
-          p.key?.type === 'Identifier' &&
-          !['__proto__', 'constructor', 'prototype'].includes(p.key.name),
-      );
-      return [p.key.name, evaluate(ast, p.value, dependencies, locals)];
-    });
-    check(new Set(pairs.map((p) => p[0])).size === pairs.length);
-    return Object.fromEntries(pairs);
-  }
-  if (node?.type === 'NewExpression' && node.callee?.name === 'Map') {
-    check(node.arguments.length <= 1);
-    const entries = node.arguments.length ? evaluate(ast, node.arguments[0], dependencies, locals) : [];
-    check(Array.isArray(entries) && entries.every((x) => Array.isArray(x) && x.length === 2));
-    const map = new Map(entries);
-    check(map.size === entries.length);
-    return map;
-  }
-  if (node?.type === 'CallExpression' && node.callee?.type === 'Identifier' && node.arguments.length === 1) {
-    const d = declaration(ast, node.callee.name),
-      fn = d.declarations[0].init;
-    check(
-      fn?.type === 'ArrowFunctionExpression' &&
-        !fn.async &&
-        fn.params.length === 1 &&
-        fn.params[0].type === 'Identifier' &&
-        fn.body.type === 'ObjectExpression',
-    );
-    const p = fn.body.properties;
-    check(
-      p.length === 2 &&
-        p[0].key?.name === 'type' &&
-        p[0].value?.type === 'Literal' &&
-        p[0].value.value === 'string' &&
-        p[1].key?.name === 'value' &&
-        p[1].value?.name === fn.params[0].name,
-    );
-    dependencies.set(node.callee.name, d);
-    const local = new Map(locals);
-    local.set(fn.params[0].name, evaluate(ast, node.arguments[0], dependencies, locals));
-    return evaluate(ast, fn.body, dependencies, local);
-  }
+  if (node?.type === 'Identifier') return evaluateIdentifier(ast, node, dependencies, locals);
+  if (node?.type === 'ArrayExpression') return evaluateArray(ast, node, dependencies, locals);
+  if (node?.type === 'ObjectExpression') return evaluateObject(ast, node, dependencies, locals);
+  if (node?.type === 'NewExpression' && node.callee?.name === 'Map')
+    return evaluateMap(ast, node, dependencies, locals);
+  if (node?.type === 'CallExpression' && node.callee?.type === 'Identifier' && node.arguments.length === 1)
+    return evaluateCall(ast, node, dependencies, locals);
   fail();
+}
+function evaluateCall(ast, node, dependencies, locals) {
+  const d = declaration(ast, node.callee.name),
+    fn = d.declarations[0].init;
+  check(
+    fn?.type === 'ArrowFunctionExpression' &&
+      !fn.async &&
+      fn.params.length === 1 &&
+      fn.params[0].type === 'Identifier' &&
+      fn.body.type === 'ObjectExpression',
+  );
+  const p = fn.body.properties;
+  check(
+    p.length === 2 &&
+      p[0].key?.name === 'type' &&
+      p[0].value?.type === 'Literal' &&
+      p[0].value.value === 'string' &&
+      p[1].key?.name === 'value' &&
+      p[1].value?.name === fn.params[0].name,
+  );
+  dependencies.set(node.callee.name, d);
+  const local = new Map(locals);
+  local.set(fn.params[0].name, evaluate(ast, node.arguments[0], dependencies, locals));
+  return evaluate(ast, fn.body, dependencies, local);
+}
+function evaluateIdentifier(ast, node, dependencies, locals) {
+  if (locals.has(node.name)) return locals.get(node.name);
+  if (node.name === 'Infinity') return Infinity;
+  const d = declaration(ast, node.name);
+  dependencies.set(node.name, d);
+  const n = d.declarations[0].init;
+  check(n?.type === 'Literal' && typeof n.value === 'string');
+  return n.value;
+}
+function evaluateMap(ast, node, dependencies, locals) {
+  check(node.arguments.length <= 1);
+  const entries = node.arguments.length ? evaluate(ast, node.arguments[0], dependencies, locals) : [];
+  check(Array.isArray(entries) && entries.every((x) => Array.isArray(x) && x.length === 2));
+  const map = new Map(entries);
+  check(map.size === entries.length);
+  return map;
+}
+function evaluateObject(ast, node, dependencies, locals) {
+  const pairs = node.properties.map((p) => {
+    check(
+      p.type === 'Property' &&
+        p.kind === 'init' &&
+        !p.computed &&
+        !p.method &&
+        p.key?.type === 'Identifier' &&
+        !['__proto__', 'constructor', 'prototype'].includes(p.key.name),
+    );
+    return [p.key.name, evaluate(ast, p.value, dependencies, locals)];
+  });
+  check(new Set(pairs.map((p) => p[0])).size === pairs.length);
+  return Object.fromEntries(pairs);
+}
+function evaluateArray(ast, node, dependencies, locals) {
+  const result = [];
+  for (const x of node.elements) {
+    check(x);
+    if (x.type === 'SpreadElement') {
+      const call = x.argument,
+        member = call?.callee,
+        arrow = call?.arguments?.[0];
+      check(
+        call?.type === 'CallExpression' &&
+          call.arguments.length === 1 &&
+          member?.type === 'MemberExpression' &&
+          !member.computed &&
+          member.property.name === 'map' &&
+          member.object?.type === 'ArrayExpression' &&
+          arrow?.type === 'ArrowFunctionExpression' &&
+          !arrow.async &&
+          arrow.params.length === 1 &&
+          arrow.params[0].type === 'Identifier' &&
+          arrow.body.type === 'ObjectExpression',
+      );
+      const source = evaluate(ast, member.object, dependencies, locals);
+      for (const item of source) {
+        const inner = new Map(locals);
+        inner.set(arrow.params[0].name, item);
+        result.push(evaluate(ast, arrow.body, dependencies, inner));
+      }
+    } else result.push(evaluate(ast, x, dependencies, locals));
+  }
+  return result;
 }
 function pointer(o, path) {
   check(typeof path === 'string' && path.startsWith('/'));
@@ -214,7 +207,7 @@ function pointer(o, path) {
     .slice(1)
     .split('/')
     .reduce((v, k) => {
-      k = k.replace(/~1/g, '/').replace(/~0/g, '~');
+      k = k.replaceAll('~1', '/').replaceAll('~0', '~');
       check(v !== null && typeof v === 'object' && Object.hasOwn(v, k));
       return v[k];
     }, o);
@@ -290,8 +283,7 @@ export function analyzeAssertionLoop({ baselineAst, currentAst, selected, select
       statements.slice(1).every((n) => n.type === 'ExpressionStatement' && n.expression?.type === 'CallExpression'),
   );
   const helperSource = {
-    renamed:
-      "const renamed = (xml) => xml.replace(/xmlns:([a-z0-9]+)=/g, 'xmlns:p$1=').replace(/(?<=[<\\s\"/])(?!xmlns:|xml:|https?:)([a-z0-9]+)(?=:)/g, 'p$1');",
+    renamed: String.raw`const renamed = (xml) => xml.replace(/xmlns:([a-z0-9]+)=/g, 'xmlns:p$1=').replace(/(?<=[<\s"/])(?!xmlns:|xml:|https?:)([a-z0-9]+)(?=:)/g, 'p$1');`,
     decodeFrom: 'const decodeFrom = (xml) => decodeValue(parseEnvelope(xml).request);',
   };
   for (const name of ['renamed', 'decodeFrom']) {
@@ -320,18 +312,21 @@ export function analyzeAssertionLoop({ baselineAst, currentAst, selected, select
       !same(capsule.runs[0].rawSha256, capsule.runs[1].rawSha256),
   );
   check(same(proof.capturePointers, ['/runs/0/rawSha256', '/runs/1/rawSha256']));
-  for (let i = 0; i < 27; i++) {
-    const c = capsule.cases[i];
-    check(
-      c.id === i &&
-        same(sidecar(values[i]), c.expected) &&
-        typeof c.xmlDirect === 'string' &&
-        c.xmlRenamed ===
-          c.xmlDirect
-            .replace(/xmlns:([a-z0-9]+)=/g, 'xmlns:p$1=')
-            .replace(/(?<=[<\s"/])(?!xmlns:|xml:|https?:)([a-z0-9]+)(?=:)/g, 'p$1'),
-    );
-  }
+  const verifyAllRecordedCases = () => {
+    for (let i = 0; i < 27; i++) {
+      const c = capsule.cases[i];
+      check(
+        c.id === i &&
+          same(sidecar(values[i]), c.expected) &&
+          typeof c.xmlDirect === 'string' &&
+          c.xmlRenamed ===
+            c.xmlDirect
+              .replace(/xmlns:([a-z0-9]+)=/g, 'xmlns:p$1=')
+              .replace(/(?<=[<\s"/])(?!xmlns:|xml:|https?:)([a-z0-9]+)(?=:)/g, 'p$1'),
+      );
+    }
+  };
+  verifyAllRecordedCases();
   check(
     capsule.cases[27].id === 'null' &&
       capsule.cases[27].expected === null &&
@@ -358,14 +353,17 @@ export function analyzeAssertionLoop({ baselineAst, currentAst, selected, select
     facts = new Map(proof.facts.map((f) => [f.id, f]));
   check(facts.size === proof.facts.length);
   const expected = [];
-  for (const i of selectedIndices)
-    for (let j = 0; j < 2; j++)
-      expected.push({
-        originalValueIndex: i,
-        caseIndex: i,
-        variant: j ? 'renamed' : 'direct',
-        assertionAstSha256: assertionsHash[j],
-      });
+  const verifySelectedCases = () => {
+    for (const i of selectedIndices)
+      for (let j = 0; j < 2; j++)
+        expected.push({
+          originalValueIndex: i,
+          caseIndex: i,
+          variant: j ? 'renamed' : 'direct',
+          assertionAstSha256: assertionsHash[j],
+        });
+  };
+  verifySelectedCases();
   expected.push(
     { originalValueIndex: null, caseIndex: 27, variant: 'direct', assertionAstSha256: tailHash[0] },
     { originalValueIndex: null, caseIndex: 28, variant: 'direct', assertionAstSha256: tailHash[1] },
@@ -378,33 +376,35 @@ export function analyzeAssertionLoop({ baselineAst, currentAst, selected, select
       expected.every((e, i) => Object.keys(e).every((k) => capsule.selectedAssertions[i][k] === e[k])),
   );
   const used = new Set();
-  for (let i = 0; i < expected.length; i++) {
-    const e = expected[i],
-      b = selection.instanceBindings[i];
-    check(
-      Object.keys(e).every((k) => e[k] === b[k]) &&
-        Array.isArray(b.factIds) &&
-        b.factIds.length === 1 &&
-        !used.has(b.factIds[0]),
-    );
-    used.add(b.factIds[0]);
-    const f = facts.get(b.factIds[0]),
-      p = `/runs/0/results/${e.caseIndex}/${e.variant}`;
-    check(
-      f &&
-        f.pointer === p &&
-        same(f.replicatedPointers, [p, `/runs/1/results/${e.caseIndex}/${e.variant}`]) &&
-        capsule.runs.every((r) => r.results[e.caseIndex].id === capsule.cases[e.caseIndex].id),
-    );
-    const a = pointer(capsule, p),
-      z = pointer(capsule, f.replicatedPointers[1]);
-    check(
-      jsonHash(a) === f.sha256 &&
-        jsonHash(z) === f.sha256 &&
-        a.phase === 'value' &&
-        same(a.canonical, capsule.cases[e.caseIndex].expected),
-    );
-  }
+  const verifySelectedFacts = () => {
+    for (let i = 0; i < expected.length; i++) {
+      const e = expected[i],
+        b = selection.instanceBindings[i];
+      check(
+        Object.keys(e).every((k) => e[k] === b[k]) &&
+          Array.isArray(b.factIds) &&
+          b.factIds.length === 1 &&
+          !used.has(b.factIds[0]),
+      );
+      used.add(b.factIds[0]);
+      const f = facts.get(b.factIds[0]),
+        p = `/runs/0/results/${e.caseIndex}/${e.variant}`;
+      check(
+        f?.pointer === p &&
+          same(f.replicatedPointers, [p, `/runs/1/results/${e.caseIndex}/${e.variant}`]) &&
+          capsule.runs.every((r) => r.results[e.caseIndex].id === capsule.cases[e.caseIndex].id),
+      );
+      const a = pointer(capsule, p),
+        z = pointer(capsule, f.replicatedPointers[1]);
+      check(
+        jsonHash(a) === f.sha256 &&
+          jsonHash(z) === f.sha256 &&
+          a.phase === 'value' &&
+          same(a.canonical, capsule.cases[e.caseIndex].expected),
+      );
+    }
+  };
+  verifySelectedFacts();
   const descriptor = {
     version: 1,
     sourceBinding: sourceName,

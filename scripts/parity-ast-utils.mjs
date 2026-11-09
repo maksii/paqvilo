@@ -1,16 +1,15 @@
 // Shared pure AST utilities for source certificates. These do not load a parser.
 import { createHash } from 'node:crypto';
 
-const normalize = (value) =>
-  Array.isArray(value)
-    ? value.map(normalize)
-    : !value || typeof value !== 'object'
-      ? value
-      : Object.fromEntries(
-          Object.entries(value)
-            .filter(([key]) => !['loc', 'range', 'start', 'end', 'raw'].includes(key))
-            .map(([key, item]) => [key, normalize(item)]),
-        );
+function normalize(value) {
+  if (Array.isArray(value)) return value.map(normalize);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !['loc', 'range', 'start', 'end', 'raw'].includes(key))
+      .map(([key, item]) => [key, normalize(item)]),
+  );
+}
 
 export const hashAst = (value) =>
   createHash('sha256')

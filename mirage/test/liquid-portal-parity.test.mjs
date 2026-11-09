@@ -13374,5 +13374,6 @@ test('diagnostic/default mode: math filters promote real operands to decimal, di
 
 // @test-kind tooling: Shared source guard reads expected bindings from protected parity bodies and runs independently of their generators; no baseline closure credit.
 test('parity source bindings 79a601a3e3b1d321', () => {
-  __paqParitySourceBindings(import.meta.url);
+  // @parity-evidence: Tooling-only exposure of the existing source/run/fact/case validator; the same helper and module URL execute once, with every protected binding unchanged.
+  assert.doesNotThrow(() => __paqParitySourceBindings(import.meta.url));
 });

@@ -80,6 +80,20 @@ const literal = (value) => {
   return null;
 }
 
+function isPrimitiveTypeConflict(sourceType, expectedType) {
+  return (
+    (sourceType === 'Edm.Int32' && ['Edm.String', 'Edm.Boolean'].includes(expectedType)) ||
+    (sourceType === 'Edm.Decimal' && expectedType === 'Edm.Int32') ||
+    (sourceType === 'Edm.Boolean' && expectedType === 'Edm.Int32')
+  );
+}
+
+function conversionLiteral(value) {
+  if (value === true) return 'True';
+  if (value === false) return 'False';
+  return literal(value);
+}
+
 /** Facts from the original JSON value and the imported column's Edm type. */
 export function odataConversionDetails(
   value,
@@ -100,15 +114,10 @@ export function odataConversionDetails(
     ['Edm.Int32', 'Edm.Double', 'Edm.DateTimeOffset', 'Edm.Guid', 'Edm.Boolean'].includes(expectedType)
   )
     return { kind: 'primitive-format', literal: literal(value), expectedType };
-  if (!(
-    (sourceType === 'Edm.Int32' && ['Edm.String', 'Edm.Boolean'].includes(expectedType)) ||
-    (sourceType === 'Edm.Decimal' && expectedType === 'Edm.Int32') ||
-    (sourceType === 'Edm.Boolean' && expectedType === 'Edm.Int32')
-  ))
-    return null;
+  if (!isPrimitiveTypeConflict(sourceType, expectedType)) return null;
   return {
     kind: 'primitive-type',
-    literal: typeof value === 'boolean' ? (value ? 'True' : 'False') : literal(value),
+    literal: conversionLiteral(value),
     sourceType,
     expectedType,
   };
@@ -171,7 +180,9 @@ function observedMessage(d, { method, entitySet } = {}) {
       message = `Cannot convert a value to target type '${d.expectedType}' because of conflict between input format string/number and parameter 'IEEE754Compatible' false/true.`;
       break;
     case 'property-node':
-      message = `An unexpected '${d.actualNode}' node was found${d.property ? ` for property named '${d.property}'` : ''} when reading from the JSON reader. A '${d.expectedNode}' node was expected.`;
+      message = `An unexpected '${d.actualNode}' node was found`;
+      if (d.property) message += ` for property named '${d.property}'`;
+      message += ` when reading from the JSON reader. A '${d.expectedNode}' node was expected.`;
       break;
     case 'root-node':
       message = `An unexpected '${d.actualNode}' node was found when reading from the JSON reader. A '${d.expectedNode}' node was expected.`;

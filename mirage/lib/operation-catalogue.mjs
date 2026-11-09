@@ -73,9 +73,13 @@ const definitionOf = (workflow) => workflow?.definition?.properties?.definition 
       } else {
         let route = null;
         try {
-          const url = new URL(String(field('flowapiurl') ?? ''), 'http://local.invalid');
+          const value = String(field('flowapiurl') ?? '');
+          const relative = value.replace(/[\t\r\n]/g, '').trimStart();
+          const url = new URL(value, 'https://local.invalid');
           if (
-            url.origin === 'http://local.invalid' &&
+            !URL.canParse(value) &&
+            !/^[\\/]{2}/.test(relative) &&
+            url.origin === 'https://local.invalid' &&
             /^\/_api\/cloudflow\/v1\.0\/trigger\/[^/]+\/?$/.test(url.pathname)
           )
             route = url.pathname;

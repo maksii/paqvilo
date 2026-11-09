@@ -1,5 +1,5 @@
 // @test-kind observation: recorded native draft choice-control cases pending reviewed public evidence capsule.
-import test from 'node:test';
+import test, { before } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -22,11 +22,16 @@ function fixture(type, options = ['A', 'B', 'C'].map((label, i) => ({ label, val
 }
 
 const bytes = readFileSync(new URL('./fixtures/model-driven-choice-native-facts.json', import.meta.url));
-assert.equal(
-  createHash('sha256').update(bytes).digest('hex'),
-  '4cdfe3a46a4391a0600df6f4eb849cbafcaae09e43a490d6af9763221cd8ddcd',
-);
+
 const evidence = JSON.parse(bytes);
+
+// @parity-evidence: existing native fixture and probe SHA-256 pins are checked before any recorded case executes.
+before(() => {
+  assert.equal(
+    createHash('sha256').update(bytes).digest('hex'),
+    '4cdfe3a46a4391a0600df6f4eb849cbafcaae09e43a490d6af9763221cd8ddcd',
+  );
+});
 
 // @test-kind parity: independently repeated native draft source-bound choice and multiselect sibling mutations.
 // @parity-evidence: mirage/test/fixtures/model-driven-choice-native-facts.json binds source, probe and both typed native captures, including the NaN blank option.

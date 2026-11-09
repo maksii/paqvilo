@@ -1,16 +1,13 @@
 // @test-kind parity: two native source-bound draft recordings of membership and type-specific accessor presence.
 // @parity-evidence: mirage/test/fixtures/model-driven-form-membership-native-facts.json retains both typed runs and the source-form omission checks; it does not establish primary-key status.
-import test from 'node:test';
+import test, { before } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { createFormClientRuntime } from '../lib/model-driven/client-runtime.mjs';
 
 const bytes = readFileSync(new URL('./fixtures/model-driven-form-membership-native-facts.json', import.meta.url));
-assert.equal(
-  createHash('sha256').update(bytes).digest('hex'),
-  '0cbae975bfa35da7d5266c3be4a2110b5dc00ce6af2ca480e1ddc45a1b8fd3a1',
-);
+
 const evidence = JSON.parse(bytes);
 const fields = {
   text: { name: 'text', type: 'text', maxLength: 200 },
@@ -21,6 +18,14 @@ const fields = {
   existing_date: { name: 'existing_date', type: 'date' },
 };
 const present = ['text', 'memo', 'decimal', 'integer'];
+
+// @parity-evidence: existing native fixture and probe SHA-256 pins are checked before any recorded case executes.
+before(() => {
+  assert.equal(
+    createHash('sha256').update(bytes).digest('hex'),
+    '0cbae975bfa35da7d5266c3be4a2110b5dc00ce6af2ca480e1ddc45a1b8fd3a1',
+  );
+});
 
 test('recorded omitted form members and typed accessor shapes', () => {
   for (const capture of evidence.captures) {

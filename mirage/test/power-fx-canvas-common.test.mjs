@@ -1898,7 +1898,8 @@ test('Choices refuses an unknown provider without invoking it', () => {
 
 // @test-kind tooling: Shared source guard reads expected bindings from protected parity bodies and runs independently of their generators; no baseline closure credit.
 test('parity source bindings dd1313af441e6137', () => {
-  __paqParitySourceBindings(import.meta.url);
+  // @parity-evidence: Tooling-only exposure of the existing source/run/fact/case validator; the same helper and module URL execute once, with every protected binding unchanged.
+  assert.doesNotThrow(() => __paqParitySourceBindings(import.meta.url));
 });
 
 if (ErrorKind.Numeric !== 24) throw new Error('official ErrorKind.Numeric binding changed');

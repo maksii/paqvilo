@@ -867,13 +867,22 @@ function deduplicateCsdlNavigations(navs) {
   }
 }
 
+function compareLogicalNames(a, b) {
+  if (a.LogicalName < b.LogicalName) return -1;
+  if (a.LogicalName > b.LogicalName) return 1;
+  return 0;
+}
+
 function sourcePropertyComparator(src) {
   const declared = mappedODataPropertyOrder(src.m) ?? mappedODataPropertyOrder(src.s);
   const rank = new Map((declared ?? []).map((name, index) => [name, index]));
   return (a, b) => {
     const left = rank.get(a.name),
       right = rank.get(b.name);
-    return left === right ? byName(a, b) : left === undefined ? 1 : right === undefined ? -1 : left - right;
+    if (left === right) return byName(a, b);
+    if (left === undefined) return 1;
+    if (right === undefined) return -1;
+    return left - right;
   };
 }
 
@@ -2091,8 +2100,7 @@ export function createMetadataService({
             nav === 'OneToManyRelationships' && http
               ? oneToManyOf(src.logical, httpRelationshipRecords())
               : EXPANSIONS[nav](src);
-          if (nav === 'Attributes' && http)
-            values.sort((a, b) => (a.LogicalName < b.LogicalName ? -1 : a.LogicalName > b.LogicalName ? 1 : 0));
+          if (nav === 'Attributes' && http) values.sort(compareLogicalNames);
           // These navigation collections declare their exact relationship metadata type.
           // OData JSON omits the redundant discriminator; internal/SDK metadata keeps it.
           out[nav] = nav.endsWith('Relationships') ? values.map(({ '@odata.type': _type, ...value }) => value) : values;
@@ -2111,7 +2119,7 @@ export function createMetadataService({
       const src = sourceFor(name);
       if (!src) return null;
       let list = attributesOf(src);
-      if (http) list.sort((a, b) => (a.LogicalName < b.LogicalName ? -1 : a.LogicalName > b.LogicalName ? 1 : 0));
+      if (http) list.sort(compareLogicalNames);
       if (cast) list = list.filter((a) => castMatches(castName(cast), a));
       if (key) list = list.filter((a) => matchKey(a, key));
       const keep = listOf(select).length ? [...listOf(select), ...listOf(expand)] : null;

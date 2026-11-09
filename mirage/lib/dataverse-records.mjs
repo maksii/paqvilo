@@ -2336,7 +2336,8 @@ export function createRecordHandlers({
     };
     const submitted = payload(mapping, structuredClone(body));
     for (const [name, value] of Object.entries(submitted))
-      if (name.endsWith(BIND) && value !== null) for (const reference of [].concat(value)) refOf(reference);
+      if (name.endsWith(BIND) && value !== null)
+        for (const reference of Array.isArray(value) ? value : [value]) refOf(reference);
     const input = store.normalizeRecord(mapping, submitted);
     // HTTP primitives must pass the HTTP reader before the existence pipeline
     // constructs an SDK Target. Invalid Double/choice inputs otherwise escape

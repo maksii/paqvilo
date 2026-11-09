@@ -50,12 +50,13 @@ async function profilesOf(folder) {
  * module folder ({ type: 'pack' }: pack.mjs).
  */
 async function folderKind(folder, entries = null) {
+  let folderEntries;
   try {
-    entries ??= await fs.readdir(folder, { withFileTypes: true });
+    folderEntries = entries ?? (await fs.readdir(folder, { withFileTypes: true }));
   } catch {
     return null;
   }
-  const names = new Set(entries.map((entry) => entry.name));
+  const names = new Set(folderEntries.map((entry) => entry.name));
   if (['website.yml', 'website.yaml', 'powerpagecomponents', '.powerpages-site'].some((name) => names.has(name))) {
     const website = await websiteKind(folder, names);
     if (website) return website;
@@ -68,7 +69,7 @@ async function folderKind(folder, entries = null) {
     if (source.some((name) => /\.(?:pa|fx)\.yaml$/i.test(name))) return { type: 'canvas', name: path.basename(folder) };
   }
   if (names.has('power.config.json')) return { type: 'codeApp', name: path.basename(folder) };
-  const profiles = entries
+  const profiles = folderEntries
     .filter((entry) => entry.isFile() && PROFILE_FILE.test(entry.name))
     .map((entry) => ({ name: PROFILE_FILE.exec(entry.name)[1], file: entry.name }));
   if (profiles.length) return { type: 'profiles', files: profiles };

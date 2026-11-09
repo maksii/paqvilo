@@ -11,10 +11,15 @@ import { captureCodeAppContextContract, captureCodeAppContextCacheContract } fro
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 // @parity-evidence: two fresh published-host context captures agree on all 13 typed context/query rows and four cache rows; serialized probes and raw capture hashes are bound in the fixture.
 const bytes = fs.readFileSync(new URL('./fixtures/code-apps-context-native.json', import.meta.url));
-assert.equal(hash(bytes), '9ba4e056aca60036e840d81bfe8cf65abece4a5ce529f111994fac17aac81b3b');
+
 const evidence = JSON.parse(bytes);
-assert.equal(hash(captureCodeAppContextContract.toString()), evidence.probeFunctionSha256);
-assert.equal(hash(captureCodeAppContextCacheContract.toString()), evidence.cacheProbeFunctionSha256);
+
+// @parity-evidence: two published native player captures in code-apps-context-native.json bind both unchanged context probes. The same pinned setup checks run before the tests.
+test.before(() => {
+  assert.equal(hash(bytes), '9ba4e056aca60036e840d81bfe8cf65abece4a5ce529f111994fac17aac81b3b');
+  assert.equal(hash(captureCodeAppContextContract.toString()), evidence.probeFunctionSha256);
+  assert.equal(hash(captureCodeAppContextCacheContract.toString()), evidence.cacheProbeFunctionSha256);
+});
 
 test('local context reproduces native required fields, authored query decoding and cache relationships', async (t) => {
   const originalLocation = globalThis.location;

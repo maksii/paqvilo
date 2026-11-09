@@ -9,16 +9,15 @@ const { parse } = createRequire(import.meta.url)('espree');
 const { analyze: analyzeScopes } = createRequire(import.meta.url)('eslint-scope');
 const parseModule = (text) => parse(text, { ecmaVersion: 'latest', sourceType: 'module' });
 const digest = (data) => createHash('sha256').update(data).digest('hex');
-const clean = (value) =>
-  Array.isArray(value)
-    ? value.map(clean)
-    : !value || typeof value !== 'object'
-      ? value
-      : Object.fromEntries(
-          Object.entries(value)
-            .filter(([key]) => !['loc', 'range', 'start', 'end', 'raw'].includes(key))
-            .map(([key, item]) => [key, clean(item)]),
-        );
+function clean(value) {
+  if (Array.isArray(value)) return value.map(clean);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !['loc', 'range', 'start', 'end', 'raw'].includes(key))
+      .map(([key, item]) => [key, clean(item)]),
+  );
+}
 const same = (a, b) => JSON.stringify(clean(a)) === JSON.stringify(clean(b));
 const fail = () => {
   throw Object.assign(new Error('unsupported-generated-fixture'), {
@@ -29,7 +28,10 @@ const requireProof = (value) => {
   if (!value) fail();
 };
 const children = (node) =>
-  Object.values(node).flatMap((v) => (Array.isArray(v) ? v.filter((x) => x?.type) : v?.type ? [v] : []));
+  Object.values(node).flatMap((v) => {
+    if (Array.isArray(v)) return v.filter((x) => x?.type);
+    return v?.type ? [v] : [];
+  });
 function walk(node, fn, parent = null) {
   fn(node, parent);
   for (const child of children(node)) walk(child, fn, node);
@@ -62,7 +64,7 @@ function safeName(name) {
     typeof name === 'string' &&
     name.length > 0 &&
     !/[\\:<>"|?*]/u.test(name) &&
-    ![...name].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) > 126) &&
+    ![...name].some((character) => character.codePointAt(0) < 32 || character.codePointAt(0) > 126) &&
     !name.startsWith('/') &&
     name
       .split('/')
@@ -76,6 +78,12 @@ function safeName(name) {
           !/^(?:con|prn|aux|nul|clock\$|conin\$|conout\$|com[1-9]|lpt[1-9])(?:\.|$)/iu.test(part),
       )
   );
+}
+
+function constant(variable) {
+  const definition = variable.defs[0];
+  requireProof(definition.type === 'Variable' && definition.parent?.kind === 'const' && definition.node.init);
+  return definition.node.init;
 }
 
 /** Enumerate statically constructed map keys; this alone does not certify values or module effects. */
@@ -92,15 +100,8 @@ export function inferStaticObjectKeys({ ast, expression }) {
   const active = new Set();
   function binding(node) {
     const variable = references.get(node);
-    requireProof(
-      variable && variable.defs.length === 1 && !variable.references.some((ref) => ref.isWrite() && !ref.init),
-    );
+    requireProof(variable?.defs.length === 1 && !variable.references.some((ref) => ref.isWrite() && !ref.init));
     return variable;
-  }
-  function constant(variable) {
-    const definition = variable.defs[0];
-    requireProof(definition.type === 'Variable' && definition.parent?.kind === 'const' && definition.node.init);
-    return definition.node.init;
   }
   function textValue(node, environment) {
     if (node?.type === 'Literal' && typeof node.value === 'string') return node.value;
@@ -131,6 +132,44 @@ export function inferStaticObjectKeys({ ast, expression }) {
     }
     return fail();
   }
+  function keysCall(node, environment) {
+    const variable = binding(node.callee),
+      fn = constant(variable);
+    requireProof(
+      fn.type === 'ArrowFunctionExpression' &&
+        fn.expression &&
+        !fn.async &&
+        !fn.generator &&
+        fn.params.every(
+          (param) =>
+            param.type === 'Identifier' || (param.type === 'AssignmentPattern' && param.left.type === 'Identifier'),
+        ),
+    );
+    const scope = scopes.acquire(fn),
+      nested = new Map(environment);
+    requireProof(scope);
+    for (let i = 0; i < fn.params.length; i++) {
+      const pattern = fn.params[i],
+        name = pattern.type === 'Identifier' ? pattern.name : pattern.left.name;
+      const param = scope.variables.find((item) => item.name === name);
+      requireProof(param && !param.references.some((ref) => ref.isWrite() && !ref.init));
+      const argument = node.arguments[i] ?? (pattern.type === 'AssignmentPattern' ? pattern.right : null);
+      let value = null;
+      try {
+        value = textValue(argument, environment);
+      } catch {
+        /* Unknown values may not contribute to a key. */
+      }
+      nested.set(param, value);
+    }
+    requireProof(!active.has(variable));
+    active.add(variable);
+    try {
+      return keys(fn.body, nested);
+    } finally {
+      active.delete(variable);
+    }
+  }
   function keys(node, environment) {
     if (node?.type === 'Identifier') {
       const variable = binding(node);
@@ -148,42 +187,7 @@ export function inferStaticObjectKeys({ ast, expression }) {
       !node.optional &&
       node.arguments.every((arg) => arg.type !== 'SpreadElement')
     ) {
-      const variable = binding(node.callee),
-        fn = constant(variable);
-      requireProof(
-        fn.type === 'ArrowFunctionExpression' &&
-          fn.expression &&
-          !fn.async &&
-          !fn.generator &&
-          fn.params.every(
-            (param) =>
-              param.type === 'Identifier' || (param.type === 'AssignmentPattern' && param.left.type === 'Identifier'),
-          ),
-      );
-      const scope = scopes.acquire(fn),
-        nested = new Map(environment);
-      requireProof(scope);
-      for (let i = 0; i < fn.params.length; i++) {
-        const pattern = fn.params[i],
-          name = pattern.type === 'Identifier' ? pattern.name : pattern.left.name;
-        const param = scope.variables.find((item) => item.name === name);
-        requireProof(param && !param.references.some((ref) => ref.isWrite() && !ref.init));
-        const argument = node.arguments[i] ?? (pattern.type === 'AssignmentPattern' ? pattern.right : null);
-        let value = null;
-        try {
-          value = textValue(argument, environment);
-        } catch {
-          /* Unknown values may not contribute to a key. */
-        }
-        nested.set(param, value);
-      }
-      requireProof(!active.has(variable));
-      active.add(variable);
-      try {
-        return keys(fn.body, nested);
-      } finally {
-        active.delete(variable);
-      }
+      return keysCall(node, environment);
     }
     requireProof(node?.type === 'ObjectExpression');
     const result = [];
@@ -193,11 +197,10 @@ export function inferStaticObjectKeys({ ast, expression }) {
         continue;
       }
       requireProof(property.type === 'Property' && property.kind === 'init' && !property.method);
-      const name = property.computed
-        ? textValue(property.key, environment)
-        : property.key.type === 'Identifier'
-          ? property.key.name
-          : property.key.value;
+      let name;
+      if (property.computed) name = textValue(property.key, environment);
+      else if (property.key.type === 'Identifier') name = property.key.name;
+      else name = property.key.value;
       requireProof(safeName(name));
       result.push(name);
     }
@@ -226,38 +229,77 @@ export function assertPureFixtureBootstrap({ ast }) {
   const refs = new Map();
   for (const scope of manager.scopes) for (const ref of scope.references) refs.set(ref.identifier, ref.resolved);
   const active = new Set();
+  function pureObject(node) {
+    for (const prop of node.properties) {
+      if (prop.type === 'SpreadElement') {
+        pure(prop.argument);
+        continue;
+      }
+      requireProof(prop.type === 'Property' && prop.kind === 'init' && !prop.method);
+      if (prop.computed) pure(prop.key);
+      pure(prop.value);
+    }
+    return;
+  }
+  function pureLocalCall(node) {
+    const variable = refs.get(node.callee),
+      def = variable?.defs?.[0];
+    requireProof(
+      variable?.defs.length === 1 &&
+        def?.type === 'Variable' &&
+        def.parent?.kind === 'const' &&
+        def.node.init?.type === 'ArrowFunctionExpression' &&
+        !variable.references.some((ref) => ref.isWrite() && !ref.init) &&
+        !active.has(variable),
+    );
+    node.arguments.forEach(pure);
+    active.add(variable);
+    try {
+      pure(def.node.init);
+    } finally {
+      active.delete(variable);
+    }
+    return;
+  }
+  function pureDate(node) {
+    const utc = node.arguments[0];
+    requireProof(
+      utc?.type === 'CallExpression' &&
+        utc.callee?.type === 'MemberExpression' &&
+        !utc.callee.computed &&
+        utc.callee.object?.name === 'Date' &&
+        !refs.get(utc.callee.object) &&
+        utc.callee.property.name === 'UTC' &&
+        utc.arguments.every((arg) => arg.type === 'Literal' && typeof arg.value === 'number'),
+    );
+    return;
+  }
+  function pureJoin(node) {
+    requireProof(
+      node.callee.object.elements.every((item) => item?.type === 'Literal' || item?.type === 'TemplateLiteral'),
+    );
+    pure(node.callee.object);
+    node.arguments.forEach(pure);
+    return;
+  }
   function pure(node) {
-    if (!node) return;
-    if (node.type === 'Literal') return;
+    if (!node || node.type === 'Literal') return;
     if (node.type === 'Identifier') {
       const variable = refs.get(node);
-      requireProof(
-        variable && variable.defs.length === 1 && !variable.references.some((ref) => ref.isWrite() && !ref.init),
-      );
+      requireProof(variable?.defs.length === 1 && !variable.references.some((ref) => ref.isWrite() && !ref.init));
       const def = variable.defs[0];
       requireProof(def.type === 'Parameter' || (def.type === 'Variable' && def.parent?.kind === 'const'));
       return;
     }
-    if (node.type === 'TemplateLiteral') {
-      node.expressions.forEach(pure);
-      return;
+    switch (node.type) {
+      case 'TemplateLiteral':
+        node.expressions.forEach(pure);
+        return;
+      case 'ArrayExpression':
+        node.elements.forEach(pure);
+        return;
     }
-    if (node.type === 'ArrayExpression') {
-      node.elements.forEach(pure);
-      return;
-    }
-    if (node.type === 'ObjectExpression') {
-      for (const prop of node.properties) {
-        if (prop.type === 'SpreadElement') {
-          pure(prop.argument);
-          continue;
-        }
-        requireProof(prop.type === 'Property' && prop.kind === 'init' && !prop.method);
-        if (prop.computed) pure(prop.key);
-        pure(prop.value);
-      }
-      return;
-    }
+    if (node.type === 'ObjectExpression') return pureObject(node);
     if (node.type === 'ArrowFunctionExpression') {
       requireProof(
         node.expression && !node.async && !node.generator && node.params.every((param) => param.type === 'Identifier'),
@@ -272,34 +314,9 @@ export function assertPureFixtureBootstrap({ ast }) {
       node.callee.property.name === 'join' &&
       node.callee.object.type === 'ArrayExpression'
     ) {
-      requireProof(
-        node.callee.object.elements.every((item) => item?.type === 'Literal' || item?.type === 'TemplateLiteral'),
-      );
-      pure(node.callee.object);
-      node.arguments.forEach(pure);
-      return;
+      return pureJoin(node);
     }
-    if (node.type === 'CallExpression' && node.callee?.type === 'Identifier') {
-      const variable = refs.get(node.callee),
-        def = variable?.defs?.[0];
-      requireProof(
-        variable &&
-          variable.defs.length === 1 &&
-          def?.type === 'Variable' &&
-          def.parent?.kind === 'const' &&
-          def.node.init?.type === 'ArrowFunctionExpression' &&
-          !variable.references.some((ref) => ref.isWrite() && !ref.init) &&
-          !active.has(variable),
-      );
-      node.arguments.forEach(pure);
-      active.add(variable);
-      try {
-        pure(def.node.init);
-      } finally {
-        active.delete(variable);
-      }
-      return;
-    }
+    if (node.type === 'CallExpression' && node.callee?.type === 'Identifier') return pureLocalCall(node);
     if (
       node.type === 'NewExpression' &&
       node.callee?.type === 'Identifier' &&
@@ -307,17 +324,7 @@ export function assertPureFixtureBootstrap({ ast }) {
       !refs.get(node.callee) &&
       node.arguments.length === 1
     ) {
-      const utc = node.arguments[0];
-      requireProof(
-        utc?.type === 'CallExpression' &&
-          utc.callee?.type === 'MemberExpression' &&
-          !utc.callee.computed &&
-          utc.callee.object?.name === 'Date' &&
-          !refs.get(utc.callee.object) &&
-          utc.callee.property.name === 'UTC' &&
-          utc.arguments.every((arg) => arg.type === 'Literal' && typeof arg.value === 'number'),
-      );
-      return;
+      return pureDate(node);
     }
     fail();
   }
@@ -329,29 +336,41 @@ export function assertPureFixtureBootstrap({ ast }) {
   );
   const testName = imports[0].specifiers[0].local.name,
     declarations = [];
-  for (const node of ast.body) {
-    if (node.type === 'ImportDeclaration' || node.type === 'FunctionDeclaration') continue;
-    if (node.type === 'VariableDeclaration') {
-      requireProof(node.kind === 'const');
-      for (const declaration of node.declarations) {
-        requireProof(declaration.id.type === 'Identifier' && declaration.init);
-        pure(declaration.init);
+  const verifyBootstrapStatements = () => {
+    for (const node of ast.body) {
+      if (node.type === 'ImportDeclaration' || node.type === 'FunctionDeclaration') continue;
+      if (node.type === 'VariableDeclaration') {
+        requireProof(node.kind === 'const');
+        for (const declaration of node.declarations) {
+          requireProof(declaration.id.type === 'Identifier' && declaration.init);
+          pure(declaration.init);
+        }
+        declarations.push(digest(JSON.stringify(clean(node))));
+        continue;
       }
-      declarations.push(digest(JSON.stringify(clean(node))));
-      continue;
+      const call = node.type === 'ExpressionStatement' && node.expression;
+      requireProof(
+        call?.type === 'CallExpression' &&
+          call.callee?.type === 'Identifier' &&
+          call.callee.name === testName &&
+          call.arguments.length === 2 &&
+          call.arguments[0]?.type === 'Literal' &&
+          ['FunctionExpression', 'ArrowFunctionExpression'].includes(call.arguments[1]?.type),
+      );
     }
-    const call = node.type === 'ExpressionStatement' && node.expression;
-    requireProof(
-      call?.type === 'CallExpression' &&
-        call.callee?.type === 'Identifier' &&
-        call.callee.name === testName &&
-        call.arguments.length === 2 &&
-        call.arguments[0]?.type === 'Literal' &&
-        ['FunctionExpression', 'ArrowFunctionExpression'].includes(call.arguments[1]?.type),
-    );
-  }
+  };
+  verifyBootstrapStatements();
   return { declarations };
 }
+
+const emptyFixtureSlice = () => ({
+  recognizedIdentifiers: new Set(),
+  recognizedBuiltinImports: new Set(),
+  handledInputSources: new Set(),
+  dependencies: [],
+  fixtures: [],
+  isolatedIdentifiers: new Set(),
+});
 
 /** Infer the source-only renderer slice and independent owned filesystem roots. */
 export function analyzeUnselectedFixtureSlice({
@@ -362,14 +381,6 @@ export function analyzeUnselectedFixtureSlice({
   readBaseline,
   implementationSources = [],
 }) {
-  const none = () => ({
-    recognizedIdentifiers: new Set(),
-    recognizedBuiltinImports: new Set(),
-    handledInputSources: new Set(),
-    dependencies: [],
-    fixtures: [],
-    isolatedIdentifiers: new Set(),
-  });
   try {
     requireProof(selected.length === 1 && selected[0].old.callback.params.length === 0);
     const bootstrap = assertPureFixtureBootstrap({ ast }),
@@ -386,8 +397,7 @@ export function analyzeUnselectedFixtureSlice({
       const variable = refs.get(node),
         def = variable?.defs?.[0];
       requireProof(
-        variable &&
-          variable.defs.length === 1 &&
+        variable?.defs.length === 1 &&
           def?.type === 'Variable' &&
           def.parent?.kind === 'const' &&
           !variable.references.some((ref) => ref.isWrite() && !ref.init),
@@ -439,44 +449,46 @@ export function analyzeUnselectedFixtureSlice({
       construct = rendered?.init,
       portal = construct?.arguments?.[0],
       wrapper = result.argument;
-    requireProof(
-      declaration.type === 'VariableDeclaration' &&
-        declaration.kind === 'const' &&
-        declaration.declarations.length === 1 &&
-        rendered.id?.type === 'Identifier' &&
-        construct?.type === 'CallExpression' &&
-        construct.callee?.type === 'Identifier' &&
-        sutBindings.has(refs.get(construct.callee)) &&
-        construct.arguments.length === 1 &&
-        portal?.type === 'ObjectExpression' &&
-        portal.properties.length &&
-        portal.properties.every(
-          (property) =>
-            property.type === 'Property' &&
-            !property.computed &&
-            property.kind === 'init' &&
-            !property.method &&
-            ['ArrayExpression', 'ObjectExpression'].includes(property.value.type) &&
-            (property.value.elements ?? property.value.properties).length === 0,
-        ) &&
-        result.type === 'ReturnStatement' &&
-        wrapper?.type === 'ArrowFunctionExpression' &&
-        wrapper.expression &&
-        wrapper.params.length === 2 &&
-        wrapper.params[0]?.type === 'Identifier' &&
-        wrapper.params[1]?.type === 'AssignmentPattern' &&
-        wrapper.params[1].left.type === 'Identifier' &&
-        wrapper.params[1].right.type === 'ObjectExpression' &&
-        !wrapper.params[1].right.properties.length &&
-        wrapper.body?.type === 'CallExpression' &&
-        wrapper.body.callee?.type === 'MemberExpression' &&
-        !wrapper.body.callee.computed &&
-        wrapper.body.callee.object?.name === rendered.id.name &&
-        wrapper.body.callee.property.name === 'renderString' &&
-        wrapper.body.arguments.length === 2 &&
-        wrapper.body.arguments[0]?.name === wrapper.params[0].name &&
-        wrapper.body.arguments[1]?.name === wrapper.params[1].left.name,
-    );
+    const verifyPlainDeclaration = () =>
+      requireProof(
+        declaration.type === 'VariableDeclaration' &&
+          declaration.kind === 'const' &&
+          declaration.declarations.length === 1 &&
+          rendered.id?.type === 'Identifier' &&
+          construct?.type === 'CallExpression' &&
+          construct.callee?.type === 'Identifier' &&
+          sutBindings.has(refs.get(construct.callee)) &&
+          construct.arguments.length === 1 &&
+          portal?.type === 'ObjectExpression' &&
+          portal.properties.length &&
+          portal.properties.every(
+            (property) =>
+              property.type === 'Property' &&
+              !property.computed &&
+              property.kind === 'init' &&
+              !property.method &&
+              ['ArrayExpression', 'ObjectExpression'].includes(property.value.type) &&
+              (property.value.elements ?? property.value.properties).length === 0,
+          ) &&
+          result.type === 'ReturnStatement' &&
+          wrapper?.type === 'ArrowFunctionExpression' &&
+          wrapper.expression &&
+          wrapper.params.length === 2 &&
+          wrapper.params[0]?.type === 'Identifier' &&
+          wrapper.params[1]?.type === 'AssignmentPattern' &&
+          wrapper.params[1].left.type === 'Identifier' &&
+          wrapper.params[1].right.type === 'ObjectExpression' &&
+          !wrapper.params[1].right.properties.length &&
+          wrapper.body?.type === 'CallExpression' &&
+          wrapper.body.callee?.type === 'MemberExpression' &&
+          !wrapper.body.callee.computed &&
+          wrapper.body.callee.object?.name === rendered.id.name &&
+          wrapper.body.callee.property.name === 'renderString' &&
+          wrapper.body.arguments.length === 2 &&
+          wrapper.body.arguments[0]?.name === wrapper.params[0].name &&
+          wrapper.body.arguments[1]?.name === wrapper.params[1].left.name,
+      );
+    verifyPlainDeclaration();
     const rendererLocal = row.callback.body.body.find(
       (node) =>
         node.type === 'VariableDeclaration' &&
@@ -494,17 +506,19 @@ export function analyzeUnselectedFixtureSlice({
     requireProof(allCallbacks.includes(row.callback));
     const testVariable = named(testImport.name);
     requireProof(
-      testVariable &&
-        testVariable.references.every((ref) => {
-          const call = parents.get(ref.identifier);
-          return call?.type === 'CallExpression' && call.callee === ref.identifier && allRegistrations.includes(call);
-        }),
+      testVariable?.references.every((ref) => {
+        const call = parents.get(ref.identifier);
+        return call?.type === 'CallExpression' && call.callee === ref.identifier && allRegistrations.includes(call);
+      }),
     );
     let selectedUnsafe = false;
     const selectedModuleBindings = new Set([named(plainName)]);
-    for (const item of ast.body)
-      if (item.type === 'ImportDeclaration' && ['node:assert', 'node:assert/strict'].includes(item.source.value))
-        for (const specifier of item.specifiers) selectedModuleBindings.add(named(specifier.local.name));
+    function includeAssertionBindings() {
+      for (const item of ast.body)
+        if (item.type === 'ImportDeclaration' && ['node:assert', 'node:assert/strict'].includes(item.source.value))
+          for (const specifier of item.specifiers) selectedModuleBindings.add(named(specifier.local.name));
+    }
+    includeAssertionBindings();
     walk(row.callback.body, (node) => {
       if (node.type === 'Identifier' && [fsImport.name, osImport.name, pathImport.name, helperName].includes(node.name))
         selectedUnsafe = true;
@@ -523,29 +537,31 @@ export function analyzeUnselectedFixtureSlice({
     requireProof(!selectedUnsafe);
     const plainVariable = named(plainName);
     requireProof(
-      plainVariable &&
-        plainVariable.references.every((ref) => {
-          const parent = parents.get(ref.identifier);
-          return parent?.type === 'CallExpression' && parent.callee === ref.identifier && parent.arguments.length === 0;
-        }),
+      plainVariable?.references.every((ref) => {
+        const parent = parents.get(ref.identifier);
+        return parent?.type === 'CallExpression' && parent.callee === ref.identifier && parent.arguments.length === 0;
+      }),
     );
     const helper = named(helperName),
       fsVar = named(fsImport.name),
       osVar = named(osImport.name),
       pathVar = named(pathImport.name);
     requireProof(helper && fsVar && osVar && pathVar);
-    for (const ref of pathVar.references) {
-      const member = parents.get(ref.identifier),
-        call = parents.get(member);
-      requireProof(
-        member?.type === 'MemberExpression' &&
-          member.object === ref.identifier &&
-          !member.computed &&
-          ['join', 'dirname', 'basename'].includes(member.property.name) &&
-          call?.type === 'CallExpression' &&
-          call.callee === member,
-      );
-    }
+    const verifyPathReferences = () => {
+      for (const ref of pathVar.references) {
+        const member = parents.get(ref.identifier),
+          call = parents.get(member);
+        requireProof(
+          member?.type === 'MemberExpression' &&
+            member.object === ref.identifier &&
+            !member.computed &&
+            ['join', 'dirname', 'basename'].includes(member.property.name) &&
+            call?.type === 'CallExpression' &&
+            call.callee === member,
+        );
+      }
+    };
+    verifyPathReferences();
     // No module-scoped or ambient writes, test hooks, asynchronous scheduling or hidden globals.
     const globals = new Set([
       'Buffer',
@@ -558,142 +574,149 @@ export function analyzeUnselectedFixtureSlice({
       'encodeURIComponent',
       'undefined',
     ]);
-    for (const scope of scopes.scopes)
-      for (const ref of scope.references) {
-        if (ref.resolved) continue;
-        const id = ref.identifier,
-          parent = parents.get(id),
-          grandparent = parents.get(parent);
-        requireProof(globals.has(id.name));
-        if (id.name === 'undefined') continue;
-        if (['Error', 'Set', 'URL'].includes(id.name)) {
-          requireProof(parent?.type === 'NewExpression' && parent.callee === id);
-          continue;
-        }
-        if (id.name === 'encodeURIComponent') {
-          requireProof(parent?.type === 'CallExpression' && parent.callee === id);
-          continue;
-        }
-        if (id.name === 'Date' && parent?.type === 'NewExpression' && parent.callee === id) {
-          requireProof(
-            parent.arguments.length === 1 &&
-              parent.arguments[0]?.type === 'CallExpression' &&
-              parent.arguments[0].callee?.type === 'MemberExpression' &&
-              parent.arguments[0].callee.object?.name === 'Date' &&
-              parent.arguments[0].callee.property.name === 'UTC',
-          );
-          continue;
-        }
+    function verifyAmbientMethod(id, parent, grandparent) {
+      if (id.name === 'Date')
         requireProof(
-          parent?.type === 'MemberExpression' &&
-            parent.object === id &&
-            !parent.computed &&
-            grandparent?.type === 'CallExpression' &&
-            grandparent.callee === parent,
+          parent.property.name === 'UTC' &&
+            grandparent.arguments.every((arg) => arg.type === 'Literal' && typeof arg.value === 'number'),
         );
-        if (id.name === 'Date')
+      else if (id.name === 'JSON') requireProof(parent.property.name === 'stringify');
+      else if (id.name === 'Buffer') requireProof(parent.property.name === 'byteLength');
+      else if (id.name === 'Object') {
+        requireProof(['entries', 'keys', 'hasOwn', 'fromEntries', 'assign'].includes(parent.property.name));
+        if (parent.property.name === 'assign')
           requireProof(
-            parent.property.name === 'UTC' &&
-              grandparent.arguments.every((arg) => arg.type === 'Literal' && typeof arg.value === 'number'),
+            grandparent.arguments[0]?.type === 'NewExpression' &&
+              grandparent.arguments[0].callee?.name === 'Error' &&
+              !refs.get(grandparent.arguments[0].callee),
           );
-        else if (id.name === 'JSON') requireProof(parent.property.name === 'stringify');
-        else if (id.name === 'Buffer') requireProof(parent.property.name === 'byteLength');
-        else if (id.name === 'Object') {
-          requireProof(['entries', 'keys', 'hasOwn', 'fromEntries', 'assign'].includes(parent.property.name));
-          if (parent.property.name === 'assign')
-            requireProof(
-              grandparent.arguments[0]?.type === 'NewExpression' &&
-                grandparent.arguments[0].callee?.name === 'Error' &&
-                !refs.get(grandparent.arguments[0].callee),
-            );
-        } else fail();
+      } else fail();
+    }
+    function verifyAmbientReference(ref) {
+      if (ref.resolved) return;
+      const id = ref.identifier,
+        parent = parents.get(id),
+        grandparent = parents.get(parent);
+      requireProof(globals.has(id.name));
+      if (id.name === 'undefined') return;
+      if (['Error', 'Set', 'URL'].includes(id.name)) {
+        requireProof(parent?.type === 'NewExpression' && parent.callee === id);
+        return;
       }
+      if (id.name === 'encodeURIComponent') {
+        requireProof(parent?.type === 'CallExpression' && parent.callee === id);
+        return;
+      }
+      if (id.name === 'Date' && parent?.type === 'NewExpression' && parent.callee === id) {
+        requireProof(
+          parent.arguments.length === 1 &&
+            parent.arguments[0]?.type === 'CallExpression' &&
+            parent.arguments[0].callee?.type === 'MemberExpression' &&
+            parent.arguments[0].callee.object?.name === 'Date' &&
+            parent.arguments[0].callee.property.name === 'UTC',
+        );
+        return;
+      }
+      requireProof(
+        parent?.type === 'MemberExpression' &&
+          parent.object === id &&
+          !parent.computed &&
+          grandparent?.type === 'CallExpression' &&
+          grandparent.callee === parent,
+      );
+      verifyAmbientMethod(id, parent, grandparent);
+    }
+    const verifyAmbientReferences = () => {
+      for (const scope of scopes.scopes) for (const ref of scope.references) verifyAmbientReference(ref);
+    };
+    verifyAmbientReferences();
     const dynamicAssignments = [],
       dynamicMembers = [];
+    function inspectAssignment(node) {
+      let target = node.type === 'AssignmentExpression' ? node.left : node.argument;
+      const assigned = target;
+      let dynamic = false;
+      while (target?.type === 'MemberExpression' || target?.type === 'CallExpression') {
+        if (target.type === 'MemberExpression') {
+          if (target.computed && target.property.type !== 'Literal') dynamic = true;
+          target = target.object;
+        } else if (
+          target.callee?.type === 'MemberExpression' &&
+          !target.callee.computed &&
+          target.callee.property.name === 'find'
+        )
+          target = target.callee.object;
+        else fail();
+      }
+      const variable = refs.get(target);
+      requireProof(target?.type === 'Identifier' && variable && !['module', 'global'].includes(variable.scope.type));
+      if (dynamic) dynamicAssignments.push({ assigned, variable });
+    }
+    function inspectPattern(node) {
+      for (const property of node.properties) {
+        if (property.type === 'RestElement') continue;
+        requireProof(
+          property.type === 'Property' &&
+            !property.computed &&
+            !['constructor', 'prototype', '__proto__'].includes(property.key?.name ?? property.key?.value),
+        );
+      }
+    }
     walk(ast, (node) => {
-      if (node.type === 'ObjectPattern')
-        for (const property of node.properties) {
-          if (property.type === 'RestElement') continue;
-          requireProof(
-            property.type === 'Property' &&
-              !property.computed &&
-              !['constructor', 'prototype', '__proto__'].includes(property.key?.name ?? property.key?.value),
-          );
-        }
+      if (node.type === 'ObjectPattern') inspectPattern(node);
       if (node.type === 'MemberExpression') {
         if (node.computed && node.property?.type !== 'Literal') dynamicMembers.push(node);
-        const property = node.computed
-          ? node.property?.type === 'Literal'
-            ? node.property.value
-            : null
-          : node.property?.name;
+        let property = node.property?.name;
+        if (node.computed) property = node.property?.type === 'Literal' ? node.property.value : null;
         requireProof(!['constructor', 'prototype', '__proto__'].includes(property));
       }
       if (node.type === 'CallExpression' && node.callee?.name === testImport.name)
         requireProof(allRegistrations.includes(node));
       if (node.type === 'MemberExpression' && node.object?.name === testImport.name) fail();
-      if (['AssignmentExpression', 'UpdateExpression'].includes(node.type)) {
-        let target = node.type === 'AssignmentExpression' ? node.left : node.argument;
-        const assigned = target;
-        let dynamic = false;
-        while (target?.type === 'MemberExpression' || target?.type === 'CallExpression') {
-          if (target.type === 'MemberExpression') {
-            if (target.computed && target.property.type !== 'Literal') dynamic = true;
-            target = target.object;
-          } else if (
-            target.callee?.type === 'MemberExpression' &&
-            !target.callee.computed &&
-            target.callee.property.name === 'find'
-          )
-            target = target.callee.object;
-          else fail();
-        }
-        const variable = refs.get(target);
-        requireProof(target?.type === 'Identifier' && variable && !['module', 'global'].includes(variable.scope.type));
-        if (dynamic) dynamicAssignments.push({ assigned, variable });
-      }
+      if (['AssignmentExpression', 'UpdateExpression'].includes(node.type)) inspectAssignment(node);
     });
     const rootVars = new Set(),
-      rootInitializers = new Set(),
       osIdentifiers = new Set();
-    for (const ref of helper.references) {
-      const invoke = parents.get(ref.identifier),
-        awaited = parents.get(invoke),
-        declarator = parents.get(awaited),
-        prefix = invoke?.arguments?.[0];
-      requireProof(
-        invoke?.type === 'CallExpression' &&
-          invoke.callee === ref.identifier &&
-          invoke.arguments.length === 1 &&
-          awaited?.type === 'AwaitExpression' &&
-          declarator?.type === 'VariableDeclarator' &&
-          declarator.id.type === 'Identifier' &&
-          prefix?.type === 'CallExpression' &&
-          prefix.callee?.type === 'MemberExpression' &&
-          !prefix.callee.computed &&
-          refs.get(prefix.callee.object) === pathVar &&
-          prefix.callee.property.name === 'join' &&
-          prefix.arguments.length === 2 &&
-          prefix.arguments[0]?.type === 'CallExpression' &&
-          prefix.arguments[0].callee?.type === 'MemberExpression' &&
-          !prefix.arguments[0].callee.computed &&
-          refs.get(prefix.arguments[0].callee.object) === osVar &&
-          prefix.arguments[0].callee.property.name === 'tmpdir' &&
-          prefix.arguments[0].arguments.length === 0 &&
-          prefix.arguments[1]?.type === 'Literal' &&
-          typeof prefix.arguments[1].value === 'string' &&
-          safeName(prefix.arguments[1].value) &&
-          !prefix.arguments[1].value.includes('/'),
-      );
-      const scope = scopes.scopes.find((item) =>
-          item.variables.some((variable) => variable.identifiers.includes(declarator.id)),
-        ),
-        variable = scope?.variables.find((item) => item.identifiers.includes(declarator.id));
-      requireProof(variable && !variable.references.some((item) => item.isWrite() && !item.init));
-      rootVars.add(variable);
-      rootInitializers.add(declarator);
-      osIdentifiers.add(prefix.arguments[0].callee.object);
-    }
+    const verifyTemporaryRootBindings = () => {
+      for (const ref of helper.references) {
+        const invoke = parents.get(ref.identifier),
+          awaited = parents.get(invoke),
+          declarator = parents.get(awaited),
+          prefix = invoke?.arguments?.[0];
+        requireProof(
+          invoke?.type === 'CallExpression' &&
+            invoke.callee === ref.identifier &&
+            invoke.arguments.length === 1 &&
+            awaited?.type === 'AwaitExpression' &&
+            declarator?.type === 'VariableDeclarator' &&
+            declarator.id.type === 'Identifier' &&
+            prefix?.type === 'CallExpression' &&
+            prefix.callee?.type === 'MemberExpression' &&
+            !prefix.callee.computed &&
+            refs.get(prefix.callee.object) === pathVar &&
+            prefix.callee.property.name === 'join' &&
+            prefix.arguments.length === 2 &&
+            prefix.arguments[0]?.type === 'CallExpression' &&
+            prefix.arguments[0].callee?.type === 'MemberExpression' &&
+            !prefix.arguments[0].callee.computed &&
+            refs.get(prefix.arguments[0].callee.object) === osVar &&
+            prefix.arguments[0].callee.property.name === 'tmpdir' &&
+            prefix.arguments[0].arguments.length === 0 &&
+            prefix.arguments[1]?.type === 'Literal' &&
+            typeof prefix.arguments[1].value === 'string' &&
+            safeName(prefix.arguments[1].value) &&
+            !prefix.arguments[1].value.includes('/'),
+        );
+        const scope = scopes.scopes.find((item) =>
+            item.variables.some((variable) => variable.identifiers.includes(declarator.id)),
+          ),
+          variable = scope?.variables.find((item) => item.identifiers.includes(declarator.id));
+        requireProof(variable && !variable.references.some((item) => item.isWrite() && !item.init));
+        rootVars.add(variable);
+        osIdentifiers.add(prefix.arguments[0].callee.object);
+      }
+    };
+    verifyTemporaryRootBindings();
     requireProof(rootVars.size > 0);
     for (const ref of osVar.references) requireProof(osIdentifiers.has(ref.identifier));
     // The module-level fixture helper may receive additional maps only from frozen source call sites.
@@ -769,84 +792,89 @@ export function analyzeUnselectedFixtureSlice({
     requireProof(moduleMap);
     const moduleMapVariable = refs.get(moduleMap);
     requireProof(
-      moduleMapVariable &&
-        moduleMapVariable.scope.type === 'module' &&
+      moduleMapVariable?.scope.type === 'module' &&
         moduleMapVariable.references.every((ref) => ref.init || ref.identifier === moduleMap),
     );
-    for (const ref of fixtureVariable.references) {
-      const call = parents.get(ref.identifier);
-      requireProof(call?.type === 'CallExpression' && call.callee === ref.identifier && call.arguments.length <= 2);
-      if (!call.arguments[1]) continue;
-      const argument = call.arguments[1],
-        variable = argument.type === 'Identifier' ? refs.get(argument) : null,
-        def = variable?.defs?.[0];
-      if (def?.type !== 'Parameter') {
-        checkMap(argument);
-        continue;
-      }
-      const forwarder = def.node;
-      requireProof(
-        forwarder.type === 'FunctionDeclaration' &&
-          forwarder.params.length === 3 &&
-          forwarder.params[2].type === 'AssignmentPattern' &&
-          forwarder.params[2].left.name === argument.name &&
-          forwarder.params[2].right.type === 'ObjectExpression' &&
-          !forwarder.params[2].right.properties.length,
-      );
-      const forwardVariable = named(forwarder.id.name);
-      requireProof(forwardVariable);
-      forwarders.add(forwarder.id.name);
-      requireProof(variable.references.every((item) => item.init || item.identifier === argument));
-      for (const use of forwardVariable.references) {
-        const outer = parents.get(use.identifier);
+    const verifyFixtureReferences = () => {
+      for (const ref of fixtureVariable.references) {
+        const call = parents.get(ref.identifier);
+        requireProof(call?.type === 'CallExpression' && call.callee === ref.identifier && call.arguments.length <= 2);
+        if (!call.arguments[1]) continue;
+        const argument = call.arguments[1],
+          variable = argument.type === 'Identifier' ? refs.get(argument) : null,
+          def = variable?.defs?.[0];
+        if (def?.type !== 'Parameter') {
+          checkMap(argument);
+          continue;
+        }
+        const forwarder = def.node;
         requireProof(
-          outer?.type === 'CallExpression' && outer.callee === use.identifier && outer.arguments.length <= 3,
+          forwarder.type === 'FunctionDeclaration' &&
+            forwarder.params.length === 3 &&
+            forwarder.params[2].type === 'AssignmentPattern' &&
+            forwarder.params[2].left.name === argument.name &&
+            forwarder.params[2].right.type === 'ObjectExpression' &&
+            !forwarder.params[2].right.properties.length,
         );
-        if (outer.arguments[2]) checkMap(outer.arguments[2]);
+        const forwardVariable = named(forwarder.id.name);
+        requireProof(forwardVariable);
+        forwarders.add(forwarder.id.name);
+        requireProof(variable.references.every((item) => item.init || item.identifier === argument));
+        for (const use of forwardVariable.references) {
+          const outer = parents.get(use.identifier);
+          requireProof(
+            outer?.type === 'CallExpression' && outer.callee === use.identifier && outer.arguments.length <= 3,
+          );
+          if (outer.arguments[2]) checkMap(outer.arguments[2]);
+        }
       }
-    }
-    for (const { assigned, variable } of dynamicAssignments) {
-      let dynamicTarget = assigned;
-      while (dynamicTarget?.type === 'MemberExpression' && !dynamicTarget.computed)
-        dynamicTarget = dynamicTarget.object;
-      const def = variable.defs[0],
-        init = def?.node?.init,
-        object = dynamicTarget?.object;
-      requireProof(
-        variable.defs.length === 1 &&
-          def?.type === 'Variable' &&
-          def.parent?.kind === 'const' &&
-          def.node.id?.type === 'ObjectPattern' &&
-          def.node.id.properties.some(
-            (property) =>
-              property.type === 'Property' &&
-              !property.computed &&
-              property.key.type === 'Identifier' &&
-              property.value?.type === 'Identifier' &&
-              property.value.name === variable.name,
-          ) &&
-          init?.type === 'AwaitExpression' &&
-          init.argument?.type === 'CallExpression' &&
-          init.argument.callee?.type === 'Identifier' &&
-          forwarders.has(init.argument.callee.name) &&
-          refs.get(init.argument.callee) === named(init.argument.callee.name),
-      );
-      requireProof(
-        dynamicTarget?.type === 'MemberExpression' &&
-          dynamicTarget.computed &&
-          dynamicTarget.property.type === 'MemberExpression' &&
-          object?.type === 'MemberExpression' &&
-          !object.computed &&
-          object.object?.type === 'Identifier' &&
-          refs.get(object.object) === variable,
-      );
-      let key = dynamicTarget.property;
-      while (key?.type === 'MemberExpression') {
-        if (key.computed) requireProof(key.property.type === 'Literal' && typeof key.property.value === 'number');
-        key = key.object;
+    };
+    verifyFixtureReferences();
+    const verifyDynamicAssignments = () => {
+      for (const { assigned, variable } of dynamicAssignments) {
+        let dynamicTarget = assigned;
+        while (dynamicTarget?.type === 'MemberExpression' && !dynamicTarget.computed)
+          dynamicTarget = dynamicTarget.object;
+        const def = variable.defs[0],
+          init = def?.node?.init,
+          object = dynamicTarget?.object;
+        requireProof(
+          variable.defs.length === 1 &&
+            def?.type === 'Variable' &&
+            def.parent?.kind === 'const' &&
+            def.node.id?.type === 'ObjectPattern' &&
+            def.node.id.properties.some(
+              (property) =>
+                property.type === 'Property' &&
+                !property.computed &&
+                property.key.type === 'Identifier' &&
+                property.value?.type === 'Identifier' &&
+                property.value.name === variable.name,
+            ) &&
+            init?.type === 'AwaitExpression' &&
+            init.argument?.type === 'CallExpression' &&
+            init.argument.callee?.type === 'Identifier' &&
+            forwarders.has(init.argument.callee.name) &&
+            refs.get(init.argument.callee) === named(init.argument.callee.name),
+        );
+        requireProof(
+          dynamicTarget?.type === 'MemberExpression' &&
+            dynamicTarget.computed &&
+            dynamicTarget.property.type === 'MemberExpression' &&
+            object?.type === 'MemberExpression' &&
+            !object.computed &&
+            object.object?.type === 'Identifier' &&
+            refs.get(object.object) === variable,
+        );
+        let key = dynamicTarget.property;
+        while (key?.type === 'MemberExpression') {
+          if (key.computed) requireProof(key.property.type === 'Literal' && typeof key.property.value === 'number');
+          key = key.object;
+        }
+        requireProof(key?.type === 'Identifier' && refs.get(key) === variable);
       }
-      requireProof(key?.type === 'Identifier' && refs.get(key) === variable);
-    }
+    };
+    verifyDynamicAssignments();
     requireProof(
       dynamicMembers.every((node) =>
         dynamicAssignments.some((item) => {
@@ -858,6 +886,29 @@ export function analyzeUnselectedFixtureSlice({
     );
     // Classify each fs target as a fresh owned root or a statically safe path below one.
     const active = new Set();
+    function relativeParameter(def, node) {
+      const fn = def.node,
+        declaration = parents.get(fn),
+        binding = declaration?.type === 'VariableDeclarator' ? declaration.id : null;
+      const scope = scopes.scopes.find((item) => item.variables.some((value) => value.identifiers.includes(binding))),
+        fnVar = scope?.variables.find((value) => value.identifiers.includes(binding));
+      requireProof(fnVar && fn.params[0]?.name === node.name);
+      const values = [];
+      for (const ref of fnVar.references) {
+        if (ref.init) continue;
+        const call = parents.get(ref.identifier);
+        requireProof(
+          call?.type === 'CallExpression' &&
+            call.callee === ref.identifier &&
+            call.arguments[0]?.type === 'Literal' &&
+            typeof call.arguments[0].value === 'string' &&
+            safeName(call.arguments[0].value),
+        );
+        values.push(call.arguments[0].value);
+      }
+      requireProof(values.length > 0);
+      return Math.min(...values.map((value) => value.split('/').length));
+    }
     function relative(node) {
       if (node?.type === 'Literal' && typeof node.value === 'string') {
         requireProof(safeName(node.value));
@@ -877,34 +928,11 @@ export function analyzeUnselectedFixtureSlice({
       const variable = refs.get(node),
         def = variable?.defs?.[0];
       requireProof(
-        variable &&
-          variable.defs.length === 1 &&
+        variable?.defs.length === 1 &&
           !active.has(variable) &&
           !variable.references.some((ref) => ref.isWrite() && !ref.init),
       );
-      if (def.type === 'Parameter') {
-        const fn = def.node,
-          declaration = parents.get(fn),
-          binding = declaration?.type === 'VariableDeclarator' ? declaration.id : null;
-        const scope = scopes.scopes.find((item) => item.variables.some((value) => value.identifiers.includes(binding))),
-          fnVar = scope?.variables.find((value) => value.identifiers.includes(binding));
-        requireProof(fnVar && fn.params[0]?.name === node.name);
-        const values = [];
-        for (const ref of fnVar.references) {
-          if (ref.init) continue;
-          const call = parents.get(ref.identifier);
-          requireProof(
-            call?.type === 'CallExpression' &&
-              call.callee === ref.identifier &&
-              call.arguments[0]?.type === 'Literal' &&
-              typeof call.arguments[0].value === 'string' &&
-              safeName(call.arguments[0].value),
-          );
-          values.push(call.arguments[0].value);
-        }
-        requireProof(values.length > 0);
-        return Math.min(...values.map((value) => value.split('/').length));
-      }
+      if (def.type === 'Parameter') return relativeParameter(def, node);
       requireProof(def.type === 'Variable');
       requireProof(def.node.id?.type === 'ArrayPattern' && def.node.id.elements[0]?.name === node.name);
       const loop = parents.get(def.parent);
@@ -963,144 +991,160 @@ export function analyzeUnselectedFixtureSlice({
       return depth;
     }
     const isolatedIdentifiers = new Set();
-    for (const ref of fsVar.references) {
-      const member = parents.get(ref.identifier),
-        call = parents.get(member);
-      requireProof(
-        member?.type === 'MemberExpression' &&
-          member.object === ref.identifier &&
-          !member.computed &&
-          ['mkdir', 'writeFile', 'readFile', 'rm'].includes(member.property.name) &&
-          call?.type === 'CallExpression' &&
-          call.callee === member &&
-          call.arguments.length >= 1,
-      );
-      rooted(call.arguments[0]);
-      isolatedIdentifiers.add(ref.identifier);
-    }
+    const verifyFilesystemReferences = () => {
+      for (const ref of fsVar.references) {
+        const member = parents.get(ref.identifier),
+          call = parents.get(member);
+        requireProof(
+          member?.type === 'MemberExpression' &&
+            member.object === ref.identifier &&
+            !member.computed &&
+            ['mkdir', 'writeFile', 'readFile', 'rm'].includes(member.property.name) &&
+            call?.type === 'CallExpression' &&
+            call.callee === member &&
+            call.arguments.length >= 1,
+        );
+        rooted(call.arguments[0]);
+        isolatedIdentifiers.add(ref.identifier);
+      }
+    };
+    verifyFilesystemReferences();
     requireProof(isolatedIdentifiers.size > 0);
     const cleanupContexts = new Set();
-    for (const variable of rootVars) {
-      let cleanups = 0;
-      for (const ref of variable.references) {
-        if (ref.init) continue;
-        const call = parents.get(ref.identifier);
-        requireProof(call?.type === 'CallExpression' && call.arguments[0] === ref.identifier);
-        if (
-          call.callee?.type === 'MemberExpression' &&
-          refs.get(call.callee.object) === pathVar &&
+    function inspectRootReference(ref, variable) {
+      if (ref.init) return false;
+      const call = parents.get(ref.identifier);
+      requireProof(call?.type === 'CallExpression' && call.arguments[0] === ref.identifier);
+      if (
+        call.callee?.type === 'MemberExpression' &&
+        refs.get(call.callee.object) === pathVar &&
+        !call.callee.computed &&
+        call.callee.property.name === 'join'
+      ) {
+        rooted(call);
+        return false;
+      }
+      if (call.callee?.type === 'Identifier' && sutBindings.has(refs.get(call.callee))) return false;
+      requireProof(
+        call.callee?.type === 'MemberExpression' &&
+          refs.get(call.callee.object) === fsVar &&
           !call.callee.computed &&
-          call.callee.property.name === 'join'
-        ) {
-          rooted(call);
-          continue;
+          call.callee.property.name === 'rm' &&
+          call.arguments.length === 2,
+      );
+      const options = call.arguments[1];
+      requireProof(
+        options?.type === 'ObjectExpression' &&
+          options.properties.length === 2 &&
+          options.properties.every(
+            (property) =>
+              property.type === 'Property' &&
+              !property.computed &&
+              ['recursive', 'force'].includes(property.key.name) &&
+              property.value?.type === 'Literal' &&
+              property.value.value === true,
+          ) &&
+          new Set(options.properties.map((property) => property.key.name)).size === 2,
+      );
+      const arrow = parents.get(call),
+        after = parents.get(arrow);
+      requireProof(
+        arrow?.type === 'ArrowFunctionExpression' &&
+          arrow.expression &&
+          arrow.params.length === 0 &&
+          arrow.body === call &&
+          after?.type === 'CallExpression' &&
+          after.arguments.length === 1 &&
+          after.arguments[0] === arrow &&
+          after.callee?.type === 'MemberExpression' &&
+          !after.callee.computed &&
+          after.callee.property.name === 'after' &&
+          after.callee.object?.type === 'Identifier',
+      );
+      const context = refs.get(after.callee.object);
+      requireProof(
+        context &&
+          context.scope === variable.scope &&
+          context.defs.length === 1 &&
+          context.defs[0].type === 'Parameter',
+      );
+      cleanupContexts.add(after.callee.object);
+      return true;
+    }
+    const verifyRootCleanup = () => {
+      for (const variable of rootVars) {
+        let cleanups = 0;
+        for (const ref of variable.references) if (inspectRootReference(ref, variable)) cleanups++;
+        requireProof(cleanups === 1);
+      }
+    };
+    verifyRootCleanup();
+    const verifyCallbackContexts = () => {
+      for (const callback of [
+        ...allCallbacks,
+        fixtureFn,
+        ...ast.body.filter((node) => node.type === 'FunctionDeclaration' && forwarders.has(node.id.name)),
+      ]) {
+        let maxParams = 1;
+        if (callback === fixtureFn) maxParams = 2;
+        else if (forwarders.has(callback.id?.name)) maxParams = 3;
+        requireProof(callback.params.length <= maxParams);
+        const context = callback.params[0];
+        if (!context) continue;
+        requireProof(context.type === 'Identifier');
+        const scope = scopes.acquire(callback),
+          variable = scope?.variables.find((item) => item.identifiers.includes(context));
+        requireProof(variable);
+        for (const ref of variable.references) {
+          if (ref.init || cleanupContexts.has(ref.identifier)) continue;
+          const call = parents.get(ref.identifier);
+          requireProof(
+            call?.type === 'CallExpression' &&
+              call.arguments[0] === ref.identifier &&
+              call.callee?.type === 'Identifier' &&
+              (call.callee.name === fixtureFn.id.name || forwarders.has(call.callee.name)),
+          );
         }
-        if (call.callee?.type === 'Identifier' && sutBindings.has(refs.get(call.callee))) continue;
-        requireProof(
-          call.callee?.type === 'MemberExpression' &&
-            refs.get(call.callee.object) === fsVar &&
-            !call.callee.computed &&
-            call.callee.property.name === 'rm' &&
-            call.arguments.length === 2,
-        );
-        const options = call.arguments[1];
-        requireProof(
-          options?.type === 'ObjectExpression' &&
-            options.properties.length === 2 &&
-            options.properties.every(
-              (property) =>
-                property.type === 'Property' &&
-                !property.computed &&
-                ['recursive', 'force'].includes(property.key.name) &&
-                property.value?.type === 'Literal' &&
-                property.value.value === true,
-            ) &&
-            new Set(options.properties.map((property) => property.key.name)).size === 2,
-        );
-        const arrow = parents.get(call),
-          after = parents.get(arrow);
-        requireProof(
-          arrow?.type === 'ArrowFunctionExpression' &&
-            arrow.expression &&
-            arrow.params.length === 0 &&
-            arrow.body === call &&
-            after?.type === 'CallExpression' &&
-            after.arguments.length === 1 &&
-            after.arguments[0] === arrow &&
-            after.callee?.type === 'MemberExpression' &&
-            !after.callee.computed &&
-            after.callee.property.name === 'after' &&
-            after.callee.object?.type === 'Identifier',
-        );
-        const context = refs.get(after.callee.object);
-        requireProof(
-          context &&
-            context.scope === variable.scope &&
-            context.defs.length === 1 &&
-            context.defs[0].type === 'Parameter',
-        );
-        cleanupContexts.add(after.callee.object);
-        cleanups++;
       }
-      requireProof(cleanups === 1);
-    }
-    for (const callback of [
-      ...allCallbacks,
-      fixtureFn,
-      ...ast.body.filter((node) => node.type === 'FunctionDeclaration' && forwarders.has(node.id.name)),
-    ]) {
-      requireProof(callback.params.length <= (callback === fixtureFn ? 2 : forwarders.has(callback.id?.name) ? 3 : 1));
-      const context = callback.params[0];
-      if (!context) continue;
-      requireProof(context.type === 'Identifier');
-      const scope = scopes.acquire(callback),
-        variable = scope?.variables.find((item) => item.identifiers.includes(context));
-      requireProof(variable);
-      for (const ref of variable.references) {
-        if (ref.init || cleanupContexts.has(ref.identifier)) continue;
-        const call = parents.get(ref.identifier);
-        requireProof(
-          call?.type === 'CallExpression' &&
-            call.arguments[0] === ref.identifier &&
-            call.callee?.type === 'Identifier' &&
-            (call.callee.name === fixtureFn.id.name || forwarders.has(call.callee.name)),
-        );
-      }
-    }
+    };
+    verifyCallbackContexts();
     const auditMaps = [...mapExpressions],
       audited = new Set();
-    for (let index = 0; index < auditMaps.length; index++) {
-      const expression = auditMaps[index];
-      if (expression.type !== 'Identifier') {
-        walk(expression, (node) => {
-          if (node.type === 'SpreadElement' && node.argument.type === 'Identifier') auditMaps.push(node.argument);
-        });
-        continue;
-      }
-      const variable = refs.get(expression);
-      requireProof(variable);
-      if (audited.has(variable)) continue;
-      audited.add(variable);
-      for (const ref of variable.references) {
-        if (ref.init || ref.identifier === moduleMap) continue;
-        const parent = parents.get(ref.identifier);
-        if (parent?.type === 'SpreadElement') continue;
-        requireProof(
-          parent?.type === 'CallExpression' &&
-            parent.arguments.includes(ref.identifier) &&
-            ((parent.callee?.type === 'Identifier' &&
-              (parent.callee.name === fixtureFn.id.name || forwarders.has(parent.callee.name))) ||
-              (parent.callee?.type === 'MemberExpression' &&
-                !parent.callee.computed &&
-                parent.callee.object?.name === 'Object' &&
-                !refs.get(parent.callee.object) &&
-                parent.callee.property.name === 'entries')),
-        );
-      }
-      const definition = variable.defs[0];
-      if (definition?.type === 'Variable' && definition.node.init?.type === 'ObjectExpression')
-        auditMaps.push(definition.node.init);
+    function inspectMapReference(ref) {
+      if (ref.init || ref.identifier === moduleMap) return;
+      const parent = parents.get(ref.identifier);
+      if (parent?.type === 'SpreadElement') return;
+      requireProof(
+        parent?.type === 'CallExpression' &&
+          parent.arguments.includes(ref.identifier) &&
+          ((parent.callee?.type === 'Identifier' &&
+            (parent.callee.name === fixtureFn.id.name || forwarders.has(parent.callee.name))) ||
+            (parent.callee?.type === 'MemberExpression' &&
+              !parent.callee.computed &&
+              parent.callee.object?.name === 'Object' &&
+              !refs.get(parent.callee.object) &&
+              parent.callee.property.name === 'entries')),
+      );
     }
+    const verifyMapReferences = () => {
+      for (const expression of auditMaps) {
+        if (expression.type !== 'Identifier') {
+          walk(expression, (node) => {
+            if (node.type === 'SpreadElement' && node.argument.type === 'Identifier') auditMaps.push(node.argument);
+          });
+          continue;
+        }
+        const variable = refs.get(expression);
+        requireProof(variable);
+        if (audited.has(variable)) continue;
+        audited.add(variable);
+        for (const ref of variable.references) inspectMapReference(ref);
+        const definition = variable.defs[0];
+        if (definition?.type === 'Variable' && definition.node.init?.type === 'ObjectExpression')
+          auditMaps.push(definition.node.init);
+      }
+    };
+    verifyMapReferences();
     for (const node of osIdentifiers) isolatedIdentifiers.add(node);
     // Helper itself is input infrastructure; prove and pin its allocation-only export.
     const relativeHelper = path
@@ -1127,23 +1171,26 @@ export function analyzeUnselectedFixtureSlice({
       ),
     );
     const imports = new Set(['node:fs/promises', 'node:fs', 'node:assert/strict', 'node:os', 'node:path']);
-    for (const item of helperAst.body)
-      requireProof(
-        (item.type === 'ImportDeclaration' &&
-          imports.has(item.source.value) &&
-          item.specifiers.length === 1 &&
-          item.specifiers[0].type === 'ImportDefaultSpecifier') ||
-          (item.type === 'ExportNamedDeclaration' && item.declaration?.type === 'FunctionDeclaration') ||
-          (item.type === 'VariableDeclaration' &&
-            item.kind === 'const' &&
-            item.declarations.every(
-              (d) =>
-                d.init?.type === 'ArrowFunctionExpression' ||
-                (d.init?.type === 'NewExpression' &&
-                  d.init.callee?.name === 'WeakMap' &&
-                  d.init.arguments.length === 0),
-            )),
-      );
+    const verifyAllocatorStatements = () => {
+      for (const item of helperAst.body)
+        requireProof(
+          (item.type === 'ImportDeclaration' &&
+            imports.has(item.source.value) &&
+            item.specifiers.length === 1 &&
+            item.specifiers[0].type === 'ImportDefaultSpecifier') ||
+            (item.type === 'ExportNamedDeclaration' && item.declaration?.type === 'FunctionDeclaration') ||
+            (item.type === 'VariableDeclaration' &&
+              item.kind === 'const' &&
+              item.declarations.every(
+                (d) =>
+                  d.init?.type === 'ArrowFunctionExpression' ||
+                  (d.init?.type === 'NewExpression' &&
+                    d.init.callee?.name === 'WeakMap' &&
+                    d.init.arguments.length === 0),
+              )),
+        );
+    };
+    verifyAllocatorStatements();
     return {
       recognizedIdentifiers: new Set(),
       isolatedIdentifiers,
@@ -1163,7 +1210,7 @@ export function analyzeUnselectedFixtureSlice({
       ],
     };
   } catch {
-    return none();
+    return emptyFixtureSlice();
   }
 }
 function literalEntries(node) {
@@ -1221,9 +1268,9 @@ function ownedReads(ast, { fixtureName, mapName, map, fsName, pathName }) {
     testImports[0].specifiers[0].local.name !== 'test'
   )
     return { reads, nodes };
-  for (const statement of ast.body) {
+  function inspectOwnedRegistration(statement) {
     const registration = statement.type === 'ExpressionStatement' && statement.expression;
-    if (registration?.type !== 'CallExpression' || registration.callee?.name !== 'test') continue;
+    if (registration?.type !== 'CallExpression' || registration.callee?.name !== 'test') return;
     const callback = registration.arguments[1];
     if (
       !callback?.async ||
@@ -1231,7 +1278,7 @@ function ownedReads(ast, { fixtureName, mapName, map, fsName, pathName }) {
       callback.params.length !== 1 ||
       callback.params[0].type !== 'Identifier'
     )
-      continue;
+      return;
     const statements = callback.body.body;
     for (let i = 0; i < statements.length; i++) {
       const declaration = statements[i];
@@ -1272,48 +1319,52 @@ function ownedReads(ast, { fixtureName, mapName, map, fsName, pathName }) {
           definitions++;
       });
       if (definitions !== 1) continue;
-      for (const next of statements.slice(i + 1)) {
-        const candidate =
-          next.type === 'VariableDeclaration' &&
-          next.kind === 'const' &&
-          next.declarations.length === 1 &&
-          next.declarations[0];
-        const expression = candidate?.init?.type === 'AwaitExpression' && candidate.init.argument;
-        const pathCall = expression?.arguments?.[0];
-        const file = pathCall?.arguments?.[1]?.value;
-        const isRead =
-          expression?.type === 'CallExpression' &&
-          expression.callee?.type === 'MemberExpression' &&
-          !expression.callee.computed &&
-          expression.callee.object?.name === fsName &&
-          expression.callee.property.name === 'readFile' &&
-          expression.arguments.length === 2 &&
-          expression.arguments[1]?.value === 'utf8' &&
-          pathCall?.type === 'CallExpression' &&
-          pathCall.callee?.type === 'MemberExpression' &&
-          !pathCall.callee.computed &&
-          pathCall.callee.object?.name === pathName &&
-          pathCall.callee.property.name === 'join' &&
-          pathCall.arguments.length === 2 &&
-          pathCall.arguments[0]?.name === dir &&
-          pathCall.arguments[1]?.type === 'Literal' &&
-          typeof file === 'string' &&
-          entries.some((entry) => entry.name === file);
-        let dirUses = 0;
-        walk(next, (item) => {
-          if (item.type === 'Identifier' && item.name === dir) dirUses++;
-        });
-        if (isRead && dirUses === 1) {
-          nodes.add(expression.callee.object);
-          reads.push({
-            registrationSha256: digest(JSON.stringify(clean(registration))),
-            entry: file,
-            entrySha256: entries.find((entry) => entry.name === file).sha256,
+      const collectReads = () => {
+        for (const next of statements.slice(i + 1)) {
+          const candidate =
+            next.type === 'VariableDeclaration' &&
+            next.kind === 'const' &&
+            next.declarations.length === 1 &&
+            next.declarations[0];
+          const expression = candidate?.init?.type === 'AwaitExpression' && candidate.init.argument;
+          const pathCall = expression?.arguments?.[0];
+          const file = pathCall?.arguments?.[1]?.value;
+          const isRead =
+            expression?.type === 'CallExpression' &&
+            expression.callee?.type === 'MemberExpression' &&
+            !expression.callee.computed &&
+            expression.callee.object?.name === fsName &&
+            expression.callee.property.name === 'readFile' &&
+            expression.arguments.length === 2 &&
+            expression.arguments[1]?.value === 'utf8' &&
+            pathCall?.type === 'CallExpression' &&
+            pathCall.callee?.type === 'MemberExpression' &&
+            !pathCall.callee.computed &&
+            pathCall.callee.object?.name === pathName &&
+            pathCall.callee.property.name === 'join' &&
+            pathCall.arguments.length === 2 &&
+            pathCall.arguments[0]?.name === dir &&
+            pathCall.arguments[1]?.type === 'Literal' &&
+            typeof file === 'string' &&
+            entries.some((entry) => entry.name === file);
+          let dirUses = 0;
+          walk(next, (item) => {
+            if (item.type === 'Identifier' && item.name === dir) dirUses++;
           });
-        } else if (dirUses) break; // An opaque consumer can mutate or replace any generated file.
-      }
+          if (isRead && dirUses === 1) {
+            nodes.add(expression.callee.object);
+            reads.push({
+              registrationSha256: digest(JSON.stringify(clean(registration))),
+              entry: file,
+              entrySha256: entries.find((entry) => entry.name === file).sha256,
+            });
+          } else if (dirUses) break; // An opaque consumer can mutate or replace any generated file.
+        }
+      };
+      collectReads();
     }
   }
+  for (const statement of ast.body) inspectOwnedRegistration(statement);
   return { reads, nodes };
 }
 // Ignore an unrelated callback's reads only when its fresh fixture root cannot flow into
@@ -1338,38 +1389,42 @@ function isolatedReads(ast, { selectedRow, fixtureName, mapName, map, fsName, pa
   const testName = imports[0].specifiers[0].local.name,
     registrations = [],
     moduleNames = new Set();
-  for (const item of ast.body) {
-    if (item.type === 'ImportDeclaration') {
-      for (const part of item.specifiers) moduleNames.add(part.local.name);
-      continue;
+  const inspectModuleRegistrations = () => {
+    for (const item of ast.body) {
+      if (item.type === 'ImportDeclaration') {
+        for (const part of item.specifiers) moduleNames.add(part.local.name);
+        continue;
+      }
+      if (item.type === 'FunctionDeclaration') {
+        moduleNames.add(item.id.name);
+        continue;
+      }
+      if (
+        item.type === 'VariableDeclaration' &&
+        item.kind === 'const' &&
+        item.declarations.length === 1 &&
+        item.declarations[0].id?.name === mapName &&
+        item.declarations[0].init === map
+      ) {
+        moduleNames.add(mapName);
+        continue;
+      }
+      const call = item.type === 'ExpressionStatement' && item.expression;
+      if (
+        call?.type !== 'CallExpression' ||
+        call.callee?.type !== 'Identifier' ||
+        call.callee.name !== testName ||
+        call.arguments.length !== 2 ||
+        call.arguments[0]?.type !== 'Literal' ||
+        !['FunctionExpression', 'ArrowFunctionExpression'].includes(call.arguments[1]?.type) ||
+        call.arguments[1].body?.type !== 'BlockStatement'
+      )
+        return false;
+      registrations.push(call);
     }
-    if (item.type === 'FunctionDeclaration') {
-      moduleNames.add(item.id.name);
-      continue;
-    }
-    if (
-      item.type === 'VariableDeclaration' &&
-      item.kind === 'const' &&
-      item.declarations.length === 1 &&
-      item.declarations[0].id?.name === mapName &&
-      item.declarations[0].init === map
-    ) {
-      moduleNames.add(mapName);
-      continue;
-    }
-    const call = item.type === 'ExpressionStatement' && item.expression;
-    if (
-      call?.type !== 'CallExpression' ||
-      call.callee?.type !== 'Identifier' ||
-      call.callee.name !== testName ||
-      call.arguments.length !== 2 ||
-      call.arguments[0]?.type !== 'Literal' ||
-      !['FunctionExpression', 'ArrowFunctionExpression'].includes(call.arguments[1]?.type) ||
-      call.arguments[1].body?.type !== 'BlockStatement'
-    )
-      return empty();
-    registrations.push(call);
-  }
+    return true;
+  };
+  if (!inspectModuleRegistrations()) return empty();
   let unsafe = false;
   let scopes;
   try {
@@ -1382,29 +1437,57 @@ function isolatedReads(ast, { selectedRow, fixtureName, mapName, map, fsName, pa
     for (const reference of scope.references) resolved.set(reference.identifier, reference.resolved);
   const parents = new Map();
   walk(ast, (node, parent) => parents.set(node, parent));
-  for (const [node, variable] of resolved) {
-    if (variable) continue;
-    const parent = parents.get(node);
-    if (node.name === 'Object') continue; // Independently restricted to the fixture producer above.
+  const inspectUnresolvedReferences = () => {
+    for (const [node, variable] of resolved) {
+      if (variable) continue;
+      const parent = parents.get(node);
+      if (node.name === 'Object') continue; // Independently restricted to the fixture producer above.
+      if (
+        node.name === 'Date' &&
+        parent?.type === 'NewExpression' &&
+        parent.callee === node &&
+        parent.arguments.length === 1 &&
+        parent.arguments[0]?.type === 'Literal'
+      )
+        continue;
+      if (
+        node.name === 'JSON' &&
+        parent?.type === 'MemberExpression' &&
+        parent.object === node &&
+        !parent.computed &&
+        parent.property.name === 'stringify' &&
+        parents.get(parent)?.type === 'CallExpression' &&
+        parents.get(parent).callee === parent
+      )
+        continue;
+      unsafe = true;
+    }
+  };
+  inspectUnresolvedReferences();
+  function inspectMutation(node) {
+    let target = node.type === 'AssignmentExpression' ? node.left : node.argument;
+    while (target?.type === 'MemberExpression' || target?.type === 'CallExpression') {
+      if (target.type === 'MemberExpression') target = target.object;
+      else if (
+        target.callee?.type === 'MemberExpression' &&
+        !target.callee.computed &&
+        target.callee.property.name === 'find'
+      )
+        target = target.callee.object;
+      else {
+        target = null;
+        break;
+      }
+    }
+    const variable = resolved.get(target);
     if (
-      node.name === 'Date' &&
-      parent?.type === 'NewExpression' &&
-      parent.callee === node &&
-      parent.arguments.length === 1 &&
-      parent.arguments[0]?.type === 'Literal'
+      target?.type !== 'Identifier' ||
+      !variable ||
+      ['module', 'global'].includes(variable.scope.type) ||
+      moduleNames.has(target.name) ||
+      ['globalThis', 'process'].includes(target.name)
     )
-      continue;
-    if (
-      node.name === 'JSON' &&
-      parent?.type === 'MemberExpression' &&
-      parent.object === node &&
-      !parent.computed &&
-      parent.property.name === 'stringify' &&
-      parents.get(parent)?.type === 'CallExpression' &&
-      parents.get(parent).callee === parent
-    )
-      continue;
-    unsafe = true;
+      unsafe = true;
   }
   walk(ast, (node, parent) => {
     if (
@@ -1421,31 +1504,7 @@ function isolatedReads(ast, { selectedRow, fixtureName, mapName, map, fsName, pa
       unsafe = true;
     if (node.type === 'MemberExpression' && node.object?.type === 'Identifier' && node.object.name === testName)
       unsafe = true;
-    if (['AssignmentExpression', 'UpdateExpression'].includes(node.type)) {
-      let target = node.type === 'AssignmentExpression' ? node.left : node.argument;
-      while (target?.type === 'MemberExpression' || target?.type === 'CallExpression') {
-        if (target.type === 'MemberExpression') target = target.object;
-        else if (
-          target.callee?.type === 'MemberExpression' &&
-          !target.callee.computed &&
-          target.callee.property.name === 'find'
-        )
-          target = target.callee.object;
-        else {
-          target = null;
-          break;
-        }
-      }
-      const variable = resolved.get(target);
-      if (
-        target?.type !== 'Identifier' ||
-        !variable ||
-        ['module', 'global'].includes(variable.scope.type) ||
-        moduleNames.has(target.name) ||
-        ['globalThis', 'process'].includes(target.name)
-      )
-        unsafe = true;
-    }
+    if (['AssignmentExpression', 'UpdateExpression'].includes(node.type)) inspectMutation(node);
     if (
       node.type === 'Identifier' &&
       node.name === testName &&
@@ -1454,21 +1513,24 @@ function isolatedReads(ast, { selectedRow, fixtureName, mapName, map, fsName, pa
     )
       unsafe = true;
   });
-  for (const call of registrations) {
-    const callback = call.arguments[1],
-      context = callback.params[0]?.name;
-    if (callback.params.length > 1 || callback.params.some((p) => p.type !== 'Identifier')) unsafe = true;
-    walk(callback.body, (node, parent) => {
-      if (context && node.type === 'MemberExpression' && node.object?.name === context) unsafe = true;
-      if (
-        context &&
-        node.type === 'Identifier' &&
-        node.name === context &&
-        !(parent?.type === 'CallExpression' && parent.callee?.name === fixtureName && parent.arguments[0] === node)
-      )
-        unsafe = true;
-    });
-  }
+  const verifyCallbackIsolation = () => {
+    for (const call of registrations) {
+      const callback = call.arguments[1],
+        context = callback.params[0]?.name;
+      if (callback.params.length > 1 || callback.params.some((p) => p.type !== 'Identifier')) unsafe = true;
+      walk(callback.body, (node, parent) => {
+        if (context && node.type === 'MemberExpression' && node.object?.name === context) unsafe = true;
+        if (
+          context &&
+          node.type === 'Identifier' &&
+          node.name === context &&
+          !(parent?.type === 'CallExpression' && parent.callee?.name === fixtureName && parent.arguments[0] === node)
+        )
+          unsafe = true;
+      });
+    }
+  };
+  verifyCallbackIsolation();
   if (unsafe) return empty();
   const sutBindings = new Set(
     scopes.scopes
@@ -1477,91 +1539,100 @@ function isolatedReads(ast, { selectedRow, fixtureName, mapName, map, fsName, pa
   );
   const reads = [],
     nodes = new Set();
-  for (const registration of registrations) {
-    const callback = registration.arguments[1];
-    if (callback === selectedRow.callback || !callback.async || callback.params.length !== 1) continue;
-    const body = callback.body.body;
-    for (const statement of body) {
-      if (statement.type !== 'VariableDeclaration' || statement.kind !== 'const' || statement.declarations.length !== 1)
-        continue;
-      const binding = statement.declarations[0],
-        setup = binding.init?.argument;
-      if (
-        binding.id.type !== 'Identifier' ||
-        binding.init?.type !== 'AwaitExpression' ||
-        setup?.type !== 'CallExpression' ||
-        setup.callee?.name !== fixtureName ||
-        setup.arguments.length !== 2 ||
-        setup.arguments[0]?.type !== 'Identifier' ||
-        setup.arguments[0].name !== callback.params[0].name
-      )
-        continue;
-      const expanded = entriesWithSpread(setup.arguments[1], mapName, map);
-      if (!expanded) continue;
-      let entries;
-      try {
-        entries = literalEntries(expanded);
-      } catch {
-        continue;
-      }
-      const dir = binding.id.name,
-        uses = [],
-        localReads = [];
-      let definitions = 0;
-      walk(callback, (node, parent) => {
-        if (node.type === 'VariableDeclarator' && bindingNames(node.id).includes(dir)) definitions++;
+  const collectIsolatedReads = () => {
+    function inspectUnselectedRegistration(registration) {
+      const callback = registration.arguments[1];
+      if (callback === selectedRow.callback || !callback.async || callback.params.length !== 1) return;
+      const body = callback.body.body;
+      function inspectFixtureStatement(statement) {
         if (
-          ['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression'].includes(node.type) &&
-          node !== callback &&
-          node.params.some((param) => bindingNames(param).includes(dir))
+          statement.type !== 'VariableDeclaration' ||
+          statement.kind !== 'const' ||
+          statement.declarations.length !== 1
         )
-          definitions++;
-        if (node.type === 'Identifier' && node.name === dir && node !== binding.id) uses.push({ node, parent });
+          return;
+        const binding = statement.declarations[0],
+          setup = binding.init?.argument;
         if (
-          node.type === 'CallExpression' &&
-          node.callee?.type === 'MemberExpression' &&
-          !node.callee.computed &&
-          node.callee.object?.name === fsName &&
-          node.callee.property.name === 'readFile' &&
-          node.arguments.length === 2 &&
-          node.arguments[1]?.value === 'utf8'
-        ) {
-          const joined = node.arguments[0],
-            file = joined?.arguments?.[1]?.value;
-          if (
-            joined?.type === 'CallExpression' &&
-            joined.callee?.type === 'MemberExpression' &&
-            !joined.callee.computed &&
-            joined.callee.object?.name === pathName &&
-            joined.callee.property.name === 'join' &&
-            joined.arguments.length === 2 &&
-            joined.arguments[0]?.type === 'Identifier' &&
-            joined.arguments[0].name === dir &&
-            joined.arguments[1]?.type === 'Literal' &&
-            entries.some((entry) => entry.name === file)
-          )
-            localReads.push({ fs: node.callee.object, joined, file });
+          binding.id.type !== 'Identifier' ||
+          binding.init?.type !== 'AwaitExpression' ||
+          setup?.type !== 'CallExpression' ||
+          setup.callee?.name !== fixtureName ||
+          setup.arguments.length !== 2 ||
+          setup.arguments[0]?.type !== 'Identifier' ||
+          setup.arguments[0].name !== callback.params[0].name
+        )
+          return;
+        const expanded = entriesWithSpread(setup.arguments[1], mapName, map);
+        if (!expanded) return;
+        let entries;
+        try {
+          entries = literalEntries(expanded);
+        } catch {
+          return;
         }
-      });
-      if (definitions !== 1 || !localReads.length) continue;
-      const allowed = uses.every(
-        ({ node, parent }) =>
-          parent?.type === 'CallExpression' &&
-          parent.arguments[0] === node &&
-          ((parent.callee?.type === 'Identifier' && sutBindings.has(resolved.get(parent.callee))) ||
-            localReads.some((read) => read.joined === parent)),
-      );
-      if (!allowed) continue;
-      for (const read of localReads) {
-        nodes.add(read.fs);
-        reads.push({
-          registrationSha256: digest(JSON.stringify(clean(registration))),
-          entry: read.file,
-          entrySha256: entries.find((item) => item.name === read.file).sha256,
+        const dir = binding.id.name,
+          uses = [],
+          localReads = [];
+        let definitions = 0;
+        walk(callback, (node, parent) => {
+          if (node.type === 'VariableDeclarator' && bindingNames(node.id).includes(dir)) definitions++;
+          if (
+            ['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression'].includes(node.type) &&
+            node !== callback &&
+            node.params.some((param) => bindingNames(param).includes(dir))
+          )
+            definitions++;
+          if (node.type === 'Identifier' && node.name === dir && node !== binding.id) uses.push({ node, parent });
+          if (
+            node.type === 'CallExpression' &&
+            node.callee?.type === 'MemberExpression' &&
+            !node.callee.computed &&
+            node.callee.object?.name === fsName &&
+            node.callee.property.name === 'readFile' &&
+            node.arguments.length === 2 &&
+            node.arguments[1]?.value === 'utf8'
+          ) {
+            const joined = node.arguments[0],
+              file = joined?.arguments?.[1]?.value;
+            if (
+              joined?.type === 'CallExpression' &&
+              joined.callee?.type === 'MemberExpression' &&
+              !joined.callee.computed &&
+              joined.callee.object?.name === pathName &&
+              joined.callee.property.name === 'join' &&
+              joined.arguments.length === 2 &&
+              joined.arguments[0]?.type === 'Identifier' &&
+              joined.arguments[0].name === dir &&
+              joined.arguments[1]?.type === 'Literal' &&
+              entries.some((entry) => entry.name === file)
+            )
+              localReads.push({ fs: node.callee.object, joined, file });
+          }
         });
+        if (definitions !== 1 || !localReads.length) return;
+        const allowed = uses.every(
+          ({ node, parent }) =>
+            parent?.type === 'CallExpression' &&
+            parent.arguments[0] === node &&
+            ((parent.callee?.type === 'Identifier' && sutBindings.has(resolved.get(parent.callee))) ||
+              localReads.some((read) => read.joined === parent)),
+        );
+        if (!allowed) return;
+        for (const read of localReads) {
+          nodes.add(read.fs);
+          reads.push({
+            registrationSha256: digest(JSON.stringify(clean(registration))),
+            entry: read.file,
+            entrySha256: entries.find((item) => item.name === read.file).sha256,
+          });
+        }
       }
+      for (const statement of body) inspectFixtureStatement(statement);
     }
-  }
+    for (const registration of registrations) inspectUnselectedRegistration(registration);
+  };
+  collectIsolatedReads();
   return { reads, nodes };
 }
 function confined(root, relative) {
@@ -1576,18 +1647,17 @@ function confined(root, relative) {
   return resolved;
 }
 
+function isPropertyName(item, parent) {
+  return (
+    (parent?.type === 'MemberExpression' && parent.property === item && !parent.computed) ||
+    (parent?.type === 'Property' && parent.key === item && !parent.computed && !parent.shorthand)
+  );
+}
+
 /** Returns exact AST nodes permitted by the inferred producer; never marks a subtree as safe. */
 export function analyzeGeneratedFixtures({ ast, selected, root, filePath, readBaseline, implementationSources = [] }) {
-  const none = () => ({
-    recognizedIdentifiers: new Set(),
-    recognizedBuiltinImports: new Set(),
-    handledInputSources: new Set(),
-    dependencies: [],
-    fixtures: [],
-    isolatedIdentifiers: new Set(),
-  });
-  if (selected.length > 1) {
-    const combined = none(),
+  function combineSelections() {
+    const combined = emptyFixtureSlice(),
       dependencies = new Map();
     for (const entry of selected) {
       const part = analyzeGeneratedFixtures({
@@ -1611,17 +1681,22 @@ export function analyzeGeneratedFixtures({ ast, selected, root, filePath, readBa
     combined.dependencies = [...dependencies].map(([name, sha256]) => ({ path: name, sha256 }));
     return combined;
   }
-  const candidates = [];
-  for (const item of selected)
-    walk(item.old.callback.body, (node) => {
-      if (
-        node.type === 'CallExpression' &&
-        node.callee.type === 'Identifier' &&
-        node.arguments.length === 2 &&
-        node.arguments[1]?.type === 'Identifier'
-      )
-        candidates.push({ node, row: item.old });
-    });
+  if (selected.length > 1) return combineSelections();
+  function findCandidateCalls() {
+    const candidates = [];
+    for (const item of selected)
+      walk(item.old.callback.body, (node) => {
+        if (
+          node.type === 'CallExpression' &&
+          node.callee.type === 'Identifier' &&
+          node.arguments.length === 2 &&
+          node.arguments[1]?.type === 'Identifier'
+        )
+          candidates.push({ node, row: item.old });
+      });
+    return candidates;
+  }
+  const candidates = findCandidateCalls();
   const allocatorNames = new Set(
     ast.body
       .filter((node) => node.type === 'ImportDeclaration')
@@ -1629,17 +1704,21 @@ export function analyzeGeneratedFixtures({ ast, selected, root, filePath, readBa
       .filter((node) => node.type === 'ImportSpecifier' && node.imported.name === 'makeTemporaryDirectory')
       .map((node) => node.local.name),
   );
-  const producerNames = new Set();
-  for (const declaration of ast.body.filter((node) => node.type === 'FunctionDeclaration' && node.async)) {
-    let usesAllocator = false;
-    walk(declaration.body, (node) => {
-      if (node.type === 'CallExpression' && node.callee.type === 'Identifier' && allocatorNames.has(node.callee.name))
-        usesAllocator = true;
-    });
-    if (usesAllocator) producerNames.add(declaration.id.name);
+  function findProducerNames() {
+    const producerNames = new Set();
+    for (const declaration of ast.body.filter((node) => node.type === 'FunctionDeclaration' && node.async)) {
+      let usesAllocator = false;
+      walk(declaration.body, (node) => {
+        if (node.type === 'CallExpression' && node.callee.type === 'Identifier' && allocatorNames.has(node.callee.name))
+          usesAllocator = true;
+      });
+      if (usesAllocator) producerNames.add(declaration.id.name);
+    }
+    return producerNames;
   }
+  const producerNames = findProducerNames();
   const calls = candidates.filter(({ node }) => producerNames.has(node.callee.name));
-  if (!calls.length) return none();
+  if (!calls.length) return emptyFixtureSlice();
   requireProof(calls.length === 1);
   const { node: call, row } = calls[0],
     name = call.callee.name,
@@ -1693,6 +1772,45 @@ export function analyzeGeneratedFixtures({ ast, selected, root, filePath, readBa
   const protectedNames = new Set([name, mapName, helper, fsImport.name, osImport.name, pathImport.name, 'Object']);
   const producerNodes = new Set();
   walk(producer, (node) => producerNodes.add(node));
+  function inspectProtectedIdentifier(item, parent) {
+    if (item.type !== 'Identifier') return;
+    if (item.name === mapName && item !== maps[0].id) {
+      requireProof(
+        (parent?.type === 'CallExpression' &&
+          parent.callee.type === 'Identifier' &&
+          parent.callee.name === name &&
+          parent.arguments[1] === item) ||
+          (parent?.type === 'SpreadElement' && parent.argument === item) ||
+          (parent?.type === 'MemberExpression' &&
+            parent.object === item &&
+            parent.computed &&
+            parent.property.type === 'Literal'),
+      );
+    }
+    if (
+      item.name === 'Object' &&
+      !(parent?.type === 'MemberExpression' && parent.property === item && !parent.computed)
+    ) {
+      requireProof(producerNodes.has(item));
+    }
+    if ([fsImport.name, osImport.name, pathImport.name].includes(item.name)) {
+      const propertyName = isPropertyName(item, parent);
+      requireProof(
+        propertyName ||
+          parent?.type === 'ImportDefaultSpecifier' ||
+          (parent?.type === 'MemberExpression' && parent.object === item && !parent.computed),
+      );
+    }
+    if ([helper, name].includes(item.name)) {
+      const propertyName = isPropertyName(item, parent);
+      requireProof(
+        propertyName ||
+          parent?.type === 'ImportSpecifier' ||
+          (parent?.type === 'FunctionDeclaration' && parent.id === item) ||
+          (parent?.type === 'CallExpression' && parent.callee === item),
+      );
+    }
+  }
   walk(ast, (item, parent) => {
     if (item.type === 'VariableDeclarator' && bindingNames(item.id).some((bound) => protectedNames.has(bound)))
       requireProof(item === maps[0]);
@@ -1710,47 +1828,7 @@ export function analyzeGeneratedFixtures({ ast, selected, root, filePath, readBa
       while (base?.type === 'MemberExpression') base = base.object;
       requireProof(!(base?.type === 'Identifier' && protectedNames.has(base.name)));
     }
-    if (item.type === 'Identifier' && item.name === mapName && item !== maps[0].id) {
-      requireProof(
-        (parent?.type === 'CallExpression' &&
-          parent.callee.type === 'Identifier' &&
-          parent.callee.name === name &&
-          parent.arguments[1] === item) ||
-          (parent?.type === 'SpreadElement' && parent.argument === item) ||
-          (parent?.type === 'MemberExpression' &&
-            parent.object === item &&
-            parent.computed &&
-            parent.property.type === 'Literal'),
-      );
-    }
-    if (
-      item.type === 'Identifier' &&
-      item.name === 'Object' &&
-      !(parent?.type === 'MemberExpression' && parent.property === item && !parent.computed)
-    ) {
-      requireProof(producerNodes.has(item));
-    }
-    if (item.type === 'Identifier' && [fsImport.name, osImport.name, pathImport.name].includes(item.name)) {
-      const propertyName =
-        (parent?.type === 'MemberExpression' && parent.property === item && !parent.computed) ||
-        (parent?.type === 'Property' && parent.key === item && !parent.computed && !parent.shorthand);
-      requireProof(
-        propertyName ||
-          parent?.type === 'ImportDefaultSpecifier' ||
-          (parent?.type === 'MemberExpression' && parent.object === item && !parent.computed),
-      );
-    }
-    if (item.type === 'Identifier' && [helper, name].includes(item.name)) {
-      const propertyName =
-        (parent?.type === 'MemberExpression' && parent.property === item && !parent.computed) ||
-        (parent?.type === 'Property' && parent.key === item && !parent.computed && !parent.shorthand);
-      requireProof(
-        propertyName ||
-          parent?.type === 'ImportSpecifier' ||
-          (parent?.type === 'FunctionDeclaration' && parent.id === item) ||
-          (parent?.type === 'CallExpression' && parent.callee === item),
-      );
-    }
+    inspectProtectedIdentifier(item, parent);
   });
   const relative = path.relative(root, path.resolve(root, path.dirname(filePath), source)).replaceAll(path.sep, '/');
   const absolute = confined(root, relative),

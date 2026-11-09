@@ -1054,7 +1054,7 @@ export const FUNCTIONS = {
       // Exact remainder that takes the divisor's sign (Learn example Mod(-3, 2) = 1).
       const pair = numericPair(x, d),
         scale = Math.max(decimalParts(x).scale, decimalParts(d).scale);
-      let rest = pair.x % pair.y;
+      let rest = /** @type {bigint} */ (pair.x % pair.y);
       if (rest !== 0n && rest < 0n !== pair.y < 0n) rest += pair.y;
       return exactNumeric(decimalText({ coefficient: rest, scale }), 'Decimal');
     },
@@ -1341,12 +1341,9 @@ export const FUNCTIONS = {
         return new FxGuid(typeof fx.host.guid === 'function' ? fx.host.guid() : crypto.randomUUID());
       const t = text(fx, value);
       if (t instanceof FxError) return t;
-      const m =
-        /^(?:([0-9a-f]{32})|([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})|\{([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\})$/i.exec(
-          t.trim(),
-        );
-      if (!m) return fail('InvalidArgument', `'${t}' is not a GUID.`);
-      const hex = (m[1] ?? m[2] ?? m[3]).replaceAll('-', '');
+      const m = /^(?:([0-9a-f]{32})|(\{?)([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})(\}?))$/i.exec(t.trim());
+      if (!m || Boolean(m[2]) !== Boolean(m[4])) return fail('InvalidArgument', `'${t}' is not a GUID.`);
+      const hex = (m[1] ?? m[3]).replaceAll('-', '');
       return new FxGuid(
         `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
       );

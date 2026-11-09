@@ -1,22 +1,8 @@
 // Narrow source-only proof for the fixed-clock Power Fx host helpers used by a literal-formula test.
 // Caller must validate existing guards and bind the complete module and registration set.
-import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
+import { hashAst as hash } from './parity-ast-utils.mjs';
 const { analyze } = createRequire(import.meta.url)('eslint-scope');
-const clean = (x) =>
-  Array.isArray(x)
-    ? x.map(clean)
-    : !x || typeof x !== 'object'
-      ? x
-      : Object.fromEntries(
-          Object.entries(x)
-            .filter(([k]) => !['loc', 'range', 'start', 'end', 'raw'].includes(k))
-            .map(([k, v]) => [k, clean(v)]),
-        );
-const hash = (x) =>
-  createHash('sha256')
-    .update(JSON.stringify(clean(x)))
-    .digest('hex');
 const fail = () => {
   throw new Error('unsupported-powerfx-host-slice');
 };
@@ -82,36 +68,39 @@ export function analyzePowerFxHostSlice({ ast, selected, implementationSources =
         testBinding.defs[0].parent.source.value === 'node:test' &&
         testBinding.defs[0].node.type === 'ImportDefaultSpecifier',
     );
-    for (const reference of testBinding.references) {
-      const call = parents.get(reference.identifier);
-      check(
-        call?.type === 'CallExpression' &&
-          call.callee === reference.identifier &&
-          call.arguments.length === 2 &&
-          ['ArrowFunctionExpression', 'FunctionExpression'].includes(call.arguments[1]?.type) &&
-          !call.arguments[1].async &&
-          !call.arguments[1].generator,
-      );
-    }
-    for (const name of ['hostOf', 'run'])
-      for (const r of vars.get(name).references)
-        if (!r.init) {
-          const p = parents.get(r.identifier);
-          check(p?.type === 'CallExpression' && p.callee === r.identifier && !p.optional);
-        }
-    for (const r of sut.references) {
-      const p = parents.get(r.identifier),
-        call = parents.get(p);
-      check(
-        p?.type === 'MemberExpression' &&
-          p.object === r.identifier &&
-          !p.computed &&
-          ['evaluateSync', 'checkSync'].includes(p.property.name) &&
+    const checkBindingReferences = () => {
+      for (const reference of testBinding.references) {
+        const call = parents.get(reference.identifier);
+        check(
           call?.type === 'CallExpression' &&
-          call.callee === p,
-      );
-    }
-    walk(ast, (n, p) => {
+            call.callee === reference.identifier &&
+            call.arguments.length === 2 &&
+            ['ArrowFunctionExpression', 'FunctionExpression'].includes(call.arguments[1]?.type) &&
+            !call.arguments[1].async &&
+            !call.arguments[1].generator,
+        );
+      }
+      for (const name of ['hostOf', 'run'])
+        for (const r of vars.get(name).references)
+          if (!r.init) {
+            const p = parents.get(r.identifier);
+            check(p?.type === 'CallExpression' && p.callee === r.identifier && !p.optional);
+          }
+      for (const r of sut.references) {
+        const p = parents.get(r.identifier),
+          call = parents.get(p);
+        check(
+          p?.type === 'MemberExpression' &&
+            p.object === r.identifier &&
+            !p.computed &&
+            ['evaluateSync', 'checkSync'].includes(p.property.name) &&
+            call?.type === 'CallExpression' &&
+            call.callee === p,
+        );
+      }
+    };
+    checkBindingReferences();
+    const checkSyntax = (n) => {
       if (
         n.type === 'WithStatement' ||
         n.type === 'ImportExpression' ||
@@ -131,15 +120,21 @@ export function analyzePowerFxHostSlice({ ast, selected, implementationSources =
               n.property.right?.type === 'Literal' &&
               n.property.right.value === 1,
           );
-        const key = n.computed ? (n.property?.type === 'Literal' ? n.property.value : null) : n.property.name;
+        let key;
+        if (n.computed) key = n.property?.type === 'Literal' ? n.property.value : null;
+        else key = n.property.name;
         check(!['constructor', 'prototype', '__proto__'].includes(key));
       }
+    };
+    const checkPattern = (n) => {
       if (n.type === 'ObjectPattern')
         for (const prop of n.properties)
           if (prop.type !== 'RestElement')
             check(
               !prop.computed && !['constructor', 'prototype', '__proto__'].includes(prop.key?.name ?? prop.key?.value),
             );
+    };
+    const checkReferences = (n, p) => {
       if (n.type === 'AssignmentExpression' || n.type === 'UpdateExpression') {
         const target = n.type === 'AssignmentExpression' ? n.left : n.argument;
         check(
@@ -161,6 +156,8 @@ export function analyzePowerFxHostSlice({ ast, selected, implementationSources =
           );
         else check((p?.type === 'NewExpression' || p?.type === 'CallExpression') && p.callee === n);
       }
+    };
+    const checkHooks = (n) => {
       if (
         n.type === 'CallExpression' &&
         n.callee?.type === 'MemberExpression' &&
@@ -168,6 +165,12 @@ export function analyzePowerFxHostSlice({ ast, selected, implementationSources =
         ['before', 'after', 'beforeEach', 'afterEach', 'only', 'skip'].includes(n.callee.property.name)
       )
         fail();
+    };
+    walk(ast, (n, p) => {
+      checkSyntax(n);
+      checkPattern(n);
+      checkReferences(n, p);
+      checkHooks(n);
     });
     const row = selected[0].old,
       cb = row.callback,
@@ -194,28 +197,31 @@ export function analyzePowerFxHostSlice({ ast, selected, implementationSources =
     );
     const local = scopes.acquire(cb)?.variables.find((v) => v.identifiers.includes(item.id));
     check(local && !local.references.some((r) => r.isWrite() && !r.init));
-    for (const stmt of body.slice(1)) {
-      const call = stmt.expression;
-      check(
-        stmt.type === 'ExpressionStatement' &&
-          call?.type === 'CallExpression' &&
-          call.callee?.type === 'MemberExpression' &&
-          !call.callee.computed &&
-          call.callee.property.name === 'equal' &&
-          refs.get(call.callee.object) === assertion &&
-          call.arguments.length === 2 &&
-          call.arguments[1].type === 'Literal',
-      );
-      const run = call.arguments[0];
-      check(
-        run?.type === 'CallExpression' &&
-          refs.get(run.callee) === vars.get('run') &&
-          run.arguments.length === 2 &&
-          run.arguments[0].type === 'Literal' &&
-          typeof run.arguments[0].value === 'string' &&
-          refs.get(run.arguments[1]) === local,
-      );
-    }
+    const checkSelectedAssertions = () => {
+      for (const stmt of body.slice(1)) {
+        const call = stmt.expression;
+        check(
+          stmt.type === 'ExpressionStatement' &&
+            call?.type === 'CallExpression' &&
+            call.callee?.type === 'MemberExpression' &&
+            !call.callee.computed &&
+            call.callee.property.name === 'equal' &&
+            refs.get(call.callee.object) === assertion &&
+            call.arguments.length === 2 &&
+            call.arguments[1].type === 'Literal',
+        );
+        const run = call.arguments[0];
+        check(
+          run?.type === 'CallExpression' &&
+            refs.get(run.callee) === vars.get('run') &&
+            run.arguments.length === 2 &&
+            run.arguments[0].type === 'Literal' &&
+            typeof run.arguments[0].value === 'string' &&
+            refs.get(run.arguments[1]) === local,
+        );
+      }
+    };
+    checkSelectedAssertions();
     return {
       ...empty(),
       fixtures: [

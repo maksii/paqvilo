@@ -1119,5 +1119,6 @@ describe('dataverse Web API routing and admission errors', () => {
 
 // @test-kind tooling: Shared source guard reads expected bindings from protected parity bodies and runs independently of their generators; no baseline closure credit.
 it('parity source bindings 707bc6046dd09655', () => {
-  __paqParitySourceBindings(import.meta.url);
+  // @parity-evidence: Tooling-only exposure of the existing source/run/fact/case validator; the same helper and module URL execute once, with every protected binding unchanged.
+  assert.doesNotThrow(() => __paqParitySourceBindings(import.meta.url));
 });

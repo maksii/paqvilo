@@ -547,7 +547,15 @@ function json(res, status, value, headers = {}, { chunks, wireText, omitContentT
       if (name.toLowerCase() === 'content-type') delete responseHeaders[name];
   res.writeHead(status, responseHeaders);
   if (chunks && status !== 204) return writeJsonChunks(res, chunks);
-  res.end(status === 204 ? undefined : typeof wireText === 'string' ? wireText : stringifyExactJson(value));
+  let responseText;
+  if (status !== 204) responseText = typeof wireText === 'string' ? wireText : stringifyExactJson(value);
+  res.end(responseText);
+}
+
+function dataverseInputSettings(option) {
+  if (option && typeof option === 'object' && !Array.isArray(option)) return option;
+  if (option === true) return {};
+  return { enabled: false };
 }
 
 const RECORD_OWNERS = Symbol('owned record storage');
@@ -1123,10 +1131,9 @@ export async function createSimulator(options = {}) {
   store.setObserved(observed); // observed anonymousDataAccess for table permissions
   // Simulated Dataverse API (lib/dataverse-api.mjs): started before the portal listens, closed by close().
   // Managed identity mode uses the same validated configuration on every runtime surface.
-  const dataverseInput =
-    dataverseOption && typeof dataverseOption === 'object' && !Array.isArray(dataverseOption) ? dataverseOption : null;
+  const dataverseInput = dataverseInputSettings(dataverseOption);
   const dataverseConfig = dataverseSettings({
-    ...(dataverseInput ?? (dataverseOption === true ? {} : { enabled: false })),
+    ...dataverseInput,
     localeId: project?.lcid ?? dataverseInput?.localeId ?? 1033,
   });
   const managedIdentityMode = dataverseConfig.managedIdentity?.mode ?? 'appservice';

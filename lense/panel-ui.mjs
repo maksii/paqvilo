@@ -3188,7 +3188,8 @@ function panelBrowserImpl(data) {
           break;
         }
         case 'diff': {
-          const pending = (S.diff = { loading: true, rel });
+          const pending = { loading: true, rel };
+          S.diff = pending;
           fresh();
           const r = await api('diff', { rel, url });
           if (S.diff === pending) S.diff = { ...r, rel };
