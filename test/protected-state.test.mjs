@@ -76,7 +76,10 @@ test('protected state has encrypted durable roundtrip, purpose binding and exclu
 
 // @test-kind security: A failed replacement must retain the original encrypted state and remove its temporary file.
 test('protected state retains ciphertext when Windows refuses replacement of a read-only destination', async (t) => {
-  if (process.platform !== 'win32') return;
+  if (process.platform !== 'win32') {
+    t.skip('Windows read-only destination semantics');
+    return;
+  }
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'protected-json-readonly-'));
   const file = path.join(dir, '.paqvilo', 'identity.json');
   t.after(async () => {
