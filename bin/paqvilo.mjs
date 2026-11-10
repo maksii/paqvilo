@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 import { parseArgs } from 'node:util';
 import { MIRAGE_TOOLS, MIRAGE_LIFECYCLE, mirageToolHelp } from '../mirage/tool-registry.mjs';
+import { parseToolHelp } from '../mirage/tool-options.mjs';
 
 const HELP = `paqvilo — Power Platform source development
 
@@ -155,11 +156,8 @@ if (['--version', '-v', '--help', '-h'].includes(product)) {
   }
 } else if (product === 'mirage' && Object.hasOwn(MIRAGE_TOOLS, args[0]) && hasFlag(args, '--help', '-h')) {
   try {
-    // This dispatcher serves standalone tool help; operational arguments belong to the tool's parser.
-    parseArgs({
-      args: args.slice(1),
-      options: { help: { type: 'boolean', short: 'h' }, json: { type: 'boolean' } },
-    });
+    // Validate the operational schema without importing or executing the operation.
+    parseToolHelp(args[0], args.slice(1));
     console.log(mirageToolHelp(args[0]));
   } catch (error) {
     failure(error, 'INVALID_ARGUMENT', `paqvilo mirage ${args[0]}`);

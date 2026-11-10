@@ -3,8 +3,135 @@ import { parseArgs } from 'node:util';
 const string = (label, extra = {}) => ({ type: 'string', label, ...extra });
 const flag = () => ({ type: 'boolean' });
 const catalogue = { config: string('FILE'), site: string('ID'), env: string('ID'), repo: string('DIR') };
+// These tools historically reject empty strings; the other operational parsers accept them.
+const NONEMPTY_VALUES = new Set(['liquid-inventory', 'webapi-inventory', 'render-sweep', 'portal-matrix', 'trace']);
 /** The public help and parsers share these option tables. */
-export const TOOL_OPTIONS = {
+const TOOL_SCHEMAS = {
+  'bootstrap-report': {
+    site: { type: 'string' },
+    env: { type: 'string' },
+    repo: { type: 'string' },
+    config: { type: 'string' },
+    source: { type: 'string' },
+    'solution-root': { type: 'string', multiple: true },
+    'solution-order': { type: 'string' },
+    project: { type: 'string' },
+    portal: { type: 'string' },
+    'deployment-profile': { type: 'string' },
+    'data-model': { type: 'string' },
+    lcid: { type: 'string' },
+    json: { type: 'boolean' },
+    output: { type: 'string' },
+    'no-cache': { type: 'boolean' },
+    'all-fields': { type: 'boolean' },
+    help: { type: 'boolean' },
+  },
+  'parity-suite': {
+    local: { type: 'string' },
+    'local-owned': { type: 'boolean' },
+    source: { type: 'string' },
+    state: { type: 'string' },
+    preset: { type: 'string' },
+    site: { type: 'string' },
+    env: { type: 'string' },
+    repo: { type: 'string' },
+    config: { type: 'string' },
+    'pack-module': { type: 'string', multiple: true },
+    origin: { type: 'string' },
+    cdp: { type: 'string' },
+    'anonymous-browser': { type: 'string' },
+    scenarios: { type: 'string' },
+    core: { type: 'boolean' },
+    'no-core': { type: 'boolean' },
+    pack: { type: 'string', multiple: true },
+    packs: { type: 'string' },
+    out: { type: 'string' },
+    only: { type: 'string' },
+    tags: { type: 'string' },
+    'exclude-tags': { type: 'string' },
+    label: { type: 'string' },
+    'delay-ms': { type: 'string' },
+    'work-dir': { type: 'string' },
+    'persona-contact': { type: 'string' },
+    'no-persona': { type: 'boolean' },
+    browser: { type: 'string' },
+    ids: { type: 'string' },
+    'deployment-profile': { type: 'string' },
+    reclassify: { type: 'string' },
+  },
+  'baseline-suite': {
+    matrix: { type: 'string' },
+    out: { type: 'string' },
+    side: { type: 'string' },
+    label: { type: 'string' },
+    'allow-writes': { type: 'boolean' },
+    ids: { type: 'string' },
+    only: { type: 'string' },
+    config: { type: 'string' },
+    site: { type: 'string' },
+    env: { type: 'string' },
+    source: { type: 'string' },
+    state: { type: 'string' },
+    headed: { type: 'boolean' },
+    'work-dir': { type: 'string' },
+    live: { type: 'string' },
+    mirage: { type: 'string' },
+    allowlist: { type: 'string' },
+    'second-live': { type: 'string' },
+    'evidence-changes': { type: 'string' },
+  },
+  'liquid-conformance': {
+    suite: { type: 'string' },
+    rules: { type: 'string' },
+    out: { type: 'string' },
+    timeout: { type: 'string' },
+    json: { type: 'boolean' },
+    markdown: { type: 'boolean' },
+  },
+  acceptance: {
+    local: { type: 'string' },
+    origin: { type: 'string' },
+    cdp: { type: 'string' },
+    plan: { type: 'string' },
+    requires: { type: 'string', multiple: true },
+    strict: { type: 'boolean', default: false },
+    output: {
+      type: 'string',
+      default: '.paqvilo/simulator/acceptance/evidence',
+    },
+  },
+  'enrich-reference': {
+    state: { type: 'string' },
+    origin: { type: 'string' },
+    cdp: { type: 'string' },
+    plan: { type: 'string' },
+  },
+  'reference-parity': {
+    local: { type: 'string' },
+    origin: { type: 'string' },
+    cdp: { type: 'string' },
+    plan: { type: 'string' },
+    output: { type: 'string' },
+    'local-contact': { type: 'string' },
+    'local-role': { type: 'string', multiple: true },
+    'local-configured-persona': { type: 'boolean' },
+  },
+  'query-inventory': { portal: { type: 'string' }, json: { type: 'boolean' } },
+  verify: Object.fromEntries(['local', 'origin', 'cdp', 'path', 'output'].map((name) => [name, { type: 'string' }])),
+  'verify-storage': { json: { type: 'boolean' }, help: { type: 'boolean', short: 'h' } },
+  'capture-shell': {
+    config: { type: 'string' },
+    site: { type: 'string' },
+    env: { type: 'string' },
+    all: { type: 'boolean' },
+    path: { type: 'string' },
+    cdp: { type: 'string' },
+    timeout: { type: 'string' },
+    json: { type: 'boolean' },
+    strict: { type: 'boolean' },
+    'no-rich-text': { type: 'boolean' },
+  },
+
   'liquid-inventory': {
     ...catalogue,
     portal: string('DIR'),
@@ -110,27 +237,57 @@ export const TOOL_OPTIONS = {
   },
 };
 
+// Preserve the catalogue-tool registry: consumers iterate this subset to run catalogue reports.
+export const TOOL_OPTIONS = Object.fromEntries(
+  ['liquid-inventory', 'webapi-inventory', 'render-sweep', 'portal-matrix', 'trace'].map((name) => [
+    name,
+    TOOL_SCHEMAS[name],
+  ]),
+);
+
 /** The parsed { values, positionals } of a tool that takes positional arguments (allowPositionals). */
-export function parseToolCommand(name, args, { allowPositionals = false } = {}) {
+export function parseToolCommand(name, args, { allowPositionals = false, help = false } = {}) {
   const options = Object.fromEntries(
-    Object.entries(TOOL_OPTIONS[name]).map(([key, { label, ...definition }]) => [key, definition]),
+    Object.entries(TOOL_SCHEMAS[name]).map(([key, { label, ...definition }]) => [key, definition]),
   );
-  for (let i = 0; i < args.length; i++) {
+  if (help) Object.assign(options, { help: { type: 'boolean', short: 'h' }, json: { type: 'boolean' } });
+  for (let i = 0; i < args.length && args[i] !== '--'; i++) {
     const key = args[i].startsWith('--') ? args[i].slice(2) : null;
     if (options[key]?.type === 'string' && (args[i + 1] == null || args[i + 1].startsWith('--')))
       throw new Error(`--${key} requires a value`);
   }
   const parsed = parseArgs({ args, options, tokens: true, allowPositionals });
   for (const token of parsed.tokens)
-    if (token.kind === 'option' && options[token.name].type === 'string' && token.value === '')
+    if (
+      NONEMPTY_VALUES.has(name) &&
+      token.kind === 'option' &&
+      options[token.name].type === 'string' &&
+      token.value === ''
+    )
       throw new Error(`--${token.name} requires a nonempty value`);
   return parsed;
 }
 
 export const parseToolArgs = (name, args) => parseToolCommand(name, args).values;
 
+/** Syntax only: required operational inputs may be omitted, and no input is resolved. */
+export function parseToolHelp(name, args) {
+  const positional = name === 'baseline-suite' || name === 'trace';
+  const parsed = parseToolCommand(name, args, { allowPositionals: positional, help: true });
+  if (positional && parsed.positionals.length) {
+    const [action, ...rest] = parsed.positionals;
+    const actions =
+      name === 'baseline-suite'
+        ? ['capture', 'compare']
+        : ['list', 'show', 'spans', 'stats', 'settings', 'clear', 'flush', 'export', 'watch'];
+    if (!actions.includes(action) || rest.length > (name === 'trace' && action === 'show' ? 1 : 0))
+      throw new Error(`Unexpected positional arguments for ${name}: ${parsed.positionals.join(' ')}`);
+  }
+  return parsed;
+}
+
 export function toolOptionsHelp(name) {
-  return Object.entries(TOOL_OPTIONS[name])
+  return Object.entries(TOOL_SCHEMAS[name])
     .filter(([key]) => key !== 'help')
     .map(([key, option]) => `[--${key}${option.label ? ' ' + option.label : ''}]${option.multiple ? '...' : ''}`)
     .join(' ');

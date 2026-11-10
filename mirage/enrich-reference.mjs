@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
-import { parseArgs } from 'node:util';
+import { parseToolArgs } from './tool-options.mjs';
 import { DataStore, parseFetchXml } from './lib/data.mjs';
 import { LiveBridge } from './lib/live.mjs';
 import { collectFetchXmlPages, escapeXmlAttribute } from './lib/paging-validation.mjs';
@@ -108,14 +108,7 @@ export async function enrichReference({ store, origin, cdpUrl, plan, bridge: sup
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    const { values } = parseArgs({
-      options: {
-        state: { type: 'string' },
-        origin: { type: 'string' },
-        cdp: { type: 'string' },
-        plan: { type: 'string' },
-      },
-    });
+    const values = parseToolArgs('enrich-reference', process.argv.slice(2));
     // Require an existing workspace; the command never fabricates source configuration.
     await assertOfflineState(values.state);
     const fingerprint = await stateFileFingerprint(values.state);

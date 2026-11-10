@@ -10,7 +10,7 @@ import path from 'node:path';
 import { observeDocumentCommits } from './lib/document-commits.mjs';
 import { readLocalFile } from '../lense/local-file.mjs';
 import { createHash, createHmac, randomBytes } from 'node:crypto';
-import { parseArgs } from 'node:util';
+import { parseToolArgs } from './tool-options.mjs';
 import { fileURLToPath } from 'node:url';
 import { validateLivePath, decodePagingCookie } from './lib/live.mjs';
 import {
@@ -4883,41 +4883,7 @@ async function main() {
 }
 
 function parseMainArgs() {
-  const { values } = parseArgs({
-    options: {
-      local: { type: 'string' },
-      'local-owned': { type: 'boolean' },
-      source: { type: 'string' },
-      state: { type: 'string' },
-      preset: { type: 'string' },
-      site: { type: 'string' },
-      env: { type: 'string' },
-      repo: { type: 'string' },
-      config: { type: 'string' },
-      'pack-module': { type: 'string', multiple: true },
-      origin: { type: 'string' },
-      cdp: { type: 'string' },
-      'anonymous-browser': { type: 'string' },
-      scenarios: { type: 'string' },
-      core: { type: 'boolean' },
-      'no-core': { type: 'boolean' },
-      pack: { type: 'string', multiple: true },
-      packs: { type: 'string' },
-      out: { type: 'string' },
-      only: { type: 'string' },
-      tags: { type: 'string' },
-      'exclude-tags': { type: 'string' },
-      label: { type: 'string' },
-      'delay-ms': { type: 'string' },
-      'work-dir': { type: 'string' },
-      'persona-contact': { type: 'string' },
-      'no-persona': { type: 'boolean' },
-      browser: { type: 'string' },
-      ids: { type: 'string' },
-      'deployment-profile': { type: 'string' },
-      reclassify: { type: 'string' },
-    },
-  });
+  const values = parseToolArgs('parity-suite', process.argv.slice(2));
   return values;
 }
 

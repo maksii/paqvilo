@@ -6,7 +6,7 @@ import { navigationCommitBudget } from './lib/navigation-budget.mjs';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseArgs } from 'node:util';
+import { parseToolArgs } from './tool-options.mjs';
 import { createCapabilityRegistry } from './lib/capability-registry.mjs';
 import { chromium } from 'playwright-core';
 import { windowsLaunchOptions } from './lib/browser-launch.mjs';
@@ -1057,20 +1057,7 @@ function throwIfActiveRequests(active) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    const { values } = parseArgs({
-      options: {
-        local: { type: 'string' },
-        origin: { type: 'string' },
-        cdp: { type: 'string' },
-        plan: { type: 'string' },
-        requires: { type: 'string', multiple: true },
-        strict: { type: 'boolean', default: false },
-        output: {
-          type: 'string',
-          default: '.paqvilo/simulator/acceptance/evidence',
-        },
-      },
-    });
+    const values = parseToolArgs('acceptance', process.argv.slice(2));
     const flows = JSON.parse(await fs.readFile(values.plan, 'utf8'));
     const result = await runAcceptance({
       localUrl: values.local,

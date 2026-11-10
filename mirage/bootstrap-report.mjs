@@ -17,7 +17,7 @@ import fs from 'node:fs/promises';
 import { platformSettingEntries } from './lib/platform-settings.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseArgs } from 'node:util';
+import { parseToolArgs } from './tool-options.mjs';
 import { importPortal, portalField as field } from './lib/importer.mjs';
 import { initialState } from './lib/bootstrap.mjs';
 import { scanSolutionSources, buildSolutionSchema, tableFields } from './lib/solution-schema.mjs';
@@ -596,27 +596,7 @@ export function formatReport(report) {
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
   try {
-    const { values: args } = parseArgs({
-      options: {
-        site: { type: 'string' },
-        env: { type: 'string' },
-        repo: { type: 'string' },
-        config: { type: 'string' },
-        source: { type: 'string' },
-        'solution-root': { type: 'string', multiple: true },
-        'solution-order': { type: 'string' },
-        project: { type: 'string' },
-        portal: { type: 'string' },
-        'deployment-profile': { type: 'string' },
-        'data-model': { type: 'string' },
-        lcid: { type: 'string' },
-        json: { type: 'boolean' },
-        output: { type: 'string' },
-        'no-cache': { type: 'boolean' },
-        'all-fields': { type: 'boolean' },
-        help: { type: 'boolean' },
-      },
-    });
+    const args = parseToolArgs('bootstrap-report', process.argv.slice(2));
     if (args.help) {
       console.log(
         'node mirage/bootstrap-report.mjs (--site S --env E [--config FILE] [--repo DIR] | --source PATH | --project FILE [--portal ID]) [--solution-root PATH ...] [--solution-order derived|explicit] [--json] [--output FILE] [--no-cache] [--all-fields]',

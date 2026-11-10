@@ -265,8 +265,11 @@ function replaceRecordOwner(directory, temporary, owner, location, io) {
       return;
     } catch (error) {
       if (!markerSharingErrors.has(error?.code) || attempt === 99) throw error;
-      // The same bounded sharing-contention allowance used when reading a newly published marker.
-      Atomics.wait(wait, 0, 0, 2);
+      // Windows sharing holds can outlast 100 immediate 2 ms retries. Back off only for
+      // sharing errors, retaining the attempt bound and rechecking ownership before every retry.
+      // Cap exponential backoff at 100 ms: total requested waiting stays below ten seconds.
+      // Permanent refusals still retain the preceding valid marker after exactly 100 attempts.
+      Atomics.wait(wait, 0, 0, Math.min(2 ** Math.min(attempt + 1, 7), 100));
     }
   }
 }
