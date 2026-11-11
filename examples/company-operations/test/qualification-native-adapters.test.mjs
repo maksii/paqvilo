@@ -1,3 +1,4 @@
+// @test-kind unproven: the checks in this file exercise qualification native adapters with local fixtures; no native capture establishes the behaviour they assert.
 import test from 'node:test';
 import { qualificationMutationIntent } from '../portal-security/qualification-native-adapters.mjs';
 import assert from 'node:assert/strict';

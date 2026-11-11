@@ -1,3 +1,4 @@
+// @test-kind unproven: the checks in this file exercise racy file stamps with local fixtures; no native capture establishes the behaviour they assert.
 // Same-size rewrites inside one file-time tick keep every stat field. Freezing the times every stat call
 // reports (tick) reproduces that on any file system, so these regressions fail deterministically without the
 // racy-window rule (lense/file-cache.mjs recordedStamp/racyStat); `settled` proves unchanged files are still reused.
@@ -26,6 +27,7 @@ function directory(t) {
   };
 }
 
+// @test-kind contract: served-body cache serves a same-size rewrite made in the tick of the cached read
 test('served-body cache serves a same-size rewrite made in the tick of the cached read', (t) => {
   const write = directory(t);
   const file = write('app.js', 'alpha();');
@@ -36,6 +38,7 @@ test('served-body cache serves a same-size rewrite made in the tick of the cache
   assert.equal(cache.read(file).toString(), 'omega();');
 });
 
+// @test-kind contract: served-body cache still reuses a settled file without reading it again
 test('served-body cache still reuses a settled file without reading it again', (t) => {
   const write = directory(t);
   const file = write('app.js', 'alpha();');
@@ -83,6 +86,7 @@ test('portal model reload reuses settled metadata without parsing it again', (t)
   );
 });
 
+// @test-kind contract: rewriter revalidation re-reads a same-size source rewrite made in the tick of its read
 test('rewriter revalidation re-reads a same-size source rewrite made in the tick of its read', (t) => {
   const write = directory(t);
   const file = write('form.js', 'alpha();');
@@ -100,6 +104,7 @@ test('rewriter revalidation re-reads a same-size source rewrite made in the tick
   assert.equal(ticked.rewrite('<script>online();</script>', '/').html, '<script>omega();</script>');
 });
 
+// @test-kind contract: rewriter revalidation keeps settled source bytes without reading them again
 test('rewriter revalidation keeps settled source bytes without reading them again', (t) => {
   const write = directory(t);
   const file = write('form.js', 'alpha();');

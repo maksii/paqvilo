@@ -1,3 +1,4 @@
+// @test-kind unproven: Local Dataverse Web API router models; no native recording is replayed by these tests.
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -22,9 +23,11 @@ describe('dataverse API router', () => {
   let token;
   let appUserId;
   let makerUserId;
+  let previousSecret;
   const recordCalls = [];
 
   before(async () => {
+    previousSecret = process.env[SECRET_VAR];
     process.env[SECRET_VAR] = 'test-secret-value';
     const state = emptyState();
     state.mappings = {
@@ -64,7 +67,7 @@ describe('dataverse API router', () => {
         return { status: 200, body: { echo: ctx.route.kind, user: ctx.user.systemuserid } };
       },
     };
-    api = await startDataverseApi({ store, change: (fn) => fn(), settings, records, log: () => {} });
+    api = await startDataverseApi({ store, change: (fn) => fn(), settings, records, host: '127.0.0.1', log: () => {} });
     origin = api.origin;
     tenantId = api.tenantId;
     organizationId = api.organizationId;
@@ -84,8 +87,12 @@ describe('dataverse API router', () => {
   });
 
   after(async () => {
-    delete process.env[SECRET_VAR];
-    await api?.close();
+    try {
+      await api?.close();
+    } finally {
+      if (previousSecret === undefined) delete process.env[SECRET_VAR];
+      else process.env[SECRET_VAR] = previousSecret;
+    }
   });
 
   const auth = () => ({ authorization: `Bearer ${token}` });

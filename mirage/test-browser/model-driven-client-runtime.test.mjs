@@ -1,5 +1,8 @@
+// @test-kind unproven: mixed model-driven form, lifecycle, navigation and rendered UI guarantees; individually reproduced assertions have protected parity regions.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
@@ -639,7 +642,17 @@ test('a persisted inactive two-state record disables its default UI while explic
   await page.waitForFunction(
     () => document.documentElement.dataset.mirageAppState === 'ready' && Boolean(globalThis.Xrm),
   );
-  assert.equal(await page.evaluate(() => window.Xrm.Page.ui.getFormType()), 4);
+  await t.test('native inactive persisted records report form type four', async () => {
+    const nativeFacts = readFileSync(
+      new URL('../test/fixtures/model-driven-historical-native-facts.json', import.meta.url),
+    );
+    assert.equal(
+      createHash('sha256').update(nativeFacts).digest('hex'),
+      '9427b1304180444657c59cd0d1835a6b660122e2e9fca978b1943382adcbc412',
+    );
+    assert.equal(JSON.parse(nativeFacts).inactiveFormType, 4);
+    assert.equal(await page.evaluate(() => window.Xrm.Page.ui.getFormType()), 4);
+  });
   await page.getByRole('button', { name: 'Inactive action', exact: true }).click();
   await page.getByText('Inactive source command ran', { exact: true }).waitFor();
   const commandLabels = await page

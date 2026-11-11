@@ -371,6 +371,7 @@ const MAX_NEST = 5;
 // A calendar rule's RRULE pattern as a recurrence rule. ponytail: FREQ DAILY or WEEKLY only; a weekly rule without BYDAY repeats
 // on every day.
 function patternOf(text) {
+  /** @type {Partial<Record<string, string>>} */
   const parts = Object.fromEntries(
     String(text)
       .split(';')

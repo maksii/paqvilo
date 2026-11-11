@@ -1,4 +1,6 @@
-// Power Pages Liquid parity. Expected values follow DotLiquid (master sources at
+// @test-kind unproven: DotLiquid and Adxstudio model expectations and invented contexts that no recorded case set covers.
+
+// Power Pages Liquid compatibility. Expected values follow DotLiquid (master sources at
 // SyntaxCompatibility.DotLiquid20), the Adxstudio Liquid layer (MIT ADX sources: Web/Mvc/Liquid,
 // Cms/*DataAdapter.cs) and the documented examples; mirage/docs/liquid-parity.md lists the
 // source of each behaviour and the items that still need a live observation.
@@ -140,6 +142,34 @@ function plain() {
   return (source, data = {}) => renderer.renderString(source, data);
 }
 
+/** Native captures execute each literal expression inside an included source template. */
+function nativeInclude() {
+  return (source, data = {}) =>
+    createPortalRenderer(
+      {
+        templates: { proof: { id: 'proof', name: 'proof', source } },
+        snippets: {},
+        settings: {},
+        pages: [],
+        webFiles: [],
+        records: [],
+        weblinks: {},
+        sitemarkers: {},
+        website: {},
+        pageTemplates: [],
+      },
+      {
+        observed: {
+          liquidRuntimeCompatibility: 'observed',
+          liquidFilterErrors: 'observed',
+          liquidHtmlVoidSerialization: 'html',
+          liquidPathAndQueryFragment: 'query',
+          evidence: 'Repeated native 2026-11-08 language include captures; frontend-parity-evidence.json.',
+        },
+      },
+    ).renderString("{% include 'proof' %}", data);
+}
+
 test('DotLiquid20 whitespace control trims spaces and tabs before a tag and one newline or blank run after it', async () => {
   const render = plain();
   assert.equal(await render('a  {%- assign x = 1 -%}\n  b'), 'a  b');
@@ -229,12 +259,12 @@ test('if/elsif/elseif/unless/case follow DotLiquid block rules', async () => {
 });
 
 test('for loops support limit, offset, reversed, variable ranges, else, forloop, break and continue', async () => {
-  const render = plain();
+  const render = nativeInclude();
   assert.equal(
     await render(
       '{% for i in (1..5) limit: 2 offset: 1 %}{{ i }}{% endfor %}|{% for i in (1..3) reversed %}{{ i }}{% endfor %}|{% for i in missing %}x{% else %}none{% endfor %}',
     ),
-    '23|321|none',
+    'Liquid syntax error: for tag does not expect else tag',
   );
   assert.equal(await render('{% assign n = 3 %}{% for i in (1..n) %}{{ i }}{% endfor %}'), '123');
   assert.equal(
@@ -253,12 +283,12 @@ test('for loops support limit, offset, reversed, variable ranges, else, forloop,
     await render(
       '{% for i in (1..2) %}{% else whatever %}{% endfor %}{% for i in none %}{% else whatever %}e{% endfor %}',
     ),
-    'e',
+    'Liquid syntax error: for tag does not expect else tag',
   );
 });
 
 test('cycle, tablerow, increment and decrement keep DotLiquid output', async () => {
-  const render = plain();
+  const render = nativeInclude();
   assert.equal(
     await render(
       "{% for i in (1..4) %}{% cycle 'a', 'b', 'c' %}{% endfor %}|{% cycle 'g': 'x', 'y' %}{% cycle 'g': 'x', 'y' %}",
@@ -274,7 +304,7 @@ test('cycle, tablerow, increment and decrement keep DotLiquid output', async () 
   );
   assert.equal(
     await render('{% increment c %}{% increment c %}{% decrement d %}{% decrement d %}|{{ c }}'),
-    '01-1-2|2',
+    "Liquid syntax error: Unknown tag 'increment'",
   );
 });
 
@@ -356,14 +386,17 @@ test('string and escape filters match .NET encoders', async () => {
 });
 
 test('math filters promote real operands to decimal, divide integers, round to even and format decimals without trailing zeros', async () => {
-  const render = plain();
+  const render = nativeInclude();
   // DotLiquid >= 2.1 DoMathsOperation (the Power Pages docs still list the 2.0 truncating examples).
   assert.equal(await render('{{ 10 | plus: 1.1 }}|{{ 10 | minus: 1.1 }}|{{ 10 | times: 2.2 }}'), '11.1|8.9|22');
   assert.equal(
     await render('{{ 10 | divided_by: 3 }}|{{ 10.0 | divided_by: 3 }}|{{ 10 | modulo: 3 }}|{{ 5 | divided_by: 2.0 }}'),
     '3|3.3333333333333333333333333333|1|2.5',
   );
-  assert.equal(await render('{{ 1 | divided_by: 0 }}'), 'Liquid error: Attempted to divide by zero.');
+  assert.equal(
+    await render('{{ 1 | divided_by: 0 }}'),
+    'Liquid error: Exception has been thrown by the target of an invocation.',
+  );
   assert.equal(
     await render(
       '{{ 4.5612 | round: 2 }}|{{ 2.5 | round }}|{{ 3.5 | round }}|{{ 2.675 | round: 2 }}|{{ nil | round }}',
@@ -374,10 +407,7 @@ test('math filters promote real operands to decimal, divide integers, round to e
   assert.equal(await render("{{ 1.2 | ceil }}|{{ 1.8 | floor }}|{{ '3.7' | floor }}|{{ nil | ceil }}"), '2|1|3|0');
   assert.equal(await render('{{ 1.50 }}|{{ 12.5 | times: 10 }}|{{ 0.1 | plus: 0.2 }}'), '1.5|125|0.3');
   // Plus concatenates string input; other mismatches raise the expression error.
-  assert.equal(
-    await render("{{ '1' | plus: 1 }}|{{ 1 | plus: 'a' }}"),
-    "11|Liquid error: The binary operator Add is not defined for the types 'System.Int32' and 'System.String'.",
-  );
+  assert.equal(await render("{{ '1' | plus: 1 }}|{{ 1 | plus: 'a' }}"), '11|Liquid error: Parameter count mismatch.');
   assert.equal(await render('{{ -5 | abs }}|{{ 5 | at_least: 7 }}|{{ 5 | at_most: 3 }}'), '5|7|3');
 });
 
@@ -1623,4 +1653,83 @@ test('the observed bootstrapStylesheet setting is validated with its evidence', 
     /bootstrapStylesheet must be platform or web-file/,
   );
   assert.throws(() => observedConfig({ bootstrapStylesheet: 'web-file' }), /evidence/);
+});
+
+// @test-kind unproven: default-mode DotLiquid expectations kept as diagnostics; the native include expectations are in the tests above.
+test('diagnostic/default mode: for loops support limit, offset, reversed, variable ranges, else, forloop, break and continue', async () => {
+  const render = plain();
+  assert.equal(
+    await render(
+      '{% for i in (1..5) limit: 2 offset: 1 %}{{ i }}{% endfor %}|{% for i in (1..3) reversed %}{{ i }}{% endfor %}|{% for i in missing %}x{% else %}none{% endfor %}',
+    ),
+    '23|321|none',
+  );
+  assert.equal(await render('{% assign n = 3 %}{% for i in (1..n) %}{{ i }}{% endfor %}'), '123');
+  assert.equal(
+    await render(
+      '{% for i in (1..3) %}{{ forloop.index }}{{ forloop.index0 }}{{ forloop.rindex }}{{ forloop.rindex0 }}{{ forloop.first }}{{ forloop.last }}{{ forloop.length }},{% endfor %}',
+    ),
+    '1032truefalse3,2121falsefalse3,3210falsetrue3,',
+  );
+  assert.equal(
+    await render(
+      '{% for i in (1..5) %}{% if i == 2 %}{% continue %}{% endif %}{% if i == 4 %}{% break %}{% endif %}{{ i }}{% endfor %}',
+    ),
+    '13',
+  );
+  assert.equal(
+    await render(
+      '{% for i in (1..2) %}{% else whatever %}{% endfor %}{% for i in none %}{% else whatever %}e{% endfor %}',
+    ),
+    'e',
+  );
+});
+
+// @test-kind unproven: default-mode DotLiquid expectations kept as diagnostics; the native include expectations are in the tests above.
+test('diagnostic/default mode: cycle, tablerow, increment and decrement keep DotLiquid output', async () => {
+  const render = plain();
+  assert.equal(
+    await render(
+      "{% for i in (1..4) %}{% cycle 'a', 'b', 'c' %}{% endfor %}|{% cycle 'g': 'x', 'y' %}{% cycle 'g': 'x', 'y' %}",
+    ),
+    'abca|xy',
+  );
+  // TableRow uses TextWriter.WriteLine (CRLF on the Windows host).
+  assert.equal(
+    await render(
+      '{% tablerow i in (1..3) cols: 2 %}{{ i }}{{ tablerowloop.col }}{{ tablerowloop.col_last }}{% endtablerow %}',
+    ),
+    '<tr class="row1">\r\n<td class="col1">11false</td><td class="col2">22true</td></tr>\r\n<tr class="row2"><td class="col1">31false</td></tr>\r\n',
+  );
+  assert.equal(
+    await render('{% increment c %}{% increment c %}{% decrement d %}{% decrement d %}|{{ c }}'),
+    '01-1-2|2',
+  );
+});
+
+// @test-kind unproven: default-mode DotLiquid expectations kept as diagnostics; the native include expectations are in the tests above.
+test('diagnostic/default mode: math filters promote real operands to decimal, divide integers, round to even and format decimals without trailing zeros', async () => {
+  const render = plain();
+  // DotLiquid >= 2.1 DoMathsOperation (the Power Pages docs still list the 2.0 truncating examples).
+  assert.equal(await render('{{ 10 | plus: 1.1 }}|{{ 10 | minus: 1.1 }}|{{ 10 | times: 2.2 }}'), '11.1|8.9|22');
+  assert.equal(
+    await render('{{ 10 | divided_by: 3 }}|{{ 10.0 | divided_by: 3 }}|{{ 10 | modulo: 3 }}|{{ 5 | divided_by: 2.0 }}'),
+    '3|3.3333333333333333333333333333|1|2.5',
+  );
+  assert.equal(await render('{{ 1 | divided_by: 0 }}'), 'Liquid error: Attempted to divide by zero.');
+  assert.equal(
+    await render(
+      '{{ 4.5612 | round: 2 }}|{{ 2.5 | round }}|{{ 3.5 | round }}|{{ 2.675 | round: 2 }}|{{ nil | round }}',
+    ),
+    '4.56|2|4|2.68|0',
+  );
+  // Adxstudio MathFilters.Ceil/Floor return int; nil is 0.
+  assert.equal(await render("{{ 1.2 | ceil }}|{{ 1.8 | floor }}|{{ '3.7' | floor }}|{{ nil | ceil }}"), '2|1|3|0');
+  assert.equal(await render('{{ 1.50 }}|{{ 12.5 | times: 10 }}|{{ 0.1 | plus: 0.2 }}'), '1.5|125|0.3');
+  // Plus concatenates string input; other mismatches raise the expression error.
+  assert.equal(
+    await render("{{ '1' | plus: 1 }}|{{ 1 | plus: 'a' }}"),
+    "11|Liquid error: The binary operator Add is not defined for the types 'System.Int32' and 'System.String'.",
+  );
+  assert.equal(await render('{{ -5 | abs }}|{{ 5 | at_least: 7 }}|{{ 5 | at_most: 3 }}'), '5|7|3');
 });

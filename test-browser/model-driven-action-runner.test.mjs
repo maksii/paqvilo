@@ -1,3 +1,4 @@
+// @test-kind unproven: the checks in this file exercise model driven action runner with local fixtures; no native capture establishes the behaviour they assert.
 import { ownedFixture, drainFixture } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -298,6 +299,7 @@ test('client overrides restore exact states and autosave guard blocks only 70 wi
   assert.equal(await page.locator('[data-paq-model-logical-name]').count(), 0);
 });
 
+// @test-kind contract: late server results cancel after record navigation and retired, foreign or unowned sessions cannot execute
 test(
   'late server results cancel after record navigation and retired, foreign or unowned sessions cannot execute',
   { timeout: 60_000 },
@@ -413,6 +415,7 @@ test('owned target lifetime restores fields and guards after SPA navigation whil
   assert.equal(await page.evaluate(() => window.nativeFixture.closedPanes), 1);
 });
 
+// @test-kind contract: explicit stop waiting cancels pending SDK work without discarding owned form adjustments
 test('explicit stop waiting cancels pending SDK work without discarding owned form adjustments', async (t) => {
   const { page, run } = await fixture(t);
   await run('form:god-mode');
@@ -436,6 +439,7 @@ test('explicit stop waiting cancels pending SDK work without discarding owned fo
   assert.equal((await pending).status, 'cancelled');
 });
 
+// @test-kind contract: explicit action lifetime clears displayed values after a same-URL record change without cancelling a fresh dispatch
 test('explicit action lifetime clears displayed values after a same-URL record change without cancelling a fresh dispatch', async (t) => {
   const { page, run } = await fixture(t);
   const originalUrl = page.url();
@@ -513,6 +517,7 @@ test('maker and admin navigation preserve an actual Default-prefixed environment
   assert.equal(await page.evaluate(() => window.nativeFixture.opened.length), 2);
 });
 
+// @test-kind contract: native action reads cancel bounded decoded streams before unbounded text allocation
 test('native action reads cancel bounded decoded streams before unbounded text allocation', async (t) => {
   const { page, run } = await fixture(t);
   await page.evaluate(() => {

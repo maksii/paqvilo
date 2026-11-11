@@ -505,6 +505,7 @@ function standaloneAdminAssetHeaders(res, file, index) {
         bindings: graphBindings({ environmentVariables: options.environmentVariables, profile }),
       }),
     });
+  /** @type {Array<[string, (url: URL) => any]>} */
   const HOST_API = [
     [
       '/preflight',

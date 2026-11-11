@@ -4256,6 +4256,20 @@
       "lines": 14,
       "type": "clone",
       "reason": "Independent example controls, manifests, build and qualification contracts; sharing stops at the owning example package."
+    },
+    {
+      "key": "runtime:exports:mirage/lib/odata-property-order.mjs:validateODataPropertyOrder",
+      "file": "mirage/lib/odata-property-order.mjs",
+      "type": "exports",
+      "name": "validateODataPropertyOrder",
+      "reason": "Runtime own callers invoke this function locally; the exported symbol is consumed by the full-graph unit test, which directly checks invalid configurations. docs/code-review.md permits a reviewed disposition for this test seam; removing the export would require moving the direct assertion to an equally discriminating public caller."
+    },
+    {
+      "key": "tests:clone:mirage/test/webapi-error-details.test.mjs|mirage/test/webapi-error-details.test.mjs:333112a4a73e4d4937ec61a84d17b58677305cb20ea3860c908f08bb85585c05",
+      "files": ["mirage/test/webapi-error-details.test.mjs", "mirage/test/webapi-error-details.test.mjs"],
+      "lines": 11,
+      "type": "clone",
+      "reason": "The native-observed subtest (loop indexes 0, 2, 4 and 7) and the direct branch for the other cases assert the same HTTP error response shape; both stay written out in full so each branch reads on its own."
     }
   ]
 }

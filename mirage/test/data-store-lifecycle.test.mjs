@@ -1,3 +1,4 @@
+// @test-kind unproven: the checks in this file exercise data store lifecycle with local fixtures; no native capture establishes the behaviour they assert.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -13,6 +14,7 @@ const exists = (file) =>
     (error) => (error.code === 'ENOENT' ? false : Promise.reject(error)),
   );
 
+// @test-kind contract: close() removes the temporary record directory of a store without a state file
 test('close() removes the temporary record directory of a store without a state file', async () => {
   const store = new DataStore();
   const directory = store.ensureRecordSession().directory;
@@ -23,6 +25,7 @@ test('close() removes the temporary record directory of a store without a state 
   assert.equal(store.recordSession, null);
 });
 
+// @test-kind contract: process exit removes temporary record directories that were never closed
 test('process exit removes temporary record directories that were never closed', async () => {
   const module = new URL('../lib/data.mjs', import.meta.url).href;
   const script = `const { DataStore } = await import(${JSON.stringify(module)});
@@ -37,6 +40,7 @@ process.stdout.write(store.recordSession.directory);`;
   assert.equal(await exists(stdout), false);
 });
 
+// @test-kind contract: binding a state file to a store without published pages starts later tables beside the file
 test('binding a state file to a store without published pages starts later tables beside the file', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'invented-record-bind-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -59,6 +63,7 @@ test('binding a state file to a store without published pages starts later table
   assert.equal(reopened.get('items', 'one', { admin: true }).name, 'Bound');
 });
 
+// @test-kind contract: the record retirement recheck stops once no retired session remains
 test('the record retirement recheck stops once no retired session remains', () => {
   const store = new DataStore();
   let live = true,

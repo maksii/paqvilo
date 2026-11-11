@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo project configuration parses invented power.config.json inputs read-only and reports its own diagnostics, overrides, reference bindings and inventory records.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -14,6 +15,7 @@ async function tempDir(t) {
   return root;
 }
 
+// @test-kind contract+security: Paqvilo settings apply explicit defaults while refusing duplicate names, escaping directories, remote dev URLs and unknown configuration keys.
 test('codeAppSettings validates names, relative dirs and loopback localAppUrl', () => {
   assert.deepEqual(codeAppSettings(null), []);
   assert.deepEqual(codeAppSettings([{ name: 'invented-app', dir: 'apps/invented' }]), [
@@ -42,6 +44,7 @@ test('codeAppSettings validates names, relative dirs and loopback localAppUrl', 
   );
 });
 
+// The asserted CODEAPP_* diagnostics and byte-for-byte unchanged file are local source-ingestion contracts, not native host behavior.
 test('readCodeAppConfig parses power.config.json read-only with diagnostics', async (t) => {
   const root = await tempDir(t);
   assert.deepEqual(
@@ -104,6 +107,7 @@ test('readCodeAppConfig parses power.config.json read-only with diagnostics', as
   );
 });
 
+// Project URL precedence and the Paqvilo capability record's contract level are explicit toolkit policies.
 test('loadCodeApps prefers the project localAppUrl and codeAppInventoryRecord is contract level', async (t) => {
   const root = await tempDir(t);
   await fs.mkdir(path.join(root, 'apps', 'invented'), { recursive: true });
@@ -131,6 +135,7 @@ test('loadCodeApps prefers the project localAppUrl and codeAppInventoryRecord is
   assert.deepEqual(record.diagnostics, ['CODEAPP_CONNECTION_UNBOUND']);
 });
 
+// Invalid authored siblings produce bounded local diagnostics while valid source entries remain available.
 test('validates reference maps and binding values without losing valid siblings', async (t) => {
   const root = await tempDir(t);
   const file = path.join(root, 'power.config.json');
@@ -172,6 +177,7 @@ test('validates reference maps and binding values without losing valid siblings'
   assert.equal(readCodeAppConfig(root).diagnostics.filter((d) => d.code === 'CODEAPP_CONFIG_INVALID').length, 2);
 });
 
+// A project override resolves the local dev URL before the toolkit emits CODEAPP_LOCAL_URL_MISSING.
 test('loadCodeApps reports a missing local URL only after applying the project override', async (t) => {
   const root = await tempDir(t);
   await fs.writeFile(path.join(root, 'power.config.json'), JSON.stringify({ environmentId: 'invented' }));
@@ -187,6 +193,7 @@ test('loadCodeApps reports a missing local URL only after applying the project o
   assert.deepEqual(override.diagnostics, []);
 });
 
+// These project binding diagnostics validate explicitly registered local connection objects and their declared connector identity.
 test('binding diagnostics reflect project connection objects and connector identity', async (t) => {
   const root = await tempDir(t);
   await fs.writeFile(
@@ -208,6 +215,7 @@ test('binding diagnostics reflect project connection objects and connector ident
   assert.match(unbound[1].message, /wrong/);
 });
 
+// Reference-key fallback is the toolkit's project extension lookup policy when the source omits an API ID.
 test('binding diagnostics use the reference key when no connector id is declared', async (t) => {
   const root = await tempDir(t);
   await fs.writeFile(
@@ -220,6 +228,7 @@ test('binding diagnostics use the reference key when no connector id is declared
   assert.deepEqual(config.diagnostics, []);
 });
 
+// Connector-ID fallback resolves an explicitly supplied project binding and its local diagnostics.
 test('binding diagnostics recognize connector-id fallback when reference key differs', async (t) => {
   const root = await tempDir(t);
   await fs.writeFile(
@@ -232,6 +241,7 @@ test('binding diagnostics recognize connector-id fallback when reference key dif
   assert.deepEqual(config.diagnostics, []);
 });
 
+// @test-kind security: inherited __proto__ properties cannot stand in for an explicitly configured connection binding.
 test('inherited binding properties do not satisfy a declared connection reference', async (t) => {
   const root = await tempDir(t);
   await fs.writeFile(
@@ -245,6 +255,7 @@ test('inherited binding properties do not satisfy a declared connection referenc
   );
 });
 
+// @test-kind security: malformed local configuration reports CODEAPP_CONFIG_INVALID without disclosing an invented sensitive source marker.
 test('invalid JSON diagnostics do not expose source contents', async (t) => {
   const root = await tempDir(t);
   await fs.writeFile(path.join(root, 'power.config.json'), '{"secret":"invented-sensitive-marker", bad}');
@@ -253,6 +264,7 @@ test('invalid JSON diagnostics do not expose source contents', async (t) => {
   assert.doesNotMatch(JSON.stringify(config.diagnostics), /invented-sensitive-marker/);
 });
 
+// @test-kind contract+security: local dev-server configuration retains explicit argv and rejects escaping cwd, invalid environment values and unbounded timeout settings.
 test('dev server settings validate explicit argv, cwd, environment and bounded timeout', () => {
   const entry = {
     name: 'local',
@@ -272,6 +284,7 @@ test('dev server settings validate explicit argv, cwd, environment and bounded t
     assert.throws(() => codeAppSettings([{ name: 'local', dir: 'a', devServer }]));
 });
 
+// The toolkit derives its local source-name map, refuses an ambiguous alias and carries the configured dev-server command unchanged.
 test('config reads app settings and derives unambiguous entity sets from data sources', async (t) => {
   const root = await tempDir(t);
   await fs.writeFile(

@@ -116,7 +116,7 @@ function tokenize(source, { nativeSyntax = false } = {}) {
         continue;
       }
     }
-    const [kind, value] = Object.entries(match.groups).find(([, v]) => v !== undefined);
+    const [kind, value] = Object.entries(match.groups).find(([, v]) => v);
     tokens.push({ kind, value, at: index });
     index = TOKEN.lastIndex;
   }
@@ -764,6 +764,8 @@ export function compileODataPredicate(ast, mapping, ctx) {
             return leftNull && rightNull;
           if (node.op === 'ne' && (node.left.kind === 'null' || node.right.kind === 'null'))
             return !(leftNull && rightNull);
+          if (ctx.odataNullEquality && (leftNull || rightNull) && ['eq', 'ne'].includes(node.op))
+            return node.op === 'eq' ? leftNull && rightNull : !(leftNull && rightNull);
           // SQL semantics: a comparison with a null operand is unknown, so neither it
           // nor its negation matches.
           if (leftNull || rightNull) return null;

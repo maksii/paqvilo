@@ -627,7 +627,7 @@ export async function exportSolution({ client, solutionName, zipFile, unpackFold
     /* NOSONAR */ if (
       result.code !== 0 ||
       result.timedOut ||
-      /^[^\S\r\n\u2028\u2029]*Error:/im.test(result.stdout + '\n' + result.stderr)
+      /^(?:(?![\r\n\u2028\u2029])\s)*Error:/im.test(result.stdout + '\n' + result.stderr)
     )
       throw new Error('PAC unpack failed; exported ZIP preserved. PAC output withheld.');
   }

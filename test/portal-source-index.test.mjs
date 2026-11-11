@@ -1,3 +1,4 @@
+// @test-kind unproven: the checks in this file exercise portal source index with local fixtures; no native capture establishes the behaviour they assert.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -12,6 +13,7 @@ import { inspectionFixture } from './source-inspection-fixture.mjs';
 import { editSource } from '../lense/source-edit.mjs';
 import { loadDeploymentProfiles, resolveDeploymentProfiles } from '../mirage/lib/deployment-profiles.mjs';
 
+// @test-kind security+contract: Windows source links use native canonical paths and still refuse edited source bytes
 test(
   'Windows source links use native canonical paths and still refuse edited source bytes',
   { skip: process.platform !== 'win32' },
@@ -30,6 +32,7 @@ test(
   },
 );
 
+// @test-kind contract: shared index revision agrees with renderer/inspector and source links revalidate current field identity
 test('shared index revision agrees with renderer/inspector and source links revalidate current field identity', async (t) => {
   const fx = inspectionFixture();
   t.after(fx.cleanup);
@@ -95,6 +98,7 @@ test('imports and index builds touch each shared export file once instead of onc
   assert.deepEqual(await work(40), await work(80));
 });
 
+// @test-kind contract: resolved source paths are remembered for one index build only, so a retargeted root is followed
 test('resolved source paths are remembered for one index build only, so a retargeted root is followed', (t) => {
   const fx = inspectionFixture();
   t.after(fx.cleanup);
@@ -175,6 +179,7 @@ test('duplicate localized identities remain conflicting instead of silently sele
   assert.ok(index.diagnostics.some((issue) => issue.reason === 'duplicate-source-identity'));
 });
 
+// @test-kind contract: profile overrides bind the actual profile field and preserve unrelated source definitions
 test('profile overrides bind the actual profile field and preserve unrelated source definitions', async (t) => {
   const fx = inspectionFixture();
   t.after(fx.cleanup);
@@ -231,6 +236,7 @@ test('Solution-only edits change current FormXml content evidence without relabe
   );
 });
 
+// @test-kind contract: web-file implementation opens actual blob code and treats a leading BOM as an editor encoding marker
 test('web-file implementation opens actual blob code and treats a leading BOM as an editor encoding marker', async (t) => {
   const fx = inspectionFixture();
   t.after(fx.cleanup);
@@ -257,6 +263,7 @@ test('web-file implementation opens actual blob code and treats a leading BOM as
   assert.equal(second.editorTarget.column, 1);
 });
 
+// @test-kind contract: editor positions count CRLF, CR and LF as one line break each at every offset, with or without a shared cache
 test('editor positions count CRLF, CR and LF as one line break each at every offset, with or without a shared cache', async (t) => {
   const fx = inspectionFixture();
   t.after(fx.cleanup);
@@ -367,6 +374,7 @@ test('global source revision covers all languages while winners and their source
   assert.notEqual(en.snippet('Banner').contentRevision, fr.snippet('Banner').contentRevision);
 });
 
+// @test-kind security+contract: semantic configuration changes after index admission fail the final container read, which re-checks the admitted source
 test('semantic configuration changes after index admission fail the final guarded container read', async (t) => {
   const fx = inspectionFixture();
   t.after(fx.cleanup);

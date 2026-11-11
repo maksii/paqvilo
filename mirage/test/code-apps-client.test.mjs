@@ -1,7 +1,10 @@
+// @test-kind unproven: local model of the code-apps client; SDK query/result and metadata semantics still need exact official or native proof.
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { configure, dataClient, getStatus } from '../lib/code-apps-client.js';
 
+// @test-kind security: Paqvilo debug telemetry masks an invented unclosed connector key without retaining its secret suffix or unbounded length.
 test('debug events mask long unclosed keys from connector operation paths', async (t) => {
   const original = globalThis.fetch;
   t.after(() => {
@@ -17,6 +20,7 @@ test('debug events mask long unclosed keys from connector operation paths', asyn
   assert.equal(path, '/_apps/code/sample/connectors/reference/(...)');
 });
 
+// @test-kind security: local diagnostic events omit fixture payloads/query values and isolate Paqvilo per-load session headers, including observer failures.
 test('debug events omit payloads and query values, preserve failures and isolate per-load sessions', async (t) => {
   const original = globalThis.fetch;
   t.after(() => {
@@ -86,6 +90,7 @@ test('client sends context token and documented query options with paging', asyn
   assert.equal(new URL(calls[2].url, 'http://localhost').searchParams.get('$skiptoken'), 'next');
 });
 
+// @test-kind contract: the bounded Paqvilo client deliberately refuses its unsupported skip/expand options and malformed paging/count input instead of issuing an altered request.
 test('unsupported options fail instead of silently changing the query', async () => {
   configure({ app: 'sample' });
   await assert.rejects(dataClient.getAll('items', { skip: 1 }), /does not support skip/);
@@ -94,6 +99,7 @@ test('unsupported options fail instead of silently changing the query', async ()
   await assert.rejects(dataClient.getAll('items', { count: 'yes' }), /count must be a boolean/);
 });
 
+// @test-kind contract: the local fetch adapter preserves an invented HTTP 502/statusText when its response body cannot supply a JSON error envelope.
 test('HTTP errors preserve status even when the response is not JSON', async (t) => {
   const original = globalThis.fetch;
   t.after(() => {
@@ -107,6 +113,7 @@ test('HTTP errors preserve status even when the response is not JSON', async (t)
   await assert.rejects(dataClient.getAll('items'), (error) => error.status === 502 && error.message === 'Bad Gateway');
 });
 
+// @test-kind security: Paqvilo browser configuration requires an app name and confines its target to the active origin before any native-host guarantee is considered.
 test('configuration rejects missing app names and cross-origin browser targets', (t) => {
   const original = globalThis.location;
   t.after(() => {
@@ -119,6 +126,7 @@ test('configuration rejects missing app names and cross-origin browser targets',
   assert.doesNotThrow(() => configure({ app: 'sample', origin: 'http://localhost:3000' }));
 });
 
+// @test-kind security: a controlled local reconfiguration gate prevents an old app context token from authorizing a request for the newly configured app.
 test('reconfiguration while context is in flight never reuses the previous app token', async (t) => {
   const original = globalThis.fetch;
   t.after(() => {
@@ -170,6 +178,7 @@ test('optional SDK query fields set to undefined do not reject a valid read', as
   assert.deepEqual(await dataClient.getAll('items', { partitionId: undefined, skip: undefined }), { data: [] });
 });
 
+// @test-kind security: a controlled local fetch gate rejects stale app data after Paqvilo configuration changes rather than exposing it through the new app session.
 test('reconfiguration rejects an old app data response already in flight', async (t) => {
   const original = globalThis.fetch;
   t.after(() => {
@@ -196,6 +205,7 @@ test('reconfiguration rejects an old app data response already in flight', async
   await assert.rejects(oldRequest, /configuration changed/);
 });
 
+// @test-kind security: invalid entity identifiers cannot escape the local Dataverse proxy path or trigger any fetch call.
 test('entity set names cannot escape the Dataverse proxy path', async (t) => {
   const original = globalThis.fetch;
   t.after(() => {
@@ -207,6 +217,7 @@ test('entity set names cannot escape the Dataverse proxy path', async (t) => {
     await assert.rejects(dataClient.getAll(name), /Entity set must be a Dataverse identifier/);
 });
 
+// @test-kind security: local origins reject credentials, paths, query, fragment and non-HTTP schemes before fetch; an accepted loopback origin retains its canonical base.
 test('explicit origins are canonicalized and invalid origin prefixes are rejected before fetch', async (t) => {
   const originalFetch = globalThis.fetch;
   const originalLocation = globalThis.location;

@@ -287,7 +287,7 @@ function createFieldSecurity({
   const compiled = new Map();
   // Rules per column, memoised per data revision (a masking rule row edit is a committed data write); the row counts also
   // catch rule rows added inside the open transaction.
-  let rules = { revision: null, byColumn: new Map() };
+  let rules = { revision: /** @type {string | null} */ (null), byColumn: new Map() };
   function maskOf(entity, column) {
     const revision = `${store.dataRevision?.() ?? Math.random()}:${rows('attributemaskingrule').length}:${rows('maskingrule').length}`; // NOSONAR: pseudo-random value for simulation, not a secret
     if (rules.revision !== revision) rules = { revision, byColumn: new Map() };

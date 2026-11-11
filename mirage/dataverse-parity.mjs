@@ -778,9 +778,9 @@ export function inspectCsdl(xml) {
     )) {
       const content = match[3] ?? '';
       const meta = attrs(match[2]),
-        parameters = [...throughLastTagClose(content).matchAll(/<(?:\w+:)?Parameter\b([^>]*)\/?\s*>/g)].map((item) =>
+        parameters = [...throughLastTagClose(content).matchAll(/<(?:\w+:)?Parameter\b([^>]*)>/g)].map((item) =>
           attrs(item[1]),
-        ); // NOSONAR: the input ends at its last >, and each match consumes one
+        );
       const signature = `${namespace}.${meta.Name}(${parameters.map((item) => item.Name + ':' + item.Type).join(',')})`;
       operations.push({
         id: 'operation:' + signature,

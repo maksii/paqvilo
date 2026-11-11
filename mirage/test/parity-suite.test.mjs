@@ -1,3 +1,4 @@
+// @test-kind unproven: the checks in this file exercise parity suite with local fixtures; no native capture establishes the behaviour they assert.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -90,6 +91,7 @@ test('isolated baseline identity imports stay on the owned loopback runtime rega
   assert.equal(owned.app.store.state.tables.contact[0].fullname, 'Synthetic persona');
 });
 
+// @test-kind tooling: normalisers generalise identifiers, dates, tokens and origins
 test('normalisers generalise identifiers, dates, tokens and origins', () => {
   const value = `Open ${GUID_A} on 2026-10-07T21:30:00Z (07/10/2026 21:30) by ana.local@example.test ref 1234567 at https://reference.example token ${'A'.repeat(48)}`;
   assert.equal(
@@ -100,6 +102,7 @@ test('normalisers generalise identifiers, dates, tokens and origins', () => {
   assert.equal(normalizeText('12 October 2025'), '{date}');
 });
 
+// @test-kind tooling: URL redaction keeps names and shapes but never query values
 test('URL redaction keeps names and shapes but never query values', () => {
   assert.equal(
     redactUrl(`https://reference.example/requests/itemselection-ro/?id=${GUID_A}&orderId=1`, {
@@ -123,6 +126,7 @@ test('URL redaction keeps names and shapes but never query values', () => {
   assert.equal(redactUrl('#tab-1'), '#tab-1');
 });
 
+// @test-kind tooling: live text is revealed only when source-derived, local-equal or trivially short
 test('live text is revealed only when source-derived, local-equal or trivially short', () => {
   const corpus = { has: (value) => value === 'Owned products' };
   const redactor = createRedactor({ corpus, key: Buffer.alloc(32, 1) });
@@ -141,6 +145,7 @@ test('live text is revealed only when source-derived, local-equal or trivially s
   assert.ok(!JSON.stringify(hidden).includes('Maria'));
 });
 
+// @test-kind tooling: read-only checks reject writes, deny-listed routes and unsafe plans.
 test('read-only guards reject writes, deny-listed routes and unsafe plans', () => {
   assert.doesNotThrow(() => assertReadOnlyPath('/workspace/'));
   for (const bad of ['https://evil.example/', '//evil.example/'])
@@ -204,6 +209,7 @@ test('read-only guards reject writes, deny-listed routes and unsafe plans', () =
   );
 });
 
+// @test-kind tooling: request decisions continue reads, fulfil explicit writes locally and block everything else
 test('request decisions continue reads, fulfil explicit writes locally and block everything else', () => {
   const origins = ['https://reference.example'];
   const fulfil = [
@@ -228,6 +234,7 @@ test('request decisions continue reads, fulfil explicit writes locally and block
   );
 });
 
+// @test-kind tooling: semantic trees collapse data rows, redact control values and report structural deltas
 test('semantic trees collapse data rows, redact control values and report structural deltas', () => {
   // A platform asset from the CDN and its local copy compare equal; bundle content hashes are ignored.
   assert.equal(
@@ -437,6 +444,7 @@ test('Liquid probes classify literals, masks and concatenated roles', () => {
   );
 });
 
+// @test-kind tooling: run-time identifiers fill placeholders without entering the plan; drift and probe shapes carry no values
 test('run-time identifiers fill placeholders without entering the plan; drift and probe shapes carry no values', async () => {
   const scenario = {
     id: 'x',
@@ -492,6 +500,7 @@ test('FetchXML paging rewrites only page and cookie attributes', () => {
   );
 });
 
+// @test-kind tooling: classification rules match scenario, kind, path and field criteria in order
 test('classification rules match scenario, kind, path and field criteria in order', () => {
   const rules = [
     { scenario: '/^anon-/', kind: 'redirect', class: 'runtime-gap', owner: 'D', note: 'redirect shape' },
@@ -757,6 +766,7 @@ test('runner compares synthetic loopback sides, classifies deltas, redacts value
   assert.match(summaryMarkdown(report), /anon-redirect \| anonymous/);
 });
 
+// @test-kind tooling: scenario sources combine the core set with matching data-pack plans and scope each plan's rules
 test("scenario sources combine the core set with matching data-pack plans and scope each plan's rules", async (t) => {
   const {
     packScenarioFiles,
@@ -977,6 +987,7 @@ test('portal discovery picks deterministic anonymous targets, and the core set v
   );
 });
 
+// @test-kind tooling: document shells compare the title, html/body attributes and bundle presence and order
 test('document shells compare the title, html/body attributes and bundle presence and order', async () => {
   const { compareShell } = await import('../parity-suite.mjs');
   const live = {
@@ -1107,6 +1118,7 @@ test('local identity mirrors the reference persona with a session role override 
   assert.throws(() => createIdentityController('http://example.com:8080'), /loopback/);
 });
 
+// @test-kind tooling: blocked request bodies keep only their top-level keys and the GUIDs they name
 test('blocked request bodies keep only their top-level keys and the GUIDs they name', async () => {
   const { bodyShape } = await import('../parity-suite.mjs');
   assert.deepEqual(
@@ -1120,6 +1132,7 @@ test('blocked request bodies keep only their top-level keys and the GUIDs they n
   assert.equal(bodyShape(''), undefined);
 });
 
+// @test-kind tooling: captures that never settled, or anonymous ones naming a portal user, are blocked, also on reclassify
 test('captures that never settled, or anonymous ones naming a portal user, are blocked, also on reclassify', async () => {
   const { captureProblem, reclassifyReport, loadScenarioPlans } = await import('../parity-suite.mjs');
   const view = (settled, nodeCount, portalUser) => ({
@@ -1175,6 +1188,7 @@ test('captures that never settled, or anonymous ones naming a portal user, are b
   assert.equal(report.totals.blocked, 2);
 });
 
+// @test-kind tooling: shell and client probes both block inadmissible captures and retain status diagnostics
 test('shell and client probes both block inadmissible captures and retain status diagnostics', async (t) => {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'parity-probe-admission-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
@@ -1227,6 +1241,7 @@ test('shell and client probes both block inadmissible captures and retain status
   }
 });
 
+// @test-kind tooling: client objects compare key presence, key order, value types and empty User values, never values
 test('client objects compare key presence, key order, value types and empty User values, never values', async () => {
   const { compareClientObject, validatePlan, loadScenarioPlans } = await import('../parity-suite.mjs');
   const entry = (key, type, empty) => (empty === undefined ? { key, type } : { key, type, empty });
@@ -1261,6 +1276,7 @@ test('client objects compare key presence, key order, value types and empty User
   assert.equal(plan.scenarios.find((scenario) => scenario.id === 'core-client-object').kind, 'client-object');
 });
 
+// @test-kind tooling: a plan denies its own routes, a matching pack's denied routes apply to every run, and no validation lifts a denial.
 test("a plan denies its own routes, a matching pack's denied routes guard every run, and no validation lifts a denial", async (t) => {
   const { validatePlan, mergePlans, assertReadOnlyPath, activatePackDeniedRoutes, __testing } =
     await import('../parity-suite.mjs');
@@ -1334,6 +1350,7 @@ test("a plan denies its own routes, a matching pack's denied routes guard every 
   assert.throws(() => assertReadOnlyPath('/synthetic-exports/?id=1'), /deny list/);
 });
 
+// @test-kind tooling: the reference sees only GET and HEAD: the fixed allow-list is empty and no plan can widen it
 test('the reference sees only GET and HEAD: the fixed allow-list is empty and no plan can widen it', async () => {
   const { SAFE_REFERENCE_REQUESTS, loadScenarioPlans } = await import('../parity-suite.mjs');
   assert.deepEqual(SAFE_REFERENCE_REQUESTS, []);

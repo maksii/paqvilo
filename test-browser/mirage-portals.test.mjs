@@ -1,3 +1,4 @@
+// @test-kind contract: Local portal switching preserves each browser session and waits for the destination panel.
 import { ownedFixture, drainFixture } from '../mirage/testing/owned-fixture.mjs';
 // mirage dev with portals=all: several local Mirages and live targets in one browser
 // context, switched through the panel's portal selector.
@@ -141,6 +142,35 @@ test(
     );
     // Open the tab before startup so its interception is installed before the first navigation.
     const page = await context.newPage();
+    // Hold the classic panel detached on one return navigation, after the browser
+    // has committed the destination document. This makes the URL/panel race deterministic.
+    await page.addInitScript(
+      ({ origin }) => {
+        if (location.origin !== origin || window.name !== 'paqvilo-hold-classic-panel') return;
+        window.name = '';
+        const getById = Document.prototype.getElementById;
+        const appendChild = Node.prototype.appendChild;
+        let held;
+        Document.prototype.getElementById = function (id) {
+          if (id === 'paqvilo-panel' && held) return held;
+          return getById.call(this, id);
+        };
+        Node.prototype.appendChild = function (child) {
+          if (this === document.body && child.id === 'paqvilo-panel' && !held) {
+            held = child;
+            globalThis.__heldClassicPanel = true;
+            return child;
+          }
+          return appendChild.call(this, child);
+        };
+        globalThis.__releaseClassicPanel = () => {
+          Document.prototype.getElementById = getById;
+          Node.prototype.appendChild = appendChild;
+          appendChild.call(document.body, held);
+        };
+      },
+      { origin: classicApp.url },
+    );
     runtime = await startDevSessions(context, selection, { log: () => {}, debugPort: null });
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
@@ -153,7 +183,7 @@ test(
       if (await panel('.pill').isVisible()) await panel('.pill').click();
       await panel(`.tabs [data-act="tab"][data-v="${tab}"]`).click();
     };
-    const choose = async (index, origin) => {
+    const choose = async (index, origin, onOrigin) => {
       await openTab('overrides');
       await Promise.all([
         page.waitForURL((url) => url.origin === origin),
@@ -162,6 +192,12 @@ test(
           .selectOption(String(index))
           .then(() => page.locator('[data-target-go]').click()),
       ]);
+      onOrigin?.();
+      const expected = ['classic Mirage @ local', 'enhanced Mirage @ local', 'classic @ dev'][index];
+      await page.waitForFunction((label) => {
+        const host = document.getElementById('paqvilo-panel');
+        return host?.isConnected && host.dataset.label === label;
+      }, expected);
     };
     const signedIn = async (app) => (await (await context.request.get(`${app.url}/_sim/api/session`)).json()).signedIn;
 
@@ -199,7 +235,23 @@ test(
     );
 
     // Back on the classic Mirage: sign in there too; both sessions now coexist (one cookie per port).
-    await choose(0, classicApp.url);
+    await page.evaluate(() => {
+      window.name = 'paqvilo-hold-classic-panel';
+    });
+    let settled = false;
+    let reportOrigin;
+    const originObserved = new Promise((resolve) => {
+      reportOrigin = resolve;
+    });
+    const returnToClassic = choose(0, classicApp.url, reportOrigin).finally(() => {
+      settled = true;
+    });
+    await page.waitForFunction(() => globalThis.__heldClassicPanel === true);
+    await originObserved;
+    assert.equal(new URL(page.url()).origin, classicApp.url);
+    assert.equal(settled, false, 'target selection waits for the connected destination panel');
+    await page.evaluate(() => globalThis.__releaseClassicPanel());
+    await returnToClassic;
     await openTab('tweaks');
     await panel('.card').filter({ hasText: 'Browser session' }).getByText('Anonymous', { exact: true }).waitFor();
     await panel('[data-act="choosepersona"][data-contact="alex"]').first().click();

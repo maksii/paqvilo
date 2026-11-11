@@ -128,6 +128,15 @@ const CHECKS = {
 };
 
 const httpOutputDefault = (type) => (type === 'StringArray' || type === 'EntityCollection' ? [] : null);
+// SDK DateTime roundtrip strings retain Kind/ticks internally. Native declared
+// DateTime HTTP outputs omit fractional seconds, unlike String outputs of the
+// same CLR value; never round the input or the internal SDK representation.
+function httpOutputValue(type, value) {
+  if (type !== 'DateTime' || typeof value !== 'string') return value;
+  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,7}))?(Z)?$/.exec(value);
+  if (!match || Number.isNaN(Date.parse(value))) return value;
+  return match[1] + 'Z';
+}
 // Assumed: crmbaseentity is the entity type when logicalentityname is empty.
 function edmOf(property) {
   const type = typeOf(property.type);
@@ -396,7 +405,7 @@ const payloadError = (detail) =>
     `Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: ${detail}`,
     400,
     'InvalidRequest',
-    { innerCode: '0x80048d19' },
+    { innerCode: '0x80048d19', dataverseReaderTarget: 'operation' },
   );
 const literal = (value) => (value !== null && typeof value === 'object' ? JSON.stringify(value) : String(value));
 
@@ -485,7 +494,9 @@ function responseBody(c, row, properties, outputs = {}) {
     ...Object.fromEntries(
       properties.map((p) => [
         p.uniquename,
-        outputs[p.uniquename] !== undefined ? outputs[p.uniquename] : httpOutputDefault(typeOf(p.type)),
+        outputs[p.uniquename] !== undefined
+          ? httpOutputValue(typeOf(p.type), outputs[p.uniquename])
+          : httpOutputDefault(typeOf(p.type)),
       ]),
     ),
   };

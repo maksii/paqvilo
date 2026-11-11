@@ -16,6 +16,8 @@ let generation = 0;
 let sessionId = null;
 let observer = null;
 let appName = null;
+// The official SDK retains the resolved context object (including caller mutations).
+let context = null;
 // The getContext() answer's trace (X-Trace-Id, X-Sim-Span-Id): every later call joins it (docs/design/tracing.md).
 let trace = null;
 
@@ -74,6 +76,7 @@ export function configure({ app, origin = '', onEvent } = {}) {
   base = `${normalizedOrigin}/_apps/code/${encodeURIComponent(app)}/`;
   appName = app;
   csrf = null;
+  context = null;
   trace = null;
   sessionId = crypto.randomUUID();
   observer = onEvent ?? null;
@@ -124,6 +127,7 @@ export async function getStatus() {
 }
 
 export async function getContext() {
+  if (context) return context;
   const configured = generation;
   const { data, response } = await call('context' + (typeof location === 'undefined' ? '' : location.search));
   if (generation !== configured) throw new Error('Mirage code app configuration changed during the request.');
@@ -131,6 +135,7 @@ export async function getContext() {
   const traceId = response.headers.get('x-trace-id'),
     spanId = response.headers.get('x-sim-span-id');
   trace = traceId && spanId ? { traceId, spanId } : null;
+  context = data;
   return data;
 }
 

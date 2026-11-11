@@ -9,5 +9,5 @@ test('Power Fx Trim and TrimEnds handle long interior space runs', () => {
     powerFxEngine.evaluateSync(formula, { host: { variables: {} }, values: { value } }).value;
   assert.equal(evaluate('TrimEnds(value)', `${spaces}x${spaces}y${spaces}`), `x${spaces}y`);
   assert.equal(evaluate('Trim(value)', `${spaces}x${spaces}y${spaces}`), 'x y');
-  assert.equal(evaluate('TrimEnds(value)', '\t x \n'), '\t x \n');
+  assert.equal(evaluate('TrimEnds(value)', '\t x \n'), 'x');
 });

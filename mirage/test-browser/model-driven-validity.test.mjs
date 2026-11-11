@@ -1,3 +1,4 @@
+// @test-kind contract: local form validity preserves source constraints, visibility, disabled state and notification semantics without weakening invalid-input checks.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

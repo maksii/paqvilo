@@ -172,6 +172,7 @@ const simApi = (sim, method, suffix, payload) =>
     ...(payload ? { body: JSON.stringify(payload) } : {}),
   });
 
+// @test-kind contract+security+unproven: trace behavior is local; the portal or service result has no native capture.
 test('Power Pages: a page GET is an http root with render, render-template and read spans; the audit entry links to it', async () => {
   const sim = await powerPages();
   const page = await fetch(sim.url + '/');
@@ -221,6 +222,7 @@ test('Power Pages: a page GET is an http root with render, render-template and r
   assert.equal(fetchEntry.traceId, traceId);
 });
 
+// @test-kind contract+security+unproven: trace behavior is local; the portal or service result has no native capture.
 test('Power Pages: a /_api POST is http → webapi; follow-ups with the audit parent header join the page trace', async () => {
   const sim = await powerPages();
   const page = await fetch(sim.url + '/');
@@ -282,6 +284,7 @@ test('Power Pages: a /_api POST is http → webapi; follow-ups with the audit pa
   assert.notEqual(fresh.headers.get('x-trace-id'), traceId);
 });
 
+// @test-kind contract+security+unproven: trace behavior is local; the portal or service result has no native capture.
 test('Power Pages: a Web API request refused before routing has no webapi span; its http root records the status and code', async () => {
   const sim = await powerPages();
   const post = (headers) => ({
@@ -308,6 +311,7 @@ test('Power Pages: a Web API request refused before routing has no webapi span; 
   }
 });
 
+// @test-kind contract+security+unproven: trace behavior is local; the portal or service result has no native capture.
 test('Power Pages: status lists /trace, the trace routes answer and the trace SSE channel delivers frames', async () => {
   const sim = await powerPages();
   const status = await (await simApi(sim, 'GET', '/status')).json();
@@ -347,6 +351,7 @@ test('Power Pages: status lists /trace, the trace routes answer and the trace SS
   );
 });
 
+// @test-kind contract+security+unproven: trace behavior is local; the portal or service result has no native capture.
 test('standalone: /_sim/events streams the trace channel with the Power Pages frames and refuses other channels', async () => {
   const sim = await standalone();
   const status = await (await simApi(sim, 'GET', '/status')).json();
@@ -370,6 +375,7 @@ test('standalone: /_sim/events streams the trace channel with the Power Pages fr
   }
 });
 
+// @test-kind contract+security+unproven: trace behavior is local; the portal or service result has no native capture.
 test('standalone and Dataverse API listener: http roots carry their origin host; the listener records the caller', async () => {
   const sim = await standalone();
   const status = await (await simApi(sim, 'GET', '/status')).json();
@@ -436,6 +442,7 @@ test('standalone and Dataverse API listener: http roots carry their origin host;
   assert.ok(refused ?? (await endedSpan(sim.trace, { host: 'dataverse-api', status: 'denied' })));
 });
 
+// @test-kind contract+security+unproven: trace behavior is local; the portal or service result has no native capture.
 test('standalone: the runtime secret resolver records secret spans in the host trace store, never a value', async () => {
   const sim = await standalone();
   const answer = await sim.organization.api.secrets.resolve('https://fx-vault.vault.azure.net/secrets/func-key', {
@@ -472,6 +479,7 @@ async function modelDriven(prefix) {
   return sim;
 }
 
+// @test-kind contract+security+unproven: trace behavior is local; the portal or service result has no native capture.
 test('model-driven: the in-process Web API transport nests its http span under the standalone request root', async () => {
   const sim = await modelDriven('trace-roots-model-');
   const response = await fetch(sim.url + '/_apps/api/webapi', {
@@ -522,6 +530,7 @@ async function appToken(sim, appId) {
   return (await issued.json()).access_token;
 }
 
+// @test-kind contract+security+unproven: trace behavior is local; the portal or service result has no native capture.
 test('Power Pages: the root session key is contact:<id> signed in, else visitor:<id> with a visitor cookie, else null', async () => {
   const sim = await powerPages();
   const visitorId = '33333333-3333-4333-8333-333333333333',
@@ -544,6 +553,7 @@ test('Power Pages: the root session key is contact:<id> signed in, else visitor:
   );
 });
 
+// @test-kind contract+security+unproven: trace behavior is local; the portal or service result has no native capture.
 test('Power Pages: follow-ups into a full trace keep its trace id (no span id, no new trace); malformed ids start a new trace', async () => {
   const sim = await powerPages();
   const settings = sim.trace.settings();
@@ -581,6 +591,7 @@ test('Power Pages: follow-ups into a full trace keep its trace id (no span id, n
   }
 });
 
+// @test-kind contract+security+unproven: trace behavior is local; the portal or service result has no native capture.
 test('standalone and Dataverse listener roots are anonymous until auth whatever parent the headers name; listener responses name their trace', async () => {
   const sim = await standalone();
   const token = await appToken(sim, '99999999-9999-4999-8999-999999999982');
@@ -618,6 +629,7 @@ test('standalone and Dataverse listener roots are anonymous until auth whatever 
   assert.match(refused.headers.get('access-control-expose-headers'), /X-Trace-Id, X-Sim-Span-Id/);
 });
 
+// @test-kind contract+security+unproven: trace behavior is local; the portal or service result has no native capture.
 test('model-driven: a destroyed in-process Web API response ends the listener http span (499)', async () => {
   const sim = await modelDriven('trace-roots-destroy-');
   // An answer whose body and error both refuse to serialize: the handler's last resort is res.destroy().
@@ -653,6 +665,7 @@ test('model-driven: a destroyed in-process Web API response ends the listener ht
   );
 });
 
+// @test-kind contract+security+unproven: trace behavior is local; the portal or service result has no native capture.
 test('a persona runtime records into its parent trace store and follows its run-time settings', async (t) => {
   const { app, call } = await personaFixture(t, { trace: { level: 'summary' } });
   const { response, value: persona } = await call('/personas/launch', 'POST', { personaKey: 'person-2' });
@@ -729,6 +742,7 @@ test('a memory-only runtime accepts persist but writes nothing and says why on t
   }
 });
 
+// @test-kind contract+security+unproven: trace behavior is local; the portal or service result has no native capture.
 test('Power Pages: an entity read is a retrieve naming its record; the root records the query with secret values hidden', async () => {
   const sim = await powerPages();
   const id = '11111111-1111-4111-8111-111111111111';
@@ -752,6 +766,7 @@ test('Power Pages: an entity read is a retrieve naming its record; the root reco
   );
 });
 
+// @test-kind contract+security+unproven: trace behavior is local; the portal or service result has no native capture.
 test('Power Pages: a request root captures its body and content type; an answered error names its code and message', async () => {
   const sim = await powerPages();
   const created = await fetch(sim.url + '/_api/x_items', {
@@ -779,6 +794,7 @@ test('Power Pages: a request root captures its body and content type; an answere
   assert.match(notFound.error.message, /no-such-page|Page Not Found/);
 });
 
+// @test-kind contract+security+unproven: trace behavior is local; the portal or service result has no native capture.
 test('Power Pages: an anonymous first page GET starts the visitor session, so every visitor has a visitor session key', async () => {
   const sim = await powerPages();
   const first = await fetch(sim.url + '/');
@@ -841,6 +857,7 @@ test('Power Pages: at level off a root parses no trace header and looks up no au
   }
 });
 
+// @test-kind contract+security+unproven: trace behavior is local; the portal or service result has no native capture.
 test('Power Pages: a page path with a file suffix that reaches the Liquid renderer has its http root', async () => {
   const sim = await powerPages();
   const response = await fetch(sim.url + '/missing-report.json');
@@ -876,6 +893,7 @@ test('Power Pages: a /_sim administration write is a sim root acting as the simu
   assert.equal(read.headers.get('x-trace-id'), null, 'an administration read opens no root');
 });
 
+// @test-kind contract+security+unproven: trace behavior is local; the portal or service result has no native capture.
 test('Azurite Blob requests are http-out spans of the current trace without their bytes; a refused key names the Azure code', async (t) => {
   const traces = createTraceStore({ settings: { level: 'full' } });
   const fake = await startAzuriteFake();
@@ -914,6 +932,7 @@ test('Azurite Blob requests are http-out spans of the current trace without thei
   assert.deepEqual([failed[0].status, failed[0].error?.status], ['denied', 403]);
 });
 
+// @test-kind contract+security+unproven: trace behavior is local; the portal or service result has no native capture.
 test('the SharePoint fixture server opens a root per request joined to its caller, naming the Graph error', async (t) => {
   const traces = createTraceStore({ settings: { level: 'summary' } });
   const fixture = await createSharePointFixtureServer({

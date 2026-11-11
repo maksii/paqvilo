@@ -102,7 +102,7 @@ test('CLR registration cannot infer trust, backend identity or unsafe paths', ()
     /confined/,
   );
   const store = data();
-  // @parity-evidence: user explicitly approved C16 on 2026-10-30 (native run-as roles replace the grant profile)
+  // Evidence: user explicitly approved C16 on 2026-10-30 (native run-as roles replace the grant profile)
   // CreateOrganizationService(null) and another user's id run as that user (Learn IOrganizationServiceFactory); with an
   // organization the user's roles authorize the call (plugin-clr-run-as.test.mjs). This store has no Dataverse security
   // model, so the descriptor grants still bound every run-as user: a granted read succeeds, an ungranted write is refused.
@@ -156,7 +156,7 @@ test('Backend RPC grants do not inherit portal roles and preserve SDK value type
           arguments: ['widget', { $type: 'Guid', value: rowId }, { allColumns: true }],
         },
       }),
-    // @parity-evidence: native dev-environment recorder corpus sdkSurface: an SDK request on a missing row faults 0x80040217 'Entity '<table>' With Id = <id> Does Not Exist'
+    // Evidence: native dev-environment recorder corpus sdkSurface: an SDK request on a missing row faults 0x80040217 'Entity '<table>' With Id = <id> Does Not Exist'
     /Entity 'widget' With Id = 20000000-0000-0000-0000-000000000001 Does Not Exist/,
   );
   const result = dispatchSdkCall({
@@ -229,7 +229,7 @@ test('Internal backend Delete authorization does not dispatch a phantom Retrieve
   assert.ok(!messages.includes('retrieve'));
   assert.ok(messages.includes('delete'));
 });
-// @test-kind compatibility: Learn event pipeline (transactions, images, PreValidation outside transaction, async after commit); nativeQualified false
+// @test-kind compatibility: Learn event pipeline (transactions, images, PreValidation outside transaction, async after commit); the evidence file records nativeQualified false.
 test(
   'Original compiled DLL executes context, service calls, images and rollback; timeout closes its host',
   { skip: CLR_SKIP },

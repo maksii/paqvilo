@@ -1,27 +1,69 @@
-// Enforces docs/test-kinds.md on test files a change adds or modifies.
-//   node scripts/check-test-tags.mjs --staged          pre-commit: the index against HEAD
-//   node scripts/check-test-tags.mjs --base <rev>      a branch against <rev> (merge base)
-//   node scripts/check-test-tags.mjs --event           CI: the GitHub pull_request/push event range
-//   node scripts/check-test-tags.mjs --report          counts per kind over every test file (no failure)
-//   node scripts/check-test-tags.mjs <file...>         tag syntax of the named files only
-// A changed test file needs a valid kind for every test. Removing or rewriting a line inside a `parity` region
-// also needs a `// @parity-evidence: <proof>` line added by the same change. Files listed in scripts/test-kinds-legacy.json
-// predate the rule: they are skipped while they carry no @test-kind line at all, and checked in full once one is added.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-
+import { isDeepStrictEqual } from 'node:util';
+import { validateParityCases } from '../mirage/testing/parity-cases.mjs';
+// Enforces docs/test-kinds.md on test files, parity case files and known-gap files a change adds or modifies.
+//   node scripts/check-test-tags.mjs --staged          pre-commit: the index against HEAD
+//   node scripts/check-test-tags.mjs --base <rev>      a branch against <rev> (merge base)
+//   node scripts/check-test-tags.mjs --event           CI: the GitHub pull_request/push event range
+//   node scripts/check-test-tags.mjs --report          counts per kind and replay cases over the repository (no failure)
+//   node scripts/check-test-tags.mjs <file...>         tag syntax of the named files only
+// A changed test file needs a valid kind for every test. Removing or rewriting a line inside a `parity` region
+// also needs a `// @parity-evidence: <proof>` line added by the same change, or a retirement entry in
+// scripts/parity-retirements.json. A new parity tag is valid only on a replay runner. Recorded parity cases change
+// only with a new history entry, and a recorded case cannot receive a new known gap. Files listed in
+// scripts/test-kinds-legacy.json predate the rule: they are skipped while they carry no @test-kind line at all, and
+// checked in full once one is added.
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const KINDS = new Set(['parity', 'observation', 'compatibility', 'unproven', 'contract', 'security', 'tooling']);
 const EVIDENCE_KINDS = new Set(['parity', 'observation']);
 const TEST_FILE = /\.test\.[cm]?js$/;
+const CASE_FILE = /(?:^|\/)parity\/cases\/(?<surface>[a-z0-9-]+)\/(?<suite>[a-z0-9-]+)\.json$/;
+const GAP_FILE = /(?:^|\/)parity\/known-gaps\/(?<surface>[a-z0-9-]+)\.json$/;
+const GAP_KEY = /^(?<suite>[a-z0-9-]+)#(?<caseId>.+)$/;
+const RETIREMENT_FILE = 'scripts/parity-retirements.json';
+const REPLAY_CALL = /\breplayParity(?:Cases|Directory)\s*\(/;
 const TAG = /^\s*\/\/\s*@test-kind\b(.*)$/;
 const TAG_BODY = /^\s+([a-z]+(?:\+[a-z]+)*)\s*:\s*(\S.*)$/;
-const DECLARATION = /^\s*(?:(?:test|it|describe|suite)(?:\.(?:only|skip|todo))?\s*\(|for\s*\(|\[.*\]\.forEach\()/;
-const TOP_LEVEL = /^(?:(?:test|it|describe|suite)(?:\.(?:only|skip|todo))?\s*\(|for\s*\(|\[.*\]\.forEach\()/;
+const TEST_DECLARATION = /^(?:test|it|describe|suite)(?:\.(?:only|skip|todo))?\s*\(/;
+const CONTEXT_DECLARATION = /^(?:await\s+)?t\.test\s*\(/;
+const LOOP_DECLARATION = /^(?:for\s*\(|\[.*\]\.forEach\()/;
+function isDeclaration(line) {
+  const text = line.trimStart();
+  return TEST_DECLARATION.test(text) || CONTEXT_DECLARATION.test(text) || LOOP_DECLARATION.test(text);
+}
+function isTestDeclaration(line) {
+  const text = line.trimStart();
+  return TEST_DECLARATION.test(text) || CONTEXT_DECLARATION.test(text);
+}
+function isTopLevelDeclaration(line) {
+  return line === line.trimStart() && isDeclaration(line);
+}
 const FILE_TAG_LINES = 40;
-const ANY_TAG = /^[^\S\r\n\u2028\u2029]*\/\/\s*@test-kind\b/m;
+function tagAfterComment(text, index) {
+  let next = index + 2;
+  while (next < text.length && /\s/u.test(text[next])) next++;
+  return text.startsWith('@test-kind', next) && !/\w/u.test(text[next + 10] ?? '');
+}
+function hasAnyTag(text) {
+  let lineStart = true;
+  for (let index = 0; index < text.length; index++) {
+    const character = text[index];
+    if (/[\r\n\u2028\u2029]/u.test(character)) {
+      lineStart = true;
+    } else if (lineStart && /\s/u.test(character)) {
+      continue;
+    } else if (lineStart && text.startsWith('//', index)) {
+      if (tagAfterComment(text, index)) return true;
+      lineStart = false;
+    } else {
+      lineStart = false;
+    }
+  }
+  return false;
+}
 
 function legacyFiles() {
   try {
@@ -46,7 +88,26 @@ function git(args, { allowFailure = false } = {}) {
   return result.stdout;
 }
 
-/** Parses tags: { fileKinds, regions: [{ start, end, kinds }], errors }. Lines are 1-based. */
+const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+function parseJson(text) {
+  try {
+    return { value: JSON.parse(text) };
+  } catch (error) {
+    return { error: error.message };
+  }
+}
+
+function workingText(file) {
+  try {
+    return fs.readFileSync(path.resolve(root, file), 'utf8');
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+/** Parses tags: { fileKinds, regions: [{ start, end, kinds }], tags, errors }. Lines are 1-based. */
 export function parseTestKinds(text) {
   const lines = text.split(/\r?\n/);
   const errors = [],
@@ -69,7 +130,7 @@ export function parseTestKinds(text) {
     tags.push({
       line: index + 1,
       kinds,
-      perTest: next < lines.length && DECLARATION.test(lines[next]),
+      perTest: next < lines.length && isDeclaration(lines[next]),
       declaration: next + 1,
     });
   });
@@ -78,7 +139,7 @@ export function parseTestKinds(text) {
     if (tag.line > FILE_TAG_LINES)
       errors.push(`line ${tag.line}: a file-level @test-kind belongs in the first ${FILE_TAG_LINES} lines`);
   if (fileTags.length > 1) errors.push('more than one file-level @test-kind');
-  const topLevel = lines.flatMap((line, index) => (TOP_LEVEL.test(line) ? [index + 1] : []));
+  const topLevel = lines.flatMap((line, index) => (isTopLevelDeclaration(line) ? [index + 1] : []));
   // A per-test region ends before the next declaration at the same or a shallower indentation, so a tag on an
   // indented it() inside describe() covers only that test.
   const indent = (line) => /^\s*/.exec(lines[line - 1])[0].length;
@@ -86,59 +147,267 @@ export function parseTestKinds(text) {
     .filter((tag) => tag.perTest)
     .map((tag) => {
       const depth = indent(tag.declaration);
+      const subtest = /^\s*(?:await\s+)?t\.test\s*\(/.test(lines[tag.declaration - 1]);
+      const closesSubtest = (line, number) => subtest && indent(number) <= depth && /^\s*\}\);?\s*$/.test(line);
       const end = lines.findIndex(
-        (line, index) => index + 1 > tag.declaration && DECLARATION.test(line) && indent(index + 1) <= depth,
+        (line, index) =>
+          index + 1 > tag.declaration &&
+          ((isDeclaration(line) && indent(index + 1) <= depth) || closesSubtest(line, index + 1)),
       );
-      return { start: tag.line, end: end >= 0 ? end : lines.length, kinds: tag.kinds };
+      let endLine = lines.length;
+      if (end >= 0) endLine = end + Number(closesSubtest(lines[end], end + 1));
+      return {
+        start: tag.line,
+        end: endLine,
+        kinds: tag.kinds,
+      };
     });
   const fileKinds = fileTags[0]?.kinds ?? null;
   if (!fileKinds)
     for (const line of topLevel)
       if (!regions.some((region) => line >= region.start && line <= region.end))
         errors.push(`line ${line}: test has no @test-kind (add a file-level tag or one above the test)`);
-  return { fileKinds, regions, errors };
+  return { fileKinds, regions, tags, errors };
 }
 
-// The innermost region (an it() inside a tagged describe()) wins.
-const kindsAt = (parsed, line) =>
+/** The innermost region (an it() inside a tagged describe()) wins, then the file kinds, then none. */
+export const kindsAt = (parsed, line) =>
   parsed.regions.filter((region) => line >= region.start && line <= region.end).sort((a, b) => b.start - a.start)[0]
     ?.kinds ??
   parsed.fileKinds ??
   [];
 
-/** Old-side line numbers a unified -U0 diff removes or rewrites, and whether it adds a @parity-evidence line. */
-export { kindsAt };
-export function diffFacts(diff) {
-  const removed = [];
-  let evidence = false;
-  for (const line of diff.split('\n')) {
-    const hunk = /^@@ -(\d+)(?:,(\d+))? \+/.exec(line);
-    if (hunk) {
-      const start = Number(hunk[1]),
-        count = hunk[2] === undefined ? 1 : Number(hunk[2]);
-      for (let i = 0; i < count; i++) removed.push(start + i);
-    } else if (/^\+(?!\+\+)/.test(line) && /\/\/\s*@parity-evidence:\s*\S{3}/.test(line)) evidence = true;
-  }
-  return { removed, evidence };
+function rangeInto(list, start, count) {
+  const length = count === undefined ? 1 : Number(count);
+  for (let i = 0; i < length; i++) list.push(start + i);
 }
 
-export function check({ files, newText, oldText, diffOf, legacy = new Set() }) {
-  const failures = [];
-  for (const file of files.filter((file) => TEST_FILE.test(file))) {
-    const text = newText(file);
-    if (text == null || (legacy.has(file) && !ANY_TAG.test(text))) continue;
-    const parsed = parseTestKinds(text);
-    for (const error of parsed.errors) failures.push(`${file}: ${error}`);
-    const old = oldText?.(file);
-    if (old == null) continue;
-    const before = parseTestKinds(old);
-    const { removed, evidence } = diffFacts(diffOf(file));
-    const touched = removed.filter((line) => kindsAt(before, line).includes('parity'));
-    if (touched.length && !evidence)
+/**
+ * Line facts of a unified -U0 diff: old-side line numbers removed, new-side line numbers added, the texts of those
+ * lines without their +/- sign, and whether the diff adds a @parity-evidence line.
+ */
+export function diffFacts(diff) {
+  const removed = [],
+    added = [],
+    addedText = [],
+    removedText = [];
+  let evidence = false,
+    inHunk = false;
+  for (const line of diff.split('\n')) {
+    const hunk = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
+    if (hunk) {
+      inHunk = true;
+      rangeInto(removed, Number(hunk[1]), hunk[2]);
+      rangeInto(added, Number(hunk[3]), hunk[4]);
+    } else if (inHunk && line.startsWith('+')) addedText.push(line.slice(1));
+    else if (inHunk && line.startsWith('-')) removedText.push(line.slice(1));
+    if (/^\+(?!\+\+)/.test(line) && /\/\/\s*@parity-evidence:\s*\S{3}/.test(line)) evidence = true;
+  }
+  return { removed, added, addedText, removedText, evidence };
+}
+
+const isRepoPath = (value) =>
+  typeof value === 'string' &&
+  value !== '' &&
+  !value.startsWith('/') &&
+  !value.includes('\\') &&
+  value.split('/').every((part) => part !== '' && part !== '..');
+
+function retirementProblems(entry, where) {
+  if (!isObject(entry)) return [`${where} must be an object`];
+  const problems = [];
+  if (!isRepoPath(entry.file)) problems.push(`${where}.file must be a repo-relative POSIX path`);
+  if (typeof entry.reason !== 'string' || entry.reason.trim().length < 20)
+    problems.push(`${where}.reason needs at least 20 characters`);
+  if (typeof entry.authority !== 'string' || entry.authority.trim().length < 10)
+    problems.push(`${where}.authority needs at least 10 characters (who approved the retirement)`);
+  return problems;
+}
+
+function ledgerProblems(text) {
+  if (text == null) return [`${RETIREMENT_FILE}: missing`];
+  const parsed = parseJson(text);
+  if ('error' in parsed) return [`${RETIREMENT_FILE}: not valid JSON (${parsed.error})`];
+  if (parsed.value?.version !== 1) return [`${RETIREMENT_FILE}: version must be 1`];
+  if (!Array.isArray(parsed.value.retirements)) return [`${RETIREMENT_FILE}: retirements must be an array`];
+  return parsed.value.retirements.flatMap((entry, index) =>
+    retirementProblems(entry, `${RETIREMENT_FILE}: retirements[${index}]`),
+  );
+}
+
+function ledgerEntries(text) {
+  const value = text == null ? undefined : parseJson(text).value;
+  return Array.isArray(value?.retirements) ? value.retirements : [];
+}
+
+/** Files named by well-formed retirement entries that the change adds to the ledger. */
+function retiredByChange(newText, oldText) {
+  const before = ledgerEntries(oldText(RETIREMENT_FILE));
+  const added = ledgerEntries(newText(RETIREMENT_FILE)).filter(
+    (entry) => !before.some((old) => isDeepStrictEqual(old, entry)),
+  );
+  return new Set(added.filter((entry) => retirementProblems(entry, '').length === 0).map((entry) => entry.file));
+}
+
+function checkParityRemoval(file, old, facts, ctx, failures) {
+  const before = parseTestKinds(old);
+  const touched = facts.removed.filter((line) => kindsAt(before, line).includes('parity'));
+  if (!touched.length || facts.evidence || ctx.retired.has(file)) return;
+  const first = touched.slice(0, 5).join(', ');
+  const more = touched.length > 5 ? ', ...' : '';
+  failures.push(
+    `${file}: changes ${touched.length} line(s) of a parity test (old lines ${first}${more}). ` +
+      'Parity assertions change only with an explicit user request or new native/official-package proof; add "// @parity-evidence: <proof>" or a retirement entry (docs/test-kinds.md).',
+  );
+}
+
+const isReplayRunner = (tag, text, lines) =>
+  !tag.perTest &&
+  tag.kinds.join('+') === 'parity' &&
+  REPLAY_CALL.test(text) &&
+  !lines.some((line) => isTestDeclaration(line));
+
+/** A parity tag is NEW when the file is new, or its line was added and its text was not moved from elsewhere. */
+function checkNewParityTags(file, text, parsed, facts, failures) {
+  const lines = text.split(/\r?\n/);
+  const removedTexts = new Set((facts?.removedText ?? []).map((line) => line.trim()));
+  for (const tag of parsed.tags) {
+    if (!tag.kinds.includes('parity')) continue;
+    const isNew = !facts || (facts.added.includes(tag.line) && !removedTexts.has(lines[tag.line - 1].trim()));
+    if (isNew && !isReplayRunner(tag, text, lines))
       failures.push(
-        `${file}: changes ${touched.length} line(s) of a parity test (old lines ${touched.slice(0, 5).join(', ')}${touched.length > 5 ? ', ...' : ''}). ` +
-          'Parity assertions change only with an explicit user request or new native/official-package proof; add "// @parity-evidence: <proof>" (docs/test-kinds.md).',
+        `${file}: line ${tag.line}: a new parity tag is only valid on a replay runner that registers its tests through replayParityCases or replayParityDirectory; record a replay case instead (docs/test-kinds.md).`,
       );
+  }
+}
+
+function checkFile(file, ctx, failures) {
+  const text = ctx.newText(file);
+  const old = ctx.oldText?.(file) ?? null;
+  const facts = old == null ? null : diffFacts(ctx.diffOf(file));
+  if (old != null) checkParityRemoval(file, old, facts, ctx, failures);
+  if (text == null || (ctx.legacy.has(file) && !hasAnyTag(text))) return;
+  const parsed = parseTestKinds(text);
+  for (const error of parsed.errors) failures.push(`${file}: ${error}`);
+  if (ctx.diffMode) checkNewParityTags(file, text, parsed, facts, failures);
+}
+
+const historyLength = (value) => (Array.isArray(value?.history) ? value.history.length : 0);
+
+/** Recorded cases whose oracle, id set, input, output or volatile list differs between the two versions. */
+function changedCases(before, after) {
+  const changed = isDeepStrictEqual(before?.oracle, after?.oracle) ? [] : ['oracle'];
+  const current = new Map((Array.isArray(after?.cases) ? after.cases : []).map((item) => [item?.id, item]));
+  const recorded = (Array.isArray(before?.cases) ? before.cases : []).filter(isObject);
+  for (const item of recorded) {
+    const next = current.get(item.id);
+    if (!next || !['input', 'output', 'volatile'].every((key) => isDeepStrictEqual(next[key], item[key])))
+      changed.push(item.id);
+  }
+  return changed;
+}
+
+function checkRecordedCases(file, before, after, failures) {
+  const changed = changedCases(before, after);
+  if (!changed.length || historyLength(after) > historyLength(before)) return;
+  const shown = changed.slice(0, 5).join(', ') + (changed.length > 5 ? ', ...' : '');
+  failures.push(
+    `${file}: changes recorded parity cases (${shown}) without a new history entry; a recorded case changes only with new evidence (docs/test-kinds.md).`,
+  );
+}
+
+function checkCaseFile(file, ctx, failures) {
+  const { surface, suite } = CASE_FILE.exec(file).groups;
+  const text = ctx.newText(file);
+  const old = ctx.diffMode ? (ctx.oldText(file) ?? null) : null;
+  if (text == null) {
+    if (old != null && !ctx.retired.has(file))
+      failures.push(
+        `${file}: deletes recorded parity cases; add a retirement entry in scripts/parity-retirements.json (docs/test-kinds.md).`,
+      );
+    return;
+  }
+  const parsed = parseJson(text);
+  if ('error' in parsed) {
+    failures.push(`${file}: not valid JSON (${parsed.error})`);
+    return;
+  }
+  for (const problem of validateParityCases(parsed.value, { surface, suite })) failures.push(`${file}: ${problem}`);
+  const before = old == null ? null : parseJson(old);
+  if (before && !('error' in before)) checkRecordedCases(file, before.value, parsed.value, failures);
+}
+
+function knownGapProblems(value) {
+  if (!isObject(value)) return ['must be a JSON object of <suite>#<caseId> gaps'];
+  return Object.entries(value).flatMap(([key, gap]) => {
+    if (!GAP_KEY.test(key)) return [`${key}: key must be <suite>#<caseId>`];
+    if (typeof gap === 'string') return gap.trim() === '' ? [`${key}: gap reason must not be empty`] : [];
+    if (!isObject(gap) || Object.keys(gap).length === 0)
+      return [`${key}: gap must be a reason or an object of JSON pointer reasons`];
+    return Object.entries(gap).flatMap(([pointer, reason]) => {
+      if (!pointer.startsWith('/')) return [`${key}: ${pointer} is not a JSON pointer`];
+      return typeof reason === 'string' && reason.trim() !== '' ? [] : [`${key}: ${pointer} needs a non-empty reason`];
+    });
+  });
+}
+
+/** A gap is new when its key is new, it becomes whole-case, or a pointer-scoped gap gains a pointer. */
+function isNewGap(previous, next) {
+  if (previous === undefined) return true;
+  if (typeof next === 'string') return typeof previous !== 'string';
+  if (typeof previous === 'string') return false;
+  return Object.keys(next).some((pointer) => !isObject(previous) || !(pointer in previous));
+}
+
+function gapsOf(text) {
+  const parsed = text == null ? {} : parseJson(text);
+  return isObject(parsed.value) ? parsed.value : {};
+}
+
+function recordedIds(text) {
+  const value = text == null ? undefined : parseJson(text).value;
+  return (Array.isArray(value?.cases) ? value.cases : []).map((item) => item?.id);
+}
+
+function checkKnownGaps(file, ctx, failures) {
+  const { surface } = GAP_FILE.exec(file).groups;
+  const text = ctx.newText(file);
+  if (text == null) return;
+  const parsed = parseJson(text);
+  if ('error' in parsed) {
+    failures.push(`${file}: not valid JSON (${parsed.error})`);
+    return;
+  }
+  for (const problem of knownGapProblems(parsed.value)) failures.push(`${file}: ${problem}`);
+  if (!ctx.diffMode || !isObject(parsed.value)) return;
+  const previous = gapsOf(ctx.oldText(file));
+  for (const [key, gap] of Object.entries(parsed.value)) {
+    if (knownGapProblems({ [key]: gap }).length || !isNewGap(previous[key], gap)) continue;
+    const { suite, caseId } = GAP_KEY.exec(key).groups;
+    const caseFile = file.replace(/known-gaps\/[a-z0-9-]+\.json$/, `cases/${surface}/${suite}.json`);
+    if (recordedIds(ctx.oldText(caseFile)).includes(caseId) && !ctx.retired.has(file))
+      failures.push(
+        `${file}: declares a new gap for recorded case ${suite}#${caseId}; a recorded case must keep passing, fix the runtime (docs/test-kinds.md).`,
+      );
+  }
+}
+
+export function check({ files, newText, oldText, diffOf = () => '', legacy = new Set() }) {
+  const failures = [];
+  const diffMode = Boolean(oldText);
+  if (files.includes(RETIREMENT_FILE)) failures.push(...ledgerProblems(newText(RETIREMENT_FILE)));
+  const ctx = {
+    newText,
+    oldText,
+    diffOf,
+    legacy,
+    diffMode,
+    retired: diffMode ? retiredByChange(newText, oldText) : new Set(),
+  };
+  for (const file of files) {
+    if (TEST_FILE.test(file)) checkFile(file, ctx, failures);
+    else if (CASE_FILE.test(file)) checkCaseFile(file, ctx, failures);
+    else if (GAP_FILE.test(file)) checkKnownGaps(file, ctx, failures);
   }
   return failures;
 }
@@ -150,7 +419,7 @@ function run(args) {
   let options;
   if (args[0] === '--staged') {
     options = {
-      files: git(['diff', '--cached', '--name-only', '--diff-filter=AM', '--no-renames', '-z'])
+      files: git(['diff', '--cached', '--name-only', '--diff-filter=AMD', '--no-renames', '-z'])
         .split('\0')
         .filter(Boolean),
       newText: (file) => git(['show', `:${file}`], { allowFailure: true }),
@@ -171,7 +440,7 @@ function run(args) {
     }
     const mergeBase = git(['merge-base', base, head]).trim();
     options = {
-      files: git(['diff', '--name-only', '--diff-filter=AM', '--no-renames', '-z', mergeBase, head])
+      files: git(['diff', '--name-only', '--diff-filter=AMD', '--no-renames', '-z', mergeBase, head])
         .split('\0')
         .filter(Boolean),
       newText: (file) => git(['show', `${head}:${file}`], { allowFailure: true }),
@@ -179,7 +448,7 @@ function run(args) {
       diffOf: (file) => git(['diff', '-U0', '--no-renames', mergeBase, head, '--', file]),
     };
   } else {
-    options = { files: args, newText: (file) => fs.readFileSync(path.resolve(root, file), 'utf8') };
+    options = { files: args, newText: workingText };
   }
   const failures = check({ ...options, legacy: legacyFiles() });
   for (const failure of failures) console.error(failure);
@@ -194,17 +463,23 @@ function run(args) {
 }
 
 function reportKinds() {
-  const files = git(['ls-files', '-z'])
-    .split('\0')
-    .filter((file) => TEST_FILE.test(file));
+  // Tracked files deleted in the working tree have no text on disk and are not counted.
+  const tracked = git(['ls-files', '-z']).split('\0').filter(Boolean);
+  const files = tracked.filter((file) => TEST_FILE.test(file) && workingText(file) !== null);
   const counts = {};
   for (const file of files) {
-    const parsed = parseTestKinds(fs.readFileSync(path.join(root, file), 'utf8'));
+    const parsed = parseTestKinds(workingText(file));
     const kinds = new Set([...(parsed.fileKinds ?? []), ...parsed.regions.flatMap((region) => region.kinds)]);
     if (!kinds.size) kinds.add('untagged');
     for (const kind of kinds) counts[kind] = (counts[kind] ?? 0) + 1;
   }
-  console.log(JSON.stringify({ files: files.length, counts }, null, 1));
+  const cases = tracked.filter((file) => CASE_FILE.test(file) && workingText(file) !== null);
+  const replay = { suites: cases.length, cases: 0 };
+  for (const file of cases) {
+    const value = parseJson(workingText(file)).value;
+    replay.cases += Array.isArray(value?.cases) ? value.cases.length : 0;
+  }
+  console.log(JSON.stringify({ files: files.length, counts, replay }, null, 1));
   return 0;
 }
 

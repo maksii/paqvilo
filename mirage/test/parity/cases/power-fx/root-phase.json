@@ -1,0 +1,372 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "power-fx",
+  "suite": "root-phase",
+  "oracle": {
+    "kind": "official-package",
+    "name": "Microsoft.PowerFx.Interpreter",
+    "version": "1.99.0.0 (shipped in Microsoft.PowerApps.CLI 2.13.1)",
+    "scope": "Numeric and culture formulas checked and evaluated by the official interpreter in two independent processes, with en-US culture and the Pacific time zone. Establishes these outcomes only; Canvas is not claimed."
+  },
+  "captures": [
+    {
+      "id": "run-1",
+      "sha256": "1970158a3e61b984285ae493cede0606391251b3e0b81a50c196a392e4a258aa",
+      "capturedAt": "2026-11-08"
+    },
+    {
+      "id": "run-2",
+      "sha256": "f363810209885f5750957bdcd2e4f3012212c8e42bf9f99e7edcd58267c7029d",
+      "capturedAt": "2026-11-08"
+    }
+  ],
+  "cases": [
+    {
+      "id": "row-01",
+      "input": {
+        "expression": "IfError(1e300 * 1e300, 0)",
+        "host": {
+          "culture": "en-US",
+          "timeZone": "Pacific Standard Time",
+          "numberIsFloat": true
+        },
+        "result": {
+          "fields": ["expression", "phase", "success", "diagnostics", "valueType", "kind", "value", "errors"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IfError(1e300 * 1e300, 0)",
+        "phase": "evaluation",
+        "success": true,
+        "diagnostics": [],
+        "valueType": "NumberValue",
+        "kind": "value",
+        "value": 0,
+        "errors": null
+      },
+      "volatile": []
+    },
+    {
+      "id": "row-02",
+      "input": {
+        "expression": "IfError(1e400, 2)",
+        "host": {
+          "culture": "en-US",
+          "timeZone": "Pacific Standard Time",
+          "numberIsFloat": true
+        },
+        "result": {
+          "fields": ["expression", "phase", "success", "diagnostics", "valueType", "kind", "value", "errors"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IfError(1e400, 2)",
+        "phase": "check",
+        "success": false,
+        "diagnostics": [
+          {
+            "message": "Numeric value is too large.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Incompatible type. We can't evaluate your formula because of a type error.",
+            "severity": "Critical"
+          },
+          {
+            "message": "The function 'IfError' has some invalid arguments.",
+            "severity": "Severe"
+          },
+          {
+            "message": "Argument type mismatch. The types of all result arguments must agree with or be coercible to the first result argument.",
+            "severity": "Critical"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "row-03",
+      "input": {
+        "expression": "Value(\"$ 12.34\")",
+        "host": {
+          "culture": "en-US",
+          "timeZone": "Pacific Standard Time",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "success", "diagnostics", "valueType", "kind", "value", "errors"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Value(\"$ 12.34\")",
+        "phase": "evaluation",
+        "success": true,
+        "diagnostics": [],
+        "valueType": "DecimalValue",
+        "kind": "value",
+        "value": 12.34,
+        "errors": null
+      },
+      "volatile": []
+    },
+    {
+      "id": "row-04",
+      "input": {
+        "expression": "Language()",
+        "host": {
+          "culture": "en-US",
+          "timeZone": "Pacific Standard Time",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "success", "diagnostics", "valueType", "kind", "value", "errors"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Language()",
+        "phase": "evaluation",
+        "success": true,
+        "diagnostics": [],
+        "valueType": "StringValue",
+        "kind": "value",
+        "value": "en-US",
+        "errors": null
+      },
+      "volatile": []
+    },
+    {
+      "id": "row-05",
+      "input": {
+        "expression": "Text(Time(14, 5, 0), \"h:mm AM/PM\")",
+        "host": {
+          "culture": "en-US",
+          "timeZone": "Pacific Standard Time",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "success", "diagnostics", "valueType", "kind", "value", "errors"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Text(Time(14, 5, 0), \"h:mm AM/PM\")",
+        "phase": "evaluation",
+        "success": true,
+        "diagnostics": [],
+        "valueType": "StringValue",
+        "kind": "value",
+        "value": "2:05 PM",
+        "errors": null
+      },
+      "volatile": []
+    },
+    {
+      "id": "row-06",
+      "input": {
+        "expression": "Text(Date(2024, 3, 5), DateTimeFormat.LongDate)",
+        "host": {
+          "culture": "en-US",
+          "timeZone": "Pacific Standard Time",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "success", "diagnostics", "valueType", "kind", "value", "errors"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Text(Date(2024, 3, 5), DateTimeFormat.LongDate)",
+        "phase": "evaluation",
+        "success": true,
+        "diagnostics": [],
+        "valueType": "StringValue",
+        "kind": "value",
+        "value": "Tuesday, March 5, 2024",
+        "errors": null
+      },
+      "volatile": []
+    },
+    {
+      "id": "row-07",
+      "input": {
+        "expression": "IsError(IsMatch(\"a\", \"(\"))",
+        "host": {
+          "culture": "en-US",
+          "timeZone": "Pacific Standard Time",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "success", "diagnostics", "valueType", "kind", "value", "errors"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IsError(IsMatch(\"a\", \"(\"))",
+        "phase": "check",
+        "success": false,
+        "diagnostics": [
+          {
+            "message": "'IsMatch' is a recognized but not supported function.",
+            "severity": "Critical"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "row-08",
+      "input": {
+        "expression": "DataSourceInfo([], DataSourceInfo.Required, Name)",
+        "host": {
+          "culture": "en-US",
+          "timeZone": "Pacific Standard Time",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "success", "diagnostics", "valueType", "kind", "value", "errors"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "DataSourceInfo([], DataSourceInfo.Required, Name)",
+        "phase": "check",
+        "success": false,
+        "diagnostics": [
+          {
+            "message": "'DataSourceInfo' is a recognized but not supported function.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Name isn't valid. 'DataSourceInfo' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "message": "The '.' operator cannot be used on Error values.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Name isn't valid. 'Name' isn't recognized.",
+            "severity": "Critical"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "row-09",
+      "input": {
+        "expression": "IsError(Choices([{x:1}].x))",
+        "host": {
+          "culture": "en-US",
+          "timeZone": "Pacific Standard Time",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "success", "diagnostics", "valueType", "kind", "value", "errors"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IsError(Choices([{x:1}].x))",
+        "phase": "check",
+        "success": false,
+        "diagnostics": [
+          {
+            "message": "'Choices' is a recognized but not supported function.",
+            "severity": "Critical"
+          },
+          {
+            "message": "Deprecated use of '.'. Please use the 'ShowColumns' function instead.",
+            "severity": "Critical"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "row-10",
+      "input": {
+        "expression": "IsError(Errors([1]))",
+        "host": {
+          "culture": "en-US",
+          "timeZone": "Pacific Standard Time",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "success", "diagnostics", "valueType", "kind", "value", "errors"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "IsError(Errors([1]))",
+        "phase": "check",
+        "success": false,
+        "diagnostics": [
+          {
+            "message": "'Errors' is a recognized but not supported function.",
+            "severity": "Critical"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "row-11",
+      "input": {
+        "expression": "JSON(Defaults([1]))",
+        "host": {
+          "culture": "en-US",
+          "timeZone": "Pacific Standard Time",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "success", "diagnostics", "valueType", "kind", "value", "errors"],
+          "check": "phase",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "JSON(Defaults([1]))",
+        "phase": "check",
+        "success": false,
+        "diagnostics": [
+          {
+            "message": "'JSON' is a recognized but not supported function.",
+            "severity": "Critical"
+          },
+          {
+            "message": "'Defaults' is a recognized but not supported function.",
+            "severity": "Critical"
+          }
+        ]
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

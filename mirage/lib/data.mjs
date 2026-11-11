@@ -4074,6 +4074,7 @@ export class DataStore {
     };
     return {
       dialect: options.dialect ?? 'extended',
+      odataNullEquality: options.odataNullEquality === true,
       readRows,
       related,
       navigate: (mapping, row, name) => {

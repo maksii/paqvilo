@@ -5,7 +5,7 @@ import { chromium } from 'playwright-core';
 import { PNG } from 'pngjs';
 import pixelmatch from 'pixelmatch';
 import { fileURLToPath } from 'node:url';
-import { parseArgs } from 'node:util';
+import { parseToolArgs } from './tool-options.mjs';
 
 const sha = (value) => createHash('sha256').update(value).digest('hex');
 const loopback = (hostname) => ['127.0.0.1', 'localhost', '[::1]'].includes(hostname);
@@ -648,11 +648,7 @@ export async function verifyParity({
 
 if (process.argv[1] && pathModule.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    const { values } = parseArgs({
-      options: Object.fromEntries(
-        ['local', 'origin', 'cdp', 'path', 'output'].map((name) => [name, { type: 'string' }]),
-      ),
-    });
+    const values = parseToolArgs('verify', process.argv.slice(2));
     const report = await verifyParity({
       localUrl: values.local,
       origin: values.origin,

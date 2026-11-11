@@ -807,7 +807,7 @@ export function createFlowTriggerRunner({
       );
     },
   });
-  async function startHost(key, { item, definition, trigger }) {
+  async function startHost(key, { item, definition, trigger }, connectors) {
     const host = {
       key,
       processId: item.processId,
@@ -908,7 +908,7 @@ export function createFlowTriggerRunner({
     }
     for (const [key, want] of found)
       if (!hosts.has(key) && want.trigger.supported && want.trigger.kind !== 'http' && eligible(want.item))
-        await startHost(key, want);
+        await startHost(key, want, connectors);
     return list(found);
   }
   /** The trigger hosts: one entry per Recurrence, HTTP Request and connector-trigger flow. */

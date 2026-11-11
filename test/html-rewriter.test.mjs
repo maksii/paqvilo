@@ -26,6 +26,7 @@ const FOOTER = 'content-snippets/footer-text/Footer-Text.en-US.contentsnippet.va
 // A linear match reads the page a small, fixed number of times; restarting per candidate line reads it thousands of times.
 const LINEAR_SCANS = 20;
 
+// @test-kind contract: a page identical to the local sources is returned untouched
 test('a page identical to the local sources is returned untouched', () => {
   const result = rewriter().rewrite(ONLINE_HOME, '/');
   assert.equal(result.html, ONLINE_HOME);
@@ -34,6 +35,7 @@ test('a page identical to the local sources is returned untouched', () => {
   assert.ok(result.matched.every((m) => m.identical));
 });
 
+// @test-kind contract: page custom CSS: the inline <style> is replaced by the local file
 test('page custom CSS: the inline <style> is replaced by the local file', () => {
   fx.write(CSS, fx.read(CSS).replace('color: red', 'color: green'));
   const result = rewriter().rewrite(ONLINE_HOME, '/');
@@ -48,6 +50,7 @@ test('page custom CSS: the inline <style> is replaced by the local file', () => 
   assert.equal(result.html.replace('color: green', 'color: red'), ONLINE_HOME);
 });
 
+// @test-kind contract: page custom CSS is only applied on its own page (also under a language prefix)
 test('page custom CSS is only applied on its own page (also under a language prefix)', () => {
   fx.write(CSS, fx.read(CSS).replace('color: red', 'color: green'));
   const r = rewriter();
@@ -90,6 +93,7 @@ test('real short routes stay distinct from home and exported language prefixes f
   assert.equal(pageKey('/fr-FR/it', r.model), '/it');
 });
 
+// @test-kind contract: form custom JS: found by similarity on any page, `$` in the code survives
 test('form custom JS: found by similarity on any page, `$` in the code survives', () => {
   fx.write(
     FORM_JS,
@@ -104,6 +108,7 @@ test('form custom JS: found by similarity on any page, `$` in the code survives'
   );
 });
 
+// @test-kind contract: a block is still recognised after a heavy local rewrite, through the baseline
 test('a block is still recognised after a heavy local rewrite, through the baseline', () => {
   fx.write(FORM_JS, 'import("/scripts/app.js").then(function (m) {\n  m.start();\n});\n');
   const result = rewriter().rewrite(ONLINE_HOME, '/');
@@ -111,6 +116,7 @@ test('a block is still recognised after a heavy local rewrite, through the basel
   assert.ok(!result.html.includes('$("#name")'));
 });
 
+// @test-kind contract: custom JS emptied locally removes the online block content
 test('custom JS emptied locally removes the online block content', () => {
   fx.write(FORM_JS, '');
   const result = rewriter().rewrite(ONLINE_HOME, '/');
@@ -118,6 +124,7 @@ test('custom JS emptied locally removes the online block content', () => {
   assert.ok(result.html.includes('<form><script type="text/javascript"></script></form>'));
 });
 
+// @test-kind contract: short scripts that only share boilerplate are not mistaken for each other
 test('short scripts that only share boilerplate are not mistaken for each other', () => {
   const form = (call) => `var ExampleApp = ExampleApp || {};\n\n$( document ).ready(function() {\n  ${call}\n});\n`;
   fx.write('basic-forms/a/A.basicform.custom_javascript.js', form('ExampleApp.Finalization.paymentContentEdit();'));
@@ -140,6 +147,7 @@ test('short scripts that only share boilerplate are not mistaken for each other'
   );
 });
 
+// @test-kind contract: non-code script elements and external scripts are never touched
 test('non-code script elements and external scripts are never touched', () => {
   fx.write(FORM_JS, '{"keep":"me"}\n');
   const external = `<script src="/scripts/app.js">${fx.read(FORM_JS).trim()}</script>`;
@@ -148,6 +156,7 @@ test('non-code script elements and external scripts are never touched', () => {
   assert.ok(result.html.includes(external));
 });
 
+// @test-kind contract: new page custom JS that is not online yet is injected into its page only
 test('new page custom JS that is not online yet is injected into its page only', () => {
   fx.write(PAGE_JS, 'window.fresh = 1;\n');
   const r = rewriter();
@@ -210,6 +219,7 @@ test('web template: a change to Liquid tags is listed as needing a deployment', 
   assert.match(r.unsupported[0].reason, /Liquid tags/);
 });
 
+// @test-kind contract: disabled markup and inline kinds still report changed sources as requiring deployment
 test('disabled markup and inline kinds still report changed sources as requiring deployment', () => {
   fx.write(HEADER, fx.read(HEADER).replace('{% if user %}', '{% if user.roles %}'));
   fx.write(CSS, fx.read(CSS).replace('color: red', 'color: green'));
@@ -221,6 +231,7 @@ test('disabled markup and inline kinds still report changed sources as requiring
   }
 });
 
+// @test-kind contract: disabled previews do not report unchanged sources or newline-only differences
 test('disabled previews do not report unchanged sources or newline-only differences', () => {
   fx.write(HEADER, fx.read(HEADER).replace(/\n/g, '\r\n'));
   const r = rewriter({ ...SITE, markup: { enabled: false }, inline: { enabled: false } });
@@ -318,12 +329,14 @@ test('a line with several {{ values }} is matched in linear time on a large page
   assert.ok(result.html.includes('<li class="item"><a href="/about">About</a></li>'));
 });
 
+// @test-kind contract: data responses (JSON) only take web template changes, never snippet text
 test('data responses (JSON) only take web template changes, never snippet text', () => {
   fx.write(FOOTER, 'All "rights" reserved.');
   const json = '{"footer":"All rights reserved by the agency."}';
   assert.equal(rewriter().rewrite(json, '/api', { html: false }).html, json);
 });
 
+// @test-kind contract: scope 'changed': an edited form does not take over the script of a similar, untouched form
 test("scope 'changed': an edited form does not take over the script of a similar, untouched form", () => {
   const body = (extra) =>
     `$(document).ready(function () {\n  setup("${extra}");\n  bindLookup();\n  bindDates();\n  bindTotals();\n  validateAll();\n});\n`;
@@ -338,6 +351,7 @@ test("scope 'changed': an edited form does not take over the script of a similar
   assert.ok(r.rewrite(quotePage, '/quote').html.includes('quoteOnly();'));
 });
 
+// @test-kind contract: one local script never replaces two different online scripts
 test('one local script never replaces two different online scripts', () => {
   const a = '$(function () {\n  alpha();\n  beta();\n  gamma();\n  delta();\n});';
   const b = '$(function () {\n  alpha();\n  beta();\n  gamma();\n  epsilon();\n});';
@@ -348,6 +362,7 @@ test('one local script never replaces two different online scripts', () => {
   assert.ok(result.html.includes('epsilon();'));
 });
 
+// @test-kind contract: a page that does not use the changed template is left alone, silently
 test('a page that does not use the changed template is left alone, silently', () => {
   fx.write(HEADER, fx.read(HEADER).replace('About us', 'About'));
   const other = '<html><body><p>nothing of the header here</p></body></html>';
@@ -362,6 +377,7 @@ test('a new template is reported: it does not exist online', () => {
   assert.match(r.unsupported.find((u) => u.rel.includes('New.webtemplate')).reason, /does not exist online yet/);
 });
 
+// @test-kind contract: scope 'changed': unchanged local blocks do not override the online ones
 test("scope 'changed': unchanged local blocks do not override the online ones", () => {
   // online is ahead of the checkout for the form script; the developer only edits the CSS
   const ahead = ONLINE_HOME.replace('  validate();', '  validate();\r\n  newerOnlineCall();');
@@ -373,6 +389,7 @@ test("scope 'changed': unchanged local blocks do not override the online ones", 
   assert.ok(changed.html.includes('color: green'));
 });
 
+// @test-kind contract: sourceMaps: a recognised inline script is loaded from its local file, in place
 test('sourceMaps: a recognised inline script is loaded from its local file, in place', () => {
   const r = new HtmlRewriter({
     model: new PortalModel(fx.dir),
@@ -396,6 +413,7 @@ test('sourceMaps: a recognised inline script is loaded from its local file, in p
   assert.ok(result.html.includes('<script type="application/json">{"keep":"me"}</script>'));
 });
 
+// @test-kind contract: sourceMaps: new page JS is injected as a script file too
 test('sourceMaps: new page JS is injected as a script file too', () => {
   fx.write(PAGE_JS, 'window.fresh = 1;\n');
   const r = new HtmlRewriter({
@@ -408,6 +426,7 @@ test('sourceMaps: new page JS is injected as a script file too', () => {
   assert.ok(html.includes(`<script type="text/javascript" src="${inlineScriptUrl(PAGE_JS)}"></script>\n</body>`));
 });
 
+// @test-kind contract: the source map of a served file points every line at the same line of the local file
 test('the source map of a served file points every line at the same line of the local file', () => {
   const file = fx.file('web-files/app.js');
   const body = Buffer.from('one();\r\ntwo();\r\nthree();');
@@ -421,6 +440,7 @@ test('the source map of a served file points every line at the same line of the 
   assert.equal(withFileSourceMap(own, file), own);
 });
 
+// @test-kind contract: disabled kinds are ignored
 test('disabled kinds are ignored', () => {
   fx.write(CSS, fx.read(CSS).replace('color: red', 'color: green'));
   fx.write(FOOTER, 'changed');
@@ -428,6 +448,7 @@ test('disabled kinds are ignored', () => {
   assert.equal(rewriter(site).rewrite(ONLINE_HOME, '/').html, ONLINE_HOME);
 });
 
+// @test-kind contract: refresh() picks up edits made after construction
 test('refresh() picks up edits made after construction', () => {
   const r = rewriter();
   assert.equal(r.rewrite(ONLINE_HOME, '/').html, ONLINE_HOME);

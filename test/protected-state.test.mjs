@@ -1,3 +1,4 @@
+// @test-kind security: Protected credentials must remain encrypted, purpose-bound, and safe against failed writes.
 import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -71,6 +72,33 @@ test('protected state has encrypted durable roundtrip, purpose binding and exclu
     await assert.rejects(protectSecret(ciphertext, true), {
       message: 'Windows credential encryption/decryption failed; no plaintext fallback.',
     });
+});
+
+// @test-kind security: A failed replacement must retain the original encrypted state and remove its temporary file.
+test('protected state retains ciphertext when Windows refuses replacement of a read-only destination', async (t) => {
+  if (process.platform !== 'win32') {
+    t.skip('Windows read-only destination semantics');
+    return;
+  }
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'protected-json-readonly-'));
+  const file = path.join(dir, '.paqvilo', 'identity.json');
+  t.after(async () => {
+    await fs.chmod(file, 0o600).catch((error) => {
+      if (error.code !== 'ENOENT') throw error;
+    });
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+  const purpose = 'readonly-fixture';
+  await saveProtectedState(file, { original: true }, { purpose });
+  const original = await fs.readFile(file);
+  await fs.chmod(file, 0o400);
+  await assert.rejects(saveProtectedState(file, { replacement: true }, { purpose, exclusive: false }), {
+    code: 'EPERM',
+  });
+  assert.deepEqual(await fs.readFile(file), original);
+  assert.deepEqual(await fs.readdir(path.dirname(file)), ['identity.json']);
+  await fs.chmod(file, 0o600);
+  assert.deepEqual(await loadProtectedState(file, { purpose }), { original: true });
 });
 
 test('DPAPI tolerates cold startup past 15 seconds, remains bounded, and withholds failed output', async (t) => {

@@ -50,6 +50,15 @@ Every PR must report all CodeQL configurations present on main, including unchan
 
 Every test you add or modify declares its kind with `// @test-kind <kind>: <reason>` (file-level in the first 40 lines, or directly above a test to override it): `parity`, `observation`, `compatibility`, `unproven`, `contract`, `security` or `tooling`. Definitions, syntax and evidence rules are in [docs/test-kinds.md](docs/test-kinds.md); pre-commit and CI run `scripts/check-test-tags.mjs` on changed test files.
 
-- `parity` assertions reproduce behaviour proven by a reproduced native recording or by an official Microsoft package. A failing parity assertion means the code is wrong: fix the code. Change, loosen, retag or remove a parity assertion only with an explicit user request naming the exact change, or new proof of that same guarantee (a fresh native recording/replay, official Microsoft package behaviour), stated in a `// @parity-evidence: <proof>` line in the same change. Documentation, memory, another tool, a forum post or an assumption is not proof.
-- A single unreproduced capture is `observation`; a local model without proof is `unproven` and must never be presented as parity. Never weaken a `security` test without explicit user approval.
+- `parity` assertions are replay cases: `scripts/parity-cases.mjs build` writes each case from two or more
+  recorded oracle captures, and `mirage/test/parity-replay.test.mjs` replays them. A failing replay case means
+  the code is wrong: fix the code.
+- Never edit a case file by hand. A recorded case changes only through `build` with new captures and a `history`
+  entry. Never add a known gap for an already recorded case to make it pass: fix the code. Never retag or remove an
+  existing parity test or case, except with an explicit user request naming the exact change, recorded as a
+  retirement entry in `scripts/parity-retirements.json`.
+- Hand-written tests cannot be newly tagged `parity`. Evidence linked by hand, or a single capture, is
+  `observation`; a local model without proof is `unproven` and is never presented as parity.
+- Never weaken a `security` test without explicit user approval. Documentation, memory, another tool, a forum
+  post or an assumption is not proof.
 - Do not tag a whole file `parity` because one test is; split or tag per test.

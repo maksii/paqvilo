@@ -100,6 +100,7 @@ let catalogue,
   query = {},
   selected = new Set(),
   record,
+  initialRecord,
   recordCapabilities,
   etag,
   formId,
@@ -123,6 +124,8 @@ let touchedFields = new Set();
 // Tab and section visibility changed by client scripts, for the open form only (tab.setVisible, section.setVisible).
 const layoutState = new Map();
 const layoutVisible = (item) => (layoutState.has(item) ? layoutState.get(item) : item.visible !== false);
+const layoutLabels = new Map();
+const layoutLabel = (item) => layoutLabels.get(item) ?? item.label;
 let loadedFormType = 1;
 let clientRuntime,
   clientReady = Promise.resolve(),
@@ -175,6 +178,7 @@ const disposeControls = () => {
 };
 function disposeClient() {
   layoutState.clear();
+  layoutLabels.clear();
   dismissPicker?.(false);
   clearTimeout(gridSearchTimer);
   formLifetime?.abort();
@@ -358,6 +362,7 @@ async function staffProfile() {
         disposeClient();
         dirty = false;
         record = null;
+        initialRecord = undefined;
         recordCapabilities = undefined;
         current = null;
         $('#commands').replaceChildren();
@@ -2548,6 +2553,7 @@ async function loadRecord(id) {
     recordCapabilities = result.capabilities ?? table.capabilities;
     setLoadedFormType(id);
     if (!id) applyNewRecordDefaults();
+    initialRecord = structuredClone(record);
     const requestedTab = selectRecordForm(result.etag);
     await renderRecord();
     if (token !== generation) return;
@@ -2838,7 +2844,7 @@ function createRecordTabs(selectedForm, recordCard, content) {
     if (focus) $('#content [role="tab"][aria-selected="true"]')?.focus();
   };
   for (const [index, tab] of availableTabs.entries()) {
-    const tabButton = button(tab.label, () => chooseTab(tab));
+    const tabButton = button(layoutLabel(tab), () => chooseTab(tab));
     tabButton.id = `record-tab-${index}`;
     tabButton.dataset.id = `tablist-${tab.id}`;
     bindModel(tabButton, modelBinding('tab', `${provenanceFormId()}:${tab.id}`));
@@ -2854,7 +2860,7 @@ function createRecordTabs(selectedForm, recordCard, content) {
     () =>
       picker(
         moreTabs,
-        availableTabs.map((tab) => ({ label: tab.label, value: tab.id })),
+        availableTabs.map((tab) => ({ label: layoutLabel(tab), value: tab.id })),
         {
           label: 'Record tabs',
           selected: activeTab,
@@ -2970,9 +2976,9 @@ function renderRecordSections(tab, columns, selectedForm, existing) {
       { coverage: 'self' },
     );
     if (section.name) panel.dataset.id = section.name;
-    if (section.label && section.showLabel !== false) {
+    if (layoutLabel(section) && section.showLabel !== false) {
       const title = document.createElement('h2');
-      title.textContent = section.label;
+      title.textContent = layoutLabel(section);
       panel.append(title);
     }
     if (section.labelPosition) panel.dataset.labelPosition = section.labelPosition;
@@ -3171,6 +3177,7 @@ function applyControlState(name, key, value) {
       reflowSectionFields(entry.wrapper.parentElement);
       break;
     case 'options':
+      if (entry.cell?.pcf) break;
       entry.control.setOptions(value.map((option) => ({ label: option.text, value: option.value })));
       break;
     case 'label':
@@ -3267,6 +3274,7 @@ function createShellClient(selectedForm) {
     tables: catalogue.tables,
     form: selectedForm,
     record: record ?? {},
+    initialRecord,
     extensions: catalogue.clientExtensions,
     metadata: (entity) => ensureMetadata(entity),
     getFormType: () => loadedFormType,
@@ -3289,6 +3297,17 @@ function createShellClient(selectedForm) {
           }
         : { pageType: 'entitylist', entityName: table.entity, viewId: query.view ?? null, viewType: 'savedquery' },
     layoutVisible,
+    layoutLabel,
+    setLayoutLabel: (item, label) => {
+      layoutLabels.set(item, label);
+      const runtime = clientRuntime;
+      requestAnimationFrame(() => {
+        if (runtime === clientRuntime && record) {
+          captureDraft();
+          void renderRecord();
+        }
+      });
+    },
     setLayoutVisible: (item, visible) => {
       layoutState.set(item, visible);
       const runtime = clientRuntime;
@@ -3303,7 +3322,7 @@ function createShellClient(selectedForm) {
       const entry = controls.find((entry) => entry.name === name);
       return entry?.control.supported ? entry.control.read() : record?.[name];
     },
-    write: (name, value) => {
+    write: (name, value, { changed = true } = {}) => {
       const field = table.fields[name],
         cell =
           cells.find((cell) => cell.name === name) ?? (selectedForm.attributes?.includes(name) ? { name } : undefined),
@@ -3318,8 +3337,10 @@ function createShellClient(selectedForm) {
       )
         throw new Error(`Column ${name} cannot be changed by this client extension.`);
       record[name] = value;
-      touchedFields.add(name);
-      dirty = true;
+      if (changed) {
+        touchedFields.add(name);
+        dirty = true;
+      }
       for (const entry of controls.filter((entry) => entry.name === name)) {
         if (entry.control.setValue) entry.control.setValue(value);
         else {
@@ -3335,7 +3356,7 @@ function createShellClient(selectedForm) {
         for (const [key, state] of clientControlState.get(entry.controlName) ?? [])
           applyControlState(entry.controlName, key, state);
       }
-      if ($('#save-status')) $('#save-status').textContent = ' - Unsaved changes';
+      if (dirty && $('#save-status')) $('#save-status').textContent = ' - Unsaved changes';
     },
     isDirty: (name) => (name ? touchedFields.has(name) : dirty),
     isValid: (report) => {
@@ -3375,7 +3396,26 @@ function createShellClient(selectedForm) {
     controlField: (name) =>
       cells.find((cell) => controlName(cell) === name)?.name ??
       regionControls.find((control) => control.id === name)?.name,
+    isPcfControl: (name) => Boolean(cells.find((cell) => controlName(cell) === name)?.pcf),
     controlState: (name, key, value) => readClientControlState(name, key, value, regionControls, cells, controlName),
+    syncChoiceOptions: (caller, fieldName, options, blank) => {
+      const sharedPcfBinding = cells.some((cell) => cell.name === fieldName && cell.pcf);
+      for (const cell of cells) {
+        const name = controlName(cell);
+        if (cell.name !== fieldName || cell.readOnlyText || (name !== caller && !sharedPcfBinding)) continue;
+        const states = clientControlState.get(name) ?? new Map();
+        states.set('optionPlaceholder', blank);
+        clientControlState.set(name, states);
+        if (name === caller) continue;
+        if (cell.pcf) {
+          states.set('options', options);
+          continue;
+        }
+        const entry = controls.find((control) => control.controlName === name);
+        if (entry && typeof entry.control.setOptions !== 'function') continue;
+        readClientControlState(name, 'options', options, regionControls, cells, controlName);
+      }
+    },
     notification: (message, level, id) => {
       let host = $('#form-notifications'),
         element = [...(host?.children ?? [])].find((element) => element.dataset.formNotification === id);
@@ -3462,7 +3502,7 @@ function readClientControlState(name, key, value, regionControls, cells, control
   if (value === undefined) return readCurrentControlState(name, key, entry, cells, controlName);
   if (key === 'options') {
     const cell = cells.find((cell) => controlName(cell) === name);
-    if (cell?.pcf || cell?.readOnlyText || (entry && typeof entry.control.setOptions !== 'function'))
+    if (cell?.readOnlyText || (!cell?.pcf && entry && typeof entry.control.setOptions !== 'function'))
       throw new Error(`Mirage client API does not support changing options for control ${name}.`);
   }
   const states = clientControlState.get(name) ?? new Map();
@@ -3478,6 +3518,9 @@ function readCurrentControlState(name, key, entry, cells, controlName) {
     return entry?.disabled ?? controlDisabled(cell, table.fields[cell?.name], clientControlState.get(name)?.get(key));
   const current = clientControlState.get(name)?.get(key);
   if (current != null) return current;
+  if (key === 'options' && cell)
+    return (table.fields[cell.name]?.options ?? []).map((option) => ({ text: option.label, value: option.value }));
+  if (key === 'optionPlaceholder' && cell) return true;
   if (key === 'hidden') return entry?.wrapper.hidden ?? cell?.visible === false;
   if (key === 'label') return cell?.label ?? table.fields[cell?.name]?.label;
   return undefined;
@@ -3981,7 +4024,12 @@ async function saveRecord(close) {
   notice('');
   captureDraft();
   const existing = Boolean(record[table.idColumn]),
-    values = {};
+    values = {},
+    submitModes = new Map(
+      clientRuntime?.formContext.data.entity.attributes
+        .get()
+        .map((attribute) => [attribute.getName(), attribute.getSubmitMode()]),
+    );
   // Client scripts may explicitly write source-disabled presentation controls.
   // Column permissions and staff capabilities still govern the resulting write.
   // Header and footer columns are form attributes like body columns (formContext.data.entity.attributes: every
@@ -3996,9 +4044,12 @@ async function saveRecord(close) {
   ]);
   for (const [name, value] of Object.entries(record)) {
     const field = table.fields[name],
+      submitMode = submitModes.get(name) ?? 'dirty',
+      attributeDirty = clientRuntime?.formContext.getAttribute(name)?.getIsDirty() ?? touchedFields.has(name),
       mode = existing ? 'update' : 'create';
     if (
-      (!existing || touchedFields.has(name)) &&
+      submitMode !== 'never' &&
+      ((submitMode === 'always' && dirty) || !existing || attributeDirty) &&
       field &&
       hasControl(field) &&
       !field.isPrimaryId &&
@@ -4009,7 +4060,12 @@ async function saveRecord(close) {
       values[name] = value;
   }
   // Dirty state clears only for the values persisted: a changed column the save could not carry stays unsaved and named.
-  const unsaved = [...touchedFields].filter((name) => !Object.hasOwn(values, name));
+  const unsaved = [...touchedFields].filter(
+    (name) =>
+      !Object.hasOwn(values, name) &&
+      submitModes.get(name) !== 'never' &&
+      (clientRuntime?.formContext.getAttribute(name)?.getIsDirty() ?? true),
+  );
   if (existing && !Object.keys(values).length) {
     if (unsaved.length) {
       notice(`These changed columns cannot be saved locally: ${unsaved.join(', ')}.`, true);
@@ -4045,7 +4101,11 @@ async function saveRecord(close) {
       await returnToGrid();
       if (notCarried) notice(`Record saved locally.${notCarried}`, true);
     } else {
-      await navigate(table.entity, { id: record[table.idColumn], form: formId, replace: true });
+      const savedEntity = table.entity,
+        savedId = record[table.idColumn];
+      await navigate(savedEntity, { id: savedId, form: formId, replace: true });
+      if (!switchingStaff && table?.entity === savedEntity && record?.[table.idColumn] === savedId)
+        for (const [name, mode] of submitModes) clientRuntime?.formContext.getAttribute(name)?.setSubmitMode(mode);
       notice(`Record saved locally.${notCarried}`, Boolean(notCarried));
     }
   } finally {
@@ -4646,6 +4706,7 @@ const sidePanes = {
     pageItems[0];
   renderNavigation();
   record = null;
+  initialRecord = undefined;
   recordCapabilities = undefined;
   current = null;
   etag = null;

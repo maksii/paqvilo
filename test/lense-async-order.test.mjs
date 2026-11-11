@@ -14,6 +14,7 @@ async function temp(t, label) {
   return directory;
 }
 
+// @test-kind contract: setup save starts its revision recheck before a later validation callback
 test('setup save starts its revision recheck before a later validation callback', async (t) => {
   const directory = await temp(t, 'paqvilo-save-order-');
   const events = [];
@@ -44,6 +45,7 @@ test('setup save starts its revision recheck before a later validation callback'
   assert.equal(await fs.readFile(path.join(directory, 'paqvilo.config.yml'), 'utf8'), 'name: example\n');
 });
 
+// @test-kind contract: setup snapshot starts findings before a later portals callback
 test('setup snapshot starts findings before a later portals callback', async () => {
   const events = [];
   const valid = {
@@ -87,6 +89,7 @@ test('setup snapshot starts findings before a later portals callback', async () 
   assert.ok(kindIndex < markerIndex);
 });
 
+// @test-kind contract: resource map reads a later asset before a no-sidecar entry yields
 test('resource map reads a later asset before a no-sidecar entry yields', async (t) => {
   const directory = await temp(t, 'paqvilo-resource-map-order-');
   const script = path.join(directory, 'bundle.js');
@@ -136,6 +139,7 @@ test('resource map reads a later asset before a no-sidecar entry yields', async 
   assert.ok(mimeIndex < changedIndex);
 });
 
+// @test-kind contract: setup linked-project refusals preserve caller directory getter ordering
 test('setup linked-project refusals preserve caller directory getter ordering', async (t) => {
   const directory = await temp(t, 'paqvilo-linked-order-');
   const events = [];
@@ -167,6 +171,7 @@ test('setup linked-project refusals preserve caller directory getter ordering', 
   assert.ok(Object.values(result.refused).every((item) => item.code === 'project-outside'));
 });
 
+// @test-kind contract: overlay route reports a rejected upstream fallback before the later marker
 test('overlay route reports a rejected upstream fallback before the later marker', async () => {
   const events = [],
     sentinel = new Error('fallback rejected');

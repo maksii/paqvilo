@@ -1450,16 +1450,11 @@ function formatMoneyEntry(entry, inner, field, currency) {
       ? Number(money.currencyprecision)
       : Number(field?.precision ?? 2);
   // Symbols and precision come from the record; the current pattern uses en-US grouping and a leading minus.
-  entry.FormattedValue = entry.DisplayValue = chooseLazily(
-    () => number == null,
-    () => '',
-    () =>
-      `${chooseLazily(
-        () => number < 0,
-        () => '-',
-        () => '',
-      )}${money?.currencysymbol ?? ''}${Math.abs(number).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })}`,
-  );
+  const formatted = () => {
+    if (number == null) return '';
+    return `${number < 0 ? '-' : ''}${money?.currencysymbol ?? ''}${Math.abs(number).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
+  };
+  entry.FormattedValue = entry.DisplayValue = formatted();
 }
 
 function formatBooleanEntry(entry, inner, field) {
@@ -3127,7 +3122,8 @@ export function antiForgeryCookie(csrf) {
         Math.floor(Number(siteSetting(context.portal, 'Grid/Download/MaximumResults')) || 5000),
       );
       const records = [];
-      for (let page = 1; records.length < maximum; page++) {
+      let page = 1;
+      while (records.length < maximum) {
         const data = await gridData(
           model,
           { ...body, page, pageSize: Math.min(maximum, 5000), allowLargePages: true, download: true },
@@ -3139,6 +3135,7 @@ export function antiForgeryCookie(csrf) {
         }
         records.push(...(data.Records ?? []));
         if (!data.MoreRecords || !data.Records?.length) break;
+        page++;
       }
       const columns = (Array.isArray(body.columns) ? body.columns : []).filter(
         (column) => column?.LogicalName && column.Type !== 1 && column.Type !== 2,

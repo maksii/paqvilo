@@ -72,6 +72,13 @@ organization's metadata. Large datasets use far less memory.
 
 ### Fixed
 
+- Acceptance observation works with script-disabled sandboxed frames, including compatibility rich-text editors.
+  Document recovery uses CDP context events; authored script, console, page and HTTP failures still fail acceptance.
+- Standalone Mirage tool help accepts each command's operational options before or after `--help` / `-h`.
+  Help validates syntax without reading inputs or running the tool. Successful `--help --json` retains text output;
+  malformed JSON requests still return the existing machine-readable error envelope.
+- Record-owner relocation uses bounded backoff for Windows sharing errors that outlast the former fixed retry
+  window. The 100-attempt limit, ownership rechecks and preservation of the preceding marker remain intact.
 - Updates no longer fail when exported audit relationships stamp modifier fields.
 - Default grids work on partial Solution exports whose primary name column is declared but not exported.
 - A server-logic Create response no longer exposes a column that column security hides.
@@ -83,6 +90,31 @@ organization's metadata. Large datasets use far less memory.
 - The rich-text compatibility editor sanitizes content with DOMPurify and keeps tables and paragraphs across saves.
 - `verify` cleanup waits for Windows to release the browser profile.
 - The temporary Edge browser used for shell capture no longer signs in to the Windows Microsoft account.
+
+### Consumer feedback qualification: 10 November 2026
+
+Both reports reproduce on the PR checkpoint `332399ed`; they are toolkit defects.
+The regressions use invented exports and loopback fixtures, with no customer or native access.
+
+| ID  | Confirmed cause and repair                                                                                                                                                                                                             | Regression coverage                                                                                                                                                                                                                                                 |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 239 | The document observer's main-world `pageshow` callback triggers Chromium's sandbox error. CDP context events now recover document identity. Review also reproduced and repaired duplicate retirement and stale-context identity reuse. | [Acceptance](../mirage/test-browser/acceptance-sandbox.test.mjs), [frame lifecycle and actual BFCache restore](../mirage/test-browser/document-commits-sandbox.test.mjs), [controlled stale-message ordering](../mirage/test/document-commits-boundaries.test.mjs). |
+| 247 | The dispatcher validated help against only `help` and `json`. All 16 standalone tools now share their operational option schemas with help parsing.                                                                                    | [Help syntax, option order, repeated arguments, terminators and side-effect guards](../test/cli-tool-help.test.mjs).                                                                                                                                                |
+
+The editor check edits two fields from empty and formatted/quoted starting values, blurs, saves locally and
+reopens twice, preserving hidden JSON values and stored HTML. Editor sandbox permissions remain intact.
+Authored console errors, page exceptions, failed responses and real blocked scripts still fail acceptance.
+The help guard refuses operational imports, input reads, writes, process launches and network access.
+Existing operational defaults and empty-value policies are retained; successful JSON help remains text.
+These are toolkit contract/security checks. They are not replay cases and change no protected assertions.
+
+Full validation also reproduced a separate record-owner relocation failure: Windows returned `EPERM` for the
+entire former 100-by-2-ms retry window, leaving the location marker unchanged. A
+[controlled contention regression](../mirage/test/record-owner-contention.test.mjs) now exercises a longer sharing
+hold without wall-clock sleeping, including legacy markers held beyond two seconds. Bounded backoff keeps total requested waiting below ten seconds, retains the
+100-attempt ceiling and checks ownership before each retry. Existing permanent-refusal and concurrent-owner
+security assertions are unchanged. A separate fixed 400-case legacy-relocation probe passed on the final sharing
+policy; the probe is supplementary evidence, not a guarantee for permanent denial.
 
 ### Upgrade notes
 
@@ -100,6 +132,9 @@ organization's metadata. Large datasets use far less memory.
 - SonarQube analyzes branches and pull requests. It is not a required check.
 - The test suite was audited: sleeps and wall-clock assertions were replaced by real signals, and slow hosts no
   longer fail tests.
+- Parity is asserted by replay cases. `node scripts/parity-cases.mjs build` records cases from two or more oracle
+  captures, `check` validates every case file and `report` counts cases per oracle kind. One runner replays each
+  case into Mirage. Hand-written tests can no longer be tagged `parity`. See [test kinds](test-kinds.md).
 
 Update with `npm install --save-dev paqvilo@^0.9.8` and commit the lockfile.
 

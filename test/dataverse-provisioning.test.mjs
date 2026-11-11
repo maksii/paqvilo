@@ -444,6 +444,7 @@ test('solution scoping replaces IncludeAll membership without deleting metadata 
   assert.equal(state.requests.filter((r) => r.method === 'POST').length, posts);
 });
 
+// @test-kind security+contract: drift and organisation mismatch block writes before mutation
 test('drift and organisation mismatch block writes before mutation', async (t) => {
   const { state, client } = await serverFixture(t),
     manifest = fixtureManifest();
@@ -458,6 +459,7 @@ test('drift and organisation mismatch block writes before mutation', async (t) =
   assert.equal(state.requests.filter((r) => r.method === 'POST').length, writes);
 });
 
+// @test-kind security+contract: solution scoping refuses metadata drift before replacing any membership
 test('solution scoping refuses metadata drift before replacing any membership', async (t) => {
   const { state, client } = await serverFixture(t),
     manifest = fixtureManifest();
@@ -470,6 +472,7 @@ test('solution scoping refuses metadata drift before replacing any membership', 
   assert.ok(state.components.filter((c) => c.componenttype === 1).every((c) => c.rootcomponentbehavior === 0));
 });
 
+// @test-kind security+contract: mutations are not blindly retried and server responses do not leak through errors
 test('mutations are not blindly retried and server responses do not leak through errors', async (t) => {
   const { state, client } = await serverFixture(t);
   state.failCreate = true;
@@ -548,6 +551,7 @@ test('datetime manifest format is independent of behavior and participates in dr
   }
 });
 
+// @test-kind contract: schema mutations have a longer deadline while timeout outcomes still require reconciliation
 test('schema mutations have a longer deadline while timeout outcomes still require reconciliation', async (t) => {
   // docs/dataverse-provisioning.md: reads allow 30 seconds, schema mutations 180 seconds.
   const defaults = new DataverseClient({ environmentUrl: 'https://fictional.crm.example', token: async () => '' });
@@ -587,6 +591,7 @@ test('schema mutations have a longer deadline while timeout outcomes still requi
   );
 });
 
+// @test-kind security+contract: API continuations cannot escape origin or path; connection output omits secrets
 test('API continuations cannot escape origin or path; connection output omits secrets', () => {
   const client = new DataverseClient({
     environmentUrl: 'https://fictional.crm.example',
@@ -611,6 +616,7 @@ test('API continuations cannot escape origin or path; connection output omits se
   assert.equal(parsed.clientSecret, 'invented-secret');
 });
 
+// @test-kind contract: dataverse help lists its register, plan and export commands
 test('dataverse help lists its register, plan and export commands', () => {
   const result = spawnSync(
     process.execPath,
@@ -622,6 +628,7 @@ test('dataverse help lists its register, plan and export commands', () => {
     assert.match(result.stdout, new RegExp(`^  ${command} +--`, 'm'));
 });
 
+// @test-kind contract: journal replacement survives a transient filesystem lock without repeating remote work
 test('journal replacement survives a transient filesystem lock without repeating remote work', async () => {
   const directory = await tempDir('invented-dataverse-journal-'),
     file = path.join(directory, 'journal.json'),
@@ -649,6 +656,7 @@ test('journal replacement survives a transient filesystem lock without repeating
   }
 });
 
+// @test-kind security+contract: credential import handles identity-bearing formats without treating secret ID as the value
 test('credential import handles identity-bearing formats without treating secret ID as the value', () => {
   const clientId = '11111111-1111-4111-8111-111111111111',
     tenantId = '22222222-2222-4222-8222-222222222222',
@@ -714,6 +722,7 @@ test('forms/views and later scalar columns preserve explicit solution ownership'
   assert.equal(plan.actions.at(-1).kind, 'view');
 });
 
+// @test-kind security+contract: response stream and JSON failures retain unknown mutation outcomes without leaking bodies
 test('response stream and JSON failures retain unknown mutation outcomes without leaking bodies', async () => {
   for (const text of [
     async () => {
@@ -742,6 +751,7 @@ test('response stream and JSON failures retain unknown mutation outcomes without
   }
 });
 
+// @test-kind contract: interrupted schema journals identify the pending action before its remote mutation
 test('interrupted schema journals identify the pending action before its remote mutation', async (t) => {
   const { client, state } = await serverFixture(t);
   state.failCreate = true;
@@ -802,6 +812,7 @@ test('application authentication confines file-derived configuration to the fixe
   }
 });
 
+// @test-kind security+contract: unexpected OAuth transport and response failures never expose credential text
 test('unexpected OAuth transport and response failures never expose credential text', async () => {
   const connection = {
     tenantId: '11111111-1111-4111-8111-111111111111',

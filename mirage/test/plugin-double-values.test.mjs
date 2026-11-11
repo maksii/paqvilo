@@ -1,4 +1,4 @@
-// @test-kind compatibility: Learn column types: Float/Double columns are System.Double SDK values; finite-only checks are local; nativeQualified false
+// @test-kind compatibility: Learn column types: Float/Double columns are System.Double SDK values; finite-only checks are local; the evidence file records nativeQualified false.
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';

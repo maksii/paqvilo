@@ -1,3 +1,5 @@
+// @test-kind unproven: Mirage's local colour, search, random and URL-encoding model; no recording backs these expectations.
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ErrorKind, FxDataSource, FxError, evaluateFx, powerFxEngine } from '../lib/power-fx.mjs';
@@ -46,7 +48,7 @@ test('Rand and RandBetween honor an injected random source and bounded integer r
   );
   const error = evaluateFx('RandBetween(3,2)', { host: { random: () => 0 } }).value;
   assert.ok(error instanceof FxError);
-  assert.equal(error.errors[0].Kind, ErrorKind.InvalidArgument);
+  assert.equal(error.errors[0].Kind, ErrorKind.Numeric);
 });
 
 test('EncodeUrl encodes reserved and Unicode characters as in PAC', () => {

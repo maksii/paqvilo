@@ -66,6 +66,21 @@ test('an $expand of a collection navigation with a nested $select returns the se
   for (const child of body.x_parent_children) assert.deepEqual(keysOf(child), ['x_childid', 'x_name']);
 });
 
+// @test-kind contract: Collection-rooted expansion retains its implicit relationship lookup while the keyed native projection above stays unchanged.
+test('a collection-rooted selected expansion retains its relationship lookup', async (t) => {
+  const f = await fixture(t);
+  const body = await getJson(
+    f,
+    `/x_parents?$select=x_name&$filter=x_parentid eq ${PARENT}&$expand=x_parent_children($select=x_name)`,
+  );
+  assert.equal(body.value.length, 1);
+  assert.equal(body.value[0].x_parent_children.length, 2);
+  for (const child of body.value[0].x_parent_children) {
+    assert.deepEqual(keysOf(child), ['_x_parentid_value', 'x_childid', 'x_name']);
+    assert.equal(child._x_parentid_value, PARENT);
+  }
+});
+
 test('a fetchXml GET returns the primary key of each row even when only other attributes are listed', async (t) => {
   const f = await fixture(t);
   const fetch = "<fetch><entity name='x_child'><attribute name='x_name'/></entity></fetch>";

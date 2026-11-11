@@ -1,6 +1,7 @@
 // A signed-in portal visitor drives a canvas app on the Power Pages host as the Dataverse user enhanced authorization maps
 // the contact to (portal-authorization.mjs), never SYSTEM; an anonymous visitor, or a visitor the standard model does not
 // map, is refused with 401 CanvasPrincipalRequired.
+// @test-kind unproven: the mixed portal-to-Canvas startup/data assertions still require exact proof; local refusal-to-elevate policy is tagged separately.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -129,6 +130,7 @@ test('a signed-in portal visitor runs the app as the mapped Dataverse user (enha
   assert.deepEqual([anonymous.status, (await anonymous.json()).error.code], [401, 'CanvasPrincipalRequired']);
 });
 
+// @test-kind security: a portal session lacking a mapped Dataverse principal is refused by Paqvilo's driver API instead of being elevated to SYSTEM.
 test('the standard model maps no Dataverse user, so a signed-in visitor is refused rather than run as SYSTEM', async (t) => {
   const sim = await site(t, 0);
   const response = await api(sim, signInHeaders(sim, 'alex'));

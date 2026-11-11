@@ -96,7 +96,7 @@ test('independent HTTP reads cannot borrow an awaiting main operation transactio
           { code: 'LocalBackendPermissionDenied' },
         );
         refused.push(true);
-        // @parity-evidence: native and native-r2 readNested: a read step's SDK write commits in its own transaction
+        // Evidence: native and native-r2 readNested: a read step's SDK write commits in its own transaction
         // The authorized CLR write commits in a transaction of its own (data.mjs openReadLane), queued behind the
         // awaiting main operation: it neither joins that transaction nor sees its provisional row.
         dispatchSdkCall({

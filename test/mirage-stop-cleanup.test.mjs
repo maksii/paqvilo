@@ -27,6 +27,7 @@ const standalone = (directory) => [
   '--json',
 ];
 
+// @test-kind tooling: a closed CLI stays ended when its PID is reused
 test('a closed CLI stays ended when its PID is reused', () => {
   const occupied = () => true;
   assert.equal(trackedCliEnded(1234, true, occupied), true);
@@ -37,6 +38,7 @@ test('a closed CLI stays ended when its PID is reused', () => {
   );
 });
 
+// @test-kind tooling: workspace cleanup on a failed or timed-out test ends a CLI still starting and the runtime it launched
 test('workspace cleanup on a failed or timed-out test ends a CLI still starting and the runtime it launched', async (t) => {
   const work = await workspace(t);
   // The CLI launches and records its runtime, reports it on stdout, then blocks before answering,
@@ -66,6 +68,7 @@ test('workspace cleanup on a failed or timed-out test ends a CLI still starting 
 // `after start`: the test process dies once its CLI has started and recorded a runtime.
 // `during start`: it dies while the CLI is still starting. On Windows the CLI then dies with it (a
 // libuv child joins its parent's kill-on-close job), so a runtime it launched has no record.
+// @test-kind tooling: cancellation and cleanup for each authored lifecycle case
 for (const moment of ['after start', 'during start'])
   test(`an abruptly ended test process leaves its workspace to the reaper (${moment})`, async (t) => {
     const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-reaped-')));
@@ -104,6 +107,7 @@ for (const moment of ['after start', 'during start'])
     assert.equal(fs.existsSync(directory), false, 'the reaper removed the workspace');
   });
 
+// @test-kind tooling: a live unrelated process does not count as a workspace CLI when a PID is reused
 test('a live unrelated process does not count as a workspace CLI when a PID is reused', async (t) => {
   const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-reaper-identity-')));
   const script = "process.stdout.write('ready\\n');process.stdin.resume()";

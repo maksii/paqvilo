@@ -1,3 +1,5 @@
+// @test-kind unproven: Local contracts; SQL Server results only for inputs replayed from parity/cases/tds-sql.
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { FUNCTIONS, callFunction, castValue, returnType, systemVariable } from '../lib/dataverse-tds-sql-functions.mjs';
@@ -92,7 +94,7 @@ const cases = [
   ['ROUND', [dec('1.5'), null], null],
   ['CONCAT', ['a', null, 'b'], 'ab'],
   ['CONCAT_WS', [',', 'a', null, 'b'], 'a,b'],
-  ['CONCAT_WS', [null, 'a', 'b'], null],
+  ['CONCAT_WS', [null, 'a', 'b'], 'ab'],
   ['ISNULL', [null, 'x'], 'x'],
   ['ISNULL', ['y', 'x'], 'y'],
   ['COALESCE', [null, null, 3], 3],
@@ -126,7 +128,7 @@ const cases = [
   ['CHARINDEX', ['TEST', 'This is a Test'], 11],
   ['CHARINDEX', ['TEST', 'This is a Test', 1], 0, { caseSensitive: true }],
   ['PATINDEX', ['%[0-9]%', 'abc4'], 4],
-  ['PATINDEX', ['a_c', 'zabc'], 2],
+  ['PATINDEX', ['a_c', 'zabc'], 0],
   ['PATINDEX', ['%x%', 'abc'], 0],
   ['REPLACE', ['abcabc', 'B', 'X'], 'aXcaXc'],
   ['REPLACE', ['abcabc', 'B', 'X'], 'abcabc', { caseSensitive: true }],
@@ -169,8 +171,7 @@ const cases = [
   ['FORMAT', [utc(2026, 10, 19), 'd'], '10/19/2026'],
   ['FORMAT', [utc(2026, 10, 19), 'd', 'de-DE'], '19.10.2026'],
   ['FORMAT', [utc(2026, 10, 19), 'dddd, dd MMMM yyyy', 'de-DE'], 'Montag, 19 Oktober 2026'],
-  ['FORMAT', [1234.5, 'N2', 'xx-YY'], null],
-  ['FORMAT', [1234.5, 'N2', 'not a culture'], null],
+  ['FORMAT', [1234.5, 'N2', 'xx-YY'], '1,234.50'],
 
   // date and time
   ['DATEDIFF', ['day', '2036-03-01', '2036-02-28'], -2],
@@ -225,7 +226,7 @@ const cases = [
   ['ROUND', [-2.5, 0], -3],
   ['ROUND', [123.45, -2], 100],
   ['SIGN', [-3], -1],
-  ['SIGN', [dec('0.0')], dec('0')],
+  ['SIGN', [dec('0.0')], dec('0.0')],
   ['POWER', [2, 10], 1024],
   ['SQRT', [16], 4],
   ['SQUARE', [3], 9],
@@ -241,6 +242,7 @@ for (const [name, args, expected, ctx] of cases) {
 }
 
 test('error cases carry SQL Server numbers', () => {
+  assert.throws(() => call('FORMAT', [1234.5, 'N2', 'not a culture']), fails(9818));
   assert.throws(() => call('LEFT', ['ab', -1]), fails(536));
   assert.throws(() => call('SUBSTRING', ['abc', 1, -1]), fails(537));
   assert.throws(() => call('ROUND', [dec('748.58'), -3]), fails(8115));

@@ -333,6 +333,7 @@ function canvasControlModel(tree, format) {
 function prepareCanvasModel(source) {
   const tree = source.tree ?? {
     format: source.app?.format ?? 'pa.yaml',
+    screensOrder: source.app?.screensOrder ?? null,
     screens: source.screens ?? [],
     components: source.components ?? [],
   };
@@ -905,10 +906,12 @@ export function createCanvasApp({
           dataRowLimit: CANVAS_DATA_ROW_LIMIT,
           dataSource: (name) => {
             if (scope.component && !scope.component.accessAppScope) return undefined;
+            // A records host is created only from a context built with api and caller.
             const entry = dataSources.get(name),
-              table = entry?.table ?? name;
+              table = entry?.table ?? name,
+              recordApi = /** @type {{store?: {state?: {mappings?: Record<string, {entitySet?: string}>}}}} */ (api);
             // By entity set: a store mapping keyed by logical name need not repeat its logicalName.
-            const found = records?.dataSource(api.store?.state?.mappings?.[table]?.entitySet ?? table);
+            const found = records?.dataSource(recordApi.store?.state?.mappings?.[table]?.entitySet ?? table);
             if (found) return new FxDataSource(name, journaledAdapter(found.adapter, name));
             if (entry && String(entry.kind).toLowerCase() === 'table') {
               const message = `Canvas data source ${name} is declared but has no configured local table.`;
@@ -1462,7 +1465,7 @@ export function createCanvasApp({
     };
     const mode = (form, next) => {
       setForm(form, { mode: next, error: undefined, errorKind: undefined });
-      clearInputs(form);
+      clearFormInputs(form);
       return true;
     };
     return {
@@ -1479,9 +1482,9 @@ export function createCanvasApp({
       /* NOSONAR: constant return value is part of the handler contract */ ResetForm: (target) => {
         const form = controlArg(target, ['form'], 'ResetForm');
         if (read(form, 'Mode') === 'View') return true; // ResetForm has no effect in FormMode.View
-        clearInputs(form);
+        clearFormInputs(form);
         setForm(form, {
-          mode: read(form, 'Mode') === 'New' ? 'Edit' : state.forms.get(form)?.mode,
+          mode: read(form, 'Mode') === 'New' ? undefined : state.forms.get(form)?.mode,
           error: undefined,
           errorKind: undefined,
         });
@@ -1577,6 +1580,17 @@ export function createCanvasApp({
       state.selected.delete(name);
       changed(`sel:${name}`);
     }
+  };
+  // Native form resets reach controls directly in data cards, while custom inputs inside nested containers retain edits.
+  const clearFormInputs = (form) => {
+    for (const card of cards(form))
+      for (const child of controls.get(card)?.children ?? [])
+        for (const key of [...state.inputs.keys()].filter(
+          (key) => key === `input:${child}` || key.startsWith(`input:${child}#`),
+        )) {
+          state.inputs.delete(key);
+          changed(key);
+        }
   };
 
   // ---- behaviour ----
@@ -1909,6 +1923,16 @@ export function createCanvasApp({
   }
   function initializeResetInputs() {
     for (const input of captureResetInputs()) componentInputBaseline.set(input.key, input.value);
+    captureFormInputBaselines();
+  }
+  const formInputBaselines = new Map();
+  function captureFormInputBaselines(resetChanged = false) {
+    for (const [name, entry] of controls) {
+      if (!['form', 'formviewer'].includes(entry.kind)) continue;
+      const value = JSON.stringify({ mode: read(name, 'Mode'), item: observable(formRecord(name)) });
+      if (resetChanged && formInputBaselines.has(name) && formInputBaselines.get(name) !== value) clearInputs(name);
+      formInputBaselines.set(name, value);
+    }
   }
   function formulaOutcome(result, where, current) {
     let failed;
@@ -2511,6 +2535,7 @@ export function createCanvasApp({
         }
         if (request?.action !== 'evaluate') await syncTimers();
         await settle();
+        if (request?.action !== 'evaluate') captureFormInputBaselines(true);
         if (request?.action !== 'evaluate') await synchronizeResetInputs();
         return { result: observable(result), errors: state.errors.slice(before), snapshot: instance.snapshot() };
       }),
@@ -2548,6 +2573,8 @@ export function createCanvasApp({
           properties: Object.fromEntries(names.map((property) => [property, observable(read(name, property, scope))])),
           behaviours: [...(formulas.get(name)?.keys() ?? [])].filter((property) => isBehaviour(name, property)),
         };
+        const form = formOf(name);
+        if (form && formRecord(form) === null) out.properties.Visible = false;
         if (entry.kind === 'codecomponent') out.codeComponent = source.codeComponents?.[name] ?? null;
         if (['combobox', 'dropdown', 'radio'].includes(entry.kind) && !scope.gallery) {
           const rows = items(name);

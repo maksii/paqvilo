@@ -48,7 +48,14 @@
  * Not enforced: function names other than FREETEXT and FREETEXTTABLE.
  */
 
-import { TdsSqlError, checkPredicate, parseExpression, splitBatches, tokenize } from './dataverse-tds-sql-lexer.mjs';
+import {
+  SQL_OPERATOR_TOKEN,
+  TdsSqlError,
+  checkPredicate,
+  parseExpression,
+  splitBatches,
+  tokenize,
+} from './dataverse-tds-sql-lexer.mjs';
 
 // Data types the Dataverse SQL docs list as supported.
 const SUPPORTED_TYPES = new Set([
@@ -399,13 +406,68 @@ function parseSelectList(s, starts) {
     } else if (tok?.type === 'variable' && isOperator(peek(s, 1), '=')) {
       advance(s);
       advance(s);
-      columns.push({ kind: 'Assign', name: tok.value, expr: expr(s) });
+      const value = expr(s);
+      checkScalarExpression(value);
+      columns.push({ kind: 'Assign', name: tok.value, expr: value });
+    } else if ((isName(tok) || tok?.type === 'string') && isOperator(peek(s, 1), '=')) {
+      advance(s);
+      advance(s);
+      const value = expr(s);
+      checkScalarExpression(value);
+      if (isKeyword(peek(s), 'AS')) {
+        const near = peek(s);
+        throw new TdsSqlError(156, "Incorrect syntax near the keyword 'AS'.", { pos: near.pos, line: near.line });
+      }
+      columns.push({ kind: 'Expr', expr: value, alias: tok.value });
     } else {
-      const e = expr(s);
-      columns.push({ kind: 'Expr', expr: e, alias: parseAlias(s) });
+      columns.push(parseExpressionColumn(s));
     }
   } while (eatPunct(s, ','));
   return columns;
+}
+
+function parseExpressionColumn(s) {
+  const e = expr(s);
+  checkScalarExpression(e);
+  return { kind: 'Expr', expr: e, alias: parseAlias(s) };
+}
+
+function checkScalarExpression(e) {
+  const errors = scalarPredicateTokens(e);
+  if (!errors.length) return;
+  const near = errors.sort((a, b) => a.pos - b.pos)[0];
+  if (near.type === 'keyword')
+    throw new TdsSqlError(156, `Incorrect syntax near the keyword '${near.value}'.`, {
+      pos: near.pos,
+      line: near.line,
+    });
+  throw syntaxError(near.raw.length > 1 ? { ...near, raw: near.raw[0] } : near);
+}
+
+// CASE conditions and IIF's first argument are predicate contexts; scalar subqueries parse their own SELECT list.
+function scalarPredicateTokens(node) {
+  if (!node || typeof node !== 'object') return [];
+  if (Array.isArray(node)) return node.flatMap(scalarPredicateTokens);
+  if (node.type === 'Subquery') return [];
+  if (node.type === 'Case')
+    return [
+      node.operand,
+      ...node.whens.flatMap(({ when, then }) => (node.operand ? [when, then] : [then])),
+      node.elseExpr,
+    ].flatMap(scalarPredicateTokens);
+  if (node.type === 'FunctionCall')
+    return node.args.slice(node.name.toUpperCase() === 'IIF' ? 1 : 0).flatMap(scalarPredicateTokens);
+  if (node.type === 'Cast' && isPredicateRoot(node.operand)) return [node[SQL_OPERATOR_TOKEN]];
+  const own = isPredicateRoot(node) && node[SQL_OPERATOR_TOKEN] ? [node[SQL_OPERATOR_TOKEN]] : [];
+  return own.concat(Object.values(node).flatMap(scalarPredicateTokens));
+}
+
+function isPredicateRoot(e) {
+  return (
+    ['IsNull', 'In', 'Between', 'Like', 'Exists', 'Quantified'].includes(e.type) ||
+    (e.type === 'Unary' && e.operator === 'NOT') ||
+    (e.type === 'Binary' && (COMPARISONS.has(e.operator) || ['AND', 'OR'].includes(e.operator)))
+  );
 }
 
 // Output names must be unique and every expression column needs an alias. Only names known statically are
@@ -573,13 +635,15 @@ function attachQuantifiers(node, quantified) {
   if (node === null || typeof node !== 'object') return node;
   for (const key of Object.keys(node)) node[key] = attachQuantifiers(node[key], quantified);
   if (node.type === 'Binary' && node.right?.type === 'Subquery' && quantified.has(node.right.query)) {
-    return {
+    const result = {
       type: 'Quantified',
       operator: node.operator,
       quantifier: quantified.get(node.right.query),
       left: node.left,
       query: node.right.query,
     };
+    Object.defineProperty(result, SQL_OPERATOR_TOKEN, { value: node[SQL_OPERATOR_TOKEN] });
+    return result;
   }
   return node;
 }

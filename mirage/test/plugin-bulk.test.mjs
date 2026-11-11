@@ -1,4 +1,4 @@
-// @test-kind compatibility: Learn bulk operation messages: standard tables, one table per request, no 1000-record cap, atomic failure; nativeQualified false
+// @test-kind compatibility: Learn bulk operation messages: standard tables, one table per request, no 1000-record cap, atomic failure; the evidence file records nativeQualified false.
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr, retypeClrRuntime } from './fixtures/clr-sdk.mjs';
@@ -117,7 +117,7 @@ test('Standard bulk validates all identities/security before writing and preserv
   );
   assert.equal(calls, 1);
   assert.deepEqual(store.snapshot(), before);
-  // @parity-evidence: native recorder corpus bulk: a CreateMultiple request with both CreateMultiple and Create steps runs
+  // Evidence: native recorder corpus bulk: a CreateMultiple request with both CreateMultiple and Create steps runs
   // them all (CreateMultiple first, then each record's Create, at every stage); a host pipeline without a step catalogue
   // no longer refuses that mix.
   const seen = [];

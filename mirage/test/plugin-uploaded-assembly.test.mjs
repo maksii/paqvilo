@@ -1,5 +1,4 @@
 // @test-kind contract: user decision 2026-10-30 (C08 "Run by default"): a registered step on uploaded assembly bytes runs in the CLR host without a trust step; the load-failure message wording is a local model
-// @parity-evidence: user decision 2026-10-30 in this session (C08: "Run by default")
 // Registered plug-in assemblies uploaded through the registration Web API run like native: the step changes data, a package's
 // dependent assembly resolves, updated content runs the new code, and a step whose assembly cannot load fails with 0x80040224
 // and rolls its operation back. Invented schema, assemblies and identities only.

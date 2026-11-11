@@ -77,6 +77,7 @@ const shown = (value) => {
 };
 
 function parseFormFields(text) {
+  /** @type {Record<string, string | undefined>} */
   const fields = Object.fromEntries(new URLSearchParams(text));
   const action = {
     action: fields.action,
@@ -367,7 +368,7 @@ export function createCanvasHandler({
     }
   };
   const callerOf = async (req) => {
-    const caller = await principal(req);
+    const caller = await Promise.resolve(principal(req));
     if (!caller?.principalId)
       throw failure(
         401,
@@ -497,7 +498,7 @@ export function createCanvasHandler({
     // The root's actor is the principal the app runs as; an unusable session is answered by the paths that need one.
     if (traces?.enabled)
       try {
-        traces.current()?.setActor(traceActor(await principal(req)));
+        traces.current()?.setActor(traceActor(await Promise.resolve(principal(req))));
       } catch {
         /* no actor */
       }

@@ -970,7 +970,7 @@ function likeSdkCondition(c, attribute, values) {
     const value = values[0];
     const leading = value.startsWith('%'),
       trailing = value.endsWith('%');
-    const inner = value.slice(leading ? 1 : 0, trailing ? -1 : undefined);
+    const inner = value.slice(leading ? 1 : 0, trailing ? -1 : value.length);
     const decoded = inner.replace(/\[\[\]|\[%\]|\[_\]/g, (match) => ({ '[[]': '[', '[%]': '%', '[_]': '_' })[match]);
     if (supportedLikePattern(inner)) {
       const predicate = likePredicate(leading, trailing, attribute, decoded);
@@ -2727,6 +2727,7 @@ export function pluginImage(store, entity, row, registration, formatUserId) {
   const outsidePlugin = !store.pluginParentContext && !pluginInvocationSdkParent(store);
   // The platform's own reads (an Upsert's existence query, an N:N intersect check; frame.internalRead) carry the
   // app-module inputs, also inside a plug-in, and never IncludeAnnotations (recorded native crud, associate, sdkMessages).
+  /** @type {Record<string, unknown>} */
   const readRequestParameters = Object.fromEntries(
     Object.entries(
       !outsidePlugin && !frame.internalRead

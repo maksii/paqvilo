@@ -1,4 +1,4 @@
-// @test-kind contract: maintenance refactors preserve synchronous route guards and transaction publication boundaries.
+// @test-kind contract: maintenance refactors preserve synchronous route checks and transaction publication boundaries.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

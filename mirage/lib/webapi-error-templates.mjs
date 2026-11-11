@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { odataReaderTemplateDescriptor } from './webapi-error-details.mjs';
+import { templateDataRecord, templateDataArray } from './error-template-data.mjs';
 
 const TYPES = new Set([
   'Edm.String',
@@ -10,7 +11,7 @@ const TYPES = new Set([
   'Edm.DateTimeOffset',
   'Edm.Guid',
 ]);
-const NODES = new Set(['StartObject', 'PrimitiveValue', 'EndOfInput']);
+const NODES = new Set(['StartObject', 'StartArray', 'PrimitiveValue', 'EndOfInput']);
 const FIELDS = {
   'unreadable-stream': [],
   'decimal-string': ['expectedType'],
@@ -18,6 +19,7 @@ const FIELDS = {
   'root-node': ['actualNode', 'expectedNode'],
   'unexpected-token': [],
   'unrecognized-token': [],
+  'unknown-property': [],
   'primitive-type': ['sourceType', 'expectedType'],
   'primitive-format': ['expectedType'],
 };
@@ -26,10 +28,13 @@ const SHA = /^[a-f0-9]{64}$/;
 
 /** Keys contain neither submitted values nor property/record/site identifiers. */
 export function webApiReaderTemplateKey(descriptor) {
+  templateDataRecord(descriptor, 'Reader templates');
   if (!descriptor || typeof descriptor !== 'object' || Array.isArray(descriptor))
     throw new Error('Reader template descriptor required');
   const fields =
-    Object.hasOwn(descriptor, 'kind') && Object.hasOwn(FIELDS, descriptor.kind) ? FIELDS[descriptor.kind] : null;
+    Object.hasOwn(descriptor, 'kind') && typeof descriptor.kind === 'string' && Object.hasOwn(FIELDS, descriptor.kind)
+      ? FIELDS[descriptor.kind]
+      : null;
   if (
     !fields ||
     Object.keys(descriptor).length !== fields.length + 1 ||
@@ -44,26 +49,30 @@ export function webApiReaderTemplateKey(descriptor) {
 
 /** Trusted pack templates are explicit response emulation, never CLR execution. */
 export function validateWebApiErrorTemplates(value) {
+  templateDataRecord(value, 'Reader templates');
   if (
     value?.version !== 1 ||
     typeof value.evidence !== 'string' ||
     !value.evidence.trim() ||
-    !Array.isArray(value.templates) ||
-    value.templates.length < 1 ||
-    value.templates.length > 32
+    !Array.isArray(value.templates)
   )
     throw new Error('webApiErrorTemplates requires version1, evidence and 1..32 templates');
+  const entries = templateDataArray(value.templates, { maximum: 32, label: 'Reader templates' });
   const keys = new Set();
-  return value.templates.map((template) => {
+  return entries.map((template) => {
+    templateDataRecord(template, 'Reader templates');
     if (!['POST', 'PATCH'].includes(template?.method))
       throw new Error('Reader template requires an evidenced POST/PATCH method');
     const key = template.method + ':' + webApiReaderTemplateKey(template?.descriptor);
     if (keys.has(key)) throw new Error('Duplicate reader template descriptor');
     keys.add(key);
     if (
-      !SHA.test(template.capturedSourceSha256 ?? '') ||
-      !SHA.test(template.qualifiedVariationSha256 ?? '') ||
-      !SHA.test(template.suffixSha256 ?? '')
+      typeof template.capturedSourceSha256 !== 'string' ||
+      !SHA.test(template.capturedSourceSha256) ||
+      typeof template.qualifiedVariationSha256 !== 'string' ||
+      !SHA.test(template.qualifiedVariationSha256) ||
+      typeof template.suffixSha256 !== 'string' ||
+      !SHA.test(template.suffixSha256)
     )
       throw new Error('Reader template requires captured source, qualified variation and suffix SHA256');
     const suffix = template.suffix;

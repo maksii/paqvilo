@@ -20,10 +20,19 @@ export async function observeDocumentCommits(page, cdp, { document, commit, read
     if (!pairs.has(token) && pairs.size >= 2048) pairs.delete(pairs.keys().next().value);
     return pairs.get(token) ?? {};
   };
+  const currentContext = (pair) =>
+    pair.context && sessions.get(pair.session)?.contexts.get(pair.executionContextId) === pair.context;
   const join = (token) => {
     const pair = pairs.get(token),
       record = sessions.get(pair?.session);
-    if (!pair?.frame || !pair.frameId || !record?.initialized || !record.loaders.get(pair.frameId)) return;
+    if (
+      !pair?.frame ||
+      !pair.frameId ||
+      !record?.initialized ||
+      !record.loaders.get(pair.frameId) ||
+      !currentContext(pair)
+    )
+      return;
     const previous = documents.get(pair.frameId);
     if (previous?.token !== token) documents.set(pair.frameId, { frame: pair.frame, token });
     pairs.delete(token);
@@ -33,14 +42,23 @@ export async function observeDocumentCommits(page, cdp, { document, commit, read
     for (const [token, pair] of pairs)
       if (pair.session === session && (!frameId || pair.frameId === frameId)) join(token);
   };
-  const navigated = (frame, session) => {
+  const navigated = (frame, session, restored = false) => {
     if (disposed) return;
-    sessions.get(session)?.loaders.set(frame.id, frame.loaderId);
+    const record = sessions.get(session),
+      ownedLoader = record?.loaders.get(frame.id);
+    // A commit can precede context destruction. Retire those contexts immediately, but
+    // do not invalidate an OOPIF's initial snapshot or BFCache contexts announced before restore.
+    if (!restored && record?.initialized && ownedLoader && ownedLoader !== frame.loaderId)
+      for (const [id, context] of record.contexts) if (context.frameId === frame.id) record.contexts.delete(id);
+    record?.loaders.set(frame.id, frame.loaderId);
     const previous = loaders.get(frame.id);
     loaders.set(frame.id, frame.loaderId);
     if (previous && previous !== frame.loaderId) {
       const replaced = documents.get(frame.id);
-      if (replaced) commit(replaced.frame, replaced.token);
+      if (replaced) {
+        documents.delete(frame.id);
+        commit(replaced.frame, replaced.token);
+      }
     }
     joinSession(session, frame.id);
   };
@@ -55,6 +73,10 @@ export async function observeDocumentCommits(page, cdp, { document, commit, read
     if (disposed) return;
     const pair = pairFor(token);
     if (!pair) return;
+    if (pair.session && !currentContext(pair)) {
+      pairs.delete(token);
+      return;
+    }
     // Label early requests even while the independent CDP target is still attaching.
     document(frame, token);
     pairs.set(token, { ...pair, frame });
@@ -72,6 +94,7 @@ export async function observeDocumentCommits(page, cdp, { document, commit, read
       owner,
       frameId: null,
       initialized: false,
+      contexts,
       loaders: new Map(),
       cleanup: () => {
         for (const [name, handler] of listeners) session.off(name, handler);
@@ -83,19 +106,32 @@ export async function observeDocumentCommits(page, cdp, { document, commit, read
     };
     sessions.set(session, record);
     on('Runtime.executionContextCreated', ({ context }) => {
-      if (context.auxData?.isDefault) contexts.set(context.id, context.auxData.frameId);
+      if (context.auxData?.isDefault) {
+        // Keep the context object too: a new document may reuse the numeric context id.
+        contexts.set(context.id, { frameId: context.auxData.frameId });
+        // Restored BFCache documents retain their token, but their contexts are announced again.
+        // Invoke through CDP: a pageshow listener in the main world is blocked by script-disabled
+        // sandboxes even when it was installed by an init script, producing a spurious page error.
+        void session
+          .send('Runtime.evaluate', {
+            expression: `globalThis[${JSON.stringify(reportBinding)}]?.()`,
+            contextId: context.id,
+          })
+          .catch(() => {});
+      }
     });
     on('Runtime.executionContextDestroyed', ({ executionContextId }) => contexts.delete(executionContextId));
     on('Runtime.executionContextsCleared', () => contexts.clear());
     on('Runtime.bindingCalled', ({ name, payload, executionContextId }) => {
       if (name !== browserBinding || disposed) return;
-      const frameId = contexts.get(executionContextId),
+      const context = contexts.get(executionContextId),
+        frameId = context?.frameId,
         pair = pairFor(payload);
       if (!frameId || !pair) return;
-      pairs.set(payload, { ...pair, frameId, session });
+      pairs.set(payload, { ...pair, frameId, session, context, executionContextId });
       join(payload);
     });
-    on('Page.frameNavigated', ({ frame }) => navigated(frame, session));
+    on('Page.frameNavigated', ({ frame, type }) => navigated(frame, session, type === 'BackForwardCacheRestore'));
     on('Page.frameDetached', ({ frameId, reason }) => {
       if (reason !== 'swap') forgetFrame(frameId);
     });
@@ -195,9 +231,6 @@ export async function observeDocumentCommits(page, cdp, { document, commit, read
         };
         Object.defineProperty(globalThis, reportBinding, { value: report });
         report();
-        window.addEventListener('pageshow', (event) => {
-          if (event.persisted) report();
-        });
       },
       { browserBinding, frameBinding, reportBinding },
     );

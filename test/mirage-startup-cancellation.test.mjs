@@ -1,3 +1,4 @@
+// @test-kind unproven: the checks in this file exercise mirage startup cancellation with local fixtures; no native capture establishes the behaviour they assert.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -53,6 +54,7 @@ async function ownRuntime(paths, identity, url) {
   ]);
 }
 
+// @test-kind contract: cancellation and cleanup for each authored lifecycle case
 for (const streaming of [false, true])
   test(`discovery cancellation aborts a pending ${streaming ? 'status body' : 'status response'} and skips remaining portals`, async (t) => {
     const { paths } = await fixture(t);
@@ -96,6 +98,7 @@ for (const streaming of [false, true])
     );
   });
 
+// @test-kind contract: ownership cancellation releases queued and externally locked updates without changing another owner
 test('ownership cancellation releases queued and externally locked updates without changing another owner', async (t) => {
   const { paths } = await fixture(t);
   await fs.mkdir(path.dirname(paths.ownershipFile), { recursive: true });
@@ -149,6 +152,7 @@ test('ownership cancellation releases queued and externally locked updates witho
   await assert.rejects(fs.access(lock), { code: 'ENOENT' });
 });
 
+// @test-kind contract: Ctrl+C during existing-runtime discovery exits before launching a child
 test('Ctrl+C during existing-runtime discovery exits before launching a child', async (t) => {
   const { root, paths } = await fixture(t);
   let requested;
@@ -180,6 +184,7 @@ test('Ctrl+C during existing-runtime discovery exits before launching a child', 
   assert.equal(process.listenerCount('SIGINT'), signalsBefore);
 });
 
+// @test-kind contract: cancellation and cleanup for each authored lifecycle case
 for (const ownedMismatch of [false, true])
   test(`startup skips ${ownedMismatch ? 'owned settings-mismatch' : 'unowned'} listener probes before cancellation during log setup`, async (t) => {
     const { root, paths } = await fixture(t);
@@ -232,6 +237,7 @@ for (const ownedMismatch of [false, true])
       assert.equal((await fs.stat(path.join(paths.logRoot, name))).size, 0);
   });
 
+// @test-kind contract: startup probes and reuses a runtime whose ownership, launch settings and process identity match
 test('startup probes and reuses a runtime whose ownership, launch settings and process identity match', async (t) => {
   const { root, paths } = await fixture(t);
   let requests = 0;

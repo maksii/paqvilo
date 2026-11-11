@@ -1,3 +1,4 @@
+// @test-kind unproven: portal import, local adapter and native-facing rendering models without recorded replay evidence.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

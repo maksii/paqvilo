@@ -1,3 +1,4 @@
+// @test-kind contract: local setup journeys, configuration revision handling and owned workspace lifecycle.
 import { makeTemporaryDirectory, drainFixture, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -127,80 +128,87 @@ test('background preview polling preserves an unsaved settings draft', async (t)
   assert.equal(await input.inputValue(), './unsaved-draft');
 });
 
+test('setup UI configures a demo and opens its Mirage setup flow', { timeout: 120000 }, async (t) => {
+  const work = await temporary(t),
+    demo = path.join(work, 'demo');
+  await prepareDemo(demo);
+  const catalogueFile = path.join(demo, 'paqvilo.config.yml');
+  const catalogue = await fs.readFile(catalogueFile, 'utf8');
+  await fs.writeFile(
+    catalogueFile,
+    catalogue
+      .replace('      solutionRoots: [ ./code-solution, ./metadata, ./solution ]\n', '')
+      .replace('local: http://127.0.0.1:8787', 'local: http://127.0.0.1:8787 # TODO(paqvilo-init): choose an origin') +
+      'defaults:\n  mirage:\n    solutionRoots: [ ./code-solution, ./metadata, ./solution ]\n',
+  );
+  await fs.mkdir(path.join(demo, 'node_modules'));
+  await fs.symlink(root, path.join(demo, 'node_modules/paqvilo'), process.platform === 'win32' ? 'junction' : 'dir');
+  const page = await newPage(t, { viewport: { width: 1440, height: 1050 } });
+  await allSettings(page);
+  const failures = [];
+  page.on('pageerror', (error) => failures.push(error.message));
+  const demoServer = await startSetupServer({ directory: demo, processEnv: {} });
+  t.resources.push(() => demoServer.close());
+  // Journey sections are collapsed except the next stage; a hash opens its section.
+  await page.goto(demoServer.url + '#portals');
+  await page.getByRole('heading', { name: 'Exported files', exact: true }).waitFor();
+  assert.equal(await page.locator('#portals').evaluate((node) => node.open), true);
+  assert.equal(await page.locator('#identity').evaluate((node) => node.open), false);
+  assert.match(await page.locator('#portal-example').innerText(), /export/);
+  // The local port is part of What to run.
+  await page.evaluate(() => {
+    location.hash = '#runtime-configuration';
+  });
+  const demoForm = page.locator('form[data-form=runtime][data-site=example]');
+  const configurationBefore = await fs.readFile(path.join(demo, 'paqvilo.config.yml'), 'utf8');
+  await demoForm.locator('[name=port]').fill('0');
+  await saveForm(page, demoForm);
+  assert.equal(
+    await fs.readFile(path.join(demo, 'paqvilo.config.yml'), 'utf8'),
+    configurationBefore.replace('port: 8787', 'port: 0'),
+  );
+  assert.equal(
+    YAML.parse(await fs.readFile(path.join(demo, 'paqvilo.config.yml'), 'utf8')).sites.example.mirage.port,
+    0,
+  );
+  const demoRuntime = await createSimulator({
+    sourceDir: path.join(demo, 'portal'),
+    watch: false,
+    solutionRoots: [path.join(demo, 'metadata'), path.join(demo, 'code-solution'), path.join(demo, 'solution')],
+    dataPacks: [{ id: 'example', module: path.join(demo, 'pack/pack.mjs') }],
+    preset: 'example-demo',
+    setup: { config: path.join(demo, 'paqvilo.config.yml'), processEnv: {} },
+  });
+  t.resources.push(() => demoRuntime.close());
+  assert.match(await fetch(demoRuntime.url).then((response) => response.text()), /Build it three ways/);
+  await page.goto(demoRuntime.url + '/_sim/');
+  // The top bar link opens setup in a new tab; the AREAS switch in the sidebar carries the same name.
+  const popupWait = page.waitForEvent('popup');
+  await page.locator('.topbar').getByRole('link', { name: 'Project setup', exact: true }).click();
+  const popup = await popupWait;
+  await popup.getByRole('heading', { name: 'Project setup', exact: true }).waitFor();
+  assert.equal(await popup.getByRole('link', { name: '← Back to portal', exact: true }).getAttribute('href'), '/');
+  assert.equal(await popup.getByRole('link', { name: 'Administration', exact: true }).getAttribute('href'), '/_sim/');
+  assert.match(await popup.locator('#overview').innerText(), /Mirage preview running/);
+  await popup.close();
+  assert.deepEqual(failures, []);
+});
+
+// @test-kind contract+security: independent scaffold configuration preserves revision isolation and renders a hostile layer label as inert text.
 test(
-  'setup UI configures a demo and an independent scaffold with two local Git exports and validates Mirage flows',
+  'setup UI configures an independent scaffold with two local Git exports and validates both Mirage flows',
   { timeout: 120000 },
   async (t) => {
     const work = await temporary(t),
-      demo = path.join(work, 'demo'),
-      consumer = path.join(work, 'consumer');
-    await prepareDemo(demo);
-    const catalogueFile = path.join(demo, 'paqvilo.config.yml');
-    const catalogue = await fs.readFile(catalogueFile, 'utf8');
-    await fs.writeFile(
-      catalogueFile,
-      catalogue
-        .replace('      solutionRoots: [ ./code-solution, ./metadata, ./solution ]\n', '')
-        .replace(
-          'local: http://127.0.0.1:8787',
-          'local: http://127.0.0.1:8787 # TODO(paqvilo-init): choose an origin',
-        ) + 'defaults:\n  mirage:\n    solutionRoots: [ ./code-solution, ./metadata, ./solution ]\n',
-    );
-    await fs.mkdir(path.join(demo, 'node_modules'));
-    await fs.symlink(root, path.join(demo, 'node_modules/paqvilo'), process.platform === 'win32' ? 'junction' : 'dir');
+      consumer = path.join(work, 'consumer'),
+      sources = path.join(work, 'checkouts');
     await prepareProject(consumer, { name: 'onboarding', sites: ['alpha', 'beta'], noPack: true });
-    const sources = path.join(work, 'checkouts');
     await localGit(path.join(sources, 'classic'), path.join(root, 'examples/project/portal'));
     await localGit(path.join(sources, 'code'), path.join(root, 'test-browser/fixtures/code-site'));
     const page = await newPage(t, { viewport: { width: 1440, height: 1050 } });
     await allSettings(page);
     const failures = [];
     page.on('pageerror', (error) => failures.push(error.message));
-    const demoServer = await startSetupServer({ directory: demo, processEnv: {} });
-    t.resources.push(() => demoServer.close());
-    // Journey sections are collapsed except the next stage; a hash opens its section.
-    await page.goto(demoServer.url + '#portals');
-    await page.getByRole('heading', { name: 'Exported files', exact: true }).waitFor();
-    assert.equal(await page.locator('#portals').evaluate((node) => node.open), true);
-    assert.equal(await page.locator('#identity').evaluate((node) => node.open), false);
-    assert.match(await page.locator('#portal-example').innerText(), /export/);
-    // The local port is part of What to run.
-    await page.evaluate(() => {
-      location.hash = '#runtime-configuration';
-    });
-    const demoForm = page.locator('form[data-form=runtime][data-site=example]');
-    const configurationBefore = await fs.readFile(path.join(demo, 'paqvilo.config.yml'), 'utf8');
-    await demoForm.locator('[name=port]').fill('0');
-    await saveForm(page, demoForm);
-    assert.equal(
-      await fs.readFile(path.join(demo, 'paqvilo.config.yml'), 'utf8'),
-      configurationBefore.replace('port: 8787', 'port: 0'),
-    );
-    assert.equal(
-      YAML.parse(await fs.readFile(path.join(demo, 'paqvilo.config.yml'), 'utf8')).sites.example.mirage.port,
-      0,
-    );
-    const demoRuntime = await createSimulator({
-      sourceDir: path.join(demo, 'portal'),
-      watch: false,
-      solutionRoots: [path.join(demo, 'metadata'), path.join(demo, 'code-solution'), path.join(demo, 'solution')],
-      dataPacks: [{ id: 'example', module: path.join(demo, 'pack/pack.mjs') }],
-      preset: 'example-demo',
-      setup: { config: path.join(demo, 'paqvilo.config.yml'), processEnv: {} },
-    });
-    t.resources.push(() => demoRuntime.close());
-    assert.match(await fetch(demoRuntime.url).then((response) => response.text()), /Build it three ways/);
-    await page.goto(demoRuntime.url + '/_sim/');
-    // The top bar link opens setup in a new tab; the AREAS switch in the sidebar carries the same name.
-    const popupWait = page.waitForEvent('popup');
-    await page.locator('.topbar').getByRole('link', { name: 'Project setup', exact: true }).click();
-    const popup = await popupWait;
-    await popup.getByRole('heading', { name: 'Project setup', exact: true }).waitFor();
-    assert.equal(await popup.getByRole('link', { name: '← Back to portal', exact: true }).getAttribute('href'), '/');
-    assert.equal(await popup.getByRole('link', { name: 'Administration', exact: true }).getAttribute('href'), '/_sim/');
-    assert.match(await popup.locator('#overview').innerText(), /Mirage preview running/);
-    await popup.close();
-
     const server = await startSetupServer({ directory: consumer, processEnv: {} });
     t.resources.push(() => server.close());
     await page.goto(server.url + '#settings');

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { reportCliError } from './cli-output.mjs';
-import { parseArgs as parseNodeArgs } from 'node:util';
+import { parseToolArgs } from './tool-options.mjs';
 import { fileIdentity, sameFile } from '../lense/file-identity.mjs';
 /**
  * golden-liquid conformance report for the Mirage Liquid engine.
@@ -261,17 +261,7 @@ function appendDifferenceRow(lines, item) {
 }
 
 function parseArgs(argv) {
-  const { values } = parseNodeArgs({
-    args: argv,
-    options: {
-      suite: { type: 'string' },
-      rules: { type: 'string' },
-      out: { type: 'string' },
-      timeout: { type: 'string' },
-      json: { type: 'boolean' },
-      markdown: { type: 'boolean' },
-    },
-  });
+  const values = parseToolArgs('liquid-conformance', argv);
   if (values.json && values.markdown) throw new Error('Use either --json or --markdown');
   const raw = values.timeout ?? '5000';
   const timeoutMs = Number(raw);

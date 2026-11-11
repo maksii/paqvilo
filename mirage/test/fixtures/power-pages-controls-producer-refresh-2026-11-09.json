@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "id": "power-pages-controls-producer-refresh-2026-11-09",
+  "recordedDate": "2026-11-09",
+  "scope": "Reproduces the existing 202 rendered-control and authored-feedback results; no additional assertions, cases or platform coverage.",
+  "historicalEvidence": {
+    "file": "frontend-parity-evidence.json",
+    "suite": "power-pages-rendered-controls",
+    "probeFunctionSha256": "17827c2b3477e64afaeee43edbbffea0d165ed30e1f9769f52413f2f99399171",
+    "suitePreservedUnchanged": true
+  },
+  "producer": {
+    "file": "mirage/testing/power-pages-controls.mjs",
+    "export": "capturePowerPagesControlContract",
+    "functionSha256": "3c2c3fb1447e7ac650005f4db0cf5b503717f2c9a12ef49ec39729978260814b",
+    "moduleSha256": "dc604d23840e1e5647929a53c49f6345d4591bcd87eacaa4f66bd7fbb916ad75",
+    "change": "Synchronous per-field and grouped-control helpers preserve the original property, event and restoration order."
+  },
+  "input": {
+    "originalPlanSha256": "6a4baf9a30311b753050ebb2f546d62fc8519749bc31b2dd65d1c5cf4823cc72",
+    "jsonSha256": "f7336b774c751c21a3ad50371826acce98f19572015c11c6e4db48a899f2994c",
+    "orderedCaseIdsSha256": "db68aa5c70696d0e50e11e28ca5f42e42d09402fe9c61079376fd498d0e30774",
+    "resultCount": 202,
+    "fields": 25,
+    "groups": 1,
+    "originalInputAndOrderPreserved": true
+  },
+  "fixture": {
+    "file": "power-pages-controls-expected.json",
+    "sha256": "6497bea4d8e3307073c5dacfeb6d74ee679bf4b3799153bd83afd2cfc2271d78",
+    "unchanged": true
+  },
+  "source": {
+    "currentNativeFormXmlSha256": "2df19b283c49b798af9d30b5a647d1f34dcf30a6ee98861d5799b209fadbb34b",
+    "renderedControls": 26,
+    "basicFormIdentityBoundByRenderedHtmlNames": true,
+    "currentSourceLabelsAndDomPropertiesVerified": true,
+    "knownAuthoredFeedbackVerified": true,
+    "finalRouteStatus": 200,
+    "beforeAndAfterSourceBytesIdentical": true
+  },
+  "recording": {
+    "resultsEncoding": "The results hash uses JSON.stringify(capture.results, null, 2) plus a newline; the complete raw capture object has its own captureSha256.",
+    "id": "e455057f-fcf1-4e25-9f1b-c436991f80e0",
+    "receiptSha256": "32512c02ddff5d32b350d0ac789774b41f1aee841051cd37d7e26d6c0b202ec0",
+    "journalSha256": "701b6e7a81c6338da5ee6ef49989e5d297be6f8eaa457aa709c749249c60b94d",
+    "runnerModuleSha256": "c4fac661d2929ac3e08e4fac4201543be74b4610f02f61feeb5384faf80bd02c",
+    "runnerInputSha256": "5cc4bd31c081104fe1effa2bc8b498f66b91a9b4ab43fdfbad085382c2ca6e8c",
+    "independentReviewSha256": "0cd0f57e21ab1a0c413e4ad6b5813ce9bd4062a920469d13c967668f854b017f",
+    "ownedPagesClosed": 6,
+    "runs": [
+      {
+        "id": "d71914fb-540c-49ca-9323-e99b4f46ee37",
+        "receiptSha256": "80fb511cd3dcb213a4e6b171bea2703d64599e1b2c0807e73467dc4106283ce6",
+        "sourceBeforeSha256": "7e281b46d95798e176c62537a3f80c8a4c187aa879c641a7aa2614f61b1946cc",
+        "sourceAfterSha256": "7e281b46d95798e176c62537a3f80c8a4c187aa879c641a7aa2614f61b1946cc",
+        "captureSha256": "a3ec689ef09565847c73b7944d07ad5fa6e07f2d9f069307ac616ed42f8cea41",
+        "resultsSha256": "6497bea4d8e3307073c5dacfeb6d74ee679bf4b3799153bd83afd2cfc2271d78",
+        "resultCount": 202,
+        "editableStateRestored": true,
+        "ownedPagesClosed": true
+      },
+      {
+        "id": "748f39ee-e731-4ec6-91dc-36b5727481d5",
+        "receiptSha256": "869cf71492ea9ded0e788af9b0ffeb3e750ccbea67ea4cd7499bb7db8f8e7cca",
+        "sourceBeforeSha256": "7e281b46d95798e176c62537a3f80c8a4c187aa879c641a7aa2614f61b1946cc",
+        "sourceAfterSha256": "7e281b46d95798e176c62537a3f80c8a4c187aa879c641a7aa2614f61b1946cc",
+        "captureSha256": "a3ec689ef09565847c73b7944d07ad5fa6e07f2d9f069307ac616ed42f8cea41",
+        "resultsSha256": "6497bea4d8e3307073c5dacfeb6d74ee679bf4b3799153bd83afd2cfc2271d78",
+        "resultCount": 202,
+        "editableStateRestored": true,
+        "ownedPagesClosed": true
+      }
+    ]
+  },
+  "comparison": {
+    "results": "Both independent native 202-result arrays match both historical captures exactly and are byte-identical to the unchanged public fixture.",
+    "editableValuesAndGroupSelectionsRestored": true,
+    "knownAuthoredFeedbackRestored": true
+  },
+  "limits": [
+    "The visitor identity, authentication and submission behavior are excluded; no arbitrary runtime-handler absence is claimed.",
+    "The separate client189 and property26 producers, assertions, fixtures and historical evidence are unchanged.",
+    "Deployment identities, source bodies, rendered native names and browser state remain in ignored private evidence.",
+    "Only task-owned pages were closed; the existing authenticated browser and context remain user-owned.",
+    "Page routing does not qualify existing-context service-worker or WebSocket traffic; no tested records or source components were saved."
+  ]
+}

@@ -1,3 +1,4 @@
+// @test-kind unproven: the checks in this file exercise solution parser security with local fixtures; no native capture establishes the behaviour they assert.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -7,6 +8,7 @@ import { classifySolutionPath } from '../lib/solution-schema.mjs';
 import { createSolutionMetadataOverlay } from '../lib/dataverse-solution-metadata.mjs';
 import { decodeXml } from '../lib/importer.mjs';
 
+// @test-kind security+contract: solution XML scans delimiters and attributes while preserving quoted markup, CDATA and recovery
 test('solution XML scans delimiters and attributes while preserving quoted markup, CDATA and recovery', () => {
   const root = parseSolutionXml(
     '<?xml version="1.0"?><root><!-- omitted --><item label="a > b" other=\'&quot;x&quot;\'/><text><![CDATA[<raw>&amp;]]></text></root>',
@@ -25,6 +27,7 @@ test('solution XML scans delimiters and attributes while preserving quoted marku
   assert.equal(attrs.__proto__, 'plain');
 });
 
+// @test-kind contract: CDATA decoding retains incomplete sections and the first closing delimiter semantics
 test('CDATA decoding retains incomplete sections and the first closing delimiter semantics', () => {
   assert.equal(decodeXml('a<![CDATA[x&amp;]]>b<![CDATA[y]]>c'), 'ax&byc');
   assert.equal(decodeXml('a<![CDATA[incomplete&amp;'), 'a<![CDATA[incomplete&');
@@ -97,6 +100,7 @@ test('imported solution metadata scans nested XML entries and excludes non-metad
 // machine do not count); the wall-clock limit only stops a runaway child.
 const ADVERSARIAL_CPU_BUDGET_MS = 1000;
 const RUNAWAY_LIMIT_MS = 60000;
+// @test-kind security+contract: long malformed XML and repeated solution path segments finish within a bounded worker
 test('long malformed XML and repeated solution path segments finish within a bounded worker', () => {
   const xml = new URL('../lib/solution-xml.mjs', import.meta.url).href;
   const importer = new URL('../lib/importer.mjs', import.meta.url).href;

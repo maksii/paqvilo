@@ -71,6 +71,8 @@
       "runStorageContract", "STORAGE_CONTRACT_CASES",
       "fixedClock", "sequentialIds", "createScheduler",
       "createFixtureRecipes",
+      "replayParityDirectory", "replayParityCases", "buildParityCases", "validateParityCases", "loadParityCases",
+      "diffParityOutput",
       "signInContext",
       "signInHeaders"
     ],

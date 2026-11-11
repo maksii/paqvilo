@@ -113,6 +113,7 @@ test('Dataverse help and invalid arguments preserve CLI contracts without invoki
   await assert.rejects(fs.access(marker), { code: 'ENOENT' });
 });
 
+// @test-kind contract: Dataverse diagnostics use the requested stream and retain the JSON error payload
 test('Dataverse diagnostics use the requested stream and retain the JSON error payload', () => {
   const human = run('verify');
   assert.equal(human.status, 1);
@@ -151,6 +152,7 @@ test('malformed credential input does not expose file contents in diagnostics', 
   }
 });
 
+// @test-kind security+contract: PAC runner preserves Unicode and metacharacters as arguments and hides start errors
 test('PAC runner preserves Unicode and metacharacters as arguments and hides start errors', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-process-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -166,6 +168,7 @@ test('PAC runner preserves Unicode and metacharacters as arguments and hides sta
   await assert.rejects(runProcess(path.join(folder, 'missing-executable'), []), /could not start.*permissions/);
 });
 
+// @test-kind contract: offline data plan writes its complete report and --json prints that report
 test('offline data plan writes its complete report and --json prints that report', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-data-plan-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -193,6 +196,7 @@ test('offline data plan writes its complete report and --json prints that report
   assert.equal(JSON.parse(summary.stdout).savedTo, report);
 });
 
+// @test-kind security+contract: report outputs cannot replace their input or connection, including hard-link aliases
 test('report outputs cannot replace their input or connection, including hard-link aliases', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-output-collision-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -227,6 +231,7 @@ test('report outputs cannot replace their input or connection, including hard-li
   assert.equal(await fs.readFile(connection, 'utf8'), 'invented connection contents');
 });
 
+// @test-kind security+contract: inspect does not print URL credentials, query values or fragments
 test('inspect does not print URL credentials, query values or fragments', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-inspect-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -249,6 +254,7 @@ test('inspect does not print URL credentials, query values or fragments', async 
   assert.doesNotMatch(invalid.stdout, /invented-private-value/);
 });
 
+// @test-kind security+contract: register rejects an invalid environment before invoking PAC
 test('register rejects an invalid environment before invoking PAC', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-invalid-register-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -279,6 +285,7 @@ test('register rejects an invalid environment before invoking PAC', async (t) =>
   assert.deepEqual(await fs.readdir(root), []);
 });
 
+// @test-kind security+contract: connect refuses registration and consumable secret aliases before reading or writing
 test('connect refuses registration and consumable secret aliases before reading or writing', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-connect-collision-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -309,6 +316,7 @@ test('connect refuses registration and consumable secret aliases before reading 
   assert.deepEqual((await fs.readdir(directory)).sort(), ['alias.json', 'registration.json']);
 });
 
+// @test-kind security+contract: export rejects invalid solution names before loading a connection
 test('export rejects invalid solution names before loading a connection', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-invalid-export-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));

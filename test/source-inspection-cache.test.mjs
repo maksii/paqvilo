@@ -1,3 +1,4 @@
+// @test-kind unproven: the checks in this file exercise source inspection cache with local fixtures; no native capture establishes the behaviour they assert.
 // Report and source-hint reuse across revisits and refreshes. Parse counts are
 // process-global, so these tests run in order; budgets and LRU eviction have
 // their own files so the runner can execute them in parallel.
@@ -11,6 +12,7 @@ import { elementSourceHintCacheStats } from '../lense/element-provenance.mjs';
 import { inspectionFixture } from './source-inspection-fixture.mjs';
 import { settleFileTimes } from '../mirage/test/support/file-times.mjs';
 
+// @test-kind contract: X-ray report size follows page candidates, revisits reuse reports, and refresh parses only changed markup
 test('X-ray report size follows page candidates, revisits reuse reports, and refresh parses only changed markup', async (t) => {
   // The reuse assertions below concern files written moments ago.
   settleFileTimes(t);
@@ -92,6 +94,7 @@ test('X-ray report size follows page candidates, revisits reuse reports, and ref
   );
 });
 
+// @test-kind contract: one inspection reads each exported source once for its shared source index
 test('one inspection reads each exported source once for its shared source index', async (t) => {
   const fx = inspectionFixture();
   t.after(fx.cleanup);
@@ -138,6 +141,7 @@ test('Mirage enrichment reuses unchanged route evidence while separating access 
   assert.equal(inspector.stats().enrichments, first.enrichments + 3, 'new rendered bindings are enriched again');
 });
 
+// @test-kind contract: an edit during import is observed by the next refresh instead of becoming an accepted stale snapshot
 test('an edit during import is observed by the next refresh instead of becoming an accepted stale snapshot', async (t) => {
   const fx = inspectionFixture();
   t.after(fx.cleanup);
@@ -233,6 +237,7 @@ test('shared header/footer hints reuse parsing across pages and refresh, with wh
   assert.equal(elementSourceHintCacheStats().parses, before.parses + 1);
 });
 
+// @test-kind contract: 600 source reports survive A/B/A and unchanged refresh without reparsing markup
 test('600 source reports survive A/B/A and unchanged refresh without reparsing markup', async (t) => {
   // The reuse assertions concern files written moments ago; stamps inside their time tick are never trusted.
   settleFileTimes(t);

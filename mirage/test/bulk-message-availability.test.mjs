@@ -1,4 +1,4 @@
-// @test-kind contract: Paqvilo capability inventory classifies bulk message availability by evidence source and reports the unqualified diagnostic
+// @test-kind contract: the capability inventory classifies bulk message availability by evidence source and reports a diagnostic for entries without native evidence.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { bulkMessageAvailabilityRecord } from '../lib/bulk-message-availability.mjs';

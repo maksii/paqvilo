@@ -1,3 +1,4 @@
+// @test-kind unproven: Local reader-source and lazy-parser models; exact repeated native scalar-cause guarantees are tagged separately.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -44,6 +45,7 @@ test('a numeric string, a numeric lexeme for a text target and an unknown type p
   assert.equal(dataverseScalarCause(1, 'Edm.String', { numericLexeme: '1e0' }), null);
   assert.equal(dataverseScalarCause(1, 'Edm.Unknown', { numericLexeme: '1' }), null);
 });
+// @test-kind observation: dataverse-existing-scalar-causes.json holds only first cause lines and five raw response hashes per cohort (2026-11-08), and webapi-native-scalar-reader.json the empty-Boolean cause; no native body is recorded, so not a replay case.
 test('native Boolean casing and typed causes do not invent CLR stack frames', () => {
   for (const type of ['Edm.String', 'Edm.Int32', 'Edm.Decimal', 'Edm.Double'])
     assert.equal(

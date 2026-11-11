@@ -1,3 +1,4 @@
+// @test-kind unproven: Local HTTP query reader and parser models; no native recording is replayed by these tests.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';

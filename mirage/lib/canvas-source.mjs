@@ -27,10 +27,12 @@ const PA_YAML = /\.pa\.ya?ml$/i;
 const FX_YAML = /\.fx\.ya?ml$/i;
 const DATA_SOURCE_JSON = /^DataSources\/[^/]+\.json$/i;
 const LEGACY_COMPONENT_JSON = /^Src\/Components\/[^/]+\.json$/i;
+const LEGACY_MANIFEST_JSON = /^CanvasManifest\.json$/i;
 const wanted = (name) =>
   PA_YAML.test(name) ||
   FX_YAML.test(name) ||
   DATA_SOURCE_JSON.test(name.replaceAll('\\', '/')) ||
+  LEGACY_MANIFEST_JSON.test(name.replaceAll('\\', '/')) ||
   LEGACY_COMPONENT_JSON.test(name.replaceAll('\\', '/'));
 // `.fx.yaml` control keys: `Name As type[.variant]`; a quoted name keeps its spaces.
 function /* NOSONAR */ fxControlTypeStarts(text, end) {
@@ -446,6 +448,29 @@ function processCanvasYamlSource({
       legacy[0].name,
     );
     await readFxYaml(files, result, diagnostic);
+    const manifest = files.find((file) => LEGACY_MANIFEST_JSON.test(file.name));
+    if (manifest) {
+      try {
+        const value = JSON.parse(await manifest.read());
+        if (value.ScreenOrder !== undefined) {
+          const names = new Set(result.screens.map((screen) => screen.name));
+          if (
+            !Array.isArray(value.ScreenOrder) ||
+            value.ScreenOrder.some((name) => typeof name !== 'string' || !names.has(name)) ||
+            new Set(value.ScreenOrder).size !== value.ScreenOrder.length
+          )
+            throw new Error('Invalid ScreenOrder');
+          result.app.screensOrder = [...value.ScreenOrder];
+        }
+      } catch {
+        diagnostic(
+          'CANVAS_SOURCE_MANIFEST_INVALID',
+          `${manifest.name} has invalid JSON or ScreenOrder.`,
+          manifest.name,
+          'error',
+        );
+      }
+    }
     return result;
   }
   if (legacy.length)
@@ -755,6 +780,7 @@ export function canvasSourceCoverageGaps(source) {
         'CANVAS_SOURCE_OPTIONSET_INVALID',
         'CANVAS_SOURCE_STRUCTURE_INVALID',
         'CANVAS_SOURCE_NAME_COLLISION',
+        'CANVAS_SOURCE_MANIFEST_INVALID',
       ].includes(item.code),
   );
 }

@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
-import { parseArgs } from 'node:util';
+import { parseToolArgs } from './tool-options.mjs';
 import { chromium } from 'playwright-core';
 import { windowsLaunchOptions } from './lib/browser-launch.mjs';
 import { loadCatalogue, loadConfig } from '../lense/config.mjs';
@@ -52,7 +52,7 @@ function captureLaunchOptions(channel, port, platform = process.platform) {
   return options;
 }
 
-/** A headless browser on a temporary profile with a loopback CDP port; close() removes the profile. */
+/** An anonymous headless browser with a loopback CDP port; close() removes its owned temporary profile. */
 export async function launchCaptureBrowser(channel) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-shell-'));
   let context;
@@ -358,20 +358,7 @@ export function captureExitCode(report, { strict = false } = {}) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    const { values } = parseArgs({
-      options: {
-        config: { type: 'string' },
-        site: { type: 'string' },
-        env: { type: 'string' },
-        all: { type: 'boolean' },
-        path: { type: 'string' },
-        cdp: { type: 'string' },
-        timeout: { type: 'string' },
-        json: { type: 'boolean' },
-        strict: { type: 'boolean' },
-        'no-rich-text': { type: 'boolean' },
-      },
-    });
+    const values = parseToolArgs('capture-shell', process.argv.slice(2));
     const report = await captureShell({
       ...values,
       ...(!values.json

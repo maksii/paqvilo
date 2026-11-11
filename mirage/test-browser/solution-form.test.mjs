@@ -1,3 +1,4 @@
+// @test-kind contract+security: invented loopback Solution form workflow and page access controls.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -17,12 +18,14 @@ async function write(root, files) {
     await fs.writeFile(file, content);
   }
 }
+// The old invented fixture edited contact.fullname, which is a computed read-only composite.
+// Use the standard writable, required last-name field for this generic create/view workflow.
 const metadata =
-  '<Entity><Name>contact</Name><EntityInfo><entity><attributes><attribute PhysicalName="fullname"><Name>fullname</Name><LogicalName>fullname</LogicalName><Type>nvarchar</Type><RequiredLevel>required</RequiredLevel><displaynames><displayname description="Name" languagecode="1033" /></displaynames></attribute><attribute PhysicalName="age"><Name>age</Name><LogicalName>age</LogicalName><Type>int</Type><RequiredLevel>none</RequiredLevel></attribute><attribute PhysicalName="parentcustomerid"><Name>parentcustomerid</Name><LogicalName>parentcustomerid</LogicalName><Type>lookup</Type><RequiredLevel>none</RequiredLevel></attribute></attributes></entity></EntityInfo></Entity>';
+  '<Entity><Name>contact</Name><EntityInfo><entity><attributes><attribute PhysicalName="lastname"><Name>lastname</Name><LogicalName>lastname</LogicalName><Type>nvarchar</Type><RequiredLevel>required</RequiredLevel><displaynames><displayname description="Name" languagecode="1033" /></displaynames></attribute><attribute PhysicalName="age"><Name>age</Name><LogicalName>age</LogicalName><Type>int</Type><RequiredLevel>none</RequiredLevel></attribute><attribute PhysicalName="parentcustomerid"><Name>parentcustomerid</Name><LogicalName>parentcustomerid</LogicalName><Type>lookup</Type><RequiredLevel>none</RequiredLevel></attribute></attributes></entity></EntityInfo></Entity>';
 const form = (label) =>
-  `<forms><systemform><formid>{contact-form}</formid><FormActivationState>1</FormActivationState><form><tabs><tab name="general"><labels><label description="General" languagecode="1033" /></labels><columns><column width="100%"><sections><section name="main" showlabel="true"><labels><label description="Contact details" languagecode="1033" /></labels><rows><row><cell><labels><label description="${label}" languagecode="1033" /></labels><control id="fullname" datafieldname="fullname" /></cell></row><row><cell><labels><label description="Age" languagecode="1033" /></labels><control id="age" datafieldname="age" /></cell></row><row><cell><labels><label description="Organisation" languagecode="1033" /></labels><control id="parentcustomerid" datafieldname="parentcustomerid" /></cell></row></rows></section></sections></column></columns></tab></tabs></form><LocalizedNames><LocalizedName description="Portal contact" languagecode="1033" /></LocalizedNames></systemform></forms>`;
+  `<forms><systemform><formid>{contact-form}</formid><FormActivationState>1</FormActivationState><form><tabs><tab name="general"><labels><label description="General" languagecode="1033" /></labels><columns><column width="100%"><sections><section name="main" showlabel="true"><labels><label description="Contact details" languagecode="1033" /></labels><rows><row><cell><labels><label description="${label}" languagecode="1033" /></labels><control id="lastname" datafieldname="lastname" /></cell></row><row><cell><labels><label description="Age" languagecode="1033" /></labels><control id="age" datafieldname="age" /></cell></row><row><cell><labels><label description="Organisation" languagecode="1033" /></labels><control id="parentcustomerid" datafieldname="parentcustomerid" /></cell></row></rows></section></sections></column></columns></tab></tabs></form><LocalizedNames><LocalizedName description="Portal contact" languagecode="1033" /></LocalizedNames></systemform></forms>`;
 const view =
-  '<savedqueries><savedquery><savedqueryid>{contact-view}</savedqueryid><layoutxml><grid><row id="contactid"><cell name="fullname" width="180" /><cell name="age" width="80" /></row></grid></layoutxml><fetchxml><fetch><entity name="contact"><attribute name="contactid"/><attribute name="fullname"/><attribute name="age"/><filter><condition attribute="age" operator="ge" value="18" /></filter></entity></fetch></fetchxml><LocalizedNames><LocalizedName description="Adults" languagecode="1033" /></LocalizedNames></savedquery></savedqueries>';
+  '<savedqueries><savedquery><savedqueryid>{contact-view}</savedqueryid><layoutxml><grid><row id="contactid"><cell name="lastname" width="180" /><cell name="age" width="80" /></row></grid></layoutxml><fetchxml><fetch><entity name="contact"><attribute name="contactid"/><attribute name="lastname"/><attribute name="age"/><filter><condition attribute="age" operator="ge" value="18" /></filter></entity></fetch></fetchxml><LocalizedNames><LocalizedName description="Adults" languagecode="1033" /></LocalizedNames></savedquery></savedqueries>';
 const SUCCESS = 'Submission completed successfully.';
 
 test('solution form layout creates typed data, saved view filters rows, and sources reload', async (t) => {
@@ -65,7 +68,7 @@ test('solution form layout creates typed data, saved view filters rows, and sour
   });
   await write(solutionRoot, {
     'Entities/Contact/Entity.xml': metadata,
-    'Entities/Contact/FormXml/main/{contact-form}.xml': form('Full name'),
+    'Entities/Contact/FormXml/main/{contact-form}.xml': form('Last name'),
     'Entities/Contact/SavedQueries/{contact-view}.xml': view,
   });
   const initial = {
@@ -92,7 +95,7 @@ test('solution form layout creates typed data, saved view filters rows, and sour
       },
     },
     tables: {
-      contact: [{ contactid: 'young', fullname: 'Young contact', age: 12 }],
+      contact: [{ contactid: 'young', lastname: 'Young contact', age: 12 }],
       account: [{ accountid: '11111111-1111-1111-1111-111111111111', name: 'Local Organisation' }],
     },
     plugins: [],
@@ -140,7 +143,7 @@ test('solution form layout creates typed data, saved view filters rows, and sour
   assert.equal(await page.locator('#authored-validation').innerText(), 'Source validation message');
   // Native sortable list headers carry aria-label too; scope label lookups to the form.
   const formPanel = page.locator('#EntityFormPanel');
-  await formPanel.getByLabel('Full name').fill('Local Adult');
+  await formPanel.getByLabel('Last name').fill('Local Adult');
   await formPanel.getByLabel('Age').fill('42');
   // Native lookup: read-only name box, hidden id/entityname pair and a modal grid.
   const clearLookup = page.getByRole('button', {
@@ -162,7 +165,7 @@ test('solution form layout creates typed data, saved view filters rows, and sour
   await page.locator('#MessageLabel').filter({ hasText: SUCCESS }).waitFor();
   assert.equal(await page.locator('#EntityFormPanel').isVisible(), false);
   const state = app.store.snapshot();
-  const adult = state.tables.contact.find((r) => r.fullname === 'Local Adult');
+  const adult = state.tables.contact.find((r) => r.lastname === 'Local Adult');
   assert.equal(adult.age, 42);
   assert.equal(writes[0]['parentcustomerid_account@odata.bind'], '/accounts(11111111-1111-1111-1111-111111111111)');
   assert.equal(Object.hasOwn(writes[0], 'parentcustomerid'), false);
@@ -205,11 +208,11 @@ test('solution form layout creates typed data, saved view filters rows, and sour
   assert.equal(await modal.evaluate(() => window.modalHeadSawForm), false);
   assert.equal(await modal.evaluate(() => window.modalBodySawForm), true);
   assert.equal(await modal.locator('body script[src="/body-order.js"][defer]').count(), 1);
-  await modal.getByLabel('Full name').fill('Modal Adult');
+  await modal.getByLabel('Last name').fill('Modal Adult');
   await modal.getByLabel('Age').fill('31');
   await modal.getByRole('button', { name: 'Submit', exact: true }).click();
   await modal.locator('#MessageLabel').filter({ hasText: SUCCESS }).waitFor();
-  const modalAdult = app.store.snapshot().tables.contact.find((r) => r.fullname === 'Modal Adult');
+  const modalAdult = app.store.snapshot().tables.contact.find((r) => r.lastname === 'Modal Adult');
   assert.equal(modalAdult.age, 31);
   assert.equal(app.store.snapshot().tables.contact.length, countBeforeModal + 1);
   for (const [route, status] of [
@@ -227,9 +230,9 @@ test('solution form layout creates typed data, saved view filters rows, and sour
   const revision = app.state().status.revision;
   await fs.writeFile(
     path.join(solutionRoot, 'Entities/Contact/FormXml/main/{contact-form}.xml'),
-    form('Renamed full name'),
+    form('Renamed last name'),
   );
-  await page.waitForFunction(() => document.querySelector('label[for=fullname]')?.textContent === 'Renamed full name');
+  await page.waitForFunction(() => document.querySelector('label[for=lastname]')?.textContent === 'Renamed last name');
   assert.ok(app.state().status.revision > revision);
   await page.goto(app.url + '?id=' + adult.contactid).catch((error) => {
     if (!error.message.includes('ERR_ABORTED')) throw error;
@@ -261,14 +264,14 @@ test('solution form layout creates typed data, saved view filters rows, and sour
   }, modalPath);
   await modal.waitForFunction(() => window.formFrameLoads >= 1);
   const frame = await (await modal.locator('#native-modal-frame').elementHandle()).contentFrame();
-  await frame.getByLabel('Renamed full name').fill('Frame Adult');
+  await frame.getByLabel('Renamed last name').fill('Frame Adult');
   await frame.getByLabel('Age').fill('45');
   await frame.getByRole('button', { name: 'Submit', exact: true }).click();
   await modal.waitForFunction(() => window.formFrameLoads >= 2);
   await modal.waitForFunction(() => window.frameMessages.includes('Success'));
   assert.equal(await frame.locator('#MessageLabel').innerText(), SUCCESS);
   assert.equal(await frame.locator('#EntityFormPanel').isVisible(), false);
-  const savedFrame = app.store.snapshot().tables.contact.find((r) => r.fullname === 'Frame Adult');
+  const savedFrame = app.store.snapshot().tables.contact.find((r) => r.lastname === 'Frame Adult');
   assert.equal(savedFrame.age, 45);
   assert.equal(await frame.locator('#EntityFormControl_EntityFormView_EntityID').inputValue(), savedFrame.contactid);
   await modal.goto(app.url + modalPath);

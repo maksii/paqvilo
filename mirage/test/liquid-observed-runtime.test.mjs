@@ -1,3 +1,4 @@
+// @test-kind unproven: observed and diagnostic Liquid runtime models that no recorded case set covers.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createPortalRenderer } from '../lib/liquid.mjs';

@@ -1,3 +1,4 @@
+// @test-kind unproven: Mirage's own model of coercion, lazy-host and language cases; no native or official recording backs them.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ErrorKind, FxError, FxFloat, evaluateFx, powerFxEngine } from '../lib/power-fx.mjs';

@@ -184,7 +184,13 @@ export const FILTER_SIGNATURES = Object.freeze({
 });
 export function createFilterSignatures(host = {}) {
   return host.filterRegistration === 'observed'
-    ? { ...FILTER_SIGNATURES, currency: ['@context, value, record, attribute, format?'] }
+    ? {
+        ...FILTER_SIGNATURES,
+        currency: ['@context, value, record, attribute, format?'],
+        // Recorded natively (power-pages-recorded-20261111 wrong-arg-count-slice; followup slice-no-argument):
+        // the missing parameter of slice is reported as 'start'.
+        slice: ['@context, input, start, length?'],
+      }
     : FILTER_SIGNATURES;
 }
 // ---- Strainer parameter conversion
@@ -449,7 +455,7 @@ function appendQueryGroup(parts, group) {
  * AntiXSS-encoded). Absolute input yields Uri.AbsoluteUri; relative input keeps its own
  * path text and fragment (portal navigation may prefix the result with "../").
  */
-function rebuild(url, mutate) {
+function rebuild(url, mutate, relativeResolution) {
   if (url == null) return null;
   const text = String(url);
   const hashIndex = text.indexOf('#');
@@ -464,6 +470,10 @@ function rebuild(url, mutate) {
       const parsed = new URL(text);
       return `${parsed.origin}${parsed.pathname}${query}${parsed.hash}`;
     }
+    if (relativeResolution === 'root' && !path.startsWith('//')) {
+      const resolved = new URL(path || '/', 'http://localhost/');
+      return `${resolved.pathname}${query}`;
+    }
     return `${path}${query}${fragment}`;
   } catch {
     return text;
@@ -475,10 +485,57 @@ const portOf = (url) => {
 };
 
 // ---- Text helpers
+/**
+ * Simple (single-character) uppercase mappings of UnicodeData.txt for the code points whose full uppercase form is
+ * longer than one character and which have one: U+1F80..U+1F87, U+1F90..U+1F97 and U+1FA0..U+1FA7 map to +8, and
+ * U+1FB3, U+1FC3, U+1FF3 map to U+1FBC, U+1FCC, U+1FFC. The other such characters (ß, ŉ, ǰ, ΐ, ΰ, և, ᾲ, ...) have no
+ * simple uppercase mapping. Recorded natively: upcase-iota-1f80, upcase-iota-1f97, upcase-iota-1fc3,
+ * upcase-iota-1ff3 (power-pages-recorded-20261111-casemap), upcase-ypogegrammeni-alpha (followup, 'ᾳ' gives 'ᾼ').
+ */
+const SIMPLE_UPPER_MULTI = Object.freeze(
+  new Map([
+    ...[0x1f80, 0x1f90, 0x1fa0].flatMap((start) =>
+      Array.from({ length: 8 }, (_, offset) => [start + offset, start + offset + 8]),
+    ),
+    [0x1fb3, 0x1fbc],
+    [0x1fc3, 0x1fcc],
+    [0x1ff3, 0x1ffc],
+  ]),
+);
+/**
+ * Power Pages (observed runtime) uppercase mapping, one code point at a time, as .NET invariant casing does: the
+ * full uppercase form when it is one character, else the simple mapping, else the character unchanged.
+ * Recorded natively: upcase-sharp-s and upcase-ligature-fi keep the characters whose uppercase form is more than
+ * one character (power-pages-recorded-20261111 upcase-sharp-s; followup upcase-ligature-fi, capitalize-sharp-s);
+ * upcase-no-simple-1fb2, upcase-no-simple-0149 and upcase-no-simple-0390 (casemap) keep the characters without one.
+ */
+function nativeUpper(text) {
+  return [...text]
+    .map((character) => {
+      const upper = character.toUpperCase();
+      if ([...upper].length === 1) return upper;
+      const simple = SIMPLE_UPPER_MULTI.get(character.codePointAt(0));
+      return simple === undefined ? character : String.fromCodePoint(simple);
+    })
+    .join('');
+}
+/**
+ * Lowercase per code point without the final-sigma context rule. Recorded natively: downcase-greek-capital-sigma
+ * ('ΟΔΟΣ' gives 'οδοσ'); downcase-dotted-capital-i ('İ' gives 'i'): the first character of the full lowercase
+ * form is the simple mapping, the only unconditional multi-character lowercase mapping being U+0130.
+ */
+function nativeLower(text) {
+  return [...text].map((character) => [...character.toLowerCase()][0]).join('');
+}
 /** TextInfo.ToTitleCase (en-US): words in all capitals are kept. */
-function toTitleCase(input) {
+function toTitleCase(input, native = false) {
   return input.replace(/[\p{L}\p{Mn}\p{Nd}']+/gu, (word) => {
     if (word === word.toUpperCase() && /\p{L}/u.test(word)) return word;
+    if (native) {
+      // Recorded natively: capitalize-two-words ('hello big world' gives 'Hello Big World'), capitalize-ascii.
+      const [head] = [...word];
+      return nativeUpper(head) + nativeLower(word.slice(head.length));
+    }
     return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
   });
 }
@@ -612,7 +669,9 @@ function htmlVoidSerialization(markup) {
   const visit = (node) => {
     if (voidTags.has(node.tagName) && node.sourceCodeLocation?.startTag) {
       const location = node.sourceCodeLocation.startTag;
-      replacements.push({ start: location.startOffset, end: location.endOffset, value: serializeOuter(node) });
+      // The hosted sanitizer escapes greater-than signs inside attribute values.
+      const value = serializeOuter(node).replace(/"[^"]*"/g, (attribute) => attribute.replaceAll('>', '&gt;'));
+      replacements.push({ start: location.startOffset, end: location.endOffset, value });
     }
     for (const child of node.childNodes ?? []) visit(child);
     if (node.content) visit(node.content);
@@ -712,11 +771,11 @@ function sliceEnumerable(input, start, len) {
 }
 
 // These preserve the platform's text transformation; they are not an HTML sanitizer.
-function stripHtmlBlocks(text) {
+function stripHtmlBlocks(text, preserveScript = false) {
   // ASCII folding preserves UTF-16 offsets (full Unicode lowercasing can expand a character).
   const folded = text.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
   const blocks = [
-    { open: '<script', close: '</script>', end: -2 },
+    ...(!preserveScript ? [{ open: '<script', close: '</script>', end: -2 }] : []),
     { open: '<!--', close: '-->', end: -2 },
     { open: '<style', close: '</style>', end: -2 },
   ];
@@ -768,6 +827,17 @@ function* searchFilterValues(text) {
 }
 
 // ---- Filter catalogue
+function validateObservedTimes(input, operand) {
+  const stringArray = Array.isArray(input) && input.length > 0 && input.every((item) => typeof item === 'string');
+  if ((numberKind(input) === 'int' && typeof operand === 'string') || (stringArray && numberKind(operand) === 'int'))
+    throw new LiquidError('Parameter count mismatch.', 'System.Reflection.TargetParameterCountException');
+  if (stringArray && numberKind(operand) === 'decimal')
+    throw new LiquidError(
+      "Unable to cast object of type 'System.String[]' to type 'System.IConvertible'.",
+      'System.InvalidCastException',
+    );
+}
+
 /** `this` is the LiquidContext for every filter. */
 export function createFilters(host = {}) {
   const filters = {
@@ -786,11 +856,13 @@ export function createFilters(host = {}) {
     },
     downcase: (input) => {
       const s = asString(input);
-      return s == null ? s : s.toLowerCase();
+      if (s == null) return s;
+      return host.runtimeCompatibility === 'observed' ? nativeLower(s) : s.toLowerCase();
     },
     upcase: (input) => {
       const s = asString(input);
-      return s == null ? s : s.toUpperCase();
+      if (s == null) return s;
+      return host.runtimeCompatibility === 'observed' ? nativeUpper(s) : s.toUpperCase();
     },
     url_encode: (input) => {
       const s = asString(input);
@@ -802,7 +874,7 @@ export function createFilters(host = {}) {
     },
     capitalize: (input) => {
       const s = asString(input);
-      return isNullOrWhiteSpace(s) ? s : toTitleCase(s);
+      return isNullOrWhiteSpace(s) ? s : toTitleCase(s, host.runtimeCompatibility === 'observed');
     },
     escape: (input) => {
       const s = asString(input);
@@ -815,6 +887,7 @@ export function createFilters(host = {}) {
     },
     escape_once: (input) => {
       const s = asString(input);
+      if (host.escapeOnce === 'passthrough') return s;
       return s == null || s === '' ? s : htmlEncode(htmlDecode(s));
     },
     truncate(input, length = 50, truncateString = '...') {
@@ -849,7 +922,7 @@ export function createFilters(host = {}) {
     strip_html: (input) => {
       const s = asString(input);
       if (isNullOrWhiteSpace(s)) return s;
-      return stripHtmlTags(stripHtmlBlocks(s));
+      return stripHtmlTags(stripHtmlBlocks(s, host.stripHtmlScriptText === 'preserve'));
     },
     strip: (input) => {
       const s = asString(input);
@@ -931,10 +1004,12 @@ export function createFilters(host = {}) {
     },
     // master: $"{input}{@string}" and $"{@string}{input}" (nil renders as nothing).
     append(input, value) {
+      if (host.runtimeCompatibility === 'observed' && input == null) return null;
       const s = asString(input) ?? '';
       return s + (asString(value) ?? '');
     },
     prepend(input, value) {
+      if (host.runtimeCompatibility === 'observed' && input == null) return null;
       const s = asString(input) ?? '';
       return (asString(value) ?? '') + s;
     },
@@ -971,6 +1046,8 @@ export function createFilters(host = {}) {
     plus(input, operand) {
       // DotLiquid20: a string input concatenates (string.Concat uses object.ToString()).
       if (typeof input === 'string') return input + netToString(operand);
+      if (host.filterErrors === 'observed' && numberKind(input) === 'int' && typeof operand === 'string')
+        throw new LiquidError('Parameter count mismatch.', 'System.Reflection.TargetParameterCountException');
       return mathOperation(input, operand, 'add');
     },
     minus(input, operand) {
@@ -982,17 +1059,9 @@ export function createFilters(host = {}) {
     },
     times(input, operand) {
       if (host.timesDispatch === 'observed') {
-        const stringArray = Array.isArray(input) && input.length > 0 && input.every((item) => typeof item === 'string');
-        if (
-          (numberKind(input) === 'int' && typeof operand === 'string') ||
-          (stringArray && numberKind(operand) === 'int')
-        )
-          throw new LiquidError('Parameter count mismatch.', 'System.Reflection.TargetParameterCountException');
-        if (stringArray && numberKind(operand) === 'decimal')
-          throw new LiquidError(
-            "Unable to cast object of type 'System.String[]' to type 'System.IConvertible'.",
-            'System.InvalidCastException',
-          );
+        if (numberKind(input) === 'decimal' && typeof operand === 'string')
+          return mathOperation(input, toNetDecimal(operand), 'multiply');
+        validateObservedTimes(input, operand);
       }
       // An observed portal can opt into decimal string conversion without changing
       // the pinned DotLiquid20 string repetition and operator contracts elsewhere.
@@ -1017,9 +1086,10 @@ export function createFilters(host = {}) {
         throw new LiquidError('Parameter count mismatch.', 'System.Reflection.TargetParameterCountException');
       if (
         host.filterErrors === 'observed' &&
-        numberKind(input) === 'int' &&
-        asInt(input) !== 0 &&
-        numberKind(operand) === 'decimal' &&
+        numberKind(input) &&
+        toNumber(input) !== 0 &&
+        (numberKind(input) === 'decimal' || numberKind(operand) === 'decimal') &&
+        numberKind(operand) &&
         toNumber(operand) === 0
       )
         return new NetDouble(toNumber(input) / toNumber(operand));
@@ -1055,6 +1125,11 @@ export function createFilters(host = {}) {
     },
     reverse(input) {
       if (input == null || typeof input === 'string') return input;
+      // Recorded natively (observed runtime): an array comes back in its original order, so the reverse filter
+      // does nothing; only the for-loop `reversed` parameter reverses. Evidence: power-pages-recorded-20261111
+      // reverse-split; recorded-20261111-followup reverse-split-first, reverse-split-last, reverse-sort-join,
+      // reverse-twice-join, for-split-reversed (reversed loop, 'cba') and for-range-reversed (321).
+      if (host.runtimeCompatibility === 'observed' && Array.isArray(input)) return input;
       const list = asEnumerable(input);
       return [...list].reverse();
     },
@@ -1418,27 +1493,33 @@ export function createFilters(host = {}) {
       const name = asString(parameterName);
       if (isNullOrWhiteSpace(name)) return target;
       const text = value == null ? '' : formatItem(value);
-      return rebuild(target, (pairs) => {
-        const existing = pairs.filter(([key]) => key != null && key.toLowerCase() === name.toLowerCase());
-        if (existing.length) {
-          const first = pairs.indexOf(existing[0]);
-          const remaining = pairs.filter((pair) => !existing.includes(pair));
-          remaining.splice(first - pairs.slice(0, first).filter((pair) => existing.includes(pair)).length, 0, [
-            existing[0][0],
-            text,
-          ]);
-          return remaining;
-        }
-        return [...pairs, [name, text]];
-      });
+      return rebuild(
+        target,
+        (pairs) => {
+          const existing = pairs.filter(([key]) => key != null && key.toLowerCase() === name.toLowerCase());
+          if (existing.length) {
+            const first = pairs.indexOf(existing[0]);
+            const remaining = pairs.filter((pair) => !existing.includes(pair));
+            remaining.splice(first - pairs.slice(0, first).filter((pair) => existing.includes(pair)).length, 0, [
+              existing[0][0],
+              text,
+            ]);
+            return remaining;
+          }
+          return [...pairs, [name, text]];
+        },
+        host.relativeQueryResolution,
+      );
     },
     remove_query(url, parameterName) {
       const target = asString(url);
       if (target == null) return null;
       const name = asString(parameterName);
       if (isNullOrWhiteSpace(name)) return target;
-      return rebuild(target, (pairs) =>
-        pairs.filter(([key]) => key == null || key.toLowerCase() !== name.toLowerCase()),
+      return rebuild(
+        target,
+        (pairs) => pairs.filter(([key]) => key == null || key.toLowerCase() !== name.toLowerCase()),
+        host.relativeQueryResolution,
       );
     },
     base(url) {

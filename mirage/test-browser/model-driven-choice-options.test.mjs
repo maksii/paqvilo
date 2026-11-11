@@ -1,3 +1,4 @@
+// @test-kind contract: rendered choice controls retain per-control option state and source metadata across form tab changes.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -40,6 +41,7 @@ async function fixture(t) {
   return page;
 }
 
+// @test-kind contract+security: option label HTML remains literal text while control options, siblings and source metadata stay isolated.
 test('choice options change on one rendered control without changing source metadata, sibling options or requiredness', async (t) => {
   const page = await fixture(t);
   const first = page.getByRole('combobox', { name: 'First choice', exact: true });

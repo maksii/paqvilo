@@ -1,0 +1,80 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "dataverse-webapi",
+  "suite": "native-query",
+  "oracle": {
+    "kind": "native",
+    "name": "Dataverse Web API (hosted environment)",
+    "version": "2026-11-08",
+    "scope": "Two native Dataverse Web API runs on 2026-11-08 of three unsupported query options, recorded in fixture webapi-native-query.json (sha256 be47d4f9). The owned private table route is replaced by the invented specimens collection; establishes the 400 status and exact error body for these three option names only."
+  },
+  "captures": [
+    {
+      "id": "native-run-1",
+      "sha256": "eaec2cdbc3262496e772048782739c6cf6f78d0ea5f852c485a032c41f3391e6",
+      "capturedAt": "2026-11-08"
+    },
+    {
+      "id": "native-run-2",
+      "sha256": "94139fa94f6bd416c33a54aeb457ea863b171a935163e057846e130f4decaa25",
+      "capturedAt": "2026-11-08"
+    }
+  ],
+  "cases": [
+    {
+      "id": "unknown-0",
+      "input": {
+        "collection": "specimens",
+        "key": "$invented_option",
+        "value": "authored-invented-value-0"
+      },
+      "output": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "0x80060888",
+            "message": "The query parameter [REDACTED] is not supported"
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "unknown-1",
+      "input": {
+        "collection": "specimens",
+        "key": "another_option",
+        "value": "authored-invented-value-1"
+      },
+      "output": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "0x80060888",
+            "message": "The query parameter [REDACTED] is not supported"
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "unknown-2",
+      "input": {
+        "collection": "specimens",
+        "key": "$CUSTOM",
+        "value": "authored-invented-value-2"
+      },
+      "output": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "0x80060888",
+            "message": "The query parameter [REDACTED] is not supported"
+          }
+        }
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

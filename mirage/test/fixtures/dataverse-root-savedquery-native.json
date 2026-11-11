@@ -1,0 +1,27 @@
+{
+  "scope": "Repeated native missing savedQuery on an authorized collection. The request values and organization-specific source names are omitted; message template is normalized only by replacing that request GUID.",
+  "captures": [
+    {
+      "caseId": "views.missing",
+      "method": "GET",
+      "requestPathSha256": "0190142a8c00909c6ee5b64c8839b1157c3ae127ac21dab8f12b29ced97be647",
+      "planSha256": "7f563681e6ba73556bd54ebf6c3a502c3188116a859cf19624c8a0df29a49c97",
+      "runSha256": "0e9461f99f2956719746247305f4f9cee8a97eb8ffa7ebe5e5236d1861c2e6aa",
+      "bodySha256": "e13953793c5629b8796bbad29781e76baf94effed842d4c2d8282ce619930256",
+      "status": 404,
+      "code": "0x80040217",
+      "messageTemplate": "Entity 'savedquery' With Id = {id} Does Not Exist"
+    },
+    {
+      "caseId": "views.missing",
+      "method": "GET",
+      "requestPathSha256": "7ed3fb24d06e4050d939bed60891f5363d0fdc3f215e389f736767f72f4c1bc6",
+      "planSha256": "36c13dcd26944a69916a125e98a1222389a5bfd3b2050fc02934b17d48beac01",
+      "runSha256": "089dba4316b3d686fcac87671bbe4fc26a7e6f1d25af64ee00f9268e282e6f58",
+      "bodySha256": "ef2c3c1bb2dc7c7c2df54467103eaca42ebeb86fc0c949fa931669761de173f8",
+      "status": 404,
+      "code": "0x80040217",
+      "messageTemplate": "Entity 'savedquery' With Id = {id} Does Not Exist"
+    }
+  ]
+}

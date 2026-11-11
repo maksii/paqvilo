@@ -23,7 +23,7 @@ import { loopbackFetch } from './lib/dataverse-webhooks.mjs';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
-import { parseArgs } from 'node:util';
+import { parseToolCommand } from './tool-options.mjs';
 import { runMutatingHook, MUTATING_HOOK_FAILURE } from './baseline-hooks.mjs';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -722,30 +722,7 @@ function uncertainMutatingHook(error) {
 }
 
 async function main() {
-  const { values, positionals } = parseArgs({
-    allowPositionals: true,
-    options: {
-      matrix: { type: 'string' },
-      out: { type: 'string' },
-      side: { type: 'string' },
-      label: { type: 'string' },
-      'allow-writes': { type: 'boolean' },
-      ids: { type: 'string' },
-      only: { type: 'string' },
-      config: { type: 'string' },
-      site: { type: 'string' },
-      env: { type: 'string' },
-      source: { type: 'string' },
-      state: { type: 'string' },
-      headed: { type: 'boolean' },
-      'work-dir': { type: 'string' },
-      live: { type: 'string' },
-      mirage: { type: 'string' },
-      allowlist: { type: 'string' },
-      'second-live': { type: 'string' },
-      'evidence-changes': { type: 'string' },
-    },
-  });
+  const { values, positionals } = parseToolCommand('baseline-suite', process.argv.slice(2), { allowPositionals: true });
   const action = positionals[0];
   if (positionals.length !== 1 || !['capture', 'compare'].includes(action) || !values.matrix || !values.out)
     throw new Error('Usage: suite.mjs capture|compare --matrix FILE --out DIR ...');

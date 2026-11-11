@@ -81,7 +81,7 @@ export async function protectSecret(value, decrypt = false) {
 }
 
 export function parseRegistrationOutput(output) {
-  if (/^[^\S\r\n\u2028\u2029]*Error:/im.test(output))
+  if (/^(?:(?![\r\n\u2028\u2029])\s)*Error:/im.test(output))
     throw new Error('PAC reported an error, even if its process exit code was zero.');
   const start = output.search(/Tenant\s*ID\s+Application\s*ID\s+Client\s*Secret/i);
   if (start < 0) throw new Error('PAC credential table was not recognized.');
@@ -212,7 +212,7 @@ export async function registerApplication({
     role,
   ]);
   // Save encrypted recovery evidence before parsing or reporting anything.
-  const reportedError = /^[^\S\r\n\u2028\u2029]*Error:/im.test(result.stdout + '\n' + result.stderr);
+  const reportedError = /^(?:(?![\r\n\u2028\u2029])\s)*Error:/im.test(result.stdout + '\n' + result.stderr);
   const partialApplicationId = result.stdout.match(new RegExp(String.raw`Application\s+['"]?(${GUID})`, 'i'))?.[1];
   await privateJson(pending, {
     schemaVersion: 1,

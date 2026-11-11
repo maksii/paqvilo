@@ -58,6 +58,44 @@ test('Pages client API picklist updates dispatch change on the chosen radio', as
   assert.deepEqual(result, { events: ['second'], first: false, second: true });
 });
 
+// @test-kind contract: composite editability uses actual attribute presence, including empty values.
+test('address composite editability ignores inherited dataset values and preserves empty attributes', async (t) => {
+  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  await page.setContent(
+    '<div class="crmEntityFormView" data-form-name="Example">' +
+      '<div class="control" data-logical-name="missing"><textarea id="missing" class="addressCompositeControl" readonly></textarea></div>' +
+      '<div class="control" data-logical-name="empty"><textarea id="empty" class="addressCompositeControl" readonly data-editable=""></textarea></div>' +
+      '<div class="control" data-logical-name="disabled"><textarea id="disabled" class="addressCompositeControl" data-editable="False"></textarea></div>' +
+      '<div class="control" data-logical-name="inherited"><textarea id="inherited" class="addressCompositeControl"></textarea></div>' +
+      '</div>',
+  );
+  await page.addScriptTag({ path: fileURLToPath(new URL('../lib/pages-client-api.js', import.meta.url)) });
+  const result = await page.evaluate(() => {
+    Object.defineProperty(DOMStringMap.prototype, 'editable', { configurable: true, value: 'False' });
+    const form = globalThis.__paqviloPages.currentPage.forms.getFormByName('Example');
+    return Object.fromEntries(
+      ['missing', 'empty', 'disabled', 'inherited'].map((name) => {
+        const control = form.getControlByLogicalName(name);
+        let writable = true;
+        try {
+          control.setValue({ city: 'Example' });
+        } catch {
+          writable = false;
+        }
+        return [name, { readOnly: control.isReadOnly, writable }];
+      }),
+    );
+  });
+  assert.deepEqual(result, {
+    missing: { readOnly: false, writable: false },
+    empty: { readOnly: false, writable: true },
+    disabled: { readOnly: true, writable: false },
+    inherited: { readOnly: false, writable: true },
+  });
+});
+
 // @test-kind contract: the no-jQuery portal helper retains concat spreading of caller-supplied collections.
 test('portal checkbox label helper accepts a concat-spreadable collection without jQuery', async (t) => {
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));

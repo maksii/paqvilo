@@ -1628,6 +1628,7 @@ function setView(next) {
   render();
 }
 // ---- Folder picker (Quick setup): browse the folders of this computer, see what each holds, choose one for the open form.
+/** @type {{kind: string | null, form: HTMLFormElement | null, data: object | null, into?: string | null}} */
 const picker = { kind: null, form: null, data: null };
 // config: the folder is written from the settings folder; files: the picker lists files of that type and picks one.
 const PICK = {
@@ -1686,15 +1687,16 @@ async function openFolder(folder) {
   const here = $('#folder-picker-here');
   const spec = PICK[picker.kind],
     query = new URLSearchParams({ ...(folder ? { path: folder } : {}), ...(spec.files ? { files: spec.files } : {}) });
+  let data;
   try {
-    picker.data = await request(`/_setup/api/folders${query.size ? '?' + query : ''}`);
+    data = await request(`/_setup/api/folders${query.size ? '?' + query : ''}`);
+    picker.data = data;
   } catch (error) {
     here.className = 'folder-picker-here';
     here.textContent = error.message;
     return;
   }
-  const data = picker.data,
-    match = data.kind?.type === picker.kind,
+  const match = data.kind?.type === picker.kind,
     noun = spec.noun;
   $('#folder-picker-input').value = data.path;
   here.className = `folder-picker-here${match ? ' is-match' : ''}`;

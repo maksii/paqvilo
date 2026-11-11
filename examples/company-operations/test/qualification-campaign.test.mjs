@@ -1,3 +1,4 @@
+// @test-kind unproven: the checks in this file exercise qualification campaign with local fixtures; no native capture establishes the behaviour they assert.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, mkdir, writeFile, rm, access } from 'node:fs/promises';
@@ -87,6 +88,7 @@ const compare = (native, local, currentCell = cell) =>
     actorContactId: id(1),
   });
 
+// @test-kind tooling: source-bound cell comparison checks exact HTTP/backend/context equality and detects source, actor or artifact drift
 test('source-bound cell comparison checks exact HTTP/backend/context equality and detects source, actor or artifact drift', () => {
   const { native, local } = envelopes();
   assert.equal(compare(native, local).verdict, 'equal');
@@ -104,6 +106,7 @@ test('source-bound cell comparison checks exact HTTP/backend/context equality an
   assert.ok(compare(corrupt, local).gaps.includes('plugin-parts-integrity'));
 });
 
+// @test-kind tooling: missing backend events, SDK CRUD and unverified cleanup never earn native permission coverage
 test('missing backend events, SDK CRUD and unverified cleanup never earn native permission coverage', () => {
   const { native, local } = envelopes();
   const empty = structuredClone(native);
@@ -246,6 +249,7 @@ test('all 2251 concrete configurations materialize native components and a bound
   }
 });
 
+// @test-kind tooling: native driver refuses base-role freeze and missing execution adapters before any mutation
 test('native driver refuses base-role freeze and missing execution adapters before any mutation', async () => {
   await assert.rejects(
     runNativeConfigurationCampaign({ allowNativeConfigurationMutation: true, baseRoleCampaignFreezeActive: true }),
@@ -257,6 +261,7 @@ test('native driver refuses base-role freeze and missing execution adapters befo
   );
 });
 
+// @test-kind tooling: bounded loopback fixture executes actual lease, archives repeated cells, restores and resumes without overwriting
 test('bounded loopback fixture executes actual lease, archives repeated cells, restores and resumes without overwriting', async () => {
   const schema = JSON.parse(await readFile(new URL('../dataverse/manifest.json', import.meta.url)));
   const catalogue = JSON.parse(await readFile(new URL('../data/stress-catalogue.json', import.meta.url)));
@@ -401,6 +406,7 @@ test('bounded loopback fixture executes actual lease, archives repeated cells, r
   }
 });
 
+// @test-kind tooling: power-cut recovery retains foreign locks and verifies cleanup/cache receipts before releasing its own lock
 test('power-cut recovery retains foreign locks and verifies cleanup/cache receipts before releasing its own lock', async () => {
   const temporary = await makeTemporaryDirectory(path.join(os.tmpdir(), 'qualification-campaign-'));
   const directory = path.join(temporary, '.paqvilo');

@@ -1,4 +1,4 @@
-// @test-kind contract+security: owned parity capture installs its route guard before page creation and preserves owner-close ordering.
+// @test-kind contract+security: the owned parity capture installs its route check before page creation and keeps owner-close ordering.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';

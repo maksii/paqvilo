@@ -1,3 +1,5 @@
+// @test-kind unproven: this file tests local Mirage form, attribute and control collections and reads no recorded native result.
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createFormClientRuntime } from '../lib/model-driven/client-runtime.mjs';
@@ -29,9 +31,9 @@ test('form items resolve by form identity while attribute and control collection
   assert.equal(forms.get(current.getId()), current);
   assert.throws(() => current.navigate(), /does not support formSelector item.navigate/);
   assert.equal(forms.get(formId), current);
-  assert.equal(forms.get(`{${formId.toUpperCase()}}`), current);
-  assert.equal(forms.get('Invented form'), undefined, 'the form label is not its identity');
-  assert.equal(forms.get('ffffffff-ffff-4fff-8fff-ffffffffffff'), undefined);
+  assert.equal(forms.get(`{${formId.toUpperCase()}}`), null);
+  assert.equal(forms.get('Invented form'), null, 'the form label is not its identity');
+  assert.equal(forms.get('ffffffff-ffff-4fff-8fff-ffffffffffff'), null);
   assert.equal(attributes.get('x_title').getName(), 'x_title');
   assert.equal(attributes.get('title_editor'), undefined);
   assert.equal(controls.get('title_editor').getAttribute().getName(), 'x_title');

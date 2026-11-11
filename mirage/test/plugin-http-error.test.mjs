@@ -103,7 +103,7 @@ namespace Invented.WidgetRules {public sealed class Validate:IPlugin {public voi
     const before = app.store.snapshot();
     for (const [mode, expectedCode, message] of [
       ['default', '0x80040265', 'Invented default abort'],
-      // @parity-evidence: native dev-environment recorder corpus faults (Delete step with code -2147220891) and catchCoded (custom API code -2147220970), each in two captures: an InvalidPluginExecutionException answers 0x80040265 whatever code it authors
+      // Evidence: native dev-environment recorder corpus faults (Delete step with code -2147220891) and catchCoded (custom API code -2147220970), each in two captures: an InvalidPluginExecutionException answers 0x80040265 whatever code it authors
       ['custom', '0x80040265', 'Invented explicit custom abort'],
       ['unrelated', '0x80040224', 'Invented unrelated exception'],
     ]) {

@@ -23,6 +23,7 @@ import v8 from 'node:v8';
 import vm from 'node:vm';
 import { setImmediate as setImmediatePromise } from 'node:timers/promises';
 
+// @test-kind contract+unproven: cache behavior is local; FetchXML and model-driven metadata behavior have no native capture.
 test('paged FetchXML projects only returned rows while preserving counts, cookies, ordering and detached values', () => {
   const payload = 'Invented large payload'.repeat(16);
   const store = new DataStore({
@@ -119,6 +120,7 @@ test('unchanged isolated composition clones each business graph once and owned r
   }
 });
 
+// @test-kind contract+unproven: cache behavior is local; FetchXML and model-driven metadata behavior have no native capture.
 test('metadata inventory work scales with metadata once per read, independent of business-row count', () => {
   for (const forms of [8, 256]) {
     let scans = 0,
@@ -167,6 +169,7 @@ test('metadata inventory work scales with metadata once per read, independent of
   }
 });
 
+// @test-kind contract+unproven: cache behavior is local; FetchXML and model-driven metadata behavior have no native capture.
 test('unchanged component checks avoid rebuilding field stamp trees and still detect structured in-place edits', (t) => {
   const size = 512;
   const rows = Array.from({ length: size }, (_, index) => ({
@@ -384,6 +387,7 @@ test('deferred startup callbacks read committed state while a later isolated tra
   }
 });
 
+// @test-kind contract+unproven: cache behavior is local; FetchXML and model-driven metadata behavior have no native capture.
 test('catalogue metadata epoch reuses one snapshot and expires before later source or raw metadata edits', async () => {
   const overlay = createSolutionMetadataOverlay();
   const base = { forms: [{ id: 'form-one', entity: 'x_item', xml: '<form/>' }] };
@@ -428,6 +432,7 @@ test('catalogue metadata epoch reuses one snapshot and expires before later sour
   });
 });
 
+// @test-kind contract+unproven: cache behavior is local; FetchXML and model-driven metadata behavior have no native capture.
 test('overlay invalidates column metadata, component presence and same-ID solution asset edits', () => {
   const overlay = createSolutionMetadataOverlay();
   const base = {
@@ -481,6 +486,7 @@ test('overlay invalidates column metadata, component presence and same-ID soluti
   );
 });
 
+// @test-kind contract+unproven: cache behavior is local; FetchXML and model-driven metadata behavior have no native capture.
 test('unchanged overlay resolutions outside a read epoch scan mapping metadata once until a metadata change', () => {
   let reads = 0;
   const counted = (value) => {
@@ -527,6 +533,7 @@ test('unchanged overlay resolutions outside a read epoch scan mapping metadata o
   assert.equal(reads, 16);
 });
 
+// @test-kind contract+unproven: cache behavior is local; FetchXML and model-driven metadata behavior have no native capture.
 test('one Dataverse Web API request resolves the solution metadata overlay once across per-column checks', async (t) => {
   const appId = '55555555-5555-4555-8555-555555555555',
     variable = `PAQ_OVERLAY_SECRET_${process.pid}`;
@@ -609,6 +616,7 @@ test('one Dataverse Web API request resolves the solution metadata overlay once 
   assert.equal(scans, 1, 'One overlay resolution per request, not one per checked column');
 });
 
+// @test-kind contract+unproven: cache behavior is local; FetchXML and model-driven metadata behavior have no native capture.
 test('catalogue construction groups forms, views and ribbons by table once and reuses parsed ribbon commands', () => {
   const ribbon = `<RibbonDiffXml><Button Id="x.Form.Review" Command="x.Review" LabelText="Review"/><CommandDefinitions><CommandDefinition Id="x.Review"><Actions><JavaScriptFunction Library="$webresource:x_/review.js" FunctionName="Invented.review"/></Actions></CommandDefinition></CommandDefinitions></RibbonDiffXml>`;
   let entityReads = 0;
@@ -663,6 +671,7 @@ test('catalogue construction groups forms, views and ribbons by table once and r
   );
 });
 
+// @test-kind contract+unproven: cache behavior is local; FetchXML and model-driven metadata behavior have no native capture.
 test('the store catalogue survives business-row writes and rebuilds for metadata, mapping, settings and component changes', async () => {
   const state = emptyState();
   state.mappings.x_item = { idColumn: 'x_itemid', nameColumn: 'x_name', fields: { x_name: { type: 'text' } } };
@@ -711,6 +720,7 @@ test('the store catalogue survives business-row writes and rebuilds for metadata
   assert.equal(catalogue().tables.x_other.fields.x_name.label, 'In-place edit');
 });
 
+// @test-kind contract+unproven: cache behavior is local; FetchXML and model-driven metadata behavior have no native capture.
 test('lookup formatting reads target tables from the lazy index and recent bodies survive garbage collection', async () => {
   const reads = new Map();
   const form = (entity) => ({
@@ -756,6 +766,7 @@ test('lookup formatting reads target tables from the lazy index and recent bodie
   assert.equal(reads.get('x_item'), compiled, 'One compilation of the reopened table');
 });
 
+// @test-kind contract+unproven: cache behavior is local; FetchXML and model-driven metadata behavior have no native capture.
 test('lazy catalogue inventories every table without reading unrelated form bodies and preserves the complete contract', async () => {
   const mappings = {},
     entities = {},
@@ -787,6 +798,7 @@ test('lazy catalogue inventories every table without reading unrelated form bodi
   );
 });
 
+// @test-kind contract+unproven: cache behavior is local; FetchXML and model-driven metadata behavior have no native capture.
 test('metadata reuse stops before a potentially mutating read plug-in runs', async () => {
   const overlay = createSolutionMetadataOverlay(),
     state = emptyState();
@@ -810,6 +822,7 @@ test('metadata reuse stops before a potentially mutating read plug-in runs', asy
   );
 });
 
+// @test-kind contract+unproven: cache behavior is local; FetchXML and model-driven metadata behavior have no native capture.
 test('temporarily invalid metadata scopes never restore the cached projection from before a write', () => {
   const overlay = createSolutionMetadataOverlay(),
     base = { forms: [{ id: 'f', xml: '<form/>' }] },
@@ -831,6 +844,7 @@ test('temporarily invalid metadata scopes never restore the cached projection fr
   );
 });
 
+// @test-kind contract+unproven: cache behavior is local; FetchXML and model-driven metadata behavior have no native capture.
 test('explicit nested metadata boundaries enforce both validity and revisions and expire the outer snapshot', () => {
   const overlay = createSolutionMetadataOverlay(),
     base = { forms: [{ id: 'f', xml: '<form/>' }] },
@@ -868,6 +882,7 @@ test('explicit nested metadata boundaries enforce both validity and revisions an
   );
 });
 
+// @test-kind contract+unproven: cache behavior is local; FetchXML and model-driven metadata behavior have no native capture.
 test('cooperative catalogue construction preserves the complete synchronous contract and supports cancellation', async () => {
   const options = {
     mappings: Object.fromEntries(
@@ -884,6 +899,7 @@ test('cooperative catalogue construction preserves the complete synchronous cont
   );
 });
 
+// @test-kind contract+unproven: cache behavior is local; FetchXML and model-driven metadata behavior have no native capture.
 for (const watch of [false, true])
   test(`catalogue invalidates source, form and field-security metadata with watch ${watch}`, async (t) => {
     const fixture = await performanceFixture({ tables: 2, records: 8 });
@@ -1007,6 +1023,7 @@ for (const watch of [false, true])
     );
   });
 
+// @test-kind contract+unproven: cache behavior is local; FetchXML and model-driven metadata behavior have no native capture.
 test('catalogue yields to status while retaining one security read and releases cancelled readers', async (t) => {
   const store = new DataStore(),
     tables = Object.fromEntries(

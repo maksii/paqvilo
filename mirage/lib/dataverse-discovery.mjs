@@ -315,7 +315,7 @@ export function createDiscovery({ instance }) {
       const segment = path.split('/').findLast(Boolean) ?? '';
       throw new DataError(`Resource not found for the segment '${segment}'.`, 404, 'UnknownResource', { segment });
     }
-    const [, version, target, keyText] = match;
+    const [, version, target, keyText] = /** @type {(string | undefined)[]} */ (match);
     const base = `${origin}/api/discovery/v${version}`;
     if (target === undefined) {
       return {

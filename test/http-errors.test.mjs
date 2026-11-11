@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { boundedJsonBody, observeHttpErrors } from '../lense/http-errors.mjs';
 
+// @test-kind contract: HTTP capture sets protocol byte bounds and stops reading oversized chunked responses without cancelling them
 test('HTTP capture sets protocol byte bounds and stops reading oversized chunked responses without cancelling them', async () => {
   const client = new EventEmitter(),
     calls = [],
@@ -58,6 +59,7 @@ test('HTTP capture sets protocol byte bounds and stops reading oversized chunked
   );
 });
 
+// @test-kind contract: stalled observer attach, enable and detach cannot hold startup or shutdown open
 test('stalled observer attach, enable and detach cannot hold startup or shutdown open', async () => {
   const never = () => new Promise(() => {}),
     client = new EventEmitter();
@@ -91,6 +93,7 @@ test('stalled observer attach, enable and detach cannot hold startup or shutdown
   assert.equal(detached.length, 1, 'a late connection is still released');
 });
 
+// @test-kind contract: unfinished small JSON errors still produce an HTTP row within the body deadline
 test('unfinished small JSON errors still produce an HTTP row within the body deadline', async (t) => {
   const client = new EventEmitter(),
     rows = [],
@@ -122,6 +125,7 @@ test('unfinished small JSON errors still produce an HTTP row within the body dea
   await capture.close();
 });
 
+// @test-kind contract: only target-origin error responses are observed and pending bodies are bounded
 test('only target-origin error responses are observed and pending bodies are bounded', async () => {
   const client = new EventEmitter(),
     rows = [];
@@ -149,6 +153,7 @@ test('only target-origin error responses are observed and pending bodies are bou
   await capture.close();
 });
 
+// @test-kind contract: the fallback body reader reads only small, declared-size, unencoded JSON bodies
 test('the fallback body reader reads only small, declared-size, unencoded JSON bodies', async () => {
   const body = JSON.stringify({ error: { message: 'Invented failure' } });
   const response = (headers, bytes = Buffer.from(body)) => ({

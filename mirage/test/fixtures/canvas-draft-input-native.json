@@ -1,0 +1,66 @@
+{
+  "recordedDate": "2026-11-08",
+  "scope": "Two independent native Canvas player draft flows; initial inputs and limits, authored edits, cancel/keep/discard/reopen reset. No saved records, visual or connector parity claim.",
+  "probeFunctionSha256": "3ae4beb22d633f81860610583e63297dc06a9f2ed51ff32ce277bf6bcb85d35e",
+  "sourceMsappSha256": "b22a13aa82f398a6290bae806a9c65c52a9009f977a3931d05fb8950d6f54860",
+  "fixture": {
+    "single": "Invented Łódź + & =",
+    "multi": "Invented first line\nSecond line <tag> & café"
+  },
+  "captures": [
+    {
+      "run": 1,
+      "sha256": "dcef3c49e3ddb0f6b83a9d5fe3a4dd980e3f5e9c875d07d4fe6949234b2bdf46"
+    },
+    {
+      "run": 2,
+      "sha256": "dcef3c49e3ddb0f6b83a9d5fe3a4dd980e3f5e9c875d07d4fe6949234b2bdf46"
+    }
+  ],
+  "rows": [
+    {
+      "id": "initial.single",
+      "value": ""
+    },
+    {
+      "id": "initial.multi",
+      "value": ""
+    },
+    {
+      "id": "single.maxLength",
+      "value": 100
+    },
+    {
+      "id": "multi.maxLength",
+      "value": 2000
+    },
+    {
+      "id": "edited.single",
+      "value": "Invented Łódź + & ="
+    },
+    {
+      "id": "edited.multi",
+      "value": "Invented first line\nSecond line <tag> & café"
+    },
+    {
+      "id": "cancel.requiresConfirmation",
+      "value": true
+    },
+    {
+      "id": "retained.single",
+      "value": "Invented Łódź + & ="
+    },
+    {
+      "id": "retained.multi",
+      "value": "Invented first line\nSecond line <tag> & café"
+    },
+    {
+      "id": "reset.single",
+      "value": ""
+    },
+    {
+      "id": "reset.multi",
+      "value": ""
+    }
+  ]
+}

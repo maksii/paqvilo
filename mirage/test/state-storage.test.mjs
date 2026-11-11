@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo local configuration, administration, storage or runtime behavior
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -434,6 +435,7 @@ test('an incomplete appended transaction is discarded and the next commit repair
   assert.equal(await hashStateFile(file), recovered.persistedDigest);
 });
 
+// @test-kind contract+unproven: persistence is local; plugin and secondary operation behavior have no native capture.
 test('checkpoint failure keeps current file and failed multi-row effects roll back without copying unrelated rows', async (t) => {
   const initial = seed();
   initial.plugins = [
@@ -489,6 +491,7 @@ test('ordinary writes retain unrelated row identity and report save duration', a
   assert.deepEqual(await readStateFile(file), store.snapshot());
 });
 
+// @test-kind contract+unproven: persistence is local; plugin and secondary operation behavior have no native capture.
 test('an active trusted handler promotes the rollback boundary without losing earlier changes', async (t) => {
   const { store, file } = await workspace(t);
   const before = store.snapshot();
@@ -556,6 +559,7 @@ test('an in-memory fixture can bind its persistence path before init or its firs
   }
 });
 
+// @test-kind contract+unproven: persistence is local; plugin and secondary operation behavior have no native capture.
 test('declarative secondary updates retain same-row response and referenced-row identity', async (t) => {
   const initial = seed();
   initial.tables.item.push({ itemid: 'two', name: 'second' });
@@ -601,6 +605,7 @@ test('declarative secondary updates retain same-row response and referenced-row 
   assert.equal(referenced.note, before.tables.item[1].note);
 });
 
+// @test-kind contract+unproven: persistence is local; plugin and secondary operation behavior have no native capture.
 test('deferred trusted-handler promotion reconstructs the transaction before earlier core changes', async (t) => {
   const { store, file } = await workspace(t),
     before = store.snapshot();
@@ -625,6 +630,7 @@ test('deferred trusted-handler promotion reconstructs the transaction before ear
   assert.deepEqual(await readStateFile(file), before);
 });
 
+// @test-kind contract+unproven: persistence is local; plugin and secondary operation behavior have no native capture.
 test('a representation read observer promotes before arbitrary row mutations', async (t) => {
   const { store, file } = await workspace(t),
     before = store.snapshot();

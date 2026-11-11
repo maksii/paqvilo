@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo local configuration, administration, storage or runtime behavior
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

@@ -1,3 +1,4 @@
+// @test-kind tooling: official-PAC invocation, isolated authentication checks and strict output decoding for the optional evidence runner.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -54,6 +55,39 @@ test('mixed-encoding PAC results preserve values and expression errors on exit z
   assert.throws(() => parsePacResults(Buffer.from('>> 1+1\n2\n<Error: hidden>\n>> 1/0\n3\n'), corpus), {
     code: 'PacOutputInvalid',
   });
+});
+
+test('PAC Power Fx string literals decode doubled quotes without treating backslashes as JSON escapes', () => {
+  const corpus = [
+    { id: 'quoted', expression: '"The ""quoted"" text"' },
+    { id: 'slash', expression: '"a\\b"' },
+  ];
+  const bytes = Buffer.from('>> "The ""quoted"" text"\n"The ""quoted"" text"\n\n>> "a\\b"\n"a\\b"\n');
+  assert.deepEqual(parsePacResults(bytes, corpus), [
+    { kind: 'value', value: 'The "quoted" text' },
+    { kind: 'value', value: 'a\\b' },
+  ]);
+  assert.throws(() => parsePacResults(Buffer.from('>> x\n"bad"quote"\n'), [{ id: 'bad', expression: 'x' }]), {
+    code: 'PacOutputInvalid',
+  });
+});
+
+test('PAC compile diagnostics are distinct from runtime errors and cannot qualify matching values', () => {
+  const corpus = [
+    { id: 'overflow', expression: 'IfError(1e400, 2)' },
+    { id: 'next', expression: '1+1' },
+  ];
+  const bytes = Buffer.from(
+    '>> IfError(1e400, 2)\nLine 1: Error 8-13: Numeric value is too large.\nLine 1: Error 0-7: Invalid arguments.\n\n>> 1+1\n2\n',
+  );
+  const rows = parsePacResults(bytes, corpus);
+  assert.deepEqual(rows[0], {
+    kind: 'compile-error',
+    messages: ['Line 1: Error 8-13: Numeric value is too large.', 'Line 1: Error 0-7: Invalid arguments.'],
+  });
+  assert.equal(rows[1].kind, 'value');
+  assert.equal(compareResults(rows[0], rows[0]), 'comparison-error');
+  assert.equal(compareResults(rows[0], { kind: 'error', message: 'Numeric value is too large.' }), 'comparison-error');
 });
 test('oracle checks isolated auth before evaluating fixed corpus and reports differences', async (t) => {
   const { root, pac } = await fixture(t);

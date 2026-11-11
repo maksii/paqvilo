@@ -9,6 +9,7 @@ import { runAcceptance } from '../acceptance.mjs';
 import { navigationCommitBudget } from '../lib/navigation-budget.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { preserveNavigationEvidence } from '../test/navigation-evidence-fixture.mjs';
+import { PROCESS_SLOTS } from '../test/process-slots.mjs';
 
 function fixtureApi(pathname, res, fallback) {
   if (!pathname.startsWith('/__sim/api/')) return false;
@@ -273,7 +274,8 @@ async function navigationFixture(
 
 // Each test owns its loopback server and the browser runAcceptance launches, and mostly waits on fixture
 // response delays, so a few run at once.
-const TESTS_IN_PARALLEL = 4;
+// Every subtest launches a browser; outer validation lanes share the same machine.
+const TESTS_IN_PARALLEL = Math.min(4, PROCESS_SLOTS);
 // A hang guard, not a product budget: a browser launch, a flow bounded by its own action timeout (at most 15 s,
 // asserted through its error or reserve), evidence capture and close. A loaded runner can spend seconds on each.
 const HANG_GUARD = { timeout: 60_000 };

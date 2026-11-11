@@ -1123,9 +1123,13 @@ export function createPortalRenderer(portal, options = {}) {
     timesDispatch: (options.observed ?? portal.observed)?.liquidTimesDispatch,
     filterErrors: (options.observed ?? portal.observed)?.liquidFilterErrors,
     filterRegistration: (options.observed ?? portal.observed)?.liquidFilterRegistration,
+    escapeOnce: (options.observed ?? portal.observed)?.liquidEscapeOnce,
+    stripHtmlScriptText: (options.observed ?? portal.observed)?.liquidStripHtmlScriptText,
+    runtimeCompatibility: (options.observed ?? portal.observed)?.liquidRuntimeCompatibility,
     htmlVoidSerialization: (options.observed ?? portal.observed)?.liquidHtmlVoidSerialization,
     htmlSafeInput: (options.observed ?? portal.observed)?.liquidHtmlSafeInput,
     pathAndQueryFragment: (options.observed ?? portal.observed)?.liquidPathAndQueryFragment,
+    relativeQueryResolution: (options.observed ?? portal.observed)?.liquidRelativeQueryResolution,
     renderLiquid: (source, context) => renderNested(engine, source, context, null, 'liquid filter'),
     renderWebTemplate: async (id, context) => {
       const record = Object.values(portal.templates ?? {}).find(

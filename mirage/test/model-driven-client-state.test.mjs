@@ -1,3 +1,4 @@
+// @test-kind unproven: this file tests local Mirage client-state models and reads no recorded native result.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

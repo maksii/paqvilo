@@ -49,7 +49,7 @@ function independentRead(store, attempts) {
         { code: 'LocalBackendPermissionDenied' },
       );
       attempts.push('refused');
-      // @parity-evidence: native and native-r2 readNested: a Retrieve/RetrieveMultiple step's SDK write commits in its own transaction (its child rows persist after the read's own 400)
+      // Evidence: native and native-r2 readNested: a Retrieve/RetrieveMultiple step's SDK write commits in its own transaction (its child rows persist after the read's own 400)
       // The read step's authorized SDK write commits in a transaction of its own (data.mjs openReadLane): it never joins,
       // waits inside or sees the awaiting transaction, and inherits none of its identity, tag or chain.
       dispatchSdkCall({

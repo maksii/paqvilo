@@ -1,3 +1,4 @@
+// @test-kind contract: capture CLI exit status, retained evidence and owned process cleanup.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -9,15 +10,20 @@ import { fileURLToPath } from 'node:url';
 import { ownedFixture, makeTemporaryDirectory, assertTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { withProcessSlot } from '../test/process-slots.mjs';
 
-function ownedProcess(t, args, { signal = t.signal } = {}) {
+function ownedProcess(t, args, { signal = t.signal, trace = () => {} } = {}) {
+  trace('spawn-requested');
   const child = spawn(process.execPath, args, {
     windowsHide: true,
     signal,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let output = '';
+  child.once('spawn', () => trace('spawned', String(child.pid)));
+  child.once('exit', (code, reason) => trace('exit', JSON.stringify({ code, reason })));
+  child.once('close', (code, reason) => trace('close', JSON.stringify({ code, reason })));
   const collect = (chunk) => {
     output = (output + chunk).slice(-4000);
+    trace('output', String(chunk).slice(-300));
   };
   child.stdout.on('data', collect);
   child.stderr.on('data', collect);
@@ -46,6 +52,15 @@ async function outputDirectory(t) {
 }
 
 test('capture CLI reports failed assertions without losing completed evidence', { timeout: 90000 }, async (t) => {
+  const started = Date.now(),
+    events = [];
+  const trace = (label, phase, detail = '') => {
+    events.push({ elapsedMs: Date.now() - started, label, phase, detail });
+    if (events.length > 40) events.shift();
+  };
+  const onAbort = () => console.error('Invented capture phases: ' + JSON.stringify(events));
+  t.signal.addEventListener('abort', onAbort, { once: true });
+  t.after(() => t.signal.removeEventListener('abort', onAbort));
   const dir = await outputDirectory(t);
   const source = path.join(dir, 'source');
   await fs.mkdir(source);
@@ -81,25 +96,35 @@ test('capture CLI reports failed assertions without losing completed evidence', 
   ].map(([label, only, expected]) => {
     const out = path.join(dir, label);
     const run = { label, expected, out, child: null };
-    run.code = withProcessSlot(() => {
-      run.child = ownedProcess(t, [
-        script,
-        'capture',
-        '--matrix',
-        matrix,
-        '--source',
-        source,
-        '--out',
-        out,
-        '--side',
-        'mirage',
-        '--label',
-        label,
-        '--only',
-        only,
-      ]);
-      return run.child.done;
-    });
+    trace(label, 'queued');
+    run.code = withProcessSlot(
+      () => {
+        trace(label, 'slot-acquired');
+        run.child = ownedProcess(
+          t,
+          [
+            script,
+            'capture',
+            '--matrix',
+            matrix,
+            '--source',
+            source,
+            '--out',
+            out,
+            '--side',
+            'mirage',
+            '--label',
+            label,
+            '--only',
+            only,
+          ],
+          { trace: (phase, detail) => trace(label, phase, detail) },
+        );
+        return run.child.done;
+      },
+      undefined,
+      { signal: t.signal },
+    );
     // Awaited below in order; the handler only keeps a later run's spawn error from going unhandled meanwhile.
     run.code.catch(() => {});
     return run;

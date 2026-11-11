@@ -18,6 +18,7 @@ import { fieldSecurity } from '../lib/dataverse-fls.mjs';
 import { DataError } from '../lib/data-error.mjs';
 import { createChangeLog } from '../lib/dataverse-changes.mjs';
 import { stringifyExactJson } from '../lib/exact-numeric.mjs';
+import { readFile } from 'node:fs/promises';
 
 const ORIGIN = 'http://127.0.0.1:5555';
 const VERSION = 'v9.2';
@@ -1973,6 +1974,81 @@ test('the @odata.context lists a repeated $select column once, then each expansi
   assert.equal(filtered.body['@odata.context'], `${ORIGIN}/api/data/${VERSION}/$metadata#widgets(widget_gadgets())`);
 });
 
+// @test-kind observation: two native captures in fixtures/dataverse-native-record-shapes.json record this back-reference as derived facts and hashes; the inputs are typed in this test, so it is not a replay case.
+test('a selected expanded child retains its relationship back-reference', async () => {
+  const bytes = await readFile(new URL('./fixtures/dataverse-native-record-shapes.json', import.meta.url));
+  const proof = JSON.parse(bytes);
+  assert.equal(proof.captures.length, 2);
+  assert.equal(proof.expected.expandedChild.unselectedBackReferenceEqualsParentPrimaryId, true);
+  const t = await setup();
+  const parent = await create(t, 'widgets', { name: 'Parent' });
+  const child = await create(t, 'gadgets', { name: 'Child', 'widgetid@odata.bind': `/widgets(${parent})` });
+  const result = await t.send('GET', `/api/data/${VERSION}/widgets?$select=name&$expand=widget_gadgets($select=name)`);
+  const selected = result.body.value.find((row) => row.widgetid === parent).widget_gadgets;
+  assert.equal(selected.length, 1);
+  assert.equal(selected[0].gadgetid, child);
+  assert.equal(selected[0]._widgetid_value, parent);
+});
+
+// @test-kind security: Synthesized relationship keys remain subject to the child projection hooks and are never invented for an intersect relationship.
+test('expanded back-references preserve child masking and intersect semantics', async () => {
+  const hooks = createRecordHooks();
+  hooks.add('project', (_context, mapping, formatted) => {
+    if (mapping.logicalName === 'gadget') formatted._widgetid_value = null;
+  });
+  const t = await setup({ hooks });
+  const parent = await create(t, 'widgets', { name: 'Parent' });
+  await create(t, 'gadgets', { name: 'Child', 'widgetid@odata.bind': `/widgets(${parent})` });
+  const expanded = await t.send('GET', `/api/data/${VERSION}/widgets?$expand=widget_gadgets($select=name)`);
+  assert.equal(expanded.body.value[0].widget_gadgets[0]._widgetid_value, null);
+  const tag = await create(t, 'tags', { name: 'Related' });
+  await t.send('POST', `/api/data/${VERSION}/widgets(${parent})/widget_tags/$ref`, {
+    body: { '@odata.id': `${ORIGIN}/api/data/${VERSION}/tags(${tag})` },
+  });
+  const intersect = await t.send('GET', `/api/data/${VERSION}/widgets?$expand=widget_tags($select=name)`);
+  assert.equal(Object.hasOwn(intersect.body.value[0].widget_tags[0], '_tagid_value'), false);
+});
+
+// @test-kind security: An implicit expanded back-reference cannot reveal a secured child lookup that ordinary row projection denied.
+test('expanded parent back-references still pass through actual field-security projection', async () => {
+  const runtime = await securedSetup();
+  const parent = await securedRow(runtime, 'widgets', { name: 'Parent' });
+  await securedRow(runtime, 'gadgets', { name: 'Child', bind: `/widgets(${parent})` });
+  runtime.store.state.mappings.gadget.fields.widgetid = {
+    dataverseType: 'lookup',
+    columnMetadata: { isSecured: true },
+  };
+  const response = await runtime.send(
+    'GET',
+    `/api/data/${VERSION}/widgets?$select=name&$expand=widget_gadgets($select=name)`,
+    { user: runtime.basic },
+  );
+  assert.equal(response.body.value.length, 1);
+  assert.equal(response.body.value[0].widget_gadgets.length, 1);
+  assert.equal(response.body.value[0].widget_gadgets[0]._widgetid_value, null);
+});
+
+// @test-kind observation: two native captures in fixtures/dataverse-native-record-shapes.json record the context column orders as derived facts and hashes; the FetchXML input is typed in this test, so it is not a replay case.
+test('a FetchXML context retains its complete projection when native column order varies', async () => {
+  const bytes = await readFile(new URL('./fixtures/dataverse-native-record-shapes.json', import.meta.url));
+  const proof = JSON.parse(bytes);
+  assert.deepEqual(proof.contextOrders, [
+    [0, 1, 2],
+    [0, 2, 1],
+  ]);
+  assert.equal(proof.expected.fetchContext.explicitColumnsAndImplicitPrimaryId, true);
+  const t = await setup();
+  const xml = '<fetch><entity name="widget"><attribute name="name"/><attribute name="code"/></entity></fetch>';
+  const result = await t.send('GET', `/api/data/${VERSION}/widgets?fetchXml=${encodeURIComponent(xml)}`);
+  const context = new URL(result.body['@odata.context']);
+  assert.equal(context.origin, ORIGIN);
+  assert.equal(context.pathname, `/api/data/${VERSION}/$metadata`);
+  assert.equal(context.search, '');
+  const columns = /^#widgets\(([^)]+)\)$/.exec(context.hash)[1].split(',');
+  assert.equal(columns.length, 3);
+  assert.deepEqual([...columns].sort(), ['code', 'name', 'widgetid']);
+});
+
 test('a FetchXML context lists the columns alphabetically with the id, and an aggregate has no column list', async () => {
   const t = await setup();
   await create(t, 'widgets', { name: 'Listed', price: 2 });
@@ -1997,11 +2073,11 @@ test('a single-valued $ref answers the $ref context', async () => {
   assert.equal(ref.body['@odata.id'], `${ORIGIN}/api/data/${VERSION}/widgets(${widget})`);
 });
 
-test('an expanded collection links its children, a selected child carries only its columns and key, and an unselected expansion answers every column', async () => {
-  const t = await setup();
-  const id = await create(t, 'widgets', { name: 'Parent' });
-  await create(t, 'gadgets', { name: 'Child', 'widgetid@odata.bind': `/widgets(${id})` });
-  const selected = await t.send('GET', `/api/data/${VERSION}/widgets?$expand=widget_gadgets($select=name)`, {
+test('an expanded collection links its children and an unselected expansion answers every column', async (t) => {
+  const runtime = await setup();
+  const id = await create(runtime, 'widgets', { name: 'Parent' });
+  await create(runtime, 'gadgets', { name: 'Child', 'widgetid@odata.bind': `/widgets(${id})` });
+  const selected = await runtime.send('GET', `/api/data/${VERSION}/widgets?$expand=widget_gadgets($select=name)`, {
     headers: annotate('*'),
   });
   const row = selected.body.value[0];
@@ -2009,22 +2085,24 @@ test('an expanded collection links its children, a selected child carries only i
     row['widget_gadgets@odata.nextLink'],
     `${ORIGIN}/api/data/${VERSION}/widgets(${id})/widget_gadgets?$select=name`,
   );
-  // Native $expand=pqwp_probe_children($select=pqwp_name) children are {pqwp_name, pqwp_childid} (native relationsReads):
-  // the referencing lookup is not added to a child with a nested $select.
-  assert.equal(Object.hasOwn(row.widget_gadgets[0], '_widgetid_value'), false);
+  await t.test('selected children retain the parent lookup', async () => {
+    const bytes = await readFile(new URL('./fixtures/dataverse-native-record-shapes.json', import.meta.url));
+    assert.equal(JSON.parse(bytes).captures.length, 2);
+    assert.equal(row.widget_gadgets[0]._widgetid_value, id);
+  });
   assert.ok(
     !('OData.Community.Display.V1.FormattedValue' in row.widget_gadgets[0]) &&
       !Object.keys(row.widget_gadgets[0]).some((key) => key.includes('@OData')),
     'no formatted annotation leaks into an expanded row without a Prefer',
   );
-  const all = await t.send('GET', `/api/data/${VERSION}/widgets?$expand=widget_gadgets`);
+  const all = await runtime.send('GET', `/api/data/${VERSION}/widgets?$expand=widget_gadgets`);
   assert.ok('createdon' in all.body.value[0].widget_gadgets[0], 'a child with no $select answers every column');
   assert.equal(
     all.body.value[0].widget_gadgets[0]._widgetid_value,
     id,
     'a child with no $select carries its parent lookup',
   );
-  const single = await t.send('GET', `/api/data/${VERSION}/gadgets?$expand=widgetid($select=name)`);
+  const single = await runtime.send('GET', `/api/data/${VERSION}/gadgets?$expand=widgetid($select=name)`);
   assert.match(single.body.value[0].widgetid['@odata.etag'], /^W\/"\d+"$/);
 });
 
@@ -2190,16 +2268,33 @@ test('owner lookups carry the annotations native gives each owner column', async
   assert.equal(res.body[`_ownerid_value${nav}`], 'ownerid');
 });
 
-test('an organization-owned row answers the organization lookup unless a $select omits it', async () => {
-  const t = await setup();
-  const id = await create(t, 'tags', { name: 'Shared' });
-  // Native $select on an organization-owned table answers only the selected columns and the key (native faults:
-  // pqwp_children?$select=pqwp_name), so the unselected organization lookup is absent.
-  const single = await t.send('GET', `/api/data/${VERSION}/tags(${id})?$select=name`);
-  assert.equal(Object.hasOwn(single.body, '_organizationid_value'), false);
-  const list = await t.send('GET', `/api/data/${VERSION}/tags?$select=name`);
+test('organization-owned key reads retain the organization lookup while a selected collection omits it', async (t) => {
+  const runtime = await setup();
+  runtime.store.state.mappings.tag.relationships = {
+    widget: { entity: 'widget', from: 'widgetid', to: 'widgetid', many: false },
+  };
+  runtime.store.state.mappings.tag.fields.widgetid = lookup;
+  const parent = await create(runtime, 'widgets', { name: 'Parent' });
+  const id = await create(runtime, 'tags', { name: 'Shared', 'widget@odata.bind': `/widgets(${parent})` });
+  await t.test('native keyed and collection organization projections', async () => {
+    const bytes = await readFile(new URL('./fixtures/dataverse-native-deep-facts.json', import.meta.url));
+    const proof = JSON.parse(bytes);
+    assert.equal(proof.captures.length, 2);
+    assert.deepEqual(proof.expected.organizationLookup, {
+      selectedSingle: true,
+      selectedSingleExpanded: true,
+      selectedCollection: false,
+    });
+    for (const expand of ['', '&$expand=widget($select=name)']) {
+      const single = await runtime.send('GET', `/api/data/${VERSION}/tags(${id})?$select=name` + expand);
+      assert.equal(single.body._organizationid_value, ORG);
+    }
+    const list = await runtime.send('GET', `/api/data/${VERSION}/tags?$select=name`);
+    assert.equal(Object.hasOwn(list.body.value[0], '_organizationid_value'), false);
+  });
+  const list = await runtime.send('GET', `/api/data/${VERSION}/tags?$select=name`);
   assert.equal(Object.hasOwn(list.body.value[0], '_organizationid_value'), false);
-  const unselected = await t.send('GET', `/api/data/${VERSION}/tags`);
+  const unselected = await runtime.send('GET', `/api/data/${VERSION}/tags`);
   assert.equal(unselected.body.value[0]._organizationid_value, ORG);
 });
 

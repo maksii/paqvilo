@@ -1,3 +1,4 @@
+// @test-kind tooling: code-review analysis, filesystem boundaries and clone accounting are exercised with local fixtures.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -108,6 +109,7 @@ test('analysis accepts explicitly aliased roots and rebases clone paths from a c
   assert.deepEqual(await fs.readdir(temporary), [], 'canonical snapshots are still removed');
 });
 
+// @test-kind tooling+security: review sources must not escape trusted workspace and privacy boundaries.
 test('native Git-root identity retains indexed-link refusals when legacy realpath preserves an alias spelling', async (t) => {
   const fixture = await tempDir('paqvilo-git-root-alias-');
   t.after(() => fs.rm(fixture, { recursive: true, force: true }));
@@ -262,6 +264,7 @@ test('actual runtime and full configuration detect body-only orphans despite pac
   }
 });
 
+// @test-kind tooling+security: review sources must not escape trusted workspace and privacy boundaries.
 test('Git-indexed linked ancestors cannot expose outside or ignored private sources to review', async (t) => {
   const fixture = await tempDir('paqvilo-linked-review-');
   t.after(() => fs.rm(fixture, { recursive: true, force: true }));

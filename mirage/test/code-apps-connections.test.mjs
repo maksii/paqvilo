@@ -1,3 +1,4 @@
+// @test-kind contract: explicitly registered Paqvilo project packs resolve connection aliases and selected providers; unimplemented local operations report ConnectorNotSimulated/501.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -66,6 +67,7 @@ test('code app connector resolves its project connection and reports unsupported
   assert.equal(notes.filter((n) => n.code === 'CODEAPP_CONNECTOR_NOT_SIMULATED').length, 2);
 });
 
+// The asserted pack:selected precedence and undefined unsupported result belong to the local project extension seam, not a native connector availability guarantee.
 test('connector-id connection fallback uses its selected provider before declaring an operation unsupported', async () => {
   const calls = [];
   const connections = { x_invented: { connector: 'x_invented', provider: 'pack:selected' } };

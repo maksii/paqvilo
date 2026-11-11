@@ -4,6 +4,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { activatePackRegistries, createPackRegistries, validateEndpoints } from './extensions.mjs';
 import { snapshotPackExports, validatePackExports } from './pack-exports.mjs';
 import { validateWebApiErrorTemplates } from './webapi-error-templates.mjs';
+import { validateDataverseErrorTemplates } from './dataverse-error-templates.mjs';
 import { seedPresetBody } from './solution-schema.mjs';
 import { validatePersonaCatalog } from './persona-catalog.mjs';
 import { configurationPresetReport, experimentId } from './experiment-presets.mjs';
@@ -218,9 +219,13 @@ function validatePackExtensions(pack, fail) {
 function validatePackTemplates(pack, fail) {
   const templates = Object.getOwnPropertyDescriptor(pack, 'webApiErrorTemplates');
   if (templates && !('value' in templates)) fail('webApiErrorTemplates must be an explicit data property');
+  const dataverseTemplates = Object.getOwnPropertyDescriptor(pack, 'dataverseErrorTemplates');
+  if (dataverseTemplates && !('value' in dataverseTemplates))
+    fail('dataverseErrorTemplates must be an explicit data property');
   try {
     validateEndpoints(pack.id, dataProperty(pack, 'endpoints')?.value);
     if (templates?.value !== undefined) validateWebApiErrorTemplates(templates.value);
+    if (dataverseTemplates?.value !== undefined) validateDataverseErrorTemplates(dataverseTemplates.value);
   } catch (error) {
     fail(error.message);
   }

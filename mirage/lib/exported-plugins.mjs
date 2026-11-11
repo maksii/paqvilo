@@ -1523,7 +1523,9 @@ function copyBulkParentFrame(phaseFrame, bulkParent, asyncExecution) {
 /** A deliberately small synchronous contract. PostOperation can reject, but cannot silently persist target changes.
  * awaitIo (the asynchronous pipeline, data.mjs createRecordAsync): a synchronous service endpoint step whose post leaves the
  * process (webhooks.send) suspends the phase, and the phase answers a promise of its frame that runs the later steps after the
- * post answered; a failed post rejects it. Without awaitIo the post runs on the synchronous I/O bridge (webhooks.sync). */
+ * post answered; a failed post rejects it. Without awaitIo the post runs on the synchronous I/O bridge (webhooks.sync).
+ * @param {{ concurrencyBehavior?: number | null, [key: string]: any }} options
+ */
 /* NOSONAR: single-pass routine, splitting it would change shared state */ export function runPluginPhase({
   items,
   // Every registration of the pipeline (items may be one step of a per-step call): the Context4 image sets are the stage's.

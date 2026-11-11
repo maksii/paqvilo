@@ -1,0 +1,310 @@
+{
+  "version": 1,
+  "retirements": [
+    {
+      "file": "mirage/test-browser/canvas-native-input.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test-browser/model-driven-client-runtime.test.mjs",
+      "reason": "Parity tag removed: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test-browser/model-driven-submit-modes.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test-browser/power-pages-native-controls.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/canvas-form-reset-parity.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/canvas-source-manifest.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/code-apps-context-cache-parity.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/code-apps-http.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/code-apps-native-context.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/customapi-output-defaults.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/dataverse-api.test.mjs",
+      "reason": "Generated qualification guards (__paqParity, __paqQuery, __paqSoap, __paqScalar) removed; 1 parity tag(s) removed; the base assertions keep their base tags and the expectations come from replay cases or are typed locally.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/dataverse-fetchxml-errors.test.mjs",
+      "reason": "Generated qualification guards (__paqParity, __paqQuery, __paqSoap, __paqScalar) removed; 1 parity tag(s) removed; the base assertions keep their base tags and the expectations come from replay cases or are typed locally.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/dataverse-metadata-conditionals.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/dataverse-metadata-epoch.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/dataverse-metadata-http-order.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/dataverse-metadata.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/dataverse-null-comparisons.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/dataverse-records.test.mjs",
+      "reason": "Generated qualification guards (__paqParity, __paqQuery, __paqSoap, __paqScalar) removed; 16 parity tag(s) changed to observation, 1 kept; the base assertions keep their base tags and the expectations come from replay cases or are typed locally.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/dataverse-root-savedquery.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/dataverse-routing-errors.test.mjs",
+      "reason": "Generated qualification guards (__paqParity, __paqQuery, __paqSoap, __paqScalar) removed; 9 parity tag(s) removed; the base assertions keep their base tags and the expectations come from replay cases or are typed locally.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/dataverse-scalar-reader-http.test.mjs",
+      "reason": "Generated qualification guards (__paqParity, __paqQuery, __paqSoap, __paqScalar) removed; 2 parity tag(s) changed to observation; the base assertions keep their base tags and the expectations come from replay cases or are typed locally.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/dataverse-scalar-reader.test.mjs",
+      "reason": "Generated qualification guards (__paqParity, __paqQuery, __paqSoap, __paqScalar) removed; 1 parity tag(s) changed to observation; the base assertions keep their base tags and the expectations come from replay cases or are typed locally.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/dataverse-soap-sdk-values.test.mjs",
+      "reason": "Parity tag changed to observation, 1 kept: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/dataverse-tds-root-sql-server-regression.test.mjs",
+      "reason": "Hand-written parity test deleted with its qualification guards; its recorded claims are replayed by replay suite tds-sql/tds-root-sql-server-expressions-v1.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/dataverse-tds-sql-server-alias-regressions.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/dataverse-tds-sql-server-function-regressions.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/dataverse-tds-sql-server-predicate-regressions.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/import-render.test.mjs",
+      "reason": "Generated qualification guards (__paqParity, __paqQuery, __paqSoap, __paqScalar) removed; 3 parity tag(s) removed; the base assertions keep their base tags and the expectations come from replay cases or are typed locally.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/liquid-observed-math.test.mjs",
+      "reason": "Generated qualification guards (__paqParity, __paqQuery, __paqSoap, __paqScalar) removed; 4 parity tag(s) removed; the base assertions keep their base tags and the expectations come from replay cases or are typed locally.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/liquid-portal-parity.test.mjs",
+      "reason": "Generated qualification guards (__paqParity, __paqQuery, __paqSoap, __paqScalar) removed; 5 parity tag(s) removed; the base assertions keep their base tags and the expectations come from replay cases or are typed locally.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/liquid-root-context26.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/liquid82-observed-corrections.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/model-driven-attribute-metadata.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/model-driven-choice-options.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/model-driven-client-runtime.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/model-driven-client-state.test.mjs",
+      "reason": "Generated qualification guards (__paqParity, __paqQuery, __paqSoap, __paqScalar) removed; 1 parity tag(s) removed; the base assertions keep their base tags and the expectations come from replay cases or are typed locally.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/model-driven-native-contract.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/model-driven-native-controls.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/model-driven-native-dirty.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/model-driven-native-presentation.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/model-driven-root-choice.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/model-driven-root-membership.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/model-driven-root-pcf.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/power-fx-batch-corrections.test.mjs",
+      "reason": "Hand-written parity test deleted with its qualification guards; its recorded claims are replayed by replay suite power-fx/batch.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/power-fx-canvas-common.test.mjs",
+      "reason": "Generated qualification guards (__paqParity, __paqQuery, __paqSoap, __paqScalar) removed; 2 parity tag(s) removed; the base assertions keep their base tags and the expectations come from replay cases or are typed locally.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/power-fx-language.test.mjs",
+      "reason": "Generated qualification guards (__paqParity, __paqQuery, __paqSoap, __paqScalar) removed; 4 parity tag(s) removed; the base assertions keep their base tags and the expectations come from replay cases or are typed locally.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/power-fx-positive-parity.test.mjs",
+      "reason": "Hand-written parity test deleted with its qualification guards; its recorded claims are replayed by replay suite power-fx/positive-values.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/power-fx-root-clock-process.test.mjs",
+      "reason": "Hand-written parity test deleted with its qualification guards; its recorded claims are replayed by replay suite power-fx/root-clock-process.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/power-fx-root-date-profile.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/power-fx-root-decimal.test.mjs",
+      "reason": "Hand-written parity test deleted with its qualification guards; its recorded claims are replayed by replay suite power-fx/root-decimal.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/power-fx-root-official.test.mjs",
+      "reason": "Hand-written parity test deleted with its qualification guards; its recorded claims are replayed by replay suite power-fx/root-official-iferror-and-text.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/power-fx-root-phase.test.mjs",
+      "reason": "Hand-written parity claims replaced by replay suite power-fx/root-phase; 1 parity tag(s) changed to contract.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/power-fx-root-round.test.mjs",
+      "reason": "Hand-written parity test deleted with its qualification guards; its recorded claims are replayed by replay suite power-fx/root-round.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/power-fx-root-touch.test.mjs",
+      "reason": "Hand-written parity test deleted with its qualification guards; its recorded claims are replayed by replay suite power-fx/root-touch.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/power-fx-text-oracle.test.mjs",
+      "reason": "Hand-written parity claims replaced by replay suite power-fx/text-oracle; 1 parity tag(s) removed.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/power-fx-trim-complexity.test.mjs",
+      "reason": "Generated qualification guards (__paqParity, __paqQuery, __paqSoap, __paqScalar) removed; 1 parity tag(s) removed; the base assertions keep their base tags and the expectations come from replay cases or are typed locally.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/power-pages-native-contract.test.mjs",
+      "reason": "Hand-written parity test deleted with its qualification guards; its recorded claims are replayed by replay suite liquid-render/power-pages-contract.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/power-pages-native-http.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/power-pages-native-language.test.mjs",
+      "reason": "Hand-written parity test deleted with its qualification guards; its recorded claims are replayed by replay suite liquid-render/power-pages-language.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/webapi-error-details.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    },
+    {
+      "file": "mirage/test/webapi-native-contract.test.mjs",
+      "reason": "Parity tag changed to observation: the expected values are typed in the test and are not replayed from a recording.",
+      "authority": "user request 2026-11-11: replace PR 47 qualification guards and hand-written parity claims with recorded replay cases"
+    }
+  ]
+}

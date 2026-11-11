@@ -226,7 +226,7 @@ function decodeReference(n) {
     logicalName: kidText(n, NS.a, 'LogicalName'),
     id: kidText(n, NS.a, 'Id'),
     name: kidText(n, NS.a, 'Name'),
-    ...(kid(n, NS.a, 'RowVersion') ? { rowVersion: kidText(n, NS.a, 'RowVersion') } : {}),
+    rowVersion: kidText(n, NS.a, 'RowVersion'), // absent or nil: null (#value-11, #value-12, #value-24)
     keyAttributes: decodePairs(kid(n, NS.a, 'KeyAttributes')),
   };
 }
@@ -234,7 +234,8 @@ function decodeReference(n) {
 // RelatedEntities: each item is a KeyValuePair<Relationship, EntityCollection>. Key and value are
 // declared members, so neither carries xsi:type.
 function decodeRelated(n) {
-  if (!n || isNil(n)) return null;
+  if (!n) return []; // absent: the SDK collection default is empty (#value-20, #value-26)
+  if (isNil(n)) return null;
   return n.children.map((pair) => {
     const key = kid(pair, NS.b, 'key');
     const value = kid(pair, NS.b, 'value');
@@ -368,7 +369,6 @@ const nil = (name) => `<${name} i:nil="true"/>`;
 const typed = (name, qname, body) => `<${name} i:type="${qname}">${body}</${name}>`;
 const plain = (name, text) => `<${name}>${esc(text)}</${name}>`;
 const plainOrNil = (name, value) => (value == null ? nil(name) : plain(name, value));
-const maybe = (value, render) => (value == null ? '' : render(value));
 const pairItems = (entries, toValue, wrap = KVP) =>
   [...entries].map(([key, value]) => `<${wrap}><b:key>${esc(key)}</b:key>${toValue(value)}</${wrap}>`).join('');
 const pairs = (name, entries, toValue = (v) => encodeValue('b:value', v), wrap = KVP) =>
@@ -390,30 +390,38 @@ const dateText = (x) => {
     throw new DataError('The date-time value is not a valid date.', 400, 'InvalidRequest', { innerCode: '0x80040203' });
   return x.toISOString();
 };
-// Money is an exact decimal with four digits (the Web API scale); the Value is typed c:decimal.
-const moneyValue = (value) =>
-  value == null ? nil('a:Value') : typed('a:Value', 'c:decimal', esc(fixedScaleNumeric(value, 4).lexeme));
+// Money is an exact decimal with four digits (the Web API scale). The Value is untyped: the SDK declares
+// it statically as decimal, so no xsi:type is written (#value-16, #value-20).
+const moneyValue = (value) => (value == null ? nil('a:Value') : plain('a:Value', fixedScaleNumeric(value, 4).lexeme));
 
-// Declared members (EntityReference fields, Relationship fields) carry no xsi:type.
+// Member table, EntityReference (DataContract order, namespace a:): Id, KeyAttributes, LogicalName, Name,
+// RowVersion. Evidence: dataverse-soap/sdk-interop#value-11, #value-12, #value-14, #value-24 (Name and RowVersion
+// nil when absent; KeyAttributes present, empty in #value-24). Absent scalars are nil, absent collections empty.
+// Declared members carry no xsi:type.
 const referenceBody = (r) =>
-  maybe(r.id, (id) => plain('a:Id', id)) +
-  maybe(r.keyAttributes, (keys) => pairs('a:KeyAttributes', keys, undefined, KEY_ATTRIBUTE_KVP)) +
-  maybe(r.logicalName, (logical) => plain('a:LogicalName', logical)) +
-  (r.name == null ? nil('a:Name') : plain('a:Name', r.name)) +
-  (Object.hasOwn(r, 'rowVersion') ? plainOrNil('a:RowVersion', r.rowVersion) : '');
+  plainOrNil('a:Id', r.id) +
+  pairs('a:KeyAttributes', r.keyAttributes ?? new Map(), undefined, KEY_ATTRIBUTE_KVP) +
+  plainOrNil('a:LogicalName', r.logicalName) +
+  plainOrNil('a:Name', r.name) +
+  plainOrNil('a:RowVersion', r.rowVersion);
 const encodeReference = (name, r) => typed(name, 'a:EntityReference', referenceBody(r));
+// Member table, Relationship: PrimaryEntityRole, SchemaName. Evidence: dataverse-soap/sdk-interop#value-19, #value-25.
 const relationshipBody = (r) =>
-  maybe(r.primaryEntityRole, (x) => plain('a:PrimaryEntityRole', x)) + plain('a:SchemaName', r.schemaName);
+  plainOrNil('a:PrimaryEntityRole', r.primaryEntityRole) + plainOrNil('a:SchemaName', r.schemaName);
 
-// DataContract order: Entities, EntityName, MinActiveRowVersion, MoreRecords, PagingCookie,
-// TotalRecordCount, TotalRecordCountLimitExceeded. Both counts are always written: a missing
+// Member table, EntityCollection (DataContract order is alphabetical): Entities, EntityName, MinActiveRowVersion,
+// MoreRecords, PagingCookie, RecordCountLessThanMarv, TotalRecordCount, TotalRecordCountLimitExceeded.
+// Evidence: dataverse-soap/sdk-interop#value-25 (nested collection: MinActiveRowVersion and PagingCookie nil,
+// RecordCountLessThanMarv 0) and #value-26 (top level: same members, RecordCountLessThanMarv 0). Mirage does not model RecordCountLessThanMarv,
+// so it is written as the SDK default 0. Both counts are always written: a missing
 // TotalRecordCount reads as 0 in the SDK, while Dataverse sends -1 when no count was requested.
 const collectionBody = (c) =>
   `<a:Entities>${(c.entities ?? []).map((e) => encodeEntity('a:Entity', e, false)).join('')}</a:Entities>` +
-  maybe(c.entityName, (x) => plain('a:EntityName', x)) +
-  maybe(c.minActiveRowVersion, (x) => plain('a:MinActiveRowVersion', x)) +
+  plainOrNil('a:EntityName', c.entityName) +
+  plainOrNil('a:MinActiveRowVersion', c.minActiveRowVersion) +
   `<a:MoreRecords>${Boolean(c.moreRecords)}</a:MoreRecords>` +
-  maybe(c.pagingCookie, (x) => plain('a:PagingCookie', x)) +
+  plainOrNil('a:PagingCookie', c.pagingCookie) +
+  plain('a:RecordCountLessThanMarv', '0') +
   plain('a:TotalRecordCount', String(c.totalRecordCount ?? -1)) +
   plain('a:TotalRecordCountLimitExceeded', String(c.totalRecordCountLimitExceeded ?? false));
 const encodeCollection = (name, c) => typed(name, 'a:EntityCollection', collectionBody(c));
@@ -423,29 +431,28 @@ function encodeRelated(list) {
   return `<a:RelatedEntities>${list
     .map(
       (r) =>
-        `<a:KeyValuePairOfRelationshipEntityCollection><b:key>${relationshipBody(r.relationship)}</b:key>` +
+        `<a:KeyValuePairOfRelationshipEntityCollectionX_PsK4FkN><b:key>${relationshipBody(r.relationship)}</b:key>` +
         (r.entities == null ? nil('b:value') : `<b:value>${collectionBody(r.entities)}</b:value>`) +
-        '</a:KeyValuePairOfRelationshipEntityCollection>',
+        '</a:KeyValuePairOfRelationshipEntityCollectionX_PsK4FkN>',
     )
     .join('')}</a:RelatedEntities>`;
 }
 
-// DataContract order: Attributes, EntityState, FormattedValues, Id, KeyAttributes, LogicalName,
-// RelatedEntities, RowVersion. FormattedValues is KeyValuePair<string,string>: untyped values.
+// Member table, Entity (DataContract order): Attributes, EntityState, FormattedValues, Id, KeyAttributes,
+// LogicalName, RelatedEntities, RowVersion. Evidence: dataverse-soap/sdk-interop#value-20 (all eight present),
+// #value-25 and #value-26 (EntityState and RowVersion nil, FormattedValues, KeyAttributes and RelatedEntities
+// empty when absent). Absent scalars are nil, absent collections empty. FormattedValues is
+// KeyValuePair<string,string>: untyped values.
 function encodeEntity(name, e, typedElement) {
   const body =
-    maybe(e.attributes, (m) => pairs('a:Attributes', m)) +
-    maybe(e.entityState, (s) => plain('a:EntityState', s)) +
-    maybe(
-      e.formattedValues,
-      (m) =>
-        `<a:FormattedValues>${pairItems(m, (v) => plainOrNil('b:value', v), 'a:KeyValuePairOfstringstring')}</a:FormattedValues>`,
-    ) +
-    maybe(e.id, (id) => plain('a:Id', id)) +
-    maybe(e.keyAttributes, (m) => pairs('a:KeyAttributes', m, undefined, KEY_ATTRIBUTE_KVP)) +
-    maybe(e.logicalName, (logical) => plain('a:LogicalName', logical)) +
-    maybe(e.relatedEntities, (list) => encodeRelated(list)) +
-    maybe(e.rowVersion, (version) => plain('a:RowVersion', version));
+    pairs('a:Attributes', e.attributes ?? new Map()) +
+    plainOrNil('a:EntityState', e.entityState) +
+    `<a:FormattedValues>${pairItems(e.formattedValues ?? new Map(), (v) => plainOrNil('b:value', v), 'a:KeyValuePairOfstringstring')}</a:FormattedValues>` +
+    plainOrNil('a:Id', e.id) +
+    pairs('a:KeyAttributes', e.keyAttributes ?? new Map(), undefined, KEY_ATTRIBUTE_KVP) +
+    plainOrNil('a:LogicalName', e.logicalName) +
+    encodeRelated(e.relatedEntities ?? []) +
+    plainOrNil('a:RowVersion', e.rowVersion);
   return `<${name}${typedElement ? ' i:type="a:Entity"' : ''}>${body}</${name}>`;
 }
 
@@ -470,7 +477,7 @@ const ENCODERS = new Map([
         name,
         'a:Money',
         v.sdkExact && v.value != null
-          ? typed('a:Value', 'c:decimal', esc(exactNumeric(v.value, 'Money', { collapse: false }).value))
+          ? plain('a:Value', exactNumeric(v.value, 'Money', { collapse: false }).value)
           : moneyValue(v.value),
       ),
   ],
@@ -493,7 +500,10 @@ const ENCODERS = new Map([
       typed(
         name,
         'a:ColumnSet',
+        // Member table, ColumnSet: AllColumns, AttributeExpressions, Columns. Evidence: dataverse-soap/sdk-interop#value-22,
+        // #value-23 (AttributeExpressions is always present and empty; the decoder rejects any expression).
         plain('a:AllColumns', String(v.allColumns === true)) +
+          '<a:AttributeExpressions/>' +
           `<a:Columns>${(v.columns ?? []).map((c) => plain('f:string', c)).join('')}</a:Columns>`,
       ),
   ],
@@ -512,8 +522,12 @@ const ENCODERS = new Map([
       typed(
         name,
         'a:AliasedValue',
+        // Member table, AliasedValue: AttributeLogicalName, EntityLogicalName, NeedFormatting, ReturnType, Value.
+        // Evidence: dataverse-soap/sdk-interop#value-18 (NeedFormatting false and ReturnType 0 when Mirage does not model them).
         plainOrNil('a:AttributeLogicalName', v.attribute) +
           plainOrNil('a:EntityLogicalName', v.entity) +
+          plain('a:NeedFormatting', 'false') +
+          plain('a:ReturnType', '0') +
           encodeValue('a:Value', v.value),
       ),
   ],

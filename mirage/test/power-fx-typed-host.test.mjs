@@ -1,3 +1,4 @@
+// @test-kind unproven: Mixed typed-host behavior has no native evidence; conditional official callback evidence awaits review of the host context.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {

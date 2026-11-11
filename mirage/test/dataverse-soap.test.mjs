@@ -730,7 +730,7 @@ for (const message of ['Assign', 'SetState']) {
     const result = await t.send(
       specializedRequest(message, t.store.resolveMapping(t.logical).entitySet, t.id, t.basic.systemuserid),
     );
-    // @parity-evidence: native dev-environment plug-in recorder corpus 2026-10-30, sdkMessages scenario: registered SetState steps never execute; SetState runs as SetStateDynamicEntity
+    // Evidence: native dev-environment plug-in recorder corpus 2026-10-30, sdkMessages scenario: registered SetState steps never execute; SetState runs as SetStateDynamicEntity
     // Registered SetState steps never execute natively: SetState runs as SetStateDynamicEntity (recorded corpus).
     if (message === 'SetState') {
       assert.equal(result.status, 200, result.body);
@@ -1946,10 +1946,8 @@ test('OptionSetValue and Money members of a complex response are typed as the xr
   const res = await t.send(execute('OrganizationRequest', 'PriceStatus'));
   assert.equal(res.status, 200, res.body);
   assert.match(res.body, /<b:key>Status<\/b:key><b:value i:type="a:OptionSetValue"><a:Value>2<\/a:Value><\/b:value>/);
-  assert.match(
-    res.body,
-    /<b:key>Price<\/b:key><b:value i:type="a:Money"><a:Value i:type="c:decimal">12\.5000<\/a:Value><\/b:value>/,
-  );
+  // Recorded with Microsoft.Xrm.Sdk: mirage/test/parity/cases/dataverse-soap/sdk-interop.json#value-16
+  assert.match(res.body, /<b:key>Price<\/b:key><b:value i:type="a:Money"><a:Value>12\.5000<\/a:Value><\/b:value>/);
 });
 
 test('a reference without an Id does not bind: the unbound operation of that name runs', async () => {

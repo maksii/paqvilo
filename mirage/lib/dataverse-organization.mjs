@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { createPrincipals, ensureSecurityModel, uuidV5 } from './dataverse-security.mjs';
 import { createMetadataService, objectTypeCode as typeCodeOf } from './dataverse-metadata.mjs';
+import { bindGlobalMetadataEpoch } from './metadata-version.mjs';
 import { createChangeLog } from './dataverse-changes.mjs';
 import { hashSecret, verifySecret } from './dataverse-auth.mjs';
 import { seedManagedIdentityRows } from './dataverse-managed-identity.mjs';
@@ -246,6 +247,7 @@ async function composeOrganizationRuntime({
   const operations = createOperationRegistry({ store });
   const metadata = createMetadataService({
     organizationId,
+    observedMetadataVersion: () => store.observed?.webApiGlobalMetadataVersion,
     lcid: settings.localeId,
     schema,
     // Private provider rows are composed before metadata capture, but are not organization entities.
@@ -439,6 +441,10 @@ async function composeOrganizationRuntime({
   // The organization's row-version counter starts above every stored row version, so the first write through the pipeline
   // (nextRowVersion) never stamps a row with a version at or below the one it carries (a seeded or restored state).
   store.state.rowVersion = Math.max(Number(store.state.rowVersion ?? 0), maxRowVersion(store.state));
+  metadata.captureObservedVersion();
+  bindGlobalMetadataEpoch(store, () =>
+    store.observed?.webApiGlobalMetadataVersion == null ? undefined : metadata.etag().slice(1, -1),
+  );
   // Ready committed-event jobs saved before a restart run once the organization (and its registrations) exists.
   store.committedJobs?.resume();
   pendingSchedulers.delete(store);

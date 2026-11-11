@@ -631,14 +631,14 @@ function parsePagingCookie(value) {
   try {
     node = parseXmlDocument(text, { root: 'cookie' });
   } catch {
-    fail('The FetchXML paging-cookie value is not a valid paging cookie.', 400, 'InvalidPagingCookie');
+    return fail('The FetchXML paging-cookie value is not a valid paging cookie.', 400, 'InvalidPagingCookie');
   }
   if (node.attrs.pagingcookie != null) {
     try {
       text = decodeURIComponent(decodeURIComponent(node.attrs.pagingcookie));
       node = parseXmlDocument(text, { root: 'cookie' });
     } catch {
-      fail('The FetchXML paging-cookie value is not a valid paging cookie.', 400, 'InvalidPagingCookie');
+      return fail('The FetchXML paging-cookie value is not a valid paging cookie.', 400, 'InvalidPagingCookie');
     }
   }
   const page = Number(node.attrs.page);

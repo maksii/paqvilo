@@ -1,3 +1,4 @@
+// @test-kind unproven: Local HTTP routing and admission models; no native recording is replayed by these tests.
 // Routing and admission errors of the Dataverse Web API, over HTTP. Each expectation mirrors a native response.
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -42,8 +43,10 @@ function schema() {
 describe('dataverse Web API routing and admission errors', () => {
   let api;
   let token;
+  let previousSecret;
 
   before(async () => {
+    previousSecret = process.env[SECRET_VAR];
     process.env[SECRET_VAR] = 'routing-test-secret';
     const store = await new DataStore({ state: schema() }).init();
     const settings = dataverseSettings({
@@ -57,7 +60,7 @@ describe('dataverse Web API routing and admission errors', () => {
         },
       ],
     });
-    api = await startDataverseApi({ store, change: (fn) => fn(), settings, log: () => {} });
+    api = await startDataverseApi({ store, change: (fn) => fn(), settings, host: '127.0.0.1', log: () => {} });
     const form = new URLSearchParams({
       grant_type: 'client_credentials',
       client_id: APP_ID,
@@ -73,8 +76,12 @@ describe('dataverse Web API routing and admission errors', () => {
   });
 
   after(async () => {
-    delete process.env[SECRET_VAR];
-    await api?.close();
+    try {
+      await api?.close();
+    } finally {
+      if (previousSecret === undefined) delete process.env[SECRET_VAR];
+      else process.env[SECRET_VAR] = previousSecret;
+    }
   });
 
   // Plain node:http so that Origin and Access-Control-Request-Method can be sent with an OPTIONS request.

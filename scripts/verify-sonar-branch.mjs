@@ -3,11 +3,13 @@ import { readFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveGitExecutable } from './trusted-git.mjs';
 
 function cleanCandidate(revision) {
   const options = { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] };
-  const head = execFileSync('git', ['rev-parse', 'HEAD'], options).trim();
-  const changes = execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], options);
+  const git = resolveGitExecutable();
+  const head = execFileSync(git, ['--no-optional-locks', 'rev-parse', 'HEAD'], options).trim();
+  const changes = execFileSync(git, ['--no-optional-locks', 'status', '--porcelain', '--untracked-files=all'], options);
   if (head !== revision || changes !== '')
     throw new Error('Sonar analysis requires the exact clean candidate checkout.');
 }

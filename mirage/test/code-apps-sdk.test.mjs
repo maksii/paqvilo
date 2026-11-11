@@ -146,6 +146,7 @@ test('SDK file operations forward mapped entity and preserve download bytes and 
   ]);
 });
 
+// @test-kind contract: an explicitly empty Paqvilo adapter reports its own NotSimulated/501 boundary for four absent methods; this makes no native SDK feature-support claim.
 test('partial SDK clients fail unimplemented features with explicit NotSimulated', async () => {
   const executor = createCodeAppSdkExecutor({ client: {} });
   for (const answer of [

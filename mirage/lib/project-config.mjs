@@ -1,4 +1,5 @@
 import { validateCanvasDisplay } from './canvas-display.mjs';
+import { validateDataverseAttributeErrorContexts } from './dataverse-attribute-context.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { contentPolicyDefaults } from './content-policy-defaults.mjs';
@@ -93,6 +94,9 @@ const OBSERVED_CHOICES = {
   webApiDateParsing: ['iso', 'month-first'],
   // Stable reader exception/message wrappers differ by site; generated CLR stacks are not reproduced.
   webApiErrorDetails: ['diagnostic', 'odata-wrapper'],
+  webApiWriteResponse: ['local', 'portal-classic'],
+  webApiReadResponse: ['local', 'jsonnet-indented'],
+  webApiRequestBody: ['strict', 'portal-classic'],
   anonymousDataAccess: ['allowed', 'blocked'],
   // Replay a recorded inactive-parent defect only for a site observed to have it.
   // Normal exported permission graphs keep incomplete parent chains closed.
@@ -120,6 +124,7 @@ const OBSERVED_CHOICES = {
   modalLoadOrdering: ['ready', 'immediate'],
   subgridLabelMarkup: ['encoded', 'sanitized'],
   webApiErrorStacks: ['diagnostic', 'response-template'],
+  dataverseErrorStacks: ['diagnostic', 'response-template'],
   // Which Bootstrap stylesheet the layout links: the platform's /css/bootstrap.min.css or the
   // site's bootstrap.min.css web file (read by lib/liquid.mjs; default from the export).
   bootstrapStylesheet: ['platform', 'web-file'],
@@ -142,8 +147,11 @@ const OBSERVED_CHOICES = {
   liquidHtmlVoidSerialization: ['dotliquid', 'html'],
   liquidHtmlSafeInput: ['excluded', 'observed'],
   liquidPathAndQueryFragment: ['uri', 'query'],
+  liquidRelativeQueryResolution: ['preserve', 'root'],
   liquidRuntimeCompatibility: ['dotliquid', 'observed'],
   liquidFilterRegistration: ['dotliquid', 'observed'],
+  liquidEscapeOnce: ['dotliquid', 'passthrough'],
+  liquidStripHtmlScriptText: ['remove', 'preserve'],
   liquidEditableMetadata: ['minimal', 'observed'],
   liquidMissingData: ['diagnostic', 'empty'],
   requestValidation: ['diagnostic', 'aspnet-query'],
@@ -559,11 +567,20 @@ export function observedConfig(value, label = 'observed') {
         'webApiTwoDigitYearMax',
         'webApiFetchXmlTransport',
         'webApiSelfNnPermissionErrors',
+        'dataverseAttributeErrorContexts',
       ].includes(key) &&
       !Object.hasOwn(OBSERVED_CHOICES, key)
     )
       throw new Error(`Unknown ${label} key '${key}'`);
   const observed = {};
+  if (Object.hasOwn(value, 'dataverseAttributeErrorContexts')) {
+    const property = Object.getOwnPropertyDescriptor(value, 'dataverseAttributeErrorContexts');
+    if (!('value' in property)) throw new Error(`${label}.dataverseAttributeErrorContexts requires explicit data`);
+    observed.dataverseAttributeErrorContexts = validateDataverseAttributeErrorContexts(
+      property.value,
+      `${label}.dataverseAttributeErrorContexts`,
+    );
+  }
   applyObservedBasics(value, label, observed);
   applyObservedPermissionOrders(value, label, observed);
   applyObservedFetchSettings(value, label, observed);

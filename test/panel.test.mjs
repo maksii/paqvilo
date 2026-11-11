@@ -1,3 +1,4 @@
+// @test-kind unproven: the checks in this file exercise panel with local fixtures; no native capture establishes the behaviour they assert.
 import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -111,6 +112,7 @@ async function setup(online = {}, overrides = {}, panelOptions = {}) {
   return { b, tab, session, panel, call, opened, request };
 }
 
+// @test-kind security+contract: evidence editor links revalidate identity and revisions and ignore a forged file or line
 test('evidence editor links revalidate identity and revisions and ignore a forged file or line', async (t) => {
   const { session, call, opened, tab } = await setup();
   await call('inspect');
@@ -155,11 +157,13 @@ test('evidence editor links revalidate identity and revisions and ignore a forge
   assert.equal(opened.length, 1, 'a stale definition never invokes the editor');
 });
 
+// @test-kind contract: the panel function is self-contained: it is sent to the browser as text
 test('the panel function is self-contained: it is sent to the browser as text', () => {
   // must compile on its own, without this module around it
   assert.doesNotThrow(() => new Function(`return (${panelUi.toString()})`));
 });
 
+// @test-kind security+contract: selected-source editor admission rechecks a source edited during the final browser round trip
 test('selected-source editor admission rechecks a source edited during the final browser round trip', async (t) => {
   const { session, call, opened, tab } = await setup();
   await call('inspect');
@@ -190,6 +194,7 @@ test('selected-source editor admission rechecks a source edited during the final
   assert.equal(opened.length, 0, 'a source changed during the browser check never invokes the editor');
 });
 
+// @test-kind security+contract: editor admission checks open only the selected external deployment profile and refuse neighboring files
 test('guarded editor admission opens only the selected external deployment profile and refuses neighboring files', async (t) => {
   const directory = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-panel-profile-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
@@ -228,6 +233,7 @@ test('guarded editor admission opens only the selected external deployment profi
   assert.equal(opened.length, 1);
 });
 
+// @test-kind security+contract: JSON request failures retain bounded distinct causes and redact query values without reading large or non-JSON bodies
 test('JSON request failures retain bounded distinct causes and redact query values without reading large or non-JSON bodies', async () => {
   const { tab, panel } = await setup();
   let reads = 0;
@@ -264,6 +270,7 @@ test('JSON request failures retain bounded distinct causes and redact query valu
   assert.ok(issues.every((item) => !JSON.stringify(item).includes('private')));
 });
 
+// @test-kind security+contract: URL-less browser console errors name only the page path
 test('URL-less browser console errors name only the page path', async () => {
   const { tab, panel } = await setup();
   tab.page.emit('console', {
@@ -274,6 +281,7 @@ test('URL-less browser console errors name only the page path', async () => {
   assert.equal(panel.stateFor(tab.page).problems.find((row) => row.type === 'console').where, '/scripts/');
 });
 
+// @test-kind contract: page source buttons distinguish root and language layers without changing a single-layer label
 test('page source buttons distinguish root and language layers without changing a single-layer label', async () => {
   const own = createFixture();
   try {
@@ -301,6 +309,7 @@ test('page source buttons distinguish root and language layers without changing 
   }
 });
 
+// @test-kind contract: panel persistence separates actual browser roots and named profiles, and headless starts collapsed
 test('panel persistence separates actual browser roots and named profiles, and headless starts collapsed', async () => {
   const first = await setup({}, { browser: { profile: 'shared', profileDir: 'browser-one' } });
   await first.call('ui', { open: true, tab: 'issues' });
@@ -313,6 +322,7 @@ test('panel persistence separates actual browser roots and named profiles, and h
   assert.equal(first.panel.stateFor(first.tab.page).ui.open, true);
 });
 
+// @test-kind contract: default profile namespaces follow selected site and environment; attached sessions and launch overrides stay isolated
 test('default profile namespaces follow selected site and environment; attached sessions and launch overrides stay isolated', async () => {
   const base = { browser: { profileDir: 'default-audit-profiles', headless: false } };
   const first = await setup({}, base);
@@ -342,6 +352,7 @@ test('default profile namespaces follow selected site and environment; attached 
   );
 });
 
+// @test-kind contract: selective CSS refresh preserves an unrelated tab's earlier pending save and baseline banner
 test("selective CSS refresh preserves an unrelated tab's earlier pending save and baseline banner", async () => {
   const { b, tab, session, panel } = await setup();
   const home = b.openTab(`${ORIGIN}/`);
@@ -371,6 +382,7 @@ test("selective CSS refresh preserves an unrelated tab's earlier pending save an
   assert.equal(panel.stateFor(home.page).pendingBaseline, true);
 });
 
+// @test-kind contract: a comparison lists changed lines with a little context and folds the rest
 test('a comparison lists changed lines with a little context and folds the rest', () => {
   const before = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join('\n');
   const changed = before.replace('line 15', 'line fifteen').replace('line 30', 'line 30\nline 31');
@@ -393,6 +405,7 @@ test('a comparison lists changed lines with a little context and folds the rest'
   assert.equal(comparison('a\r\nb\r\n', 'a\nb\n').lines.length, 0, 'line endings are not a difference');
 });
 
+// @test-kind contract: what a tab served from local sources is what its panel lists
 test('what a tab served from local sources is what its panel lists', async () => {
   const { tab, panel, request } = await setup();
   const redrawn = drawn(tab.page, (state) => state.items.length > 0);
@@ -411,6 +424,7 @@ test('what a tab served from local sources is what its panel lists', async () =>
   assert.equal(tab.page.drawn.items.length, 1, 'the tab was redrawn');
 });
 
+// @test-kind security+contract: the buttons only work for the panel itself
 test('the buttons only work for the panel itself', async () => {
   const { call, session } = await setup();
   const refused = await call('mode', { online: true }, {});
@@ -419,6 +433,7 @@ test('the buttons only work for the panel itself', async () => {
   assert.equal((await call('nothing-like-this', {})).status, 403);
 });
 
+// @test-kind security+contract: a file opens in the editor at the line asked for, and only files of the sources do
 test('a file opens in the editor at the line asked for, and only files of the sources do', async () => {
   const { call, opened } = await setup();
   assert.equal((await call('open', { rel: 'web-files/app.js', line: 7, col: 3 })).ok, true);
@@ -428,6 +443,7 @@ test('a file opens in the editor at the line asked for, and only files of the so
   assert.equal(opened.length, 1);
 });
 
+// @test-kind contract: a paused override shows the online file until it is switched back on
 test('a paused override shows the online file until it is switched back on', async () => {
   const { b, tab, call, panel, request } = await setup();
   assert.equal((await call('toggle', { rel: 'web-files/app.js', off: true })).ok, true);
@@ -445,6 +461,7 @@ test('a paused override shows the online file until it is switched back on', asy
   assert.equal(b.answers('r2')[0].method, 'Fetch.fulfillRequest');
 });
 
+// @test-kind contract: a panel request waits for the actual browser answer while script-source inspection is held
 test(
   'a panel request waits for the actual browser answer while script-source inspection is held',
   { timeout: 60_000 },
@@ -482,6 +499,7 @@ test(
   },
 );
 
+// @test-kind contract: online mode overrides nothing, and the panel still answers
 test('online mode overrides nothing, and the panel still answers', async () => {
   const { b, tab, call, panel, request } = await setup();
   await call('mode', { online: true });
@@ -503,6 +521,7 @@ test('online mode overrides nothing, and the panel still answers', async () => {
   assert.equal(b.answers('r3')[0].method, 'Fetch.fulfillRequest');
 });
 
+// @test-kind contract: a web file is compared with what the environment serves
 test('a web file is compared with what the environment serves', async () => {
   const { call } = await setup({ [`${ORIGIN}/scripts/app.js`]: { body: 'console.log("online app");\n' } });
   const diff = await call('diff', { rel: 'web-files/app.js', url: '/scripts/app.js' });
@@ -517,6 +536,7 @@ test('a web file is compared with what the environment serves', async () => {
   );
 });
 
+// @test-kind contract: scope and live reload are switched while the loop runs; the position is remembered
 test('scope and live reload are switched while the loop runs; the position is remembered', async () => {
   const { call, session, panel, tab } = await setup();
   await call('scope', { scope: 'changed' });
@@ -532,6 +552,7 @@ test('scope and live reload are switched while the loop runs; the position is re
   assert.equal(panel.stateFor(tab.page).ui.hidden, true);
 });
 
+// @test-kind security+contract: lookalike portal origins receive neither the panel nor its token
 test('lookalike portal origins receive neither the panel nor its token', async () => {
   const { b, panel } = await setup();
   for (const url of [`${ORIGIN}.evil.test/`, `${ORIGIN}:444/`, 'about:blank']) {
@@ -541,6 +562,7 @@ test('lookalike portal origins receive neither the panel nor its token', async (
   }
 });
 
+// @test-kind contract: panel state exposes configured destinations while retaining the active session identity
 test('panel state exposes configured destinations while retaining the active session identity', async () => {
   const { session, tab, panel } = await setup();
   session.cfg.devTargets = [
@@ -779,6 +801,7 @@ test('Mirage tweaks read personas lazily and write through the CSRF-protected ad
   assert.ok(routes.includes('POST /_sim/api/scenarios/reviewer/apply {}'));
 });
 
+// @test-kind contract: Mirage administration pages are neither decorated nor inspected
 test('Mirage administration pages are neither decorated nor inspected', async () => {
   const { b, tab, session, panel } = await setup();
   session.cfg.mirage = true;
@@ -800,6 +823,7 @@ test('Mirage administration pages are neither decorated nor inspected', async ()
   );
 });
 
+// @test-kind contract: Mirage inspections of one tab coalesce while a request is running
 test('Mirage inspections of one tab coalesce while a request is running', async () => {
   const { b, tab, session, panel } = await setup();
   session.cfg.mirage = true;
@@ -825,6 +849,7 @@ test('Mirage inspections of one tab coalesce while a request is running', async 
   assert.equal(panel.stateFor(tab.page).mirage.active, true);
 });
 
+// @test-kind contract: inspection summaries expose cold loading and clear progress after a failed metadata read
 test('inspection summaries expose cold loading and clear progress after a failed metadata read', async () => {
   const { b, session, panel } = await setup();
   session.cfg.mirage = true;
@@ -854,6 +879,7 @@ test('inspection summaries expose cold loading and clear progress after a failed
   assert.equal(failed.loadingId, null);
 });
 
+// @test-kind contract: detailed inspection publishes progress while matching the DOM and clears it on success or failure
 test('detailed inspection publishes progress while matching the DOM and clears it on success or failure', async () => {
   const { b, tab, session, panel, call } = await setup();
   session.cfg.mirage = true;
@@ -894,6 +920,7 @@ test('detailed inspection publishes progress while matching the DOM and clears i
   tab.page.evaluate = evaluate;
 });
 
+// @test-kind security+contract: panels ignore foreign console errors and avoid scheduling foreign tab redraws
 test('panels ignore foreign console errors and avoid scheduling foreign tab redraws', async () => {
   const { b, tab, panel } = await setup();
   const other = b.openTab('https://other.example/');
@@ -918,6 +945,7 @@ test('panels ignore foreign console errors and avoid scheduling foreign tab redr
   assert.equal(other.page.drawn, null);
 });
 
+// @test-kind security+contract: comparison refuses unrelated and authority-changing URLs without any request
 test('comparison refuses unrelated and authority-changing URLs without any request', async () => {
   const { b, call } = await setup();
   for (const url of [
@@ -933,6 +961,7 @@ test('comparison refuses unrelated and authority-changing URLs without any reque
   assert.equal(b.fetched.length, 0);
 });
 
+// @test-kind security+contract: the panel refuses sources reached through a directory junction escaping the extract
 test('the panel refuses sources reached through a directory junction escaping the extract', async () => {
   const outside = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-outside-'));
   const linked = fx.file('outside-link');
@@ -948,6 +977,7 @@ test('the panel refuses sources reached through a directory junction escaping th
   }
 });
 
+// @test-kind contract: comparison totals include hidden hunks and output allocation stays bounded
 test('comparison totals include hidden hunks and output allocation stays bounded', () => {
   const before = Array.from({ length: 20 }, (_, n) => `old ${n}`).join('\n');
   const after = Array.from({ length: 20 }, (_, n) => `new ${n}`).join('\n');
@@ -960,6 +990,7 @@ test('comparison totals include hidden hunks and output allocation stays bounded
   assert.equal(exact.truncated, false);
 });
 
+// @test-kind contract: a navigation only clears pending changes for the tab that loaded them
 test('a navigation only clears pending changes for the tab that loaded them', async () => {
   const { b, tab, session, panel } = await setup();
   const other = b.openTab(`${ORIGIN}/about-us/`);
@@ -970,6 +1001,7 @@ test('a navigation only clears pending changes for the tab that loaded them', as
   assert.deepEqual(panel.stateFor(other.page).pending, [session.rel(changed)]);
 });
 
+// @test-kind security+contract: malformed UI settings and oversized API input are safely rejected
 test('malformed UI settings and oversized API input are safely rejected', async () => {
   const { call, panel, tab } = await setup();
   await call('ui', { tab: 'issues', open: true });
@@ -979,6 +1011,7 @@ test('malformed UI settings and oversized API input are safely rejected', async 
   assert.equal((await call('mode', { online: true, padding: 'x'.repeat(32768) })).status, 413);
 });
 
+// @test-kind contract: disposing the panel clears scheduled work and releases session listeners
 test('disposing the panel clears scheduled work and releases session listeners', async (t) => {
   const { b, tab, session, panel } = await setup();
   t.mock.timers.enable({ apis: ['setTimeout'] });
@@ -993,6 +1026,7 @@ test('disposing the panel clears scheduled work and releases session listeners',
   assert.equal(b.context.listenerCount('page'), 1, 'only interception remains');
 });
 
+// @test-kind contract: closing a tab immediately releases its panel listeners
 test('closing a tab immediately releases its panel listeners', async () => {
   const { tab } = await setup();
   assert.ok(tab.page.listenerCount('console') > 0);
@@ -1001,11 +1035,13 @@ test('closing a tab immediately releases its panel listeners', async () => {
   assert.equal(tab.page.listenerCount('pageerror'), 0);
 });
 
+// @test-kind security+contract: editor shell syntax is rejected before starting any process
 test('editor shell syntax is rejected before starting any process', async () => {
   assert.match(await openInEditor('code & unexpected-command', fx.file('web-files/app.js')), /executable/);
   assert.match(await openInEditor('code', fx.file('web-files/unsafe%NAME%.js')), /file name/);
 });
 
+// @test-kind security+contract: unindexed files under the extract are not exposed through panel actions
 test('unindexed files under the extract are not exposed through panel actions', async () => {
   fx.write('private-local-settings.txt', 'sensitive local data');
   try {
@@ -1018,6 +1054,7 @@ test('unindexed files under the extract are not exposed through panel actions', 
   }
 });
 
+// @test-kind contract: unchanged panel redraws reuse page/source metadata without filesystem reads
 test('unchanged panel redraws reuse page/source metadata without filesystem reads', async (t) => {
   const { b, panel, session } = await setup();
   const tab = b.openTab(`${ORIGIN}/about-us/`);
@@ -1032,6 +1069,7 @@ test('unchanged panel redraws reuse page/source metadata without filesystem read
   assert.ok(read.mock.callCount() > initialReads, 'a source refresh invalidates the page metadata');
 });
 
+// @test-kind contract: a paused page has at most one panel evaluation pending and receives the latest update afterwards
 test('a paused page has at most one panel evaluation pending and receives the latest update afterwards', async () => {
   const { panel, tab, session } = await setup();
   const finish = Promise.withResolvers(),
@@ -1356,6 +1394,7 @@ test("Mirage browser sessions: Tweaks show this browser's session and identity p
   assert.deepEqual(cookieWrites(), [], 'the panel never sets the session cookie itself');
 });
 
+// @test-kind contract: Mirage Tweaks report whether local pages are confined to loopback, with the exceptions
 test('Mirage Tweaks report whether local pages are confined to loopback, with the exceptions', async () => {
   const { b, tab, session, call } = await setup();
   session.cfg.mirage = true;

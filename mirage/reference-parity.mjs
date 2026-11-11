@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { parseArgs } from 'node:util';
+import { parseToolArgs } from './tool-options.mjs';
 import { fileURLToPath } from 'node:url';
 import { LiveBridge, validateLivePath } from './lib/live.mjs';
 import { createPortalSession } from './testing/sessions.mjs';
@@ -317,18 +317,7 @@ export function normalizeContract(body, contract) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    const { values } = parseArgs({
-      options: {
-        local: { type: 'string' },
-        origin: { type: 'string' },
-        cdp: { type: 'string' },
-        plan: { type: 'string' },
-        output: { type: 'string' },
-        'local-contact': { type: 'string' },
-        'local-role': { type: 'string', multiple: true },
-        'local-configured-persona': { type: 'boolean' },
-      },
-    });
+    const values = parseToolArgs('reference-parity', process.argv.slice(2));
     const localVisitor =
       values['local-contact'] !== undefined || values['local-role'] !== undefined || values['local-configured-persona']
         ? {

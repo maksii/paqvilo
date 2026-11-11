@@ -8,6 +8,7 @@ export function prepareCanvasSource(source) {
   if ((source.diagnostics ?? []).some((item) => item.code === 'CANVAS_SOURCE_NAME_COLLISION')) return source;
   const tree = source.tree ?? {
     format: source.app?.format ?? 'pa.yaml',
+    screensOrder: source.app?.screensOrder ?? null,
     screens: source.screens ?? [],
     components: source.components ?? [],
   };
