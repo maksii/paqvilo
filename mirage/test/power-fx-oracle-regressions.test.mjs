@@ -77,6 +77,24 @@ test('Set on a record column named __proto__ writes an own field', () => {
   assert.equal(Object.getPrototypeOf(rec), Object.prototype);
 });
 
+test('UpdateContext with a __proto__ field writes an own context field, not the context prototype', () => {
+  const context = {};
+  const result = powerFxEngine.evaluateSync("UpdateContext({'__proto__': {polluted: 1}})", { host: { context } });
+  assert.equal(result.value, true);
+  assert.equal(Object.getPrototypeOf(context), Object.prototype);
+  assert.equal(context.polluted, undefined);
+  assert.ok(Object.hasOwn(context, '__proto__'));
+});
+
+test('Set on a variable named __proto__ writes an own variable, not the variables prototype', () => {
+  const variables = {};
+  const result = powerFxEngine.evaluateSync('Set(__proto__, {polluted2: 2})', { host: { variables } });
+  assert.equal(result.value, true);
+  assert.equal(Object.getPrototypeOf(variables), Object.prototype);
+  assert.equal(variables.polluted2, undefined);
+  assert.ok(Object.hasOwn(variables, '__proto__'));
+});
+
 // @test-kind contract: the scope budget is Paqvilo's own local safeguard, not a Power Fx limit.
 test('a formula that enters more row scopes than host.scopeBudget stops with PowerFxLimitExceeded', () => {
   const formula = 'ForAll(Sequence(40), ForAll(Sequence(40), Value))';

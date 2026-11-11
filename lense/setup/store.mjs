@@ -432,8 +432,8 @@ const processAlive = (pid) => {
   }
 };
 
-// A lock left by an interrupted save names its process. It is removed when that process has gone, when it holds no
-// valid record, or when it is older than the stale window; a lock of a live process within the window stays.
+// A lock left by an interrupted save names its process. It is removed when that process has gone or when it is older
+// than the stale window. A lock without a valid record is judged by its file age: its creator may still be writing it.
 async function removeStaleSaveLock(lockFile) {
   let record;
   try {
@@ -443,9 +443,21 @@ async function removeStaleSaveLock(lockFile) {
     record = null;
   }
   const valid = Number.isInteger(record?.pid) && record.pid > 0;
-  const stale = !valid || !processAlive(record.pid) || !(Date.now() - record.at <= SAVE_LOCK_STALE_MS);
+  const stale = valid
+    ? !processAlive(record.pid) || !(Date.now() - record.at <= SAVE_LOCK_STALE_MS)
+    : await unrecordedSaveLockIsStale(lockFile);
   if (stale) await fs.rm(lockFile, { force: true });
   return stale;
+}
+
+async function unrecordedSaveLockIsStale(lockFile) {
+  try {
+    const { mtimeMs } = await fs.stat(lockFile);
+    return !(Date.now() - mtimeMs <= SAVE_LOCK_STALE_MS);
+  } catch (error) {
+    if (error.code === 'ENOENT') return true;
+    throw error;
+  }
 }
 
 async function createSaveLock(lockFile) {

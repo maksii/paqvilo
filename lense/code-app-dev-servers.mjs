@@ -24,10 +24,11 @@ function listenerKey(url) {
   const port = url.port || (url.protocol === 'https:' ? '443' : '80');
   return `${url.protocol}//${local ? 'loopback' : url.hostname.toLowerCase()}:${port}`;
 }
+// Only servers Paqvilo starts are refused on a shared listener; user-run apps may point at one server.
 function refuseSharedListeners(apps) {
   const seen = new Map();
   for (const app of apps) {
-    if (!app.localAppUrl) continue;
+    if (!app.devServer || !app.localAppUrl) continue;
     const url = appUrl(app),
       key = listenerKey(url),
       first = seen.get(key);

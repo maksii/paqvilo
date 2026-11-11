@@ -262,6 +262,7 @@ test('annotation matcher and URL helpers', () => {
   );
 });
 
+// @test-kind compatibility: Microsoft Learn, Dataverse Web API: page results (learn.microsoft.com/power-apps/developer/data-platform/webapi/query/page-results)
 test('skiptoken encodes the documented paging cookie exactly and round-trips', () => {
   // A paging nextLink cookie, percent-encoded once in the query string.
   const sample =
@@ -378,6 +379,7 @@ test('parsePrefer flags a backslash outside a quoted-string and unterminated quo
   assert.deepEqual(parsePrefer('odata.include-annotations="a\\b"').annotations, ['a\\b']);
 });
 
+// @test-kind compatibility: Microsoft Learn, Dataverse Web API: Prefer header values (learn.microsoft.com/power-apps/developer/data-platform/webapi/compose-http-requests-handle-errors#http-headers) and RFC 7240 Preference-Applied
 test('preferenceApplied echoes only applied preferences, representation first; continue-on-error and respond-async are never echoed', () => {
   const all = parsePrefer(
     'odata.include-annotations="*", odata.maxpagesize=2, return=representation, odata.continue-on-error, odata.track-changes, respond-async',
@@ -876,6 +878,7 @@ test('non-hex store codes without a native status keep the status the throw site
   );
 });
 
+// @test-kind compatibility: Microsoft Learn, Dataverse service protection API limits: 429 with Retry-After (learn.microsoft.com/power-apps/developer/data-platform/api-limits)
 test('every 429 gets Retry-After from its details, including the concurrency and execution-time limits', () => {
   const concurrent = dataverseError(
     new DataError('concurrent', 429, 'ServiceProtection', { innerCode: '0x80072326', retryAfter: 1 }),

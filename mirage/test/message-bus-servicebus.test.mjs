@@ -378,36 +378,16 @@ test('settings, descriptor and entity mapping for servicebus-emulator', () => {
   );
 });
 
-// @test-kind security: the emulator transport opens a socket only to an address the loopback check accepts for the endpoint name
-test('an endpoint name under localhost that resolves to a routable address is refused before any connection', async (t) => {
+// A loopback listener standing in for the emulator port. It counts connections and resolves firstBytes with the first
+// eight bytes a client sends, then drops that connection. The listener closes with the test.
+async function emulatorListener(t) {
   let connections = 0;
-  const listener = net.createServer(() => {
-    connections += 1;
-  });
-  await new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => listener.close(resolve)));
-  const asked = [];
-  const bus = createServiceBusEmulatorBus({
-    settings: { connectionString: 'env:FX_SB', amqpPort: listener.address().port },
-    env: env(KEY, 'bus.localhost'),
-    lookup: async (host) => {
-      asked.push(host);
-      return [{ address: '10.0.0.5', family: 4 }];
-    },
-  });
-  await assert.rejects(bus.send('fx-orders', 'x'), (error) => error.diagnostic === 'SERVICEBUS_EMULATOR_NOT_LOOPBACK');
-  assert.deepEqual(asked, ['bus.localhost']);
-  assert.equal(connections, 0, 'the listener sees no connection, so the SASL key is never sent');
-  await bus.close();
-});
-
-// @test-kind security: the emulator transport opens a socket only to an address the loopback check accepts for the endpoint name
-test('an endpoint name whose lookup answers loopback connects to that address and sends the AMQP header', async (t) => {
   let received;
-  const header = new Promise((resolve) => {
+  const firstBytes = new Promise((resolve) => {
     received = resolve;
   });
   const listener = net.createServer((socket) => {
+    connections += 1;
     socket.once('data', (chunk) => {
       received(chunk.subarray(0, 8));
       socket.destroy();
@@ -415,13 +395,61 @@ test('an endpoint name whose lookup answers loopback connects to that address an
   });
   await new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise((resolve) => listener.close(resolve)));
-  const bus = createServiceBusEmulatorBus({
-    settings: { connectionString: 'env:FX_SB', amqpPort: listener.address().port },
+  return {
+    port: listener.address().port,
+    firstBytes,
+    get connections() {
+      return connections;
+    },
+  };
+}
+
+// A bus whose endpoint host is bus.localhost, with the DNS answer supplied by the test.
+const busFor = (port, lookup) =>
+  createServiceBusEmulatorBus({
+    settings: { connectionString: 'env:FX_SB', amqpPort: port },
     env: env(KEY, 'bus.localhost'),
-    lookup: async () => [{ address: '127.0.0.1', family: 4 }],
+    lookup,
   });
+
+// @test-kind security: the emulator transport opens a socket only to an address the loopback check accepts for the endpoint name
+test('an endpoint name under localhost that resolves to a routable address is refused before any connection', async (t) => {
+  const listener = await emulatorListener(t);
+  const asked = [];
+  const bus = busFor(listener.port, async (host) => {
+    asked.push(host);
+    return [
+      { address: '127.0.0.1', family: 4 },
+      { address: '10.0.0.5', family: 4 },
+    ];
+  });
+  await assert.rejects(bus.send('fx-orders', 'x'), (error) => error.diagnostic === 'SERVICEBUS_EMULATOR_NOT_LOOPBACK');
+  assert.deepEqual(asked, ['bus.localhost']);
+  assert.equal(listener.connections, 0, 'the listener sees no connection, so the SASL key is never sent');
+  await bus.close();
+});
+
+// @test-kind security: the emulator transport opens a socket only to an address the loopback check accepts for the endpoint name
+test('an endpoint name whose lookup answers loopback connects to that address and sends the AMQP header', async (t) => {
+  const listener = await emulatorListener(t);
+  const bus = busFor(listener.port, async () => [{ address: '127.0.0.1', family: 4 }]);
   const sent = bus.send('fx-orders', 'x').catch((error) => error);
-  const first = await Promise.race([header, sent]);
+  const first = await Promise.race([listener.firstBytes, sent]);
+  assert.ok(Buffer.isBuffer(first), `the listener received no connection: ${first?.message ?? first}`);
+  assert.deepEqual([...first], [...Buffer.from('AMQP\x03\x01\x00\x00', 'latin1')]);
+  await sent;
+  await bus.close();
+});
+
+// @test-kind security: the emulator transport falls through only to checked loopback addresses, in the order the lookup gave them
+test('an endpoint name whose lookup answers IPv6 loopback first connects to the IPv4 loopback address that accepts it', async (t) => {
+  const listener = await emulatorListener(t);
+  const bus = busFor(listener.port, async () => [
+    { address: '::1', family: 6 },
+    { address: '127.0.0.1', family: 4 },
+  ]);
+  const sent = bus.send('fx-orders', 'x').catch((error) => error);
+  const first = await Promise.race([listener.firstBytes, sent]);
   assert.ok(Buffer.isBuffer(first), `the listener received no connection: ${first?.message ?? first}`);
   assert.deepEqual([...first], [...Buffer.from('AMQP\x03\x01\x00\x00', 'latin1')]);
   await sent;

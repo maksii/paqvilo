@@ -61,8 +61,10 @@ const within = (store, span, fn) => (span ? store.traces.run(span, fn) : fn());
 export const flowTriggersOf = (store) => (store && hostedRunners.get(store)) ?? null;
 // The next occurrence of a recurrence after now: from startTime (or the time it was armed) in whole intervals. Missed
 // occurrences are not back-filled. Without startTime the first occurrence is one interval after arming, although a newly
-// saved flow natively runs at once; Month follows the calendar path in every zone.
+// saved flow natively runs at once; Month follows the calendar path in every zone, but a simple Month recurrence not yet
+// started is its start.
 export function nextOccurrence({ frequency, interval, start, zone = 'UTC', schedule = null }, now, armedAt = now) {
+  if (!schedule && frequency === 'Month' && (start ?? armedAt) > now) return start ?? armedAt;
   if (schedule || frequency === 'Month' || (zone !== 'UTC' && ['Day', 'Week'].includes(frequency)))
     return calendarOccurrence({ frequency, interval, start, zone, schedule }, now, armedAt);
   const anchor = start ?? armedAt,

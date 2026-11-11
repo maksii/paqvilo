@@ -153,7 +153,11 @@ test('a lease replacement retries sharing holds and publishes the protected name
 test('a lease replacement held beyond the attempt ceiling fails and keeps its preceding lease', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'invented-record-lease-held-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  t.mock.method(Atomics, 'wait', () => 'timed-out');
+  const waits = [];
+  t.mock.method(Atomics, 'wait', (_array, _index, _value, milliseconds) => {
+    waits.push(milliseconds);
+    return 'timed-out';
+  });
   let held = false,
     calls = 0;
   const lease = new leaseModule.RecordFileLease(root, {
@@ -173,7 +177,11 @@ test('a lease replacement held beyond the attempt ceiling fails and keeps its pr
   const before = fs.readFileSync(lease.file, 'utf8');
   held = true;
   assert.throws(() => lease.protect([second]), { code: 'EPERM' });
-  assert.equal(calls, 100); // The documented attempt ceiling.
+  assert.equal(calls, 10); // The attempt ceiling for protect on a request's write path.
+  assert.ok(
+    waits.reduce((total, milliseconds) => total + milliseconds, 0) < 1000,
+    'a request waits well under a second for a sharing hold',
+  );
   assert.equal(fs.readFileSync(lease.file, 'utf8'), before);
   assert.deepEqual([...lease.files], [first]);
   assert.deepEqual(fs.readdirSync(root), [path.basename(lease.file)]);

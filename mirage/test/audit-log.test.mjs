@@ -153,6 +153,41 @@ test('auditText redacts credential query parameters and the Basic, Digest and Sh
   assert.deepEqual(auditQuery({ code: 'KEY', page: 2 }), { code: '[redacted]', page: 2 });
 });
 
+// @test-kind security: invitation credential query keys are redacted by name while other query parameters keep their values
+test('auditQuery redacts the InvitationCode and invitation query values and keeps page and invitationStatus', () => {
+  assert.deepEqual(
+    auditQuery(new URLSearchParams('InvitationCode=INV-1&invitation=INV-2&page=2&invitationStatus=sent')),
+    {
+      InvitationCode: '[redacted]',
+      invitation: '[redacted]',
+      page: '2',
+      invitationStatus: 'sent',
+    },
+  );
+  assert.deepEqual(auditQuery({ invitationcode: 'INV-1', invitation: 'INV-2', page: 2 }), {
+    invitationcode: '[redacted]',
+    invitation: '[redacted]',
+    page: 2,
+  });
+});
+
+// @test-kind security: the string form of a query redacts invitation codes by key, as the URLSearchParams form does
+test('auditQuery string form redacts InvitationCode and invitation and keeps page and invitationStatus', () => {
+  const redacted = auditQuery('InvitationCode=INV-1&invitation=INV-2&page=2&invitationStatus=sent');
+  assert.doesNotMatch(redacted, /INV-1|INV-2/);
+  assert.match(redacted, /page=2/);
+  assert.match(redacted, /invitationStatus=sent/);
+});
+
+// @test-kind security: free text redacts invitation codes in URL queries with the same key set as the query forms
+test('auditText redacts invitation codes and signatures in free text and keeps page', () => {
+  const redacted = auditText(
+    'GET /Account/Login/RedeemInvitation?InvitationCode=INV-1&page=2 then /x?invitation=INV-2&sig=S1',
+  );
+  assert.doesNotMatch(redacted, /INV-1|INV-2|S1/);
+  assert.match(redacted, /page=2/);
+});
+
 test('audit filters by path, entity, status class, method and correlation, lists kinds and notifies observers', () => {
   const audit = new AuditLog();
   const observed = [];

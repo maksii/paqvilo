@@ -149,3 +149,44 @@ test('SQL LIKE and PATINDEX with repeated wildcards and no match return without 
   );
   assert.deepEqual(await evaluate(`SELECT PATINDEX('${'%a'.repeat(18)}%b%', REPLICATE('a', 200)) AS position`), [[0]]);
 });
+
+test('SQL LIKE over many rows builds its pattern once instead of constructing expressions per row', async (t) => {
+  const OriginalRegExp = globalThis.RegExp;
+  let constructions = 0;
+  globalThis.RegExp = class CountingRegExp extends OriginalRegExp {
+    constructor(...args) {
+      constructions++;
+      super(...args);
+    }
+  };
+  t.after(() => {
+    globalThis.RegExp = OriginalRegExp;
+  });
+  const values = Array.from({ length: 2000 }, (_, i) =>
+    i % 4 === 0 ? `Contoso Corp Limited ${i}` : `Fabrikam Holdings ${i}`,
+  );
+  const expected = values.filter((value) => value.toLowerCase().includes('contoso corp limit'));
+  const catalog = {
+    tables: new Map([
+      [
+        'contoso_company',
+        {
+          logicalName: 'contoso_company',
+          columns: [
+            { name: 'contoso_name', sqlType: 'nvarchar', length: 160, precision: null, scale: null, nullable: true },
+          ],
+        },
+      ],
+    ]),
+  };
+  const scan = async () => values.map((value) => ({ contoso_name: value }));
+  const result = await executeBatch(
+    "SELECT c.contoso_name AS name FROM contoso_company c WHERE c.contoso_name LIKE '%contoso corp limit%'",
+    { catalog, scan },
+  );
+  assert.deepEqual(
+    result.resultSets[0].rows.map(([value]) => value),
+    expected,
+  );
+  assert.ok(constructions < 200, `expected fewer than 200 RegExp constructions, saw ${constructions}`);
+});

@@ -297,26 +297,58 @@ test('syncDirectory opens, syncs and closes the directory', () => {
   ]);
 });
 
-test('syncDirectory rethrows directory sync failures except Windows directory handles', () => {
+const unsupportedDirectorySync = ['EINVAL', 'ENOTSUP', 'EPERM', 'EACCES', 'EISDIR', 'EBADF'];
+
+for (const code of unsupportedDirectorySync) {
+  test(`syncDirectory ignores ${code} from a directory fsync on every platform`, () => {
+    let closed = 0;
+    const io = {
+      openSync: () => 7,
+      fsyncSync() {
+        throw Object.assign(new Error('Invented directory sync failure'), { code });
+      },
+      closeSync() {
+        closed++;
+      },
+    };
+    assert.doesNotThrow(() => syncDirectory('invented-directory', io));
+    assert.equal(closed, 1);
+  });
+
+  test(`syncDirectory ignores ${code} from a directory open on every platform`, () => {
+    let closed = 0;
+    const io = {
+      openSync() {
+        throw Object.assign(new Error('Invented directory open failure'), { code });
+      },
+      closeSync() {
+        closed++;
+      },
+    };
+    assert.doesNotThrow(() => syncDirectory('invented-directory', io));
+    assert.equal(closed, 0);
+  });
+}
+
+test('syncDirectory rethrows other directory open and fsync failures and closes an opened descriptor', () => {
   let closed = 0;
-  const io = (code) => ({
-    openSync: () => 7,
+  const io = (step, code) => ({
+    openSync() {
+      if (step === 'open') throw Object.assign(new Error('Invented directory open failure'), { code });
+      return 7;
+    },
     fsyncSync() {
-      throw Object.assign(new Error('Invented directory sync failure'), { code });
+      if (step === 'fsync') throw Object.assign(new Error('Invented directory sync failure'), { code });
     },
     closeSync() {
       closed++;
     },
   });
-  assert.throws(() => syncDirectory('invented-directory', io('EIO')), { code: 'EIO' });
-  assert.equal(closed, 1);
-  if (process.platform === 'win32') {
-    assert.doesNotThrow(() => syncDirectory('invented-directory', io('EPERM')));
-    assert.equal(closed, 2);
-  } else {
-    assert.throws(() => syncDirectory('invented-directory', io('EPERM')), { code: 'EPERM' });
-    assert.equal(closed, 2);
+  for (const code of ['EIO', 'ENOENT']) {
+    assert.throws(() => syncDirectory('invented-directory', io('open', code)), { code });
+    assert.throws(() => syncDirectory('invented-directory', io('fsync', code)), { code });
   }
+  assert.equal(closed, 2);
 });
 
 test('RecordPageFile.create returns a writable file and never replaces an existing path', (t) => {
@@ -332,4 +364,31 @@ test('RecordPageFile.create returns a writable file and never replaces an existi
   assert.throws(() => RecordPageFile.create(file), { code: 'EEXIST' });
   assert.deepEqual(fs.readdirSync(root), ['created.pages']);
   assert.deepEqual(fs.readFileSync(file).subarray(0, 23), Buffer.from('PAQVILO-RECORD-PAGES-1\n'));
+});
+
+test('RecordPageFile.create syncs the parent directory once after the header and removes the file when that fails', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'invented-record-create-sync-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, 'synced.pages');
+  const calls = [];
+  const store = RecordPageFile.create(file, {
+    syncDirectory(directory) {
+      calls.push([directory, fs.statSync(file).size]);
+    },
+  });
+  t.after(() => store.close());
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], root);
+  assert.ok(calls[0][1] > 0, 'The header is written before the directory is synced.');
+  const failing = path.join(root, 'failing.pages');
+  assert.throws(
+    () =>
+      RecordPageFile.create(failing, {
+        syncDirectory() {
+          throw Object.assign(new Error('Invented directory sync failure'), { code: 'EIO' });
+        },
+      }),
+    { code: 'EIO' },
+  );
+  assert.equal(fs.existsSync(failing), false);
 });

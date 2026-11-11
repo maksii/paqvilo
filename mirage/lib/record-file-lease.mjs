@@ -259,17 +259,19 @@ function recordOwnerNeedsMigration(directory, owner, location) {
 const sharingErrors = new Set(['EPERM', 'EACCES', 'EBUSY']);
 // The attempt ceiling for renames held by sharing errors.
 const SHARING_RETRY_ATTEMPTS = 100;
-/** Rename through sharing holds: retry sharing errors with capped exponential backoff, up to
- * SHARING_RETRY_ATTEMPTS attempts, then rethrow the last error. `beforeRetry(attempt)` runs before
+// A request's write path waits at most about 0.4 s for a sharing hold.
+const PROTECT_RETRY_ATTEMPTS = 10;
+/** Rename through sharing holds: retry sharing errors with capped exponential backoff, up to `attempts`
+ * attempts (SHARING_RETRY_ATTEMPTS by default), then rethrow the last error. `beforeRetry(attempt)` runs before
  * each retry and returns false to stop without renaming. Backoff is at most 100 ms per attempt. */
-function renameThroughSharingHolds(io, from, to, beforeRetry = () => true) {
-  for (let attempt = 0; attempt < SHARING_RETRY_ATTEMPTS; attempt++) {
+function renameThroughSharingHolds(io, from, to, beforeRetry = () => true, attempts = SHARING_RETRY_ATTEMPTS) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
     if (attempt && !beforeRetry(attempt)) return;
     try {
       io.renameSync(from, to);
       return;
     } catch (error) {
-      if (!sharingErrors.has(error?.code) || attempt === SHARING_RETRY_ATTEMPTS - 1) throw error;
+      if (!sharingErrors.has(error?.code) || attempt === attempts - 1) throw error;
       // Cap exponential backoff at 100 ms: total requested waiting stays below ten seconds.
       Atomics.wait(wait, 0, 0, Math.min(2 ** Math.min(attempt + 1, 7), 100));
     }
@@ -325,7 +327,7 @@ export class RecordFileLease {
       } finally {
         this.io.closeSync(fd);
       }
-      renameThroughSharingHolds(this.io, temp, this.file);
+      renameThroughSharingHolds(this.io, temp, this.file, () => true, PROTECT_RETRY_ATTEMPTS);
       this.files = next;
     } finally {
       this.io.rmSync(temp, { force: true });

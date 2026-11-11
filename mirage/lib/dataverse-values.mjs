@@ -670,9 +670,16 @@ function sqlSetAt(pattern, index, escape, fold) {
   return { source: `[${negate ? '^' : ''}${withoutBackwardRanges(set)}]`, end };
 }
 
+const caseClassTests = new Map();
 function caseClassTest(source, ignoreCase) {
-  const expression = new RegExp(`^${source}$`, ignoreCase ? 'i' : '');
-  return (char) => expression.test(char);
+  const key = `${ignoreCase ? 1 : 0}:${source}`;
+  if (!caseClassTests.has(key)) {
+    // ponytail: cleared when full; an LRU is the upgrade if pattern variety ever shows in profiles.
+    if (caseClassTests.size >= 4096) caseClassTests.clear();
+    const expression = new RegExp(`^${source}$`, ignoreCase ? 'i' : '');
+    caseClassTests.set(key, (char) => expression.test(char));
+  }
+  return caseClassTests.get(key);
 }
 
 const likeConsumes = (token, char) => token.one === true || (token.test ? token.test(char) : token.char === char);

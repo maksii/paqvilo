@@ -2,9 +2,18 @@ import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 
 const secret = /(?:password|passwd|secret|token|authorization|cookie|credential|api[_-]?key|signature)/i;
-// URL query parameters that carry a credential on their own (Azure Functions keys, SAS signatures, OAuth codes).
-const queryCredential = /^(?:code|sig|invitation(?:code)?)$/i;
+// URL query parameters that carry a credential on their own (Azure Functions keys, SAS signatures, OAuth codes,
+// invitation codes). One alternation feeds the key test and the free-text pattern, so the two cannot drift.
+const queryCredentialNames = 'code|sig|invitation(?:code)?';
+const queryCredential = new RegExp(`^(?:${queryCredentialNames})$`, 'i');
+const queryCredentialValue = new RegExp(`([?&](?:${queryCredentialNames})=)[^&#\\s"'<>]*`, 'gi');
 const secretQueryKey = (key) => secret.test(key) || queryCredential.test(key);
+// One name=value pair of a query string, redacted by the same key test as the URLSearchParams form.
+const redactQueryPair = (pair) => {
+  const equals = pair.indexOf('=');
+  const name = equals < 0 ? '' : pair.slice(0, equals);
+  return name && secretQueryKey(name.replace(/^\?/, '')) ? `${name}=[redacted]` : pair;
+};
 const limitText = (value, limit = 12000) => String(value ?? '').slice(0, limit);
 
 // The variable-length prefix of secret/token names is scanned backwards only after a
@@ -34,7 +43,7 @@ export function auditText(value, limit = 12000) {
     // A Basic credential is base64: a token holding a digit, + or / or ending in = (so "Basic plan" stays readable).
     .replace(/\bBasic\s+(?=[a-z0-9+/]*[0-9+/=])[a-z0-9+/]{4,}={0,2}/gi, 'Basic [redacted]')
     .replace(/\bDigest\s+[\w-]+=[^\r\n<>]*/gi, 'Digest [redacted]')
-    .replace(/([?&](?:code|sig)=)[^&#\s"'<>]*/gi, '$1[redacted]');
+    .replace(queryCredentialValue, '$1[redacted]');
   return redactSecretAssignments(prefix)
     .replace(/<condition\b[^>]*(?:\/>|>[\s\S]*?<\/condition>)/gi, (tag) => {
       const attribute = /\battribute\s*=\s*(["'])(.*?)\1/i.exec(tag)?.[2];
@@ -52,7 +61,7 @@ export function auditText(value, limit = 12000) {
     return Object.fromEntries(
       [...value].map(([key, item]) => [key, secretQueryKey(key) ? '[redacted]' : auditText(item)]),
     );
-  if (typeof value === 'string') return auditText(value);
+  if (typeof value === 'string') return auditText(value).split('&').map(redactQueryPair).join('&');
   if (!value || typeof value !== 'object') return undefined;
   return Object.fromEntries(
     Object.entries(value)

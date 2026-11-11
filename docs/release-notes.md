@@ -77,7 +77,7 @@ organization's metadata. Large datasets use far less memory.
 - Standalone Mirage tools accept their own options before or after `--help` / `-h`. Help reads no inputs and runs
   nothing.
 - Moving a record directory to a new owner retries Windows sharing errors with bounded backoff instead of failing
-  after a fixed short window. Lease updates retry the same way.
+  after a fixed short window. Lease updates retry briefly, so a request's write waits well under a second.
 - Updates no longer fail when exported audit relationships stamp modifier fields.
 - Default grids work on partial Solution exports whose primary name column is declared but not exported.
 - A server-logic Create response no longer exposes a column that column security hides.
@@ -104,9 +104,9 @@ organization's metadata. Large datasets use far less memory.
 - A span opened after its trace left the retained set no longer recreates a partial trace under the same id.
 - Plug-in packages with overlapping ZIP entries or content beyond the local size limit are refused, and deeply
   nested or deeply derived types no longer exhaust the assembly reader.
-- The Service Bus emulator transport connects only to an address that resolved to loopback.
+- The Service Bus emulator transport connects only to addresses that resolved to loopback, trying each in turn.
 - A monthly flow recurrence on a day that short months lack skips those months in UTC as in every other time zone.
-- Two Code Apps configured with the same dev-server address are refused at start.
+- Two Code Apps that Paqvilo starts on the same dev-server address are refused at start.
 - A Power Fx record field named `__proto__` keeps its value, and a formula that enters more than 5,000,000 row
   scopes stops with `PowerFxLimitExceeded` (`host.scopeBudget` changes the limit).
 - Offline data generation and scaffolding answer existing keys of a paged table from its key index instead of

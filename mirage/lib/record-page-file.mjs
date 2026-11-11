@@ -24,14 +24,17 @@ const signature = (info) => [info.dev, info.ino, info.size, info.mtimeNs].join('
 const damaged = (message) => Object.assign(new Error(message), { code: 'StateIntegrity' });
 const hashOf = (bytes) => createHash('sha256').update(bytes).digest();
 
-/** Makes a directory's entries durable after a file in it was created or renamed. Windows cannot sync a directory. */
+const UNSUPPORTED_DIRECTORY_SYNC = new Set(['EINVAL', 'ENOTSUP', 'EPERM', 'EACCES', 'EISDIR', 'EBADF']);
+
+/** Makes a directory's entries durable after a file in it was created or renamed. Directory sync is best effort:
+ * a file system that refuses to open or sync a directory is ignored on every platform; other errors are rethrown. */
 export function syncDirectory(directory, io = fs) {
   let fd;
   try {
     fd = io.openSync(directory, 'r');
     io.fsyncSync(fd);
   } catch (error) {
-    if (process.platform !== 'win32' || !['EPERM', 'EISDIR', 'EINVAL', 'EACCES'].includes(error.code)) throw error;
+    if (!UNSUPPORTED_DIRECTORY_SYNC.has(error.code)) throw error;
   } finally {
     if (fd !== undefined) io.closeSync(fd);
   }
@@ -344,7 +347,7 @@ export class RecordPageFile {
       result = new RecordPageFile(file, fd, { ...options, writable: true });
       result.write(MAGIC);
       result.headers.update(MAGIC);
-      syncDirectory(dirname(file));
+      (options.syncDirectory ?? syncDirectory)(dirname(file));
       return result;
     } catch (error) {
       fs.closeSync(fd);

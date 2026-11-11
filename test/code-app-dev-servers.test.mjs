@@ -90,6 +90,31 @@ test('apps that declare the same loopback listener are refused before any server
   await assert.rejects(fs.access(marker));
 });
 
+test('apps without a devServer are not refused for loopback spellings or a shared user-run listener', async (t) => {
+  const original = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = original;
+  });
+  let probes = 0;
+  globalThis.fetch = async () => {
+    probes += 1;
+    return new Response(null, { status: 200 });
+  };
+  const output = [];
+  const result = await startCodeAppDevServers(
+    [
+      { name: 'gamma', dir: '.', localAppUrl: 'http://127.0.0.2:5299/' },
+      { name: 'delta', dir: '.', localAppUrl: 'http://localhost:5300/' },
+      { name: 'epsilon', dir: '.', localAppUrl: 'http://localhost:5300/' },
+    ],
+    { output: (text) => output.push(text) },
+  );
+  assert.deepEqual(output, []);
+  assert.equal(probes, 0);
+  assert.equal(result.owned, 0);
+  await result.close();
+});
+
 // @test-kind security: readiness never follows a redirect to another listener.
 test('readiness does not follow a configured loopback listener redirect', { timeout: 180_000 }, async (t) => {
   let redirected = 0;

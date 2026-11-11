@@ -1681,13 +1681,20 @@ function typeText(targetType) {
   return `${name.toLowerCase()}${size}`;
 }
 
+const likeRegexes = new Map();
 // Tokenize before collation folding so an accented escape remains distinct from a literal.
 // A dangling escape produces an invalid pattern, which LIKE treats as a non-match.
 // Keep insensitive matching after accent folding: whole strings and individual pattern tokens can lowercase
 // differently (for example Greek final sigma), so literals and sets compare case-insensitively per character.
 function likeRegex(pattern, escape, collation) {
-  const tokens = likeTokens(pattern, { escape, fold: (text) => foldText(text, collation), ignoreCase: true });
-  return tokens && { test: (value) => likeTokensMatch(tokens, value) };
+  const key = JSON.stringify([pattern, escape, collation]);
+  if (!likeRegexes.has(key)) {
+    // ponytail: cleared when full; an LRU is the upgrade if pattern variety ever shows in profiles.
+    if (likeRegexes.size >= 4096) likeRegexes.clear();
+    const tokens = likeTokens(pattern, { escape, fold: (text) => foldText(text, collation), ignoreCase: true });
+    likeRegexes.set(key, tokens && { test: (value) => likeTokensMatch(tokens, value) });
+  }
+  return likeRegexes.get(key);
 }
 
 function singleColumn(result) {

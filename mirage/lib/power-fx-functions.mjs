@@ -841,8 +841,9 @@ function collectionTarget(fx, node, create) {
       return { error: fail('InvalidArgument', `'${node.name}' is not a table or collection.`) };
     } catch (error) {
       if (error.code !== 'PowerFxNameUnknown' || !create || !fx.host.variables) throw error;
-      fx.host.variables[node.name] = [];
-      return { value: fx.host.variables[node.name], name: node.name };
+      const collection = [];
+      setField(fx.host.variables, node.name, collection);
+      return { value: collection, name: node.name };
     }
   }
   const value = fx.ev(node);
@@ -2020,7 +2021,7 @@ export const FUNCTIONS = {
         return true;
       }
       if (!fx.host.variables) return notHosted('Set');
-      fx.host.variables[target.name] = value;
+      setField(fx.host.variables, target.name, value);
       return true;
     },
   },
@@ -2030,7 +2031,7 @@ export const FUNCTIONS = {
     /* NOSONAR: mixed return values are part of the contract */ fn(fx, record) {
       if (!fx.host.context) return notHosted('UpdateContext');
       if (!isRecord(record)) return fail('InvalidArgument', 'UpdateContext needs a record.');
-      Object.assign(fx.host.context, record);
+      for (const [key, value] of Object.entries(record)) setField(fx.host.context, key, value);
       return true;
     },
   },

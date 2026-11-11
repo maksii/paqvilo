@@ -508,6 +508,20 @@ test('a legacy ledger that gains an entry fails and one that loses an entry pass
   assert.deepEqual(shrank, []);
 });
 
+test('a legacy ledger that repeats a listed tag line for a file that carries it twice fails as growth', () => {
+  const once = legacyLedger({ [LEGACY_TEST]: [LEGACY_TAG] });
+  const twice = legacyLedger({ [LEGACY_TEST]: [LEGACY_TAG, LEGACY_TAG] });
+  const carriesTwice = [legacyTestText, LEGACY_TAG].join('\n');
+  const grew = check({
+    files: [LEGACY],
+    newText: byPath({ [LEGACY_TEST]: carriesTwice, [LEGACY]: twice }),
+    oldText: byPath({ [LEGACY]: once }),
+    diffOf: () => '',
+  });
+  assert.equal(grew.length, 1);
+  assert.match(grew[0], /only shrinks/);
+});
+
 test('a legacy ledger the change introduces passes', () => {
   const failures = check({
     files: [LEGACY],
@@ -545,7 +559,7 @@ test('malformed legacy ledgers fail', () => {
   }
 });
 
-test('the committed legacy ledger passes and lists the 176 parity tag lines in 79 test files', () => {
+test('the committed legacy ledger passes and never exceeds the 176 parity tag lines in 79 test files it started with', () => {
   const readRepo = (file) => {
     try {
       return fs.readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
@@ -556,6 +570,7 @@ test('the committed legacy ledger passes and lists the 176 parity tag lines in 7
   };
   assert.deepEqual(check({ files: [LEGACY], newText: readRepo }), []);
   const { tags } = JSON.parse(readRepo(LEGACY));
-  assert.equal(Object.keys(tags).length, 79);
-  assert.equal(Object.values(tags).flat().length, 176);
+  // The ledger only shrinks, so the counts are upper bounds: a legitimate removal must not break this test.
+  assert.ok(Object.keys(tags).length <= 79, `${Object.keys(tags).length} test files listed, at most 79`);
+  assert.ok(Object.values(tags).flat().length <= 176, `${Object.values(tags).flat().length} tag lines, at most 176`);
 });

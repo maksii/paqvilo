@@ -235,6 +235,13 @@ test('a monthly recurrence on day 31 skips the short months in UTC as in every o
   );
 });
 
+test('a monthly recurrence with a start time in milliseconds first runs at that exact start', () => {
+  const start = Date.UTC(2027, 2, 1, 0, 0, 0, 500);
+  const recurrence = { frequency: 'Month', interval: 2, start };
+  assert.equal(nextOccurrence(recurrence, Date.UTC(2027, 0, 15)), start);
+  assert.equal(new Date(nextOccurrence(recurrence, start)).toISOString(), '2027-05-01T00:00:00.000Z');
+});
+
 // @test-kind contract: Paqvilo's unsupported-trigger message
 test('the unsupported-trigger message names mock/disable, not an adapter', () => {
   const answer = inspectFlowTrigger({

@@ -1008,21 +1008,50 @@ async function lockedProject(t, lockText) {
   return { directory, filename, store: new SetupStore({ directory, project: filename, processEnv: {} }) };
 }
 
+function pidIsGone(pid) {
+  let gone = false;
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    gone = error.code === 'ESRCH';
+  }
+  return gone;
+}
+
 // @test-kind contract: a save lock left by an interrupted save must not block every later save, a live save still does.
 test('a save lock whose process has exited does not block the next save', async (t) => {
-  const exited = spawnSync(process.execPath, ['-e', '']);
-  const { filename, store } = await lockedProject(t, JSON.stringify({ pid: exited.pid, at: Date.now() }));
+  let exitedPid = null;
+  for (let attempt = 0; attempt < 5 && exitedPid === null; attempt += 1) {
+    const pid = spawnSync(process.execPath, ['-e', '']).pid;
+    if (pidIsGone(pid)) exitedPid = pid;
+  }
+  assert.notEqual(exitedPid, null, 'no exited child pid was free after 5 spawns; the pids were reused');
+  const { filename, store } = await lockedProject(t, JSON.stringify({ pid: exitedPid, at: Date.now() }));
   const saved = await edit(store, 'shared', [set(['simulation', 'level'], 'simulation')]);
   assert.equal(saved.settings.simulation.level, 'simulation');
   await assert.rejects(fs.access(filename + '.setup.lock'), { code: 'ENOENT' });
 });
 
-// @test-kind contract: a save lock whose content is not a lock record must not block the next save.
-test('a save lock with garbled content does not block the next save', async (t) => {
+// @test-kind contract: a save lock whose content is not a lock record is reclaimed once the lock file is stale.
+test('a save lock with garbled content older than the stale window does not block the next save', async (t) => {
   const { filename, store } = await lockedProject(t, 'interrupted write, not JSON');
+  const past = new Date(Date.now() - 60_000);
+  await fs.utimes(filename + '.setup.lock', past, past);
   const saved = await edit(store, 'shared', [set(['simulation', 'level'], 'simulation')]);
   assert.equal(saved.settings.simulation.level, 'simulation');
   await assert.rejects(fs.access(filename + '.setup.lock'), { code: 'ENOENT' });
+});
+
+// @test-kind contract: a fresh save lock whose content is not yet a lock record answers busy and is left in place.
+test('a garbled or empty save lock within the stale window answers busy and is kept', async (t) => {
+  for (const lockText of ['interrupted write, not JSON', '']) {
+    const { filename, store } = await lockedProject(t, lockText);
+    await assert.rejects(
+      edit(store, 'shared', [set(['simulation', 'level'], 'simulation')]),
+      (error) => error.status === 409 && /being saved/.test(error.message),
+    );
+    assert.equal(await fs.readFile(filename + '.setup.lock', 'utf8'), lockText);
+  }
 });
 
 // @test-kind contract: a save lock held by a live process within the stale window still answers the busy response.

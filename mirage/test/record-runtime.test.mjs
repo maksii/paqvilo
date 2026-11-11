@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DataStore } from '../lib/data.mjs';
@@ -395,6 +396,37 @@ test('a write made while the compacted checkpoint is saved survives in memory an
   t.after(() => restarted.closeRecordStorage());
   await restarted.init();
   assert.equal(restarted.get('items', 'row-300', admin).name, 'Written during compaction');
+});
+
+test('a checkpoint followed by an unsupported directory sync still commits and later saves succeed', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'invented-record-directory-sync-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'state.json'),
+    store = new DataStore({ file, presetLibrary: library() });
+  t.after(() => store.closeRecordStorage());
+  await store.init();
+  await store.applyPreset('invented', { returnSnapshot: false });
+  const fsyncFile = fsSync.fsyncSync;
+  t.mock.method(fsSync, 'fsyncSync', (fd, ...rest) => {
+    if (fsSync.fstatSync(fd).isDirectory()) {
+      throw Object.assign(new Error('Invented unsupported directory sync'), { code: 'ENOTSUP' });
+    }
+    return fsyncFile(fd, ...rest);
+  });
+  const commit = store.storage.checkpointCommitted.bind(store.storage);
+  let checkpoints = 0;
+  store.storage.checkpointCommitted = async (...args) => {
+    checkpoints++;
+    return commit(...args);
+  };
+  await store.compact();
+  await store.update('items', 'row-300', { name: 'Written after the first checkpoint' }, admin);
+  await store.compact();
+  assert.equal(checkpoints, 2);
+  const restarted = new DataStore({ file, presetLibrary: library() });
+  t.after(() => restarted.closeRecordStorage());
+  await restarted.init();
+  assert.equal(restarted.get('items', 'row-300', admin).name, 'Written after the first checkpoint');
 });
 
 test('a missing record page file fails the load and leaves the state file untouched', async (t) => {

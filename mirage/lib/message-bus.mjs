@@ -517,28 +517,40 @@ export function createServiceBusEmulatorBus({
           : `${target.error.message} (${variable})`;
       return Promise.reject(new ProviderError('Unavailable', message, { provider: id, diagnostic: target.error.code }));
     }
-    return loopbackAddress(target).then((host) =>
-      connectAmqp({
-        host,
-        port,
-        hostname: target.host,
-        timeoutMs: ms,
-        signal,
-        provider: id,
-        credentials: () => ({ user: target.keyName, password: target.key }),
-      }),
-    );
+    return checkedHosts(target).then((hosts) => connectFirst(hosts, target, ms, signal));
   }
-  // The socket goes to the first address that the loopback check accepts for the endpoint name, because a *.localhost name may
-  // resolve to a routable address. Any other answer, or none, refuses the endpoint before a connection is attempted.
-  async function loopbackAddress(target) {
+  // The sockets go to the addresses that the loopback check accepts for the endpoint name, in lookup order, because a *.localhost
+  // name may resolve to a routable address. Any other answer, or none, refuses the endpoint before a connection is attempted.
+  async function checkedHosts(target) {
     const addresses = await loopbackAddresses(`http://${target.bracketed}/`, lookup).catch(() => []);
-    if (addresses === null) return target.host; // localhost and IP literals skip the lookup and connect as written
+    if (addresses === null) return [target.host]; // localhost and IP literals skip the lookup and connect as written
     if (!addresses.length) {
       const { code, message } = NOT_LOOPBACK;
       throw new ProviderError('Unavailable', `${message} (${variable})`, { provider: id, diagnostic: code });
     }
-    return addresses[0].address;
+    return addresses.map(({ address }) => address);
+  }
+  // Each host is tried in turn; the first connection that becomes usable is returned. When every attempt fails, the last failure
+  // is rethrown. An aborted signal stops the attempts, because an already-aborted signal would never bound the next one.
+  async function connectFirst(hosts, target, ms, signal) {
+    let failure;
+    for (const host of hosts) {
+      try {
+        return await connectAmqp({
+          host,
+          port,
+          hostname: target.host,
+          timeoutMs: ms,
+          signal,
+          provider: id,
+          credentials: () => ({ user: target.keyName, password: target.key }),
+        });
+      } catch (error) {
+        failure = error;
+        if (signal?.aborted) break;
+      }
+    }
+    throw failure;
   }
   // The live connection, opened on first use and again after it failed (Service Bus has no link recovery: locks die with it).
   async function current() {

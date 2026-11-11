@@ -362,8 +362,11 @@ test('additive merge into a paged table answers existing keys from its primary k
   assert.deepEqual(ids, [...rows.map((row) => row.itemid), 'row-100', 'row-101', 'row-102']);
   assert.equal(new Set(ids).size, ids.length);
   assert.equal(lookups, fragment.tables.item.length, 'Every incoming id is answered by the key index.');
-  // Validation and the dangling-lookup scan each read the table once; a key set would add a third full pass.
-  assert.ok(reads < 3 * rows.length, 'The merge builds no full-table key set.');
+  // The counter sees only merge reads, and the merge reads each row at least once: zero means the stack match broke.
+  assert.ok(reads >= rows.length, `${reads} merge reads for ${rows.length} rows`);
+  // The merge makes 83 reads for 40 rows today; one more full key scan would add 40 (123), so the bound sits between.
+  const readBound = 2 * rows.length + 10;
+  assert.ok(reads <= readBound, `${reads} merge reads for ${rows.length} rows, at most ${readBound}`);
   await fs.writeFile(plainFile, JSON.stringify(state(rows.map((row) => ({ ...row })))));
   const plainMerge = await generateInto(root, { file: plainFile, out: plainOut, fragment });
   assert.deepEqual(plainMerge.rows.item, result.rows.item);
