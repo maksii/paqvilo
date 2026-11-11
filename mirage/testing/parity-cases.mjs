@@ -11,8 +11,8 @@ const ORACLE_KINDS = ['native', 'official-package', 'reference-engine'];
 // Stored in place of every value at a volatile pointer: the run-specific value is never kept in a case file.
 const VOLATILE = '<volatile>';
 
-const TOP_LEVEL_KEYS = ['schema', 'surface', 'suite', 'oracle', 'captures', 'cases', 'history'];
-const CAPTURE_KEYS = ['id', 'sha256', 'capturedAt'];
+const TOP_LEVEL_KEYS = new Set(['schema', 'surface', 'suite', 'oracle', 'captures', 'cases', 'history']);
+const CAPTURE_KEYS = new Set(['id', 'sha256', 'capturedAt']);
 const NAME_PATTERN = /^[a-z0-9-]+$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -42,19 +42,26 @@ function kindOf(value) {
 
 function toJson(value) {
   const text = JSON.stringify(value);
-  return text === undefined ? undefined : JSON.parse(text);
+  return typeof text === 'string' ? JSON.parse(text) : undefined;
 }
 
 function sameLeaf(actual, expected) {
   return actual === expected || Object.is(actual, expected);
 }
 
+// Orders strings by UTF-16 code unit, the order case files are written in.
+function compareCodeUnits(left, right) {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
 function escapeToken(token) {
-  return String(token).replace(/~/g, '~0').replace(/\//g, '~1');
+  return String(token).replaceAll('~', '~0').replaceAll('/', '~1');
 }
 
 function unescapeToken(token) {
-  return token.replace(/~1/g, '/').replace(/~0/g, '~');
+  return token.replaceAll('~1', '/').replaceAll('~0', '~');
 }
 
 function childPointer(pointer, key) {
@@ -143,7 +150,7 @@ function oracleProblems(oracle) {
 function captureEntryProblems(capture, where) {
   if (!isObject(capture)) return [`${where} must be an object`];
   const problems = Object.keys(capture)
-    .filter((key) => !CAPTURE_KEYS.includes(key))
+    .filter((key) => !CAPTURE_KEYS.has(key))
     .map((key) => `${where} has unknown key "${key}"`);
   if (!nonEmptyString(capture.id)) problems.push(`${where}.id must be a non-empty string`);
   if (!matches(SHA256_PATTERN, capture.sha256)) problems.push(`${where}.sha256 must be 64 lowercase hex characters`);
@@ -223,7 +230,7 @@ function historyProblems(history) {
 export function validateParityCases(value, { surface, suite } = {}) {
   if (!isObject(value)) return ['file must be a JSON object'];
   const problems = Object.keys(value)
-    .filter((key) => !TOP_LEVEL_KEYS.includes(key))
+    .filter((key) => !TOP_LEVEL_KEYS.has(key))
     .map((key) => `unknown top-level key "${key}"`);
   return [
     ...problems,
@@ -328,7 +335,7 @@ function buildCase(result, index, captures) {
   if (volatile.has('')) {
     throw new Error(`case ${result.id}: output differs at the root pointer between captures; not reproducible`);
   }
-  const volatilePointers = [...volatile].sort();
+  const volatilePointers = [...volatile].sort(compareCodeUnits);
   return {
     id: result.id,
     input: structuredClone(result.input),
@@ -341,7 +348,7 @@ function sameCase(existing, fresh) {
   return (
     diffParityOutput(fresh.input, existing.input).length === 0 &&
     diffParityOutput(fresh.output, existing.output).length === 0 &&
-    JSON.stringify([...existing.volatile].sort()) === JSON.stringify(fresh.volatile)
+    JSON.stringify([...existing.volatile].sort(compareCodeUnits)) === JSON.stringify(fresh.volatile)
   );
 }
 
@@ -603,7 +610,7 @@ function listCaseFiles(dir) {
       if (entry.isDirectory()) return listCaseFiles(full);
       return entry.name.endsWith('.json') ? [full] : [];
     })
-    .sort();
+    .sort(compareCodeUnits);
 }
 
 function readKnownGaps(dir, surface) {

@@ -13,7 +13,7 @@ import { buildParityCases, loadParityCases } from '../mirage/testing/parity-case
 // Report order of the oracle kinds; the library validates `oracle.kind` against the same three values.
 const ORACLE_KINDS = ['native', 'official-package', 'reference-engine'];
 const DEFAULT_CASES = path.join('mirage', 'test', 'parity', 'cases');
-const VALUE_OPTIONS = [
+const VALUE_OPTIONS = new Set([
   'surface',
   'suite',
   'oracle-kind',
@@ -24,8 +24,8 @@ const VALUE_OPTIONS = [
   'out',
   'revise-change',
   'revise-evidence',
-];
-const FLAG_OPTIONS = ['json'];
+]);
+const FLAG_OPTIONS = new Set(['json']);
 const USAGE = `usage:
   parity-cases build --surface <s> --suite <n> --oracle-kind <k> --oracle-name <n> --oracle-version <v>
       --oracle-scope <text> --capture <file> --capture <file> [...] [--out <file>]
@@ -38,18 +38,27 @@ function isObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+// Orders strings by UTF-16 code unit, the order case files are written in.
+function compareCodeUnits(left, right) {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
 function parseArgs(argv) {
   const options = { capture: [] };
   const positional = [];
-  for (let index = 0; index < argv.length; index += 1) {
+  let index = 0;
+  while (index < argv.length) {
     const token = argv[index];
     if (!token.startsWith('--')) {
       positional.push(token);
-    } else if (FLAG_OPTIONS.includes(token.slice(2))) {
+    } else if (FLAG_OPTIONS.has(token.slice(2))) {
       options[token.slice(2)] = true;
     } else {
       index = readValueOption(argv, index, options);
     }
+    index += 1;
   }
   return { command: positional[0], args: positional.slice(1), options };
 }
@@ -57,7 +66,7 @@ function parseArgs(argv) {
 // Stores the value of one `--name value` option and returns the index of the value.
 function readValueOption(argv, index, options) {
   const name = argv[index].slice(2);
-  if (!VALUE_OPTIONS.includes(name)) throw new Error(`unknown option ${argv[index]}`);
+  if (!VALUE_OPTIONS.has(name)) throw new Error(`unknown option ${argv[index]}`);
   const value = argv[index + 1];
   if (value === undefined || value.startsWith('--')) throw new Error(`${argv[index]} needs a value`);
   if (name === 'capture') options.capture.push(value);
@@ -74,7 +83,7 @@ function listJsonFiles(dir, recursive) {
       if (entry.isDirectory()) return recursive ? listJsonFiles(full, true) : [];
       return entry.name.endsWith('.json') ? [full] : [];
     })
-    .sort();
+    .sort(compareCodeUnits);
 }
 
 function knownGapFile(casesDir, surface) {
@@ -100,7 +109,7 @@ function oracleFromOptions(options, fallback) {
     version: options['oracle-version'] ?? fallback?.version,
     scope: options['oracle-scope'] ?? fallback?.scope,
   };
-  if (Object.values(oracle).some((value) => value === undefined)) {
+  if (Object.values(oracle).includes(undefined)) {
     throw new Error(
       'build needs --oracle-kind, --oracle-name, --oracle-version and --oracle-scope, or an existing case file',
     );
