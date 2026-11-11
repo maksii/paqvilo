@@ -560,21 +560,41 @@ function validateLaunchConfiguration(config, labels, root) {
     throw new Error(`Missing debugger program: ${config.program}`);
 }
 
-/* NOSONAR: single-pass routine, splitting it would change shared state */ export function checkDocumentation(root) {
+// Shipped files and every directory that contains one, from the npm pack file list.
+function shippedPaths(packedFiles) {
+  const files = new Set(packedFiles.map((file) => file.replaceAll('\\', '/')));
+  const directories = new Set(['.']);
+  for (const file of files) {
+    let directory = path.posix.dirname(file);
+    while (!directories.has(directory)) {
+      directories.add(directory);
+      directory = path.posix.dirname(directory);
+    }
+  }
+  return { files, directories };
+}
+
+/* NOSONAR: single-pass routine, splitting it would change shared state */ export function checkDocumentation(
+  root,
+  packedFiles,
+) {
   const names = ['README.md', 'AGENTS.md', 'CONTRIBUTING.md', 'SECURITY.md', 'mirage/README.md'];
+  const shipped = packedFiles && shippedPaths(packedFiles);
   const visit = (directory) => {
     if (!fs.existsSync(path.join(root, directory))) return;
     for (const entry of fs.readdirSync(path.join(root, directory), { withFileTypes: true })) {
       if (entry.name.startsWith('.') || ['node_modules', 'bin', 'obj', 'out', 'coverage'].includes(entry.name))
         continue;
-      const name = path.join(directory, entry.name);
+      const name = path.posix.join(directory, entry.name);
       if (entry.isDirectory()) visit(name);
       else if (entry.isFile() && name.endsWith('.md')) names.push(name);
     }
   };
   for (const directory of ['docs', 'mirage/docs', 'examples/project', 'examples/company-operations']) visit(directory);
   // Template-relative links are checked after generation by installed-package smoke.
-  for (const name of names) {
+  if (shipped)
+    for (const file of shipped.files) if (file.endsWith('.md') && !file.startsWith('templates/')) names.push(file);
+  for (const name of new Set(names)) {
     const text = fs.readFileSync(path.join(root, name), 'utf8');
     // Guides describe current behaviour. Evidence ledgers, benchmark results and
     // test receipts belong in ignored storage or a private project.
@@ -606,6 +626,9 @@ function validateLaunchConfiguration(config, labels, root) {
       const localPath = decodeURIComponent(target.replace(/^<|>$/g, ''));
       if (!fs.existsSync(path.resolve(root, path.dirname(name), localPath)))
         throw new Error(`Broken documentation link in ${name}: ${target}`);
+      const repoPath = path.posix.normalize(path.posix.join(path.posix.dirname(name), localPath)).replace(/\/+$/, '');
+      if (shipped?.files.has(name) && !shipped.files.has(repoPath) && !shipped.directories.has(repoPath))
+        throw new Error(`Documentation link in ${name} links to a file that is not shipped: ${target}`);
     }
   }
   for (const name of ['.env', 'paqvilo.config.local.yml']) {
@@ -629,7 +652,6 @@ function checkLockConsistency(root) {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-    checkDocumentation(root);
     checkLockConsistency(root);
     checkPackageMetadata(JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')));
     checkEditorTasks(root);
@@ -645,6 +667,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     });
     if (packed.status !== 0) throw new Error(packed.error?.message ?? packed.stderr.trim());
     const report = JSON.parse(packed.stdout)[0];
+    checkDocumentation(
+      root,
+      report.files.map((file) => file.path),
+    );
     const count = validateReleaseFiles(report.files);
     console.log(
       `Release check passed: ${count} allowlisted files, ${report.unpackedSize} bytes; documentation links and editor tasks valid.`,

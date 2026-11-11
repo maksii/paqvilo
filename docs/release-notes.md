@@ -72,13 +72,12 @@ organization's metadata. Large datasets use far less memory.
 
 ### Fixed
 
-- Acceptance observation works with script-disabled sandboxed frames, including compatibility rich-text editors.
-  Document recovery uses CDP context events; authored script, console, page and HTTP failures still fail acceptance.
-- Standalone Mirage tool help accepts each command's operational options before or after `--help` / `-h`.
-  Help validates syntax without reading inputs or running the tool. Successful `--help --json` retains text output;
-  malformed JSON requests still return the existing machine-readable error envelope.
-- Record-owner relocation uses bounded backoff for Windows sharing errors that outlast the former fixed retry
-  window. The 100-attempt limit, ownership rechecks and preservation of the preceding marker remain intact.
+- Acceptance observation works with script-disabled sandboxed frames, including the compatibility rich-text editor.
+  Authored script, console, page and HTTP failures still fail acceptance.
+- Standalone Mirage tools accept their own options before or after `--help` / `-h`. Help reads no inputs and runs
+  nothing.
+- Moving a record directory to a new owner retries Windows sharing errors with bounded backoff instead of failing
+  after a fixed short window. Lease updates retry the same way.
 - Updates no longer fail when exported audit relationships stamp modifier fields.
 - Default grids work on partial Solution exports whose primary name column is declared but not exported.
 - A server-logic Create response no longer exposes a column that column security hides.
@@ -90,51 +89,52 @@ organization's metadata. Large datasets use far less memory.
 - The rich-text compatibility editor sanitizes content with DOMPurify and keeps tables and paragraphs across saves.
 - `verify` cleanup waits for Windows to release the browser profile.
 - The temporary Edge browser used for shell capture no longer signs in to the Windows Microsoft account.
-
-### Consumer feedback qualification: 10 November 2026
-
-Both reports reproduce on the PR checkpoint `332399ed`; they are toolkit defects.
-The regressions use invented exports and loopback fixtures, with no customer or native access.
-
-| ID  | Confirmed cause and repair                                                                                                                                                                                                             | Regression coverage                                                                                                                                                                                                                                                 |
-| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 239 | The document observer's main-world `pageshow` callback triggers Chromium's sandbox error. CDP context events now recover document identity. Review also reproduced and repaired duplicate retirement and stale-context identity reuse. | [Acceptance](../mirage/test-browser/acceptance-sandbox.test.mjs), [frame lifecycle and actual BFCache restore](../mirage/test-browser/document-commits-sandbox.test.mjs), [controlled stale-message ordering](../mirage/test/document-commits-boundaries.test.mjs). |
-| 247 | The dispatcher validated help against only `help` and `json`. All 16 standalone tools now share their operational option schemas with help parsing.                                                                                    | [Help syntax, option order, repeated arguments, terminators and side-effect guards](../test/cli-tool-help.test.mjs).                                                                                                                                                |
-
-The editor check edits two fields from empty and formatted/quoted starting values, blurs, saves locally and
-reopens twice, preserving hidden JSON values and stored HTML. Editor sandbox permissions remain intact.
-Authored console errors, page exceptions, failed responses and real blocked scripts still fail acceptance.
-The help guard refuses operational imports, input reads, writes, process launches and network access.
-Existing operational defaults and empty-value policies are retained; successful JSON help remains text.
-These are toolkit contract/security checks. They are not replay cases and change no protected assertions.
-
-Full validation also reproduced a separate record-owner relocation failure: Windows returned `EPERM` for the
-entire former 100-by-2-ms retry window, leaving the location marker unchanged. A
-[controlled contention regression](../mirage/test/record-owner-contention.test.mjs) now exercises a longer sharing
-hold without wall-clock sleeping, including legacy markers held beyond two seconds. Bounded backoff keeps total requested waiting below ten seconds, retains the
-100-attempt ceiling and checks ownership before each retry. Existing permanent-refusal and concurrent-owner
-security assertions are unchanged. A separate fixed 400-case legacy-relocation probe passed on the final sharing
-policy; the probe is supplementary evidence, not a guarantee for permanent denial.
+- A missing record page file stops the start with `StateIntegrity` and leaves the state file untouched; the saved
+  state is no longer replaced by a new one.
+- A `like` pattern with many wildcards (FetchXML, OData string functions, T-SQL `LIKE` and `PATINDEX`) can no longer
+  hang the runtime, and a malformed character set no longer answers an unexpected error.
+- TDS `GO <count>` accepts up to 1,000 repeats and honours the query time limit.
+- `$filter` expressions nested deeper than 100 levels answer 400 instead of an unexpected error.
+- A sign-in or sign-out `returnUrl` with dot segments can no longer redirect off the site.
+- `paqvilo analyze` reviews portal pages, templates and web resources in folders named like build output (`metrics`,
+  `build`, `dist`), runs from a checkout under such a folder, and no longer reports an unpacked solution as
+  incomplete because of ribbon, formula or web resource content files. The text report names every skipped source.
+- `lense list --settings` and the `verify` sign-in message no longer print credentials or query values from URLs.
+  Invitation codes are redacted in traces and audit records.
+- A span opened after its trace left the retained set no longer recreates a partial trace under the same id.
+- Plug-in packages with overlapping ZIP entries or content beyond the local size limit are refused, and deeply
+  nested or deeply derived types no longer exhaust the assembly reader.
+- The Service Bus emulator transport connects only to an address that resolved to loopback.
+- A monthly flow recurrence on a day that short months lack skips those months in UTC as in every other time zone.
+- Two Code Apps configured with the same dev-server address are refused at start.
+- A Power Fx record field named `__proto__` keeps its value, and a formula that enters more than 5,000,000 row
+  scopes stops with `PowerFxLimitExceeded` (`host.scopeBudget` changes the limit).
+- Offline data generation and scaffolding answer existing keys of a paged table from its key index instead of
+  loading every key.
+- An interrupted setup save no longer blocks later saves: a lock left by a stopped process is removed.
+- The `_sim` top bar keeps the page title readable at tablet width, and `mirage serve` reports the `/_sim/` address.
 
 ### Upgrade notes
 
 - Tracing is on at `summary`. Set `mirage.trace.level: off` to turn it off.
-- The old `_sim` addresses (`#dashboard`, `#overview`, `#logs`, `#audit`, `#trace`, `#evidence`) redirect to
-  Monitor with their filters.
+- The old `_sim` addresses `#dashboard`, `#logs`, `#audit`, `#trace` and `#evidence` redirect to Monitor with their
+  filters; `#overview` opens Home.
 - The CLI now rejects extra or misplaced arguments that it used to ignore. Check scripts that call it.
 
 ### Contributor validation
 
 - `npm run validate` and pre-push reproduce the hosted checks: CodeQL with the pinned bundle, Windows browser
-  lanes in both Chromium and Edge, the hosted runner's `TEMP` alias and an empty npm cache. Lanes run
-  concurrently (`paqvilo.ci.jobs` or `PAQ_CI_JOBS`), and changed test files run twice more.
+  lanes in both Chromium and Edge, the hosted runner's `TEMP` alias and an empty npm cache, and the test-kind check
+  against the default branch. Lanes run concurrently (`paqvilo.ci.jobs` or `PAQ_CI_JOBS`), and changed test files run
+  twice more.
 - Every new or changed test declares its kind with `// @test-kind`. See [test kinds](test-kinds.md).
 - SonarQube analyzes branches and pull requests. It is not a required check.
 - The test suite was audited: sleeps and wall-clock assertions were replaced by real signals, and slow hosts no
   longer fail tests.
 - Parity is asserted by replay cases. `node scripts/parity-cases.mjs build` records cases from two or more oracle
   captures, `check` validates every case file and `report` counts cases per oracle kind. One runner replays each
-  case into Mirage. Hand-written tests can no longer be tagged `parity`. See [test kinds](test-kinds.md).
+  case into Mirage. A new hand-written test cannot be tagged `parity`; the tags that predate replay cases are listed in
+  `scripts/parity-tags-legacy.json`, and that list only shrinks. See [test kinds](test-kinds.md).
 
 Update with `npm install --save-dev paqvilo@^0.9.8` and commit the lockfile.
 

@@ -56,15 +56,15 @@ name. A metadata-only run with a different gate name can leave GitHub waiting fo
 older successful run. Run `npm run check:pr -- --pr <number>` with authenticated GitHub CLI before declaring success;
 it requires the pushed HEAD to match and the effective merge state to be `CLEAN`, as well as completed gates.
 
-Report vulnerabilities through [private reporting](../SECURITY.md). Alert triage decisions
-are recorded in [`.github/security/codeql-triage.json`](../.github/security/codeql-triage.json). A triage entry
+Report vulnerabilities through [private reporting](https://github.com/maksii/paqvilo/blob/main/SECURITY.md). Alert triage decisions
+are recorded in [`.github/security/codeql-triage.json`](https://github.com/maksii/paqvilo/blob/main/.github/security/codeql-triage.json). A triage entry
 must record the actual source-to-sink constraint, a focused regression where applicable,
 and validation on the affected revision. Do not dismiss an alert merely because code
 runs locally or appears in a test.
 
 ## Packages
 
-The [Release workflow](../.github/workflows/release.yml) resolves an immutable tag, runs
+The [Release workflow](https://github.com/maksii/paqvilo/blob/main/.github/workflows/release.yml) resolves an immutable tag, runs
 all release gates and publishes the tested archive. Stable tags must match package
 metadata and belong to main. Use [branch previews](branch-packages.md) for pre-merge tests.
 

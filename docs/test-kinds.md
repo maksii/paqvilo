@@ -55,9 +55,9 @@ keep their own kind.
   checker accepts a listed tag where a new `parity` tag would otherwise be refused, the list only shrinks, and an entry
   whose test no longer carries the tag fails the check. New parity is recorded as replay cases.
 - When a test mixes kinds, split it or tag each test; do not tag a whole file `parity` because one test is.
-- The [frontend](../mirage/test/fixtures/frontend-parity-evidence.md),
-  [platform](../mirage/test/fixtures/platform-parity-evidence.md) and
-  [Canvas and Code Apps](../mirage/test/fixtures/canvas-code-apps-package-evidence.md) evidence maps name the
+- The [frontend](https://github.com/maksii/paqvilo/blob/main/mirage/test/fixtures/frontend-parity-evidence.md),
+  [platform](https://github.com/maksii/paqvilo/blob/main/mirage/test/fixtures/platform-parity-evidence.md) and
+  [Canvas and Code Apps](https://github.com/maksii/paqvilo/blob/main/mirage/test/fixtures/canvas-code-apps-package-evidence.md) evidence maps name the
   observations behind each area. A filename containing `parity`, an invented browser fixture or an upstream
   compatibility model does not establish native parity.
 

@@ -1,3 +1,4 @@
+// @test-kind tooling: release checks validate repository scripts and shipped documentation against temporary package trees.
 import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -78,6 +79,32 @@ test('release checks nested user guides and example documentation links', (t) =>
   write('missing.md', '# Site\n');
   write('mirage/docs/node_modules/private/README.md', '[Ignore](absent.md)');
   assert.doesNotThrow(() => checkDocumentation(root));
+});
+
+test('release rejects shipped guides that link to repository-only files', (t) => {
+  const { root, write } = documentationRoot(t, 'paqvilo-doc-shipped-');
+  const shipped = [
+    'README.md',
+    'AGENTS.md',
+    'CONTRIBUTING.md',
+    'SECURITY.md',
+    'mirage/README.md',
+    'docs/guide.md',
+    'docs/other.md',
+    'examples/project/README.md',
+  ];
+  write('.github/workflows/ci.yml', 'name: CI\n');
+  write('docs/other.md', '# Other\n');
+  write('examples/project/README.md', '# Project\n');
+  write('docs/guide.md', '[CI](../.github/workflows/ci.yml)');
+  assert.throws(
+    () => checkDocumentation(root, shipped),
+    /Documentation link in docs\/guide\.md links to a file that is not shipped: \.\.\/\.github\/workflows\/ci\.yml/,
+  );
+  write('docs/guide.md', '[CI](https://github.com/maksii/paqvilo/blob/main/.github/workflows/ci.yml)');
+  assert.doesNotThrow(() => checkDocumentation(root, shipped));
+  write('docs/guide.md', '[Other](other.md)\n[Project](../examples/project/)');
+  assert.doesNotThrow(() => checkDocumentation(root, shipped));
 });
 
 test('release rejects evidence ledgers and test receipts among shipped guides', (t) => {
