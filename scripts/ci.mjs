@@ -643,7 +643,7 @@ function verifyBrowserLane(suite, shard) {
 export function validationSteps(
   scope,
   suites,
-  { unit = true, browser = true, changed = [], repeat = 0, env = process.env } = {},
+  { unit = true, browser = true, changed = [], repeat = 0, env = process.env, base = 'origin/main' } = {},
   platform = process.platform,
 ) {
   const npmRun = (script) => [npmCli(), 'run', script];
@@ -657,6 +657,10 @@ export function validationSteps(
   // must not compete with timed CLR/browser lanes in a local parallel run.
   if (scope.codeql && env.GITHUB_ACTIONS !== 'true')
     steps.push({ label: 'codeql', exclusive: true, commands: [['scripts/codeql.mjs']] });
+  // The hosted change-scope job checks test kinds over the whole pull request range. A release line's own pull
+  // request targets the default branch, so local validation compares with it, not only with the staged index.
+  if (env.GITHUB_ACTIONS !== 'true')
+    steps.push({ label: 'test kinds', commands: [['scripts/check-test-tags.mjs', '--base', base]] });
   for (const suite of ['mirage', 'lense'].filter((suite) => suites.includes(suite))) {
     appendSuiteSteps(steps, suite, { unit, channels, changed, repeat, verify });
   }
@@ -1217,7 +1221,7 @@ function prepareVerification({ values, suites, scope, suite, browser, unit, shar
   };
 }
 
-function runVerificationLanes({ suite, suites, scope, changed, unit, browser, shard, securityChecked }) {
+function runVerificationLanes({ suite, suites, scope, changed, unit, browser, shard, securityChecked, base }) {
   if (suite) {
     verifyLane(suite, { unit, browser, shard });
     return null;
@@ -1232,7 +1236,7 @@ function runVerificationLanes({ suite, suites, scope, changed, unit, browser, sh
   }
   if (scope.smoke) assertOwnedCiState(root, 'npm-cache-smoke');
   return runSteps(
-    validationSteps(scope, suites, { unit, browser, changed, repeat: validationRepeat() }),
+    validationSteps(scope, suites, { unit, browser, changed, repeat: validationRepeat(), base }),
     validationJobs(),
   );
 }
@@ -1289,6 +1293,7 @@ async function runVerification({ values, suite, full, unit, browser, scope, suit
     browser,
     shard: values.shard,
     securityChecked: preflight.securityChecked,
+    base: values.base,
   });
   if (laneRun) await laneRun; // NOSONAR: optional pending promise, awaited only when set
   await completeVerification({ suite, unit, browser, full, scope, baselineIdentity, receiptFile });

@@ -48,7 +48,7 @@ Every PR must report all CodeQL configurations present on main, including unchan
 
 ## Test kinds
 
-Every test you add or modify declares its kind with `// @test-kind <kind>: <reason>` (file-level in the first 40 lines, or directly above a test to override it): `parity`, `observation`, `compatibility`, `unproven`, `contract`, `security` or `tooling`. Definitions, syntax and evidence rules are in [docs/test-kinds.md](docs/test-kinds.md); pre-commit and CI run `scripts/check-test-tags.mjs` on changed test files.
+Every test you add or modify declares its kind with `// @test-kind <kind>: <reason>` (file-level in the first 40 lines, or directly above a test to override it): `parity`, `observation`, `compatibility`, `unproven`, `contract`, `security` or `tooling`. Definitions, syntax and evidence rules are in [docs/test-kinds.md](docs/test-kinds.md); pre-commit, local validation and CI run `scripts/check-test-tags.mjs` on changed test files.
 
 - `parity` assertions are replay cases: `scripts/parity-cases.mjs build` writes each case from two or more
   recorded oracle captures, and `mirage/test/parity-replay.test.mjs` replays them. A failing replay case means

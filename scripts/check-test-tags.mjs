@@ -15,7 +15,8 @@ import { validateParityCases } from '../mirage/testing/parity-cases.mjs';
 // scripts/parity-retirements.json. A new parity tag is valid only on a replay runner. Recorded parity cases change
 // only with a new history entry, and a recorded case cannot receive a new known gap. Files listed in
 // scripts/test-kinds-legacy.json predate the rule: they are skipped while they carry no @test-kind line at all, and
-// checked in full once one is added.
+// checked in full once one is added. Hand-written parity tags that predate replay cases are listed in
+// scripts/parity-tags-legacy.json; the list only shrinks.
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const KINDS = new Set(['parity', 'observation', 'compatibility', 'unproven', 'contract', 'security', 'tooling']);
 const EVIDENCE_KINDS = new Set(['parity', 'observation']);
@@ -24,6 +25,7 @@ const CASE_FILE = /(?:^|\/)parity\/cases\/(?<surface>[a-z0-9-]+)\/(?<suite>[a-z0
 const GAP_FILE = /(?:^|\/)parity\/known-gaps\/(?<surface>[a-z0-9-]+)\.json$/;
 const GAP_KEY = /^(?<suite>[a-z0-9-]+)#(?<caseId>.+)$/;
 const RETIREMENT_FILE = 'scripts/parity-retirements.json';
+const LEGACY_PARITY_FILE = 'scripts/parity-tags-legacy.json';
 const REPLAY_CALL = /\breplayParity(?:Cases|Directory)\s*\(/;
 const TAG = /^\s*\/\/\s*@test-kind\b(.*)$/;
 const TAG_BODY = /^\s+([a-z]+(?:\+[a-z]+)*)\s*:\s*(\S.*)$/;
@@ -267,18 +269,84 @@ const isReplayRunner = (tag, text, lines) =>
   REPLAY_CALL.test(text) &&
   !lines.some((line) => isTestDeclaration(line));
 
+const countOf = (list, item) => list.filter((entry) => entry === item).length;
+
+/** Hand-written parity tag lines that predate replay cases, by test file. A missing or invalid ledger lists nothing. */
+function legacyParityTags(text) {
+  const parsed = text == null ? {} : parseJson(text);
+  const tags = isObject(parsed.value?.tags) ? parsed.value.tags : {};
+  return new Map(Object.entries(tags).filter(([, lines]) => Array.isArray(lines)));
+}
+
 /** A parity tag is NEW when the file is new, or its line was added and its text was not moved from elsewhere. */
-function checkNewParityTags(file, text, parsed, facts, failures) {
+function checkNewParityTags(file, text, parsed, facts, failures, legacyParity) {
   const lines = text.split(/\r?\n/);
   const removedTexts = new Set((facts?.removedText ?? []).map((line) => line.trim()));
+  const listed = legacyParity.get(file) ?? [];
+  const parityTexts = parsed.tags
+    .filter((tag) => tag.kinds.includes('parity'))
+    .map((tag) => lines[tag.line - 1].trim());
   for (const tag of parsed.tags) {
     if (!tag.kinds.includes('parity')) continue;
     const isNew = !facts || (facts.added.includes(tag.line) && !removedTexts.has(lines[tag.line - 1].trim()));
-    if (isNew && !isReplayRunner(tag, text, lines))
+    const tagText = lines[tag.line - 1].trim();
+    // A listed legacy tag may appear once per listing; copying it onto another test in the file fails.
+    const isListedLegacy = listed.includes(tagText) && countOf(parityTexts, tagText) <= countOf(listed, tagText);
+    if (isNew && !isListedLegacy && !isReplayRunner(tag, text, lines))
       failures.push(
         `${file}: line ${tag.line}: a new parity tag is only valid on a replay runner that registers its tests through replayParityCases or replayParityDirectory; record a replay case instead (docs/test-kinds.md).`,
       );
   }
+}
+
+function staleLegacyProblems(file, lines, ctx) {
+  const current = ctx.newText(file);
+  const carried = current == null ? [] : current.split(/\r?\n/).map((line) => line.trim());
+  return [...new Set(lines)]
+    .filter((line) => countOf(carried, line) < countOf(lines, line))
+    .map((line) => `${file}: does not carry "${line}"; remove the stale entry`);
+}
+
+function legacyEntryProblems(file, lines, ctx) {
+  if (!isRepoPath(file) || !TEST_FILE.test(file)) return [`${file}: must be a repo-relative test file`];
+  if (!Array.isArray(lines) || lines.length === 0 || !lines.every((line) => typeof line === 'string'))
+    return [`${file}: needs a non-empty array of tag lines`];
+  const notParity = lines
+    .filter((line) => !isParityTagLine(line))
+    .map((line) => `${file}: "${line}" is not a parity tag line`);
+  return [...notParity, ...staleLegacyProblems(file, lines, ctx)];
+}
+
+function isParityTagLine(line) {
+  const match = TAG.exec(line);
+  const body = match && TAG_BODY.exec(match[1]);
+  return Boolean(body) && body[1].split('+').includes('parity');
+}
+
+/** Tags the change adds to the ledger: any file/line whose count grows against the base ledger. */
+function legacyGrowthProblems(newMap, oldMap) {
+  return [...newMap].flatMap(([file, lines]) =>
+    [...new Set(lines)]
+      .filter((line) => countOf(lines, line) > countOf(oldMap.get(file) ?? [], line))
+      .map(
+        () =>
+          `adds a tag for ${file}; the list of hand-written parity tags only shrinks, record a replay case instead (docs/test-kinds.md).`,
+      ),
+  );
+}
+
+function legacyParityProblems(ctx) {
+  const text = ctx.newText(LEGACY_PARITY_FILE);
+  if (text == null) return [];
+  const parsed = parseJson(text);
+  let problems;
+  if ('error' in parsed) problems = [`not valid JSON (${parsed.error})`];
+  else if (parsed.value?.version !== 1) problems = ['version must be 1'];
+  else if (!isObject(parsed.value.tags)) problems = ['tags must be an object of test file to tag lines'];
+  else problems = Object.entries(parsed.value.tags).flatMap(([file, lines]) => legacyEntryProblems(file, lines, ctx));
+  const oldText = ctx.diffMode ? ctx.oldText(LEGACY_PARITY_FILE) : null;
+  if (typeof oldText === 'string') problems.push(...legacyGrowthProblems(ctx.legacyParity, legacyParityTags(oldText)));
+  return problems.map((problem) => `${LEGACY_PARITY_FILE}: ${problem}`);
 }
 
 function checkFile(file, ctx, failures) {
@@ -289,7 +357,7 @@ function checkFile(file, ctx, failures) {
   if (text == null || (ctx.legacy.has(file) && !hasAnyTag(text))) return;
   const parsed = parseTestKinds(text);
   for (const error of parsed.errors) failures.push(`${file}: ${error}`);
-  if (ctx.diffMode) checkNewParityTags(file, text, parsed, facts, failures);
+  if (ctx.diffMode) checkNewParityTags(file, text, parsed, facts, failures, ctx.legacyParity);
 }
 
 const historyLength = (value) => (Array.isArray(value?.history) ? value.history.length : 0);
@@ -402,8 +470,10 @@ export function check({ files, newText, oldText, diffOf = () => '', legacy = new
     diffOf,
     legacy,
     diffMode,
+    legacyParity: legacyParityTags(newText(LEGACY_PARITY_FILE)),
     retired: diffMode ? retiredByChange(newText, oldText) : new Set(),
   };
+  if (files.includes(LEGACY_PARITY_FILE)) failures.push(...legacyParityProblems(ctx));
   for (const file of files) {
     if (TEST_FILE.test(file)) checkFile(file, ctx, failures);
     else if (CASE_FILE.test(file)) checkCaseFile(file, ctx, failures);

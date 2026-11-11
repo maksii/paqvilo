@@ -1,4 +1,5 @@
 // @test-kind tooling: scripts/check-test-tags.mjs enforces docs/test-kinds.md on changed test files
+import fs from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseTestKinds, check, kindsAt, diffFacts } from '../scripts/check-test-tags.mjs';
@@ -437,4 +438,124 @@ test('a retirement entry that already existed in the old ledger does not count',
     diffOf: () => diff,
   });
   assert.match(failures[0], /parity test/);
+});
+
+const LEGACY = 'scripts/parity-tags-legacy.json';
+const LEGACY_TEST = 'mirage/test/legacy.test.mjs';
+const OTHER_TEST = 'mirage/test/other.test.mjs';
+const LEGACY_TAG = '// @test-kind parity: native capture reproduced twice (invented example)';
+const legacyTestText = ["import test from 'node:test';", LEGACY_TAG, "test('listed', () => {});"].join('\n');
+const legacyLedger = (tags) => JSON.stringify({ version: 1, tags });
+const legacyProblems = (ledgerText, files = {}) =>
+  check({
+    files: [LEGACY],
+    newText: byPath({ ...files, [LEGACY]: ledgerText }),
+    oldText: () => null,
+    diffOf: () => '',
+  });
+
+test('a new parity tag listed in the legacy ledger for its test file passes', () => {
+  const failures = check({
+    files: [LEGACY_TEST],
+    newText: byPath({ [LEGACY_TEST]: legacyTestText, [LEGACY]: legacyLedger({ [LEGACY_TEST]: [LEGACY_TAG] }) }),
+    oldText: () => null,
+    diffOf: () => '',
+  });
+  assert.deepEqual(failures, []);
+});
+
+test('a listed legacy tag copied onto a second test in the same file fails', () => {
+  const copied = [legacyTestText, LEGACY_TAG, "test('copied', () => {});"].join('\n');
+  const failures = check({
+    files: [LEGACY_TEST],
+    newText: byPath({ [LEGACY_TEST]: copied, [LEGACY]: legacyLedger({ [LEGACY_TEST]: [LEGACY_TAG] }) }),
+    oldText: () => null,
+    diffOf: () => '',
+  });
+  assert.equal(failures.length, 2);
+  assert.match(failures[0], /a new parity tag is only valid on a replay runner/);
+});
+
+test('a listed legacy tag text used in a file the ledger does not list fails', () => {
+  const failures = check({
+    files: [OTHER_TEST],
+    newText: byPath({ [OTHER_TEST]: legacyTestText, [LEGACY]: legacyLedger({ [LEGACY_TEST]: [LEGACY_TAG] }) }),
+    oldText: () => null,
+    diffOf: () => '',
+  });
+  assert.equal(failures.length, 1);
+  assert.match(failures[0], /mirage\/test\/other\.test\.mjs: line 2: a new parity tag/);
+});
+
+test('a legacy ledger that gains an entry fails and one that loses an entry passes', () => {
+  const both = legacyLedger({ [LEGACY_TEST]: [LEGACY_TAG], [OTHER_TEST]: [LEGACY_TAG] });
+  const one = legacyLedger({ [LEGACY_TEST]: [LEGACY_TAG] });
+  const texts = { [LEGACY_TEST]: legacyTestText, [OTHER_TEST]: legacyTestText };
+  const grew = check({
+    files: [LEGACY],
+    newText: byPath({ ...texts, [LEGACY]: both }),
+    oldText: byPath({ [LEGACY]: one }),
+    diffOf: () => '',
+  });
+  assert.equal(grew.length, 1);
+  assert.match(grew[0], /only shrinks/);
+  const shrank = check({
+    files: [LEGACY],
+    newText: byPath({ ...texts, [LEGACY]: one }),
+    oldText: byPath({ [LEGACY]: both }),
+    diffOf: () => '',
+  });
+  assert.deepEqual(shrank, []);
+});
+
+test('a legacy ledger the change introduces passes', () => {
+  const failures = check({
+    files: [LEGACY],
+    newText: byPath({ [LEGACY_TEST]: legacyTestText, [LEGACY]: legacyLedger({ [LEGACY_TEST]: [LEGACY_TAG] }) }),
+    oldText: () => null,
+    diffOf: () => '',
+  });
+  assert.deepEqual(failures, []);
+});
+
+test('a legacy entry whose test no longer carries the tag fails as stale', () => {
+  const stale = legacyProblems(legacyLedger({ [LEGACY_TEST]: [LEGACY_TAG] }), {
+    [LEGACY_TEST]: "test('listed', () => {});",
+  });
+  assert.equal(stale.length, 1);
+  assert.match(stale[0], /^scripts\/parity-tags-legacy\.json: mirage\/test\/legacy\.test\.mjs: does not carry/);
+  assert.match(legacyProblems(legacyLedger({ [LEGACY_TEST]: [LEGACY_TAG] }))[0], /does not carry/);
+});
+
+test('malformed legacy ledgers fail', () => {
+  const cases = [
+    ['{', /not valid JSON/],
+    [JSON.stringify({ version: 2, tags: {} }), /version must be 1/],
+    [JSON.stringify({ version: 1, tags: [] }), /tags must be an object/],
+    [legacyLedger({ [LEGACY_TEST]: ['// @test-kind unproven: local model only'] }), /is not a parity tag line/],
+    [legacyLedger({ 'scripts/other.mjs': [LEGACY_TAG] }), /must be a repo-relative test file/],
+    [legacyLedger({ [LEGACY_TEST]: [] }), /needs a non-empty array of tag lines/],
+  ];
+  for (const [ledgerText, pattern] of cases) {
+    const failures = legacyProblems(ledgerText, { [LEGACY_TEST]: legacyTestText });
+    assert.ok(
+      failures.some((failure) => pattern.test(failure)),
+      `${pattern} not reported in ${JSON.stringify(failures)}`,
+    );
+  }
+});
+
+test('the committed legacy ledger passes and lists the 176 parity tag lines in 79 test files', () => {
+  const readRepo = (file) => {
+    try {
+      return fs.readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
+    } catch (error) {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    }
+  };
+  assert.deepEqual(check({ files: [LEGACY], newText: readRepo }), []);
+  const { tags } = JSON.parse(readRepo(LEGACY));
+  assert.equal(Object.keys(tags).length, 79);
+  assert.equal(Object.values(tags).flat().length, 176);
 });

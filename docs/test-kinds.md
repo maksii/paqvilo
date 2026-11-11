@@ -51,7 +51,9 @@ keep their own kind.
 - Existing `parity` tags stay protected. Removing or rewriting a protected line, deleting a file or stripping a
   legacy file's tags needs a `// @parity-evidence: <proof>` line in the same change, or a retirement entry for the file.
 - Hand-written tests that were tagged `parity` before replay cases existed keep their tag and its protection; their
-  evidence is the source named in the tag. New parity is recorded as replay cases.
+  evidence is the source named in the tag. `scripts/parity-tags-legacy.json` lists each such tag line by file. The
+  checker accepts a listed tag where a new `parity` tag would otherwise be refused, the list only shrinks, and an entry
+  whose test no longer carries the tag fails the check. New parity is recorded as replay cases.
 - When a test mixes kinds, split it or tag each test; do not tag a whole file `parity` because one test is.
 - The [frontend](../mirage/test/fixtures/frontend-parity-evidence.md),
   [platform](../mirage/test/fixtures/platform-parity-evidence.md) and
@@ -75,6 +77,7 @@ case into Mirage and compares the whole output. The expected value is never type
 | `mirage/test/parity/adapters/<surface>.mjs`       | One adapter per surface: recorded input to Mirage to output in the oracle's shape            |
 | `mirage/test/parity/known-gaps/<surface>.json`    | Declared differences between Mirage and the recording                                        |
 | `scripts/parity-retirements.json`                 | Ledger of retirements that the checker accepts                                               |
+| `scripts/parity-tags-legacy.json`                 | Hand-written parity tags that predate replay cases (shrink-only)                             |
 
 ### Case files
 

@@ -1,3 +1,4 @@
+// @test-kind tooling: local validation steps and the hosted CI wiring they mirror, on repository scripts only
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -63,6 +64,18 @@ test('local validation runs the Security workflow CodeQL analysis first, except 
   assert.equal(labels(steps(scope, []))[0], 'codeql');
   assert.deepEqual(steps(scope, [])[0].commands, [['scripts/codeql.mjs']]);
   assert.equal(labels(steps(scope, [], { env: { GITHUB_ACTIONS: 'true' } })).includes('codeql'), false);
+});
+
+test('local validation checks test kinds against the default branch, as the hosted change scope does', () => {
+  const scope = classifyChanges(['docs/faq.md']);
+  const kinds = (options) => steps(scope, [], options).find((step) => step.label === 'test kinds');
+  assert.deepEqual(kinds({}).commands, [['scripts/check-test-tags.mjs', '--base', 'origin/main']]);
+  assert.deepEqual(kinds({ base: 'origin/0.9.8' }).commands, [
+    ['scripts/check-test-tags.mjs', '--base', 'origin/0.9.8'],
+  ]);
+  assert.equal(labels(steps(scope, [], { env: { GITHUB_ACTIONS: 'true' } })).includes('test kinds'), false);
+  const ci = YAML.parse(fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8'));
+  assert.ok(ci.jobs.changes.steps.some((step) => step.run === 'node scripts/check-test-tags.mjs --event'));
 });
 
 test('the package smoke starts from an empty npm cache, as a hosted runner would', () => {
