@@ -185,6 +185,15 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
   return -1;
 }
 
+/** Opens the start page again while the displayed document's body cannot be read; three attempts at most. */
+async function openStableDocument(open, startPath) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const opened = await open();
+    if (opened.html !== null || !opened.response) return opened;
+  }
+  throw new Error(`${startPath} kept navigating while it loaded; its document could not be read`);
+}
+
 /* NOSONAR */ export default async function verify(cfg, args) {
   const log = args.json ? (...values) => console.error(...values) : (...values) => console.log(...values);
   const signInTimeout = args['sign-in-timeout'] === undefined ? 900_000 : Number(args['sign-in-timeout']);
@@ -315,6 +324,10 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
         /* ignore */
       }
     });
+    let navigations = 0;
+    page.on('framenavigated', (frame) => {
+      if (frame === page.mainFrame()) navigations++;
+    });
     const onTarget = () => {
       const u = new URL(page.url());
       return (
@@ -322,14 +335,17 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
         pageKey(u.pathname, session.model) === pageKey(new URL(startPath, cfg.origin).pathname, session.model)
       );
     };
-    // 'load' can take very long on data-heavy pages; the document itself is what matters here
+    // 'load' can take very long on data-heavy pages; the document itself is what matters here.
+    // The body is read at once: a response cannot be read after the page has navigated away from it.
     const open = async () => {
       const res = await page.goto(cfg.origin + startPath, { waitUntil: 'domcontentloaded', timeout: 120_000 });
+      const navigationsAtLoad = navigations;
+      const html = res ? await res.text().catch(() => null) : null;
       await page.waitForLoadState('load', { timeout: 30_000 }).catch(() => {});
       await sleep(1500);
-      return res;
+      return { response: res, html: navigations === navigationsAtLoad ? html : null };
     };
-    let response = await open();
+    let started = await open();
     if (!onTarget()) {
       if (!args.headed) {
         throw new Error(
@@ -344,17 +360,22 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
       check('sign-in works through the overlay', true, 'identity provider round trip ended back on the page');
       requested.clear();
       hits.length = 0;
-      response = await open();
+      started = await open();
     }
-    if (response?.status() !== 200) {
-      const answer = response ? `HTTP ${response.status()}` : 'no document response';
+    if (started.html === null) started = await openStableDocument(open, startPath);
+    if (started.response?.status() !== 200) {
+      const answer = started.response ? `HTTP ${started.response.status()}` : 'no document response';
       throw new Error(`${startPath} answered ${answer}`);
     }
-    // the HTML of this navigation; nothing is overridden yet (recognised inline scripts are already
+    // the HTML of the displayed document; nothing is overridden yet (recognised inline scripts are already
     // loaded from their local files, which does not matter for picking template and snippet lines)
-    const rawHtml = await response.text();
+    const rawHtml = started.html;
     if (process.env.PAQVILO_DEBUG) fs.writeFileSync(path.join(work, 'last-page.html'), rawHtml);
-    check('page loads through the overlay', true, `HTTP ${response.status()}, ${requested.size} same-origin requests`);
+    check(
+      'page loads through the overlay',
+      true,
+      `HTTP ${started.response.status()}, ${requested.size} same-origin requests`,
+    );
     check(
       'nothing is overridden before any edit',
       hits.every((h) => !(h.sources ?? []).length),

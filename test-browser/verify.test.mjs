@@ -1,4 +1,5 @@
 import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
+// @test-kind contract: verify is Paqvilo's own CLI behaviour, checked end to end against disposable loopback fixtures.
 // Exercises the real verify command against disposable fixtures.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -50,7 +51,7 @@ function component(dir, id, type, name, content, attachment) {
   if (attachment) write(dir, `powerpagecomponents/${id}/filecontent/${attachment.name}`, attachment.text);
 }
 
-async function fixture(t, layout, uncommittedInline = false) {
+async function fixture(t, layout, uncommittedInline = false, startHeadMarkup = '') {
   const work = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-verify-acceptance-'));
   const classic = layout === 'classic' ? createFixture() : null;
   const sourceDir = classic?.dir ?? path.join(work, 'enhanced-source');
@@ -171,7 +172,7 @@ async function fixture(t, layout, uncommittedInline = false) {
   const outside = path.join(work, 'outside');
   write(outside, 'private.txt', 'linked files must never be copied');
   fs.symlinkSync(outside, path.join(sourceDir, 'linked-outside'), process.platform === 'win32' ? 'junction' : 'dir');
-  const html = `<!doctype html><html><head><title>Verification fixture</title>
+  const html = `<!doctype html><html><head><title>Verification fixture</title>${startHeadMarkup}
 <link rel="stylesheet" href="${encodeURI(CSS_URL)}">${uncommittedInline ? '' : `<style>${PAGE_CSS}</style>`}
 <script>${PAGE_JS}</script><script src="${JS_URL}"></script>
 <script>window.instrumentationKey = "${CONFIGURATION_SNIPPET}"; document.addEventListener('DOMContentLoaded', () => { const display = document.createElement('p'); display.textContent = window.instrumentationKey; document.body.append(display); });</script>
@@ -411,6 +412,73 @@ for (const layout of ['classic', 'enhanced'])
       },
     );
   }
+
+test(
+  'verify reads the displayed document when the start page reloads itself after its first document',
+  { timeout: 120_000 },
+  async (t) => {
+    const reloadOnce = `<script>addEventListener('load', () => { if (!sessionStorage.getItem('reloaded')) { sessionStorage.setItem('reloaded', '1'); location.reload(); } });</script>`;
+    const fx = await fixture(t, 'classic', false, reloadOnce);
+    fx.cfg.sourceDir = path.join(fx.work, 'source-root-junction');
+    fs.symlinkSync(fx.sourceDir, fx.cfg.sourceDir, process.platform === 'win32' ? 'junction' : 'dir');
+    const launch = chromium.launchPersistentContext;
+    chromium.launchPersistentContext = async function (profileDir, options) {
+      assertCopyIsolation(path.dirname(profileDir));
+      return launch.call(this, profileDir, {
+        ...options,
+        proxy: { server: fx.cfg.origin, bypass: '127.0.0.1,localhost' },
+        args: [
+          ...options.args,
+          '--disable-background-networking',
+          '--disable-component-update',
+          '--disable-sync',
+          '--disable-domain-reliability',
+          '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost',
+        ],
+      });
+    };
+    const output = [];
+    const log = console.log;
+    const logError = console.error;
+    console.log = (...values) => output.push(values.join(' '));
+    console.error = (...values) => output.push(values.join(' '));
+    let result;
+    try {
+      result = await verify(fx.cfg, { strict: true });
+    } finally {
+      chromium.launchPersistentContext = launch;
+      console.log = log;
+      console.error = logError;
+    }
+    const { report } = reportFor(fx.cfg);
+    assert.doesNotMatch(output.join('\n'), /Response body is not available/);
+    assert.doesNotMatch(String(report.error ?? ''), /Response body is not available/);
+    assert.ok(
+      fx.requests.filter((request) => request.pathname === '/').length >= 2,
+      'the start page really reloaded itself',
+    );
+    assert.equal(result, 1);
+    assert.equal(report.passed, false, 'strict mode fails the newly observed post-edit console error');
+    assert.equal(report.checks.find((check) => check.name === 'page loads through the overlay')?.ok, true);
+    const required = [
+      'web file (CSS)',
+      'web file (JS)',
+      'web file (image)',
+      'page custom CSS',
+      'page custom JS',
+      'web template',
+      'content snippet',
+      'basic-form-js',
+      'advanced-form-step-js',
+      'list-js',
+    ];
+    for (const prefix of required) {
+      const check = report.checks.find((entry) => entry.name.startsWith(prefix));
+      assert.ok(check, `missing coverage: ${prefix}`);
+      assert.equal(check.ok, true, `${prefix}: ${check.detail}`);
+    }
+  },
+);
 
 test('verify writes failure evidence and removes its temporary copy when browser setup fails', async (t) => {
   const fx = await fixture(t, 'classic');
