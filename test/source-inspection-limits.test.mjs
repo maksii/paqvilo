@@ -1,4 +1,4 @@
-// @test-kind unproven: local review has not established every held or unreviewed platform-sensitive behavior.
+// @test-kind unproven: the checks in this file exercise source inspection limits with local fixtures; no native capture establishes the behaviour they assert.
 // Declared inspection budgets: rendered candidates, script notes and
 // oversized markup are bounded and reported, never silently attributed.
 import test from 'node:test';

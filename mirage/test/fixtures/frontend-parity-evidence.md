@@ -1,6 +1,6 @@
 # Frontend parity evidence
 
-Native captures collected on 2026-11-08 qualify the specific assertions below. The offline tests use an
+Native captures collected on 2026-11-08 establish the specific assertions below. The offline tests use an
 invented schema and authored strings. Portal exports, deployment identities, raw responses, screenshots,
 ownership journals and signed-in browser state remain in the private developer workbench.
 
@@ -12,8 +12,8 @@ ownership journals and signed-in browser state remain in the private developer w
 | Model-driven dirty state                | 82 results plus repeated Boolean-first, isolated email/quantity and saved-row read-only diagnostics at synchronous, microtask and animation-frame boundaries | `mirage/test/model-driven-native-dirty.test.mjs` |
 | Model-driven saves                      | Two disposable native record flows; suppression, server refresh and retained submit modes | `mirage/test-browser/model-driven-submit-modes.test.mjs`                               |
 | Restored dirty-mode submission          | Two further owned native flows; stage-20 Targets omit restored dirty, include unchanged always and exclude never; clean save produces no Update | The second test in `mirage/test-browser/model-driven-submit-modes.test.mjs` |
-| Power Pages Liquid filters              | 65 literal response fragments from two independent native page loads                      | `mirage/test/power-pages-native-contract.test.mjs`                                     |
-| Power Pages Liquid language             | 20 existing-test source expressions reproduced through native include templates twice     | `mirage/test/power-pages-native-language.test.mjs`                                     |
+| Power Pages Liquid filters              | 65 literal response fragments from two independent native page loads                      | `mirage/test/parity/cases/liquid-render/power-pages-contract.json`                                     |
+| Power Pages Liquid language             | 20 existing-test source expressions reproduced through native include templates twice     | `mirage/test/parity/cases/liquid-render/power-pages-language.json`                                     |
 | Existing whitespace assertions          | All four original source expressions reproduced literally                                 | The individually tagged whitespace test in `mirage/test/liquid-portal-parity.test.mjs` |
 | Existing loop, cycle and math assertions | All 16 original expressions reproduced in native include context with recorded observed modes; five model expectations corrected | Three individually tagged tests in `mirage/test/liquid-portal-parity.test.mjs`; original default-mode assertions remain separate diagnostics |
 | Existing model-driven type assertions   | Original money, decimal and single-choice type assertions reproduce the native metadata results | The individually tagged type test in `mirage/test/model-driven-client-runtime.test.mjs`; option-by-label lookup remains a contract |
@@ -34,7 +34,7 @@ the native API, a local browser and the invented offline client fixture. Missing
 The 121-case producer was reproduced again on 2026-11-09 after extracting synchronous snapshot and
 restoration helpers. Two independently opened native draft forms ran the exact refreshed function and
 original ordered input. Both raw result arrays are byte-identical to the unchanged public fixture. The
-[producer refresh capsule](model-driven-producer-refresh-2026-11-09.json) binds the new function, source
+[producer refresh record](model-driven-producer-refresh-2026-11-09.json) holds the new function, source
 checks and recordings separately from the unchanged historical manifest. Each run restored the touched
 values, required levels and submit modes, and its complete post-state matched a fresh original-producer
 control, including the native default-field dirty flags. This refresh adds no assertions or case credit.
@@ -52,7 +52,7 @@ after a real edit. A new-form exported false-default Boolean has a pending defau
 unrelated email or numeric edit; assigning false idempotently retains that state and true-to-false clears
 it. Its initial value is numeric 0. The source-bound isolation found no active native business rules and
 the native form script matched its export, registering only a title change handler. These observations
-qualify the enumerated false-default cases; no default-true claim is inferred.
+establish the enumerated false-default cases; no default-true claim is inferred.
 
 Native save runs create only owned invented records, inspect saved values independently and delete each
 record with a not-found readback. Changing a `never` attribute does not submit that value, saving refreshes
@@ -64,7 +64,7 @@ event cursor and the exact owned record identity.
 
 Power Pages captures independently read back every owned source component and require all literal response
 markers plus HTTP 200. Two page loads must agree byte-for-byte on every captured fragment. A missing marker,
-sign-in response, unavailable record or source mismatch fails qualification. Language cases retain their
+sign-in response, unavailable record or source mismatch fails the comparison. Language cases retain their
 include-template context: a direct top-level parse failure has a different envelope and cannot stand in for
 a native include failure.
 
@@ -81,7 +81,7 @@ checks that cached raw FormXml still receives that enrichment, without admitting
 
 The rendered-control producer was reproduced twice on 2026-11-09 after a synchronous helper extraction.
 Both native 202-result arrays match the unchanged public fixture exactly. The
-[rendered-control producer refresh capsule](power-pages-controls-producer-refresh-2026-11-09.json) binds
+[rendered-control producer refresh record](power-pages-controls-producer-refresh-2026-11-09.json) holds
 the new function and ordered input to the current source, rendered component, authored feedback and
 restoration checks. The historical manifest and the separate 189-case client and 26-property evidence
 remain unchanged. Visitor identity, submission and arbitrary handler absence remain outside this scope.
@@ -108,10 +108,7 @@ Its README records the live commands and the selected reference context. Live wr
 authorization; the public tests never connect to an online environment. Browser tabs and runtimes started
 by the runners are closed in cleanup; attached user browsers remain open.
 
-Public fixture SHA-256 checks live inside the parity tests. Updating a fixture requires updating its protected
-checksum with new evidence. Model-driven tests also bind both shared probe function sources to the exact
-hashes recorded in the native plans, so a helper edit cannot silently change the exercised guarantee.
-The tag checker also rejects parity deletion and stripping a legacy parity tag.
+Changes to the parity assertions in this area follow the [test kinds](../../../docs/test-kinds.md) rules.
 
 Upstream DotLiquid/Adxstudio compatibility expectations and invented portal contexts in older tests are
 distinct from the recorded native include behavior. The mixed Liquid file uses `unproven` as its default

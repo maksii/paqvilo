@@ -1,4 +1,4 @@
-// @test-kind unproven: local review has not established every held or unreviewed platform-sensitive behavior.
+// @test-kind unproven: the checks in this file exercise parity suite with local fixtures; no native capture establishes the behaviour they assert.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -145,7 +145,7 @@ test('live text is revealed only when source-derived, local-equal or trivially s
   assert.ok(!JSON.stringify(hidden).includes('Maria'));
 });
 
-// @test-kind tooling: read-only guards reject writes, deny-listed routes and unsafe plans
+// @test-kind tooling: read-only checks reject writes, deny-listed routes and unsafe plans.
 test('read-only guards reject writes, deny-listed routes and unsafe plans', () => {
   assert.doesNotThrow(() => assertReadOnlyPath('/workspace/'));
   for (const bad of ['https://evil.example/', '//evil.example/'])
@@ -1276,7 +1276,7 @@ test('client objects compare key presence, key order, value types and empty User
   assert.equal(plan.scenarios.find((scenario) => scenario.id === 'core-client-object').kind, 'client-object');
 });
 
-// @test-kind tooling: a plan denies its own routes, a matching pack's denied routes guard every run, and no validation lifts a denial
+// @test-kind tooling: a plan denies its own routes, a matching pack's denied routes apply to every run, and no validation lifts a denial.
 test("a plan denies its own routes, a matching pack's denied routes guard every run, and no validation lifts a denial", async (t) => {
   const { validatePlan, mergePlans, assertReadOnlyPath, activatePackDeniedRoutes, __testing } =
     await import('../parity-suite.mjs');

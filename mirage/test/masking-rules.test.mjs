@@ -173,8 +173,7 @@ test('a System Administrator reads masked values until it asks for UnMaskedData'
   assert.equal(await f.many('&UnMaskedData=true', ADMIN), SECRET);
 });
 
-// @test-kind compatibility: Repeated native wrong-case requests verify this parameter error before column projection, not field-security equivalence.
-// @parity-evidence: Two independent raw responses have SHA256 aae8f60065297d815f198fe04c1d7462ac56f180e1ce2ceb09d87abeb1044b60 and contain the literal platform redaction; verification SHA256 3dc1581fb96f35a6c794e582ff1a51f9ebb17ab63dc2f6bda4085035717d3f98.
+// @test-kind compatibility: Repeated native wrong-case requests verify this parameter error before column projection, not field-security equivalence; two independent raw responses (SHA256 aae8f60065297d815f198fe04c1d7462ac56f180e1ce2ceb09d87abeb1044b60 and verification SHA256 3dc1581fb96f35a6c794e582ff1a51f9ebb17ab63dc2f6bda4085035717d3f98) contain the literal platform redaction.
 test('unmaskeddata (wrong case) answers 0x80060888', async () => {
   const f = shared[3];
   const response = await f.request('GET', `/x_items?$select=x_secret&unmaskeddata=true`, undefined, {}, CUST);

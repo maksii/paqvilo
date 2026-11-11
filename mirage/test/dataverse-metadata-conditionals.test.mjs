@@ -1,5 +1,4 @@
-// @test-kind parity: repeated native service-document and CSDL GETs with their exact current If-None-Match return empty304 responses retaining the source ETag.
-// @parity-evidence: dataverse-native-metadata-conditionals.json binds two fresh eight-read native cohorts, exact request-validator dependency, raw empty-body hashes and route-specific response headers. Wildcards, lists and weak validators are outside this proof.
+// @test-kind observation: two fresh eight-read native cohorts in fixtures/dataverse-native-metadata-conditionals.json record derived facts and body hashes only (no recorded requests or responses); requests are typed in this test, so it is not a replay case. Wildcards, lists and weak validators are not proven.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';

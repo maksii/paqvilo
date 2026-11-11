@@ -1,4 +1,4 @@
-// @test-kind unproven: held or unreviewed platform-sensitive behavior has no native proof in this review.
+// @test-kind unproven: the checks in this file exercise cli with local fixtures; no native capture establishes the behaviour they assert.
 // CLI subprocess acceptance: disposable exports and explicit solution roots.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

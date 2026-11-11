@@ -266,8 +266,7 @@ public sealed class Caller:IPlugin{public void Execute(IServiceProvider p){var c
         const authoredHttp = await f.json(await httpCall('Authored'), 200);
         for (const key of ['Amount', 'Ratio', 'Count', 'Cost', 'Choice']) assert.equal(authoredHttp[key], 0, key);
         assert.equal(authoredHttp.Flag, false);
-        // @test-kind parity: Both fresh native cohorts return declared DateTime HTTP outputs as UTC text without an all-zero fraction, for minimum and authored dates.
-        // @parity-evidence: webapi-native-customapi-datetime.json binds14 native responses and both CSDL/plan/run hashes; only calendar values and schema names are parameters. SDK OutputParameters are asserted separately above.
+        // @test-kind observation: two fresh native cohorts (2026-11-08) in fixtures/webapi-native-customapi-datetime.json record 14 native responses as UTC text with identities and bodies hashed; the minimum and authored dates are typed in this test, so it is not a replay case. SDK OutputParameters are asserted separately above.
         await t.test('native HTTP DateTime zero-fraction presentation', async () => {
           const bytes = await fs.readFile(new URL('./fixtures/webapi-native-customapi-datetime.json', import.meta.url));
           assert.equal(
@@ -352,7 +351,7 @@ public sealed class Caller:IPlugin{public void Execute(IServiceProvider p){var c
       },
     );
 
-// @test-kind contract: SDK typed outputs retain roundtrip data; declared HTTP DateTime presentation is qualified separately below.
+// @test-kind contract: SDK typed outputs retain roundtrip data; declared HTTP DateTime presentation is checked separately below.
 test('DateTime HTTP output presentation is separate from input ticks and SDK roundtrip data', async (t) => {
   const operation = 'invented_DateReply',
     operationId = id(80);
@@ -394,8 +393,7 @@ test('DateTime HTTP output presentation is separate from input ticks and SDK rou
         }).ready,
     },
   });
-  // @test-kind parity: A default CLR DateTime roundtrip exposed through a declared HTTP response is UTC minimum without an all-zero fraction.
-  // @parity-evidence: The protected native DateTime capsule binds the exact minimum UTC response in both native1071 cohorts; SDK default input spelling is retained separately below.
+  // @test-kind observation: the minimum DateTime HTTP response 0001-01-01T00:00:00Z recorded in both native cohorts of fixtures/webapi-native-customapi-datetime.json; the empty POST is typed here and case identities are hashed, so it is not a replay case. SDK default input spelling is retained separately below.
   await t.test('native minimum DateTime HTTP output', async () => {
     const bytes = await fs.readFile(new URL('./fixtures/webapi-native-customapi-datetime.json', import.meta.url));
     assert.equal(
@@ -405,8 +403,7 @@ test('DateTime HTTP output presentation is separate from input ticks and SDK rou
     const result = await f.json(await f.request('POST', '/' + operation, {}), 200);
     assert.equal(result.Reply, JSON.parse(bytes).minimumHttpText);
   });
-  // @test-kind parity: Native input roundtrip strings preserve seven-digit UTC ticks, while declared DateTime HTTP outputs omit fractions.
-  // @parity-evidence: dataverse-native-datetime-precision.json binds two fresh three-case native rounds, actual CLR source/DLL/MVID, CSDL property types and all-eight cleanup. The fixed CLR output is returned simultaneously as String and DateTime, establishing the output boundary without rounding inputs.
+  // @test-kind observation: two fresh three-case native rounds in fixtures/dataverse-native-datetime-precision.json (CLR source/DLL/MVID, CSDL property types and cleanup facts) record 2020-01-15 inputs with a fixed CLR output returned as String and DateTime; this test types 2026-10-19 inputs against its own handler model, not the recorded inputs or fixed output, so it is not a replay case.
   await t.test('native DateTime HTTP fractions are omitted without rounding input or string output', async () => {
     const bytes = await fs.readFile(new URL('./fixtures/dataverse-native-datetime-precision.json', import.meta.url));
     assert.equal(

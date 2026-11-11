@@ -1,4 +1,4 @@
-// @test-kind unproven: local review has not established every held or unreviewed platform-sensitive behavior.
+// @test-kind unproven: the checks in this file exercise source inspection cache with local fixtures; no native capture establishes the behaviour they assert.
 // Report and source-hint reuse across revisits and refreshes. Parse counts are
 // process-global, so these tests run in order; budgets and LRU eviction have
 // their own files so the runner can execute them in parallel.

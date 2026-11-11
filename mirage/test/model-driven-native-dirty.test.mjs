@@ -1,5 +1,4 @@
-// @test-kind parity: two native dirty82 captures and repeated Boolean-first/email/quantity/saved-row isolation on2026-11-08; exact exported-app replay and sources bound in frontend-parity-evidence.json.
-// @parity-evidence: dirty-native-{1,2}.json reproduce dirty-local.json82/82; dirty-diagnostic.json/dirty-isolation.json reproduce45/39 snapshots, with0 active native business rules and matching exported form script.
+// @test-kind observation: two native model-driven dirty-state captures on 2026-11-08 produced the 82 rows of fixtures/model-driven-dirty-expected.json, SHA256 a82c85e6df0f66ea9c0297b2ef87fdb1a83d32f51b9e7851e8a1252b219b7c93, from the probe with SHA256 62c403234c10bd3e1c8ec4dd15ea3496f672fc76d3324f1b5a2fcce1d7420177 (dirty-plan.json SHA256 2027f1107ab32fc64aa684136688a0a28e68062da217882c28edf5a9e2f92f88, not committed). The field list is typed in this test. The Boolean-first isolation snapshots below are hand-written; their native sources (dirty-diagnostic.json and dirty-isolation.json, hashes in fixtures/frontend-parity-evidence.json) are not committed, and the PR comment cited 45 and 39 snapshots from them. No replay case records these inputs.
 import test, { before } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -10,7 +9,6 @@ import { presentationFixture } from './fixtures/model-driven-presentation.mjs';
 const bytes = fs.readFileSync(new URL('./fixtures/model-driven-dirty-expected.json', import.meta.url));
 
 let actual;
-// @parity-evidence: existing native fixture and probe SHA-256 pins are checked before any recorded case executes.
 before(async () => {
   assert.equal(
     createHash('sha256').update(captureModelDrivenDirtyContract.toString()).digest('hex'),

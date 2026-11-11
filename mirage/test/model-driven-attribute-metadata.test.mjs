@@ -39,7 +39,7 @@ test('attribute metadata accessors retain source constraints independently of cu
   assert.deepEqual([amount.getMin(), amount.getMax(), amount.getPrecision()], [-12.25, 0, 3]);
   assert.equal(runtime.formContext.getAttribute('x_title').getMaxLength(), 47);
   assert.equal(runtime.formContext.getAttribute('x_notes').getMaxLength(), 2000);
-  // @parity-evidence: model-driven-form-membership-native-facts.json SHA256 0cbae975bfa35da7d5266c3be4a2110b5dc00ce6af2ca480e1ddc45a1b8fd3a1 binds two native runs where these type-inapplicable getters are absent and the unchanged calls raise TypeError; no error text is normalized.
+  // Native form-membership facts (SHA256 0cbae975bfa35da7d5266c3be4a2110b5dc00ce6af2ca480e1ddc45a1b8fd3a1) record these getters as absent and the calls as TypeError; observation only, not a replay case.
   assert.throws(() => runtime.formContext.getAttribute('x_title').getMin(), TypeError);
   assert.throws(() => amount.getMaxLength(), TypeError);
   runtime.destroy();
@@ -64,9 +64,7 @@ test('missing limits refuse numeric accessors while integer precision derives fr
   const number = runtime.formContext.getAttribute('x_number');
   assert.throws(() => number.getMin(), /without imported numeric minValue metadata/);
   assert.throws(() => number.getMax(), /without imported numeric maxValue metadata/);
-  // @parity-evidence: two native UCI runs on 2026-11-08 report integer precision 0; see mirage/test/fixtures/frontend-parity-evidence.md.
-  // @test-kind parity: reproduced native2026-11-08 UCI integer.getPrecision; frontend-parity-evidence.json model-driven suite.
-  // @parity-evidence: both retained121-result captures use the checksum-bound expected fixture and producer below; only this original assertion is qualified.
+  // @test-kind observation: two native UCI runs on 2026-11-08 reported integer precision 0 (mirage/test/fixtures/frontend-parity-evidence.md); the row integer.getPrecision is in fixtures/model-driven-contract-expected.json, SHA256 99de1dcf0a8b390347e3780db499c30224c1dd39914995bcdf2a414faa2823a8, from the producer with SHA256 e80b3ac30fc180e3f62b25b21bc07ddbc5b6e74d93cfd67a67959587b044ecf3, reproduced 2026-11-09. The integer field here is typed by hand, so no replay case records this input.
   await t.test('native integer precision is zero without a decimal scale', () => {
     assert.equal(
       createHash('sha256')
@@ -76,7 +74,6 @@ test('missing limits refuse numeric accessors while integer precision derives fr
     );
     assert.equal(
       createHash('sha256').update(captureModelDrivenContract.toString()).digest('hex'),
-      // @parity-evidence: two fresh native UCI runs on 2026-11-09 reproduce the same ordered 121 cases (fixture SHA256 99de1dcf0a8b390347e3780db499c30224c1dd39914995bcdf2a414faa2823a8); full post-state matches the unchanged public control. See model-driven-producer-refresh-2026-11-09.json.
       'e80b3ac30fc180e3f62b25b21bc07ddbc5b6e74d93cfd67a67959587b044ecf3',
     );
     assert.equal(number.getPrecision(), 0);

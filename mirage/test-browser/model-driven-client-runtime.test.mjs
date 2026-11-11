@@ -642,8 +642,6 @@ test('a persisted inactive two-state record disables its default UI while explic
   await page.waitForFunction(
     () => document.documentElement.dataset.mirageAppState === 'ready' && Boolean(globalThis.Xrm),
   );
-  // @test-kind parity: two successful native2026-10-21 inactive-record captures independently return ui.getFormType4; checksum-bound historical facts below.
-  // @parity-evidence: native-inactive-settled and native-inactive-unlock raw captures reproduce the same formType guarantee; no other inactive/UI/save assertion is promoted.
   await t.test('native inactive persisted records report form type four', async () => {
     const nativeFacts = readFileSync(
       new URL('../test/fixtures/model-driven-historical-native-facts.json', import.meta.url),

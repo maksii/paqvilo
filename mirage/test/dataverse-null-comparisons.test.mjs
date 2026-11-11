@@ -1,4 +1,4 @@
-// @test-kind contract: Explicit HTTP comparison semantics are separate from default DataStore/SDK SQL three-valued reads; native HTTP assertions carry their own proof region.
+// @test-kind contract: Explicit HTTP comparison semantics are separate from default DataStore/SDK SQL three-valued reads; native HTTP assertions carry their own evidence.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
@@ -28,8 +28,7 @@ test('Dataverse HTTP equality/null decisions leave default store reads unchanged
     direct.value.map((row) => row.name),
     ['Two'],
   );
-  // @test-kind parity: Two native owned three-row truth tables prove equality/null and negated-equality decisions without changing relational null semantics.
-  // @parity-evidence: dataverse-native-deep-facts.json binds both44-request native cohorts, all7 exact truth-table outputs, independent organization identity and six owned absence checks per cohort.
+  // @test-kind observation: two native owned three-row truth tables in fixtures/dataverse-native-deep-facts.json (44-request cohorts; seven exact outputs, organization identity and six owned absence checks per cohort; response hashes only); requests are typed here, so it is not a replay case.
   await t.test('native HTTP nullable comparison truth table', async () => {
     const bytes = await readFile(new URL('./fixtures/dataverse-native-deep-facts.json', import.meta.url));
     assert.equal(

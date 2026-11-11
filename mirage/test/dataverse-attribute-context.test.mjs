@@ -1,4 +1,4 @@
-// @test-kind contract: Organization-cache diagnostics require explicit source-bound observations; invented IDs and indices qualify only configuration and wiring.
+// @test-kind contract: Organization-cache diagnostics require explicit observations with their source; invented IDs and indices check only configuration and wiring.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { observedConfig } from '../lib/project-config.mjs';

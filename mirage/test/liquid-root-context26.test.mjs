@@ -1,4 +1,4 @@
-// @test-kind parity: two source-frozen Power Pages include renders in power-pages-original-scalar-context-evidence.json.
+// @test-kind observation: two native Power Pages include renders per run (runSha256 per capture, 2026-11-08) in power-pages-original-scalar-context-evidence.json; the power-pages-original-scalar-context replay suite covers the same 25 recorded programs as includes under the same observed configuration, while this test also renders the original expressions with an explicit context object and pins the fixture hash, which the replay does not do.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';

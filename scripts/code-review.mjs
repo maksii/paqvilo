@@ -4,10 +4,9 @@ import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { execFile, spawnSync } from 'node:child_process';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { readLocalFileSync } from '../lense/local-file.mjs';
-import { assertParityBindingsFromSource, describeParitySource } from './qualify-parity.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const tools = {
@@ -336,139 +335,13 @@ function cloneRun(snapshot, files, output) {
   return ['jscpd', ['--config', config, '--fail-on-empty', '--no-tips'], snapshot];
 }
 
-// The old fingerprint can be reused only for a verified generated guard's
-// punctuation-only closing line. The original clone body must match byte for
-// byte at both reported locations; compareReview still consumes one baseline
-// occurrence at a time.
-export function verifiedCloneGuard(directory, relative, snapshotBytes, lineNumber) {
-  try {
-    const current = reviewBytes(directory, relative);
-    if (!current?.equals(snapshotBytes)) return false;
-    const source = current.toString('utf8'),
-      file = path.resolve(directory, relative);
-    const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
-    const binding = moduleImports(tree, file).get('__paqParityBindings');
-    if (
-      binding?.name !== 'assertParityBindings' ||
-      binding.target !== path.resolve(directory, 'scripts/qualify-parity.mjs')
-    )
-      return false;
-    const model = describeParitySource(source, file);
-    const guards = model.registrations.flatMap((row) =>
-      (row.callback.body.type === 'BlockStatement' ? row.callback.body.body : []).filter(
-        (statement) =>
-          statement.type === 'ExpressionStatement' &&
-          statement.expression?.type === 'CallExpression' &&
-          statement.expression.callee?.name === '__paqParityBindings',
-      ),
-    );
-    const matches = guards.filter(
-      (statement) => source.slice(0, statement.range[1]).split(/\r?\n/u).length === lineNumber,
-    );
-    if (matches.length !== 1) return false;
-    assertParityBindingsFromSource(pathToFileURL(file));
-    const after = reviewBytes(directory, relative);
-    return Boolean(after?.equals(snapshotBytes));
-  } catch {
-    return false;
-  }
-}
-
-function cloneSuffixMatches(file, occurrence, suffix) {
-  const lines = occurrence.text.replaceAll('\r\n', '\n').split('\n');
-  const first = lines[file.start - 1] ?? '';
-  if (!first) return false;
-  if (
-    !Number.isInteger(file.start) ||
-    !Number.isInteger(file.end) ||
-    file.start < 1 ||
-    file.end <= file.start ||
-    !Number.isInteger(file.startLoc?.column) ||
-    file.startLoc.column < 1 ||
-    file.startLoc.column > first.length ||
-    !Number.isInteger(file.endLoc?.column) ||
-    file.endLoc.column < 1
-  )
-    return false;
-  if (!/^[\s\](){};,'"`]+$/u.test(first.slice(file.startLoc.column - 1))) return false;
-  const body = lines.slice(file.start, file.end);
-  if (!body.length) return false;
-  body[body.length - 1] = body.at(-1).slice(0, file.endLoc.column);
-  if (body.join('\n') !== suffix) return false;
-  return true;
-}
-
-export function projectedGuardCloneKey(clone, pair, readOccurrence, verifyGuard) {
-  const fragment = clone.fragment.replaceAll('\r\n', '\n');
-  const newline = fragment.indexOf('\n');
-  if (newline < 0) return null;
-  const suffix = fragment.slice(newline + 1);
-  if (!suffix) return null;
-  const files = [clone.firstFile, clone.secondFile];
-  const occurrences = files.map((file) => readOccurrence(file));
-  if (occurrences.some((item) => !item)) return null;
-  if (!files.every((file, index) => cloneSuffixMatches(file, occurrences[index], suffix))) return null;
-  let guarded;
-  try {
-    guarded = occurrences.some(
-      (item, index) =>
-        item.text.replaceAll('\r\n', '\n').split('\n')[files[index].start - 1].trim() === ']);' &&
-        verifyGuard(item, files[index].start),
-    );
-  } catch {
-    return null;
-  }
-  if (!guarded) return null;
-  const digest = createHash('sha256').update(suffix).digest('hex');
-  return `${pair.join('|')}:${digest}`;
-}
-
-export function cloneOccurrencesStable(items, readOriginal, readSnapshot) {
-  return (
-    items.length === 2 &&
-    items.every((item) => {
-      const original = readOriginal(item.relative),
-        snapshot = readSnapshot(item.relative);
-      return original && snapshot && original.equals(item.bytes) && snapshot.equals(item.bytes);
-    })
-  );
-}
-
 function cloneFindings(directory, snapshot, output) {
   const report = JSON.parse(fs.readFileSync(path.join(output, 'jscpd-report.json'), 'utf8'));
   if (!Array.isArray(report.duplicates)) throw new Error('jscpd returned no clone inventory.');
   const findings = report.duplicates.map((clone) => {
     const pair = [clone.firstFile, clone.secondFile].map((file) => normalize(file.name, snapshot)).sort(); // NOSONAR: preserve default coercion and UTF-16 sort order
     const hash = createHash('sha256').update(clone.fragment.replaceAll('\r\n', '\n')).digest('hex');
-    const read = [];
-    const projected = projectedGuardCloneKey(
-      clone,
-      pair,
-      (file) => {
-        const relative = normalize(file.name, snapshot),
-          bytes = reviewBytes(snapshot, relative),
-          original = reviewBytes(directory, relative);
-        if (!bytes || !original || !bytes.equals(original)) return null;
-        const item = { relative, bytes, text: bytes.toString('utf8') };
-        read.push(item);
-        return item;
-      },
-      (item, line) => verifiedCloneGuard(directory, item.relative, item.bytes, line),
-    );
-    const stable =
-      projected &&
-      cloneOccurrencesStable(
-        read,
-        (relative) => reviewBytes(directory, relative),
-        (relative) => reviewBytes(snapshot, relative),
-      );
-    const baselineKey = stable ? projected : null;
-    return {
-      key: `${pair.join('|')}:${hash}`,
-      files: pair,
-      lines: clone.lines,
-      ...(baselineKey ? { baselineKey } : {}),
-    };
+    return { key: `${pair.join('|')}:${hash}`, files: pair, lines: clone.lines };
   });
   for (const clone of report.duplicates) {
     for (const file of [clone.firstFile, clone.secondFile]) {
@@ -533,10 +406,9 @@ export function compareReview(actual, baseline) {
   const accepted = new Map();
   for (const item of baseline) accepted.set(item.key, (accepted.get(item.key) ?? 0) + 1);
   return actual.filter((item) => {
-    const key = (accepted.get(item.key) ?? 0) > 0 ? item.key : item.baselineKey;
-    const remaining = accepted.get(key) ?? 0;
+    const remaining = accepted.get(item.key) ?? 0;
     if (!remaining) return true;
-    accepted.set(key, remaining - 1);
+    accepted.set(item.key, remaining - 1);
     return false;
   });
 }
@@ -623,14 +495,7 @@ async function main() {
     console.log(`Dead-code ${scope}: ${dead.length} findings reviewed against baseline.`);
   }
   for (const [index, [scope, files]] of inventory.entries()) {
-    findings.push(
-      ...clones[index].map((clone) => ({
-        ...clone,
-        key: `${scope}:clone:${clone.key}`,
-        ...(clone.baselineKey ? { baselineKey: `${scope}:clone:${clone.baselineKey}` } : {}),
-        type: 'clone',
-      })),
-    );
+    findings.push(...clones[index].map((clone) => ({ ...clone, key: `${scope}:clone:${clone.key}`, type: 'clone' })));
     console.log(`Clone ${scope}: ${files.length} files, ${clones[index].length} blocks reviewed against baseline.`);
   }
   findings.sort((a, b) => a.key.localeCompare(b.key));
@@ -643,7 +508,7 @@ async function main() {
           version: 1,
           policy:
             'Reviewed compatibility, declarative contracts, independent test assertions and standalone distribution copies. Baseline changes require human review; CI never fixes source or refreshes this file.',
-          findings: findings.map(({ baselineKey: _baselineKey, ...item }) => ({
+          findings: findings.map((item) => ({
             ...item,
             reason: reviewedReason(item),
           })),

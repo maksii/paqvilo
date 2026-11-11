@@ -13,8 +13,7 @@ const read = (service, path) => {
   return metadataRead({ url, origin }, service, parseDataverseRoute(url.pathname)).body;
 };
 
-// @test-kind parity: Native uncast and typed HTTP attribute collections use ordinal LogicalName order; explicit asc/desc and an unknown order field do not alter that order.
-// @parity-evidence: dataverse-native-metadata-order.json binds the exact original metadata pair; dataverse-native-deep-facts.json binds fresh explicit-order holdouts in two owned cohorts.
+// @test-kind observation: native uncast and typed attribute collections use ordinal LogicalName order per fixtures/dataverse-native-metadata-order.json (request and response hashes only); explicit asc/desc and an unknown order field are ignored in the two owned cohorts of fixtures/dataverse-native-deep-facts.json. Requests are typed here, so it is not a replay case.
 test('HTTP attribute collections retain native default order across ignored order options', async () => {
   const bytes = await readFile(new URL('./fixtures/dataverse-native-metadata-order.json', import.meta.url));
   assert.equal(
@@ -72,8 +71,7 @@ test('HTTP ordering leaves SDK and internal attribute registration order unchang
   assert.deepEqual(names(service.attributes('sample')), ['zulu', 'alpha']);
 });
 
-// @test-kind parity: Reproduced native expanded relationship arrays use platform reference, inferred notes, authored source, then file/duplicate template order.
-// @parity-evidence: dataverse-native-metadata-order.json binds both complete original native metadata.relationships bodies and the independent exported-source kind ordering proof; direct navigation endpoint order is a separate guarantee.
+// @test-kind observation: native expanded relationship arrays (platform reference, inferred notes, authored source, then file/duplicate template order) recorded as metadata.relationships response hashes in fixtures/dataverse-native-metadata-order.json plus an independent exported-source kind proof; requests are typed here, so it is not a replay case. Direct navigation endpoint order is not covered.
 test('expanded HTTP relationships use native source-kind order', async () => {
   const bytes = await readFile(new URL('./fixtures/dataverse-native-metadata-order.json', import.meta.url));
   assert.equal(

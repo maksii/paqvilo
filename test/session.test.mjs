@@ -1,4 +1,4 @@
-// @test-kind unproven: local review has not established every held or unreviewed platform-sensitive behavior.
+// @test-kind unproven: the checks in this file exercise session with local fixtures; no native capture establishes the behaviour they assert.
 import { makeTemporaryDirectorySync, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 
 import { test, after } from 'node:test';

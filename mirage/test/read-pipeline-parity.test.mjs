@@ -782,7 +782,7 @@ test('selective SDK bypass respects organization limits and does not propagate i
   );
 });
 
-// @test-kind contract: bypass keeps source-protected steps and reports unqualified ownership as diagnostics
+// @test-kind contract: bypass keeps source-protected steps and reports ownership that has no native evidence as diagnostics.
 test('read bypass retains source-protected steps and reports unqualified ownership', async (t) => {
   assert.equal(pluginBypassOwnership({ customizationLevel: '' }).kind, 'unknown');
   assert.equal(pluginBypassOwnership({ customizationLevel: 0 }).kind, 'unknown');

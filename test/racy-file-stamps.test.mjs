@@ -1,4 +1,4 @@
-// @test-kind unproven: local review has not established every held or unreviewed platform-sensitive behavior.
+// @test-kind unproven: the checks in this file exercise racy file stamps with local fixtures; no native capture establishes the behaviour they assert.
 // Same-size rewrites inside one file-time tick keep every stat field. Freezing the times every stat call
 // reports (tick) reproduces that on any file system, so these regressions fail deterministically without the
 // racy-window rule (lense/file-cache.mjs recordedStamp/racyStat); `settled` proves unchanged files are still reused.

@@ -1,10 +1,7 @@
 // @test-kind tooling: scripts/check-test-tags.mjs enforces docs/test-kinds.md on changed test files
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createRequire } from 'node:module';
-import { parseTestKinds, check, kindsAt } from '../scripts/check-test-tags.mjs';
-import { parityAstHash } from '../scripts/qualify-parity.mjs';
-const { parse } = createRequire(import.meta.url)('espree');
+import { parseTestKinds, check, kindsAt, diffFacts } from '../scripts/check-test-tags.mjs';
 
 const parityFile = [
   '// @test-kind parity: native dev-environment recording, reproduced twice (invented example)',
@@ -18,268 +15,43 @@ const parityFile = [
   '});',
 ].join('\n');
 
-test('marker spellings in fixture strings and comments are not executable guards', () => {
-  const text = [
-    '// @test-kind tooling: invented checker fixture source.',
-    '// __paqQueryBindings __paqSoapBindings __paqScalarBindings',
-    'const query = "__paqQueryBindings(import.meta.url, [])";',
-    'const soap = `__paqSoapBindings(import.meta.url, [])`;',
-    'const scalar = /__paqScalarBindings/;',
-    "test('fixture', () => assert.ok(query && soap && scalar));",
-  ].join('\n');
-  assert.deepEqual(parseTestKinds(text).errors, []);
-  for (const name of ['__paqQueryBindings', '__paqSoapBindings', '__paqScalarBindings']) {
-    const executable = text + `\n${name}(import.meta.url, []);\n`;
-    assert.ok(parseTestKinds(executable).errors.some((error) => error.includes('invalid generated')));
-  }
-  const broken = text + '\n__paqQueryBindings(import.meta.url, [\n';
-  assert.ok(parseTestKinds(broken).errors.some((error) => error.includes('invalid generated')));
+const CASE = 'mirage/test/parity/cases/power-fx/root.json';
+const GAP = 'mirage/test/parity/known-gaps/power-fx.json';
+const LEDGER = 'scripts/parity-retirements.json';
+const REASON = 'invented reason long enough for the ledger rule';
+const AUTHORITY = 'user request 2026-11-11: checker test';
+
+const caseOf = (id, output = { kind: 'number', value: 7 }) => ({
+  id,
+  input: { expression: 'Abs(-7)' },
+  output,
+  volatile: [],
 });
 
-test('query guard protects selected source entries without promoting held cases', () => {
-  const lines = [
-    '// @test-kind unproven: invented query guard fixture.',
-    "import { guard as __paqQueryBindings } from './tool.mjs';",
-    'const __paqQueryDescriptor = { selectedIndices: [0, 2, 4, 6, 8] };',
-    '__paqQueryBindings(import.meta.url, [{}]);',
-    "test('parent', async () => {",
-    '  const cases = [',
-    ...Array.from({ length: 63 }, (_, index) => `    ['q', '${index}', 400, 'message'],`),
-    '  ];',
-    '  let count = 0;',
-    '  for (const [option, value, status, message] of cases)',
-    '    await t.test(value, async () => {',
-    '      __paqQueryCase(cases, count++, [option, value, status, message], __paqQueryDescriptor);',
-    '      assert.equal(1, 1);',
-    '      assert.equal(2, 2);',
-    '      assert.equal(3, 3);',
-    '    });',
-    '  __paqQueryComplete(count, __paqQueryDescriptor);',
-    '});',
-  ];
-  const parsed = parseTestKinds(lines.join('\n'));
-  assert.deepEqual(parsed.errors, []);
-  assert.deepEqual(kindsAt(parsed, 7), ['parity']);
-  assert.deepEqual(kindsAt(parsed, 8), ['unproven']);
-  const extended = lines
-    .join('\n')
-    .replace('[0, 2, 4, 6, 8]', JSON.stringify(Array.from({ length: 21 }, (_, index) => index)));
-  const extendedParsed = parseTestKinds(extended);
-  assert.deepEqual(extendedParsed.errors, []);
-  assert.deepEqual(kindsAt(extendedParsed, 27), ['parity']);
-  assert.deepEqual(kindsAt(extendedParsed, 28), ['unproven']);
-  assert.ok(
-    parseTestKinds(lines.join('\n').replace('  __paqQueryComplete(count, __paqQueryDescriptor);', '')).errors.length,
-  );
-});
-
-test('SOAP loop checker protects selected inputs and markers without tagging held values', () => {
-  const lines = [
-    '// @test-kind compatibility: invented SOAP marker fixture.',
-    "import { value as __paqSoapValue } from './helper.mjs';",
-    "import { guard as __paqSoapBindings } from './tool.mjs';",
-    `const __paqSoapDescriptor = { selectedIndices: ${JSON.stringify(Array.from({ length: 21 }, (_, index) => index))} };`,
-    '__paqSoapBindings(import.meta.url, [{}]);',
-    'const VALUES = [',
-    ...Array.from({ length: 27 }, (_, index) => `  ${index},`),
-    '];',
-    "test('loop', () => {",
-    '  let index = 0;',
-    '  for (const value of VALUES) {',
-    '    const xml = value;',
-    '    __paqSoapValue(VALUES, index++, value, xml, __paqSoapDescriptor);',
-    '    assert.equal(xml, value);',
-    '    assert.equal(xml, value);',
-    '  }',
-    '  __paqSoapComplete(index, __paqSoapDescriptor);',
-    '  assert.equal(decodeFrom(__paqSoapTail(1, 0, __paqSoapDescriptor)), 1);',
-    '  assert.equal(decodeFrom(__paqSoapTail(2, 1, __paqSoapDescriptor)), 2);',
-    '});',
-  ];
-  const parsed = parseTestKinds(lines.join('\n'));
-  assert.deepEqual(parsed.errors, []);
-  assert.deepEqual(kindsAt(parsed, 7), ['parity']);
-  assert.deepEqual(kindsAt(parsed, 28), ['compatibility']);
-  assert.deepEqual(kindsAt(parsed, lines.findIndex((line) => line.includes('__paqSoapComplete(')) + 1), ['parity']);
-  const extended = lines
-    .join('\n')
-    .replace(
-      JSON.stringify(Array.from({ length: 21 }, (_, index) => index)),
-      JSON.stringify(Array.from({ length: 22 }, (_, index) => index)),
-    );
-  assert.deepEqual(parseTestKinds(extended).errors, []);
-  assert.deepEqual(kindsAt(parseTestKinds(extended), 28), ['parity']);
-  assert.ok(parseTestKinds(extended.replace('[0,1,2,3', '[0,0,2,3')).errors.length);
-  const sibling =
-    lines
-      .join('\n')
-      .replace(
-        '__paqSoapBindings(import.meta.url, [{}]);',
-        '__paqSoapBindings(import.meta.url, [{namespaceRegions:[{factId:"namespace"}]}]);\n' +
-          "import { assertSoapNamespaceProof as __paqSoapNamespaceProof } from './tool.mjs';",
-      ) +
-    "\ntest('sibling', () => {\n  assert.ok(localOnly);\n  {\n    __paqSoapNamespaceProof(import.meta.url, 'namespace');\n    assert.equal(actualNamespace, expectedNamespace);\n  }\n});\n";
-  const siblingTags = parseTestKinds(sibling),
-    siblingLines = sibling.split('\n');
-  assert.deepEqual(siblingTags.errors, []);
-  assert.deepEqual(kindsAt(siblingTags, siblingLines.findIndex((line) => line.includes('assert.ok(localOnly)')) + 1), [
-    'compatibility',
-  ]);
-  assert.deepEqual(
-    kindsAt(siblingTags, siblingLines.findIndex((line) => line.includes('assert.equal(actualNamespace')) + 1),
-    ['parity'],
-  );
-  assert.ok(
-    parseTestKinds(sibling.replace("__paqSoapNamespaceProof(import.meta.url, 'namespace');", '')).errors.length,
-  );
-  const valueSibling = sibling
-    .replaceAll('SoapNamespaceProof', 'SoapValueProof')
-    .replace('namespaceRegions', 'valueRegions');
-  const valueTags = parseTestKinds(valueSibling),
-    valueLines = valueSibling.split('\n');
-  assert.deepEqual(valueTags.errors, []);
-  assert.deepEqual(kindsAt(valueTags, valueLines.findIndex((line) => line.includes('assert.ok(localOnly)')) + 1), [
-    'compatibility',
-  ]);
-  assert.deepEqual(
-    kindsAt(valueTags, valueLines.findIndex((line) => line.includes('assert.equal(actualNamespace')) + 1),
-    ['parity'],
-  );
-  assert.ok(
-    parseTestKinds(valueSibling.replace("__paqSoapValueProof(import.meta.url, 'namespace');", '')).errors.length,
-  );
-  assert.ok(
-    parseTestKinds(lines.join('\n').replace('  __paqSoapComplete(index, __paqSoapDescriptor);', '')).errors.length,
-  );
-});
-
-test('scalar migration source guard is protected without retagging its parent', () => {
-  const source = [
-    '// @test-kind contract: invented scalar migration tooling fixture.',
-    "import { assertScalarParityBindings as __paqScalarBindings } from './tool.mjs';",
-    '__paqScalarBindings(import.meta.url, [{ kind: "scalar-reader-migration-v1" }]);',
-    "test('local policy', () => assert.ok(true));",
-  ].join('\n');
-  const parsed = parseTestKinds(source);
-  assert.deepEqual(parsed.errors, []);
-  assert.deepEqual(kindsAt(parsed, 2), ['parity']);
-  assert.deepEqual(kindsAt(parsed, 3), ['parity']);
-  assert.deepEqual(kindsAt(parsed, 4), ['contract']);
-  assert.ok(
-    parseTestKinds(
-      source.replace(
-        '__paqScalarBindings(import.meta.url, [{ kind: "scalar-reader-migration-v1" }]);',
-        '__paqScalarBindings(import.meta.url);',
-      ),
-    ).errors.length,
-  );
-  const failures = check({
-    files: ['scalar.test.mjs'],
-    oldText: () => source,
-    newText: () =>
-      source.replace('__paqScalarBindings(import.meta.url, [{ kind: "scalar-reader-migration-v1" }]);\n', ''),
-    diffOf: () => '@@ -3 +3 @@\n-old\n',
+const caseFile = ({ cases = [caseOf('abs-negative')], oracle, history = [] } = {}) =>
+  JSON.stringify({
+    schema: 'paqvilo.parity-cases/1',
+    surface: 'power-fx',
+    suite: 'root',
+    oracle: oracle ?? {
+      kind: 'official-package',
+      name: 'Microsoft.PowerFx.Interpreter',
+      version: '1.4.0',
+      scope: 'Invented scope for checker tests only.',
+    },
+    captures: [
+      { id: 'run-1', sha256: 'a'.repeat(64), capturedAt: '2026-11-08' },
+      { id: 'run-2', sha256: 'b'.repeat(64), capturedAt: '2026-11-08' },
+    ],
+    cases,
+    history,
   });
-  assert.match(failures[0], /parity test/);
-});
 
-test('case guard protects mapped entries and shared assertion without tagging unmatched cases', () => {
-  const lines = [
-    '// @test-kind unproven: invented mixed matrix for tooling.',
-    "import { parityCaseBindings as __paqParityCaseBindings, assertParityBindings as __paqParityBindings } from './tool.mjs';",
-    '__paqParityBindings(import.meta.url, []);',
-    'const cases = [',
-    "  ['first', 1],",
-    "  ['unmatched', 2],",
-    "  ['third', 3],",
-    '];',
-    'for (const [name, expected] of cases) {',
-    '  test(name, () => {',
-    '    __paqParityCaseBindings(import.meta.url, cases, [0, 2], [name, expected], []);',
-    '    assert.equal(actual(name), expected);',
-    '  });',
-    '}',
-  ];
-  const parsed = parseTestKinds(lines.join('\n'));
-  assert.deepEqual(parsed.errors, []);
-  assert.deepEqual(kindsAt(parsed, 5), ['parity']);
-  assert.deepEqual(kindsAt(parsed, 6), ['unproven']);
-  assert.deepEqual(kindsAt(parsed, 7), ['parity']);
-  assert.deepEqual(kindsAt(parsed, 9), ['unproven']);
-  assert.deepEqual(kindsAt(parsed, 11), ['parity']);
-  assert.deepEqual(kindsAt(parsed, 12), ['parity']);
-  for (const line of [5, 7, 11, 12]) {
-    const failures = check({
-      files: ['mixed.test.mjs'],
-      oldText: () => lines.join('\n'),
-      newText: () => lines.join('\n'),
-      diffOf: () => `@@ -${line} +${line} @@\n-old\n+new\n`,
-    });
-    assert.match(failures[0], /parity test/);
-  }
-  assert.ok(parseTestKinds(lines.join('\n').replace('[0, 2]', '[0, 0]')).errors.length);
-  const sharedLine = lines.join('\n').replace("['first', 1],\n  ['unmatched', 2],", "['first', 1], ['unmatched', 2],");
-  assert.ok(parseTestKinds(sharedLine).errors.length);
-});
+const ledger = (retirements = []) => JSON.stringify({ version: 1, retirements });
+const retirement = (file) => ({ file, reason: REASON, authority: AUTHORITY });
 
-test('case metadata protects exact retained assertions without tagging their surrounding branch', () => {
-  const assertions = Array.from({ length: 7 }, (_, index) => `assert.equal(${index}, ${index});`);
-  const retainedHashes = assertions.map((statement) =>
-    parityAstHash(parse(statement, { ecmaVersion: 'latest' }).body[0].expression),
-  );
-  const lines = [
-    '// @test-kind unproven: invented retained case proof tooling.',
-    'const cases = [',
-    '  1,',
-    '  2,',
-    '];',
-    'for (const value of cases) {',
-    '  test(value, () => {',
-    '    if (value === 1) {',
-    ...assertions.map((statement) => `      ${statement}`),
-    '    }',
-    `    __paqParityCaseBindings(import.meta.url, cases, [0], { value }, [{ caseSelection: { retainedAssertionHashes: ${JSON.stringify(retainedHashes)} } }]);`,
-    '    return assert.equal(value, value);',
-    '  });',
-    '}',
-  ];
-  const parsed = parseTestKinds(lines.join('\n'));
-  assert.deepEqual(parsed.errors, []);
-  assert.deepEqual(kindsAt(parsed, 8), ['unproven']);
-  for (let line = 9; line <= 15; line++) assert.deepEqual(kindsAt(parsed, line), ['parity']);
-  assert.deepEqual(kindsAt(parsed, 17), ['parity']);
-  assert.deepEqual(kindsAt(parsed, 18), ['parity']);
-  assert.ok(parseTestKinds(lines.join('\n').replace('assert.equal(3, 3)', 'assert.equal(3, 4)')).errors.length);
-});
-
-test('pre-branch case guard protects retained assertions without tagging the conditional', () => {
-  const assertion = 'assert.throws(() => actual(value));';
-  const hash = parityAstHash(parse(assertion, { ecmaVersion: 'latest' }).body[0].expression);
-  const lines = [
-    '// @test-kind unproven: invented guarded branch tooling.',
-    'const cases = [',
-    ...Array.from({ length: 139 }, (_, index) => `  ${index},`),
-    '];',
-    'for (const value of cases) {',
-    '  test(value, () => {',
-    `    __paqParityCaseBindings(import.meta.url, cases, [138], { value }, [{ caseSelection: { guardBeforeGuidBranch: true, retainedAssertionHashes: [${JSON.stringify(hash)}] } }]);`,
-    '    if (value === 138) {',
-    `      ${assertion}`,
-    '      return;',
-    '    }',
-    '    return assert.equal(actual(value), value);',
-    '  });',
-    '}',
-  ];
-  const parsed = parseTestKinds(lines.join('\n'));
-  assert.deepEqual(parsed.errors, []);
-  const branch = lines.findIndex((line) => line.includes('if (value')) + 1;
-  assert.deepEqual(kindsAt(parsed, branch), ['unproven']);
-  assert.deepEqual(kindsAt(parsed, branch + 1), ['parity']);
-  assert.deepEqual(kindsAt(parsed, branch + 4), ['parity']);
-  assert.ok(parseTestKinds(lines.join('\n').replace('[138]', '[137]')).errors.length);
-  assert.ok(parseTestKinds(lines.join('\n').replace(assertion, 'assert.throws(() => changed(value));')).errors.length);
-});
+// Text callbacks that answer by path; any other path reads as absent.
+const byPath = (files) => (file) => files[file] ?? null;
 
 test('file and per-test kinds resolve per region and reject untagged or malformed tags', () => {
   const parsed = parseTestKinds(parityFile);
@@ -396,142 +168,273 @@ test('deleting a parity file or stripping a legacy parity tag still requires new
   );
 });
 
-test('generated partial blocks protect assertions and source guard while parent remains unproven', () => {
-  const text = `// @test-kind unproven: invented partial fixture
-import { parityAssertions as __paqParityAssertions, assertParityBindings as __paqParityBindings } from './guard.mjs';
-__paqParityBindings(import.meta.url, []);
-test('mixed', async () => {
-  assert.equal(local(), 1);
-  {
-    __paqParityAssertions(import.meta.url, []);
-    assert.equal(await native(), 2);
-  }
-  assert.equal(other(), 3);
-});`;
-  const parsed = parseTestKinds(text);
-  assert.deepEqual(kindsAt(parsed, 5), ['unproven']);
-  assert.deepEqual(kindsAt(parsed, 8), ['parity']);
-  assert.deepEqual(kindsAt(parsed, 10), ['unproven']);
-  const run = (line) =>
-    check({
-      files: ['partial.test.mjs'],
-      oldText: () => text,
-      newText: () => text,
-      diffOf: () => `@@ -${line} +${line} @@\n-old\n+new\n`,
-    });
-  assert.match(run(8)[0], /parity test/);
-  assert.match(run(3)[0], /parity test/);
-  assert.deepEqual(run(10), []);
+test('diffFacts reports old and new line numbers and the texts of changed lines', () => {
+  const facts = diffFacts('--- a/x\n+++ b/x\n@@ -4 +4,2 @@\n-  old line\n+  new line\n+  extra\n');
+  assert.deepEqual(facts.removed, [4]);
+  assert.deepEqual(facts.added, [4, 5]);
+  assert.deepEqual(facts.removedText, ['  old line']);
+  assert.deepEqual(facts.addedText, ['  new line', '  extra']);
+  assert.equal(facts.evidence, false);
 });
 
-test('insertion-only wrapping of a source guard is rejected', () => {
-  const old = `// @test-kind unproven: fixture
-import { parityAssertions as __paqParityAssertions, assertParityBindings as __paqParityBindings } from './guard.mjs';
-__paqParityBindings(import.meta.url, []);
-test('mixed', () => { { __paqParityAssertions(import.meta.url, []); assert.equal(1, 1); } });`;
-  const changed = old.replace(
-    '__paqParityBindings(import.meta.url, []);',
-    'if (false) {\n__paqParityBindings(import.meta.url, []);\n}',
-  );
-  const problems = check({
-    files: ['sample.test.mjs'],
-    oldText: () => old,
-    newText: () => changed,
-    diffOf: () => '@@ -2,0 +3 @@\n+if (false) {\n@@ -3,0 +5 @@\n+}\n',
-  });
-  assert.match(problems[0], /no longer executed at module level/);
+test('a new parity tag on a per-test declaration fails', () => {
+  const text = [
+    "import test from 'node:test';",
+    '// @test-kind parity: native recording reproduced twice (invented example)',
+    "test('native', () => {});",
+  ].join('\n');
+  const failures = check({ files: ['new.test.mjs'], newText: () => text, oldText: () => null, diffOf: () => '' });
+  assert.equal(failures.length, 1);
+  assert.match(failures[0], /new\.test\.mjs: line 2: a new parity tag is only valid on a replay runner/);
 });
 
-test('insertion-only wrapping of a whole-test source guard is rejected', () => {
-  const old = `// @test-kind unproven: fixture
-import { assertParityBindingsFromSource as __paqParitySourceBindings } from './guard.mjs';
-test('parity source bindings 0123456789abcdef', () => { __paqParitySourceBindings(import.meta.url); });`;
-  const changed = old.replace("test('parity source", "if (false) {\ntest('parity source") + '\n}';
-  const problems = check({
-    files: ['sample.test.mjs'],
-    oldText: () => old,
-    newText: () => changed,
-    diffOf: () => '@@ -2,0 +3 @@\n+if (false) {\n@@ -3,0 +5 @@\n+}\n',
-  });
-  assert.match(problems[0], /no longer executed at module level/);
+test('a new file-level parity tag on a file that declares tests fails', () => {
+  const text = [
+    '// @test-kind parity: native recording reproduced twice (invented example)',
+    "import test from 'node:test';",
+    "test('native', () => {});",
+  ].join('\n');
+  const failures = check({ files: ['new.test.mjs'], newText: () => text, oldText: () => null, diffOf: () => '' });
+  assert.match(failures[0], /line 1: a new parity tag/);
 });
 
-test('a decoy top-level guard or executable statement before it cannot replace the real source guard', () => {
-  const old = `// @test-kind unproven: fixture
-import { parityAssertions as __paqParityAssertions, assertParityBindings as __paqParityBindings } from './guard.mjs';
-__paqParityBindings(import.meta.url, [{a: 1}]);
-test('mixed', () => { { __paqParityAssertions(import.meta.url, [{a: 1}]); assert.equal(1, 1); } });`;
-  const run = (changed) =>
-    check({
-      files: ['sample.test.mjs'],
-      oldText: () => old,
-      newText: () => changed,
-      diffOf: () => '@@ -2,0 +3 @@\n+insertion\n',
-    });
-  assert.match(
-    run(
-      old.replace(
-        '__paqParityBindings(import.meta.url, [{a: 1}]);',
-        'if (false) { __paqParityBindings(import.meta.url, [{a: 1}]); }\n__paqParityBindings(import.meta.url, []);',
-      ),
-    )[0],
-    /no longer executed/,
-  );
-  assert.match(
-    run(
-      old.replace(
-        '__paqParityBindings(import.meta.url, [{a: 1}]);',
-        'process.exit(0);\n__paqParityBindings(import.meta.url, [{a: 1}]);',
-      ),
-    )[0],
-    /no longer executed/,
-  );
-});
-
-// @test-kind tooling: shared descriptor source and selected values remain protected, with malformed aliases rejected.
-test('shared case descriptor is protected and invalid aliases fail closed', () => {
-  const lines = [
-    '// @test-kind unproven: invented matrix',
-    "import { parityCaseBindings as __paqParityCaseBindings, assertParityBindings as __paqParityBindings, freezeParityDescriptor as __paqParityFreeze } from './scripts/qualify-parity.mjs';",
-    'const __paqParityShared = __paqParityFreeze([{caseSelection:{}}]);',
-    '__paqParityBindings(import.meta.url, __paqParityShared);',
-    'const cases = [',
-    "  ['first', 1],",
-    "  ['unmatched', 2],",
-    "  ['third', 3],",
-    '];',
-    'for (const [name, expected] of cases) {',
-    '  test(name, () => {',
-    '    __paqParityCaseBindings(import.meta.url, cases, [0, 2], [name, expected], __paqParityShared);',
-    '    assert.equal(actual(name), expected);',
-    '  });',
+test('a new replay runner with a file-level parity tag passes, with a for loop or with replayParityDirectory', () => {
+  const loop = [
+    '// @test-kind parity: native capture reproduced twice (invented example)',
+    "import { replayParityCases } from '../../mirage/testing/parity-cases.mjs';",
+    "for (const suite of ['root']) {",
+    "  replayParityCases(new URL('./cases/power-fx/root.json', import.meta.url), run, { knownGaps: {} });",
     '}',
-  ];
-  const text = lines.join('\n'),
-    parsed = parseTestKinds(text);
-  assert.deepEqual(parsed.errors, []);
-  assert.deepEqual(kindsAt(parsed, 3), ['parity']);
-  assert.deepEqual(kindsAt(parsed, 6), ['parity']);
-  assert.deepEqual(kindsAt(parsed, 7), ['unproven']);
-  assert.match(
-    check({
-      files: ['mixed.test.mjs'],
-      oldText: () => text,
-      newText: () => text,
-      diffOf: () => '@@ -3 +3 @@\n-old\n+new\n',
-    })[0],
-    /parity test/,
+  ].join('\n');
+  const directory = [
+    '// @test-kind parity: native capture reproduced twice (invented example)',
+    "import { replayParityDirectory } from '../../mirage/testing/parity-cases.mjs';",
+    "await replayParityDirectory({ surface: 'power-fx', dir: './cases/power-fx' });",
+  ].join('\n');
+  for (const text of [loop, directory]) {
+    assert.deepEqual(
+      check({ files: ['new.test.mjs'], newText: () => text, oldText: () => null, diffOf: () => '' }),
+      [],
+    );
+  }
+});
+
+test('an existing parity tag that is unchanged passes', () => {
+  assert.deepEqual(
+    check({ files: ['a.test.mjs'], newText: () => parityFile, oldText: () => parityFile, diffOf: () => '' }),
+    [],
   );
-  for (const changed of [
-    text.replace('const __paqParityShared', 'let __paqParityShared'),
-    text.replace(
-      'assert.equal(actual(name), expected);',
-      'const alias = __paqParityShared; assert.equal(actual(name), expected);',
-    ),
-    text.replace(
-      '__paqParityBindings(import.meta.url, __paqParityShared)',
-      '__paqParityBindings(import.meta.url, unknown)',
-    ),
-  ])
-    assert.ok(parseTestKinds(changed).errors.length);
+});
+
+test('an existing parity tag whose line moved passes', () => {
+  const old = [
+    '// @test-kind parity: native capture reproduced twice (invented example)',
+    "import { replayParityCases } from '../testing/parity-cases.mjs';",
+    "await replayParityCases(new URL('./cases/power-fx/root.json', import.meta.url), run);",
+  ].join('\n');
+  const moved = [
+    "import { replayParityCases } from '../testing/parity-cases.mjs';",
+    '// @test-kind parity: native capture reproduced twice (invented example)',
+    "await replayParityCases(new URL('./cases/power-fx/root.json', import.meta.url), run);",
+  ].join('\n');
+  // Moving the tag removes its old line, which is a parity line change and needs proof of its own.
+  const diff = [
+    '@@ -1 +0,0 @@',
+    '-// @test-kind parity: native capture reproduced twice (invented example)',
+    '@@ -0,0 +2 @@',
+    '+// @test-kind parity: native capture reproduced twice (invented example)',
+    '@@ -0,0 +4 @@',
+    '+// @parity-evidence: synthetic checker input shows that the moved tag keeps its proof',
+    '',
+  ].join('\n');
+  const failures = check({ files: ['a.test.mjs'], newText: () => moved, oldText: () => old, diffOf: () => diff });
+  assert.deepEqual(
+    failures.filter((failure) => /a new parity tag/.test(failure)),
+    [],
+  );
+  assert.deepEqual(failures, []);
+});
+
+test('a tag changed from unproven to parity on an existing test fails', () => {
+  const old = "// @test-kind unproven: local model only\ntest('local', () => {});";
+  const changed = "// @test-kind parity: native recording reproduced twice\ntest('local', () => {});";
+  const diff =
+    '@@ -1 +1 @@\n-// @test-kind unproven: local model only\n+// @test-kind parity: native recording reproduced twice\n';
+  const failures = check({ files: ['a.test.mjs'], newText: () => changed, oldText: () => old, diffOf: () => diff });
+  assert.equal(failures.length, 1);
+  assert.match(failures[0], /a\.test\.mjs: line 1: a new parity tag/);
+});
+
+test('an invalid case file fails in file-list mode too', () => {
+  const failures = check({ files: [CASE], newText: () => '{"schema":"other"}' });
+  assert.ok(failures.length > 0);
+  assert.ok(failures.every((failure) => failure.startsWith(`${CASE}: `)));
+});
+
+test('changed output of a recorded case without a history entry fails', () => {
+  const changed = caseFile({ cases: [caseOf('abs-negative', { kind: 'number', value: 8 })] });
+  const failures = check({
+    files: [CASE],
+    newText: byPath({ [CASE]: changed }),
+    oldText: byPath({ [CASE]: caseFile() }),
+    diffOf: () => '',
+  });
+  assert.equal(failures.length, 1);
+  assert.match(failures[0], /changes recorded parity cases \(abs-negative\) without a new history entry/);
+});
+
+test('changed output of a recorded case with a new history entry passes', () => {
+  const history = [{ date: '2026-11-11', change: 'corrected expected value', evidence: 'third native capture' }];
+  const changed = caseFile({ cases: [caseOf('abs-negative', { kind: 'number', value: 8 })], history });
+  assert.deepEqual(
+    check({
+      files: [CASE],
+      newText: byPath({ [CASE]: changed }),
+      oldText: byPath({ [CASE]: caseFile() }),
+      diffOf: () => '',
+    }),
+    [],
+  );
+});
+
+test('an added recorded case needs no history entry', () => {
+  const added = caseFile({ cases: [caseOf('abs-negative'), caseOf('abs-positive', { kind: 'number', value: 7 })] });
+  assert.deepEqual(
+    check({
+      files: [CASE],
+      newText: byPath({ [CASE]: added }),
+      oldText: byPath({ [CASE]: caseFile() }),
+      diffOf: () => '',
+    }),
+    [],
+  );
+});
+
+test('a changed oracle without a history entry fails', () => {
+  const changed = caseFile({
+    oracle: { kind: 'official-package', name: 'Microsoft.PowerFx.Interpreter', version: '1.5.0', scope: 'Invented.' },
+  });
+  const failures = check({
+    files: [CASE],
+    newText: byPath({ [CASE]: changed }),
+    oldText: byPath({ [CASE]: caseFile() }),
+    diffOf: () => '',
+  });
+  assert.match(failures[0], /changes recorded parity cases \(oracle\) without a new history entry/);
+});
+
+test('a deleted case file fails without a retirement entry and passes with one', () => {
+  const oldText = byPath({ [CASE]: caseFile(), [LEDGER]: ledger() });
+  const failures = check({ files: [CASE], newText: byPath({}), oldText, diffOf: () => '' });
+  assert.match(failures[0], /deletes recorded parity cases; add a retirement entry/);
+  const retired = byPath({ [LEDGER]: ledger([retirement(CASE)]) });
+  assert.deepEqual(
+    check({
+      files: [CASE, LEDGER],
+      newText: retired,
+      oldText: byPath({ [CASE]: caseFile(), [LEDGER]: ledger() }),
+      diffOf: () => '',
+    }),
+    [],
+  );
+});
+
+test('a new gap for a recorded case fails', () => {
+  const gaps = JSON.stringify({ 'root#abs-negative': 'Mirage rounds differently, invented reason here' });
+  const failures = check({
+    files: [GAP],
+    newText: byPath({ [GAP]: gaps }),
+    oldText: byPath({ [CASE]: caseFile() }),
+    diffOf: () => '',
+  });
+  assert.match(failures[0], /declares a new gap for recorded case root#abs-negative/);
+});
+
+test('a new gap for a case added in the same change passes', () => {
+  const gaps = JSON.stringify({ 'root#abs-new': 'Mirage differs on a case that this change adds' });
+  assert.deepEqual(
+    check({
+      files: [GAP],
+      newText: byPath({ [GAP]: gaps }),
+      oldText: byPath({ [CASE]: caseFile() }),
+      diffOf: () => '',
+    }),
+    [],
+  );
+});
+
+test('a pointer gap that gains a pointer for a recorded case fails', () => {
+  const old = JSON.stringify({ 'root#abs-negative': { '/output/value': 'first reason is long enough' } });
+  const gaps = JSON.stringify({
+    'root#abs-negative': { '/output/value': 'first reason is long enough', '/output/kind': 'second reason here' },
+  });
+  const failures = check({
+    files: [GAP],
+    newText: byPath({ [GAP]: gaps }),
+    oldText: byPath({ [GAP]: old, [CASE]: caseFile() }),
+    diffOf: () => '',
+  });
+  assert.match(failures[0], /declares a new gap for recorded case root#abs-negative/);
+});
+
+test('a new gap for a recorded case passes with a retirement entry for the gap file', () => {
+  const gaps = JSON.stringify({ 'root#abs-negative': 'Mirage rounds differently, invented reason here' });
+  assert.deepEqual(
+    check({
+      files: [GAP, LEDGER],
+      newText: byPath({ [GAP]: gaps, [LEDGER]: ledger([retirement(GAP)]) }),
+      oldText: byPath({ [CASE]: caseFile(), [LEDGER]: ledger() }),
+      diffOf: () => '',
+    }),
+    [],
+  );
+});
+
+test('malformed known-gap entries are reported in file-list mode', () => {
+  const failures = check({ files: [GAP], newText: () => '{"not-a-key": "reason text here", "root#x": ""}' });
+  assert.match(failures.join('\n'), /not-a-key: key must be <suite>#<caseId>/);
+  assert.match(failures.join('\n'), /root#x: gap reason must not be empty/);
+});
+
+test('malformed retirement entries are reported when the ledger changes', () => {
+  const bad = ledger([{ file: 'a/b.test.mjs', reason: 'short', authority: 'x' }]);
+  const failures = check({ files: [LEDGER], newText: () => bad, oldText: () => ledger(), diffOf: () => '' });
+  assert.match(failures.join('\n'), /reason needs at least 20 characters/);
+  assert.match(failures.join('\n'), /authority needs at least 10 characters/);
+});
+
+test('a retirement entry lets a deleted parity test file and removed parity lines pass', () => {
+  const retired = byPath({ [LEDGER]: ledger([retirement('old.test.mjs')]) });
+  assert.deepEqual(
+    check({
+      files: ['old.test.mjs', LEDGER],
+      newText: retired,
+      oldText: (file) => (file === 'old.test.mjs' ? parityFile : ledger()),
+      diffOf: () => '@@ -1,9 +0,0 @@\n',
+    }),
+    [],
+  );
+  const changed = parityFile.replace("'none'", "''");
+  const diff = "@@ -4 +4 @@\n-  assert.equal(value(), 'none');\n+  assert.equal(value(), '');\n";
+  assert.deepEqual(
+    check({
+      files: ['a.test.mjs', LEDGER],
+      newText: (file) => (file === LEDGER ? ledger([retirement('a.test.mjs')]) : changed),
+      oldText: (file) => (file === LEDGER ? ledger() : parityFile),
+      diffOf: () => diff,
+    }),
+    [],
+  );
+});
+
+test('a retirement entry that already existed in the old ledger does not count', () => {
+  const diff = "@@ -4 +4 @@\n-  assert.equal(value(), 'none');\n+  assert.equal(value(), '');\n";
+  const existing = ledger([retirement('a.test.mjs')]);
+  const failures = check({
+    files: ['a.test.mjs', LEDGER],
+    newText: (file) => (file === LEDGER ? existing : parityFile.replace("'none'", "''")),
+    oldText: (file) => (file === LEDGER ? existing : parityFile),
+    diffOf: () => diff,
+  });
+  assert.match(failures[0], /parity test/);
 });

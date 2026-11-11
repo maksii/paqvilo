@@ -1,5 +1,4 @@
-// @test-kind parity: two native source-bound draft recordings of membership and type-specific accessor presence.
-// @parity-evidence: mirage/test/fixtures/model-driven-form-membership-native-facts.json retains both typed runs and the source-form omission checks; it does not establish primary-key status.
+// @test-kind observation: two native source-bound draft recordings in fixtures/model-driven-form-membership-native-facts.json show membership and accessor presence; the Mirage field definitions are typed in these tests and primary-key status is not established, so they are not replay cases.
 import test, { before } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -19,7 +18,6 @@ const fields = {
 };
 const present = ['text', 'memo', 'decimal', 'integer'];
 
-// @parity-evidence: existing native fixture and probe SHA-256 pins are checked before any recorded case executes.
 before(() => {
   assert.equal(
     createHash('sha256').update(bytes).digest('hex'),
@@ -68,8 +66,7 @@ test('recorded omitted form members and typed accessor shapes', () => {
   }
 });
 
-// @test-kind parity: two fresh source metadata and form recordings establish omission of the queried primary ID.
-// @parity-evidence: mirage/test/fixtures/model-driven-field-source-native-facts.json binds the exact current PrimaryIdAttribute equality and same-form null readbacks.
+// @test-kind observation: two fresh source metadata and form recordings in fixtures/model-driven-field-source-native-facts.json show the queried primary ID is omitted; the Mirage field definitions are typed in this test, so it is not a replay case.
 test('the recorded omitted primary ID is not exposed as a form attribute or control', () => {
   const sourceBytes = readFileSync(new URL('./fixtures/model-driven-field-source-native-facts.json', import.meta.url));
   assert.equal(

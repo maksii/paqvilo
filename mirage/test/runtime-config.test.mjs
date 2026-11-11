@@ -44,7 +44,7 @@ test('solution-only project configuration does not require or invent a portal', 
     /portal source/,
   );
 });
-// @test-kind contract+unproven: catalogue configuration is local; imported model-driven behavior is not native-qualified
+// @test-kind contract+unproven: catalogue configuration is local; imported model-driven behavior has no native capture.
 test('solution catalogue has no Power Pages provider and chooses an imported default', () => {
   const input = {
     metadata: {

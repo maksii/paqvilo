@@ -176,7 +176,7 @@ const create = (store, name = 'alpha') =>
 const rowsOf = (store) => store.tableRows('contoso_widget');
 
 describe('loopback guard (shared with TriggerServiceEndpointCheck)', () => {
-  // @test-kind contract+security: Paqvilo's loopback-only delivery guard
+  // @test-kind contract+security: webhook delivery is restricted to loopback addresses.
   it('accepts localhost, *.localhost, 127.0.0.0/8 and ::1 over http or https, and nothing else', () => {
     for (const url of ['http://localhost:1/x', 'https://api.localhost/x', 'http://127.0.0.2/x', 'http://[::1]:8080/x'])
       assert.equal(isLoopbackUrl(url), true, url);
@@ -564,7 +564,7 @@ describe('TriggerServiceEndpointCheck probes loopback endpoints only', () => {
 describe('loopback guard by resolved address', () => {
   afterEach(() => mock.restoreAll());
 
-  // @test-kind contract+security: the loopback guard checks the resolved address
+  // @test-kind contract+security: the loopback restriction checks the resolved address.
   it('refuses a *.localhost name that resolves to a routable address, without a connection', async () => {
     const fetchSpy = mock.method(globalThis, 'fetch');
     const lookups = [];

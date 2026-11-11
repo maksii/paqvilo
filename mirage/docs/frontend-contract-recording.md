@@ -44,7 +44,5 @@ request adapter. Keep portal and Dataverse routes, identity/permissions and nati
 Inspect response bodies and independent persistence readbacks, and isolate recording-hook failures before
 treating them as platform behavior. Preserve raw anomalies and exact restoration journals in private evidence.
 
-Keep qualification reports and fixture manifests with repository tests or in the external project, outside
-the shipped documentation. Protect expected fixture bytes and the serialized native probe function with
-checksums inside each parity test. This binds shared helpers to the code that actually ran natively. A
-parity tag requires reproduced native evidence for those assertions; see [test kinds](../../docs/test-kinds.md).
+Keep capture reports and fixture manifests with repository tests or in the external project, outside
+the shipped documentation. A parity tag requires reproduced native evidence for those assertions; see [test kinds](../../docs/test-kinds.md).

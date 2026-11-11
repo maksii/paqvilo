@@ -19,3 +19,11 @@ export {
   webApiInputContractCases,
   webApiScalarReaderCases,
 } from './testing/webapi-contract.mjs';
+export {
+  replayParityDirectory,
+  replayParityCases,
+  buildParityCases,
+  validateParityCases,
+  loadParityCases,
+  diffParityOutput,
+} from './testing/parity-cases.mjs';

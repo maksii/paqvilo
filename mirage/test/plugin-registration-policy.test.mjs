@@ -104,7 +104,7 @@ test('exported and observed availability metadata survives import and rejects a 
   assert.equal((await f.register('Create', 20, 0, { supporteddeployment: 0 })).status, 201);
   // Without Solution metadata the seeded filter availability decides: a custom table's filters are server-only (native
   // sdkmessagefilter rows), so a client deployment is refused.
-  // @parity-evidence: native registration round 2 (_registration-probes-2.json) "supporteddeployment 1" and "2" on a custom table filter: 0x80040203 "Supported deployment
+  // Evidence: native registration round 2 (_registration-probes-2.json) "supporteddeployment 1" and "2" on a custom table filter: 0x80040203 "Supported deployment
   // does not agree with message availability"
   const unknown = await fixture(t);
   assert.equal((await unknown.register('Create', 20, 0, { supporteddeployment: 1 })).status, 400);

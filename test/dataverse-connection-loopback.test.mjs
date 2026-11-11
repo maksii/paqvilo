@@ -1,4 +1,4 @@
-// @test-kind unproven: local review has not established every held or unreviewed platform-sensitive behavior.
+// @test-kind unproven: the checks in this file exercise dataverse connection loopback with local fixtures; no native capture establishes the behaviour they assert.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { tokenProvider } from '../lense/dataverse/connection.mjs';

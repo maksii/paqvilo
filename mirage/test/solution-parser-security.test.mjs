@@ -1,4 +1,4 @@
-// @test-kind unproven: held or unreviewed platform-sensitive behavior has no native proof in this review.
+// @test-kind unproven: the checks in this file exercise solution parser security with local fixtures; no native capture establishes the behaviour they assert.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';

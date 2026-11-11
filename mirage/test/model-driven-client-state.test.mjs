@@ -1,8 +1,4 @@
-// @test-kind unproven: Other original registrations have not been reviewed against native proof.
-import {
-  assertParityBindings as __paqParityBindings,
-  assertParityBindingsFromSource as __paqParitySourceBindings,
-} from '../../scripts/qualify-parity.mjs';
+// @test-kind unproven: this file tests local Mirage client-state models and reads no recorded native result.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -47,107 +43,7 @@ test('$batch answers split on their declared boundaries only, so a body holding 
   assert.deepEqual(JSON.parse(parts[1].body).error, { code: '0x80044331', message: 'a -- b' });
 });
 
-// @test-kind parity: Two independent authenticated native draft forms execute both original client state calls with the exact original results.
-// @parity-evidence: Manifest guarantee online-client-state; exact capsule/run/fact/source bindings are asserted below.
 test('globalContext.client.isOffline answers false like the PCF client', () => {
-  __paqParityBindings(import.meta.url, [
-    {
-      baselineId: 'mirage/test/model-driven-client-state.test.mjs:45:0',
-      repositoryRoot: '../..',
-      titleExpressionSha256: '2654b57b5c4c4d2d4b744bef0fb07de2cbe4ae2b64377acd3f2af3854b8ef4e2',
-      originalAssertions: [
-        'c82aa5ecea8677d9081941ddf1af7b617d8c283b4fb2eae45b938e016ae0bc87',
-        '136f7650ba33444c8cb2fb872010def595f68b154d4d87d3c65d7d5dbc603d2b',
-      ],
-      originalBodyAstSha256: '87e247813572b9d0ab4a2db2a70e2d41dd662f38fa58b925e297e1be4288c971',
-      originalGuardHashes: [],
-      moduleContextAstSha256: '13749593e8ba7a69157cfc94ec1b87f288ef8a3bb4b35d7e6c437199d605c9a5',
-      isolationRegistrationsAstSha256: 'c5075daac0eeb403d49b8a4de3fd48538b3c43719c4e05a4f4b0aac69374d4e5',
-      importRoles: [
-        {
-          source: '../api.mjs',
-          role: 'implementation-under-test',
-          reviewedBy: 'frontend-agent',
-          reason: 'Toolkit implementation imports; only createFormClientRuntime is used in the selected registration.',
-        },
-        {
-          source: '../lib/model-driven/client-runtime.mjs',
-          role: 'implementation-under-test',
-          reviewedBy: 'frontend-agent',
-          reason: 'Toolkit implementation imports; only createFormClientRuntime is used in the selected registration.',
-        },
-        {
-          source: '../lib/model-driven/solution.mjs',
-          role: 'implementation-under-test',
-          reviewedBy: 'frontend-agent',
-          reason: 'Toolkit implementation imports; only createFormClientRuntime is used in the selected registration.',
-        },
-        {
-          source: '../lib/staff-session.mjs',
-          role: 'implementation-under-test',
-          reviewedBy: 'frontend-agent',
-          reason: 'Toolkit implementation imports; only createFormClientRuntime is used in the selected registration.',
-        },
-        {
-          source: '../lib/dataverse-model-driven.mjs',
-          role: 'implementation-under-test',
-          reviewedBy: 'frontend-agent',
-          reason: 'Toolkit implementation imports; only createFormClientRuntime is used in the selected registration.',
-        },
-        {
-          source: '../lib/dataverse-security.mjs',
-          role: 'implementation-under-test',
-          reviewedBy: 'frontend-agent',
-          reason: 'Toolkit implementation imports; only createFormClientRuntime is used in the selected registration.',
-        },
-        {
-          source: '../testing/owned-fixture.mjs',
-          role: 'test-input',
-          reviewedBy: 'frontend-agent',
-          reason:
-            'Temporary directory ownership helper for a separate registration; selected registration does not reference it.',
-        },
-      ],
-      runtimeInputs: [],
-      inputDependencies: [
-        {
-          path: 'mirage/testing/owned-fixture.mjs',
-          sha256: '88ddbb5a2a7a001fc9389340419536ae561a65606384e9744c440c4e363754a0',
-        },
-      ],
-      sourceBindings: [],
-      loopHeaders: [],
-      caseUniverse: {
-        count: 1,
-        cases: ['globalContext.client.isOffline answers false like the PCF client'],
-        casesSha256: '275afddbe7be4e3541779fedc253e5ecd866a36b92bb97eb1a936eb315448a1e',
-        sourceBindings: [],
-        ancestorLoops: [],
-      },
-      proofs: [
-        {
-          path: 'mirage/test/fixtures/model-driven-client-online-native-facts.json',
-          sha256: 'd519e56b9676cb4d7fc2276a242ffee633bb13bf64e1eb1edde7ebf27efb73e3',
-          mode: 'reproduced-native',
-          capturePointers: ['/captures/0/runSha256', '/captures/1/runSha256'],
-          facts: [
-            {
-              id: 'offline',
-              pointer: '/captures/0/result/values/0',
-              sha256: 'fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa',
-              replicatedPointers: ['/captures/0/result/values/0', '/captures/1/result/values/0'],
-            },
-            {
-              id: 'state',
-              pointer: '/captures/0/result/values/1',
-              sha256: 'b11148e2002ef092742cbd4566f96b67a8f517f32279b1b399b479efcef62634',
-              replicatedPointers: ['/captures/0/result/values/1', '/captures/1/result/values/1'],
-            },
-          ],
-        },
-      ],
-    },
-  ]);
   const table = {
     entity: 'x_item',
     idColumn: 'x_itemid',
@@ -262,9 +158,4 @@ test('usersettingscollection answers GET and PATCH for the caller and feeds the 
     webApi({ method: 'GET', path: '/api/data/v9.2/WhoAmI', principal: { principalId: system }, host: '127.0.0.1' }),
     (error) => error.status === 401,
   );
-});
-
-// @test-kind tooling: Shared source guard reads expected bindings from protected parity bodies and runs independently of their generators; no baseline closure credit.
-test('parity source bindings 9a3d659896a1c89b', () => {
-  assert.doesNotThrow(() => __paqParitySourceBindings(import.meta.url));
 });

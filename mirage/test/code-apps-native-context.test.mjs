@@ -1,4 +1,4 @@
-// @test-kind parity: two independent published native Code Apps player loads on 2026-11-08; typed context relationships and authored query fixtures only.
+// @test-kind observation: two published native Code Apps player captures in fixtures/code-apps-context-native.json (raw sha256 2d70c507..., 2026-11-08) bind 13 typed context rows and four cache rows; the authored query string and identities are typed in this test rather than recorded, so it is not a replay case.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -9,12 +9,10 @@ import { configure, getContext } from '../lib/code-apps-client.js';
 import { captureCodeAppContextContract, captureCodeAppContextCacheContract } from '../testing/code-apps-contract.mjs';
 
 const hash = (value) => createHash('sha256').update(value).digest('hex');
-// @parity-evidence: two fresh published-host context captures agree on all 13 typed context/query rows and four cache rows; serialized probes and raw capture hashes are bound in the fixture.
 const bytes = fs.readFileSync(new URL('./fixtures/code-apps-context-native.json', import.meta.url));
 
 const evidence = JSON.parse(bytes);
 
-// @parity-evidence: two published native player captures in code-apps-context-native.json bind both unchanged context probes. The same pinned setup checks run before the tests.
 test.before(() => {
   assert.equal(hash(bytes), '9ba4e056aca60036e840d81bfe8cf65abece4a5ce529f111994fac17aac81b3b');
   assert.equal(hash(captureCodeAppContextContract.toString()), evidence.probeFunctionSha256);

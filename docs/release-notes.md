@@ -106,7 +106,7 @@ reopens twice, preserving hidden JSON values and stored HTML. Editor sandbox per
 Authored console errors, page exceptions, failed responses and real blocked scripts still fail acceptance.
 The help guard refuses operational imports, input reads, writes, process launches and network access.
 Existing operational defaults and empty-value policies are retained; successful JSON help remains text.
-These are toolkit contract/security checks. They add no native parity credit and change no protected assertions.
+These are toolkit contract/security checks. They are not replay cases and change no protected assertions.
 
 Full validation also reproduced a separate record-owner relocation failure: Windows returned `EPERM` for the
 entire former 100-by-2-ms retry window, leaving the location marker unchanged. A
@@ -132,6 +132,9 @@ policy; the probe is supplementary evidence, not a guarantee for permanent denia
 - SonarQube analyzes branches and pull requests. It is not a required check.
 - The test suite was audited: sleeps and wall-clock assertions were replaced by real signals, and slow hosts no
   longer fail tests.
+- Parity is asserted by replay cases. `node scripts/parity-cases.mjs build` records cases from two or more oracle
+  captures, `check` validates every case file and `report` counts cases per oracle kind. One runner replays each
+  case into Mirage. Hand-written tests can no longer be tagged `parity`. See [test kinds](test-kinds.md).
 
 Update with `npm install --save-dev paqvilo@^0.9.8` and commit the lockfile.
 

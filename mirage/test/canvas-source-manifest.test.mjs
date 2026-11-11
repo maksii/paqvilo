@@ -14,8 +14,7 @@ const files = {
   'Src/Zulu.fx.yaml': 'Zulu As screen:\n',
 };
 
-// @test-kind parity: two native Canvas player starts used the first legacy CanvasManifest.ScreenOrder entry; exact native source hash and captures bound by canvas-native-input.test.mjs.
-// @parity-evidence: current native msapp hash b22a13aa82f398a6290bae806a9c65c52a9009f977a3931d05fb8950d6f54860 and two source-bound draft probes; no explicit App.StartScreen in that source.
+// @test-kind observation: two native Canvas draft captures recorded in fixtures/canvas-draft-input-native.json (2026-11-08, sha256 53da0137...) show the source-bound draft probes of the msapp b22a13aa...; the fixture records no start screen and this test types its source files, so it is not a replay case.
 test('legacy manifest order selects the native first screen instead of alphabetic file order', async () => {
   const evidence = fs.readFileSync(new URL('./fixtures/canvas-draft-input-native.json', import.meta.url));
   assert.equal(

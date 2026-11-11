@@ -1,4 +1,4 @@
-// @test-kind parity: two source-frozen native include renders in power-pages-existing-liquid-evidence.json.
+// @test-kind observation: two native include renders per run (runSha256 per capture, 2026-11-08) in power-pages-existing-liquid-evidence.json; the power-pages-existing-liquid replay suite replays the same 82 recorded programs as includes under one observed configuration, while the first and third tests here also pin the fixture hash, check the recorded outcome labels or use narrower observed configurations that the suite does not replay and these are not replay cases.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';

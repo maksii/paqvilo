@@ -102,7 +102,7 @@ test('default async deadline admits the observed late queue and retains a finite
   }
 });
 
-// @test-kind tooling: async reconciliation retains partial failures and never qualifies missing, corrupt, paged or cancelled evidence
+// @test-kind tooling: async reconciliation retains partial failures and never grants credit for missing, corrupt, paged or cancelled evidence
 test('async reconciliation retains partial failures and never qualifies missing, corrupt, paged or cancelled evidence', async () => {
   const { sha256 } = await import('./core.mjs'),
     event = {

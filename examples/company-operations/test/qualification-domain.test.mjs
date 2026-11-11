@@ -1,4 +1,4 @@
-// @test-kind unproven: held or unreviewed platform-sensitive behavior has no native proof in this review.
+// @test-kind unproven: the checks in this file exercise qualification domain with local fixtures; no native capture establishes the behaviour they assert.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -203,7 +203,7 @@ test('the deep graph uses eleven actual Parent edges and classic scope templates
   );
 });
 
-// @test-kind tooling: configuration proof counts actual role-mask cells and never credits a backend guard failure as a permission denial
+// @test-kind tooling: configuration proof counts actual role-mask cells and never counts a backend check failure as a permission denial
 test('configuration proof counts actual role-mask cells and never credits a backend guard failure as a permission denial', () => {
   const variant = [...scopeHierarchyVariantCases()].find(
     (variant) => variant.family === 'alternative-grants' && variant.parameters.grants === 3,

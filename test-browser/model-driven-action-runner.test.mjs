@@ -1,4 +1,4 @@
-// @test-kind unproven: held or unreviewed platform-sensitive behavior has no native proof in this review.
+// @test-kind unproven: the checks in this file exercise model driven action runner with local fixtures; no native capture establishes the behaviour they assert.
 import { ownedFixture, drainFixture } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';

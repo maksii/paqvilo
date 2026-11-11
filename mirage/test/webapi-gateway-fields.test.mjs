@@ -1,4 +1,4 @@
-// @test-kind security: Unknown-schema error formatting uses static complete metadata and preserves every known or sensitive field guard without row access.
+// @test-kind security: Unknown-schema error formatting uses static complete metadata and preserves every known or sensitive field check without row access.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { rejectedGatewayProperty } from '../lib/webapi-gateway-fields.mjs';

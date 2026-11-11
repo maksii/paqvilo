@@ -1,4 +1,4 @@
-// @test-kind unproven: local review has not established every held or unreviewed platform-sensitive behavior.
+// @test-kind unproven: the checks in this file exercise mirage stop scope standalone with local fixtures; no native capture establishes the behaviour they assert.
 // Standalone runtimes: stop and init hints keep their ownership directory and runtime from another
 // cwd, a failed hint stops what it started, and shared hint payloads outlive unverified targets.
 import test from 'node:test';

@@ -1,0 +1,189 @@
+{
+  "sql-server-civil-date-facts-v1#sql-function-civil-95": "Mirage raises SQL error 207 (\"Invalid column name 'weekday'.\"), and the recording returns a result whose first value is {\"kind\":\"System.Int32\",\"exact\":\"2\"}.",
+  "sql-server-civil-date-facts-v1#sql-function-civil-96": "Mirage raises SQL error 207 (\"Invalid column name 'dayofyear'.\"), and the recording returns a result whose first value is {\"kind\":\"System.Int32\",\"exact\":\"292\"}.",
+  "sql-server-civil-date-facts-v1#sql-function-civil-97": "Mirage raises SQL error 207 (\"Invalid column name 'week'.\"), and the recording returns a result whose first value is {\"kind\":\"System.Int32\",\"exact\":\"1\"}.",
+  "sql-server-civil-date-facts-v1#sql-function-civil-98": "Mirage raises SQL error 207 (\"Invalid column name 'week'.\"), and the recording returns a result whose first value is {\"kind\":\"System.Int32\",\"exact\":\"2\"}.",
+  "sql-server-civil-date-facts-v1#sql-function-civil-99": "Mirage raises SQL error 207 (\"Invalid column name 'month'.\"), and the recording returns a result whose first value is {\"kind\":\"string\",\"value\":\"October\"}.",
+  "sql-server-civil-date-facts-v1#sql-function-civil-100": "Mirage raises SQL error 207 (\"Invalid column name 'weekday'.\"), and the recording returns a result whose first value is {\"kind\":\"string\",\"value\":\"Monday\"}.",
+  "sql-server-civil-date-facts-v1#sql-function-civil-101": "Mirage raises SQL error 207 (\"Invalid column name 'quarter'.\"), and the recording returns a result whose first value is {\"kind\":\"string\",\"value\":\"4\"}.",
+  "sql-server-date-string-facts-v1#sql-function-date-string-83": "Mirage raises SQL error 207 (\"Invalid column name 'day'.\"), and the recording returns a result whose first value is {\"kind\":\"System.Int32\",\"exact\":\"-2\"}.",
+  "sql-server-date-string-facts-v1#sql-function-date-string-84": "Mirage raises SQL error 207 (\"Invalid column name 'day'.\"), and the recording returns a result whose first value is {\"kind\":\"System.Int32\",\"exact\":\"1\"}.",
+  "sql-server-date-string-facts-v1#sql-function-date-string-85": "Mirage raises SQL error 207 (\"Invalid column name 'year'.\"), and the recording returns a result whose first value is {\"kind\":\"System.Int32\",\"exact\":\"1\"}.",
+  "sql-server-date-string-facts-v1#sql-function-date-string-86": "Mirage raises SQL error 207 (\"Invalid column name 'month'.\"), and the recording returns a result whose first value is {\"kind\":\"System.Int32\",\"exact\":\"1\"}.",
+  "sql-server-date-string-facts-v1#sql-function-date-string-87": "Mirage raises SQL error 207 (\"Invalid column name 'week'.\"), and the recording returns a result whose first value is {\"kind\":\"System.Int32\",\"exact\":\"1\"}.",
+  "sql-server-date-string-facts-v1#sql-function-date-string-88": "Mirage raises SQL error 207 (\"Invalid column name 'hour'.\"), and the recording returns a result whose first value is {\"kind\":\"System.Int32\",\"exact\":\"1\"}.",
+  "sql-server-date-string-facts-v1#sql-function-date-string-89": "Mirage raises SQL error 207 (\"Invalid column name 'second'.\"), and the recording returns a result whose first value is {\"kind\":\"System.Int32\",\"exact\":\"90\"}.",
+  "sql-server-decimal-facts-v1#sql-function-decimal-114": {
+    "/resultSets/0/columns/0/scale": "Mirage reports 2 for scale of column 0 'value' (decimal), and the recording reports 0.",
+    "/resultSets/0/rows/0/0/exact": "Mirage reports \"2.00\" for exact of the value at row 0, column 0, and the recording reports \"2\"."
+  },
+  "sql-server-decimal-facts-v1#sql-function-decimal-115": {
+    "/resultSets/0/columns/0/scale": "Mirage reports 2 for scale of column 0 'value' (decimal), and the recording reports 0.",
+    "/resultSets/0/rows/0/0/exact": "Mirage reports \"-2.00\" for exact of the value at row 0, column 0, and the recording reports \"-2\"."
+  },
+  "sql-server-evaluator-corrected-facts-v1#sql-eval-corrected-19": {
+    "/errors/0/severity": "Mirage has no severity of error 102, and the recording reports 15.",
+    "/errors/0/state": "Mirage has no state of error 102, and the recording reports 1."
+  },
+  "sql-server-evaluator-corrected-facts-v1#sql-eval-corrected-20": {
+    "/errors/0/severity": "Mirage has no severity of error 102, and the recording reports 15.",
+    "/errors/0/state": "Mirage has no state of error 102, and the recording reports 1."
+  },
+  "sql-server-evaluator-corrected-facts-v1#sql-eval-corrected-21": {
+    "/errors/0/severity": "Mirage has no severity of error 156, and the recording reports 15.",
+    "/errors/0/state": "Mirage has no state of error 156, and the recording reports 1."
+  },
+  "sql-server-evaluator-corrected-facts-v1#sql-eval-corrected-22": {
+    "/errors/0/severity": "Mirage has no severity of error 156, and the recording reports 15.",
+    "/errors/0/state": "Mirage has no state of error 156, and the recording reports 1."
+  },
+  "sql-server-evaluator-corrected-facts-v1#sql-eval-corrected-41": {
+    "/errors/0/severity": "Mirage has no severity of error 102, and the recording reports 15.",
+    "/errors/0/state": "Mirage has no state of error 102, and the recording reports 1."
+  },
+  "sql-server-evaluator-corrections-v1#sql-eval-correction-semanticcases-19": {
+    "/errors/0/severity": "Mirage has no severity of error 102, and the recording reports 15.",
+    "/errors/0/state": "Mirage has no state of error 102, and the recording reports 1."
+  },
+  "sql-server-evaluator-corrections-v1#sql-eval-correction-semanticcases-20": {
+    "/errors/0/severity": "Mirage has no severity of error 102, and the recording reports 15.",
+    "/errors/0/state": "Mirage has no state of error 102, and the recording reports 1."
+  },
+  "sql-server-evaluator-corrections-v1#sql-eval-correction-semanticcases-21": {
+    "/errors/0/severity": "Mirage has no severity of error 156, and the recording reports 15.",
+    "/errors/0/state": "Mirage has no state of error 156, and the recording reports 1."
+  },
+  "sql-server-evaluator-corrections-v1#sql-eval-correction-semanticcases-22": {
+    "/errors/0/severity": "Mirage has no severity of error 156, and the recording reports 15.",
+    "/errors/0/state": "Mirage has no state of error 156, and the recording reports 1."
+  },
+  "sql-server-evaluator-corrections-v1#sql-eval-correction-semanticcases-41": {
+    "/errors/0/severity": "Mirage has no severity of error 102, and the recording reports 15.",
+    "/errors/0/state": "Mirage has no state of error 102, and the recording reports 1."
+  },
+  "sql-server-evaluator-extra-facts-v1#sql-eval-extra-cases-28": {
+    "/resultSets/0/columns/1/sqlType": "Mirage reports \"nvarchar\" for sqlType of column 1 's' (varchar), and the recording reports \"varchar\"."
+  },
+  "sql-server-evaluator-extra-facts-v1#sql-eval-extra-cases-30": {
+    "/errors/0/line": "Mirage has no line of error 8134, and the recording reports 1."
+  },
+  "sql-server-evaluator-extra-facts-v1#sql-eval-extra-cases-47": {
+    "/errors/0/line": "Mirage has no line of error 205, and the recording reports 1."
+  },
+  "sql-server-evaluator-extra-facts-v1#sql-eval-extra-orderedcases-15": {
+    "/resultSets/0/columns/0/sqlType": "Mirage reports \"nvarchar\" for sqlType of column 0 's' (varchar), and the recording reports \"varchar\"."
+  },
+  "sql-server-evaluator-facts-v1#sql-eval-semantic-10": {
+    "/errors/0/state": "Mirage reports 1 for state of error 8115, and the recording reports 2.",
+    "/errors/0/line": "Mirage has no line of error 8115, and the recording reports 1."
+  },
+  "sql-server-evaluator-facts-v1#sql-eval-semantic-13": {
+    "/errors/0/state": "Mirage reports 1 for state of error 8115, and the recording reports 2.",
+    "/errors/0/line": "Mirage has no line of error 8115, and the recording reports 1.",
+    "/errors/0/message": "Mirage reports \"Arithmetic overflow error converting numeric to data type numeric.\" for message of error 8115, and the recording reports \"Arithmetic overflow error converting expression to data type numeric.\"."
+  },
+  "sql-server-evaluator-facts-v1#sql-eval-semantic-14": {
+    "/errors/0/line": "Mirage has no line of error 8134, and the recording reports 1."
+  },
+  "sql-server-evaluator-facts-v1#sql-eval-semantic-16": {
+    "/errors/0/severity": "Mirage has no severity of error 245, and the recording reports 16.",
+    "/errors/0/state": "Mirage has no state of error 245, and the recording reports 1.",
+    "/errors/0/line": "Mirage has no line of error 245, and the recording reports 1.",
+    "/errors/0/message": "Mirage reports \"Conversion failed when converting the nvarchar value 'x' to data type int.\" for message of error 245, and the recording reports \"Conversion failed when converting the varchar value 'x' to data type int.\"."
+  },
+  "sql-server-evaluator-facts-v1#sql-eval-semantic-17": {
+    "/errors/0/severity": "Mirage has no severity of error 245, and the recording reports 16.",
+    "/errors/0/state": "Mirage has no state of error 245, and the recording reports 1.",
+    "/errors/0/line": "Mirage has no line of error 245, and the recording reports 1.",
+    "/errors/0/message": "Mirage reports \"Conversion failed when converting the nvarchar value '2.5' to data type int.\" for message of error 245, and the recording reports \"Conversion failed when converting the varchar value '2.5' to data type int.\"."
+  },
+  "sql-server-evaluator-facts-v1#sql-eval-semantic-18": {
+    "/resultSets/0/columns/0/precision": "Mirage reports 2 for precision of column 0 'd' (decimal), and the recording reports 5."
+  },
+  "sql-server-evaluator-facts-v1#sql-eval-semantic-30": {
+    "/errors/0/severity": "Mirage has no severity of error 4145, and the recording reports 15.",
+    "/errors/0/state": "Mirage has no state of error 4145, and the recording reports 1."
+  },
+  "sql-server-evaluator-facts-v1#sql-eval-semantic-31": {
+    "/errors/0/severity": "Mirage has no severity of error 4145, and the recording reports 15.",
+    "/errors/0/state": "Mirage has no state of error 4145, and the recording reports 1."
+  },
+  "sql-server-evaluator-new7-facts-v1#sql-eval-new7-26": {
+    "/errors/0/severity": "Mirage has no severity of error 8115, and the recording reports 16.",
+    "/errors/0/state": "Mirage has no state of error 8115, and the recording reports 2.",
+    "/errors/0/line": "Mirage has no line of error 8115, and the recording reports 1."
+  },
+  "sql-server-format-null-facts-v1#sql-function-format-null-3": {
+    "/resultSets/0/columns/0/sqlType": "Mirage reports \"decimal\" for sqlType of column 0 'value' (float), and the recording reports \"float\".",
+    "/resultSets/0/columns/0/precision": "Mirage reports 2 for precision of column 0 'value' (float), and the recording has none.",
+    "/resultSets/0/columns/0/scale": "Mirage reports 1 for scale of column 0 'value' (float), and the recording has none."
+  },
+  "sql-server-function-facts#patindex-case-ci": "Mirage raises SQL error 102 (\"Incorrect syntax near 'COLLATE'.\"), and the recording returns a result whose first value is {\"kind\":\"System.Int32\",\"exact\":\"2\"}.",
+  "sql-server-function-facts#patindex-case-cs": "Mirage raises SQL error 102 (\"Incorrect syntax near 'COLLATE'.\"), and the recording returns a result whose first value is {\"kind\":\"System.Int32\",\"exact\":\"0\"}.",
+  "sql-server-next-primitives-v1#sql-function-next-36": "Mirage raises SQL error 102 (\"Incorrect syntax near 'COLLATE'.\"), and the recording returns a result whose first value is {\"kind\":\"System.Int32\",\"exact\":\"0\"}.",
+  "sql-server-next-primitives-v1#sql-function-next-41": "Mirage raises SQL error 102 (\"Incorrect syntax near 'COLLATE'.\"), and the recording returns a result whose first value is {\"kind\":\"string\",\"value\":\"abcabc\"}.",
+  "sql-server-next-primitives-v1#sql-function-next-48": "Mirage raises SQL error 102 (\"Incorrect syntax near 'FROM'.\"), and the recording returns a result whose first value is {\"kind\":\"string\",\"value\":\"a\"}.",
+  "sql-server-original-reviewed-v1#sql-function-1": {
+    "/resultSets/0/columns/0/sqlType": "Mirage reports \"nvarchar\" for sqlType of column 0 'value' (varchar), and the recording reports \"varchar\"."
+  },
+  "sql-server-original-reviewed-v1#sql-function-52": {
+    "/resultSets/0/columns/0/sqlType": "Mirage reports \"nvarchar\" for sqlType of column 0 'value' (varchar), and the recording reports \"varchar\"."
+  },
+  "sql-server-original-reviewed-v1#sql-function-53": {
+    "/resultSets/0/columns/0/sqlType": "Mirage reports \"nvarchar\" for sqlType of column 0 'value' (varchar), and the recording reports \"varchar\"."
+  },
+  "sql-server-original-reviewed-v1#sql-function-56": {
+    "/resultSets/0/columns/0/sqlType": "Mirage reports \"nvarchar\" for sqlType of column 0 'value' (varchar), and the recording reports \"varchar\"."
+  },
+  "sql-server-original-reviewed-v1#sql-function-63": {
+    "/resultSets/0/columns/0/sqlType": "Mirage reports \"nvarchar\" for sqlType of column 0 'value' (char), and the recording reports \"char\"."
+  },
+  "sql-server-original-reviewed-v1#sql-function-64": {
+    "/resultSets/0/columns/0/sqlType": "Mirage reports \"nvarchar\" for sqlType of column 0 'value' (char), and the recording reports \"char\"."
+  },
+  "sql-server-original-reviewed-v1#sql-function-66": {
+    "/resultSets/0/columns/0/sqlType": "Mirage reports \"nvarchar\" for sqlType of column 0 'value' (nchar), and the recording reports \"nchar\"."
+  },
+  "sql-server-original-reviewed-v1#sql-function-67": {
+    "/resultSets/0/columns/0/sqlType": "Mirage reports \"nvarchar\" for sqlType of column 0 'value' (nchar), and the recording reports \"nchar\"."
+  },
+  "sql-server-original-reviewed-v1#sql-function-134": {
+    "/resultSets/0/columns/0/sqlType": "Mirage reports \"float\" for sqlType of column 0 'value' (int), and the recording reports \"int\".",
+    "/resultSets/0/rows/0/0/kind": "Mirage reports \"float64\" for kind of the value at row 0, column 0, and the recording reports \"System.Int32\".",
+    "/resultSets/0/rows/0/0/exact": "Mirage has no exact of the value at row 0, column 0, and the recording reports \"1024\".",
+    "/resultSets/0/rows/0/0/roundtrip": "Mirage reports \"1024\" for roundtrip of the value at row 0, column 0, and the recording has none."
+  },
+  "sql-server-remediation81-133-v1#sql-function-remediation-133": {
+    "/resultSets/0/columns/0/precision": "Mirage reports 1 for precision of column 0 'value' (decimal), and the recording reports 2."
+  },
+  "sql-server-remediation82-v1#sql-function-remediation-82": {
+    "/errors/0/severity": "Mirage has no severity of error 9818, and the recording reports 16.",
+    "/errors/0/state": "Mirage has no state of error 9818, and the recording reports 1.",
+    "/errors/0/line": "Mirage has no line of error 9818, and the recording reports 1."
+  },
+  "tds-root-sql-server-expressions-v1#expr-613-19": {
+    "/errors/0/severity": "Mirage has no severity of error 102, and the recording reports 15.",
+    "/errors/0/state": "Mirage has no state of error 102, and the recording reports 1."
+  },
+  "tds-root-sql-server-expressions-v1#expr-613-20": {
+    "/errors/0/severity": "Mirage has no severity of error 102, and the recording reports 15.",
+    "/errors/0/state": "Mirage has no state of error 102, and the recording reports 1."
+  },
+  "tds-root-sql-server-expressions-v1#expr-613-21": {
+    "/errors/0/severity": "Mirage has no severity of error 156, and the recording reports 15.",
+    "/errors/0/state": "Mirage has no state of error 156, and the recording reports 1."
+  },
+  "tds-root-sql-server-expressions-v1#expr-613-22": {
+    "/errors/0/severity": "Mirage has no severity of error 156, and the recording reports 15.",
+    "/errors/0/state": "Mirage has no state of error 156, and the recording reports 1."
+  },
+  "tds-root-sql-server-expressions-v1#expr-613-41": {
+    "/errors/0/severity": "Mirage has no severity of error 102, and the recording reports 15.",
+    "/errors/0/state": "Mirage has no state of error 102, and the recording reports 1."
+  },
+  "tds-root-sql-server-literal-controls-v1#explicit-bigint-overflow": {
+    "/errors/0/state": "Mirage reports 1 for state of error 8115, and the recording reports 2.",
+    "/errors/0/line": "Mirage has no line of error 8115, and the recording reports 1."
+  },
+  "tds-root-sql-server-literal-controls-v1#literal-type-2147483648": "Mirage raises SQL error 195 (\"'SQL_VARIANT_PROPERTY' is not supported in Dataverse SQL.\"), and the recording returns a result whose first value is {\"kind\":\"string\",\"value\":\"numeric\"}."
+}

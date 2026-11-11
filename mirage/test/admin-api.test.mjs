@@ -244,7 +244,7 @@ test('status is cheap, carries CSRF, revision, diagnostics, presets and the effe
   assert.equal((await call('/_sim/api/status')).status, 200, 'the short admin alias serves the same API');
 });
 
-// @test-kind contract+unproven: administration is local; the portal access or request behavior is not native-qualified
+// @test-kind contract+unproven: administration routes are local; portal access and request behaviour have no native capture.
 test('page inspection explains access rules, publishing state, permissions, values, chain and related metadata', async (t) => {
   const { call, signIn } = await setup(t);
   let report = (await call('/__sim/api/page-resources?path=/secure/')).json;
@@ -401,7 +401,7 @@ test('scenarios combine preset, persona and permissions in one state change and 
   );
 });
 
-// @test-kind contract+unproven: administration is local; the portal access or request behavior is not native-qualified
+// @test-kind contract+unproven: administration routes are local; portal access and request behaviour have no native capture.
 test('page access rules can be overridden, added and reset locally and change page access', async (t) => {
   const { app, call, signIn } = await setup(t);
   const member = { cookie: await signIn('alex') };
@@ -576,7 +576,7 @@ test('state exports and imports round-trip, rejecting invalid imports without ch
   );
 });
 
-// @test-kind contract+unproven: administration is local; the portal access or request behavior is not native-qualified
+// @test-kind contract+unproven: administration routes are local; portal access and request behaviour have no native capture.
 test('the log channel streams requests, Liquid reads, plugin evaluations and diagnostics only to subscribers', async (t) => {
   const { app, call } = await setup(t);
   const controller = new AbortController();
@@ -752,7 +752,7 @@ test('page inspection summaries carry counts, the access verdict and table names
   assert.ok(JSON.stringify(summary).length < JSON.stringify(full).length / 2);
 });
 
-// @test-kind contract+unproven: administration is local; the portal access or request behavior is not native-qualified
+// @test-kind contract+unproven: administration routes are local; portal access and request behaviour have no native capture.
 test('page inspection answers with the identity a portal request with the same cookies and headers gets', async (t) => {
   const { app, call, signIn } = await setup(t);
   // The configured persona is a member: whether it applies to cookie-less clients is the

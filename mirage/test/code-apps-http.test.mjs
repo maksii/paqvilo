@@ -129,8 +129,7 @@ test('context returns the documented IContext shape from the staff session', asy
     tenantId: TENANT,
     userPrincipalName: row.domainname,
   });
-  // @test-kind parity: the original host.sessionId GUID-shape assertion is reproduced by two published native Code Apps context captures; other parent assertions stay unproven.
-  // @parity-evidence: reuse the checksum-bound native13-row fixture and exact serialized probe; both native raw captures agree on host.sessionId.guid=true.
+  // @test-kind observation: two published native Code Apps context captures in fixtures/code-apps-context-native.json (raw sha256 2d70c507...) agree on host.sessionId.guid=true; the local host is typed in this test rather than recorded, so it is not a replay case.
   await t.test('existing context session ID has the reproduced native GUID shape', () => {
     const bytes = fs.readFileSync(new URL('./fixtures/code-apps-context-native.json', import.meta.url));
     const hash = (value) => createHash('sha256').update(value).digest('hex');

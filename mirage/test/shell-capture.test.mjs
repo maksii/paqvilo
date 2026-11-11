@@ -20,7 +20,7 @@ const htmlResponse = (html) => ({
 });
 const page = (head, body = '') => `<!doctype html><html><head>${head}</head><body>${body}</body></html>`;
 
-// @test-kind contract+unproven: capture policy is local; native shell resource behavior is not native-qualified
+// @test-kind contract+unproven: capture policy is local; the shell resource behaviour it records has no native capture.
 test('Bootstrap 5 postpreform bundles are retained as native runtime resources', async (t) => {
   const directory = await makeTemporaryDirectory(join(tmpdir(), 'pp-shell-v5-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -177,7 +177,7 @@ test('UTF-16 PAC stylesheet attachments capture their browser font dependencies'
   }
 });
 
-// @test-kind contract+unproven: capture policy is local; native shell resource behavior is not native-qualified
+// @test-kind contract+unproven: capture policy is local; the shell resource behaviour it records has no native capture.
 test('managed Moment dependency keeps its native phase before page content', async () => {
   const directory = await makeTemporaryDirectory(join(tmpdir(), 'pp-shell-moment-'));
   try {
@@ -769,7 +769,7 @@ test('password markup in source scripts or hidden portal controls does not mark 
   }
 });
 
-// @test-kind contract+unproven: capture policy is local; native shell resource behavior is not native-qualified
+// @test-kind contract+unproven: capture policy is local; the shell resource behaviour it records has no native capture.
 test('known platform ResourceManager label dictionaries are captured as JavaScript without a jQuery assumption', async () => {
   const directory = await makeTemporaryDirectory(join(tmpdir(), 'pp-shell-'));
   try {
@@ -924,7 +924,7 @@ test('metadata-only exported scripts are captured and CSS dependency failures re
   }
 });
 
-// @test-kind contract+unproven: capture policy is local; native shell resource behavior is not native-qualified
+// @test-kind contract+unproven: capture policy is local; the shell resource behaviour it records has no native capture.
 test('shell capture binds observed footer sizing and notification presentation without native item content', async () => {
   const directory = await makeTemporaryDirectory(join(tmpdir(), 'pp-shell-static-widgets-'));
   try {
@@ -970,7 +970,7 @@ test('shell capture binds observed footer sizing and notification presentation w
   }
 });
 
-// @test-kind contract+unproven: capture policy is local; native shell resource behavior is not native-qualified
+// @test-kind contract+unproven: capture policy is local; the shell resource behaviour it records has no native capture.
 for (const variant of ['', '.BootstrapV5'])
   test(`captured preform${variant} supplies jQuery without a standalone script`, async (t) => {
     const directory = await makeTemporaryDirectory(join(tmpdir(), 'pp-shell-preform-'));

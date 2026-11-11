@@ -184,7 +184,13 @@ export const FILTER_SIGNATURES = Object.freeze({
 });
 export function createFilterSignatures(host = {}) {
   return host.filterRegistration === 'observed'
-    ? { ...FILTER_SIGNATURES, currency: ['@context, value, record, attribute, format?'] }
+    ? {
+        ...FILTER_SIGNATURES,
+        currency: ['@context, value, record, attribute, format?'],
+        // Recorded natively (power-pages-recorded-20261111 wrong-arg-count-slice; followup slice-no-argument):
+        // the missing parameter of slice is reported as 'start'.
+        slice: ['@context, input, start, length?'],
+      }
     : FILTER_SIGNATURES;
 }
 // ---- Strainer parameter conversion
@@ -479,10 +485,57 @@ const portOf = (url) => {
 };
 
 // ---- Text helpers
+/**
+ * Simple (single-character) uppercase mappings of UnicodeData.txt for the code points whose full uppercase form is
+ * longer than one character and which have one: U+1F80..U+1F87, U+1F90..U+1F97 and U+1FA0..U+1FA7 map to +8, and
+ * U+1FB3, U+1FC3, U+1FF3 map to U+1FBC, U+1FCC, U+1FFC. The other such characters (ß, ŉ, ǰ, ΐ, ΰ, և, ᾲ, ...) have no
+ * simple uppercase mapping. Recorded natively: upcase-iota-1f80, upcase-iota-1f97, upcase-iota-1fc3,
+ * upcase-iota-1ff3 (power-pages-recorded-20261111-casemap), upcase-ypogegrammeni-alpha (followup, 'ᾳ' gives 'ᾼ').
+ */
+const SIMPLE_UPPER_MULTI = Object.freeze(
+  new Map([
+    ...[0x1f80, 0x1f90, 0x1fa0].flatMap((start) =>
+      Array.from({ length: 8 }, (_, offset) => [start + offset, start + offset + 8]),
+    ),
+    [0x1fb3, 0x1fbc],
+    [0x1fc3, 0x1fcc],
+    [0x1ff3, 0x1ffc],
+  ]),
+);
+/**
+ * Power Pages (observed runtime) uppercase mapping, one code point at a time, as .NET invariant casing does: the
+ * full uppercase form when it is one character, else the simple mapping, else the character unchanged.
+ * Recorded natively: upcase-sharp-s and upcase-ligature-fi keep the characters whose uppercase form is more than
+ * one character (power-pages-recorded-20261111 upcase-sharp-s; followup upcase-ligature-fi, capitalize-sharp-s);
+ * upcase-no-simple-1fb2, upcase-no-simple-0149 and upcase-no-simple-0390 (casemap) keep the characters without one.
+ */
+function nativeUpper(text) {
+  return [...text]
+    .map((character) => {
+      const upper = character.toUpperCase();
+      if ([...upper].length === 1) return upper;
+      const simple = SIMPLE_UPPER_MULTI.get(character.codePointAt(0));
+      return simple === undefined ? character : String.fromCodePoint(simple);
+    })
+    .join('');
+}
+/**
+ * Lowercase per code point without the final-sigma context rule. Recorded natively: downcase-greek-capital-sigma
+ * ('ΟΔΟΣ' gives 'οδοσ'); downcase-dotted-capital-i ('İ' gives 'i'): the first character of the full lowercase
+ * form is the simple mapping, the only unconditional multi-character lowercase mapping being U+0130.
+ */
+function nativeLower(text) {
+  return [...text].map((character) => [...character.toLowerCase()][0]).join('');
+}
 /** TextInfo.ToTitleCase (en-US): words in all capitals are kept. */
-function toTitleCase(input) {
+function toTitleCase(input, native = false) {
   return input.replace(/[\p{L}\p{Mn}\p{Nd}']+/gu, (word) => {
     if (word === word.toUpperCase() && /\p{L}/u.test(word)) return word;
+    if (native) {
+      // Recorded natively: capitalize-two-words ('hello big world' gives 'Hello Big World'), capitalize-ascii.
+      const [head] = [...word];
+      return nativeUpper(head) + nativeLower(word.slice(head.length));
+    }
     return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
   });
 }
@@ -803,11 +856,13 @@ export function createFilters(host = {}) {
     },
     downcase: (input) => {
       const s = asString(input);
-      return s == null ? s : s.toLowerCase();
+      if (s == null) return s;
+      return host.runtimeCompatibility === 'observed' ? nativeLower(s) : s.toLowerCase();
     },
     upcase: (input) => {
       const s = asString(input);
-      return s == null ? s : s.toUpperCase();
+      if (s == null) return s;
+      return host.runtimeCompatibility === 'observed' ? nativeUpper(s) : s.toUpperCase();
     },
     url_encode: (input) => {
       const s = asString(input);
@@ -819,7 +874,7 @@ export function createFilters(host = {}) {
     },
     capitalize: (input) => {
       const s = asString(input);
-      return isNullOrWhiteSpace(s) ? s : toTitleCase(s);
+      return isNullOrWhiteSpace(s) ? s : toTitleCase(s, host.runtimeCompatibility === 'observed');
     },
     escape: (input) => {
       const s = asString(input);
@@ -1070,6 +1125,11 @@ export function createFilters(host = {}) {
     },
     reverse(input) {
       if (input == null || typeof input === 'string') return input;
+      // Recorded natively (observed runtime): an array comes back in its original order, so the reverse filter
+      // does nothing; only the for-loop `reversed` parameter reverses. Evidence: power-pages-recorded-20261111
+      // reverse-split; recorded-20261111-followup reverse-split-first, reverse-split-last, reverse-sort-join,
+      // reverse-twice-join, for-split-reversed (reversed loop, 'cba') and for-range-reversed (321).
+      if (host.runtimeCompatibility === 'observed' && Array.isArray(input)) return input;
       const list = asEnumerable(input);
       return [...list].reverse();
     },

@@ -1,4 +1,4 @@
-// @test-kind unproven: local CLR context and output model; no native capture cited, and the evidence files record nativeQualified false
+// @test-kind unproven: local CLR context and output model; no native capture is cited, and the evidence files record nativeQualified false.
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';

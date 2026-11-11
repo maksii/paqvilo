@@ -506,18 +506,13 @@ test('no-check hook needs no npm or dependencies and still removes its snapshot'
   assertCleaned();
 });
 
-test('staged test-kind checks load their real local helper without installed dependencies', (t) => {
+test('staged test-kind checks run without installed dependencies', (t) => {
   const { root, git, write, run, assertCleaned } = hookFixture(t, {
     classifier: 'export const preCommitScripts = () => [];',
   });
   const file = 'test/invented.test.mjs';
   const body = "import test from 'node:test';\ntest('invented', () => {});\n";
   assert.equal(fs.existsSync(path.join(root, 'node_modules')), false);
-  for (const helper of ['parity-query-universe.mjs', 'parity-shared-descriptor.mjs', 'parity-shared-partial.mjs'])
-    assert.deepEqual(
-      fs.readFileSync(path.join(root, 'scripts', helper)),
-      fs.readFileSync(new URL(`../scripts/${helper}`, import.meta.url)),
-    );
   write(file, body);
   git('add', file);
   const untagged = run();
@@ -531,23 +526,6 @@ test('staged test-kind checks load their real local helper without installed dep
   assert.equal(valid.status, 0, valid.stderr);
   assert.match(valid.stdout, /no applicable checks/);
   assert.equal(fs.existsSync(path.join(root, 'node_modules')), false);
-  assertCleaned();
-});
-
-test('a staged generated guard fails closed when its parser is unavailable', (t) => {
-  const { root, git, write, run, assertCleaned } = hookFixture(t, {
-    classifier: 'export const preCommitScripts = () => [];',
-  });
-  const file = 'test/invented.test.mjs';
-  write(
-    file,
-    "// @test-kind tooling: invented isolated hook fixture.\nimport test from 'node:test';\ntest('invented', () => { __paqQueryBindings(); });\n",
-  );
-  git('add', file);
-  const result = run();
-  assert.equal(fs.existsSync(path.join(root, 'node_modules')), false);
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /invalid generated query case guard/);
   assertCleaned();
 });
 

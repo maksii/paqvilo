@@ -1,5 +1,4 @@
-// @test-kind parity: Two independent SQL Server 2022 engine captures of SELECT predicates and scalar controls; engine only, not Dataverse TDS transport.
-// @parity-evidence: fixtures/dataverse-sql-server-select-predicate-facts.json SHA-256 cd04ab0142d877550eec7949ac4b2d2b2e78b416f313bc333d0d2a256957c48d.
+// @test-kind observation: fixtures/dataverse-sql-server-select-predicate-facts.json (SHA-256 cd04ab0142d877550eec7949ac4b2d2b2e78b416f313bc333d0d2a256957c48d) commits one SQL Server 2022 result set and one file hash, no second run identity, so it is not a replay case; engine only, not Dataverse TDS transport.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';

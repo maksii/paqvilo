@@ -63,8 +63,7 @@ test('choice mutations use isolated control state while source options and sibli
   assert.throws(() => first.clearOptions(), /disposed/);
 });
 
-// @test-kind parity+contract: two native recordings prove the continuous choice API sequence; final internal Map accounting remains a Paqvilo contract.
-// @parity-evidence: fresh raw captures f72a0a4afdc50005c4ec6d123f03accfc86cc71498287c11a3da951a53beb251 and ec48948ae127e69a9f75fd639b4d4ad7c82d96d01fe1eccf32b4e2208e31a3ca; scope audit 4994194d1c104d36ce1379626201b39380f940e81c938f9dd241e5c758acf7ce. Only control options were initialized to One/Two; underlying attribute metadata One/Two=false. The final Map assertion is excluded from native proof; zero whole-original credit.
+// @test-kind observation+contract: pins the native continuous-sequence fixture and its credit fields; the 15 recorded steps themselves replay as mirage/test/parity/cases/model-driven-client/choice-continuous.json
 test('choice mutations reproduce the native continuous argument sequence', () => {
   const bytes = readFileSync(new URL('./fixtures/model-driven-choice-continuous-native-facts.json', import.meta.url));
   assert.equal(

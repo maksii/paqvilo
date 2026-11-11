@@ -35,8 +35,7 @@ test('the explicit metadata epoch is optional, numeric and separate from synthes
   assert.equal(service.etag(), '"271828"');
 });
 
-// @test-kind parity: Repeated native CSDL ETags quote the same numeric epoch returned by the global metadata version annotation.
-// @parity-evidence: dataverse-native-record-shapes.json binds both complete native HTTP service.metadata and query.annotations-all responses; the epoch value is an explicit invented input here.
+// @test-kind observation: native CSDL ETags and query.annotations-all epoch recorded in fixtures/dataverse-native-record-shapes.json (service.metadata and annotation responses as hashes only); the epoch is an explicit invented input typed here, so it is not a replay case.
 test('HTTP CSDL and record annotations share an explicitly configured source epoch', async (t) => {
   const bytes = await readFile(new URL('./fixtures/dataverse-native-record-shapes.json', import.meta.url));
   assert.equal(
@@ -99,8 +98,8 @@ test('HTTP CSDL and record annotations share an explicitly configured source epo
   const body = await response.json();
   assert.equal(body['@Microsoft.Dynamics.CRM.globalmetadataversion'], '314159');
   assert.equal(metadata.headers.get('etag'), '"' + body['@Microsoft.Dynamics.CRM.globalmetadataversion'] + '"');
-  // @test-kind contract: Local metadata edits invalidate the captured epoch, while row edits retain it; the matching conditional status uses the freshly qualified native behavior.
-  // @parity-evidence: dataverse-native-metadata-conditionals.json proves matching current CSDL ETags return304 in two fresh native cohorts, correcting the former local-only200 assumption.
+  // @test-kind contract: Local metadata edits invalidate the captured epoch, while row edits retain it; the matching conditional status is the native behaviour recorded in dataverse-native-metadata-conditionals.json.
+  // Evidence: dataverse-native-metadata-conditionals.json records matching current CSDL ETags return304 in two fresh native cohorts, correcting the former local-only200 assumption.
   await t.test('local metadata changes invalidate the shared source epoch', async () => {
     await store.transact(() => {
       store.state.tables.sample[0].name = 'Row edit';

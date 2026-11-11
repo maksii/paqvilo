@@ -1,34 +1,30 @@
-import { sharedParityDescriptor, SHARED } from './parity-shared-descriptor.mjs';
-import { sharedPartialDescriptors } from './parity-shared-partial.mjs';
-import { SQL_EXTRA_EVALUATOR_CASES } from './parity-sql-main-witness.mjs';
-// Enforces docs/test-kinds.md on test files a change adds or modifies.
-//   node scripts/check-test-tags.mjs --staged          pre-commit: the index against HEAD
-//   node scripts/check-test-tags.mjs --base <rev>      a branch against <rev> (merge base)
-//   node scripts/check-test-tags.mjs --event           CI: the GitHub pull_request/push event range
-//   node scripts/check-test-tags.mjs --report          counts per kind over every test file (no failure)
-//   node scripts/check-test-tags.mjs <file...>         tag syntax of the named files only
-// A changed test file needs a valid kind for every test. Removing or rewriting a line inside a `parity` region
-// also needs a `// @parity-evidence: <proof>` line added by the same change. Files listed in scripts/test-kinds-legacy.json
-// predate the rule: they are skipped while they carry no @test-kind line at all, and checked in full once one is added.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { createRequire } from 'node:module';
-import { queryUniverse } from './parity-query-universe.mjs';
-// Ordinary tag checks and no-op hooks run before dependencies are installed.
-// Guarded source still requires the parser and fails closed if it is absent.
-let parser;
-function parse(...args) {
-  parser ??= createRequire(import.meta.url)('espree').parse;
-  return parser(...args);
-}
-
+import { isDeepStrictEqual } from 'node:util';
+import { validateParityCases } from '../mirage/testing/parity-cases.mjs';
+// Enforces docs/test-kinds.md on test files, parity case files and known-gap files a change adds or modifies.
+//   node scripts/check-test-tags.mjs --staged          pre-commit: the index against HEAD
+//   node scripts/check-test-tags.mjs --base <rev>      a branch against <rev> (merge base)
+//   node scripts/check-test-tags.mjs --event           CI: the GitHub pull_request/push event range
+//   node scripts/check-test-tags.mjs --report          counts per kind and replay cases over the repository (no failure)
+//   node scripts/check-test-tags.mjs <file...>         tag syntax of the named files only
+// A changed test file needs a valid kind for every test. Removing or rewriting a line inside a `parity` region
+// also needs a `// @parity-evidence: <proof>` line added by the same change, or a retirement entry in
+// scripts/parity-retirements.json. A new parity tag is valid only on a replay runner. Recorded parity cases change
+// only with a new history entry, and a recorded case cannot receive a new known gap. Files listed in
+// scripts/test-kinds-legacy.json predate the rule: they are skipped while they carry no @test-kind line at all, and
+// checked in full once one is added.
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const KINDS = new Set(['parity', 'observation', 'compatibility', 'unproven', 'contract', 'security', 'tooling']);
 const EVIDENCE_KINDS = new Set(['parity', 'observation']);
 const TEST_FILE = /\.test\.[cm]?js$/;
+const CASE_FILE = /(?:^|\/)parity\/cases\/(?<surface>[a-z0-9-]+)\/(?<suite>[a-z0-9-]+)\.json$/;
+const GAP_FILE = /(?:^|\/)parity\/known-gaps\/(?<surface>[a-z0-9-]+)\.json$/;
+const GAP_KEY = /^(?<suite>[a-z0-9-]+)#(?<caseId>.+)$/;
+const RETIREMENT_FILE = 'scripts/parity-retirements.json';
+const REPLAY_CALL = /\breplayParity(?:Cases|Directory)\s*\(/;
 const TAG = /^\s*\/\/\s*@test-kind\b(.*)$/;
 const TAG_BODY = /^\s+([a-z]+(?:\+[a-z]+)*)\s*:\s*(\S.*)$/;
 const TEST_DECLARATION = /^(?:test|it|describe|suite)(?:\.(?:only|skip|todo))?\s*\(/;
@@ -37,6 +33,10 @@ const LOOP_DECLARATION = /^(?:for\s*\(|\[.*\]\.forEach\()/;
 function isDeclaration(line) {
   const text = line.trimStart();
   return TEST_DECLARATION.test(text) || CONTEXT_DECLARATION.test(text) || LOOP_DECLARATION.test(text);
+}
+function isTestDeclaration(line) {
+  const text = line.trimStart();
+  return TEST_DECLARATION.test(text) || CONTEXT_DECLARATION.test(text);
 }
 function isTopLevelDeclaration(line) {
   return line === line.trimStart() && isDeclaration(line);
@@ -64,40 +64,6 @@ function hasAnyTag(text) {
   }
   return false;
 }
-function normalized(value) {
-  if (typeof value === 'bigint') return { $bigint: String(value) };
-  if (Array.isArray(value)) return value.map(normalized);
-  if (!value || typeof value !== 'object') return value;
-  return Object.fromEntries(
-    Object.entries(value)
-      .filter(([key]) => !['loc', 'range', 'start', 'end', 'raw'].includes(key))
-      .map(([key, item]) => [key, normalized(item)]),
-  );
-}
-const astHash = (node) =>
-  createHash('sha256')
-    .update(JSON.stringify(normalized(node)))
-    .digest('hex');
-
-// Marker names in fixture strings and comments are not executable guards.
-// A source that cannot be parsed remains conservative: any marker spelling in
-// it is treated as potentially executable and the guard parser fails closed.
-function markerSyntax(text) {
-  if (!text?.includes('__paq')) return { ast: null, identifiers: new Set() };
-  try {
-    const ast = parse(text, { ecmaVersion: 'latest', sourceType: 'module', loc: true });
-    const identifiers = new Set();
-    function visit(node) {
-      if (node.type === 'Identifier' && node.name.startsWith('__paq')) identifiers.add(node.name);
-      for (const value of Object.values(node))
-        for (const child of Array.isArray(value) ? value : [value]) if (child?.type) visit(child);
-    }
-    visit(ast);
-    return { ast, identifiers };
-  } catch {
-    return null;
-  }
-}
 
 function legacyFiles() {
   try {
@@ -122,582 +88,27 @@ function git(args, { allowFailure = false } = {}) {
   return result.stdout;
 }
 
-function property(object, name) {
-  if (object?.type !== 'ObjectExpression') return null;
-  return object.properties.find(
-    (item) => item.type === 'Property' && !item.computed && (item.key.name ?? item.key.value) === name,
-  )?.value;
-}
+const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 
-function appendAssertionRegions({ hasMarker, text, lines, regions }) {
-  if (hasMarker('__paqParityAssertions')) {
-    try {
-      const ast = parse(text, { ecmaVersion: 'latest', sourceType: 'module', loc: true });
-      const shared = sharedPartialDescriptors(ast, astHash);
-      if (shared)
-        regions.push({
-          start: shared.declaration.loc.start.line,
-          end: shared.declaration.loc.end.line,
-          kinds: ['parity'],
-          partial: true,
-        });
-      function visit(node) {
-        if (
-          node.type === 'BlockStatement' &&
-          node.body[0]?.type === 'ExpressionStatement' &&
-          node.body[0].expression?.type === 'CallExpression' &&
-          node.body[0].expression.callee.name === '__paqParityAssertions'
-        )
-          regions.push({ start: node.loc.start.line, end: node.loc.end.line, kinds: ['parity'], partial: true });
-        for (const value of Object.values(node)) {
-          if (Array.isArray(value)) value.filter((item) => item?.type).forEach(visit);
-          else if (value?.type) visit(value);
-        }
-      }
-      visit(ast);
-      for (const node of ast.body)
-        if (
-          (node.type === 'ImportDeclaration' &&
-            node.specifiers.some((item) => item.local.name === '__paqParityAssertions')) ||
-          (node.type === 'ExpressionStatement' &&
-            node.expression.type === 'CallExpression' &&
-            node.expression.callee.name === '__paqParityBindings')
-        )
-          regions.push({ start: node.loc.start.line, end: node.loc.end.line, kinds: ['parity'] });
-    } catch {
-      // A malformed protected source cannot be silently treated as unproven.
-      regions.push({ start: 1, end: lines.length, kinds: ['parity'] });
-    }
+function parseJson(text) {
+  try {
+    return { value: JSON.parse(text) };
+  } catch (error) {
+    return { error: error.message };
   }
 }
 
-function appendRetainedAssertions(node, descriptor, regions) {
-  const retained = property(property(descriptor, 'caseSelection'), 'retainedAssertionHashes');
-  if (!retained) return;
-  if (
-    retained.type !== 'ArrayExpression' ||
-    retained.elements.some(
-      (item) => item?.type !== 'Literal' || typeof item.value !== 'string' || !/^[a-f0-9]{64}$/u.test(item.value),
-    )
-  )
-    throw new Error('invalid retained assertions');
-  const hashes = retained.elements.map((item) => item.value),
-    found = [];
-  if (new Set(hashes).size !== hashes.length) throw new Error('duplicate retained assertion');
-  function retain(item) {
-    if (
-      item.type === 'ExpressionStatement' &&
-      item.expression?.type === 'CallExpression' &&
-      hashes.includes(astHash(item.expression))
-    )
-      found.push(item);
-    for (const value of Object.values(item)) {
-      if (Array.isArray(value)) value.filter((child) => child?.type).forEach(retain);
-      else if (value?.type) retain(value);
-    }
-  }
-  retain(node);
-  if (found.length !== hashes.length || new Set(found.map((item) => astHash(item.expression))).size !== hashes.length)
-    throw new Error('missing retained assertion');
-  for (const item of found)
-    regions.push({ start: item.loc.start.line, end: item.loc.end.line, kinds: ['parity'], partial: true });
-}
-
-function appendSqlEvaluatorHelperRegions(ast, descriptor, arrayName, regions) {
-  if (property(descriptor, 'sqlEvaluator')?.value !== true) return;
-  if (arrayName !== 'semanticCases') throw new Error('invalid SQL evaluator guard');
-  for (const name of ['run', 'plain', 'rowsOf', 'NOW', 'check', 'makeScan']) {
-    const matches = ast.body.filter(
-      (item) =>
-        (item.type === 'FunctionDeclaration' && item.id?.name === name) ||
-        (item.type === 'VariableDeclaration' && item.declarations.some((declaration) => declaration.id?.name === name)),
-    );
-    if (matches.length !== 1) throw new Error('invalid SQL evaluator helper');
-    regions.push({ start: matches[0].loc.start.line, end: matches[0].loc.end.line, kinds: ['parity'], partial: true });
+function workingText(file) {
+  try {
+    return fs.readFileSync(path.resolve(root, file), 'utf8');
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
   }
 }
 
-function appendSqlFormat82HelperRegion(ast, descriptor, arrayName, regions) {
-  if (property(descriptor, 'sqlFormat82Migration')?.value !== true) return;
-  if (arrayName !== 'cases') throw new Error('invalid SQL FORMAT error guard');
-  const declarations = ast.body.filter(
-    (item) =>
-      item.type === 'VariableDeclaration' &&
-      item.kind === 'const' &&
-      item.declarations.some((entry) => entry.id?.name === 'call'),
-  );
-  if (declarations.length !== 1) throw new Error('invalid SQL FORMAT error helper');
-  regions.push({
-    start: declarations[0].loc.start.line,
-    end: declarations[0].loc.end.line,
-    kinds: ['parity'],
-    partial: true,
-  });
-}
-
-function appendSqlWitnessArrayRegions(ast, binding, indices, count, regions) {
-  const declarations = ast.body.flatMap((node) =>
-    node.type === 'VariableDeclaration' && node.kind === 'const'
-      ? node.declarations.filter((item) => item.id?.name === binding)
-      : [],
-  );
-  const loops = ast.body.filter((node) => node.type === 'ForOfStatement' && node.right?.name === binding);
-  const entries = indices.map((index) => declarations[0]?.init?.elements?.[index]),
-    test = loops[0]?.body?.body?.[0]?.expression;
-  const callback = test?.arguments?.[1];
-  if (
-    declarations.length !== 1 ||
-    loops.length !== 1 ||
-    declarations[0].init?.elements?.length !== count ||
-    entries.some((entry) => !entry) ||
-    entries.some((entry) =>
-      declarations[0].init.elements.some(
-        (other, index) =>
-          !indices.includes(index) &&
-          other.loc.start.line <= entry.loc.end.line &&
-          other.loc.end.line >= entry.loc.start.line,
-      ),
-    ) ||
-    test?.callee?.name !== 'test' ||
-    callback?.type !== 'ArrowFunctionExpression'
-  )
-    throw new Error('invalid SQL evaluator witness');
-  for (const node of [...entries, callback.body])
-    regions.push({ start: node.loc.start.line, end: node.loc.end.line, kinds: ['parity'], partial: true });
-}
-
-function appendSqlOrderedWitnessRegions(ast, descriptor, regions) {
-  const witness = property(descriptor, 'sqlOrderedWitness');
-  if (!witness) return;
-  if (
-    property(witness, 'baselineId')?.value !== 'mirage/test/dataverse-tds-sql-eval.test.mjs:1063:2' ||
-    property(witness, 'caseIndex')?.value !== 11
-  )
-    throw new Error('invalid SQL ordered witness');
-  appendSqlWitnessArrayRegions(ast, 'orderedCases', [11], 16, regions);
-}
-function appendSqlExtraWitnessRegions(ast, descriptor, regions) {
-  const witness = property(descriptor, 'sqlExtraEvaluatorCases');
-  if (!witness) return;
-  const list = property(witness, 'cases');
-  if (list?.type !== 'ArrayExpression') throw new Error('invalid SQL extra witness');
-  const values = list.elements.map((item) => ({
-    binding: property(item, 'binding')?.value,
-    index: property(item, 'index')?.value,
-  }));
-  if (JSON.stringify(values) !== JSON.stringify(SQL_EXTRA_EVALUATOR_CASES))
-    throw new Error('invalid SQL extra witness');
-  appendSqlWitnessArrayRegions(
-    ast,
-    'cases',
-    values.filter((item) => item.binding === 'cases').map((item) => item.index),
-    74,
-    regions,
-  );
-  appendSqlWitnessArrayRegions(
-    ast,
-    'orderedCases',
-    values.filter((item) => item.binding === 'orderedCases').map((item) => item.index),
-    16,
-    regions,
-  );
-}
-
-function appendCaseGuard(ast, node, index, call, regions) {
-  const statement = node.body[index],
-    arrayName = call.arguments[1]?.name,
-    indices = call.arguments[2],
-    next = node.body[index + 1];
-  const shared = sharedParityDescriptor(ast);
-  const arg =
-    call.arguments[4]?.type === 'Identifier' && call.arguments[4].name === SHARED ? shared?.data : call.arguments[4];
-  const descriptor = arg?.type === 'ArrayExpression' && arg.elements.length === 1 ? arg.elements[0] : null;
-  if (arg?.type !== 'ArrayExpression' || (call.arguments[4]?.type === 'Identifier' && !descriptor))
-    throw new Error('invalid shared parity descriptor');
-  const guidBranch = property(property(descriptor, 'caseSelection'), 'guardBeforeGuidBranch')?.value === true;
-  const protectedAssertion = guidBranch ? node.body[index + 2] : next;
-  const declarations = ast.body.flatMap((item) =>
-    item.type === 'VariableDeclaration' && item.kind === 'const'
-      ? item.declarations.filter((declaration) => declaration.id?.name === arrayName)
-      : [],
-  );
-  if (
-    call.arguments.length !== 5 ||
-    declarations.length !== 1 ||
-    declarations[0].init?.type !== 'ArrayExpression' ||
-    indices?.type !== 'ArrayExpression' ||
-    !indices.elements.length ||
-    !next ||
-    (guidBranch &&
-      (next.type !== 'IfStatement' ||
-        next.consequent?.type !== 'BlockStatement' ||
-        next.consequent.body.at(-1)?.type !== 'ReturnStatement')) ||
-    !protectedAssertion ||
-    !['ExpressionStatement', 'ReturnStatement'].includes(protectedAssertion.type)
-  )
-    throw new Error('invalid case guard');
-  const entries = declarations[0].init.elements;
-  const numbers = indices.elements.map((item) => item?.value);
-  if (
-    numbers.some((number) => !Number.isInteger(number) || number < 0 || number >= entries.length) ||
-    new Set(numbers).size !== numbers.length ||
-    numbers.some((number, position) => position && number <= numbers[position - 1]) ||
-    numbers.some((number) =>
-      entries.some(
-        (entry, position) =>
-          !numbers.includes(position) &&
-          entry.loc.start.line <= entries[number].loc.end.line &&
-          entry.loc.end.line >= entries[number].loc.start.line,
-      ),
-    )
-  )
-    throw new Error('invalid case guard indices');
-  if (guidBranch && !numbers.includes(138)) throw new Error('missing guarded GUID case');
-  for (const entry of [statement, protectedAssertion, ...numbers.map((number) => entries[number])])
-    regions.push({ start: entry.loc.start.line, end: entry.loc.end.line, kinds: ['parity'], partial: true });
-  appendSqlEvaluatorHelperRegions(ast, descriptor, arrayName, regions);
-  appendSqlFormat82HelperRegion(ast, descriptor, arrayName, regions);
-  appendSqlOrderedWitnessRegions(ast, descriptor, regions);
-  appendSqlExtraWitnessRegions(ast, descriptor, regions);
-  appendRetainedAssertions(node, descriptor, regions);
-}
-
-function appendCaseRegions({ hasMarker, text, lines, regions, errors }) {
-  if (hasMarker('__paqParityCaseBindings')) {
-    try {
-      const ast = parse(text, { ecmaVersion: 'latest', sourceType: 'module', loc: true });
-      let guards = 0,
-        usedMarker = false;
-      function visit(node) {
-        if (node.type === 'Identifier' && node.name === '__paqParityCaseBindings') usedMarker = true;
-        if (node.type === 'BlockStatement') {
-          for (let i = 0; i < node.body.length; i++) {
-            const statement = node.body[i],
-              call = statement.type === 'ExpressionStatement' && statement.expression;
-            if (call?.type !== 'CallExpression' || call.callee?.name !== '__paqParityCaseBindings') continue;
-            guards++;
-            appendCaseGuard(ast, node, i, call, regions);
-          }
-        }
-        for (const value of Object.values(node)) {
-          if (Array.isArray(value)) value.filter((item) => item?.type).forEach(visit);
-          else if (value?.type) visit(value);
-        }
-      }
-      visit(ast);
-      if (usedMarker && !guards) throw new Error('missing case guard');
-      const shared = sharedParityDescriptor(ast);
-      if (shared)
-        regions.push({
-          start: shared.declaration.loc.start.line,
-          end: shared.declaration.loc.end.line,
-          kinds: ['parity'],
-          partial: true,
-        });
-      for (const node of ast.body)
-        if (
-          (node.type === 'ImportDeclaration' &&
-            node.specifiers.some((item) => item.local.name === '__paqParityCaseBindings')) ||
-          (node.type === 'ExpressionStatement' &&
-            node.expression.type === 'CallExpression' &&
-            node.expression.callee.name === '__paqParityBindings')
-        )
-          regions.push({ start: node.loc.start.line, end: node.loc.end.line, kinds: ['parity'], partial: true });
-    } catch {
-      errors.push('invalid generated case parity guard');
-      regions.push({ start: 1, end: lines.length, kinds: ['parity'], partial: true });
-    }
-  }
-}
-
-function appendQueryRegions({ hasMarker, text, lines, regions, errors }) {
-  if (hasMarker('__paqQueryBindings')) {
-    try {
-      const ast = parse(text, { ecmaVersion: 'latest', sourceType: 'module', loc: true });
-      const imports = ast.body.filter(
-        (node) =>
-          node.type === 'ImportDeclaration' && node.specifiers.some((item) => item.local.name === '__paqQueryBindings'),
-      );
-      const guards = ast.body.filter(
-        (node) => node.type === 'ExpressionStatement' && node.expression?.callee?.name === '__paqQueryBindings',
-      );
-      const data = ast.body.flatMap((node) =>
-        node.type === 'VariableDeclaration'
-          ? node.declarations.filter((item) => item.id?.name === '__paqQueryDescriptor')
-          : [],
-      );
-
-      const selected = property(data[0]?.init, 'selectedIndices');
-      const numbers = selected?.type === 'ArrayExpression' ? selected.elements.map((item) => item?.value) : [];
-      if (
-        imports.length !== 1 ||
-        guards.length !== 1 ||
-        data.length !== 1 ||
-        numbers.length === 0 ||
-        numbers.length > 63 ||
-        new Set(numbers).size !== numbers.length ||
-        numbers.some(
-          (number, index) =>
-            !Number.isInteger(number) || number < 0 || number >= 63 || (index && number <= numbers[index - 1]),
-        )
-      )
-        throw new Error('invalid query guard');
-      const cases = [],
-        markers = [],
-        completions = [];
-      function visit(node, parent) {
-        if (node.type === 'VariableDeclarator' && node.id?.name === 'cases') cases.push(node);
-        if (node.type === 'ExpressionStatement' && node.expression?.callee?.name === '__paqQueryCase')
-          markers.push({ node, parent });
-        if (node.type === 'ExpressionStatement' && node.expression?.callee?.name === '__paqQueryComplete')
-          completions.push(node);
-        for (const value of Object.values(node))
-          for (const child of Array.isArray(value) ? value : [value]) if (child?.type) visit(child, node);
-      }
-      visit(ast, null);
-      if (
-        cases.length !== 1 ||
-        markers.length !== 1 ||
-        completions.length !== 1 ||
-        markers[0].parent?.type !== 'BlockStatement' ||
-        markers[0].parent.body[0] !== markers[0].node
-      )
-        throw new Error('invalid query markers');
-      const rows = queryUniverse(cases[0].init),
-        body = markers[0].parent.body;
-      const assertions = body.filter(
-        (node) =>
-          node.type === 'ExpressionStatement' &&
-          node.expression?.type === 'CallExpression' &&
-          node.expression.callee?.object?.name === 'assert',
-      );
-      if (
-        assertions.length !== 3 ||
-        numbers.some((number) =>
-          rows.some(
-            (entry, index) =>
-              !numbers.includes(index) &&
-              entry.source.loc.start.line <= rows[number].source.loc.end.line &&
-              entry.source.loc.end.line >= rows[number].source.loc.start.line,
-          ),
-        )
-      )
-        throw new Error('invalid query assertion region');
-      for (const node of [
-        imports[0],
-        guards[0],
-        data[0],
-        markers[0].node,
-        completions[0],
-        ...assertions,
-        ...numbers.map((number) => rows[number].source),
-      ])
-        regions.push({ start: node.loc.start.line, end: node.loc.end.line, kinds: ['parity'], partial: true });
-    } catch {
-      errors.push('invalid generated query case guard');
-      regions.push({ start: 1, end: lines.length, kinds: ['parity'], partial: true });
-    }
-  }
-}
-
-function soapGuardDeclarations(ast) {
-  const imports = ast.body.filter(
-    (node) =>
-      node.type === 'ImportDeclaration' && node.specifiers.some((item) => item.local.name === '__paqSoapBindings'),
-  );
-  const helperImports = ast.body.filter(
-    (node) => node.type === 'ImportDeclaration' && node.specifiers.some((item) => item.local.name === '__paqSoapValue'),
-  );
-  const guards = ast.body.filter(
-    (node) => node.type === 'ExpressionStatement' && node.expression?.callee?.name === '__paqSoapBindings',
-  );
-  const declarations = ast.body.flatMap((node) =>
-    node.type === 'VariableDeclaration'
-      ? node.declarations.filter((item) => item.id?.name === '__paqSoapDescriptor')
-      : [],
-  );
-  const values = ast.body.flatMap((node) =>
-    node.type === 'VariableDeclaration' ? node.declarations.filter((item) => item.id?.name === 'VALUES') : [],
-  );
-  if (
-    imports.length !== 1 ||
-    helperImports.length !== 1 ||
-    guards.length !== 1 ||
-    declarations.length !== 1 ||
-    values.length !== 1 ||
-    values[0].init?.type !== 'ArrayExpression' ||
-    guards[0].expression.arguments.length !== 2 ||
-    guards[0].expression.arguments[1]?.type !== 'ArrayExpression' ||
-    guards[0].expression.arguments[1].elements.length !== 1
-  )
-    throw new Error('invalid soap guard');
-  const selected = property(declarations[0].init, 'selectedIndices');
-  if (selected?.type !== 'ArrayExpression') throw new Error('missing soap selection');
-  const numbers = selected.elements.map((item) => item?.value);
-  if (
-    !numbers.length ||
-    numbers.length > 27 ||
-    new Set(numbers).size !== numbers.length ||
-    numbers.some(
-      (number, index) =>
-        !Number.isInteger(number) || number < 0 || number >= 27 || (index && number <= numbers[index - 1]),
-    )
-  )
-    throw new Error('invalid soap selection');
-  return { imports, helperImports, guards, declarations, values, numbers };
-}
-
-function appendSoapUniverse(values, numbers, regions) {
-  let index = 0;
-  for (const entry of values[0].init.elements) {
-    const width =
-      entry?.type === 'SpreadElement' && entry.argument?.callee?.object?.type === 'ArrayExpression'
-        ? entry.argument.callee.object.elements.length
-        : 1;
-    if (numbers.some((number) => number >= index && number < index + width))
-      regions.push({ start: entry.loc.start.line, end: entry.loc.end.line, kinds: ['parity'], partial: true });
-    index += width;
-  }
-  if (index !== 27) throw new Error('changed soap universe');
-}
-
-function soapGuardMarkers(ast) {
-  const marked = [];
-  function visit(node, parent) {
-    if (
-      node.type === 'ExpressionStatement' &&
-      ['__paqSoapValue', '__paqSoapComplete'].includes(node.expression?.callee?.name)
-    )
-      marked.push(node);
-    if (node.type === 'CallExpression' && node.callee?.name === '__paqSoapTail' && parent?.type === 'CallExpression')
-      marked.push(parent);
-    for (const value of Object.values(node))
-      for (const child of Array.isArray(value) ? value : [value]) if (child?.type) visit(child, node);
-  }
-  visit(ast, null);
-  const loop = [];
-  function findLoop(node) {
-    if (node.type === 'ForOfStatement' && node.right?.name === 'VALUES') loop.push(node);
-    for (const value of Object.values(node))
-      for (const child of Array.isArray(value) ? value : [value]) if (child?.type) findLoop(child);
-  }
-  findLoop(ast);
-  if (
-    loop.length !== 1 ||
-    marked.length !== 4 ||
-    loop[0].body?.body?.length !== 4 ||
-    loop[0].body.body[1].expression?.callee?.name !== '__paqSoapValue'
-  )
-    throw new Error('invalid soap markers');
-  return { marked, loop };
-}
-
-function appendSoapSiblingRegions(ast, guard, regions, regionProperty, marker) {
-  const descriptor = guard.expression.arguments[1].elements[0],
-    metadata = property(descriptor, regionProperty);
-  const imports = ast.body.filter(
-    (node) => node.type === 'ImportDeclaration' && node.specifiers.some((item) => item.local.name === marker),
-  );
-  const blocks = [];
-  function visit(node) {
-    if (node.type === 'BlockStatement' && node.body[0]?.expression?.callee?.name === marker) blocks.push(node);
-    for (const value of Object.values(node))
-      for (const child of Array.isArray(value) ? value : [value]) if (child?.type) visit(child);
-  }
-  visit(ast);
-  if (!metadata) {
-    if (imports.length || blocks.length) throw new Error('unbound SOAP namespace marker');
-    return;
-  }
-  if (
-    metadata.type !== 'ArrayExpression' ||
-    !metadata.elements.length ||
-    imports.length !== 1 ||
-    blocks.length !== metadata.elements.length
-  )
-    throw new Error('invalid SOAP namespace markers');
-  const ids = metadata.elements.map((entry) => property(entry, 'factId')?.value);
-  if (ids.some((id) => typeof id !== 'string') || new Set(ids).size !== ids.length)
-    throw new Error('invalid SOAP namespace facts');
-  const seen = blocks.map((block) => {
-    const call = block.body[0].expression;
-    if (
-      block.body.length !== 2 ||
-      block.body[1].type !== 'ExpressionStatement' ||
-      call.arguments.length !== 2 ||
-      call.arguments[1]?.type !== 'Literal'
-    )
-      throw new Error('invalid SOAP namespace region');
-    return call.arguments[1].value;
-  });
-  if (new Set(seen).size !== ids.length || ids.some((id) => !seen.includes(id)))
-    throw new Error('unbound SOAP namespace fact');
-  for (const node of [imports[0], ...blocks])
-    regions.push({ start: node.loc.start.line, end: node.loc.end.line, kinds: ['parity'], partial: true });
-}
-
-function appendSoapRegions({ hasMarker, text, lines, regions, errors }) {
-  if (hasMarker('__paqSoapBindings')) {
-    try {
-      const ast = parse(text, { ecmaVersion: 'latest', sourceType: 'module', loc: true });
-      const { imports, helperImports, guards, declarations, values, numbers } = soapGuardDeclarations(ast);
-      appendSoapUniverse(values, numbers, regions);
-      const { marked, loop } = soapGuardMarkers(ast);
-      appendSoapSiblingRegions(ast, guards[0], regions, 'namespaceRegions', '__paqSoapNamespaceProof');
-      appendSoapSiblingRegions(ast, guards[0], regions, 'valueRegions', '__paqSoapValueProof');
-      for (const node of [
-        imports[0],
-        helperImports[0],
-        guards[0],
-        declarations[0],
-        ...marked,
-        ...loop[0].body.body.slice(2),
-      ])
-        regions.push({ start: node.loc.start.line, end: node.loc.end.line, kinds: ['parity'], partial: true });
-    } catch {
-      errors.push('invalid generated SOAP assertion guard');
-      regions.push({ start: 1, end: lines.length, kinds: ['parity'], partial: true });
-    }
-  }
-}
-
-function appendScalarRegions({ hasMarker, text, lines, regions, errors }) {
-  if (hasMarker('__paqScalarBindings')) {
-    try {
-      const ast = parse(text, { ecmaVersion: 'latest', sourceType: 'module', loc: true });
-      const imports = ast.body.filter(
-        (node) =>
-          node.type === 'ImportDeclaration' &&
-          node.specifiers.some((item) => item.local.name === '__paqScalarBindings'),
-      );
-      const guards = ast.body.filter(
-        (node) => node.type === 'ExpressionStatement' && node.expression?.callee?.name === '__paqScalarBindings',
-      );
-      if (
-        imports.length !== 1 ||
-        guards.length !== 1 ||
-        ast.body[0] !== imports[0] ||
-        ast.body[1] !== guards[0] ||
-        imports[0].specifiers.length !== 1 ||
-        imports[0].specifiers[0].imported?.name !== 'assertScalarParityBindings' ||
-        guards[0].expression.arguments.length !== 2 ||
-        guards[0].expression.arguments[1]?.type !== 'ArrayExpression' ||
-        guards[0].expression.arguments[1].elements.length !== 1
-      )
-        throw new Error('invalid scalar guard');
-      for (const node of [imports[0], guards[0]])
-        regions.push({ start: node.loc.start.line, end: node.loc.end.line, kinds: ['parity'], partial: true });
-    } catch {
-      errors.push('invalid generated scalar parity guard');
-      regions.push({ start: 1, end: lines.length, kinds: ['parity'], partial: true });
-    }
-  }
-}
-
-/** Parses tags: { fileKinds, regions: [{ start, end, kinds }], errors }. Lines are 1-based. */
+/** Parses tags: { fileKinds, regions: [{ start, end, kinds }], tags, errors }. Lines are 1-based. */
 export function parseTestKinds(text) {
-  const syntax = markerSyntax(text);
-  const hasMarker = (name) => (syntax ? syntax.identifiers.has(name) : text.includes(name));
   const lines = text.split(/\r?\n/);
   const errors = [],
     tags = [];
@@ -751,260 +162,253 @@ export function parseTestKinds(text) {
         kinds: tag.kinds,
       };
     });
-  // Generated partial regions are lexical blocks, never whole-test promotions.
-  // Protect the guard, original statements, and independently executed source guard.
-  appendAssertionRegions({ hasMarker, text, lines, regions, errors });
-  // A case guard protects only its mapped input entries and the shared statement;
-  // the loop and the unmatched entries retain their original kind.
-  appendCaseRegions({ hasMarker, text, lines, regions, errors });
-  appendQueryRegions({ hasMarker, text, lines, regions, errors });
-  appendSoapRegions({ hasMarker, text, lines, regions, errors });
-  appendScalarRegions({ hasMarker, text, lines, regions, errors });
   const fileKinds = fileTags[0]?.kinds ?? null;
   if (!fileKinds)
     for (const line of topLevel)
       if (!regions.some((region) => line >= region.start && line <= region.end))
         errors.push(`line ${line}: test has no @test-kind (add a file-level tag or one above the test)`);
-  return { fileKinds, regions, errors };
+  return { fileKinds, regions, tags, errors };
 }
 
-// The innermost region (an it() inside a tagged describe()) wins.
-const kindsAt = (parsed, line) => {
-  const matching = parsed.regions
-    .filter((region) => line >= region.start && line <= region.end)
-    .sort((a, b) => b.start - a.start);
-  const base = matching.find((region) => !region.partial)?.kinds ?? parsed.fileKinds ?? [];
-  return matching.some((region) => region.partial)
-    ? [...new Set([...base.filter((kind) => kind === 'security'), 'parity'])]
-    : base;
-};
+/** The innermost region (an it() inside a tagged describe()) wins, then the file kinds, then none. */
+export const kindsAt = (parsed, line) =>
+  parsed.regions.filter((region) => line >= region.start && line <= region.end).sort((a, b) => b.start - a.start)[0]
+    ?.kinds ??
+  parsed.fileKinds ??
+  [];
 
-function isImportMetaUrl(node) {
-  return (
-    node?.type === 'MemberExpression' &&
-    !node.computed &&
-    node.property?.name === 'url' &&
-    node.object?.type === 'MetaProperty' &&
-    node.object.meta?.name === 'import' &&
-    node.object.property?.name === 'meta'
-  );
+function rangeInto(list, start, count) {
+  const length = count === undefined ? 1 : Number(count);
+  for (let i = 0; i < length; i++) list.push(start + i);
 }
 
-function withoutPositions(value) {
-  if (Array.isArray(value)) return value.map(withoutPositions);
-  if (!value || typeof value !== 'object') return value;
-  return Object.fromEntries(
-    Object.entries(value)
-      .filter(([key]) => !['range', 'start', 'end'].includes(key))
-      .map(([key, item]) => [key, withoutPositions(item)]),
-  );
-}
-
-function isSourceBindingCall(node) {
-  return (
-    node?.type === 'CallExpression' &&
-    !node.optional &&
-    node.callee?.type === 'Identifier' &&
-    node.callee.name === '__paqParitySourceBindings' &&
-    node.arguments.length === 1 &&
-    isImportMetaUrl(node.arguments[0])
-  );
-}
-
-function safeAssertBinding(ast, identifier) {
-  const { analyze } = createRequire(import.meta.url)('eslint-scope');
-  const scopes = analyze(ast, { ecmaVersion: 2022, sourceType: 'module' });
-  const references = scopes.scopes.flatMap((scope) => scope.references);
-  const binding = references.find((reference) => reference.identifier === identifier)?.resolved;
-  const definition = binding?.defs[0];
-  if (
-    binding?.defs.length !== 1 ||
-    definition?.type !== 'ImportBinding' ||
-    definition.parent?.source?.value !== 'node:assert/strict' ||
-    definition.node?.type !== 'ImportDefaultSpecifier' ||
-    binding.references.some((reference) => reference.isWrite())
-  )
-    return false;
-  const parents = new Map();
-  function visit(node, parent) {
-    if (!node?.type) return;
-    parents.set(node, parent);
-    for (const value of Object.values(node))
-      for (const child of Array.isArray(value) ? value : [value]) if (child?.type) visit(child, node);
+/**
+ * Line facts of a unified -U0 diff: old-side line numbers removed, new-side line numbers added, the texts of those
+ * lines without their +/- sign, and whether the diff adds a @parity-evidence line.
+ */
+export function diffFacts(diff) {
+  const removed = [],
+    added = [],
+    addedText = [],
+    removedText = [];
+  let evidence = false,
+    inHunk = false;
+  for (const line of diff.split('\n')) {
+    const hunk = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
+    if (hunk) {
+      inHunk = true;
+      rangeInto(removed, Number(hunk[1]), hunk[2]);
+      rangeInto(added, Number(hunk[3]), hunk[4]);
+    } else if (inHunk && line.startsWith('+')) addedText.push(line.slice(1));
+    else if (inHunk && line.startsWith('-')) removedText.push(line.slice(1));
+    if (/^\+(?!\+\+)/.test(line) && /\/\/\s*@parity-evidence:\s*\S{3}/.test(line)) evidence = true;
   }
-  visit(ast, null);
-  return binding.references.every((reference) => {
-    const member = parents.get(reference.identifier),
-      call = parents.get(member);
-    return (
-      member?.type === 'MemberExpression' &&
-      member.object === reference.identifier &&
-      !member.computed &&
-      call?.type === 'CallExpression' &&
-      call.callee === member
-    );
+  return { removed, added, addedText, removedText, evidence };
+}
+
+const isRepoPath = (value) =>
+  typeof value === 'string' &&
+  value !== '' &&
+  !value.startsWith('/') &&
+  !value.includes('\\') &&
+  value.split('/').every((part) => part !== '' && part !== '..');
+
+function retirementProblems(entry, where) {
+  if (!isObject(entry)) return [`${where} must be an object`];
+  const problems = [];
+  if (!isRepoPath(entry.file)) problems.push(`${where}.file must be a repo-relative POSIX path`);
+  if (typeof entry.reason !== 'string' || entry.reason.trim().length < 20)
+    problems.push(`${where}.reason needs at least 20 characters`);
+  if (typeof entry.authority !== 'string' || entry.authority.trim().length < 10)
+    problems.push(`${where}.authority needs at least 10 characters (who approved the retirement)`);
+  return problems;
+}
+
+function ledgerProblems(text) {
+  if (text == null) return [`${RETIREMENT_FILE}: missing`];
+  const parsed = parseJson(text);
+  if ('error' in parsed) return [`${RETIREMENT_FILE}: not valid JSON (${parsed.error})`];
+  if (parsed.value?.version !== 1) return [`${RETIREMENT_FILE}: version must be 1`];
+  if (!Array.isArray(parsed.value.retirements)) return [`${RETIREMENT_FILE}: retirements must be an array`];
+  return parsed.value.retirements.flatMap((entry, index) =>
+    retirementProblems(entry, `${RETIREMENT_FILE}: retirements[${index}]`),
+  );
+}
+
+function ledgerEntries(text) {
+  const value = text == null ? undefined : parseJson(text).value;
+  return Array.isArray(value?.retirements) ? value.retirements : [];
+}
+
+/** Files named by well-formed retirement entries that the change adds to the ledger. */
+function retiredByChange(newText, oldText) {
+  const before = ledgerEntries(oldText(RETIREMENT_FILE));
+  const added = ledgerEntries(newText(RETIREMENT_FILE)).filter(
+    (entry) => !before.some((old) => isDeepStrictEqual(old, entry)),
+  );
+  return new Set(added.filter((entry) => retirementProblems(entry, '').length === 0).map((entry) => entry.file));
+}
+
+function checkParityRemoval(file, old, facts, ctx, failures) {
+  const before = parseTestKinds(old);
+  const touched = facts.removed.filter((line) => kindsAt(before, line).includes('parity'));
+  if (!touched.length || facts.evidence || ctx.retired.has(file)) return;
+  const first = touched.slice(0, 5).join(', ');
+  const more = touched.length > 5 ? ', ...' : '';
+  failures.push(
+    `${file}: changes ${touched.length} line(s) of a parity test (old lines ${first}${more}). ` +
+      'Parity assertions change only with an explicit user request or new native/official-package proof; add "// @parity-evidence: <proof>" or a retirement entry (docs/test-kinds.md).',
+  );
+}
+
+const isReplayRunner = (tag, text, lines) =>
+  !tag.perTest &&
+  tag.kinds.join('+') === 'parity' &&
+  REPLAY_CALL.test(text) &&
+  !lines.some((line) => isTestDeclaration(line));
+
+/** A parity tag is NEW when the file is new, or its line was added and its text was not moved from elsewhere. */
+function checkNewParityTags(file, text, parsed, facts, failures) {
+  const lines = text.split(/\r?\n/);
+  const removedTexts = new Set((facts?.removedText ?? []).map((line) => line.trim()));
+  for (const tag of parsed.tags) {
+    if (!tag.kinds.includes('parity')) continue;
+    const isNew = !facts || (facts.added.includes(tag.line) && !removedTexts.has(lines[tag.line - 1].trim()));
+    if (isNew && !isReplayRunner(tag, text, lines))
+      failures.push(
+        `${file}: line ${tag.line}: a new parity tag is only valid on a replay runner that registers its tests through replayParityCases or replayParityDirectory; record a replay case instead (docs/test-kinds.md).`,
+      );
+  }
+}
+
+function checkFile(file, ctx, failures) {
+  const text = ctx.newText(file);
+  const old = ctx.oldText?.(file) ?? null;
+  const facts = old == null ? null : diffFacts(ctx.diffOf(file));
+  if (old != null) checkParityRemoval(file, old, facts, ctx, failures);
+  if (text == null || (ctx.legacy.has(file) && !hasAnyTag(text))) return;
+  const parsed = parseTestKinds(text);
+  for (const error of parsed.errors) failures.push(`${file}: ${error}`);
+  if (ctx.diffMode) checkNewParityTags(file, text, parsed, facts, failures);
+}
+
+const historyLength = (value) => (Array.isArray(value?.history) ? value.history.length : 0);
+
+/** Recorded cases whose oracle, id set, input, output or volatile list differs between the two versions. */
+function changedCases(before, after) {
+  const changed = isDeepStrictEqual(before?.oracle, after?.oracle) ? [] : ['oracle'];
+  const current = new Map((Array.isArray(after?.cases) ? after.cases : []).map((item) => [item?.id, item]));
+  const recorded = (Array.isArray(before?.cases) ? before.cases : []).filter(isObject);
+  for (const item of recorded) {
+    const next = current.get(item.id);
+    if (!next || !['input', 'output', 'volatile'].every((key) => isDeepStrictEqual(next[key], item[key])))
+      changed.push(item.id);
+  }
+  return changed;
+}
+
+function checkRecordedCases(file, before, after, failures) {
+  const changed = changedCases(before, after);
+  if (!changed.length || historyLength(after) > historyLength(before)) return;
+  const shown = changed.slice(0, 5).join(', ') + (changed.length > 5 ? ', ...' : '');
+  failures.push(
+    `${file}: changes recorded parity cases (${shown}) without a new history entry; a recorded case changes only with new evidence (docs/test-kinds.md).`,
+  );
+}
+
+function checkCaseFile(file, ctx, failures) {
+  const { surface, suite } = CASE_FILE.exec(file).groups;
+  const text = ctx.newText(file);
+  const old = ctx.diffMode ? (ctx.oldText(file) ?? null) : null;
+  if (text == null) {
+    if (old != null && !ctx.retired.has(file))
+      failures.push(
+        `${file}: deletes recorded parity cases; add a retirement entry in scripts/parity-retirements.json (docs/test-kinds.md).`,
+      );
+    return;
+  }
+  const parsed = parseJson(text);
+  if ('error' in parsed) {
+    failures.push(`${file}: not valid JSON (${parsed.error})`);
+    return;
+  }
+  for (const problem of validateParityCases(parsed.value, { surface, suite })) failures.push(`${file}: ${problem}`);
+  const before = old == null ? null : parseJson(old);
+  if (before && !('error' in before)) checkRecordedCases(file, before.value, parsed.value, failures);
+}
+
+function knownGapProblems(value) {
+  if (!isObject(value)) return ['must be a JSON object of <suite>#<caseId> gaps'];
+  return Object.entries(value).flatMap(([key, gap]) => {
+    if (!GAP_KEY.test(key)) return [`${key}: key must be <suite>#<caseId>`];
+    if (typeof gap === 'string') return gap.trim() === '' ? [`${key}: gap reason must not be empty`] : [];
+    if (!isObject(gap) || Object.keys(gap).length === 0)
+      return [`${key}: gap must be a reason or an object of JSON pointer reasons`];
+    return Object.entries(gap).flatMap(([pointer, reason]) => {
+      if (!pointer.startsWith('/')) return [`${key}: ${pointer} is not a JSON pointer`];
+      return typeof reason === 'string' && reason.trim() !== '' ? [] : [`${key}: ${pointer} needs a non-empty reason`];
+    });
   });
 }
 
-function canonicalSourceGuard(ast, node) {
-  const call = node?.type === 'ExpressionStatement' && node.expression;
-  const callback = call?.arguments?.[1],
-    statement = callback?.body?.body?.[0];
-  if (
-    call?.type !== 'CallExpression' ||
-    call.callee?.name !== 'test' ||
-    call.arguments.length !== 2 ||
-    call.arguments[0]?.type !== 'Literal' ||
-    !/^parity source bindings [a-f0-9]{16}$/u.test(call.arguments[0].value ?? '') ||
-    callback?.type !== 'ArrowFunctionExpression' ||
-    callback.async ||
-    callback.params.length !== 0 ||
-    callback.body?.type !== 'BlockStatement' ||
-    callback.body.body.length !== 1 ||
-    statement?.type !== 'ExpressionStatement'
-  )
-    return null;
-  let inner = statement.expression,
-    form = 'direct';
-  if (!isSourceBindingCall(inner)) {
-    form = 'assertion';
-    const wrapper = inner,
-      arrow = wrapper?.arguments?.[0];
-    if (
-      wrapper?.type !== 'CallExpression' ||
-      wrapper.optional ||
-      wrapper.callee?.type !== 'MemberExpression' ||
-      wrapper.callee.computed ||
-      wrapper.callee.property?.name !== 'doesNotThrow' ||
-      wrapper.callee.object?.type !== 'Identifier' ||
-      wrapper.arguments.length !== 1 ||
-      arrow?.type !== 'ArrowFunctionExpression' ||
-      arrow.async ||
-      arrow.params.length !== 0 ||
-      !isSourceBindingCall(arrow.body) ||
-      !safeAssertBinding(ast, wrapper.callee.object)
-    )
-      return null;
-    inner = arrow.body;
-  }
-  const normalizedGuard = structuredClone(call);
-  normalizedGuard.arguments[1].body.body[0].expression = structuredClone(inner);
-  return { form, start: call.start, original: normalizedGuard, structure: withoutPositions(normalizedGuard) };
+/** A gap is new when its key is new, it becomes whole-case, or a pointer-scoped gap gains a pointer. */
+function isNewGap(previous, next) {
+  if (previous === undefined) return true;
+  if (typeof next === 'string') return typeof previous !== 'string';
+  if (typeof previous === 'string') return false;
+  return Object.keys(next).some((pointer) => !isObject(previous) || !(pointer in previous));
 }
 
-function topLevelSourceGuards(text) {
-  const syntax = markerSyntax(text);
-  const hasMarker = (name) => (syntax ? syntax.identifiers.has(name) : text?.includes(name));
-  if (
-    !hasMarker('__paqParityAssertions') &&
-    !hasMarker('__paqParityCaseBindings') &&
-    !hasMarker('__paqParitySourceBindings')
-  )
-    return { partial: [], whole: [] };
-  try {
-    const ast = parse(text, { ecmaVersion: 'latest', sourceType: 'module', range: true });
-    const statements = ast.body.filter((node) => node.type !== 'ImportDeclaration');
-    const guard = (node) =>
-      node.type === 'ExpressionStatement' &&
-      node.expression.type === 'CallExpression' &&
-      node.expression.callee.name === '__paqParityBindings';
-    const partial =
-      hasMarker('__paqParityAssertions') || hasMarker('__paqParityCaseBindings') ? statements.filter(guard) : [];
-    if (statements.slice(0, partial.length).some((node) => !guard(node))) return null;
-    const whole = statements.map((node) => canonicalSourceGuard(ast, node)).filter(Boolean);
-    let calls = 0;
-    function visit(node) {
-      if (!node?.type) return;
-      if (node.type === 'CallExpression' && node.callee?.name === '__paqParitySourceBindings') calls++;
-      for (const value of Object.values(node))
-        for (const child of Array.isArray(value) ? value : [value]) if (child?.type) visit(child);
-    }
-    visit(ast);
-    if (calls !== whole.length) return null;
-    return { partial: partial.map((node) => node.expression), whole };
-  } catch {
-    return null;
+function gapsOf(text) {
+  const parsed = text == null ? {} : parseJson(text);
+  return isObject(parsed.value) ? parsed.value : {};
+}
+
+function recordedIds(text) {
+  const value = text == null ? undefined : parseJson(text).value;
+  return (Array.isArray(value?.cases) ? value.cases : []).map((item) => item?.id);
+}
+
+function checkKnownGaps(file, ctx, failures) {
+  const { surface } = GAP_FILE.exec(file).groups;
+  const text = ctx.newText(file);
+  if (text == null) return;
+  const parsed = parseJson(text);
+  if ('error' in parsed) {
+    failures.push(`${file}: not valid JSON (${parsed.error})`);
+    return;
+  }
+  for (const problem of knownGapProblems(parsed.value)) failures.push(`${file}: ${problem}`);
+  if (!ctx.diffMode || !isObject(parsed.value)) return;
+  const previous = gapsOf(ctx.oldText(file));
+  for (const [key, gap] of Object.entries(parsed.value)) {
+    if (knownGapProblems({ [key]: gap }).length || !isNewGap(previous[key], gap)) continue;
+    const { suite, caseId } = GAP_KEY.exec(key).groups;
+    const caseFile = file.replace(/known-gaps\/[a-z0-9-]+\.json$/, `cases/${surface}/${suite}.json`);
+    if (recordedIds(ctx.oldText(caseFile)).includes(caseId) && !ctx.retired.has(file))
+      failures.push(
+        `${file}: declares a new gap for recorded case ${suite}#${caseId}; a recorded case must keep passing, fix the runtime (docs/test-kinds.md).`,
+      );
   }
 }
 
-function matchingSourceGuards(before, after) {
-  if (!after || JSON.stringify(before.partial) !== JSON.stringify(after.partial)) return false;
-  if (before.whole.length !== after.whole.length) return false;
-  let offset = 0;
-  for (let index = 0; index < before.whole.length; index++) {
-    const old = before.whole[index],
-      current = after.whole[index];
-    if (current.start !== old.start + offset) return false;
-    if (old.form === current.form) {
-      if (JSON.stringify(old.original) !== JSON.stringify(shiftSourcePositions(current.original, -offset)))
-        return false;
-      continue;
-    }
-    if (JSON.stringify(old.structure) !== JSON.stringify(current.structure)) return false;
-    offset += current.original.end - current.start - (old.original.end - old.start);
-  }
-  return true;
-}
-
-function shiftSourcePositions(value, offset, key = '') {
-  if (key === 'range') return value.map((position) => position + offset);
-  if ((key === 'start' || key === 'end') && typeof value === 'number') return value + offset;
-  if (Array.isArray(value)) return value.map((item) => shiftSourcePositions(item, offset));
-  if (!value || typeof value !== 'object') return value;
-  return Object.fromEntries(
-    Object.entries(value).map(([name, item]) => [name, shiftSourcePositions(item, offset, name)]),
-  );
-}
-
-/** Old-side line numbers a unified -U0 diff removes or rewrites, and whether it adds a @parity-evidence line. */
-export { kindsAt };
-export function diffFacts(diff) {
-  const removed = [];
-  let evidence = false;
-  for (const line of diff.split('\n')) {
-    const hunk = /^@@ -(\d+)(?:,(\d+))? \+/.exec(line);
-    if (hunk) {
-      const start = Number(hunk[1]),
-        count = hunk[2] === undefined ? 1 : Number(hunk[2]);
-      for (let i = 0; i < count; i++) removed.push(start + i);
-    } else if (/^\+(?!\+\+)/.test(line) && /\/\/\s*@parity-evidence:\s*\S{3}/.test(line)) evidence = true;
-  }
-  return { removed, evidence };
-}
-
-function checkFile(file, { newText, oldText, diffOf, legacy }, failures) {
-  const text = newText(file);
-  const old = oldText?.(file);
-  const before = old == null ? null : parseTestKinds(old);
-  const facts = old == null ? null : diffFacts(diffOf(file));
-  const touched = facts?.removed.filter((line) => kindsAt(before, line).includes('parity')) ?? [];
-  const oldGuards = topLevelSourceGuards(old);
-  const newGuards = topLevelSourceGuards(text);
-  if (
-    (oldGuards?.partial.length || oldGuards?.whole.length) &&
-    !matchingSourceGuards(oldGuards, newGuards) &&
-    !facts.evidence
-  )
-    failures.push(
-      `${file}: a generated parity source guard is no longer executed at module level; new parity evidence is required.`,
-    );
-  if (touched.length && !facts.evidence) {
-    const first = touched.slice(0, 5).join(', ');
-    const more = touched.length > 5 ? ', ...' : '';
-    failures.push(
-      `${file}: changes ${touched.length} line(s) of a parity test (old lines ${first}${more}). ` +
-        'Parity assertions change only with an explicit user request or new native/official-package proof; add "// @parity-evidence: <proof>" (docs/test-kinds.md).',
-    );
-  }
-  if (text == null || (legacy.has(file) && !hasAnyTag(text))) return;
-  const parsed = parseTestKinds(text);
-  for (const error of parsed.errors) failures.push(`${file}: ${error}`);
-}
-
-export function check({ files, newText, oldText, diffOf, legacy = new Set() }) {
+export function check({ files, newText, oldText, diffOf = () => '', legacy = new Set() }) {
   const failures = [];
-  for (const file of files.filter((file) => TEST_FILE.test(file)))
-    checkFile(file, { newText, oldText, diffOf, legacy }, failures);
+  const diffMode = Boolean(oldText);
+  if (files.includes(RETIREMENT_FILE)) failures.push(...ledgerProblems(newText(RETIREMENT_FILE)));
+  const ctx = {
+    newText,
+    oldText,
+    diffOf,
+    legacy,
+    diffMode,
+    retired: diffMode ? retiredByChange(newText, oldText) : new Set(),
+  };
+  for (const file of files) {
+    if (TEST_FILE.test(file)) checkFile(file, ctx, failures);
+    else if (CASE_FILE.test(file)) checkCaseFile(file, ctx, failures);
+    else if (GAP_FILE.test(file)) checkKnownGaps(file, ctx, failures);
+  }
   return failures;
 }
 
@@ -1044,7 +448,7 @@ function run(args) {
       diffOf: (file) => git(['diff', '-U0', '--no-renames', mergeBase, head, '--', file]),
     };
   } else {
-    options = { files: args, newText: (file) => fs.readFileSync(path.resolve(root, file), 'utf8') };
+    options = { files: args, newText: workingText };
   }
   const failures = check({ ...options, legacy: legacyFiles() });
   for (const failure of failures) console.error(failure);
@@ -1059,17 +463,23 @@ function run(args) {
 }
 
 function reportKinds() {
-  const files = git(['ls-files', '-z'])
-    .split('\0')
-    .filter((file) => TEST_FILE.test(file));
+  // Tracked files deleted in the working tree have no text on disk and are not counted.
+  const tracked = git(['ls-files', '-z']).split('\0').filter(Boolean);
+  const files = tracked.filter((file) => TEST_FILE.test(file) && workingText(file) !== null);
   const counts = {};
   for (const file of files) {
-    const parsed = parseTestKinds(fs.readFileSync(path.join(root, file), 'utf8'));
+    const parsed = parseTestKinds(workingText(file));
     const kinds = new Set([...(parsed.fileKinds ?? []), ...parsed.regions.flatMap((region) => region.kinds)]);
     if (!kinds.size) kinds.add('untagged');
     for (const kind of kinds) counts[kind] = (counts[kind] ?? 0) + 1;
   }
-  console.log(JSON.stringify({ files: files.length, counts }, null, 1));
+  const cases = tracked.filter((file) => CASE_FILE.test(file) && workingText(file) !== null);
+  const replay = { suites: cases.length, cases: 0 };
+  for (const file of cases) {
+    const value = parseJson(workingText(file)).value;
+    replay.cases += Array.isArray(value?.cases) ? value.cases.length : 0;
+  }
+  console.log(JSON.stringify({ files: files.length, counts, replay }, null, 1));
   return 0;
 }
 

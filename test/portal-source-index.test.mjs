@@ -1,4 +1,4 @@
-// @test-kind unproven: held or unreviewed platform-sensitive behavior has no native proof in this review.
+// @test-kind unproven: the checks in this file exercise portal source index with local fixtures; no native capture establishes the behaviour they assert.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -374,7 +374,7 @@ test('global source revision covers all languages while winners and their source
   assert.notEqual(en.snippet('Banner').contentRevision, fr.snippet('Banner').contentRevision);
 });
 
-// @test-kind security+contract: semantic configuration changes after index admission fail the final guarded container read
+// @test-kind security+contract: semantic configuration changes after index admission fail the final container read, which re-checks the admitted source
 test('semantic configuration changes after index admission fail the final guarded container read', async (t) => {
   const fx = inspectionFixture();
   t.after(fx.cleanup);

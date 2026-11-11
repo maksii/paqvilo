@@ -1,4 +1,4 @@
-// @test-kind parity: official @microsoft/power-apps 1.5.0 resolved-context cache reproduced in two isolated processes; invented bridge inputs only.
+// @test-kind observation: two official @microsoft/power-apps 1.5.0 runs in fixtures/code-apps-context-cache-official.json (raw sha256 a1e83e58...) bind the resolved-context cache probe; they prove SDK caching only, not native host fields or transport, and the authored bridge response is typed in this test rather than recorded, so it is not a replay case.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -7,12 +7,10 @@ import { configure, getContext } from '../lib/code-apps-client.js';
 import { captureCodeAppContextCacheContract } from '../testing/code-apps-contract.mjs';
 
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
-// @parity-evidence: two independent official SDK 1.5.0 executions against an authored powerAppsBridge response; exact source, capture and probe hashes in the bound fixture. This proves SDK caching, not native host fields or transport.
 const bytes = fs.readFileSync(new URL('./fixtures/code-apps-context-cache-official.json', import.meta.url));
 
 const evidence = JSON.parse(bytes);
 
-// @parity-evidence: two official Microsoft Power Apps SDK runs in code-apps-context-cache-official.json bind the unchanged cache probe. The same pinned setup checks run before the tests.
 test.before(() => {
   assert.equal(sha256(bytes), '7da08c77ae071d62f4e18d9b20385cb8623bb612c04b8265026fa56251d85695');
   assert.equal(sha256(captureCodeAppContextCacheContract.toString()), evidence.probeFunctionSha256);

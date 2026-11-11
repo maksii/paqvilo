@@ -1,4 +1,4 @@
-// @test-kind unproven: held or unreviewed platform-sensitive behavior has no native proof in this review.
+// @test-kind unproven: the checks in this file exercise enhanced with local fixtures; no native capture establishes the behaviour they assert.
 // The enhanced data model layout (unpacked solution): powerpagecomponents/<id>/powerpagecomponent.xml
 import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';

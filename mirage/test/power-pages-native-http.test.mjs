@@ -1,5 +1,4 @@
-// @test-kind parity: the source-bound 2026-11-08 native include captures reproduce literally through complete local HTTP rendering with source debugging enabled.
-// @parity-evidence: frontend-parity-evidence.json binds both native captures for pages65/language20; private pages-http-local.json/language-http-local.json reproduce all85 fragments.
+// @test-kind observation: the 2026-11-08 native include captures (power-pages-contract and power-pages-language fixtures, two page loads each, bound by frontend-parity-evidence.json; a private workbench run reproduces all 85 fragments) render through local HTTP source import with source debugging enabled. The page markers and web template files are typed in this test and no native HTTP exchange is committed, so it is not a replay case.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

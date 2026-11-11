@@ -367,7 +367,7 @@ describe('plug-in registration over HTTP', () => {
   // Native accepts a negative rank (registration probe: Update at stage 20 with rank -1).
   it('accepts any whole rank, a negative one included, and defaults a missing rank to 1', async () => {
     assert.equal((await createStep({ rank: -1 })).status, 204);
-    // @parity-evidence: native registration round 2 (_registration-probes-2.json) "rank 1.5": 0x80048d19, the OData payload reader cannot convert 1.5 to Edm.Int32
+    // Evidence: native registration round 2 (_registration-probes-2.json) "rank 1.5": 0x80048d19, the OData payload reader cannot convert 1.5 to Edm.Int32
     assert.equal((await errorOf(await createStep({ rank: 1.5 }))).code, '0x80048d19');
     const response = await createStep({ name: 'Default rank' });
     const step = await (await call(`sdkmessageprocessingsteps(${idFromLocation(response)})`)).json();
@@ -404,7 +404,7 @@ describe('plug-in registration over HTTP', () => {
     );
   });
 
-  // @parity-evidence: native registration round 2 (_registration-probes-2.json): "Merge with the probe Update filter" is accepted, "Merge with an unknown filter" answers
+  // Evidence: native registration round 2 (_registration-probes-2.json): "Merge with the probe Update filter" is accepted, "Merge with an unknown filter" answers
   // 404 0x80040217; the earlier refusal of another message's filter had no native basis
   it('accepts a filter of another message, and answers 404 for an unknown filter', async () => {
     assert.equal(
@@ -510,7 +510,7 @@ describe('plug-in registration over HTTP', () => {
     );
   });
 
-  // @parity-evidence: native registration round 2 (_registration-probes-2.json) "step without event handler": 0x80040200 "plugintypeid is missing."
+  // Evidence: native registration round 2 (_registration-probes-2.json) "step without event handler": 0x80040200 "plugintypeid is missing."
   it('refuses a step without its handler (the eventhandler is required)', async () => {
     const error = await errorOf(
       await createStep({ 'plugintypeid@odata.bind': undefined, 'eventhandler_plugintype@odata.bind': undefined }),
@@ -1460,7 +1460,7 @@ describe('plug-in registration: assembly content and plug-in types', () => {
     });
   });
 
-  // @parity-evidence: native registration round 2 (_registration-probes-2.json) "plugintype that does not implement IPlugin": 0x8004418b "PluginType [..] not found in
+  // Evidence: native registration round 2 (_registration-probes-2.json) "plugintype that does not implement IPlugin": 0x8004418b "PluginType [..] not found in
   // PluginAssembly [..] which has a total of [n] plugin/workflow activity types."
   it('a plug-in type must be one of the assembly plug-in types (0x8004418b), and an activity type is flagged isworkflowactivity', async () => {
     const { store, run } = await registry();
@@ -1539,7 +1539,7 @@ describe('plug-in registration: assembly content and plug-in types', () => {
       (error) => error.details?.innerCode === '0x8004417C',
     );
     const assembly = { name: 'Contoso.Other', version: '1.0.0.0' };
-    // @parity-evidence: native N3 package trial (native-trial/n3-package.json): PATCH isolationmode of an assembly answers 403 0x80040256 "Action failed for assembly
+    // Evidence: native N3 package trial (native-trial/n3-package.json): PATCH isolationmode of an assembly answers 403 0x80040256 "Action failed for assembly
     // '<full name>': No publisher is found, assembly must be registered in isolation."
     await assert.rejects(
       run('pluginassembly', 'create', { ...assembly, isolationmode: 1 }),
@@ -1599,7 +1599,7 @@ describe('plug-in registration: assembly content and plug-in types', () => {
       (error) => error.details?.innerCode === '0x80081117',
     );
     const existing = { pluginpackageid: pkg.pluginpackageid, name: pkg.name, version: pkg.version };
-    // @parity-evidence: native N3 package trial (native-trial/n3-package.json): PATCH version 204 (1.0.1) and PATCH name 204; the earlier refusal followed Learn only
+    // Evidence: native N3 package trial (native-trial/n3-package.json): PATCH version 204 (1.0.1) and PATCH name 204; the earlier refusal followed Learn only
     await run('pluginpackage', 'update', { version: '2.0.0', name: 'Contoso.Package.Renamed' }, existing);
     await assert.rejects(
       run('pluginpackage', 'create', { name: 'Contoso.Second', version: '1.0.0', content: pkg.content }),
@@ -1670,7 +1670,7 @@ describe('plug-in registration: assembly content and plug-in types', () => {
       { name: 'lib/net462/Contoso.Unsigned.dll', data: Buffer.from(UNSIGNED, 'base64') },
     ]).toString('base64');
 
-  // @parity-evidence: native-trial/n3-package.json and native-trial-r2/n3-package.json package (package_name) vs afterProbes.package (name, uniquename, version)
+  // Evidence: native-trial/n3-package.json and native-trial-r2/n3-package.json package (package_name) vs afterProbes.package (name, uniquename, version)
   // @test-kind parity: native trial captures native-trial and native-trial-r2 (dataverse-recorder round 2, n3-package): a package-owned assembly has sourcetype 4, and PATCH of the package version and name answer 204 (contrary to Microsoft Learn)
   it('a plug-in package registers its assembly with sourcetype 4, and its name and version can be changed', async () => {
     const { store, run } = await registry();

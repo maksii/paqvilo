@@ -1,5 +1,4 @@
-// @test-kind parity: two native authorized collection requests prove a missing savedQuery response including its status, code and message template.
-// @parity-evidence: dataverse-root-savedquery-native.json binds exact plan and run hashes, request hashes and raw response hashes from both captures; only the request GUID is substituted in the message.
+// @test-kind observation: two native authorized collection requests in fixtures/dataverse-root-savedquery-native.json record status 404, code 0x80040217 and the message template, with request path and response body hashes only; the request is typed in this test, so it is not a replay case. Only the request GUID is substituted in the message.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

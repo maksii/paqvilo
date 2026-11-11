@@ -1,5 +1,4 @@
-// @test-kind contract: Paqvilo's tracing and activity design (docs/design/tracing.md)
-// @parity-evidence: native crud, imagesOrder, relationsReads and mergeAccount (native and native-r2): PreBusinessEntity holds the published duplicate rules' base attributes plus statecode when a rule excludes inactive records; the fixture now seeds a published rule that excludes inactive records, so the asserted statecode image is unchanged (no assertion changed)
+// @test-kind contract: Paqvilo's tracing and activity design (docs/design/tracing.md); the native crud, imagesOrder, relationsReads and mergeAccount captures (native and native-r2) show that PreBusinessEntity holds the published duplicate rules' base attributes plus statecode when a rule excludes inactive records, and the fixture seeds such a rule.
 // Tracing of a compiled CLR plug-in (docs/design/tracing.md): the plugin-step span has module clr, each SDK RPC is an
 // sdk-call span under it with the Dataverse operation it drives nested under that, and ITracingService lines are
 // trace events on the step. Invented C# and schemas; skips like the other CLR tests without the Windows .NET Framework

@@ -1,0 +1,82 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "power-fx",
+  "suite": "root-clock-process",
+  "oracle": {
+    "kind": "official-package",
+    "name": "Microsoft.PowerApps.CLI interpreter (official Power Fx evaluation)",
+    "version": "2.13.1",
+    "scope": "Two original clock formulas evaluated by the official interpreter in two unprivileged processes whose wall clock is virtualized per process at 2013-07-15T13:02 Pacific. Establishes these two outcomes only; the rest of the original 193-case matrix is not claimed."
+  },
+  "captures": [
+    {
+      "id": "run-1",
+      "sha256": "48677ca8a62b0f3bc89f15624a0f5be86a2978ff9839dff6f0f709aea8f2b63a",
+      "capturedAt": "2026-11-08"
+    },
+    {
+      "id": "run-2",
+      "sha256": "a875d54ac6104299570615ce472c034c423b059120c99a808cdf23e6a6b07337",
+      "capturedAt": "2026-11-08"
+    }
+  ],
+  "cases": [
+    {
+      "id": "case-153",
+      "input": {
+        "expression": "TimeZoneOffset()",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "TimeZoneOffset()",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "NumberValue",
+        "value": 420,
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "case-154",
+      "input": {
+        "expression": "Text(DateAdd(Now(), TimeZoneOffset(), TimeUnit.Minutes), \"dd-mm-yyyy hh:mm\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00.0000000Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["expression", "phase", "kind", "type", "value", "errors", "diagnostics"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "errors"
+        }
+      },
+      "output": {
+        "expression": "Text(DateAdd(Now(), TimeZoneOffset(), TimeUnit.Minutes), \"dd-mm-yyyy hh:mm\")",
+        "phase": "evaluation",
+        "kind": "value",
+        "type": "StringValue",
+        "value": "15-07-2013 20:02",
+        "errors": null,
+        "diagnostics": []
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

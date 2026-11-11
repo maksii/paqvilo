@@ -207,16 +207,14 @@ test('reader fixture requests reject unowned external and scheme-relative origin
   assert.equal(received, 0);
 });
 
-// @test-kind parity: Both native323 cohorts reproduce successful ordinary POST/PATCH204, identifier headers and absent Content-Type; origin, set and owned IDs are parameters.
-// @parity-evidence: webapi-native-portal-write-wire.json binds all230 successful native writes per cohort to original plan/journal/run hashes and exact empty-response hashes.
+// @test-kind observation: two authenticated native write cohorts (2026-11-08) recorded in fixtures/webapi-native-portal-write-wire.json as 230 successful POST/PATCH hash records each; request bodies and origin, set and owned IDs are not recorded as replay input, so not a replay case.
 test('observed ordinary writes reproduce the native entity identifiers and204 content headers', async (t) => {
   const app = await fixture(t, 'odata-wrapper', {
     webApiWriteResponse: 'portal-classic',
     evidence: 'Paired native write-wire proof in webapi-native-portal-write-wire.json',
   });
   for (const method of ['POST', 'PATCH']) {
-    // @test-kind parity: This method's entityid and OData-EntityId point to the same written record, with empty204 body and no Content-Type.
-    // @parity-evidence: The protected capsule binds two complete native write cohorts, including both POST and PATCH across three source tables.
+    // @test-kind observation: per-method projection of the same native write cohorts in fixtures/webapi-native-portal-write-wire.json (hash records, requests not recorded); not a replay case.
     await t.test(method, async () => {
       const bytes = await fs.readFile(new URL('./fixtures/webapi-native-portal-write-wire.json', import.meta.url));
       assert.equal(
@@ -272,8 +270,7 @@ test('write-header observations leave default and unrelated204 routes unchanged'
   assert.throws(() => observedConfig({ webApiWriteResponse: 'portal-classic' }), /evidence/);
 });
 
-// @test-kind parity: Paired native collection reads reproduce exact JSON bytes after explicit request/source parameter binding; hidden lookup failures omit both innererror and cdscode.
-// @parity-evidence: webapi-native-portal-read-wire.json binds all seven native successful reads per323 capture plus the identical redacted lookup response, without discarding JSON order or whitespace.
+// @test-kind observation: two authenticated native read cohorts (2026-11-08): fixtures/webapi-native-portal-read-wire.json records exact read bodies and the hidden lookup response with origin and owned-record placeholders, while the requests are keyed to private owned records; not a replay case.
 test('observed record reads reproduce exact native JSON formatting and hidden lookup redaction', async (t) => {
   const bytes = await fs.readFile(new URL('./fixtures/webapi-native-portal-read-wire.json', import.meta.url));
   assert.equal(
@@ -293,8 +290,7 @@ test('observed record reads reproduce exact native JSON formatting and hidden lo
     { title, versionnumber: 17 },
   );
   for (const variant of ['nonempty', 'empty']) {
-    // @test-kind parity: Exact selected collection JSON has native CRLF/two-space layout, property order and source-bound version/identity parameters.
-    // @parity-evidence: The paired read-wire capsule separately retains nonempty and empty native responses and their raw body hashes.
+    // @test-kind observation: exact nonempty and empty read bodies in fixtures/webapi-native-portal-read-wire.json use placeholders bound to a private owned record and origin; not a replay case.
     await t.test(variant, async () => {
       assert.equal(
         createHash('sha256').update(bytes).digest('hex'),
@@ -318,8 +314,7 @@ test('observed record reads reproduce exact native JSON formatting and hidden lo
       }
     });
   }
-  // @test-kind parity: Native hidden lookup envelopes do not reveal the backend status code even with the site's cdscode profile enabled.
-  // @parity-evidence: Both original323 cohorts reproduce the same complete hidden lookup JSON, bound in the read-wire capsule.
+  // @test-kind observation: hidden lookup response in fixtures/webapi-native-portal-read-wire.json is bound to the same private read request; not a replay case.
   await t.test('hidden lookup', () => {
     assert.equal(
       createHash('sha256').update(bytes).digest('hex'),
@@ -420,8 +415,7 @@ test('observed reader messages preserve native classes and causes without changi
   for (const [index, [raw, message]] of cases.entries())
     for (const method of ['POST', 'PATCH']) {
       if ([0, 2, 4, 7].includes(index)) {
-        // @test-kind parity: These existing Int32 decimal/invalid-string, Decimal IEEE conflict and String integer cases reuse two native changed-input reader cohorts; authored literals are parameters of the proven cause families.
-        // @parity-evidence: webapi-native-portal-reader.json records both POST/PATCH for all four families, exact error heads/codes and changed literals A/B,2.25/3.75,2/3; this region protects the original selected input/message universe and proof bytes.
+        // @test-kind observation: fixtures/webapi-native-portal-reader.json records these raw requests and error facets on an invented probes schema, but the field types and odata-wrapper host settings are typed in this test; not a replay case.
         await t.test('native existing typed cause ' + method + ' ' + raw, async () => {
           assert.equal(
             createHash('sha256')
@@ -443,7 +437,6 @@ test('observed reader messages preserve native classes and causes without changi
           const result = await send(app, raw, { method });
           assert.equal(result.status, 400, raw);
           assert.equal(result.body.error.code, '9004010D');
-          // @parity-evidence: Paired fresh native2026-11-08 object-payload POST errors name the resolved entity set; PATCH keeps the empty entity slot. Only the private entity-set name is aliased to probes.
           assert.equal(
             result.body.error.innererror.message,
             (method === 'POST' ? prefix.replace("Entity :''", "Entity :'probes'") : prefix) + message,
@@ -456,7 +449,6 @@ test('observed reader messages preserve native classes and causes without changi
         const result = await send(app, raw, { method });
         assert.equal(result.status, 400, raw);
         assert.equal(result.body.error.code, '9004010D');
-        // @parity-evidence: Paired fresh native2026-11-08 object-payload POST errors name the resolved entity set; PATCH keeps the empty entity slot. Only the private entity-set name is aliased to probes.
         assert.equal(
           result.body.error.innererror.message,
           (method === 'POST' ? prefix.replace("Entity :''", "Entity :'probes'") : prefix) + message,
@@ -467,8 +459,7 @@ test('observed reader messages preserve native classes and causes without changi
       }
       assert.deepEqual(app.store.snapshot().tables, baseline);
     }
-  // @test-kind parity: All eight qualified original typed-reader cases must execute; branch/loop edits cannot silently skip the protected guarantee universe.
-  // @parity-evidence: Paired changed-input portal reader captures bind all four cause families; exact baseline raw inputs and methods are protected by this execution ledger.
+  // @test-kind observation: completeness check of the typed reader universe against fixtures/webapi-native-portal-reader.json; the case inputs and host settings are typed in this test, not replayed.
   await t.test('qualified original typed-reader universe executes completely', () => {
     assert.deepEqual(nativeTypedCases, [
       ['{"quantity":1.5}', 'POST'],
@@ -505,8 +496,7 @@ test('authenticated native portal reader cohorts reproduce selected HTTP error f
   });
   const baseline = app.store.snapshot().tables;
   for (let index = 0; index < 40; index++)
-    // @test-kind parity: Each authored typed POST/PATCH case reproduces native status, error fields, inner cause and property order; CLR suffix bytes are explicitly outside this public projection.
-    // @parity-evidence: webapi-native-portal-reader.json binds both source-derived authenticated native captures, immutable collector/plan hashes and each raw response hash; schema aliases preserve primitive EDM types.
+    // @test-kind observation: fixtures/webapi-native-portal-reader.json records 40 raw requests and selected error facets on an invented probes schema; the odata-wrapper host settings and field types are typed in this test, so the cases are not replay cases.
     await t.test('native portal reader case ' + index, async () => {
       const bytes = await fs.readFile(new URL('./fixtures/webapi-native-portal-reader.json', import.meta.url));
       assert.equal(
@@ -514,7 +504,6 @@ test('authenticated native portal reader cohorts reproduce selected HTTP error f
         '5256a83e1629b5da9f40cd29fa9827e4086d41218accb9f23f4719be639f8590',
       );
       const expected = JSON.parse(bytes).cases[index];
-      // @parity-evidence: The exact literal method and body are checked against the unchanged paired native reader capsule before dispatch.
       const [method, raw] = nativeReaderRequests[index];
       assert.equal(method, expected.method);
       assert.equal(raw, expected.raw);
@@ -551,11 +540,9 @@ test('bounded observed raw-body errors do not widen unsupported JSON grammar or 
     ],
     ['"text"', "Microsoft.OData.ODataException: Invalid JSON. Unexpected token 'text'."],
     ['true', 'Microsoft.OData.ODataException: Invalid JSON. A token was not recognized in the JSON content.'],
-    // @parity-evidence: Two fresh authenticated lexer cohorts reproduce false with the same unrecognized-token cause; this branch is no longer an unqualified diagnostic.
     ['false', 'Microsoft.OData.ODataException: Invalid JSON. A token was not recognized in the JSON content.'],
   ]) {
-    // @test-kind parity: Existing raw-root assertions reproduce both authenticated323 captures; false is separately reproduced in the gateway pair.
-    // @parity-evidence: webapi-native-portal-gateway.json binds exact original raw inputs, error heads/codes and raw native hashes to the capture pairs and durable recovery receipt.
+    // @test-kind observation: raw-root errors from two authenticated gateway lexer captures (2026-11-08) in fixtures/webapi-native-portal-gateway.json; the portal settings and raw inputs are typed in this test. Lexer cohorts reproduce false with the same unrecognized-token cause; not a replay case.
     await t.test('native existing raw root ' + raw, async () => {
       const bytes = await fs.readFile(new URL('./fixtures/webapi-native-portal-gateway.json', import.meta.url));
       assert.equal(
@@ -575,8 +562,7 @@ test('bounded observed raw-body errors do not widen unsupported JSON grammar or 
     });
     assert.deepEqual(app.store.snapshot().tables, baseline);
   }
-  // @test-kind parity: Enumeration completeness protects all eight reproduced native root guarantees from being skipped outside their nested proof regions.
-  // @parity-evidence: The protected fixture contains seven exact original roots plus the independently paired false root; each must execute above.
+  // @test-kind observation: completeness of the raw-root guarantees against fixtures/webapi-native-portal-gateway.json originalRoots; inputs and settings are typed in this test, not replayed.
   await t.test('native raw-root proof bindings cover every original guarantee', async () => {
     const bytes = await fs.readFile(new URL('./fixtures/webapi-native-portal-gateway.json', import.meta.url));
     assert.equal(
@@ -618,8 +604,7 @@ test('bounded observed raw-body errors do not widen unsupported JSON grammar or 
   ];
   const provenPrimitiveExecutions = [];
   for (const [raw, fragment] of provenPrimitiveCases) {
-    // @test-kind parity: Existing primitive-array and invalid-Boolean-string assertions reuse repeated native changed-input cause families; rejected-write atomicity remains local contract below.
-    // @parity-evidence: webapi-native-portal-reader.json proves invalid Boolean strings in POST/PATCH with A/B literals; webapi-native-portal-gateway.json proves the primitive StartArray cause with two nonempty-array holdouts. Exact first cause fragment is independent of array contents.
+    // @test-kind observation: invalid Boolean-string and primitive StartArray fragments from fixtures/webapi-native-portal-reader.json and fixtures/webapi-native-portal-gateway.json; inputs and host settings are typed in this test, not replay cases.
     await t.test('native existing primitive fragment ' + raw, async () => {
       assert.equal(
         createHash('sha256')
@@ -645,8 +630,7 @@ test('bounded observed raw-body errors do not widen unsupported JSON grammar or 
     });
     assert.deepEqual(app.store.snapshot().tables, baseline);
   }
-  // @test-kind parity: Both qualified existing primitive-fragment cases must execute, with their exact original raw input and expected-fragment universe.
-  // @parity-evidence: The two protected repeated native capsules bind the StartArray and invalid Boolean-string guarantees; this checksum is over actual completed cases.
+  // @test-kind observation: completeness check of the two typed primitive-fragment cases against fixtures/webapi-native-portal-reader.json and fixtures/webapi-native-portal-gateway.json; not a replay case.
   await t.test('both original primitive fragments execute', () => {
     assert.equal(
       createHash('sha256').update(JSON.stringify(provenPrimitiveExecutions)).digest('hex'),
@@ -679,8 +663,7 @@ test('authenticated gateway lexer and actual changed-input reader holdouts repro
   });
   const proven = [];
   for (let index = 0; index < 37; index++) {
-    // @test-kind parity: Every selected gateway input reproduces native status and the complete error JSON before CLR suffix; an empty encoded object reproduces the native204.
-    // @parity-evidence: webapi-native-portal-gateway.json contains the paired authenticated lexer/changed-input captures, exact native response hashes and source hashes; field aliases preserve source policy membership.
+    // @test-kind observation: fixtures/webapi-native-portal-gateway.json records raw requests and selected error facets on an invented schema; the odata-wrapper host settings and field aliases are typed in this test, so the cases are not replay cases.
     await t.test('native gateway case ' + index, async () => {
       const bytes = await fs.readFile(new URL('./fixtures/webapi-native-portal-gateway.json', import.meta.url));
       assert.equal(
@@ -688,7 +671,6 @@ test('authenticated gateway lexer and actual changed-input reader holdouts repro
         'f108c8385ff517834e9a7ae97d3bae41195a5facb69bf5cf3f25f8b9322d3a69',
       );
       const entry = JSON.parse(bytes).cases[index];
-      // @parity-evidence: The exact literal method and body are checked against the unchanged paired native gateway capsule before dispatch.
       const [method, raw] = nativeGatewayRequests[index];
       assert.equal(method, entry.method);
       assert.equal(raw, entry.raw);
@@ -703,8 +685,7 @@ test('authenticated gateway lexer and actual changed-input reader holdouts repro
     assert.equal(row.title, 'Original', 'local authored-field atomicity is independently retained');
     assert.equal(row.quantity, 2);
   }
-  // @test-kind parity: Completeness and literal source checksums protect all case definitions and expected bytes, including the loop's enumeration outside nested parity bodies.
-  // @parity-evidence: The fixture binds37 distinct authored inputs across reproduced native reader families; all37 exact case identities must execute.
+  // @test-kind observation: completeness and checksum binding of the typed gateway case definitions to fixtures/webapi-native-portal-gateway.json; not a replay case.
   await t.test('native gateway proof bindings cover every case', async () => {
     const bytes = await fs.readFile(new URL('./fixtures/webapi-native-portal-gateway.json', import.meta.url));
     assert.equal(
@@ -720,7 +701,7 @@ test('authenticated gateway lexer and actual changed-input reader holdouts repro
   });
 });
 
-// @test-kind security: Decoding an observed gateway object string preserves field guards and prevents forbidden or private writes.
+// @test-kind security: Decoding an observed gateway object string preserves field-level checks and prevents forbidden or private writes.
 test('encoded object strings retain ordinary field and private-column denial before any mutation', async (t) => {
   // Native accepted and persisted this forbidden-column transport twice; the local security boundary deliberately remains stricter.
   const nativeBytes = await fs.readFile(

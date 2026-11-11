@@ -1,4 +1,4 @@
-// @test-kind observation: recorded native draft choice-control cases pending reviewed public evidence capsule.
+// @test-kind observation: two native draft choice-control recordings in fixtures/model-driven-choice-native-facts.json are pinned by SHA-256 before any case runs; the selector and mutation fixtures are read by the tests below, whose inputs are typed or recorded as labels, so none is a replay case.
 import test, { before } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -25,7 +25,6 @@ const bytes = readFileSync(new URL('./fixtures/model-driven-choice-native-facts.
 
 const evidence = JSON.parse(bytes);
 
-// @parity-evidence: existing native fixture and probe SHA-256 pins are checked before any recorded case executes.
 before(() => {
   assert.equal(
     createHash('sha256').update(bytes).digest('hex'),
@@ -33,8 +32,7 @@ before(() => {
   );
 });
 
-// @test-kind parity: independently repeated native draft source-bound choice and multiselect sibling mutations.
-// @parity-evidence: mirage/test/fixtures/model-driven-choice-native-facts.json binds source, probe and both typed native captures, including the NaN blank option.
+// @test-kind observation: two native draft captures in fixtures/model-driven-choice-native-facts.json bind source, probe and typed results including the NaN blank option; the operation is recorded as prose and the caller mutation is typed here, so it is not a replay case.
 test('recorded source-bound sibling options follow the same caller mutation', () => {
   for (const capture of evidence.captures)
     for (const [role, type] of [
@@ -107,8 +105,7 @@ for (const type of ['number', 'multiselect']) {
   });
 }
 
-// @test-kind parity: two repeated source-bound native form selector recordings.
-// @parity-evidence: mirage/test/fixtures/model-driven-selector-native-facts.json projects native identity and null results without exposing the source form ID.
+// @test-kind observation: two native form selector recordings in fixtures/model-driven-selector-native-facts.json project identity and null results; the argument is recorded only as a shape label, so it is not a replay case.
 test('form selector resolves the recorded ID spelling and rejects other spellings', () => {
   const selectorBytes = readFileSync(new URL('./fixtures/model-driven-selector-native-facts.json', import.meta.url));
   assert.equal(
@@ -151,8 +148,7 @@ test('form selector resolves the recorded ID spelling and rejects other spelling
   runtime.destroy();
 });
 
-// @test-kind parity: repeated native mutations on a reset two-option choice and multiselect control.
-// @parity-evidence: mirage/test/fixtures/model-driven-choice-mutation-native-facts.json retains both typed native executions and the exact reset and operation sequence.
+// @test-kind observation: native choice and multiselect mutation executions in fixtures/model-driven-choice-mutation-native-facts.json record reset, argument and result; the operation is recorded as a label and its call sequence is typed here, so it is not a replay case.
 test('recorded choice mutation arguments and option ordering', () => {
   const mutationBytes = readFileSync(
     new URL('./fixtures/model-driven-choice-mutation-native-facts.json', import.meta.url),

@@ -1,17 +1,15 @@
-// @test-kind parity: two native UCI draft captures on 2026-11-08 reproduce control/layout APIs, dirty readbacks and notification results; fixtures/frontend-parity-evidence.md.
+// @test-kind observation: two native UCI draft captures on 2026-11-08 produced the 50 rows of fixtures/model-driven-presentation-expected.json, SHA256 da569c053dd3237e6dad9fc38a0d428df16eb581b1b47d0576ee02db6d7de325, from the probe with SHA256 d1d101c72488f3b03c7a83f0448e4b6f20450bc1b485e26a9199e2ed93d37992 (presentation-plan.json SHA256 093da88d2528d33989e5306a7692df6e9ddf136e733050572671099ed6255b66, not committed); see fixtures/frontend-parity-evidence.md. The tab, section and field inputs are typed in fixtures/model-driven-presentation.mjs, so no replay case records them.
 import test, { before } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import { captureModelDrivenPresentationContract } from '../testing/model-driven-presentation.mjs';
 import { presentationFixture } from './fixtures/model-driven-presentation.mjs';
-// @parity-evidence: both native captures executed this exact serialized function; native source plan and fixture hashes are retained separately.
 
 const bytes = fs.readFileSync(new URL('./fixtures/model-driven-presentation-expected.json', import.meta.url));
 
 const expected = JSON.parse(bytes);
 let actual;
-// @parity-evidence: existing native fixture and probe SHA-256 pins are checked before any recorded case executes.
 before(async () => {
   assert.equal(
     createHash('sha256').update(captureModelDrivenPresentationContract.toString()).digest('hex'),

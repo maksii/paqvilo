@@ -23,7 +23,7 @@ after(() => listener?.close());
 
 const rootOf = (tree) => tree.spans.find((span) => span.parentSpanId === null);
 
-// @test-kind contract+unproven: tracing is local; the Dataverse listener result is not native-qualified
+// @test-kind contract+unproven: tracing is local; the Dataverse listener result has no native capture.
 test('the listener root keeps its query, its answer-changing headers and its body at full, and names its caller', async () => {
   const created = await listener.request('POST', `${API}fx_widgets`, {
     body: { fx_name: 'Invented one' },
@@ -46,7 +46,7 @@ test('the listener root keeps its query, its answer-changing headers and its bod
   assert.equal(readRoot.input.body, undefined);
 });
 
-// @test-kind contract+unproven: tracing is local; the Dataverse listener result is not native-qualified
+// @test-kind contract+unproven: tracing is local; the Dataverse listener result has no native capture.
 test('at level summary the listener root keeps the content type and length but no payload', async () => {
   listener.traces.configure({ level: 'summary' });
   try {
@@ -61,7 +61,7 @@ test('at level summary the listener root keeps the content type and length but n
   }
 });
 
-// @test-kind contract+unproven: tracing is local; the Dataverse listener result is not native-qualified
+// @test-kind contract+unproven: tracing is local; the Dataverse listener result has no native capture.
 test('a refused bearer names why on the denied root: no token, or the reason the token was refused', async () => {
   const missing = await listener.request('GET', `${API}WhoAmI`, { bearer: null });
   assert.equal(missing.status, 401);
@@ -74,7 +74,7 @@ test('a refused bearer names why on the denied root: no token, or the reason the
   assert.deepEqual([refused.status, refused.error.message], ['denied', 'The access token was refused (malformed).']);
 });
 
-// @test-kind contract+unproven: tracing is local; the Dataverse listener result is not native-qualified
+// @test-kind contract+unproven: tracing is local; the Dataverse listener result has no native capture.
 test('an error the listener answers itself (the Dataverse envelope) is the root error with its code and message', async () => {
   const answer = await listener.request('GET', `${API}fx_widgets`, { headers: { 'odata-version': '4.5' } });
   assert.equal(answer.status, 412);
@@ -85,7 +85,7 @@ test('an error the listener answers itself (the Dataverse envelope) is the root 
   assert.equal(root.error.status, 412);
 });
 
-// @test-kind contract+unproven: tracing is local; the Dataverse listener result is not native-qualified
+// @test-kind contract+unproven: tracing is local; the Dataverse listener result has no native capture.
 test('WhoAmI and RetrieveTotalRecordCount open a function span named by the message with its parameters and answer', async () => {
   const whoAmI = await listener.request('GET', `${API}WhoAmI`);
   assert.equal(whoAmI.status, 200);
@@ -106,7 +106,7 @@ test('WhoAmI and RetrieveTotalRecordCount open a function span named by the mess
   assert.deepEqual(count.output.EntityRecordCountCollection.Keys, ['fx_widget']);
 });
 
-// @test-kind contract+unproven: tracing is local; the Dataverse listener result is not native-qualified
+// @test-kind contract+unproven: tracing is local; the Dataverse listener result has no native capture.
 test('a registered function opens its span named by the operation; a failing one carries its error', async () => {
   const echoed = await listener.request('GET', `${API}fx_Echo(Text='invented')`);
   assert.equal(echoed.status, 200);
@@ -124,7 +124,7 @@ test('a registered function opens its span named by the operation; a failing one
   assert.deepEqual([failed.status, failed.error.code], ['error', 'InvalidKey']);
 });
 
-// @test-kind contract+unproven: tracing is local; the Dataverse listener result is not native-qualified
+// @test-kind contract+unproven: tracing is local; the Dataverse listener result has no native capture.
 test('CreateMultiple through the Web API opens one bulk span with the table and target count, no dispatch span', async () => {
   const answer = await listener.request('POST', `${API}fx_widgets/Microsoft.Dynamics.CRM.CreateMultiple`, {
     body: {
@@ -153,7 +153,7 @@ test('CreateMultiple through the Web API opens one bulk span with the table and 
   );
 });
 
-// @test-kind contract+unproven: tracing is local; the Dataverse listener result is not native-qualified
+// @test-kind contract+unproven: tracing is local; the Dataverse listener result has no native capture.
 test('at level off the listener reads nothing from the trace store but its level', async () => {
   const off = createTraceStore({ settings: { level: 'off' } });
   const reads = [];
@@ -177,7 +177,7 @@ test('at level off the listener reads nothing from the trace store but its level
   }
 });
 
-// @test-kind contract+unproven: tracing is local; the Dataverse listener result is not native-qualified
+// @test-kind contract+unproven: tracing is local; the Dataverse listener result has no native capture.
 test('the application caller is the actor of every span of a listener request', async () => {
   const answer = await listener.request('GET', `${API}fx_widgets?$select=fx_name`);
   const tree = await listener.tree(answer.traceId);

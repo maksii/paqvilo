@@ -1,5 +1,4 @@
-// @test-kind parity: reproduced native Canvas v5/v6 flows qualify direct-card versus nested input resets, authored DefaultMode, Back/OnVisible delivery and positive en-US date/time values.
-// @parity-evidence: canvas-form-reset-native.json protects two source-bound runs of each isolated native probe, original OnVisible bytes, exact producers and positive callback markers.
+// @test-kind observation: two native Canvas v5 and v6 player runs recorded in fixtures/canvas-form-reset-native.json (2026-11-08, sha256 c25852ab...); the source edits and player actions are typed in these tests and the fixture does not record them, so the tests are not replay cases.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -120,7 +119,6 @@ test('native ResetForm and NewForm reset direct-card controls, preserve nested i
   for (const key of ['singleVisible', 'multiVisible', 'single', 'multi'])
     assert.deepEqual(reopened[key], nativeReopened[key]);
 });
-// @parity-evidence: canvas-form-reset-native.json binds two native Canvas v5/v6 runs; app: 'canvas' selects that evidenced host profile while preserving the exact expressions and expected scalar values.
 test('native positive time and numeric slash-date components reproduce the observed en-US values', () => {
   const run = (formula) =>
     powerFxEngine.evaluateSync(formula, { host: { app: 'canvas', timeZone: 'UTC', variables: {}, context: {} } }).value;

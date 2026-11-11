@@ -1,5 +1,4 @@
-// @test-kind parity: two source-bound native draft recordings of direct choice PCF option calls.
-// @parity-evidence: mirage/test/fixtures/model-driven-pcf-caller-native-facts.json retains typed source, reset, argument, result and sibling readback for all 18 cases in each run.
+// @test-kind observation: two source-bound native draft recordings in fixtures/model-driven-pcf-caller-native-facts.json record direct choice PCF option calls; the control definition and the operation for each case label are typed in these tests, so they are not replay cases.
 import test, { before, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -12,7 +11,6 @@ const bytes = readFileSync(new URL('./fixtures/model-driven-pcf-caller-native-fa
 const evidence = JSON.parse(bytes);
 
 describe('native PCF caller contract', () => {
-  // @parity-evidence: existing native fixture and probe SHA-256 pins are checked before any recorded case executes.
   before(() => {
     assert.equal(
       createHash('sha256').update(bytes).digest('hex'),

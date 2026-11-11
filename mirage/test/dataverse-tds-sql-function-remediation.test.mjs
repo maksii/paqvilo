@@ -1,4 +1,4 @@
-// @test-kind unproven: These local regression checks do not independently qualify original SQL cases.
+// @test-kind unproven: These local regression checks do not independently establish the original SQL cases.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { callFunction } from '../lib/dataverse-tds-sql-functions.mjs';

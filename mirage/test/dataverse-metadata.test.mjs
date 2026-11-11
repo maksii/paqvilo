@@ -482,8 +482,7 @@ test('many-to-many returns the intersect with both sides', () => {
   assert.deepEqual(mapped.relationships({ cast: '#Microsoft.Dynamics.CRM.ManyToManyRelationshipMetadata' }), [m2m]);
 });
 
-// @test-kind parity: Native service documents enumerate their independent CSDL EntitySets in declaration order, rather than sorting their names.
-// @parity-evidence: dataverse-native-service-document.json binds both native878-set responses and independent CSDL files; this corrects the previous unproven alphabetical expectation.
+// @test-kind observation: two native 878-entity-set service-document responses in fixtures/dataverse-native-service-document.json (response hashes, entity-set counts and independent CSDL facts only); this replaces the former unproven alphabetical expectation and its checks are typed here, so it is not a replay case.
 test('service document follows the CSDL entity-set declaration order', async () => {
   const bytes = await readFile(new URL('./fixtures/dataverse-native-service-document.json', import.meta.url));
   assert.equal(

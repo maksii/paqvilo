@@ -7,23 +7,23 @@ expression/result fixture with SHA-256 and verifies each assertion against that 
 
 The existing 193-case language matrix now has 147 exact value cases reproduced twice by the
 PAC evaluator, 13 unchanged fixed-clock cases reproduced by the official Microsoft evaluator
-libraries through their supported hosting APIs, and one original GUID expression qualified as semantic error kind25.
+libraries through their supported hosting APIs, and one original GUID expression classified as semantic error kind25.
 All 193 expressions remain in the matrix. The original 45-case unproven backlog remains
-fully itemized; 13 of those cases are now qualified, leaving 32 unproven checks.
+fully itemized; 13 of those cases are now reproduced, leaving 32 unproven checks.
 Package captures exposed incorrect exponent
 associativity, discarded blank `ForAll` rows, rejected overflowing time-of-day input and
 overly permissive GUID formats. Those implementations and former local expectations were
 corrected from the repeated results. An additional repeated positive-value corpus binds the
 actual time components, blank table row, eight GUID formats and explicit en-US formatting.
-Host-culture outputs and CLI compile failures do not qualify Canvas host behavior.
+Host-culture outputs and CLI compile failures do not establish Canvas host behavior.
 
-`power-fx-clock-official-evidence.json` binds the exact C# host, project, executed DLL,
+`mirage/test/parity/cases/power-fx/clock-official.json` (converted from the former power-fx clock evidence fixture) binds the exact C# host, project, executed DLL,
 unchanged 18-case input and two separate process captures. The host registers the actual
 `IClockService`, Pacific `TimeZoneInfo` and en-US `CultureInfo` services without replacement
 formula functions. Thirteen original expectations match unchanged. Two no-argument
 `TimeZoneOffset` cases read the real system clock in this package, and three UTC-function
 cases are unsupported by this interpreter; those five remain unproven. The original test
-matrix protects the capsule, producer and original host conditions inside a parity guard.
+matrix covers the producer and original host conditions.
 
 The official `@microsoft/power-apps` 1.5.0 package also reproduced the four resolved-context
 cache checks in two fresh Node processes. The SDK received an authored response through its
@@ -42,9 +42,9 @@ Private repeatable runners and raw receipts live in the developer workbench proj
 `canvas-apps-parity/` and `code-apps-parity/`, under ignored `.paqvilo/evidence/2026-11-08/`.
 Their offline evidence tests verify capture and probe hashes and replay current local behavior.
 These package guarantees do not establish native Canvas controls, visual rendering or connector
-behavior. Separate repeated native Code Apps captures qualify13 allowlisted context checks and
-the four cache checks in `code-apps-native-context.test.mjs`; they do not qualify optional host
-fields or general host transport. Separate repeated native Canvas recordings qualify the11-row
+behavior. Separate repeated native Code Apps captures establish 13 allowlisted context checks and
+the four cache checks in `code-apps-native-context.test.mjs`; they do not establish optional host
+fields or general host transport. Separate repeated native Canvas recordings establish the 11-row
 draft input/cancel/retention/reopen flow and the bounded form reset topology, callback, mode and
 positive date/time guarantees in `canvas-form-reset-parity.test.mjs`. Native form evidence
 distinguishes direct-card inputs from custom inputs inside nested containers; it does not

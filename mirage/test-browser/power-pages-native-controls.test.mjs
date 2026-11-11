@@ -1,5 +1,4 @@
-// @test-kind parity: repeated2026-11-08 native source-selected form/control202 and client189 arrays plus26 positive source-label/property diagnostics; frontend-parity-evidence.json binds exact native producers and fixtures.
-// @parity-evidence: current native FormXml/basic-form script readbacks; pages-controls-native-{1,2}.json and pages-client-diagnostic.json reproduce in actual exported and invented local forms.
+// @test-kind observation: two native portal runs (2026-11-08) and a producer refresh (2026-11-09) recorded as hashes in fixtures/frontend-parity-evidence.json and fixtures/power-pages-controls-producer-refresh-2026-11-09.json; raw captures are not committed and the field and group input is typed in the fixture module, so it is not a replay case
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -17,11 +16,9 @@ const read = (name, checksum) => {
 
 let controls, client, properties;
 
-// @parity-evidence: frontend-parity-evidence.json and the repeated native controls/client/property captures bind the original probes and expected fixtures. The same pinned setup checks run before the tests.
 test.before(() => {
   assert.equal(
     createHash('sha256').update(capturePowerPagesControlContract.toString()).digest('hex'),
-    // @parity-evidence: two fresh native portal runs on 2026-11-09 reproduce the same ordered 202 results and fixture SHA256 6497bea4d8e3307073c5dacfeb6d74ee679bf4b3799153bd83afd2cfc2271d78; see power-pages-controls-producer-refresh-2026-11-09.json.
     '3c2c3fb1447e7ac650005f4db0cf5b503717f2c9a12ef49ec39729978260814b',
   );
   assert.equal(

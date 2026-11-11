@@ -1,4 +1,4 @@
-// @test-kind unproven: held or unreviewed platform-sensitive behavior has no native proof in this review.
+// @test-kind unproven: the checks in this file exercise solution security import with local fixtures; no native capture establishes the behaviour they assert.
 // Solution security roles and field security profiles become rows of the security tables; a managed import replaces a
 // custom role's privileges.
 import test from 'node:test';

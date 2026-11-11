@@ -1,5 +1,4 @@
-// @test-kind parity: Two independent Microsoft SQL Server 2022 engine captures establish these exact function results.
-// @parity-evidence: fixtures/dataverse-sql-server-function-facts.json SHA-256 e6aa0995861d943219e153b10df0815bd8d62ad7b5c07978f008b02f2f01c9f5; SQL Server engine only, not Dataverse TDS transport.
+// @test-kind observation: fixtures/dataverse-sql-server-function-facts.json (SHA-256 e6aa0995861d943219e153b10df0815bd8d62ad7b5c07978f008b02f2f01c9f5) records two SQL Server 2022 processes; these tests call callFunction with arguments typed here and look facts up by name, so they are not replay cases. SQL Server engine only, not Dataverse TDS transport.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

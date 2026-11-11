@@ -6,26 +6,7 @@ import { createHash } from 'node:crypto';
 import { specimenApi, ID, PART } from './support/specimen-api.mjs';
 import { captureWebApiInputContract } from '../testing/webapi-contract.mjs';
 
-// @test-kind parity: Native unsupported-query holdouts reproduced twice with identical raw body hashes; only the private table route is replaced by invented specimens.
-// @parity-evidence: webapi-native-query.json preserves the three authored inputs, exact response JSON, capture pair body hashes and collector/plan SHA256.
-test('Dataverse unsupported query options retain the native redacted-name error', async (t) => {
-  const queryBytes = fs.readFileSync(new URL('./fixtures/webapi-native-query.json', import.meta.url));
-  assert.equal(
-    createHash('sha256').update(queryBytes).digest('hex'),
-    'be47d4f9be565ad8439893a39b11d536b058bc2766ebbdef126f9d94e1e91cdb',
-  );
-  const queryProof = JSON.parse(queryBytes);
-  const { request } = await specimenApi(t);
-  for (const entry of queryProof.cases)
-    await t.test(entry.id, async () => {
-      const response = await request('specimens?' + new URLSearchParams({ [entry.key]: entry.value }));
-      assert.equal(response.status, entry.status);
-      assert.deepEqual(await response.json(), entry.body);
-    });
-});
-
-// @test-kind parity: Two full native1071 rounds reproduce HTTP400 and exact codes for the six authored invalid PATCH values; fixture binds both native runs and collector sources.
-// @parity-evidence: webapi-native-input-errors.json records exact case IDs, status/code guarantees and both raw native response hashes; private schema names alone are replaced by invented fields.
+// @test-kind observation: two full native rounds (2026-11-08) recorded in fixtures/webapi-native-input-errors.json as case ids, status, code and raw response hashes; the six invalid PATCH values are typed in mirage/testing/webapi-contract.mjs and the oracle request is not recorded, so this is not a replay case.
 test('Dataverse rejects invalid HTTP primitives before an Upsert SDK existence observer', async (t) => {
   const inputBytes = fs.readFileSync(new URL('./fixtures/webapi-native-input-errors.json', import.meta.url));
   assert.equal(

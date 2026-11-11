@@ -1,5 +1,4 @@
-// @test-kind security: plug-in SDK calls run as the CreateOrganizationService user (null SYSTEM, Guid.Empty the step's user, else that user) and are authorized by that user's Dataverse security roles; a user without the privilege is refused with the native privilege fault
-// @parity-evidence: user explicitly approved C16 on 2026-10-30 (native run-as roles replace the grant profile); factory semantics from Microsoft Learn IOrganizationServiceFactory.CreateOrganizationService
+// @test-kind security: plug-in SDK calls run as the CreateOrganizationService user (null SYSTEM, Guid.Empty the step's user, else that user) and are authorized by that user's Dataverse security roles; a user without the privilege is refused with the native privilege fault. Native run-as roles replace the grant profile (user decision 2026-10-30); factory semantics are from Microsoft Learn IOrganizationServiceFactory.CreateOrganizationService.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';

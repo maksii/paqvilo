@@ -97,8 +97,7 @@ test('form client APIs dispatch async events, track edits and cancel OnSave with
   attribute.addOnChange(async (context) => {
     await Promise.resolve();
     changes++;
-    // @test-kind parity: reproduced native2026-11-08 UCI text.fireOnChange source identity; frontend-parity-evidence.json model-driven suite.
-    // @parity-evidence: both retained121-result captures use the checksum-bound expected fixture and producer below; only this original assertion is qualified.
+    // @test-kind observation: native UCI text.fireOnChange source identity was recorded on 2026-11-08 and two fresh UCI runs on 2026-11-09 reproduced the same ordered 121 cases in fixtures/model-driven-contract-expected.json (SHA256 99de1dcf0a8b390347e3780db499c30224c1dd39914995bcdf2a414faa2823a8); the event-context and producer-source assertions are typed in this test, so it is not a replay case.
     await t.test('native change context exposes its source attribute', () => {
       assert.equal(
         createHash('sha256')
@@ -108,7 +107,6 @@ test('form client APIs dispatch async events, track edits and cancel OnSave with
       );
       assert.equal(
         createHash('sha256').update(captureModelDrivenContract.toString()).digest('hex'),
-        // @parity-evidence: two fresh native UCI runs on 2026-11-09 reproduce the same ordered 121 cases (fixture SHA256 99de1dcf0a8b390347e3780db499c30224c1dd39914995bcdf2a414faa2823a8); full post-state matches the unchanged public control. See model-driven-producer-refresh-2026-11-09.json.
         'e80b3ac30fc180e3f62b25b21bc07ddbc5b6e74d93cfd67a67959587b044ecf3',
       );
       assert.equal(context.getEventSource(), attribute);
@@ -116,8 +114,7 @@ test('form client APIs dispatch async events, track edits and cancel OnSave with
     context.getFormContext().getAttribute('x_quantity').setValue(3);
   });
   attribute.setValue('Silver');
-  // @test-kind parity: reproduced native2026-11-08 UCI text.setValue.eventCount; frontend-parity-evidence.json model-driven suite.
-  // @parity-evidence: both retained121-result captures use the checksum-bound expected fixture and producer below; only this original assertion is qualified.
+  // @test-kind observation: native UCI text.setValue.eventCount recorded on 2026-11-08 in the 121-case fixtures/model-driven-contract-expected.json (SHA256 99de1dcf0a8b390347e3780db499c30224c1dd39914995bcdf2a414faa2823a8); the OnChange dormancy and producer-source assertions are typed in this test, so it is not a replay case.
   await t.test('native setValue leaves OnChange dormant', () => {
     assert.equal(
       createHash('sha256')
@@ -127,7 +124,6 @@ test('form client APIs dispatch async events, track edits and cancel OnSave with
     );
     assert.equal(
       createHash('sha256').update(captureModelDrivenContract.toString()).digest('hex'),
-      // @parity-evidence: two fresh native UCI runs on 2026-11-09 reproduce the same ordered 121 cases (fixture SHA256 99de1dcf0a8b390347e3780db499c30224c1dd39914995bcdf2a414faa2823a8); full post-state matches the unchanged public control. See model-driven-producer-refresh-2026-11-09.json.
       'e80b3ac30fc180e3f62b25b21bc07ddbc5b6e74d93cfd67a67959587b044ecf3',
     );
     assert.equal(changes, 0, 'setValue does not implicitly fire OnChange');
@@ -135,8 +131,7 @@ test('form client APIs dispatch async events, track edits and cancel OnSave with
   await attribute.fireOnChange();
   assert.equal(changes, 1);
   assert.equal(record.x_quantity, 3);
-  // @test-kind parity: reproduced native2026-11-08 UCI dirty text edit and getIsDirty; frontend-parity-evidence.json model-driven-dirty suite.
-  // @parity-evidence: both retained82-result dirty captures use the checksum-bound expected fixture and producer below; only this original assertion is qualified.
+  // @test-kind observation: native UCI dirty text edit and getIsDirty recorded on 2026-11-08 in the 82-result fixtures/model-driven-dirty-expected.json; the attribute and form setup is typed in this test, so it is not a replay case.
   await t.test('native changed text attribute is dirty', () => {
     assert.equal(
       createHash('sha256')
@@ -162,10 +157,8 @@ test('form client APIs dispatch async events, track edits and cancel OnSave with
   );
   assert.deepEqual(notices[0], ['Explain why', 'ERROR', 'validation']);
   assert.throws(() => runtime.Xrm.Utility.getGlobalContext().organizationSettings, /does not support/);
-  // @parity-evidence: two native UCI draft-form captures on 2026-11-08 accept always/never; see mirage/test/fixtures/frontend-parity-evidence.md.
   runtime.formContext.getAttribute('x_name').setSubmitMode('always');
-  // @test-kind parity: reproduced native2026-11-08 UCI text.submit.always; frontend-parity-evidence.json model-driven suite.
-  // @parity-evidence: both retained121-result captures use the checksum-bound expected fixture and producer below; only this original assertion is qualified.
+  // @test-kind observation: native UCI text.submit.always was accepted on 2026-11-08 in two draft-form captures (fixtures/frontend-parity-evidence.md) and the 121-case fixtures/model-driven-contract-expected.json; the submit assertions are typed in this test, so it is not a replay case.
   await t.test('native submit mode always is accepted and retained', () => {
     assert.equal(
       createHash('sha256')
@@ -175,7 +168,6 @@ test('form client APIs dispatch async events, track edits and cancel OnSave with
     );
     assert.equal(
       createHash('sha256').update(captureModelDrivenContract.toString()).digest('hex'),
-      // @parity-evidence: two fresh native UCI runs on 2026-11-09 reproduce the same ordered 121 cases (fixture SHA256 99de1dcf0a8b390347e3780db499c30224c1dd39914995bcdf2a414faa2823a8); full post-state matches the unchanged public control. See model-driven-producer-refresh-2026-11-09.json.
       'e80b3ac30fc180e3f62b25b21bc07ddbc5b6e74d93cfd67a67959587b044ecf3',
     );
     assert.equal(runtime.formContext.getAttribute('x_name').getSubmitMode(), 'always');
@@ -201,8 +193,7 @@ function attributeTypesFixture() {
   });
 }
 
-// @test-kind parity: native money, decimal and single-choice getAttributeType results are reproduced in both121-case2026-11-08 captures; frontend-parity-evidence.json.
-// @parity-evidence: the original three type assertions reproduce the recorded money/decimal/optionset guarantees; option-by-label lookup remains a separate toolkit contract.
+// @test-kind observation: native money, decimal and single-choice getAttributeType results recorded in both 121-case captures on 2026-11-08 (fixtures/model-driven-contract-expected.json); the metadata is typed in this test and option-by-label lookup is a separate toolkit contract, so it is not a replay case.
 test('client attribute types derive from exported metadata', () => {
   const { runtime } = attributeTypesFixture();
   assert.equal(runtime.formContext.getAttribute('x_amount').getAttributeType(), 'money');
@@ -387,8 +378,7 @@ test('multiselect form values expose numeric arrays and Xrm writes translate nat
   });
   record.x_choices = '1,2';
   const attribute = runtime.formContext.getAttribute('x_choices');
-  // @test-kind parity: reproduced native2026-11-08 multi.getAttributeType=multiselectoptionset in both121-result captures; frontend-parity-evidence.json.
-  // @parity-evidence: only the original multiselect type assertion is promoted; value cloning, text lookup and write translation remain outside this region.
+  // @test-kind observation: native UCI multi.getAttributeType=multiselectoptionset recorded in both 121-result captures on 2026-11-08 (fixtures/model-driven-contract-expected.json); the multiselect setup is typed in this test, so it is not a replay case.
   await t.test('native multiselect attribute retains its declared type', () => {
     assert.equal(
       createHash('sha256')
@@ -398,7 +388,6 @@ test('multiselect form values expose numeric arrays and Xrm writes translate nat
     );
     assert.equal(
       createHash('sha256').update(captureModelDrivenContract.toString()).digest('hex'),
-      // @parity-evidence: two fresh native UCI runs on 2026-11-09 reproduce the same ordered 121 cases (fixture SHA256 99de1dcf0a8b390347e3780db499c30224c1dd39914995bcdf2a414faa2823a8); full post-state matches the unchanged public control. See model-driven-producer-refresh-2026-11-09.json.
       'e80b3ac30fc180e3f62b25b21bc07ddbc5b6e74d93cfd67a67959587b044ecf3',
     );
     assert.equal(attribute.getAttributeType(), 'multiselectoptionset');
@@ -664,7 +653,6 @@ test('page context, version, openUrl, form selector and tab visibility follow Le
   assert.deepEqual(opened, [['http://127.0.0.1:1234/api/data/v9.2/x_items', '_blank', 'noopener']]);
   assert.throws(() => runtime.Xrm.Navigation.openUrl('javascript:alert(1)'), /http\(s\) addresses only/);
   const selector = runtime.formContext.ui.formSelector;
-  // @parity-evidence: model-driven-single-form-lookup-native-facts.json current-id in both source-bound runs returns the source form ID as a lowercase bare GUID; run hashes 9d80c62657f35145f0aa81e6ddaba2fa1345fd804ddeb440b6f296fdfb422192 and a1d7e36fde479212a64beba38f6e4d522cbc63cee4fe56b313d221de3be9382e.
   const formIdProofBytes = readFileSync(
     new URL('./fixtures/model-driven-single-form-lookup-native-facts.json', import.meta.url),
   );

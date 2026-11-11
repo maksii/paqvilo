@@ -329,8 +329,7 @@ test('named message steps are executable, global ones match every table and neve
   }
 });
 
-// @test-kind contract: Paqvilo refuses a chosen step on a named message whose local entry point has no pipeline (501) instead of skipping it
-// @parity-evidence: native recorder corpus 2026-10-30 soapMessages (two captures): SOAP Assign runs the Assign pipeline, so the local refusal moves out of the file's parity tag
+// @test-kind contract: Paqvilo refuses a chosen step on a named message whose local entry point has no pipeline (501) instead of skipping it; the native recorder corpus of 2026-10-30 (soapMessages, two captures) shows that SOAP Assign runs the Assign pipeline, so this refusal is a local contract and not parity.
 // Native runs this pipeline (recorder corpus 2026-10-30, soapMessages: SOAP Assign runs Assign 10/20/40 with the
 // delegated Update 20/40 under Assign stage 30), so this refusal is a local limitation, not platform behaviour.
 test('a chosen step on a named message without a local pipeline refuses', () => {
@@ -744,7 +743,7 @@ test('an SDK Assign Update/20 Target names the assignee through ownerid and owne
   assert.equal(projected.attributes.ownerid.name, ASSIGNEE);
 });
 
-// @test-kind unproven: local guard only; no native capture of a Web API ownerid bind's Update Target is reproduced here, so the absence of owneridyominame on that path is not proven
+// @test-kind unproven: a local check only; no native capture of a Web API ownerid bind's Update Target is reproduced here, so the absence of owneridyominame on that path is not established.
 test('a Web API ownerid bind does not add owneridyominame to its Update Target', async () => {
   const { store, callerId, assigneeId } = await ownedWidgetStore();
   const targets = [];

@@ -1,0 +1,60 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "power-fx",
+  "suite": "positive-guid-original",
+  "oracle": {
+    "kind": "official-package",
+    "name": "Microsoft.PowerApps.CLI (PAC) Power Fx evaluator",
+    "version": "2.13.1",
+    "scope": "Pure formula expressions evaluated by the official PAC 2.13.1 evaluator in two isolated empty-authentication profiles (raw outputs identical). Establishes the recorded values and error messages for these expressions only; native Canvas behaviour is not claimed."
+  },
+  "captures": [
+    {
+      "id": "run-1",
+      "sha256": "61545e9c9624e38d5823955d938fb5fd2b1416e5b80369ae5d2c05194a989f72",
+      "capturedAt": "2026-11-08"
+    },
+    {
+      "id": "run-2",
+      "sha256": "61545e9c9624e38d5823955d938fb5fd2b1416e5b80369ae5d2c05194a989f72",
+      "capturedAt": "2026-11-08"
+    }
+  ],
+  "cases": [
+    {
+      "id": "positive-1",
+      "input": {
+        "expression": "GUID(\"77777777-7777-4777-8777-777777777777\") = GUID(\"{77777777777747778777777777777777}\")",
+        "result": {
+          "fields": ["kind", "value", "message"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "message"
+        }
+      },
+      "output": {
+        "kind": "error",
+        "message": "Invalid argument"
+      },
+      "volatile": []
+    },
+    {
+      "id": "positive-2",
+      "input": {
+        "expression": "IfError(GUID(\"77777777-7777-4777-8777-777777777777\") = GUID(\"{77777777777747778777777777777777}\"),FirstError.Kind=25)",
+        "result": {
+          "fields": ["kind", "value", "message"],
+          "check": "none",
+          "valueForm": "json",
+          "errorForm": "message"
+        }
+      },
+      "output": {
+        "kind": "value",
+        "value": true
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

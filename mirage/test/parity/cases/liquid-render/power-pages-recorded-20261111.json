@@ -1,0 +1,3853 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "liquid-render",
+  "suite": "power-pages-recorded-20261111",
+  "oracle": {
+    "kind": "native",
+    "name": "Power Pages Liquid renderer",
+    "version": "2026-11-11",
+    "scope": "Two independent native Power Pages page loads of the same published Liquid sources on 2026-11-11; establishes rendered text for these sources on this site only."
+  },
+  "captures": [
+    {
+      "id": "native-2026-11-11-1",
+      "sha256": "c8d23f9254cec06df19bd515ec6f8a0b776ddb519113fd4fa7596f15c14fcb43",
+      "capturedAt": "2026-11-11"
+    },
+    {
+      "id": "native-2026-11-11-2",
+      "sha256": "05668749889ed4d9ab9a876099720a833a55828fa76d20332c58d7dea89f5cf4",
+      "capturedAt": "2026-11-11"
+    }
+  ],
+  "cases": [
+    {
+      "id": "append-literals",
+      "input": {
+        "source": "{% include 'append-literals' %}",
+        "templates": {
+          "append-literals": "{{ 'foo' | append: 'bar' }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "foobar"
+      },
+      "volatile": []
+    },
+    {
+      "id": "downcase-mixed",
+      "input": {
+        "source": "{% include 'downcase-mixed' %}",
+        "templates": {
+          "downcase-mixed": "{{ 'MiXeD Case 42' | downcase }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "mixed case 42"
+      },
+      "volatile": []
+    },
+    {
+      "id": "upcase-sharp-s",
+      "input": {
+        "source": "{% include 'upcase-sharp-s' %}",
+        "templates": {
+          "upcase-sharp-s": "{{ 'straße and ümlaut' | upcase }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "STRAßE AND ÜMLAUT"
+      },
+      "volatile": []
+    },
+    {
+      "id": "replace-all",
+      "input": {
+        "source": "{% include 'replace-all' %}",
+        "templates": {
+          "replace-all": "{{ 'a-b-c-b' | replace: 'b', 'X' }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "a-X-c-X"
+      },
+      "volatile": []
+    },
+    {
+      "id": "replace-first",
+      "input": {
+        "source": "{% include 'replace-first' %}",
+        "templates": {
+          "replace-first": "{{ 'a-b-c-b' | replace_first: 'b', 'X' }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "a-X-c-b"
+      },
+      "volatile": []
+    },
+    {
+      "id": "remove-all",
+      "input": {
+        "source": "{% include 'remove-all' %}",
+        "templates": {
+          "remove-all": "{{ 'banana' | remove: 'an' }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "ba"
+      },
+      "volatile": []
+    },
+    {
+      "id": "strip-spaces",
+      "input": {
+        "source": "{% include 'strip-spaces' %}",
+        "templates": {
+          "strip-spaces": "[{{ '   padded   ' | strip }}]"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "[padded]"
+      },
+      "volatile": []
+    },
+    {
+      "id": "lstrip-spaces",
+      "input": {
+        "source": "{% include 'lstrip-spaces' %}",
+        "templates": {
+          "lstrip-spaces": "[{{ '   padded   ' | lstrip }}]"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "[padded   ]"
+      },
+      "volatile": []
+    },
+    {
+      "id": "rstrip-spaces",
+      "input": {
+        "source": "{% include 'rstrip-spaces' %}",
+        "templates": {
+          "rstrip-spaces": "[{{ '   padded   ' | rstrip }}]"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "[   padded]"
+      },
+      "volatile": []
+    },
+    {
+      "id": "strip-html-tags",
+      "input": {
+        "source": "{% include 'strip-html-tags' %}",
+        "templates": {
+          "strip-html-tags": "{{ '<p>Hello <b>bold</b> <i>x</i></p>' | strip_html }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "Hello bold x"
+      },
+      "volatile": []
+    },
+    {
+      "id": "strip-newlines-capture",
+      "input": {
+        "source": "{% include 'strip-newlines-capture' %}",
+        "templates": {
+          "strip-newlines-capture": "{% capture t %}a\nb\nc{% endcapture %}{{ t | strip_newlines }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "abc"
+      },
+      "volatile": []
+    },
+    {
+      "id": "truncate-default-ellipsis",
+      "input": {
+        "source": "{% include 'truncate-default-ellipsis' %}",
+        "templates": {
+          "truncate-default-ellipsis": "{{ 'The quick brown fox jumps' | truncate: 10 }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "The qui..."
+      },
+      "volatile": []
+    },
+    {
+      "id": "truncate-custom-ellipsis",
+      "input": {
+        "source": "{% include 'truncate-custom-ellipsis' %}",
+        "templates": {
+          "truncate-custom-ellipsis": "{{ 'The quick brown fox' | truncate: 10, '~' }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "The quick~"
+      },
+      "volatile": []
+    },
+    {
+      "id": "truncatewords-ellipsis",
+      "input": {
+        "source": "{% include 'truncatewords-ellipsis' %}",
+        "templates": {
+          "truncatewords-ellipsis": "{{ 'one two three four five' | truncatewords: 3 }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "one two three four five"
+      },
+      "volatile": []
+    },
+    {
+      "id": "truncatewords-custom-ellipsis",
+      "input": {
+        "source": "{% include 'truncatewords-custom-ellipsis' %}",
+        "templates": {
+          "truncatewords-custom-ellipsis": "{{ 'one two three four five' | truncatewords: 2, '>>' }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "one two three four five"
+      },
+      "volatile": []
+    },
+    {
+      "id": "split-keeps-empty",
+      "input": {
+        "source": "{% include 'split-keeps-empty' %}",
+        "templates": {
+          "split-keeps-empty": "{{ 'a,,b,' | split: ',' | join: '|' }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "a|b"
+      },
+      "volatile": []
+    },
+    {
+      "id": "slice-negative-offset",
+      "input": {
+        "source": "{% include 'slice-negative-offset' %}",
+        "templates": {
+          "slice-negative-offset": "{{ 'abcdef' | slice: -3, 2 }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "de"
+      },
+      "volatile": []
+    },
+    {
+      "id": "escape-markup",
+      "input": {
+        "source": "{% include 'escape-markup' %}",
+        "templates": {
+          "escape-markup": "{{ '<a href=\"x\">Tom & Jerry</a>' | escape }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "&lt;a href=&quot;x&quot;&gt;Tom &amp; Jerry&lt;/a&gt;"
+      },
+      "volatile": []
+    },
+    {
+      "id": "newline-to-br-capture",
+      "input": {
+        "source": "{% include 'newline-to-br-capture' %}",
+        "templates": {
+          "newline-to-br-capture": "{% capture t %}one\ntwo{% endcapture %}{{ t | newline_to_br }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "one<br>\ntwo"
+      },
+      "volatile": []
+    },
+    {
+      "id": "default-empty-string",
+      "input": {
+        "source": "{% include 'default-empty-string' %}",
+        "templates": {
+          "default-empty-string": "[{{ '' | default: 'fallback' }}]"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "[]"
+      },
+      "volatile": []
+    },
+    {
+      "id": "default-nil",
+      "input": {
+        "source": "{% include 'default-nil' %}",
+        "templates": {
+          "default-nil": "[{{ nothing | default: 'fallback' }}]"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "[fallback]"
+      },
+      "volatile": []
+    },
+    {
+      "id": "first-and-last",
+      "input": {
+        "source": "{% include 'first-and-last' %}",
+        "templates": {
+          "first-and-last": "{{ 'x,y,z' | split: ',' | first }}-{{ 'x,y,z' | split: ',' | last }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "x-z"
+      },
+      "volatile": []
+    },
+    {
+      "id": "join-default-glue",
+      "input": {
+        "source": "{% include 'join-default-glue' %}",
+        "templates": {
+          "join-default-glue": "{{ 'a,b,c' | split: ',' | join }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "a b c"
+      },
+      "volatile": []
+    },
+    {
+      "id": "reverse-split",
+      "input": {
+        "source": "{% include 'reverse-split' %}",
+        "templates": {
+          "reverse-split": "{{ 'a,b,c' | split: ',' | reverse | join: '' }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "abc"
+      },
+      "volatile": []
+    },
+    {
+      "id": "sort-strings",
+      "input": {
+        "source": "{% include 'sort-strings' %}",
+        "templates": {
+          "sort-strings": "{{ 'pear,apple,fig' | split: ',' | sort | join: ',' }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "apple,fig,pear"
+      },
+      "volatile": []
+    },
+    {
+      "id": "sort-natural-case",
+      "input": {
+        "source": "{% include 'sort-natural-case' %}",
+        "templates": {
+          "sort-natural-case": "{{ 'b,A,a,B' | split: ',' | sort_natural | join: ',' }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "b,A,a,B"
+      },
+      "volatile": []
+    },
+    {
+      "id": "uniq-split",
+      "input": {
+        "source": "{% include 'uniq-split' %}",
+        "templates": {
+          "uniq-split": "{{ 'a,b,a,c,b' | split: ',' | uniq | join: ',' }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "a,b,c"
+      },
+      "volatile": []
+    },
+    {
+      "id": "concat-two-arrays",
+      "input": {
+        "source": "{% include 'concat-two-arrays' %}",
+        "templates": {
+          "concat-two-arrays": "{% assign a = 'x,y' | split: ',' %}{% assign b = '1,2' | split: ',' %}{{ a | concat: b | join: '' }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "xy12"
+      },
+      "volatile": []
+    },
+    {
+      "id": "empty-split-size",
+      "input": {
+        "source": "{% include 'empty-split-size' %}",
+        "templates": {
+          "empty-split-size": "{{ '' | split: ',' | size }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "1"
+      },
+      "volatile": []
+    },
+    {
+      "id": "plus-integers",
+      "input": {
+        "source": "{% include 'plus-integers' %}",
+        "templates": {
+          "plus-integers": "{{ 2 | plus: 3 }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "5"
+      },
+      "volatile": []
+    },
+    {
+      "id": "plus-decimal",
+      "input": {
+        "source": "{% include 'plus-decimal' %}",
+        "templates": {
+          "plus-decimal": "{{ 1.5 | plus: 2 }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "3.5"
+      },
+      "volatile": []
+    },
+    {
+      "id": "minus-negative",
+      "input": {
+        "source": "{% include 'minus-negative' %}",
+        "templates": {
+          "minus-negative": "{{ 3 | minus: 10 }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "-7"
+      },
+      "volatile": []
+    },
+    {
+      "id": "times-decimal",
+      "input": {
+        "source": "{% include 'times-decimal' %}",
+        "templates": {
+          "times-decimal": "{{ 2.5 | times: 4 }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "10"
+      },
+      "volatile": []
+    },
+    {
+      "id": "divided-integers",
+      "input": {
+        "source": "{% include 'divided-integers' %}",
+        "templates": {
+          "divided-integers": "{{ 7 | divided_by: 2 }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "3"
+      },
+      "volatile": []
+    },
+    {
+      "id": "divided-decimal-dividend",
+      "input": {
+        "source": "{% include 'divided-decimal-dividend' %}",
+        "templates": {
+          "divided-decimal-dividend": "{{ 7.0 | divided_by: 2 }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "3.5"
+      },
+      "volatile": []
+    },
+    {
+      "id": "divided-negative-dividend",
+      "input": {
+        "source": "{% include 'divided-negative-dividend' %}",
+        "templates": {
+          "divided-negative-dividend": "{{ -7 | divided_by: 2 }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "-3"
+      },
+      "volatile": []
+    },
+    {
+      "id": "divided-decimal-operand",
+      "input": {
+        "source": "{% include 'divided-decimal-operand' %}",
+        "templates": {
+          "divided-decimal-operand": "{{ 7 | divided_by: 2.0 }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "3.5"
+      },
+      "volatile": []
+    },
+    {
+      "id": "modulo-negative-dividend",
+      "input": {
+        "source": "{% include 'modulo-negative-dividend' %}",
+        "templates": {
+          "modulo-negative-dividend": "{{ -7 | modulo: 3 }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "-1"
+      },
+      "volatile": []
+    },
+    {
+      "id": "round-digits",
+      "input": {
+        "source": "{% include 'round-digits' %}",
+        "templates": {
+          "round-digits": "{{ 3.14159 | round: 2 }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "3.14"
+      },
+      "volatile": []
+    },
+    {
+      "id": "round-half-even",
+      "input": {
+        "source": "{% include 'round-half-even' %}",
+        "templates": {
+          "round-half-even": "{{ 2.5 | round }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "2"
+      },
+      "volatile": []
+    },
+    {
+      "id": "ceil-negative",
+      "input": {
+        "source": "{% include 'ceil-negative' %}",
+        "templates": {
+          "ceil-negative": "{{ -2.5 | ceil }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "-2"
+      },
+      "volatile": []
+    },
+    {
+      "id": "floor-negative",
+      "input": {
+        "source": "{% include 'floor-negative' %}",
+        "templates": {
+          "floor-negative": "{{ -2.5 | floor }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "-3"
+      },
+      "volatile": []
+    },
+    {
+      "id": "abs-decimal",
+      "input": {
+        "source": "{% include 'abs-decimal' %}",
+        "templates": {
+          "abs-decimal": "{{ -3.75 | abs }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "3.75"
+      },
+      "volatile": []
+    },
+    {
+      "id": "at-least-below",
+      "input": {
+        "source": "{% include 'at-least-below' %}",
+        "templates": {
+          "at-least-below": "{{ 3 | at_least: 5 }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "5"
+      },
+      "volatile": []
+    },
+    {
+      "id": "plus-string-operands",
+      "input": {
+        "source": "{% include 'plus-string-operands' %}",
+        "templates": {
+          "plus-string-operands": "{{ '3' | plus: '4' }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "34"
+      },
+      "volatile": []
+    },
+    {
+      "id": "date-iso-ymd",
+      "input": {
+        "source": "{% include 'date-iso-ymd' %}",
+        "templates": {
+          "date-iso-ymd": "{{ '2026-03-15T12:00:00Z' | date: '%Y/%m/%d' }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "Y/0/15"
+      },
+      "volatile": []
+    },
+    {
+      "id": "date-long-format",
+      "input": {
+        "source": "{% include 'date-long-format' %}",
+        "templates": {
+          "date-long-format": "{{ '2026-03-15T12:00:00Z' | date: '%A, %B %d, %Y' }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "A, B 15, Y"
+      },
+      "volatile": []
+    },
+    {
+      "id": "date-time-12h",
+      "input": {
+        "source": "{% include 'date-time-12h' %}",
+        "templates": {
+          "date-time-12h": "{{ '2026-03-15T14:05:09Z' | date: '%I:%M:%S %p' }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "I:3:S p"
+      },
+      "volatile": []
+    },
+    {
+      "id": "date-month-short",
+      "input": {
+        "source": "{% include 'date-month-short' %}",
+        "templates": {
+          "date-month-short": "{{ '2026-12-01T12:00:00Z' | date: '%b %e %y' }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "b e 26"
+      },
+      "volatile": []
+    },
+    {
+      "id": "if-empty-string-truthy",
+      "input": {
+        "source": "{% include 'if-empty-string-truthy' %}",
+        "templates": {
+          "if-empty-string-truthy": "{% if '' %}truthy{% else %}falsy{% endif %}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "truthy"
+      },
+      "volatile": []
+    },
+    {
+      "id": "if-zero-truthy",
+      "input": {
+        "source": "{% include 'if-zero-truthy' %}",
+        "templates": {
+          "if-zero-truthy": "{% if 0 %}truthy{% else %}falsy{% endif %}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "truthy"
+      },
+      "volatile": []
+    },
+    {
+      "id": "if-nil-falsy",
+      "input": {
+        "source": "{% include 'if-nil-falsy' %}",
+        "templates": {
+          "if-nil-falsy": "{% if nothing %}truthy{% else %}falsy{% endif %}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "falsy"
+      },
+      "volatile": []
+    },
+    {
+      "id": "blank-equality",
+      "input": {
+        "source": "{% include 'blank-equality' %}",
+        "templates": {
+          "blank-equality": "{% assign e = '' %}{% if e == blank %}blank{% else %}not blank{% endif %}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "blank"
+      },
+      "volatile": []
+    },
+    {
+      "id": "empty-array-equality",
+      "input": {
+        "source": "{% include 'empty-array-equality' %}",
+        "templates": {
+          "empty-array-equality": "{% assign arr = '' | split: ',' %}{% if arr == empty %}empty{% else %}full{% endif %}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "full"
+      },
+      "volatile": []
+    },
+    {
+      "id": "elsif-chain",
+      "input": {
+        "source": "{% include 'elsif-chain' %}",
+        "templates": {
+          "elsif-chain": "{% assign n = 2 %}{% if n == 1 %}one{% elsif n == 2 %}two{% elsif n == 3 %}three{% else %}other{% endif %}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "two"
+      },
+      "volatile": []
+    },
+    {
+      "id": "unless-else",
+      "input": {
+        "source": "{% include 'unless-else' %}",
+        "templates": {
+          "unless-else": "{% unless true %}a{% else %}b{% endunless %}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "b"
+      },
+      "volatile": []
+    },
+    {
+      "id": "case-when-multiple",
+      "input": {
+        "source": "{% include 'case-when-multiple' %}",
+        "templates": {
+          "case-when-multiple": "{% assign v = 2 %}{% case v %}{% when 1, 2 %}low{% when 3 %}mid{% else %}high{% endcase %}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "low"
+      },
+      "volatile": []
+    },
+    {
+      "id": "case-when-or-keyword",
+      "input": {
+        "source": "{% include 'case-when-or-keyword' %}",
+        "templates": {
+          "case-when-or-keyword": "{% case 'b' %}{% when 'a' or 'b' %}ab{% else %}other{% endcase %}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "ab"
+      },
+      "volatile": []
+    },
+    {
+      "id": "contains-string",
+      "input": {
+        "source": "{% include 'contains-string' %}",
+        "templates": {
+          "contains-string": "{% if 'hello world' contains 'lo w' %}yes{% else %}no{% endif %}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "yes"
+      },
+      "volatile": []
+    },
+    {
+      "id": "contains-array-miss",
+      "input": {
+        "source": "{% include 'contains-array-miss' %}",
+        "templates": {
+          "contains-array-miss": "{% assign parts = 'a,b,c' | split: ',' %}{% if parts contains 'z' %}yes{% else %}no{% endif %}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "no"
+      },
+      "volatile": []
+    },
+    {
+      "id": "string-compare-lexical",
+      "input": {
+        "source": "{% include 'string-compare-lexical' %}",
+        "templates": {
+          "string-compare-lexical": "{% if '10' < '9' %}lt{% else %}ge{% endif %}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "lt"
+      },
+      "volatile": []
+    },
+    {
+      "id": "and-or-precedence",
+      "input": {
+        "source": "{% include 'and-or-precedence' %}",
+        "templates": {
+          "and-or-precedence": "{% if true or false and false %}A{% else %}B{% endif %}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "A"
+      },
+      "volatile": []
+    },
+    {
+      "id": "for-limit",
+      "input": {
+        "source": "{% include 'for-limit' %}",
+        "templates": {
+          "for-limit": "{% for i in (1..10) limit: 3 %}{{ i }}{% endfor %}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "123"
+      },
+      "volatile": []
+    },
+    {
+      "id": "for-offset",
+      "input": {
+        "source": "{% include 'for-offset' %}",
+        "templates": {
+          "for-offset": "{% for i in (1..5) offset: 2 %}{{ i }}{% endfor %}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "345"
+      },
+      "volatile": []
+    },
+    {
+      "id": "for-reversed",
+      "input": {
+        "source": "{% include 'for-reversed' %}",
+        "templates": {
+          "for-reversed": "{% for i in (1..4) reversed %}{{ i }}{% endfor %}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "4321"
+      },
+      "volatile": []
+    },
+    {
+      "id": "for-range",
+      "input": {
+        "source": "{% include 'for-range' %}",
+        "templates": {
+          "for-range": "{% for i in (3..6) %}{{ i }}{% endfor %}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "3456"
+      },
+      "volatile": []
+    },
+    {
+      "id": "forloop-index-flags",
+      "input": {
+        "source": "{% include 'forloop-index-flags' %}",
+        "templates": {
+          "forloop-index-flags": "{% for i in (1..3) %}{{ forloop.index }}{% if forloop.first %}F{% endif %}{% if forloop.last %}L{% endif %}{% endfor %}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "1F23L"
+      },
+      "volatile": []
+    },
+    {
+      "id": "forloop-length",
+      "input": {
+        "source": "{% include 'forloop-length' %}",
+        "templates": {
+          "forloop-length": "{% for i in (1..4) %}{{ forloop.length }}{% endfor %}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "4444"
+      },
+      "volatile": []
+    },
+    {
+      "id": "break-in-loop",
+      "input": {
+        "source": "{% include 'break-in-loop' %}",
+        "templates": {
+          "break-in-loop": "{% for i in (1..9) %}{% if i == 3 %}{% break %}{% endif %}{{ i }}{% endfor %}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "12"
+      },
+      "volatile": []
+    },
+    {
+      "id": "continue-in-loop",
+      "input": {
+        "source": "{% include 'continue-in-loop' %}",
+        "templates": {
+          "continue-in-loop": "{% for i in (1..5) %}{% if i == 2 %}{% continue %}{% endif %}{{ i }}{% endfor %}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "1345"
+      },
+      "volatile": []
+    },
+    {
+      "id": "for-else-empty",
+      "input": {
+        "source": "{% include 'for-else-empty' %}",
+        "templates": {
+          "for-else-empty": "{% assign none = '' | split: ',' %}{% for x in none %}{{ x }}{% else %}none{% endfor %}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "Liquid syntax error: for tag does not expect else tag"
+      },
+      "volatile": []
+    },
+    {
+      "id": "for-else-nonempty",
+      "input": {
+        "source": "{% include 'for-else-nonempty' %}",
+        "templates": {
+          "for-else-nonempty": "{% assign items = 'a,b' | split: ',' %}{% for x in items %}{{ x }}{% else %}none{% endfor %}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "Liquid syntax error: for tag does not expect else tag"
+      },
+      "volatile": []
+    },
+    {
+      "id": "assign-string-concat",
+      "input": {
+        "source": "{% include 'assign-string-concat' %}",
+        "templates": {
+          "assign-string-concat": "{% assign greeting = 'hello' | append: ' there' %}{{ greeting }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "hello there"
+      },
+      "volatile": []
+    },
+    {
+      "id": "capture-block",
+      "input": {
+        "source": "{% include 'capture-block' %}",
+        "templates": {
+          "capture-block": "{% capture c %}A{{ 1 | plus: 1 }}B{% endcapture %}[{{ c }}]"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "[A2B]"
+      },
+      "volatile": []
+    },
+    {
+      "id": "capture-reassign-variable",
+      "input": {
+        "source": "{% include 'capture-reassign-variable' %}",
+        "templates": {
+          "capture-reassign-variable": "{% assign v = 'one' %}{% capture v %}two{% endcapture %}{{ v }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "two"
+      },
+      "volatile": []
+    },
+    {
+      "id": "increment-counter",
+      "input": {
+        "source": "{% include 'increment-counter' %}",
+        "templates": {
+          "increment-counter": "{% increment n %}{% increment n %}{% increment n %}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "Liquid syntax error: Unknown tag 'increment'"
+      },
+      "volatile": []
+    },
+    {
+      "id": "decrement-counter",
+      "input": {
+        "source": "{% include 'decrement-counter' %}",
+        "templates": {
+          "decrement-counter": "{% decrement m %}{% decrement m %}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "Liquid syntax error: Unknown tag 'decrement'"
+      },
+      "volatile": []
+    },
+    {
+      "id": "comment-block-hidden",
+      "input": {
+        "source": "{% include 'comment-block-hidden' %}",
+        "templates": {
+          "comment-block-hidden": "a{% comment %}hidden {{ 1 | plus: 1 }}{% endcomment %}b"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "ab"
+      },
+      "volatile": []
+    },
+    {
+      "id": "raw-block-literal",
+      "input": {
+        "source": "{% include 'raw-block-literal' %}",
+        "templates": {
+          "raw-block-literal": "{% raw %}{{ 'not rendered' | upcase }} {% if x %}{% endraw %}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "{{ 'not rendered' | upcase }} {% if x %}"
+      },
+      "volatile": []
+    },
+    {
+      "id": "trim-left-tag",
+      "input": {
+        "source": "{% include 'trim-left-tag' %}",
+        "templates": {
+          "trim-left-tag": "a   {{- 'b' }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "ab"
+      },
+      "volatile": []
+    },
+    {
+      "id": "trim-right-tag",
+      "input": {
+        "source": "{% include 'trim-right-tag' %}",
+        "templates": {
+          "trim-right-tag": "{{ 'a' -}}   b"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "ab"
+      },
+      "volatile": []
+    },
+    {
+      "id": "trim-both-if",
+      "input": {
+        "source": "{% include 'trim-both-if' %}",
+        "templates": {
+          "trim-both-if": "x  {%- if true -%}  y  {%- endif -%}  z"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "xyz"
+      },
+      "volatile": []
+    },
+    {
+      "id": "undefined-variable-empty",
+      "input": {
+        "source": "{% include 'undefined-variable-empty' %}",
+        "templates": {
+          "undefined-variable-empty": "[{{ never_set }}]"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "[]"
+      },
+      "volatile": []
+    },
+    {
+      "id": "undefined-filter-error",
+      "input": {
+        "source": "{% include 'undefined-filter-error' %}",
+        "templates": {
+          "undefined-filter-error": "{{ 'x' | nosuchfilter }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "x"
+      },
+      "volatile": []
+    },
+    {
+      "id": "unknown-tag-error",
+      "input": {
+        "source": "{% include 'unknown-tag-error' %}",
+        "templates": {
+          "unknown-tag-error": "a{% frobnicate %}b"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "Liquid syntax error: Unknown tag 'frobnicate'"
+      },
+      "volatile": []
+    },
+    {
+      "id": "unterminated-if-error",
+      "input": {
+        "source": "{% include 'unterminated-if-error' %}",
+        "templates": {
+          "unterminated-if-error": "{% if true %}never closed"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "Liquid syntax error: if tag was never closed"
+      },
+      "volatile": []
+    },
+    {
+      "id": "wrong-arg-count-slice",
+      "input": {
+        "source": "{% include 'wrong-arg-count-slice' %}",
+        "templates": {
+          "wrong-arg-count-slice": "{{ 'abc' | slice }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "Liquid syntax error: Error - Filter 'slice' does not have a default value for 'start' and no value was supplied"
+      },
+      "volatile": []
+    },
+    {
+      "id": "too-many-args-upcase",
+      "input": {
+        "source": "{% include 'too-many-args-upcase' %}",
+        "templates": {
+          "too-many-args-upcase": "{{ 'abc' | upcase: 'x' }}"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "Liquid error: Parameter count mismatch."
+      },
+      "volatile": []
+    },
+    {
+      "id": "unterminated-capture-error",
+      "input": {
+        "source": "{% include 'unterminated-capture-error' %}",
+        "templates": {
+          "unterminated-capture-error": "{% capture a %}x"
+        },
+        "observed": {
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiAntiForgery": "decryption-401",
+          "webApiReferenceErrors": "unexpected",
+          "webApiInnerError": "all-errors",
+          "headers": {
+            "webApi": {
+              "cache-control": "no-cache, no-store, must-revalidate"
+            }
+          },
+          "webApiInvalidDate": "crm-minimum",
+          "liquidDecimalStringMultiply": "convert",
+          "liquidTimesDispatch": "observed",
+          "liquidFilterErrors": "observed",
+          "liquidServiceTags": "observed",
+          "liquidObjectCompatibility": "observed",
+          "liquidHtmlVoidSerialization": "html",
+          "liquidHtmlSafeInput": "observed",
+          "liquidPathAndQueryFragment": "query",
+          "liquidRuntimeCompatibility": "observed",
+          "liquidFilterRegistration": "observed",
+          "liquidEditableMetadata": "observed",
+          "liquidMissingData": "empty",
+          "redirect301": "temporary",
+          "webTemplateResponseNewline": "crlf",
+          "webFileMimeCharset": "source",
+          "liquidRelativeQueryResolution": "root",
+          "liquidEscapeOnce": "passthrough",
+          "liquidStripHtmlScriptText": "preserve"
+        }
+      },
+      "output": {
+        "output": "Liquid syntax error: capture tag was never closed"
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

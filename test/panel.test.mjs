@@ -1,4 +1,4 @@
-// @test-kind unproven: local review has not established every held or unreviewed platform-sensitive behavior.
+// @test-kind unproven: the checks in this file exercise panel with local fixtures; no native capture establishes the behaviour they assert.
 import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -194,7 +194,7 @@ test('selected-source editor admission rechecks a source edited during the final
   assert.equal(opened.length, 0, 'a source changed during the browser check never invokes the editor');
 });
 
-// @test-kind security+contract: guarded editor admission opens only the selected external deployment profile and refuses neighboring files
+// @test-kind security+contract: editor admission checks open only the selected external deployment profile and refuse neighboring files
 test('guarded editor admission opens only the selected external deployment profile and refuses neighboring files', async (t) => {
   const directory = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-panel-profile-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));

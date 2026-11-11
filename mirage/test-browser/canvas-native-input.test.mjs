@@ -1,4 +1,4 @@
-// @test-kind parity: two independent native Canvas player draft flows on 2026-11-08; invented source reproduces the bounded input/cancel/reset operations.
+// @test-kind observation: two native Canvas draft captures recorded in fixtures/canvas-draft-input-native.json (2026-11-08, fixture sha256 53da0137...); the operation sequence and invented source are typed in this test and the probe is code, so it is not a replay case
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -14,14 +14,12 @@ import { captureCanvasDraftInputContract } from '../testing/canvas-contract.mjs'
 import { sharedBrowser } from './shared-browser.mjs';
 
 const hash = (value) => createHash('sha256').update(value).digest('hex');
-// @parity-evidence: repeated source-bound native draft captures prove all 11 rows; fixture and serialized probe hashes prevent silent changes to the guarantee.
 const bytes = await fs.readFile(new URL('../test/fixtures/canvas-draft-input-native.json', import.meta.url));
 
 const evidence = JSON.parse(bytes);
 
 const browser = sharedBrowser();
 
-// @parity-evidence: repeated native draft captures in canvas-draft-input-native.json bind the unchanged fixture and serialized probe. The same pinned setup checks run before the tests.
 test.before(async () => {
   assert.equal(hash(bytes), '53da0137b56a0e32e4c224d8124719991cd1f984d1d1d9a6d7aab3cd9d489fbc');
   assert.equal(hash(captureCanvasDraftInputContract.toString()), evidence.probeFunctionSha256);

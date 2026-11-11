@@ -1,16 +1,14 @@
-// @test-kind parity: two native UCI captures after the selected controls render on 2026-11-08 reproduce dynamic choices and invalid-number readbacks; mirage/test/fixtures/frontend-parity-evidence.md.
+// @test-kind observation: two native UCI captures on 2026-11-08, taken after the selected controls render, produced the 19 rows of fixtures/model-driven-control-expected.json, SHA256 9d8a8c2989fdd76115db14323d58973c393bfa9686c642fbd52c8c28d77ff024, from the probe with SHA256 6255a59265adfd6608f4caf740e79882b3b049039d783b35d38d220b892e6b1e bound by control-plan.json (SHA256 d5a05a7a7f1575115181c0c9f9e48e6ecbd0260ea09c313def95b3124abc9c27). The empty option value NaN comes from fixtures/model-driven-choice-native-facts.json (SHA256 4cdfe3a46a4391a0600df6f4eb849cbafcaae09e43a490d6af9763221cd8ddcd); the older transport serialized it as JSON null. The probe input is typed in this test and the native plan is not committed, so no replay case records it.
 import test, { before, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import { createFormClientRuntime } from '../lib/model-driven/client-runtime.mjs';
 import { captureModelDrivenControlContract } from '../testing/model-driven-contract.mjs';
-// @parity-evidence: both render-ready native 2026-11-08 captures used this exact probe function, bound by control-plan.json and the evidence manifest.
 
 const bytes = fs.readFileSync(new URL('./fixtures/model-driven-control-expected.json', import.meta.url));
 
 const expected = JSON.parse(bytes);
-// @parity-evidence: the two typed runs in model-driven-choice-native-facts.json (SHA256 4cdfe3a46a4391a0600df6f4eb849cbafcaae09e43a490d6af9763221cd8ddcd) establish that the empty rendered option has value NaN. The older native transport serialized that one value as JSON null; retain its wire snapshot and assert the raw value independently below.
 const typedBytes = fs.readFileSync(new URL('./fixtures/model-driven-choice-native-facts.json', import.meta.url));
 
 const typed = JSON.parse(typedBytes);
@@ -24,7 +22,6 @@ const fields = {
 };
 let actual;
 describe('native control contract', () => {
-  // @parity-evidence: existing native fixture and probe SHA-256 pins are checked before any recorded case executes.
   before(async () => {
     assert.equal(
       createHash('sha256').update(captureModelDrivenControlContract.toString()).digest('hex'),
@@ -79,7 +76,6 @@ describe('native control contract', () => {
     test(`native control contract: ${row.id}`, () => {
       const result = actual.find((item) => item.id === row.id);
       if (['choice.controlOptionsAfterControlEdit', 'multi.controlOptionsAfterControlEdit'].includes(row.id)) {
-        // @parity-evidence: the source-bound typed native runs above prove this raw NaN, while the unchanged original fixture records the native JSON transport boundary. Serialize only the proven empty option; preserve every other original field and option comparison exactly.
         assert.deepEqual(result.value[0], { text: '', value: NaN });
         const serializedEmptyOption = JSON.parse(JSON.stringify(result.value[0]));
         assert.deepEqual({ ...result, value: [serializedEmptyOption, ...result.value.slice(1)] }, row);

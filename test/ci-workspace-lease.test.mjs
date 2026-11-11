@@ -1,4 +1,4 @@
-// @test-kind tooling: CI checkout lease and dependency preparation guards
+// @test-kind tooling: CI checkout lease and dependency preparation are checked with local fixtures
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

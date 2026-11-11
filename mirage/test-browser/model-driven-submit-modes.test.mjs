@@ -1,4 +1,4 @@
-// @test-kind parity: two native UCI saves on 2026-11-08 confirm never excludes edits, server refresh restores values, and modes survive saves; mirage/test/fixtures/frontend-parity-evidence.md.
+// @test-kind observation: two native UCI save flows (2026-11-08) recorded as counts and hashes in fixtures/frontend-parity-evidence.json (suites model-driven-saves, model-driven-restored-saves); raw captures are not committed and the form setup and submit-mode calls are typed here, so it is not a replay case
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -85,12 +85,10 @@ test('submit modes govern saved columns, refresh suppressed edits and survive th
     { never: 'never', always: 'always' },
   );
   assert.deepEqual(writes, [{ x_name: 'Submitted', x_summary: 'Unchanged value' }]);
-  // @parity-evidence: two native saves per run produced one backend Update; the unchanged always column does not cause a clean form to save.
   await page.evaluate(() => window.Xrm.Page.data.save());
   assert.deepEqual(writes, [{ x_name: 'Submitted', x_summary: 'Unchanged value' }]);
 });
 
-// @parity-evidence: repeated2026-11-08 restored-submit native flows have attributeDirty=false/entityDirty=true and stage20 backend Targets omit restored dirty email, include unchanged always summary and exclude edited never memo; second clean save adds no Update.
 test('restoring a dirty-mode value omits that column while a real edit and unchanged always column save', async (t) => {
   const fixture = await modelDrivenFixture(t, { defer: true, modelDriven: { trustedExtensions: true } });
   const entityFile = path.join(fixture.solutionDir, 'Entities/x_item/Entity.xml');

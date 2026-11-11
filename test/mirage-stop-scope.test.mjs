@@ -1,4 +1,4 @@
-// @test-kind unproven: local review has not established every held or unreviewed platform-sensitive behavior.
+// @test-kind unproven: the checks in this file exercise mirage stop scope with local fixtures; no native capture establishes the behaviour they assert.
 import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 // Project stop hints: the advertised command stops exactly its runtime from other directories and
 // shells, across project edits. Catalogue, standalone and cleanup scopes have their own files.
@@ -230,7 +230,7 @@ test(
   },
 );
 
-// @test-kind contract: unqualified project stop includes recorded portals absent from current multi- and single-portal mappings
+// @test-kind contract: a project stop without a portal selector includes recorded portals absent from current multi- and single-portal mappings
 test(
   'unqualified project stop includes recorded portals absent from current multi- and single-portal mappings',
   { timeout: 90000 },

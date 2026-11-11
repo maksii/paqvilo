@@ -1,4 +1,4 @@
-// @test-kind unproven: local review has not established every held or unreviewed platform-sensitive behavior.
+// @test-kind unproven: the checks in this file exercise format with local fixtures; no native capture establishes the behaviour they assert.
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';

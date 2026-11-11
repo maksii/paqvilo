@@ -81,7 +81,7 @@ test('Stop drains accepted GET observers before closing their backend and reject
     ['Accepted GET recorded'],
   );
 });
-// @test-kind contract+unproven: shutdown policy is local; imported flow execution is not native-qualified
+// @test-kind contract+unproven: shutdown policy is local; imported flow execution has no native capture.
 test('Stop rejects new HTTP writes and drains an accepted streaming mutation plus its automatic imported flow', async (t) => {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-shutdown-flow-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));

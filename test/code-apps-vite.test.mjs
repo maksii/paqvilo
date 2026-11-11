@@ -1,4 +1,4 @@
-// @test-kind contract: Vite integration of the local code-apps bootstrap designed by this project (activation, proxy guards, entry wrappers).
+// @test-kind contract: Vite integration of the local code-apps bootstrap designed by this project (activation, proxy checks, entry wrappers).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';

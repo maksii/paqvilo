@@ -1,0 +1,4466 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "power-fx",
+  "suite": "batch",
+  "oracle": {
+    "kind": "official-package",
+    "name": "Microsoft.PowerFx.Interpreter",
+    "version": "1.99.0.0 (Microsoft.PowerApps.CLI 2.13.1)",
+    "scope": "The batch requests with their authored host contexts, executed by the unmodified official interpreter in two independent processes. Establishes the typed result or error for these requests only; clock-bypass and host-specific outcomes are declared where they differ."
+  },
+  "captures": [
+    {
+      "id": "run-1",
+      "sha256": "fa0db21055628351eaffd732f9a4e8313c0ded1592fb1638c40e1e8bb8d4b873",
+      "capturedAt": "2026-11-08"
+    },
+    {
+      "id": "run-2",
+      "sha256": "681f80672559f12eb28cc9f733ea7cbfa0da9848502c5944a8075c742bde85b1",
+      "capturedAt": "2026-11-08"
+    }
+  ],
+  "cases": [
+    {
+      "id": "matrix-17",
+      "input": {
+        "expression": "[1, 2].Value",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "[1, 2].Value",
+        "kind": "compile-error",
+        "errors": [
+          {
+            "Message": "Deprecated use of '.'. Please use the 'ShowColumns' function instead.",
+            "severity": "Critical"
+          }
+        ],
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "matrix-54",
+      "input": {
+        "expression": "Value(\"$ 12.34\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Value(\"$ 12.34\")",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "12.34"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "matrix-71",
+      "input": {
+        "expression": "IfError(1e300 * 1e300, 0)",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "IfError(1e300 * 1e300, 0)",
+        "kind": "compile-error",
+        "errors": [
+          {
+            "Message": "Numeric value is too large.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "Numeric value is too large.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "Invalid argument type. Expecting one of the following: Decimal, Number, Text, Boolean, Date, Time, DateTimeNoTimeZone, DateTime, Dynamic.",
+            "severity": "Severe"
+          },
+          {
+            "Message": "Invalid argument type. Expecting one of the following: Decimal, Number, Text, Boolean, Date, Time, DateTimeNoTimeZone, DateTime, Dynamic.",
+            "severity": "Severe"
+          }
+        ],
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "matrix-73",
+      "input": {
+        "expression": "IfError(1e400, 2)",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "IfError(1e400, 2)",
+        "kind": "compile-error",
+        "errors": [
+          {
+            "Message": "Numeric value is too large.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "Incompatible type. We can't evaluate your formula because of a type error.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "The function 'IfError' has some invalid arguments.",
+            "severity": "Severe"
+          }
+        ],
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "matrix-78",
+      "input": {
+        "expression": "IfError(ForAll([1, 0], 1/Value), FirstError.Kind)",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "IfError(ForAll([1, 0], 1/Value), FirstError.Kind)",
+        "kind": "value",
+        "value": {
+          "kind": "typed-other",
+          "type": "Microsoft.PowerFx.Types.Void",
+          "expression": "If(true, {test:1}, \"Void value (result of the expression can't be used).\")"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "matrix-109",
+      "input": {
+        "expression": "IsError(IsMatch(\"a\", \"(\"))",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "IsError(IsMatch(\"a\", \"(\"))",
+        "kind": "compile-error",
+        "errors": [
+          {
+            "Message": "Invalid regular expression: Unclosed groups, too few closing parenthesis.",
+            "severity": "Severe"
+          },
+          {
+            "Message": "The function 'IsMatch' has some invalid arguments.",
+            "severity": "Severe"
+          }
+        ],
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "matrix-141",
+      "input": {
+        "expression": "Language()",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Language()",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "en-US"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "matrix-153",
+      "input": {
+        "expression": "TimeZoneOffset()",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "TimeZoneOffset()",
+        "kind": "value",
+        "value": {
+          "kind": "float",
+          "text": "480"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "matrix-154",
+      "input": {
+        "expression": "Text(DateAdd(Now(), TimeZoneOffset(), TimeUnit.Minutes), \"dd-mm-yyyy hh:mm\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(DateAdd(Now(), TimeZoneOffset(), TimeUnit.Minutes), \"dd-mm-yyyy hh:mm\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "15-07-2013 21:02"
+        },
+        "clockReads": 1
+      },
+      "volatile": []
+    },
+    {
+      "id": "matrix-155",
+      "input": {
+        "expression": "Hour(UTCNow())",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Hour(UTCNow())",
+        "kind": "compile-error",
+        "errors": [
+          {
+            "Message": "'UTCNow' is an unknown or unsupported function.",
+            "severity": "Critical"
+          }
+        ],
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "matrix-158",
+      "input": {
+        "expression": "Day(UTCToday())",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Day(UTCToday())",
+        "kind": "compile-error",
+        "errors": [
+          {
+            "Message": "'UTCToday' is an unknown or unsupported function.",
+            "severity": "Critical"
+          }
+        ],
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "matrix-161",
+      "input": {
+        "expression": "IsUTCToday(UTCNow())",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "IsUTCToday(UTCNow())",
+        "kind": "compile-error",
+        "errors": [
+          {
+            "Message": "'IsUTCToday' is an unknown or unsupported function.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "'UTCNow' is an unknown or unsupported function.",
+            "severity": "Critical"
+          }
+        ],
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "matrix-166",
+      "input": {
+        "expression": "ISOWeekNum(Date(2021, 1, 1))",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "ISOWeekNum(Date(2021, 1, 1))",
+        "kind": "compile-error",
+        "errors": [
+          {
+            "Message": "'ISOWeekNum' is an unknown or unsupported function.",
+            "severity": "Critical"
+          }
+        ],
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "matrix-171",
+      "input": {
+        "expression": "Text(Time(14, 5, 0), \"h:mm AM/PM\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(Time(14, 5, 0), \"h:mm AM/PM\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "2:05 PM"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "matrix-172",
+      "input": {
+        "expression": "Text(Date(2024, 3, 5), DateTimeFormat.LongDate)",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(Date(2024, 3, 5), DateTimeFormat.LongDate)",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "Tuesday, March 5, 2024"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "matrix-173",
+      "input": {
+        "expression": "Set(x, 5); x * 2",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Set(x, 5); x * 2",
+        "kind": "compile-error",
+        "errors": [
+          {
+            "Message": "Name isn't valid. 'x' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "Name isn't valid. 'x' isn't recognized.",
+            "severity": "Critical"
+          }
+        ],
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "matrix-174",
+      "input": {
+        "expression": "Collect(c, {a: 1}); Collect(c, {a: 2}); CountRows(c)",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Collect(c, {a: 1}); Collect(c, {a: 2}); CountRows(c)",
+        "kind": "compile-error",
+        "errors": [
+          {
+            "Message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "The function 'Collect' has some invalid arguments.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "The specified column 'a' does not exist.",
+            "severity": "Severe"
+          },
+          {
+            "Message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "The function 'Collect' has some invalid arguments.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "The specified column 'a' does not exist.",
+            "severity": "Severe"
+          },
+          {
+            "Message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "The function 'CountRows' has some invalid arguments.",
+            "severity": "Critical"
+          }
+        ],
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "matrix-175",
+      "input": {
+        "expression": "ClearCollect(c, {a: 9}); First(c).a",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "ClearCollect(c, {a: 9}); First(c).a",
+        "kind": "compile-error",
+        "errors": [
+          {
+            "Message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "The function 'ClearCollect' has some invalid arguments.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "The specified column 'a' does not exist.",
+            "severity": "Severe"
+          },
+          {
+            "Message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "The function 'First' has some invalid arguments.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "The '.' operator cannot be used on Error values.",
+            "severity": "Critical"
+          }
+        ],
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "matrix-176",
+      "input": {
+        "expression": "Collect(c, {a: 1}); Clear(c); CountRows(c)",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Collect(c, {a: 1}); Clear(c); CountRows(c)",
+        "kind": "compile-error",
+        "errors": [
+          {
+            "Message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "The function 'Collect' has some invalid arguments.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "The specified column 'a' does not exist.",
+            "severity": "Severe"
+          },
+          {
+            "Message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "The function 'Clear' has some invalid arguments.",
+            "severity": "Severe"
+          },
+          {
+            "Message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "The function 'CountRows' has some invalid arguments.",
+            "severity": "Critical"
+          }
+        ],
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "matrix-178",
+      "input": {
+        "expression": "Collect(c, {a: 1}); Patch(c, First(c), {a: 5}); First(c).a",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Collect(c, {a: 1}); Patch(c, First(c), {a: 5}); First(c).a",
+        "kind": "compile-error",
+        "errors": [
+          {
+            "Message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "The function 'Collect' has some invalid arguments.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "The specified column 'a' does not exist.",
+            "severity": "Severe"
+          },
+          {
+            "Message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "The function 'First' has some invalid arguments.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "The function 'Patch' has some invalid arguments.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "Invalid argument type (Error). Expecting a Record value instead.",
+            "severity": "Severe"
+          },
+          {
+            "Message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "The function 'First' has some invalid arguments.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "The '.' operator cannot be used on Error values.",
+            "severity": "Critical"
+          }
+        ],
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "matrix-179",
+      "input": {
+        "expression": "Collect(c, {a: 1}, {a: 2}); Remove(c, {a: 1}); Concat(c, a)",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Collect(c, {a: 1}, {a: 2}); Remove(c, {a: 1}); Concat(c, a)",
+        "kind": "compile-error",
+        "errors": [
+          {
+            "Message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "The function 'Collect' has some invalid arguments.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "The specified column 'a' does not exist.",
+            "severity": "Severe"
+          },
+          {
+            "Message": "The specified column 'a' does not exist.",
+            "severity": "Severe"
+          },
+          {
+            "Message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "The specified column 'a' does not exist.",
+            "severity": "Severe"
+          },
+          {
+            "Message": "The function 'Remove' has some invalid arguments.",
+            "severity": "Severe"
+          },
+          {
+            "Message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "The function 'Concat' has some invalid arguments.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "Name isn't valid. 'a' isn't recognized.",
+            "severity": "Critical"
+          }
+        ],
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "matrix-180",
+      "input": {
+        "expression": "Collect(c, [1, 2, 3]); RemoveIf(c, Value > 1); CountRows(c)",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Collect(c, [1, 2, 3]); RemoveIf(c, Value > 1); CountRows(c)",
+        "kind": "compile-error",
+        "errors": [
+          {
+            "Message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "The function 'Collect' has some invalid arguments.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "The specified column 'Value' does not exist.",
+            "severity": "Severe"
+          },
+          {
+            "Message": "'RemoveIf' is a recognized but not supported function.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "Name isn't valid. 'Value' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "The function 'CountRows' has some invalid arguments.",
+            "severity": "Critical"
+          }
+        ],
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "matrix-181",
+      "input": {
+        "expression": "Collect(c, {a: 1}, {a: 2}); UpdateIf(c, a > 1, {a: a + 3}); Sum(c, a)",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Collect(c, {a: 1}, {a: 2}); UpdateIf(c, a > 1, {a: a + 3}); Sum(c, a)",
+        "kind": "compile-error",
+        "errors": [
+          {
+            "Message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "The function 'Collect' has some invalid arguments.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "The specified column 'a' does not exist.",
+            "severity": "Severe"
+          },
+          {
+            "Message": "The specified column 'a' does not exist.",
+            "severity": "Severe"
+          },
+          {
+            "Message": "'UpdateIf' is a recognized but not supported function.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "Name isn't valid. 'a' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "Name isn't valid. 'a' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "Name isn't valid. 'c' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "Name isn't valid. 'a' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "The function 'Sum' has some invalid arguments.",
+            "severity": "Severe"
+          }
+        ],
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "matrix-182",
+      "input": {
+        "expression": "UpdateContext({n: 4}); n + 1",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "UpdateContext({n: 4}); n + 1",
+        "kind": "compile-error",
+        "errors": [
+          {
+            "Message": "'UpdateContext' is a recognized but not supported function.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "Name isn't valid. 'n' isn't recognized.",
+            "severity": "Critical"
+          }
+        ],
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "matrix-183",
+      "input": {
+        "expression": "JSON(Defaults([1]))",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "JSON(Defaults([1]))",
+        "kind": "compile-error",
+        "errors": [
+          {
+            "Message": "'Defaults' is a recognized but not supported function.",
+            "severity": "Critical"
+          }
+        ],
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "matrix-184",
+      "input": {
+        "expression": "Trace(\"invented\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Trace(\"invented\")",
+        "kind": "error",
+        "value": {
+          "kind": "error",
+          "errors": [
+            {
+              "kind": 25,
+              "kindName": "InvalidArgument",
+              "Message": "Runtime type mismatch"
+            }
+          ]
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "matrix-187",
+      "input": {
+        "expression": "RGBA(255,0,128,0.5)",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "RGBA(255,0,128,0.5)",
+        "kind": "value",
+        "value": {
+          "kind": "color",
+          "r": 255,
+          "g": 0,
+          "b": 128,
+          "a": 128,
+          "expression": "RGBA(255,0,128,0.502)"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "matrix-188",
+      "input": {
+        "expression": "ColorValue(\"Red\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "ColorValue(\"Red\")",
+        "kind": "value",
+        "value": {
+          "kind": "color",
+          "r": 255,
+          "g": 0,
+          "b": 0,
+          "a": 255,
+          "expression": "RGBA(255,0,0,1)"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "matrix-189",
+      "input": {
+        "expression": "ColorFade(RGBA(100,150,200,1),0.5)",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "ColorFade(RGBA(100,150,200,1),0.5)",
+        "kind": "value",
+        "value": {
+          "kind": "color",
+          "r": 177,
+          "g": 202,
+          "b": 227,
+          "a": 255,
+          "expression": "RGBA(177,202,227,1)"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "matrix-191",
+      "input": {
+        "expression": "DataSourceInfo([], DataSourceInfo.Required, Name)",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "DataSourceInfo([], DataSourceInfo.Required, Name)",
+        "kind": "compile-error",
+        "errors": [
+          {
+            "Message": "'DataSourceInfo' is a recognized but not supported function.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "Name isn't valid. 'DataSourceInfo' isn't recognized.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "The '.' operator cannot be used on Error values.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "Name isn't valid. 'Name' isn't recognized.",
+            "severity": "Critical"
+          }
+        ],
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "matrix-192",
+      "input": {
+        "expression": "IsError(Choices([{x:1}].x))",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "IsError(Choices([{x:1}].x))",
+        "kind": "compile-error",
+        "errors": [
+          {
+            "Message": "'Choices' is a recognized but not supported function.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "Deprecated use of '.'. Please use the 'ShowColumns' function instead.",
+            "severity": "Critical"
+          }
+        ],
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "matrix-193",
+      "input": {
+        "expression": "IsError(Errors([1]))",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "IsError(Errors([1]))",
+        "kind": "compile-error",
+        "errors": [
+          {
+            "Message": "'Errors' is a recognized but not supported function.",
+            "severity": "Critical"
+          }
+        ],
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-d1f22fd34a714cfcde14",
+      "input": {
+        "expression": "1 + 1",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "1 + 1",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "2"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-bfb0daf1b1c3e0cce722",
+      "input": {
+        "expression": "Upper(x)",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {
+            "x": "fx"
+          }
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Upper(x)",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "FX"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-6cd1fa3107ea0567fc96",
+      "input": {
+        "expression": "RGBA(1.5,2.5,3.5,0.5)",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "RGBA(1.5,2.5,3.5,0.5)",
+        "kind": "value",
+        "value": {
+          "kind": "color",
+          "r": 1,
+          "g": 2,
+          "b": 3,
+          "a": 128,
+          "expression": "RGBA(1,2,3,0.502)"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-c0a2edd8a54bcb6499fb",
+      "input": {
+        "expression": "ColorValue(\"#12345680\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "ColorValue(\"#12345680\")",
+        "kind": "value",
+        "value": {
+          "kind": "color",
+          "r": 18,
+          "g": 52,
+          "b": 86,
+          "a": 128,
+          "expression": "RGBA(18,52,86,0.502)"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-de066f42ca4ceb1c16c5",
+      "input": {
+        "expression": "ColorFade(RGBA(100,150,200,1),0.5)",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "ColorFade(RGBA(100,150,200,1),0.5)",
+        "kind": "value",
+        "value": {
+          "kind": "color",
+          "r": 177,
+          "g": 202,
+          "b": 227,
+          "a": 255,
+          "expression": "RGBA(177,202,227,1)"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-2f9fd0be48a7e5635f1f",
+      "input": {
+        "expression": "ColorFade(RGBA(1,3,5,1),-0.5)",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "ColorFade(RGBA(1,3,5,1),-0.5)",
+        "kind": "value",
+        "value": {
+          "kind": "color",
+          "r": 0,
+          "g": 1,
+          "b": 2,
+          "a": 255,
+          "expression": "RGBA(0,1,2,1)"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-35d7c9d174415e6f80c5",
+      "input": {
+        "expression": "Color.Red = ColorValue(\"Red\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Color.Red = ColorValue(\"Red\")",
+        "kind": "value",
+        "value": {
+          "kind": "boolean",
+          "value": true
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-0e27dccf42d5a7bc6182",
+      "input": {
+        "expression": "ColorValue(Blank())",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "ColorValue(Blank())",
+        "kind": "value",
+        "value": {
+          "kind": "blank"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-bcf36d84cea0209e39b2",
+      "input": {
+        "expression": "ColorValue(\"\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "ColorValue(\"\")",
+        "kind": "value",
+        "value": {
+          "kind": "blank"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-2899fea03402a0ac8fda",
+      "input": {
+        "expression": "RGBA(256,0,0,1)",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "RGBA(256,0,0,1)",
+        "kind": "error",
+        "value": {
+          "kind": "error",
+          "errors": [
+            {
+              "kind": 25,
+              "kindName": "InvalidArgument",
+              "Message": "Argument out of range."
+            }
+          ]
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-6849f594d6dd4bd784d5",
+      "input": {
+        "expression": "CountRows(Search([{Name:\"Alpha\"},{Name:\"Beta\"}], \"PH\", Name))",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "CountRows(Search([{Name:\"Alpha\"},{Name:\"Beta\"}], \"PH\", Name))",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "1"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-ab5dac8cdf9b640ac45f",
+      "input": {
+        "expression": "CountRows(Search([{Name:Blank()},{Name:\"Beta\"}], \"\", Name))",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "CountRows(Search([{Name:Blank()},{Name:\"Beta\"}], \"\", Name))",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "2"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-e1a9858820057c74d2bd",
+      "input": {
+        "expression": "CountRows(Search([{Name:\"Alpha\", City:\"York\"}], \"OR\", Name, City))",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "CountRows(Search([{Name:\"Alpha\", City:\"York\"}], \"OR\", Name, City))",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "1"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-48bcc406ab1a19fba2fa",
+      "input": {
+        "expression": "Rand()",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "random": 0.25
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Rand()",
+        "kind": "value",
+        "value": {
+          "kind": "float",
+          "text": "0.25"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-2da7d6f899cb11ba3480",
+      "input": {
+        "expression": "RandBetween(2,2)",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "random": 0.9
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "RandBetween(2,2)",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "2"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-4f724607ed3d08f0da52",
+      "input": {
+        "expression": "RandBetween(-1,1)",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "random": 0
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "RandBetween(-1,1)",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "-1"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-7967fdf2f2049f7192ad",
+      "input": {
+        "expression": "RandBetween(-1,1)",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "random": 0.999999
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "RandBetween(-1,1)",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "1"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-82356c1bc5375e4effc8",
+      "input": {
+        "expression": "RandBetween(1.1,1.1)",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "random": 0
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "RandBetween(1.1,1.1)",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "2"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-63afc06541b07c4d0de0",
+      "input": {
+        "expression": "RandBetween(3,2)",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "random": 0
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "RandBetween(3,2)",
+        "kind": "error",
+        "value": {
+          "kind": "error",
+          "errors": [
+            {
+              "kind": 24,
+              "kindName": "Numeric",
+              "Message": "Lower value cannot be greater than upper value."
+            }
+          ]
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-65c781fa46275e4125ce",
+      "input": {
+        "expression": "EncodeUrl(\"a b&/é!~*'()\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "EncodeUrl(\"a b&/é!~*'()\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "a%20b%26%2F%C3%A9%21~%2A%27%28%29"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-1fbe19f42d5d12057c8c",
+      "input": {
+        "expression": "IfError(Notify(\"x\"), FirstError.Kind)",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {}
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "IfError(Notify(\"x\"), FirstError.Kind)",
+        "kind": "compile-error",
+        "errors": [
+          {
+            "Message": "'Notify' is a recognized but not supported function.",
+            "severity": "Critical"
+          },
+          {
+            "Message": "The function 'IfError' has some invalid arguments.",
+            "severity": "Severe"
+          }
+        ],
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-24735c1e0c0d8cfc7ef9",
+      "input": {
+        "expression": "Sum(Filter(T, a > 1), a)",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {
+            "a": 10,
+            "T": [
+              {
+                "a": 1
+              },
+              {
+                "a": 2
+              }
+            ]
+          }
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Sum(Filter(T, a > 1), a)",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "2"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-2363c2864c01ba655117",
+      "input": {
+        "expression": "Sum(Filter(T, ThisRecord.a + [@a] > 11), a)",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {
+            "a": 10,
+            "T": [
+              {
+                "a": 1
+              },
+              {
+                "a": 2
+              }
+            ]
+          }
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Sum(Filter(T, ThisRecord.a + [@a] > 11), a)",
+        "kind": "compile-error",
+        "errors": [
+          {
+            "Message": "Name isn't valid. 'a' isn't recognized.",
+            "severity": "Critical"
+          }
+        ],
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-05d48bf9003dfe43e665",
+      "input": {
+        "expression": "Concat(ForAll(T As Outer, Concat(Filter(T, a = Outer.a), Text(a))), Value)",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {
+            "a": 10,
+            "T": [
+              {
+                "a": 1
+              },
+              {
+                "a": 2
+              }
+            ]
+          }
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Concat(ForAll(T As Outer, Concat(Filter(T, a = Outer.a), Text(a))), Value)",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "12"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-3c305ca8e0e25232ded1",
+      "input": {
+        "expression": "Sum(Filter(T, T[@a] = 2), a)",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {
+            "a": 10,
+            "T": [
+              {
+                "a": 1
+              },
+              {
+                "a": 2
+              }
+            ]
+          }
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Sum(Filter(T, T[@a] = 2), a)",
+        "kind": "compile-error",
+        "errors": [
+          {
+            "Message": "This feature is deprecated and is no longer supported.",
+            "severity": "Critical"
+          }
+        ],
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-f16b90cf2345f64cc998",
+      "input": {
+        "expression": "Text(DateTimeValue(\"2023-03-25T12:00:00\") + 1, \"yyyy-mm-dd hh:mm\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "Europe/Amsterdam",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {}
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(DateTimeValue(\"2023-03-25T12:00:00\") + 1, \"yyyy-mm-dd hh:mm\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "2023-03-26 12:00"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-b42a1b7f6d4068d56b8d",
+      "input": {
+        "expression": "Text(DateAdd(DateTimeValue(\"2023-03-25T12:00:00\"), 1, TimeUnit.Days), \"yyyy-mm-dd hh:mm\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "Europe/Amsterdam",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {}
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(DateAdd(DateTimeValue(\"2023-03-25T12:00:00\"), 1, TimeUnit.Days), \"yyyy-mm-dd hh:mm\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "2023-03-26 12:00"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-2e632efac07a2c6f0bd0",
+      "input": {
+        "expression": "Value(\"123.456\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {}
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Value(\"123.456\")",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "123.456"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-c45694e22965fdd688be",
+      "input": {
+        "expression": "Value(\"123.456\", \"es-ES\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {}
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Value(\"123.456\", \"es-ES\")",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "123456"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-fe750b4ea04134fef076",
+      "input": {
+        "expression": "Value(\"123,456\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {}
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Value(\"123,456\")",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "123456"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-8578f783f057ff0ee792",
+      "input": {
+        "expression": "Value(\"123,456\", \"es-ES\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {}
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Value(\"123,456\", \"es-ES\")",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "123.456"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-8dfc08d42f2613d6aa2c",
+      "input": {
+        "expression": "Decimal(\"123,456\", \"es-ES\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {}
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Decimal(\"123,456\", \"es-ES\")",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "123.456"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-11cb767dfa84ee1c850e",
+      "input": {
+        "expression": "Decimal(\"123.456\", \"es-ES\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {}
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Decimal(\"123.456\", \"es-ES\")",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "123456"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-aaedeaa8d6ac9a886dd9",
+      "input": {
+        "expression": "Float(\"123,456\", \"es-ES\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {}
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Float(\"123,456\", \"es-ES\")",
+        "kind": "value",
+        "value": {
+          "kind": "float",
+          "text": "123.456"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-2cecc98702350b047cd2",
+      "input": {
+        "expression": "Value(\"12.34%\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {}
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Value(\"12.34%\")",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "0.1234"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-ccfabeb7e9cdf8e769a7",
+      "input": {
+        "expression": "Value(\"$ 12.34\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {}
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Value(\"$ 12.34\")",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "12.34"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-8917fdcb93b39886a80f",
+      "input": {
+        "expression": "Value(\"24e3\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {}
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Value(\"24e3\")",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "24000"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-7ef0a9d33f4747898ddb",
+      "input": {
+        "expression": "Value(true)",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {}
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Value(true)",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "1"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-f954318b7c2e8922073e",
+      "input": {
+        "expression": "Float(\"1e100\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {}
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Float(\"1e100\")",
+        "kind": "value",
+        "value": {
+          "kind": "float",
+          "text": "1E+100"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-63a8dcaa2df72dcff3d7",
+      "input": {
+        "expression": "IsError(Decimal(\"1e100\"))",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {}
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "IsError(Decimal(\"1e100\"))",
+        "kind": "value",
+        "value": {
+          "kind": "boolean",
+          "value": true
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-de5d58f5d2a8ab2b437d",
+      "input": {
+        "expression": "IsError(Value(\"1.5\", \"es-ES\"))",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {}
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "IsError(Value(\"1.5\", \"es-ES\"))",
+        "kind": "value",
+        "value": {
+          "kind": "boolean",
+          "value": false
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-c964e2e3e03798c9609e",
+      "input": {
+        "expression": "Value(\"1 234,5\", \"fr-FR\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {}
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Value(\"1 234,5\", \"fr-FR\")",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "1234.5"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-2e9df9c5fd684d1741fe",
+      "input": {
+        "expression": "Value(\"1.234,5\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "de-DE",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {}
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Value(\"1.234,5\")",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "1234.5"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-2d4245473fad11377c38",
+      "input": {
+        "expression": "Value(\"1,500\", \"en-US\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "de-DE",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {}
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Value(\"1,500\", \"en-US\")",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "1500"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-64def58c2cfa387dab89",
+      "input": {
+        "expression": "IfError(Value(\"1\", \"x-invalid-@\"), FirstError.Kind)",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {}
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "IfError(Value(\"1\", \"x-invalid-@\"), FirstError.Kind)",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "14"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-63ff879103b172483b9e",
+      "input": {
+        "expression": "Value(\"12,34,567.5\", \"en-IN\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {}
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Value(\"12,34,567.5\", \"en-IN\")",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "1234567.5"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-097d9cc6eaa7b1d27655",
+      "input": {
+        "expression": "IfError(Value(\"1,23\"), FirstError.Kind)",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {}
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "IfError(Value(\"1,23\"), FirstError.Kind)",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "123"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-522281f7be3018848dfc",
+      "input": {
+        "expression": "Value(\"1.234 €\", \"de-DE\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {}
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Value(\"1.234 €\", \"de-DE\")",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "1234"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-64d28726718e09678a15",
+      "input": {
+        "expression": "Value(\"1’234.5\", \"de-CH\")",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {}
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Value(\"1’234.5\", \"de-CH\")",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "1234.5"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-db70aef6d80d973ce1fa",
+      "input": {
+        "expression": "IfError(Decimal(\"79228162514264337593543950336\"), FirstError.Kind)",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {}
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "IfError(Decimal(\"79228162514264337593543950336\"), FirstError.Kind)",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "25"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-91f79f3a5b1c67c2c372",
+      "input": {
+        "expression": "IfError(Decimal(\"-79228162514264337593543950336\"), FirstError.Kind)",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {}
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "IfError(Decimal(\"-79228162514264337593543950336\"), FirstError.Kind)",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "25"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-7f650d7256dc7c0586f8",
+      "input": {
+        "expression": "Hour(Now())",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "Asia/Tokyo",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {}
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Hour(Now())",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "5"
+        },
+        "clockReads": 1
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-571e06fc5d7aebc92f81",
+      "input": {
+        "expression": "Day(Today())",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "Asia/Tokyo",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {}
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Day(Today())",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "16"
+        },
+        "clockReads": 1
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-e9ba53ef7c5c10bc875d",
+      "input": {
+        "expression": "Hour(UTCNow())",
+        "host": {
+          "clock": "2013-07-15T20:02:00Z",
+          "timeZone": "Asia/Tokyo",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {}
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Hour(UTCNow())",
+        "kind": "compile-error",
+        "errors": [
+          {
+            "Message": "'UTCNow' is an unknown or unsupported function.",
+            "severity": "Critical"
+          }
+        ],
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-73c0a6a98307f3cbc680",
+      "input": {
+        "expression": "Text(DateAdd(Now(), 1), \"yyyy-mm-dd hh:mm\")",
+        "host": {
+          "clock": "2024-03-09T18:00:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {}
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(DateAdd(Now(), 1), \"yyyy-mm-dd hh:mm\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "2024-03-10 10:00"
+        },
+        "clockReads": 1
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-02bb6e34440fc733a094",
+      "input": {
+        "expression": "DateDiff(Now(), DateAdd(Now(), 1), TimeUnit.Hours)",
+        "host": {
+          "clock": "2024-03-09T18:00:00Z",
+          "timeZone": "America/Los_Angeles",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {}
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "DateDiff(Now(), DateAdd(Now(), 1), TimeUnit.Hours)",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "23"
+        },
+        "clockReads": 2
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-6ab1d219e8c0144935ad",
+      "input": {
+        "expression": "IfError(1/0, \"x\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "IfError(1/0, \"x\")",
+        "kind": "error",
+        "value": {
+          "kind": "error",
+          "errors": [
+            {
+              "kind": 25,
+              "kindName": "InvalidArgument",
+              "Message": "The value 'x' cannot be converted to a number."
+            }
+          ]
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-66b381b8ed0ac05129f1",
+      "input": {
+        "expression": "IfError(1/0, \"2\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "IfError(1/0, \"2\")",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "2"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-b282ceb1a2dc7370cd01",
+      "input": {
+        "expression": "IfError(Float(\"bad\"), \"0.1\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "IfError(Float(\"bad\"), \"0.1\")",
+        "kind": "value",
+        "value": {
+          "kind": "float",
+          "text": "0.1"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-14dd9bc3339e4ef1bcec",
+      "input": {
+        "expression": "Text(IfError(1/0, \"1234567890123456789012345678\"))",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(IfError(1/0, \"1234567890123456789012345678\"))",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "1234567890123456789012345678"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-b437c888b0366eab0b20",
+      "input": {
+        "expression": "IfError(Text(1/0), \"x\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "IfError(Text(1/0), \"x\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "x"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-4220060e7b017e429181",
+      "input": {
+        "expression": "IfError(Text(1/0), 42)",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "IfError(Text(1/0), 42)",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "42"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-61e8e53be1ad6ef46395",
+      "input": {
+        "expression": "IfError(Value(\"bad\"), true)",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "IfError(Value(\"bad\"), true)",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "1"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-ff8f47dc0ff7d213943a",
+      "input": {
+        "expression": "IfError(Boolean(\"bad\"), \"true\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "IfError(Boolean(\"bad\"), \"true\")",
+        "kind": "value",
+        "value": {
+          "kind": "boolean",
+          "value": true
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-893081441d43917b97dd",
+      "input": {
+        "expression": "IfError(DateValue(\"bad\"), \"2026-01-02\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "IfError(DateValue(\"bad\"), \"2026-01-02\")",
+        "kind": "value",
+        "value": {
+          "kind": "typed-other",
+          "type": "Date",
+          "expression": "Date(2026,1,2)"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-34a7348379006553bf64",
+      "input": {
+        "expression": "IfError(1/0, Blank())",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "IfError(1/0, Blank())",
+        "kind": "value",
+        "value": {
+          "kind": "blank"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-cc62d7403dbcd2213ab7",
+      "input": {
+        "expression": "IfError(1, \"bad\", \"2\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "IfError(1, \"bad\", \"2\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "2"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-5fb9151f987eab1fc435",
+      "input": {
+        "expression": "IfError(1, \"z\", Text(1/0), 42)",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "IfError(1, \"z\", Text(1/0), 42)",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "42"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-7286f2b787115cc13150",
+      "input": {
+        "expression": "IfError(\"s\", \"z\", 1/0, \"3\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "IfError(\"s\", \"z\", 1/0, \"3\")",
+        "kind": "value",
+        "value": {
+          "kind": "decimal",
+          "text": "3"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-4643a562371e5acf1735",
+      "input": {
+        "expression": "IfError(Error(\"bad\"), \"fallback\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "IfError(Error(\"bad\"), \"fallback\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "fallback"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-c16cd59e394d6d9ecd2c",
+      "input": {
+        "expression": "Text(1234.5,\"#,##0.00\",\"de-DE\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(1234.5,\"#,##0.00\",\"de-DE\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "1.234,50"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-185df2d58047fed7c9fe",
+      "input": {
+        "expression": "Text(1234.5,\"#,##0.00\",\"fr-FR\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(1234.5,\"#,##0.00\",\"fr-FR\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "1 234,50"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-bc37f55961fdf003fcdf",
+      "input": {
+        "expression": "Text(1234.5,\"#,##0.00\",\"x-invalid-@\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(1234.5,\"#,##0.00\",\"x-invalid-@\")",
+        "kind": "error",
+        "value": {
+          "kind": "error",
+          "errors": [
+            {
+              "kind": 14,
+              "kindName": "BadLanguageCode",
+              "Message": "Language code 'x-invalid-@' not supported."
+            }
+          ]
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-b5a6792e13f7f4bbe13d",
+      "input": {
+        "expression": "Text(1234567890123456789012345678,\"0\",\"en-US\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(1234567890123456789012345678,\"0\",\"en-US\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "1234567890123456789012345678"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-7b4772a2b38674512948",
+      "input": {
+        "expression": "Text(1234567890123456789012345678,\"#,##0.00\",\"en-US\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(1234567890123456789012345678,\"#,##0.00\",\"en-US\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "1,234,567,890,123,456,789,012,345,678.00"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-bdfa28c2c7d8ffddcdc4",
+      "input": {
+        "expression": "Text(99999999999999999999,\"0.00\",\"en-US\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(99999999999999999999,\"0.00\",\"en-US\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "99999999999999999999.00"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-2aa998e77d7bc4fd6264",
+      "input": {
+        "expression": "Text(1.235,\"0.00\",\"en-US\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(1.235,\"0.00\",\"en-US\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "1.24"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-c5879b133a6992844fbd",
+      "input": {
+        "expression": "Text(-1.235,\"0.00\",\"en-US\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(-1.235,\"0.00\",\"en-US\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "-1.24"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-09b7412b282c3bcfa6e9",
+      "input": {
+        "expression": "Text(0.12345,\"0.00%\",\"en-US\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(0.12345,\"0.00%\",\"en-US\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "12.35%"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-d0c755cd91535f2ec1bf",
+      "input": {
+        "expression": "Text(12.3,\"$0.00\",\"en-US\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(12.3,\"$0.00\",\"en-US\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "$12.30"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-4368737303ac48efb067",
+      "input": {
+        "expression": "Text(Float(0.1)+Float(0.2),\"0.00000000000000000\",\"en-US\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(Float(0.1)+Float(0.2),\"0.00000000000000000\",\"en-US\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "0.30000000000000000"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-35991ec08755d265ed10",
+      "input": {
+        "expression": "Text(Float(1.2345678901234567),\"0.00000000000000000\",\"en-US\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(Float(1.2345678901234567),\"0.00000000000000000\",\"en-US\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "1.23456789012346000"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-f7aa8372c200a3c5b725",
+      "input": {
+        "expression": "Text(IfError(Float(\"bad\"),\"0.1\") + Float(0.2),\"0.00000000000000000\",\"en-US\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(IfError(Float(\"bad\"),\"0.1\") + Float(0.2),\"0.00000000000000000\",\"en-US\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "0.30000000000000000"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-bb86a4a0c642a1c815bb",
+      "input": {
+        "expression": "Text(12.3,\"0.00\"\"%\"\"\",\"en-US\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(12.3,\"0.00\"\"%\"\"\",\"en-US\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "12.30%"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-bce77036b798eba96a6c",
+      "input": {
+        "expression": "Text(12.3,\"0.00\\%\",\"en-US\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(12.3,\"0.00\\%\",\"en-US\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "12.30%"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-d0454c217c284d3b780b",
+      "input": {
+        "expression": "Text(0.123,\"0.00%\",\"en-US\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(0.123,\"0.00%\",\"en-US\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "12.30%"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-486748b7becc01ceea45",
+      "input": {
+        "expression": "Text(123456,\"000-000\",\"en-US\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(123456,\"000-000\",\"en-US\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "123-456"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-53ebefa8891c71084ce1",
+      "input": {
+        "expression": "Text(1234567890123456789012345678,\"000-000\",\"en-US\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(1234567890123456789012345678,\"000-000\",\"en-US\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "1234567890123456789012345-678"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-7f63b8001ef1a2ca0daf",
+      "input": {
+        "expression": "Text(12.3,\"0\"\"x\"\".00\",\"en-US\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(12.3,\"0\"\"x\"\".00\",\"en-US\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "12x.30"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-0b8f7b5afdb7b41c5180",
+      "input": {
+        "expression": "Text(12.3,\"0.0\"\"x\"\"0\",\"en-US\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(12.3,\"0.0\"\"x\"\"0\",\"en-US\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "12.3x0"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-1a8629f0dfeeae9ad86e",
+      "input": {
+        "expression": "Text(0,\"#.##\",\"en-US\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(0,\"#.##\",\"en-US\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": ""
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-ffefb56f56197e7fd543",
+      "input": {
+        "expression": "Text(12.3,\"0.#0#\",\"en-US\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(12.3,\"0.#0#\",\"en-US\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "12.30"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-7b05eea95d04471ab07a",
+      "input": {
+        "expression": "Text(12.3,\".00\",\"en-US\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(12.3,\".00\",\"en-US\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "12.30"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-9c3e19c215b08502275f",
+      "input": {
+        "expression": "Text(12,\"0.\",\"en-US\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(12,\"0.\",\"en-US\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "12."
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-02a08e01d599b5204dc8",
+      "input": {
+        "expression": "Text(0,\".##\",\"en-US\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(0,\".##\",\"en-US\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": ""
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-6e058c69328487054773",
+      "input": {
+        "expression": "Text(12,\"0#0\",\"en-US\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(12,\"0#0\",\"en-US\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "012"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-f62041fde27b1c594282",
+      "input": {
+        "expression": "Text(-12,\"$0.00\",\"en-US\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(-12,\"$0.00\",\"en-US\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "-$12.00"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-94938c6637bcbb0690d4",
+      "input": {
+        "expression": "Text(12345678,\"#,##0,,\"\" M\"\"\",\"en-US\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(12345678,\"#,##0,,\"\" M\"\"\",\"en-US\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "12 M"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-5012bb293d306a19fe8f",
+      "input": {
+        "expression": "Text(1234,\"0,\",\"en-US\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(1234,\"0,\",\"en-US\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "1"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-06c7deb4a183d4491b73",
+      "input": {
+        "expression": "Text(1234,\"0,,\",\"en-US\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(1234,\"0,,\",\"en-US\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "0"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-67e1c95e44a89b2d7076",
+      "input": {
+        "expression": "Text(0.123,\"0%%\",\"en-US\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(0.123,\"0%%\",\"en-US\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "1230%%"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-bad91b1e54cf25f012a4",
+      "input": {
+        "expression": "Text(0,\"0#0\",\"en-US\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(0,\"0#0\",\"en-US\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "000"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-22496b37c9e69eabe731",
+      "input": {
+        "expression": "Text(12,\"00#\",\"en-US\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(12,\"00#\",\"en-US\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "012"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-ee0de9f338590dd725d7",
+      "input": {
+        "expression": "Text(0,\".00\",\"en-US\")",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "Text(0,\".00\",\"en-US\")",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": ".00"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "assert-705ba2fb53a26f9a52fd",
+      "input": {
+        "expression": "TrimEnds(value)",
+        "host": {
+          "clock": "system-current",
+          "timeZone": "UTC",
+          "culture": "en-US",
+          "parseCulture": "en-US",
+          "numberIsFloat": false,
+          "values": {
+            "value": "\t x \n"
+          }
+        },
+        "result": {
+          "fields": ["clockReads", "errors", "expression", "kind", "value"],
+          "check": "compile-error",
+          "valueForm": "typed",
+          "errorForm": "typed"
+        }
+      },
+      "output": {
+        "expression": "TrimEnds(value)",
+        "kind": "value",
+        "value": {
+          "kind": "string",
+          "value": "x"
+        },
+        "clockReads": 0
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}
