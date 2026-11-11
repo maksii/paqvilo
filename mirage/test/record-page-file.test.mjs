@@ -1,10 +1,11 @@
+// @test-kind contract: paged record file format, directory durability ordering and create cleanup are Paqvilo's own runtime design
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { RecordPageFile } from '../lib/record-page-file.mjs';
+import { RecordPageFile, syncDirectory } from '../lib/record-page-file.mjs';
 
 function fixture(t, options) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'invented-record-pages-'));
@@ -279,4 +280,56 @@ test('pages are written with Brotli and files written with gzip pages stay reada
   t.after(() => old.close());
   assert.equal(old.page(1).codec, 0);
   assert.deepEqual(old.read(1), raw);
+});
+
+test('syncDirectory opens, syncs and closes the directory', () => {
+  const calls = [];
+  const io = {
+    openSync: (...args) => (calls.push(['open', ...args]), 7),
+    fsyncSync: (fd) => calls.push(['fsync', fd]),
+    closeSync: (fd) => calls.push(['close', fd]),
+  };
+  syncDirectory('invented-directory', io);
+  assert.deepEqual(calls, [
+    ['open', 'invented-directory', 'r'],
+    ['fsync', 7],
+    ['close', 7],
+  ]);
+});
+
+test('syncDirectory rethrows directory sync failures except Windows directory handles', () => {
+  let closed = 0;
+  const io = (code) => ({
+    openSync: () => 7,
+    fsyncSync() {
+      throw Object.assign(new Error('Invented directory sync failure'), { code });
+    },
+    closeSync() {
+      closed++;
+    },
+  });
+  assert.throws(() => syncDirectory('invented-directory', io('EIO')), { code: 'EIO' });
+  assert.equal(closed, 1);
+  if (process.platform === 'win32') {
+    assert.doesNotThrow(() => syncDirectory('invented-directory', io('EPERM')));
+    assert.equal(closed, 2);
+  } else {
+    assert.throws(() => syncDirectory('invented-directory', io('EPERM')), { code: 'EPERM' });
+    assert.equal(closed, 2);
+  }
+});
+
+test('RecordPageFile.create returns a writable file and never replaces an existing path', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'invented-record-create-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, 'created.pages');
+  const store = RecordPageFile.create(file);
+  t.after(() => store.close());
+  assert.equal(store.writable, true);
+  const raw = Buffer.from('[{"id":"invented"}]');
+  const id = store.append(1, raw, 1);
+  assert.deepEqual(store.read(id), raw);
+  assert.throws(() => RecordPageFile.create(file), { code: 'EEXIST' });
+  assert.deepEqual(fs.readdirSync(root), ['created.pages']);
+  assert.deepEqual(fs.readFileSync(file).subarray(0, 23), Buffer.from('PAQVILO-RECORD-PAGES-1\n'));
 });

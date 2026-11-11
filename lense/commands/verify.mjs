@@ -34,6 +34,16 @@ const diagnosticLocation = (value) => {
   }
 };
 
+/** Page location for messages: a sign-in redirect's query carries state and nonce, so only its presence shows. */
+export function redactedPageUrl(value) {
+  try {
+    const url = new URL(value);
+    return `${url.origin}${url.pathname}${url.search ? '?[redacted]' : ''}`;
+  } catch {
+    return '[redacted URL]';
+  }
+}
+
 /** Copy only bounded diagnostic fields: never the panel token, activities, or source bodies. */
 export function diagnosticSnapshot(state) {
   const snapshot = { counts: {}, truncated: {} };
@@ -323,7 +333,7 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
     if (!onTarget()) {
       if (!args.headed) {
         throw new Error(
-          `${startPath} needs a sign-in (ended on ${page.url()}). Run: npm run verify -- --headed --signed-in --path ${startPath}  and sign in in the window that opens`,
+          `${startPath} needs a sign-in (ended on ${redactedPageUrl(page.url())}). Run: npm run verify -- --headed --signed-in --path ${startPath}  and sign in in the window that opens`,
         );
       }
       log(

@@ -1,3 +1,4 @@
+// @test-kind contract: paged record storage, restart integrity and garbage collection are Paqvilo's own runtime design
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -394,4 +395,60 @@ test('a write made while the compacted checkpoint is saved survives in memory an
   t.after(() => restarted.closeRecordStorage());
   await restarted.init();
   assert.equal(restarted.get('items', 'row-300', admin).name, 'Written during compaction');
+});
+
+test('a missing record page file fails the load and leaves the state file untouched', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'invented-record-missing-pages-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'state.json'),
+    store = new DataStore({ file, presetLibrary: library() });
+  t.after(() => store.closeRecordStorage());
+  await store.init();
+  await store.applyPreset('invented', { returnSnapshot: false });
+  store.closeRecordStorage();
+  const before = await fs.readFile(file);
+  const pages = (await fs.readdir(file + '.records')).filter((name) => name.endsWith('.pages'));
+  assert.ok(pages.length > 0);
+  for (const name of pages) await fs.rm(path.join(file + '.records', name));
+  const restarted = new DataStore({ file, presetLibrary: library() });
+  t.after(() => restarted.closeRecordStorage());
+  await assert.rejects(restarted.init(), (error) => error.code === 'StateIntegrity');
+  assert.deepEqual(await fs.readFile(file), before);
+});
+
+test('a missing record directory fails the load and leaves the state file untouched', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'invented-record-missing-directory-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'state.json'),
+    store = new DataStore({ file, presetLibrary: library() });
+  t.after(() => store.closeRecordStorage());
+  await store.init();
+  await store.applyPreset('invented', { returnSnapshot: false });
+  store.closeRecordStorage();
+  const before = await fs.readFile(file);
+  await fs.rm(file + '.records', { recursive: true, force: true });
+  const restarted = new DataStore({ file, presetLibrary: library() });
+  t.after(() => restarted.closeRecordStorage());
+  await assert.rejects(restarted.init(), (error) => error.code === 'StateIntegrity');
+  assert.deepEqual(await fs.readFile(file), before);
+});
+
+test('an unverifiable record directory identity skips collection after a published compaction', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'invented-record-identity-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'state.json'),
+    store = new DataStore({ file, presetLibrary: library() });
+  t.after(() => store.closeRecordStorage());
+  await store.init();
+  await store.applyPreset('invented', { returnSnapshot: false });
+  const identity = store.recordStorageDirectoryMatches;
+  store.recordStorageDirectoryMatches = () => {
+    throw Error('Invented identity failure');
+  };
+  try {
+    await store.compact();
+  } finally {
+    store.recordStorageDirectoryMatches = identity;
+  }
+  assert.deepEqual(store.recordGarbageCollection, { skipped: 'directory-identity' });
 });

@@ -339,7 +339,7 @@ The other members of `mirage.trace` bound memory. The same four ways change them
 
 | Member          | Default | Range          | Meaning                                                                                |
 | --------------- | ------- | -------------- | -------------------------------------------------------------------------------------- |
-| `traces`        | `500`   | 10 to 10000    | Traces kept in memory; the oldest is dropped first.                                    |
+| `traces`        | `500`   | 10 to 10000    | Traces kept in memory; the trace with the least recent activity is dropped first.      |
 | `spansPerTrace` | `2000`  | 50 to 20000    | Spans kept per trace; later spans of the trace are counted in `droppedSpans` instead.  |
 | `payloadBytes`  | `16384` | 256 to 1048576 | Size cap of one captured input or output; a larger value keeps a preview.              |
 | `persist`       | `false` | `true`/`false` | Append ended traces to files under the state folder (see [Persistence](#persistence)). |
@@ -443,7 +443,7 @@ p50/p95/maximum durations by kind, module, table, operation and who. Select a ti
 to it, or **Filter** on a breakdown row to narrow to that value.
 
 **⚙ Settings** changes the level, persistence and the retention limits (`traces`, `spansPerTrace`, `payloadBytes`)
-without a restart; a smaller `traces` limit drops the oldest activities at once and reloads the list. At level `off`
+without a restart; a smaller `traces` limit drops the trace with the least recent activity first, at once, and reloads the list. At level `off`
 Activities lists the request audit instead, under a banner, so the page is never blank, and **Live** follows the request
 audit (`Following the request audit`).
 
@@ -639,8 +639,7 @@ asks for is never built. An unknown type answers one `{ type: 'error', error: { 
 `trace.evicted: true` for a trace that left the store while it still ran. Frames are built only while a subscriber is
 connected. Every frame is written, so a client that keeps reading loses none however large a burst is. A client that
 disconnects, even before its first frame, leaves no subscription behind; a client that stops reading is disconnected
-when it has not drained its buffer 5 seconds after a refused write, or when its buffer is full again after three
-drains in a row (an `EventSource` reconnects by itself).
+when it has not drained its buffer 5 seconds after a refused write (an `EventSource` reconnects by itself).
 
 ### Testing client and in-process handle
 
@@ -759,7 +758,7 @@ A line is `{ persistedAt, traceId, trace: summary, spans: [record], complete }`.
 the previous line of that trace, plus any span the previous line wrote while it still ran, so a trace that reopens for
 asynchronous segments adds small lines. To rebuild a trace, read its lines in order and keep the latest record of each
 span id and the latest summary. `complete` is `false` when a span still ran as the line was written. That happens when
-a trace leaves memory while it runs (the oldest trace is dropped first): it is written at once, its `trace-end` frame
+a trace leaves memory while it runs (the trace with the least recent activity is dropped first): it is written at once, its `trace-end` frame
 carries `trace.evicted: true`, and it is written again when its last span ends. A link added to a persisted span later,
 such as the `triggered` link of a job that ran after the trace ended, writes that span again in the trace's next line.
 
@@ -774,12 +773,12 @@ like any other local state.
 
 - Inputs and outputs are captured only at level `full`, and always through the same redaction. Values under
   credential-named keys (passwords, secrets, tokens, authorization and authentication, cookies, credentials, API keys,
-  signatures, connection strings, SAS and shared access signatures, account, subscription, private and function keys)
-  become `[redacted]`, and so does the `value` of a `{ key, value }` pair whose key is credential-named. The `sig` and
-  `code` URL query parameters are hidden too. The `secretName` of a secret span names a Key Vault secret, never its
-  value, and stays readable. In text, `Bearer`, `Basic`, `Digest` and `SharedAccessSignature` credentials,
-  `name=value` credentials and signed URL query strings (`?code=`, `&sig=`) are masked, and secret-named FetchXML
-  conditions are hidden.
+  signatures, connection strings, SAS and shared access signatures, account, subscription, private and function keys,
+  invitation codes) become `[redacted]`, and so does the `value` of a `{ key, value }` pair whose key is
+  credential-named. The `sig` and `code` URL query parameters are hidden too. The `secretName` of a secret span names
+  a Key Vault secret, never its value, and stays readable. In text, `Bearer`, `Basic`, `Digest` and
+  `SharedAccessSignature` credentials, `name=value` credentials and signed URL query strings (`?code=`, `&sig=`) are
+  masked, and secret-named FetchXML conditions are hidden.
 - File and binary columns are summarised, never copied: a note's `documentbody`, binary data, a data URL or base64
   under `body` or an image key, and any data URL or base64 longer than 1 KB become `{ bytes, mimetype, filename,
 sha256 }`, the size and SHA-256 of the decoded bytes with the MIME type and file name when they are known.

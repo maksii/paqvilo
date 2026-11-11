@@ -12,6 +12,7 @@ import { recordSources } from './record-sources.mjs';
 import { compactRecordGraph } from './record-compaction.mjs';
 import { privateRecordEqual } from './record-clone.mjs';
 import { collectRecordGarbage } from './record-file-lease.mjs';
+import { syncDirectory } from './record-page-file.mjs';
 import { encodeRecordReferences } from './record-state.mjs';
 import { systemClock, systemIds } from './runtime-clock.mjs';
 import { currentRequest } from './request-context.mjs';
@@ -1409,7 +1410,8 @@ export class DataStore {
         this.persistedDigest = this.storage.digest;
         if (this.storage.recordSession) this.recordSession = this.storage.recordSession;
       } catch (error) {
-        if (error.code !== 'ENOENT') throw error;
+        // A missing state file is the only "no saved state yet" case; missing record pages are not.
+        if (error.code !== 'ENOENT' || fsSync.existsSync(this.file)) throw error;
         this.persistedDigest = null;
         await this.save();
       }
@@ -1772,6 +1774,7 @@ export class DataStore {
         // made while the temporary snapshot was being prepared.
         await this.storage.assertUnchanged();
         await rename(temp, this.file);
+        syncDirectory(dirname(this.file));
         await this.storage.checkpointCommitted(prepared);
         this.persistedDigest = this.storage.digest;
         this.recordSave(performance.now() - saveStarted, 'checkpoint');
@@ -2224,7 +2227,17 @@ export class DataStore {
       this.recordGarbageCollection = { skipped: 'unverified-directory' };
       return this.recordGarbageCollection;
     }
-    if (!this.recordStorageDirectoryMatches(session)) return { skipped: 'directory-identity' };
+    let matches;
+    try {
+      matches = this.recordStorageDirectoryMatches(session);
+    } catch {
+      // An unreadable directory is a mismatch: collection never fails a committed publication.
+      matches = false;
+    }
+    if (!matches) {
+      this.recordGarbageCollection = { skipped: 'directory-identity' };
+      return this.recordGarbageCollection;
+    }
     const lockPath = this.file ? this.file + '.lock' : null,
       token = `${process.pid}:${randomUUID()}\n`;
     let lock;

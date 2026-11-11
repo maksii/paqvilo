@@ -179,23 +179,25 @@ export function storeCatalogue({ store, metadata, options, source = () => null }
 /** The shell consumes this interface, not HTTP OData or the live bridge. The
  * Dataverse HTTP host can use the same DataStore without coupling either UI to it. */
 const escapeLikeText = (text) => text.replace(/[[%_]/g, (char) => `[${char}]`);
+// The form in which lookup ids and stored keys are compared: surrounding whitespace, braces and letter case are ignored.
+const looseKey = (value) => String(value).trim().replace(/[{}]/g, '').toLowerCase();
 function lookupTargetRow(entity, target, id, byId, store) {
   const source =
     target.projected && !store.state.mappings[entity]?.modelDrivenSource ? target.rows : store.tableRows(entity);
   const paged = pagedRecordsOf(source);
   if (paged && !paged.looseBraceKeys) {
-    const positions = paged.primaryPositions(target.idColumn, id);
+    const positions = paged.primaryPositions(target.idColumn, looseKey(id));
     if (positions !== null) return positions.length ? source[positions[0]] : undefined;
   }
   if (!byId.has(entity)) {
     const index = new Map();
     for (const record of source) {
-      const key = String(record[target.idColumn]).replace(/[{}]/g, '').toLowerCase();
+      const key = looseKey(record[target.idColumn]);
       if (!index.has(key)) index.set(key, record);
     }
     byId.set(entity, index);
   }
-  return byId.get(entity).get(id);
+  return byId.get(entity).get(looseKey(id));
 }
 
 function lookupDisplayName(value, field, table, tables, portal, byId, { store, id }) {

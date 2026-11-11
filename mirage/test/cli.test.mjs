@@ -318,6 +318,35 @@ test(
   },
 );
 
+// Starts `serve` in `directory` with `args`, keeps its live output in `output` and resolves with its startup JSON.
+// A child still running when the test ends is stopped by the test's owner.
+async function startServe(t, directory, args) {
+  const output = { stdout: '', stderr: '' };
+  const child = spawn(process.execPath, [cli, 'serve', ...args], {
+    cwd: directory,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
+    signal: t.signal,
+    killSignal: 'SIGKILL',
+  });
+  let ended = false;
+  child.stdout.on('data', (data) => {
+    output.stdout += data;
+  });
+  child.stderr.on('data', (data) => {
+    output.stderr += data;
+  });
+  const completion = closed(child).then((values) => {
+    ended = true;
+    return values;
+  });
+  ownedFixture(t).add(async () => {
+    if (!ended) await stop(child, completion);
+  });
+  const started = await startup(child, completion, () => output);
+  return { child, completion, output, started };
+}
+
 test('CLI: explicit solution root resolves real form fixture and owned serve process shuts down cleanly', async (t) => {
   const directory = await fixture(t, {
     'portal/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Form page\nadx_partialurl: /\n',
@@ -333,41 +362,23 @@ test('CLI: explicit solution root resolves real form fixture and owned serve pro
     'solutions/Package/Entities/contact/FormXml/main/{form-id}.xml':
       '<forms><systemform><formid>{form-id}</formid><FormActivationState>1</FormActivationState><form><tabs><tab name="general"><columns><column width="100%"><sections><section name="contact"><rows><row><cell showlabel="true"><labels><label description="Friendly name" languagecode="1033"/></labels><control id="fullname" datafieldname="fullname"/></cell></row></rows></section></sections></column></columns></tab></tabs></form><LocalizedNames><LocalizedName description="Portal edit" languagecode="1033"/></LocalizedNames></systemform></forms>',
   });
-  const child = spawn(
-    process.execPath,
-    [
-      cli,
-      'serve',
-      '--source',
-      path.join(directory, 'portal'),
-      '--solution-root',
-      path.join(directory, 'solutions'),
-      '--state',
-      'state.json',
-      '--port',
-      '0',
-      '--no-watch',
-      '--json',
-    ],
-    { cwd: directory, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, signal: t.signal, killSignal: 'SIGKILL' },
-  );
-  let stdout = '',
-    stderr = '',
-    ended = false;
-  child.stdout.on('data', (data) => {
-    stdout += data;
-  });
-  child.stderr.on('data', (data) => {
-    stderr += data;
-  });
-  const completion = closed(child).then((values) => {
-    ended = true;
-    return values;
-  });
-  ownedFixture(t).add(async () => {
-    if (!ended) await stop(child, completion);
-  });
-  const discovery = await startup(child, completion, () => ({ stdout, stderr }));
+  const {
+    child,
+    completion,
+    output,
+    started: discovery,
+  } = await startServe(t, directory, [
+    '--source',
+    path.join(directory, 'portal'),
+    '--solution-root',
+    path.join(directory, 'solutions'),
+    '--state',
+    'state.json',
+    '--port',
+    '0',
+    '--no-watch',
+    '--json',
+  ]);
   const stateResponse = await fetch(`${discovery.url}/__sim/api/state`);
   assert.equal(discovery.stateFile, path.join(directory, 'state.json'));
   assert.equal(stateResponse.status, 200);
@@ -382,11 +393,40 @@ test('CLI: explicit solution root resolves real form fixture and owned serve pro
   const { code, error } = await within(
     completion,
     60_000,
-    () => `CLI did not stop. stdout: ${stdout}\nstderr: ${stderr}`,
+    () => `CLI did not stop. stdout: ${output.stdout}\nstderr: ${output.stderr}`,
   );
   if (error) throw error;
-  assert.equal(code, 0, stderr);
-  assert.equal(JSON.parse(stdout).url, discovery.url);
+  assert.equal(code, 0, output.stderr);
+  assert.equal(JSON.parse(output.stdout).url, discovery.url);
   await assert.rejects(fs.stat(discovery.discovery), (error) => error.code === 'ENOENT');
   await assert.rejects(fetch(discovery.url));
+});
+
+// @test-kind contract: CLI: the startup JSON names the documented /_sim/ admin address, and that address answers
+test('CLI: serve reports the /_sim/ admin address in its startup JSON and serves it', async (t) => {
+  const directory = await fixture(t, {
+    'portal/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n',
+    'portal/Home.webpage.copy.html': '<h1>Local home</h1>',
+  });
+  const { child, completion, output, started } = await startServe(t, directory, [
+    '--source',
+    path.join(directory, 'portal'),
+    '--state',
+    'state.json',
+    '--port',
+    '0',
+    '--no-watch',
+    '--json',
+  ]);
+  assert.equal(started.adminUrl, new URL('/_sim/', started.url).href);
+  const admin = await fetch(started.adminUrl);
+  assert.equal(admin.status, 200);
+  child.stdin.end('stop\n');
+  const { code, error } = await within(
+    completion,
+    60_000,
+    () => `CLI did not stop. stdout: ${output.stdout}\nstderr: ${output.stderr}`,
+  );
+  if (error) throw error;
+  assert.equal(code, 0, output.stderr);
 });

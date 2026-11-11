@@ -164,6 +164,7 @@ For Decimal and Money request properties, `Content-Type: application/json; IEEE7
 - `$skip` and `$format` answer 400 `0x80060888`. `$search` answers 501 `0x8006088a`.
 - URLs up to 32,768 characters are accepted. A longer URL answers 400 `0x80060888`, "Invalid URI: The Uri string is too long."
 - A path segment over 260 characters answers 400 "Bad Request - Invalid URL".
+- A `$filter` may nest parentheses, lambdas and function calls up to 100 levels.
 - Alternate-key values containing control characters are rejected.
 - A malformed `Prefer` header answers 400 with the envelope `{ "Message", "ErrorCode": "0x80097303" }`.
 
@@ -382,6 +383,8 @@ Managed identities are application users, listed in the `managedidentities` tabl
 
 - Login takes an Entra access token (FEDAUTH). Each table read runs as the caller through the Web API record handlers, so table, field and row security apply. The endpoint is read-only: a write answers error 102 with a "read-only" message.
 - Statements: `SELECT` with `DISTINCT`, `TOP n [PERCENT]`, aliases, `*` and `alias.*`, `SELECT @v = expr`, `DECLARE` and `SET`. Statements are separated by `;` or a line break, and `GO` ends a batch. `sp_executesql` is the only procedure mapped, and its parameters arrive as `@p1` and so on.
+- `GO <count>` repeats a batch up to 1,000 times; a larger count is a syntax error. The query time limit also applies
+  between repeats.
 - Sources: `dbo` tables and derived tables (alias required). Joins: `INNER`, `LEFT`, `RIGHT` and `FULL` (with optional `OUTER`), `CROSS JOIN`, and `CROSS APPLY` or `OUTER APPLY` over a derived table.
 - Clauses: `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY` (expressions or ordinals), `UNION` and `UNION ALL`.
 - Predicates and subqueries: comparisons, `LIKE`, `BETWEEN`, `IN`, `IS NULL`, `EXISTS`, `CASE`, scalar and derived subqueries, and `ANY`, `SOME` and `ALL` comparisons.

@@ -1,8 +1,10 @@
+// @test-kind contract: the guided setup workspace saves, validates and serves configuration as the product designs it.
 import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
@@ -988,4 +990,48 @@ test('a setup server of its own relays the running Mirage preview views read-onl
     ['/_sim/api/dashboard', '/_sim/api/preflight?requires=table%3Ax_item'],
     'a Lense portal is never contacted',
   );
+});
+
+async function lockedProject(t, lockText) {
+  const directory = await work(t),
+    filename = path.join(directory, 'organization.json');
+  await fs.mkdir(path.join(directory, 'solution'));
+  const raw = {
+    version: 2,
+    runtime: { kind: 'model-driven', defaultApp: '11111111-2222-4333-8444-555555555555' },
+    solutions: [{ id: 'core', path: './solution' }],
+    simulation: { level: 'dry-run' },
+    dataverse: { enabled: false },
+  };
+  await fs.writeFile(filename, JSON.stringify(raw));
+  await fs.writeFile(filename + '.setup.lock', lockText);
+  return { directory, filename, store: new SetupStore({ directory, project: filename, processEnv: {} }) };
+}
+
+// @test-kind contract: a save lock left by an interrupted save must not block every later save, a live save still does.
+test('a save lock whose process has exited does not block the next save', async (t) => {
+  const exited = spawnSync(process.execPath, ['-e', '']);
+  const { filename, store } = await lockedProject(t, JSON.stringify({ pid: exited.pid, at: Date.now() }));
+  const saved = await edit(store, 'shared', [set(['simulation', 'level'], 'simulation')]);
+  assert.equal(saved.settings.simulation.level, 'simulation');
+  await assert.rejects(fs.access(filename + '.setup.lock'), { code: 'ENOENT' });
+});
+
+// @test-kind contract: a save lock whose content is not a lock record must not block the next save.
+test('a save lock with garbled content does not block the next save', async (t) => {
+  const { filename, store } = await lockedProject(t, 'interrupted write, not JSON');
+  const saved = await edit(store, 'shared', [set(['simulation', 'level'], 'simulation')]);
+  assert.equal(saved.settings.simulation.level, 'simulation');
+  await assert.rejects(fs.access(filename + '.setup.lock'), { code: 'ENOENT' });
+});
+
+// @test-kind contract: a save lock held by a live process within the stale window still answers the busy response.
+test('a save lock held by a live process within the stale window still answers busy and is kept', async (t) => {
+  const lockText = JSON.stringify({ pid: process.pid, at: Date.now() });
+  const { filename, store } = await lockedProject(t, lockText);
+  await assert.rejects(
+    edit(store, 'shared', [set(['simulation', 'level'], 'simulation')]),
+    (error) => error.status === 409 && /being saved/.test(error.message),
+  );
+  assert.equal(await fs.readFile(filename + '.setup.lock', 'utf8'), lockText);
 });

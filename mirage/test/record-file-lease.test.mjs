@@ -13,6 +13,7 @@ import {
   openRecordReader,
   claimRecordDirectory,
 } from '../lib/record-file-lease.mjs';
+import * as leaseModule from '../lib/record-file-lease.mjs';
 import { RecordPageSession } from '../lib/record-tables.mjs';
 import { encodeRecordReferences, decodeRecordReferences, restoreRecordReferences } from '../lib/record-state.mjs';
 
@@ -122,6 +123,62 @@ test('a failed lease replacement retains its preceding protection and never admi
   assert.equal(fs.readdirSync(root).filter((name) => name.endsWith('.tmp')).length, 0);
 });
 
+test('a lease replacement retries sharing holds and publishes the protected name once the rename lands', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'invented-record-lease-sharing-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  // Backoff is recorded through the Atomics.wait mock, so the test measures no wall-clock time.
+  t.mock.method(Atomics, 'wait', () => 'timed-out');
+  let holds = 0;
+  const lease = new leaseModule.RecordFileLease(root, {
+    io: {
+      ...fs,
+      renameSync: (...args) => {
+        if (holds < 2) {
+          holds++;
+          throw Object.assign(new Error('Invented sharing hold'), { code: 'EPERM' });
+        }
+        return fs.renameSync(...args);
+      },
+    },
+  });
+  t.after(() => lease.close());
+  const name = randomUUID() + '.pages';
+  lease.protect([name]);
+  assert.equal(holds, 2);
+  assert.deepEqual([...lease.files], [name]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(lease.file, 'utf8')).files, [name]);
+  assert.deepEqual(fs.readdirSync(root), [path.basename(lease.file)]);
+});
+
+test('a lease replacement held beyond the attempt ceiling fails and keeps its preceding lease', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'invented-record-lease-held-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  t.mock.method(Atomics, 'wait', () => 'timed-out');
+  let held = false,
+    calls = 0;
+  const lease = new leaseModule.RecordFileLease(root, {
+    io: {
+      ...fs,
+      renameSync: (...args) => {
+        if (!held) return fs.renameSync(...args);
+        calls++;
+        throw Object.assign(new Error('Invented sharing hold'), { code: 'EPERM' });
+      },
+    },
+  });
+  t.after(() => lease.close());
+  const first = randomUUID() + '.pages',
+    second = randomUUID() + '.pages';
+  lease.protect([first]);
+  const before = fs.readFileSync(lease.file, 'utf8');
+  held = true;
+  assert.throws(() => lease.protect([second]), { code: 'EPERM' });
+  assert.equal(calls, 100); // The documented attempt ceiling.
+  assert.equal(fs.readFileSync(lease.file, 'utf8'), before);
+  assert.deepEqual([...lease.files], [first]);
+  assert.deepEqual(fs.readdirSync(root), [path.basename(lease.file)]);
+});
+
 const owned = (t, prefix) => {
   const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -206,6 +263,11 @@ test('a directory published before owner keys loads after moving and migrates it
 // @test-kind contract+security: controlled sharing failures recover migration without overwriting changed ownership or losing the valid preceding marker
 test('owner migration retries sharing failures, bounds refusal and preserves concurrent ownership', (t) => {
   const key = 'a'.repeat(64);
+  const waits = [];
+  t.mock.method(Atomics, 'wait', (_array, _index, _value, milliseconds) => {
+    waits.push(milliseconds);
+    return 'timed-out';
+  });
   const migration = (name, rename) => {
     const directory = owned(t, 'invented-owner-' + name + '-');
     const file = path.join(directory, '.record-owner.json');
@@ -242,8 +304,18 @@ test('owner migration retries sharing failures, bounds refusal and preserves con
     const refused = migration('refuse', () => {
       throw failure;
     });
+    waits.length = 0;
     assert.deepEqual(refused.claim(), { key, owned: true });
     assert.equal(refused.attempts(), attempts);
+    assert.equal(waits.length, attempts - 1, 'one requested wait between each retry');
+    assert.ok(
+      waits.every((milliseconds) => milliseconds <= 100),
+      'no requested wait exceeds the 100 ms cap',
+    );
+    assert.ok(
+      waits.reduce((total, milliseconds) => total + milliseconds, 0) < 10000,
+      'the requested waiting stays below ten seconds',
+    );
     assert.deepEqual(marker(refused.directory), { format: 1, key });
     assert.deepEqual(fs.readdirSync(refused.directory), ['.record-owner.json']);
   }

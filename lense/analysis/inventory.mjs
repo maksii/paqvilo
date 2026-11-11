@@ -29,20 +29,20 @@ function analysisLimits(overrides = {}) {
   }
   return limits;
 }
-const ignored = new Set([
-  'node_modules',
-  '.git',
-  '.paqvilo',
-  '.portalconfig',
-  'deployment-profiles',
-  'dist',
-  'build',
-  'out',
-  'coverage',
-  'artifacts',
-  'logs',
-  'metrics',
-  'tmp',
+const privateNames = new Set(['node_modules', '.git', '.paqvilo', '.portalconfig', 'deployment-profiles']);
+const outputNames = new Set(['dist', 'build', 'out', 'coverage', 'artifacts', 'logs', 'metrics', 'tmp']);
+// These folders hold authored records whose names the author chooses.
+const sourceContentFolders = new Set([
+  'web-pages',
+  'web-templates',
+  'content-snippets',
+  'web-files',
+  'basic-forms',
+  'advanced-forms',
+  'lists',
+  'page-templates',
+  '.powerpages-site',
+  'webresources',
 ]);
 const recordName =
   /(?:^|\.)(website|sitesetting|webrole|tablepermission|entitypermission|webpage|webtemplate|contentsnippet|basicform|list|advancedformstep)\.ya?ml$/i;
@@ -251,11 +251,7 @@ function readArchive(state, bytes, file, depth, rootId, container) {
         state.stats.entries++;
         if (name === 'manifest.json') container.nativeManifestPresent = true;
       },
-      include: (name) =>
-        Boolean(classify(name, true)) &&
-        !name
-          .split('/')
-          .some((part) => ignored.has(part.toLowerCase()) || (part.startsWith('.') && part !== '.powerpages-site')),
+      include: (name) => Boolean(classify(name, true)) && !excludedArchiveEntry(name),
     });
     container.archiveInspected = true;
     for (const entry of entries) {
@@ -317,9 +313,25 @@ function readDirectoryEntries(state, root, directory) {
   return entries;
 }
 
+function insideSourceContent(root, directory) {
+  const folders = [path.basename(root), ...path.relative(root, directory).split(/[\\/]/)];
+  return folders.some((folder) => sourceContentFolders.has(folder.toLowerCase()));
+}
+function excludedArchiveEntry(name) {
+  const parts = name.split('/');
+  return parts.some((part, index) => {
+    const lower = part.toLowerCase();
+    if (privateNames.has(lower) || (part.startsWith('.') && part !== '.powerpages-site')) return true;
+    return (
+      outputNames.has(lower) && !parts.slice(0, index).some((folder) => sourceContentFolders.has(folder.toLowerCase()))
+    );
+  });
+}
+
 function inspectEntry(state, root, directory, pending, entry) {
-  if (ignored.has(entry.name.toLowerCase()) || (entry.name.startsWith('.') && entry.name !== '.powerpages-site'))
-    return true;
+  const name = entry.name.toLowerCase();
+  if (privateNames.has(name) || (entry.name.startsWith('.') && entry.name !== '.powerpages-site')) return true;
+  if (outputNames.has(name) && !insideSourceContent(root, directory)) return true;
   const absolute = path.join(directory, entry.name);
   const relativeFile = path.relative(root, absolute).replaceAll('\\', '/');
   const file = state.prefix + relativeFile;
@@ -442,7 +454,7 @@ function inspectRoot(state, selected, multiple) {
   const skippedBefore = state.gaps;
   try {
     const requested = path.resolve(selected.path);
-    if (excludedRoot(requested)) {
+    if (excludedRoot(requested, isFileRoot(requested))) {
       skip(state, id, 'ignored-root');
     } else {
       const root = fs.realpathSync.native(requested);
@@ -455,20 +467,35 @@ function inspectRoot(state, selected, multiple) {
 }
 
 const posixTemporaryRoots = ['/tmp', '/var/tmp', '/private/tmp', '/private/var/tmp'];
-function excludedRoot(root) {
-  // These host prefixes contain a directory named tmp, not project output.
-  // Never derive an exemption from TMPDIR: it can itself contain private or
-  // generated directories. Every component after the fixed prefix is checked,
-  // for both the requested path and its canonical target.
+// Private names exclude any component after a fixed POSIX temporary prefix, for the requested and canonical path.
+// Output names exclude only the components the selection names: the path under the working directory,
+// or the root's own name. A file root also names its immediate parent folder.
+// TMPDIR is never an exemption: it can itself contain private or generated directories.
+function excludedRoot(root, fileRoot) {
   const temporaryRoot =
     process.platform !== 'win32' &&
     posixTemporaryRoots.find((prefix) => root === prefix || root.startsWith(prefix + '/'));
   const sourcePath = temporaryRoot ? root.slice(temporaryRoot.length) : root;
-  return sourcePath.split(/[\\/]/).some((part) => ignored.has(part.toLowerCase()));
+  if (sourcePath.split(/[\\/]/).some((part) => privateNames.has(part.toLowerCase()))) return true;
+  const parts = selectedParts(root);
+  if (fileRoot) parts.push(path.basename(path.dirname(root)));
+  return parts.some((part) => outputNames.has(part.toLowerCase()));
+}
+function selectedParts(root) {
+  const relative = path.relative(process.cwd(), root);
+  const inside = relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
+  return inside ? relative.split(/[\\/]/) : [path.basename(root)];
+}
+function isFileRoot(file) {
+  try {
+    return fs.statSync(file).isFile();
+  } catch {
+    return false;
+  }
 }
 function inspectResolvedRoot(state, root, id) {
-  if (excludedRoot(root)) return skip(state, id, 'ignored-root');
   const stat = fs.statSync(root);
+  if (excludedRoot(root, stat.isFile())) return skip(state, id, 'ignored-root');
   if (stat.isFile()) return inspectRootFile(state, root, id);
   if (!stat.isDirectory()) return skip(state, id, 'unsupported-source-root');
   if (++state.stats.directories > state.limits.directories) return skip(state, id, 'directory-limit');

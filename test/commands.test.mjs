@@ -1,3 +1,4 @@
+// @test-kind contract: Lense CLI commands produce the designed JSON and text output for catalogues and settings.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -40,6 +41,19 @@ function runWithin(timeout, ...args) {
   );
 }
 const run = (...args) => runWithin(30_000, ...args);
+const runWithEnv = (extra, ...args) =>
+  withProcessSlot(
+    () =>
+      new Promise((resolve) =>
+        execFile(
+          process.execPath,
+          [cli, ...args],
+          { env: { ...env, ...extra }, encoding: 'utf8', windowsHide: true, timeout: 30_000, maxBuffer: 64 << 20 },
+          (error, stdout, stderr) =>
+            resolve({ status: error ? (typeof error.code === 'number' ? error.code : null) : 0, stdout, stderr }),
+        ),
+      ),
+  );
 
 test('doctor Mirage gate diagnoses an invalid default profile and names every catalogue-relative file', async () => {
   const config = fx.file('profile-doctor.json'),
@@ -351,6 +365,25 @@ test('JSON setting discovery includes descriptions and resolved disabled agent a
   assert.deepEqual(report.settings, {});
   assert.equal(plain.status, 0, plain.stderr);
   assert.equal(Object.hasOwn(JSON.parse(plain.stdout), 'supportedSettings'), false);
+});
+
+// @test-kind security: credentials embedded in configured URLs are never printed by the settings listing.
+test('list settings never prints credentials embedded in configured URLs', async () => {
+  const file = fx.file('credential-catalogue.yml');
+  fs.writeFileSync(file, 'sites:\n  test:\n    source: .\n    environments:\n      dev: https://portal.example.test\n');
+  const extra = {
+    PAQVILO_CDP_URL: 'ws://user:INVENTEDPW@127.0.0.1:9222/devtools/browser/X?token=Q',
+    PAQVILO_URL: 'https://user:INVENTEDPW2@portal.example.test/x?code=Q2',
+  };
+  const [json, text] = await Promise.all([
+    runWithEnv(extra, 'list', '--config', file, '--settings', '--json'),
+    runWithEnv(extra, 'list', '--config', file, '--settings'),
+  ]);
+  for (const result of [json, text]) {
+    assert.doesNotMatch(result.stdout + result.stderr, /INVENTEDPW|user:/);
+    assert.match(result.stdout, /127\.0\.0\.1:9222/);
+    assert.match(result.stdout, /portal\.example\.test/);
+  }
 });
 
 test('list exposes configured portal coverage and refuses ambiguous all-mode origins', async () => {

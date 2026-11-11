@@ -1,3 +1,4 @@
+// @test-kind contract: verification reports and helpers produce the designed evidence, messages and failure states.
 import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -6,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { chromium } from 'playwright-core';
 import verify, { diagnosticSnapshot, compareDiagnostics, assessVerification } from '../lense/commands/verify.mjs';
+import * as verifyModule from '../lense/commands/verify.mjs';
 import { createFixture, SITE } from './fixture.mjs';
 
 test('signed-in verification launches the selected external child profile without a credential export', async (t) => {
@@ -122,4 +124,15 @@ test('JSON verification emits one final failure report when temporary cleanup al
   assert.match(report.cleanup.errors[0], /fixture cleanup failure/);
   assert.match(report.error, /Cleanup incomplete/);
   assert.deepEqual(JSON.parse(fs.readFileSync(report.evidence.report, 'utf8')), report);
+});
+
+// @test-kind security: a sign-in redirect carries state and nonce values that verification output must not print.
+test('verify sign-in message names the page location without query or fragment values', () => {
+  const { redactedPageUrl } = verifyModule;
+  assert.equal(typeof redactedPageUrl, 'function');
+  const shown = redactedPageUrl('https://login.example.test/authorize?state=INVENTED&nonce=N#frag');
+  assert.equal(shown, 'https://login.example.test/authorize?[redacted]');
+  assert.doesNotMatch(shown, /INVENTED|frag/);
+  assert.equal(redactedPageUrl('https://login.example.test/authorize'), 'https://login.example.test/authorize');
+  assert.equal(redactedPageUrl('not a url?x=INVENTED'), '[redacted URL]');
 });

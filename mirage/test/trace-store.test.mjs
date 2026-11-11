@@ -297,6 +297,20 @@ test('summary skips payloads; full stores redacted, size-capped payloads; config
   assert.equal(traces.settings().level, 'summary', 'a refused change keeps the settings');
 });
 
+test('redactPayload hides invitation codes and keeps other fields', () => {
+  const { value } = redactPayload({ body: { InvitationCode: 'INV-1', invitation: 'INV-2', name: 'kept' } });
+  assert.deepEqual(value, { body: { InvitationCode: '[redacted]', invitation: '[redacted]', name: 'kept' } });
+});
+
+test('redactPayload keeps invitation fields that are not codes', () => {
+  const { value } = redactPayload({
+    body: { invitationStatus: 'sent', adx_invitationid: 'kept-id', invitation_code: 'INV-3' },
+  });
+  assert.deepEqual(value, {
+    body: { invitationStatus: 'sent', adx_invitationid: 'kept-id', invitation_code: '[redacted]' },
+  });
+});
+
 test('redactPayload handles cycles, depth and errors and stays JSON-safe', () => {
   const cyclic = { name: 'a' };
   cyclic.self = cyclic;
@@ -1264,6 +1278,40 @@ test('a running trace evicted by the LRU ends for listeners and is persisted wit
   );
   assert.equal(traces.status().memoryBytes > 0, true);
   assert.equal(traces.clear().memoryBytes, 0);
+});
+
+test('a child opened under a span whose trace was evicted does not recreate the trace', () => {
+  const { traces } = store({ traces: 10 });
+  const ends = [];
+  traces.subscribe((event) => event.type === 'trace-end' && ends.push(event.trace));
+  const waiting = traces.start({ kind: 'http', name: 'POST /approve' });
+  const step = traces.run(waiting, () => traces.start({ kind: 'flow-run' }));
+  for (let index = 0; index < 10; index++) traces.start({ kind: 'http', name: `other ${index}` }).end();
+  assert.equal(traces.tree(waiting.traceId), null, 'the waiting trace was evicted');
+  traces.run(step, () => traces.start({ kind: 'connector', name: 'child after eviction' })).end();
+  assert.equal(traces.tree(waiting.traceId), null, 'the evicted trace id does not reappear');
+  assert.equal(traces.status().retained, 10, 'the child does not take a retained slot');
+  assert.equal(ends.filter((summary) => summary.traceId === waiting.traceId).length, 1, 'trace-end once');
+  step.end();
+  waiting.end();
+  assert.equal(traces.tree(waiting.traceId), null);
+  assert.equal(ends.filter((summary) => summary.traceId === waiting.traceId).length, 1, 'trace-end still once');
+});
+
+test('a child opened under a span of a cleared store does not recreate the cleared trace', () => {
+  const { traces } = store();
+  const root = traces.start({ kind: 'http', name: 'POST /approve' });
+  const step = traces.run(root, () => traces.start({ kind: 'flow-run' }));
+  traces.clear();
+  assert.equal(traces.tree(root.traceId), null, 'the store was cleared');
+  traces.run(step, () => traces.start({ kind: 'connector', name: 'child after clear' })).end();
+  assert.equal(traces.tree(root.traceId), null, 'the cleared trace id does not reappear');
+  assert.deepEqual(
+    traces.query({ pageSize: 50 }).items.map((item) => item.root.name),
+    [],
+    'the cleared trace is not listed',
+  );
+  assert.equal(traces.status().retained, 0);
 });
 
 test('persist without a state directory is accepted and reported as NoStateDirectory', async () => {

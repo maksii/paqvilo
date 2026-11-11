@@ -118,3 +118,20 @@ test('all sites report separately and incomplete syntax fails the analysis gate'
   );
   assert.doesNotMatch(answer.stdout, /PRIVATE-PARSER-CANARY|Before|After/);
 });
+
+test('text analysis prints the skipped Dataverse file and reason for an incomplete inspection', async (t) => {
+  const fx = createFixture();
+  t.after(fx.cleanup);
+  fx.write('solution/Other/Solution.xml', '<SolutionManifest><Version>1.0.0.0</Version></SolutionManifest>');
+  fx.write('solution/Entities/inv_widget/Unknown.xml', '<SomethingElse />');
+  const answer = await new Promise((resolve) =>
+    execFile(
+      process.execPath,
+      [cli, 'analyze', '--source', fx.file('solution')],
+      { env, encoding: 'utf8', windowsHide: true, timeout: 30000 },
+      (error, stdout, stderr) => resolve({ status: error?.code ?? 0, stdout, stderr }),
+    ),
+  );
+  assert.equal(answer.status, 1);
+  assert.match(answer.stdout, /SKIPPED: .*Unknown\.xml: unsupported-dataverse-metadata/);
+});

@@ -1,7 +1,7 @@
 // @test-kind unproven: Mirage's own model of coercion, lazy-host and language cases; no native or official recording backs them.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ErrorKind, FxError, FxFloat, evaluateFx, powerFxEngine } from '../lib/power-fx.mjs';
+import { ErrorKind, FxError, FxFloat, evaluateFx, powerFxEngine, toFx } from '../lib/power-fx.mjs';
 
 // PAC 2.13.1, pure-expression evidence: .paqvilo/power-fx-oracle/iferror{,2}.txt.
 test('IfError coerces the selected replacement to its failing value type', () => {
@@ -51,4 +51,38 @@ test('Text applies the specified language to numeric separators', () => {
   const invalid = evaluateFx('Text(1234.5,"#,##0.00","x-invalid-@")').value;
   assert.ok(invalid instanceof FxError);
   assert.equal(invalid.errors[0].Kind, ErrorKind.BadLanguageCode);
+});
+
+test('a record field named __proto__ keeps its value', () => {
+  const run = (formula) => powerFxEngine.evaluateSync(formula).value;
+  assert.equal(run("{'__proto__': 1}.'__proto__'"), 1);
+});
+
+test('host data with a __proto__ key is an own field, not the record prototype', () => {
+  const record = toFx(JSON.parse('{"__proto__":{"a":5}}'));
+  assert.ok(Object.hasOwn(record, '__proto__'));
+  assert.equal(Object.getPrototypeOf(record), Object.prototype);
+});
+
+test('AddColumns with a __proto__ column name adds an own column', () => {
+  const run = (formula) => powerFxEngine.evaluateSync(formula).value;
+  assert.equal(run("First(AddColumns([{a: 1}], '__proto__', 2)).'__proto__'"), 2);
+});
+
+test('Set on a record column named __proto__ writes an own field', () => {
+  const rec = { a: 1 };
+  const result = powerFxEngine.evaluateSync("Set(rec.'__proto__', 2)", { host: { variables: { rec } } });
+  assert.equal(result.value, true);
+  assert.equal(Object.getOwnPropertyDescriptor(rec, '__proto__')?.value, 2);
+  assert.equal(Object.getPrototypeOf(rec), Object.prototype);
+});
+
+// @test-kind contract: the scope budget is Paqvilo's own local safeguard, not a Power Fx limit.
+test('a formula that enters more row scopes than host.scopeBudget stops with PowerFxLimitExceeded', () => {
+  const formula = 'ForAll(Sequence(40), ForAll(Sequence(40), Value))';
+  assert.equal(evaluateFx(formula).value.length, 40);
+  assert.throws(
+    () => evaluateFx(formula, { host: { scopeBudget: 100 } }),
+    (error) => error.code === 'PowerFxLimitExceeded',
+  );
 });

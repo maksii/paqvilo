@@ -177,8 +177,7 @@ export function toFx(value) {
   if (value instanceof Date) return new FxDate('datetime', value.getTime());
   if (Array.isArray(value)) return value.map((item) => (isRecord(item) ? toFx(item) : { Value: toFx(item) }));
   if (isRecord(value)) {
-    const record = {};
-    for (const [key, item] of Object.entries(value)) record[key] = toFx(item);
+    const record = Object.fromEntries(Object.entries(value).map(([key, item]) => [key, toFx(item)]));
     if (value[ALIASES]) record[ALIASES] = value[ALIASES];
     return record;
   }
@@ -1271,6 +1270,17 @@ class FxNameError extends DataError {
   }
 }
 
+class FxBudgetError extends DataError {
+  constructor(limit) {
+    super(
+      `The formula entered more than ${limit} row scopes; Mirage stops it to keep the local runtime responsive.`,
+      400,
+      'PowerFxLimitExceeded',
+      { limit },
+    );
+  }
+}
+
 // Evaluation context for one formula: the host, the globals and the scope stack (innermost last). Scope entries are
 // { record, name, source } for record scopes (ThisRecord, As name, the table's identifier) and { vars } for named values
 // (FirstError, AllErrors).
@@ -1282,6 +1292,10 @@ class Fx {
     this.timeZone = this.host.timeZone ?? 'UTC';
     this.language = this.host.language ?? 'en-US';
     this.rowLimit = Number(this.host.dataRowLimit ?? 500);
+    // ponytail: one counter per evaluation, a local safeguard (not a platform limit);
+    // hosts raise host.scopeBudget when a formula legitimately needs more.
+    this.scopeBudget = Number(this.host.scopeBudget ?? 5_000_000);
+    this.scopesEntered = 0;
     this.warnings = [];
   }
   now() {
@@ -1293,6 +1307,7 @@ class Fx {
   }
   // Evaluates node with an extra record scope for the duration of fn.
   inScope(scope, fn) {
+    if (++this.scopesEntered > this.scopeBudget) throw new FxBudgetError(this.scopeBudget);
     this.scopes.push(scope);
     try {
       return fn();
@@ -1449,9 +1464,7 @@ function evaluateDot(fx, node) {
   return member(fx, base, node.name);
 }
 function evaluateRecord(fx, node) {
-  const record = {};
-  for (const [name, value] of node.fields) record[name] = fx.ev(value);
-  return record;
+  return Object.fromEntries(node.fields.map(([name, value]) => [name, fx.ev(value)]));
 }
 function evaluateTable(fx, node) {
   return node.items.map((item) => {

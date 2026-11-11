@@ -54,6 +54,9 @@ const DAY = 86_400_000;
 const fail = (kind, message) => fxError(ErrorKind[kind], message);
 const notHosted = (name) => fail('NotSupported', `${name} is not available in this host.`);
 const firstError = (...values) => values.find((value) => value instanceof FxError);
+// An own field even when its name is __proto__, which a plain assignment would treat as the prototype setter.
+const setField = (record, name, value) =>
+  Object.defineProperty(record, name, { value, writable: true, enumerable: true, configurable: true });
 
 // Infer only result types fixed by syntax, without evaluating an unselected formula or invoking host functions.
 // Dynamic names, connector calls and mixed-type arithmetic need a full Power Fx type checker and remain unknown.
@@ -1922,7 +1925,10 @@ export const FUNCTIONS = {
       }
       return rows.map((row) => {
         const out = copyRecord(row);
-        for (const [name, formula] of columns) out[name] = inRow(fx, row, table, () => fx.ev(formula));
+        for (const [name, formula] of columns) {
+          const value = inRow(fx, row, table, () => fx.ev(formula));
+          setField(out, name, value);
+        }
         return out;
       });
     },
@@ -2004,13 +2010,13 @@ export const FUNCTIONS = {
         // Set(Record.Column, value): Learn "Supported functions" for Dataverse functions
         const record = fx.ev(target.obj);
         if (!isRecord(record)) return fail('InvalidArgument', 'Set needs a record to change a column.');
-        record[fieldName(record, target.name)] = value;
+        setField(record, fieldName(record, target.name), value);
         return true;
       }
       if (target.t !== 'id') return fail('InvalidArgument', 'Set needs a variable name.');
       // A plug-in's columns are global variables (Learn, low-code plug-ins: "columns are treated as global variables").
       if (fx.host.scope && isRecord(fx.host.scope) && fieldName(fx.host.scope, target.name) in fx.host.scope) {
-        fx.host.scope[fieldName(fx.host.scope, target.name)] = value;
+        setField(fx.host.scope, fieldName(fx.host.scope, target.name), value);
         return true;
       }
       if (!fx.host.variables) return notHosted('Set');

@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { executeBatch } from '../lib/dataverse-tds-sql-eval.mjs';
+import { splitBatches } from '../lib/dataverse-tds-sql-lexer.mjs';
 
 // Schema and rows: contoso_widget and contoso_part.
 
@@ -654,6 +655,27 @@ test('@@ROWCOUNT carries across GO', async () => {
 test('GO with a repeat count runs the batch that many times', async () => {
   const result = await run('SELECT 1 AS a\nGO 2');
   assert.deepEqual([rowsOf(result, 0), rowsOf(result, 1), result.resultSets.length], [[[1]], [[1]], 2]);
+});
+
+// @test-kind security: a GO repeat count must stay bounded so one batch cannot exhaust the simulator process.
+test('GO with a repeat count above 1000 is rejected by the lexer', async () => {
+  await assert.rejects(run('SELECT 1 AS one\nGO 1000000000'), {
+    name: 'TdsSqlError',
+    number: 102,
+    message: 'GO accepts a repeat count up to 1000.',
+  });
+});
+
+// @test-kind security: the 1000 limit is the upper bound of an accepted repeat count, so the bound itself must parse.
+test('GO with a repeat count of 1000 is accepted by the lexer', () => {
+  assert.equal(splitBatches('SELECT 1 AS one\nGO 1000')[0].repeat, 1000);
+});
+
+// @test-kind security: a repeated batch must observe its abort signal, since its statements never yield to timers.
+test('an abort during a GO repeat stops the batch before its later runs', async () => {
+  const controller = new AbortController();
+  setImmediate(() => controller.abort());
+  await assert.rejects(run('SELECT 1 AS one\nGO 1000', { signal: controller.signal }), { number: 3617 });
 });
 
 test('sp_executesql parameters are visible', async () => {

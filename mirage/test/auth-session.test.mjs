@@ -1,3 +1,4 @@
+// @test-kind contract: Sign-in, session cookies and return routes are designed runtime behaviour of the simulator.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -198,12 +199,18 @@ test('session cookies are signed, scoped and reject tampering', () => {
   assert.deepEqual([sample.read(both), second.read(both)], [{ contactId: 'alex' }, { contactId: 'blair' }]);
 });
 
+// @test-kind security: an open redirect through the return URL would send a signed-in user to another site.
 test('return URLs must be same-origin relative paths', () => {
   for (const [value, expected] of [
     ['/members/?tab=1#top', '/members/?tab=1#top'],
     ['/', '/'],
+    ['/a/../b?x=1', '/b?x=1'],
     ['//evil.example/x', '/'],
     ['/%2F/evil.example', '/'],
+    ['/.//evil.example', '/'],
+    ['/a/..//evil.example', '/'],
+    ['/%2e//evil.example', '/'],
+    ['/%2e%2e//evil.example', '/'],
     ['https://evil.example/', '/'],
     ['javascript:alert(1)', '/'],
     ['/\\evil.example', '/'],

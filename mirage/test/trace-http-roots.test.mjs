@@ -766,6 +766,17 @@ test('Power Pages: an entity read is a retrieve naming its record; the root reco
   );
 });
 
+test('Power Pages: an invitation code in the query is hidden on the root; the other parameters stay', async () => {
+  const sim = await powerPages();
+  const response = await fetch(`${sim.url}/Account/Login/RedeemInvitation?InvitationCode=INV-1&page=2`);
+  const tree = await ended(sim.trace, response.headers.get('x-trace-id'));
+  const query = tree.root.attributes.query;
+  assert.equal(typeof query, 'string');
+  assert.ok(!query.includes('INV-1'), 'the invitation code is not recorded');
+  assert.match(query, /InvitationCode=\[redacted\]/);
+  assert.match(query, /page=2/);
+});
+
 // @test-kind contract+security+unproven: trace behavior is local; the portal or service result has no native capture.
 test('Power Pages: a request root captures its body and content type; an answered error names its code and message', async () => {
   const sim = await powerPages();

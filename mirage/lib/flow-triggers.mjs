@@ -61,24 +61,14 @@ const within = (store, span, fn) => (span ? store.traces.run(span, fn) : fn());
 export const flowTriggersOf = (store) => (store && hostedRunners.get(store)) ?? null;
 // The next occurrence of a recurrence after now: from startTime (or the time it was armed) in whole intervals. Missed
 // occurrences are not back-filled. Without startTime the first occurrence is one interval after arming, although a newly
-// saved flow natively runs at once; Month adds calendar months in UTC.
+// saved flow natively runs at once; Month follows the calendar path in every zone.
 export function nextOccurrence({ frequency, interval, start, zone = 'UTC', schedule = null }, now, armedAt = now) {
-  if (schedule || (zone !== 'UTC' && ['Day', 'Week', 'Month'].includes(frequency)))
+  if (schedule || frequency === 'Month' || (zone !== 'UTC' && ['Day', 'Week'].includes(frequency)))
     return calendarOccurrence({ frequency, interval, start, zone, schedule }, now, armedAt);
   const anchor = start ?? armedAt,
     step = RECURRENCE_FREQUENCIES[frequency];
   if (anchor > now) return anchor;
-  if (step) return anchor + (Math.floor((now - anchor) / (step * interval)) + 1) * step * interval;
-  const base = new Date(anchor);
-  let months = 0,
-    at = anchor;
-  while (at <= now) {
-    months += interval;
-    const d = new Date(base);
-    d.setUTCMonth(base.getUTCMonth() + months);
-    at = d.getTime();
-  }
-  return at;
+  return anchor + (Math.floor((now - anchor) / (step * interval)) + 1) * step * interval;
 }
 // A Day/Week/Month recurrence with a schedule or a time zone, on wall-clock days in that zone: the first scheduled time after now,
 // no sooner than startTime. Unset hours, minutes, week day and month day come from startTime (or the arming time), as documented

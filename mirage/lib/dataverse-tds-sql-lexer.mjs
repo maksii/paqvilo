@@ -70,6 +70,8 @@ const DIGIT = /\d/;
 const HEX_DIGIT = /[0-9a-fA-F]/;
 const IDENT_START = /[\p{L}_]/u;
 const IDENT_PART = /[\p{L}\p{N}_$#]/u;
+// Local safeguard for the simulator process, not a SQL Server limit.
+const MAX_BATCH_REPEAT = 1000;
 
 const KEYWORDS = new Set([
   'ALL',
@@ -488,6 +490,9 @@ function batchSeparatorAt(sql, start, end) {
     let d = m;
     while (DIGIT.test(sql[d] ?? '')) d++;
     count = Number(sql.slice(m, d));
+    if (count > MAX_BATCH_REPEAT) {
+      throw new TdsSqlError(102, `GO accepts a repeat count up to ${MAX_BATCH_REPEAT}.`, { pos: m });
+    }
     stop = d;
     m = skipBlanks(d);
   }

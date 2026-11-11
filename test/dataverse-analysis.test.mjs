@@ -531,3 +531,33 @@ test('shared large current values are parsed at most once per analysis', () => {
     JSON.parse = original;
   }
 });
+
+const unpackedWithStandardFiles = () => [
+  xml('<SolutionManifest><Version>1.0.0.0</Version></SolutionManifest>'),
+  xml('<Entity><Name>inv_widget</Name></Entity>', 'Entities/inv_widget/Entity.xml'),
+  xml('<RibbonDiffXml><CustomActions /></RibbonDiffXml>', 'Entities/inv_widget/RibbonDiff.xml'),
+  entry('Entities/inv_widget/Formulas/inv_widget-FormulaDefinitions.yaml', 'inv_total: =1 + 1'),
+  entry('WebResources/inv_/strings.json', '{"greeting":"hi"}'),
+];
+
+test('ribbon definitions, formula definitions and web resource content are recognized without rules', () => {
+  const result = inspect(unpackedWithStandardFiles());
+  const [dataverse] = result.coverage.domains;
+  assert.equal(result.coverage.complete, true);
+  assert.equal(dataverse.complete, true);
+  assert.ok(!dataverse.skipped.some((skip) => skip.reason === 'unsupported-dataverse-metadata'));
+  assert.ok(
+    dataverse.limitations.includes(
+      'Recognized without rules: formula definitions, ribbon definition, web resource content.',
+    ),
+  );
+});
+
+test('unknown Entities metadata beside the standard unpacked files is still skipped and incomplete', () => {
+  const result = inspect([...unpackedWithStandardFiles(), xml('<SomethingElse />', 'Entities/inv_widget/Unknown.xml')]);
+  const [dataverse] = result.coverage.domains;
+  assert.equal(result.coverage.complete, false);
+  assert.deepEqual(dataverse.skipped, [
+    { file: 'Entities/inv_widget/Unknown.xml', reason: 'unsupported-dataverse-metadata' },
+  ]);
+});

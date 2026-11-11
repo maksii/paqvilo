@@ -190,9 +190,9 @@ Commands: ${MIRAGE_COMMANDS.join(', ')}
   paqvilo mirage data scaffold --profile smoke|dev --state FILE [--rows N] [--seed S] [--out FILE]
     portal for scaffold or membership materialization: [--site SITE --env ENV --repo PATH] | --project FILE [--portal ID] | --source PORTAL_DIR [--solution-root DIR ...]
 
-Options: --state FILE, --preset NAME, --preset-mode bootstrap|always, --apply-configuration (apply the selected data preset’s configuration), --no-watch, --cdp URL, --solution-root PATH (repeatable), --solution-order derived|explicit, --project FILE, --portal ID, --runtime power-pages|model-driven|dataverse-api, --simulation dry-run|simulation|deep, --deployment-profile NAME, --config FILE (toolkit catalogue for --site), --repo DIR, --allow-live-writes (permits live create, update and delete requests; the /__sim/ live writes switch still decides, off by default), --data-model standard|enhanced (the data model of a YAML source; a .powerpages-site export defaults to enhanced)
+Options: --state FILE, --preset NAME, --preset-mode bootstrap|always, --apply-configuration (apply the selected data preset’s configuration), --no-watch, --cdp URL, --solution-root PATH (repeatable), --solution-order derived|explicit, --project FILE, --portal ID, --runtime power-pages|model-driven|dataverse-api, --simulation dry-run|simulation|deep, --deployment-profile NAME, --config FILE (toolkit catalogue for --site), --repo DIR, --allow-live-writes (permits live create, update and delete requests; the /_sim/ live writes switch still decides, off by default), --data-model standard|enhanced (the data model of a YAML source; a .powerpages-site export defaults to enhanced)
 Solution roots (--solution-root, else the catalogue site's mirage solutionRoots, else unpacked solution repositories discovered next to the portal repository) are a set layered definition-before-extension; --solution-order explicit (or solutionOrder: explicit in the catalogue site or project file) keeps the listed order.
-Admin: /__sim/. New workspaces use local data/page modes; saved modes persist.
+Admin: /_sim/. New workspaces use local data/page modes; saved modes persist.
 Default state and evidence paths are under .paqvilo. Map deploymentProfiles in config and pin locally in /_sim/ → Environment; legacy exported Pages profiles use --deployment-profile.
 Presets (registry; a portal lists only packs that match it): ${Object.entries(
     Object.keys(builtinPresets).reduce((groups, id) => {
@@ -557,7 +557,7 @@ try {
               sourceDir: null,
               stateFile,
               url: simulator.url,
-              adminUrl: simulator.adminUrl,
+              adminUrl: new URL('/_sim/', simulator.url).href,
               discovery,
             },
             null,
@@ -571,7 +571,7 @@ try {
               runtime,
               simulation: simulator.status().simulation,
               url: simulator.url,
-              adminUrl: simulator.adminUrl,
+              adminUrl: new URL('/_sim/', simulator.url).href,
               dataverse: simulator.status().dataverse,
               discovery,
             },
@@ -722,7 +722,7 @@ try {
               sourceDir: portal.sourceDir,
               stateFile,
               url: simulator.url,
-              adminUrl: simulator.adminUrl,
+              adminUrl: new URL('/_sim/', simulator.url).href,
               identityProvider: { origin: simulator.identityProvider.origin, port: simulator.identityProvider.port },
             })),
             discovery,
@@ -742,7 +742,7 @@ try {
                 sourceDir: portal.sourceDir,
                 stateFile,
                 url: simulator.url,
-                adminUrl: simulator.adminUrl,
+                adminUrl: new URL('/_sim/', simulator.url).href,
                 // Portal pages carry only site-setting headers unless confinement is opted in.
                 confinePortalPages: startedConfig.confinePortalPages,
                 signInPath: startedStatus.bootstrap.signInPath,
@@ -1034,7 +1034,7 @@ try {
                 {
                   pid: process.pid,
                   url: simulator.url,
-                  adminUrl: simulator.adminUrl,
+                  adminUrl: new URL('/_sim/', simulator.url).href,
                   identityProvider: {
                     origin: simulator.identityProvider.origin,
                     port: simulator.identityProvider.port,
@@ -1051,7 +1051,7 @@ try {
               JSON.stringify(
                 {
                   url: simulator.url,
-                  adminUrl: simulator.adminUrl,
+                  adminUrl: new URL('/_sim/', simulator.url).href,
                   sourceDir,
                   stateFile,
                   discovery,

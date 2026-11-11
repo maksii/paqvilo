@@ -849,6 +849,65 @@ test(
   },
 );
 
+// UI-1: between tablet and laptop widths the top bar wraps, so the page title stays whole and every button stays in the window.
+test(
+  'the top bar keeps the page title whole and its buttons inside the window between tablet and laptop widths',
+  { timeout: 120_000 },
+  async (t) => {
+    const traces = createTraceStore({ settings: { level: 'summary' } });
+    recordTraffic(traces);
+    const { origin } = await host(t, {
+      state: structuredClone(MONITOR_STATE),
+      status: { docs, routes: [...POWER_PAGES_ROUTES, '/trace'], eventChannels: ['logs', 'trace'] },
+      traces,
+    });
+    const topBar = async (width) => {
+      const context = await browser.newContext({ viewport: { width, height: 800 } });
+      t.after(() => context.close());
+      const page = await context.newPage();
+      await page.goto(`${origin}/__sim/#activity`);
+      await page.getByRole('heading', { name: 'Activity', exact: true }).waitFor();
+      await page.locator('.breadcrumb strong', { hasText: /^Activity$/ }).waitFor();
+      return page;
+    };
+    for (const width of [800, 1000, 1200]) {
+      const page = await topBar(width);
+      const layout = await page.evaluate(() => {
+        const breadcrumb = document.querySelector('.breadcrumb');
+        return {
+          breadcrumb: { scrollWidth: breadcrumb.scrollWidth, clientWidth: breadcrumb.clientWidth },
+          buttonRights: [...document.querySelectorAll('.top-actions .button')].map(
+            (button) => button.getBoundingClientRect().right,
+          ),
+          documentScrollWidth: document.documentElement.scrollWidth,
+          innerWidth,
+        };
+      });
+      assert.ok(
+        layout.breadcrumb.scrollWidth <= layout.breadcrumb.clientWidth,
+        `${width} px: the breadcrumb keeps its full text`,
+      );
+      assert.ok(layout.buttonRights.length > 0, `${width} px: the top bar buttons are rendered`);
+      assert.deepEqual(
+        layout.buttonRights.filter((right) => right > layout.innerWidth),
+        [],
+        `${width} px: every top bar button lies within the window`,
+      );
+      assert.ok(
+        layout.documentScrollWidth <= layout.innerWidth,
+        `${width} px: the document does not scroll horizontally`,
+      );
+    }
+    const page = await topBar(1400);
+    const sameRow = await page.evaluate(() => {
+      const a = document.querySelector('.breadcrumb').getBoundingClientRect();
+      const b = document.querySelector('.top-actions').getBoundingClientRect();
+      return Math.abs(a.top - b.top) < a.height;
+    });
+    assert.equal(sameRow, true, '1400 px: the breadcrumb and the top bar buttons share one row');
+  },
+);
+
 // D-M-6 / D-M-7: every view starts with its content, keeps its prose behind (i) icons and fits the window.
 const LIST_VIEWS = new Set(['flows', 'records', 'operations']);
 test(

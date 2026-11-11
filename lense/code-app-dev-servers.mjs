@@ -18,6 +18,26 @@ function appUrl(app) {
     throw new Error(`Code app ${app.name} requires a loopback localAppUrl without credentials.`);
   return url;
 }
+// Every loopback spelling (localhost, 127.x.x.x, ::1) names one listener, so the key ignores the spelling.
+function listenerKey(url) {
+  const local = loopback.has(url.hostname) || /^127(\.\d{1,3}){3}$/.test(url.hostname);
+  const port = url.port || (url.protocol === 'https:' ? '443' : '80');
+  return `${url.protocol}//${local ? 'loopback' : url.hostname.toLowerCase()}:${port}`;
+}
+function refuseSharedListeners(apps) {
+  const seen = new Map();
+  for (const app of apps) {
+    if (!app.localAppUrl) continue;
+    const url = appUrl(app),
+      key = listenerKey(url),
+      first = seen.get(key);
+    if (first)
+      throw new Error(
+        `Code apps ${first.name} and ${app.name} share the dev server ${url.origin}; give each app its own port.`,
+      );
+    seen.set(key, app);
+  }
+}
 async function ready(url) {
   try {
     const response = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(1000) });
@@ -143,6 +163,7 @@ export async function startCodeAppDevServers(
   apps,
   { signal, mirageUrl, onFailure = () => {}, output = (text) => process.stdout.write(text) } = {},
 ) {
+  refuseSharedListeners(apps);
   const owned = [];
   let closing = false;
   const close = async () => {

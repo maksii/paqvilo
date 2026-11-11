@@ -99,6 +99,8 @@ export function safeReturnUrl(value, fallback = '/') {
   try {
     const resolved = new URL(value, 'http://local.invalid'); // NOSONAR: reserved or loopback placeholder host, not a real transport
     if (resolved.origin !== 'http://local.invalid') return fallback; // NOSONAR: reserved or loopback placeholder host, not a real transport
+    // Dot segments are removed during resolution, after the checks above, so "/.//host" resolves to "//host".
+    if (resolved.pathname.startsWith('//') || resolved.pathname.includes('\\')) return fallback;
     return resolved.pathname + resolved.search + resolved.hash;
   } catch {
     return fallback;

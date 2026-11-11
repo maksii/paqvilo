@@ -59,6 +59,37 @@ test('readiness refuses external, non-HTTP and credential-bearing URLs before an
     );
 });
 
+test('apps that declare the same loopback listener are refused before any server starts or is probed', async (t) => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'code-app-shared-listener-')));
+  ownedFixture(t).remove(() => removeFixtureDirectory(root));
+  const marker = path.join(root, 'started');
+  const original = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = original;
+  });
+  let probes = 0;
+  globalThis.fetch = async () => {
+    probes += 1;
+    return new Response(null, { status: 200 });
+  };
+  const command = [process.execPath, '-e', "require('node:fs').writeFileSync(process.env.MARKER, '')"];
+  const apps = [
+    {
+      name: 'alpha',
+      dir: root,
+      localAppUrl: 'http://127.0.0.1:5199/',
+      devServer: { command, env: { MARKER: marker } },
+    },
+    { name: 'beta', dir: root, localAppUrl: 'http://localhost:5199/', devServer: { command, env: { MARKER: marker } } },
+  ];
+  await assert.rejects(
+    startCodeAppDevServers(apps, { output: () => {} }),
+    /share the dev server http:\/\/localhost:5199/,
+  );
+  assert.equal(probes, 0);
+  await assert.rejects(fs.access(marker));
+});
+
 // @test-kind security: readiness never follows a redirect to another listener.
 test('readiness does not follow a configured loopback listener redirect', { timeout: 180_000 }, async (t) => {
   let redirected = 0;

@@ -378,6 +378,56 @@ test('settings, descriptor and entity mapping for servicebus-emulator', () => {
   );
 });
 
+// @test-kind security: the emulator transport opens a socket only to an address the loopback check accepts for the endpoint name
+test('an endpoint name under localhost that resolves to a routable address is refused before any connection', async (t) => {
+  let connections = 0;
+  const listener = net.createServer(() => {
+    connections += 1;
+  });
+  await new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => listener.close(resolve)));
+  const asked = [];
+  const bus = createServiceBusEmulatorBus({
+    settings: { connectionString: 'env:FX_SB', amqpPort: listener.address().port },
+    env: env(KEY, 'bus.localhost'),
+    lookup: async (host) => {
+      asked.push(host);
+      return [{ address: '10.0.0.5', family: 4 }];
+    },
+  });
+  await assert.rejects(bus.send('fx-orders', 'x'), (error) => error.diagnostic === 'SERVICEBUS_EMULATOR_NOT_LOOPBACK');
+  assert.deepEqual(asked, ['bus.localhost']);
+  assert.equal(connections, 0, 'the listener sees no connection, so the SASL key is never sent');
+  await bus.close();
+});
+
+// @test-kind security: the emulator transport opens a socket only to an address the loopback check accepts for the endpoint name
+test('an endpoint name whose lookup answers loopback connects to that address and sends the AMQP header', async (t) => {
+  let received;
+  const header = new Promise((resolve) => {
+    received = resolve;
+  });
+  const listener = net.createServer((socket) => {
+    socket.once('data', (chunk) => {
+      received(chunk.subarray(0, 8));
+      socket.destroy();
+    });
+  });
+  await new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => listener.close(resolve)));
+  const bus = createServiceBusEmulatorBus({
+    settings: { connectionString: 'env:FX_SB', amqpPort: listener.address().port },
+    env: env(KEY, 'bus.localhost'),
+    lookup: async () => [{ address: '127.0.0.1', family: 4 }],
+  });
+  const sent = bus.send('fx-orders', 'x').catch((error) => error);
+  const first = await Promise.race([header, sent]);
+  assert.ok(Buffer.isBuffer(first), `the listener received no connection: ${first?.message ?? first}`);
+  assert.deepEqual([...first], [...Buffer.from('AMQP\x03\x01\x00\x00', 'latin1')]);
+  await sent;
+  await bus.close();
+});
+
 // A receiver's settlement has no answer; a drain round trip on the same connection orders after it, so once the drain
 // returns the broker has applied every disposition sent before.
 async function settled(bus) {

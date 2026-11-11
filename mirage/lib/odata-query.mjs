@@ -29,6 +29,7 @@ const ODATA_LIMITS = Object.freeze({
   conditions: 500,
   aggregateRecords: 50000,
   expandDepth: 10,
+  nesting: 100,
 });
 export const ODATA_COMPARISON = new Set(['eq', 'ne', 'gt', 'ge', 'lt', 'le']);
 export const ODATA_STRING_FUNCTIONS = new Set(['contains', 'startswith', 'endswith']);
@@ -218,6 +219,7 @@ export function parseODataExpression(
   const tokens = tokenize(source, { nativeSyntax });
   let pos = 0;
   let conditions = 0;
+  let nestingDepth = 0;
   const peek = (offset = 0) => tokens[pos + offset];
   const peekWord = (offset = 0) => {
     const token = peek(offset);
@@ -295,6 +297,16 @@ export function parseODataExpression(
     }
     return segments;
   };
+  // Parenthesised groups and lambda bodies recurse; the limit keeps deep input a 400 instead of a stack overflow.
+  const nested = (parse) => {
+    nestingDepth += 1;
+    try {
+      if (nestingDepth > ODATA_LIMITS.nesting) unsupported('OData filter nesting is too deep');
+      return parse();
+    } finally {
+      nestingDepth -= 1;
+    }
+  };
   const lambda = (segments) => {
     take(); // '/'
     const kind = take().value.toLowerCase();
@@ -307,7 +319,7 @@ export function parseODataExpression(
     const variable = take();
     if (variable?.kind !== 'ident') unsupported('Malformed lambda expression');
     expect(':');
-    const body = or();
+    const body = nested(or);
     expect(')');
     return { type: 'lambda', kind, path: segments, variable: variable.value, body };
   };
@@ -349,7 +361,7 @@ export function parseODataExpression(
     const args = [];
     if (peek()?.value !== ')') {
       for (;;) {
-        args.push(or());
+        args.push(nested(or));
         if (peek()?.value !== ',') break;
         take();
       }
@@ -400,7 +412,7 @@ export function parseODataExpression(
     }
     if (token.value === '(') {
       take();
-      const expression = or();
+      const expression = nested(or);
       if (nativeSyntax && !peek())
         fail(`')' or operator expected at position ${String(source).length} in '${source}'.`, 400, 'InvalidQuery', {
           innerCode: '0x80060888',
@@ -425,7 +437,7 @@ export function parseODataExpression(
     if (nativeSyntax && peek()?.value === '-') return nativeUnary();
     if (peekWord() === 'not') {
       take();
-      const operand = unary();
+      const operand = nested(unary);
       // Dataverse rejects negated query functions; the Dataverse records layer opts in.
       if (rejectNotOnQueryFunctions && operand.type === 'crm')
         fail('Not operator along with the Custom Named Condition operators is not allowed', 400, 'InvalidQuery', {
@@ -456,7 +468,7 @@ export function parseODataExpression(
     }
     if (minuses.length > ODATA_LIMITS.conditions)
       unsupported('OData unary operators exceed the bounded query complexity limit');
-    let operand = unary();
+    let operand = nested(unary);
     for (let index = minuses.length - 1; index >= 0; index--) operand = { type: 'negate', operand };
     return operand;
   };

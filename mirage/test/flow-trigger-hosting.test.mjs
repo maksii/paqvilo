@@ -216,6 +216,25 @@ test('a Windows time-zone id and a schedule outside Day/Week/Month stay explicit
   assert.equal(nextOccurrence({ frequency: 'Month', interval: 1, start }, start), Date.parse('2026-02-01T00:00:00Z'));
 });
 
+test('a monthly recurrence on day 31 skips the short months in UTC as in every other zone', () => {
+  const recurrence = { frequency: 'Month', interval: 1, start: Date.UTC(2025, 0, 31, 9) };
+  const expected = nextOccurrence({ ...recurrence, zone: 'Etc/GMT' }, Date.UTC(2025, 1, 1));
+  let now = Date.UTC(2025, 1, 1);
+  const occurrences = [];
+  for (let i = 0; i < 8; i++) {
+    now = nextOccurrence(recurrence, now);
+    occurrences.push(new Date(now));
+  }
+  assert.equal(occurrences[0].getTime(), expected);
+  assert.equal(new Date(expected).toISOString(), '2025-03-31T09:00:00.000Z');
+  const months = occurrences.map((at) => `${at.getUTCFullYear()}-${at.getUTCMonth()}`);
+  assert.equal(new Set(months).size, months.length);
+  assert.deepEqual(
+    occurrences.map((at) => at.getUTCDate()),
+    Array(8).fill(31),
+  );
+});
+
 // @test-kind contract: Paqvilo's unsupported-trigger message
 test('the unsupported-trigger message names mock/disable, not an adapter', () => {
   const answer = inspectFlowTrigger({

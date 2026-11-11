@@ -1,5 +1,7 @@
 import {
   dataverseEntry,
+  recognizedWithoutRules,
+  webResourceMetadata,
   readDataverseDocument,
   knownMetadataKind,
   localName,
@@ -491,10 +493,17 @@ function inspectObjectManifest(document, emit) {
 function collectDocuments(entries, state, emit) {
   const documents = [],
     skipped = [],
-    metadataFiles = new Set();
+    metadataFiles = new Set(),
+    unreviewed = new Set();
   for (const entry of entries) {
     if (!dataverseEntry(entry)) continue;
     metadataFiles.add(entry.file);
+    const label = recognizedWithoutRules(entry.relativeFile ?? entry.file);
+    // A WebResource metadata XML keeps its parsed path; other files in WebResources are content.
+    if (label && !(label === 'web resource content' && webResourceMetadata(entry))) {
+      unreviewed.add(label);
+      continue;
+    }
     try {
       const document = readDataverseDocument(entry);
       if (!knownMetadataKind(document)) {
@@ -514,7 +523,7 @@ function collectDocuments(entries, state, emit) {
       emit('DV-SOURCE-001', entry);
     }
   }
-  return { documents, skipped, metadataFiles };
+  return { documents, skipped, metadataFiles, unreviewed };
 }
 
 function inspectDocument(document, schemaFacts, emit, skipped) {
@@ -529,7 +538,7 @@ function inspectDocument(document, schemaFacts, emit, skipped) {
 /** Pure checks over the caller's bounded local inventory; no project modules or commands are executed. */
 export function analyzeDataverse(entries, emit) {
   const state = { definitions: [], values: [], connections: [] };
-  const { documents, skipped, metadataFiles } = collectDocuments(entries, state, emit);
+  const { documents, skipped, metadataFiles, unreviewed } = collectDocuments(entries, state, emit);
   inspectEnvironment(state, emit);
   const querySummary = analyzeDataverseQueries(entries, emit);
   const schemaFacts = collectDataverseSchema(documents);
@@ -552,6 +561,7 @@ export function analyzeDataverse(entries, emit) {
       'target-connection-and-secret-resolution-not-performed',
       'javascript-dataflow-and-dynamic-query-construction-not-analyzed',
       'complete-solution-XSD-and-SDK-app-spec-validation-not-performed',
+      ...(unreviewed.size ? [`Recognized without rules: ${[...unreviewed].sort().join(', ')}.`] : []),
     ],
   };
   const domainFiles = (names) =>

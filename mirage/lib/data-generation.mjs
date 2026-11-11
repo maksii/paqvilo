@@ -84,22 +84,42 @@ function mergeMappings(target, mappings = {}) {
   }
 }
 
+// Membership of an id in a target table: the primary key index of a paged table, otherwise a set of its keys.
+// The index stores keys without braces and in their stored case, so a miss is conclusive only while every
+// stored key is canonical (`looseBraceKeys` false); other tables fall back to the set.
+function existingKeys(target, idColumn, missing) {
+  let keys = null;
+  return {
+    has(id) {
+      const key = rowKey(id),
+        paged = pagedRecordsOf(target);
+      if (paged?.keyTree && paged.keyColumn === idColumn) {
+        if (paged.primaryPositions(idColumn, key)?.length) return true;
+        if (!paged.looseBraceKeys) return false;
+      }
+      keys ??= new Set(rowKeys(target, idColumn, missing));
+      return keys.has(key);
+    },
+  };
+}
+
 /** Additive row merge by primary key; existing rows (and local edits) are kept. */
 function mergeRows(state, tables = {}, report) {
   for (const [table, rows] of Object.entries(tables)) {
     const idColumn = idColumnOf(state, table);
     const target = own(state.tables, table) ?? (state.tables[table] = []);
-    const seen = new Set(rowKeys(target, idColumn));
+    const existing = existingKeys(target, idColumn);
+    const added = new Set();
     const entry = own(report, table) ?? (report[table] = { added: 0, alreadyPresent: 0 });
     for (const row of readRecordValues(rows)) {
       const id = own(row, idColumn);
       if (id == null) throw new Error(`Cannot merge ${table} row without ${idColumn}`);
-      if (seen.has(rowKey(id))) {
+      if (added.has(rowKey(id)) || existing.has(id)) {
         entry.alreadyPresent++;
         continue;
       }
       target.push(clone(row));
-      seen.add(rowKey(id));
+      added.add(rowKey(id));
       entry.added++;
     }
   }
@@ -190,14 +210,8 @@ function materializeDatasetMemberships(result, fragment, basePreset, portal) {
 export function findDanglingLookups(state, tables = Object.keys(state.tables ?? {})) {
   const indexes = new Map();
   const has = (table, id) => {
-    const rows = own(state.tables, table) ?? [],
-      column = idColumnOf(state, table),
-      paged = pagedRecordsOf(rows);
-    // The persistent key tree covers all-string tables. A miss still checks the
-    // legacy GUID-whitespace coercion before declaring a lookup unresolved.
-    if (paged?.primaryPositions(column, rowKey(id))?.length) return true;
-    if (!indexes.has(table)) indexes.set(table, new Set(rowKeys(rows, column)));
-    return indexes.get(table).has(rowKey(id));
+    if (!indexes.has(table)) indexes.set(table, existingKeys(own(state.tables, table) ?? [], idColumnOf(state, table)));
+    return indexes.get(table).has(id);
   };
   const dangling = [];
   for (const table of tables)
@@ -515,14 +529,11 @@ function mergeScaffoldTables(output, scaffold, metadata) {
     const key = own(output.mappings, table)?.idColumn ?? own(scaffold.idColumns, table);
     const existing = own(output.tables, table) ?? (output.tables[table] = []);
     // An existing row without the key never hides a generated row without it.
-    const ids = new Set(rowKeys(existing, key, ''));
-    let added = 0;
-    for (const row of generated)
-      if (!ids.has(rowKey(own(row, key)))) {
-        existing.push(cloneStateData(row));
-        added++;
-      }
-    rows[table] = { added, alreadyPresent: generated.length - added };
+    const ids = existingKeys(existing, key, '');
+    // Generated rows are tested against the table as it is before this merge.
+    const fresh = generated.filter((row) => !ids.has(own(row, key)));
+    for (const row of fresh) existing.push(cloneStateData(row));
+    rows[table] = { added: fresh.length, alreadyPresent: generated.length - fresh.length };
   }
   return rows;
 }

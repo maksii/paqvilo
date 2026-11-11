@@ -62,10 +62,10 @@ const BASE64_MIN = 1024;
 const ID = /^[A-Za-z0-9._:-]{1,128}$/;
 // Inbound trace headers name only UUID-shaped ids, so a client can never choose a route name or another reserved word.
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-// Credential-named keys, compared without separators (api_key, x-functions-key, client-secret); `sas` and `sig` only as
-// whole keys.
+// Credential-named keys, compared without separators (api_key, x-functions-key, client-secret); `sas`, `sig` and
+// `invitation` only as whole keys.
 const SECRET_KEY =
-  /password|passwd|secret|token|auth(?:orization|entication)|cookie|credential|apikey|signature|sharedaccesssignature|authvalue|connectionstring|saskey|sharedaccesskey|accountkey|function(?:s)?key|subscriptionkey|privatekey|^sas$|^sig$/i; // NOSONAR: regex kept: a rewrite would change matches or captures
+  /password|passwd|secret|token|auth(?:orization|entication)|cookie|credential|apikey|signature|sharedaccesssignature|authvalue|connectionstring|saskey|sharedaccesskey|accountkey|function(?:s)?key|subscriptionkey|privatekey|invitationcode|^sas$|^sig$|^invitation$/i; // NOSONAR: regex kept: a rewrite would change matches or captures
 const MAX_EVENTS = 1000;
 const MAX_DEPTH = 16;
 const MAX_ITEMS = 1000;
@@ -391,7 +391,7 @@ function overflowOf(trace) {
   return trace.overflow;
 }
 
-let recordOf, startOf;
+let recordOf, startOf, traceOf;
 // A span handle: hook sites hold it; the store keeps the plain record (the D2 span shape) behind it.
 class Span {
   #core;
@@ -408,6 +408,7 @@ class Span {
   static {
     recordOf = (span) => span.#record;
     startOf = (span) => span.#start;
+    traceOf = (span) => span.#trace;
   }
   get enabled() {
     return true;
@@ -1172,7 +1173,18 @@ export function createTraceStore({
      */
     start(args = {}) {
       if (settings.level === 'off') return NOOP;
+      // A child of an evicted or cleared overflow context stays refused; an explicit id start keeps its own rules.
+      const current = als.getStore();
+      if (args.parentSpanId === undefined && args.traceId === undefined && OVERFLOWS.has(current)) {
+        if (!traces.has(current.traceId)) return current;
+      }
       const { parent, named, request, links } = resolveStartContext(args);
+      // A span whose trace left the store is refused on that trace object: it must not rebuild the trace under its id.
+      if (parent instanceof Span && traces.get(parent.traceId) !== traceOf(parent)) {
+        const gone = traceOf(parent);
+        gone.droppedSpans++;
+        return overflowOf(gone);
+      }
       const traceId = parent?.traceId ?? named ?? randomUUID();
       const stored = traceForStart(traceId);
       if (stored.overflow) return stored.overflow;

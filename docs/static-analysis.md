@@ -56,7 +56,7 @@ All roots share hard ceilings: 128 roots, 10,000 files/directories/records/conte
 
 Solution ZIP, Canvas `.msapp` and mobile-extension packages are inspected in memory, never extracted. Member paths, CRCs, counts and inflated sizes are checked. Compressed and selected inflated bytes share the budget, including nested packages up to three archive levels. Larger/unsupported packages are incomplete; supply unpacked sources when appropriate.
 
-Hidden state, discovery files, dependencies, deployment-profile directories and build outputs remain excluded. `.powerpages-site` is the export-source exception. Links/junctions, unreadable/unsupported sources, parse failures, unknown source-only inputs and exhausted budgets are explicit gaps. Doctor `--lint-profiles` remains the separate deployment-profile syntax check.
+Hidden state, discovery files, dependencies, deployment-profile directories and build outputs remain excluded. `.powerpages-site` is the export-source exception. Links/junctions, unreadable/unsupported sources, parse failures, unknown source-only inputs and exhausted budgets are explicit gaps. Ribbon definitions, formula definitions and web resource content in an unpacked solution are recognized without rules: they are listed as a limitation and do not make the inspection incomplete. Doctor `--lint-profiles` remains the separate deployment-profile syntax check.
 
 `complete` describes bounded supported-source inspection. It does not mean every compiler, security, accessibility or runtime check passed. `sourceDigest` fingerprints paths and original bytes actually processed; partial input yields a partial fingerprint, not a deployment receipt. Reports preserve skips, rule execution, domain limitations and operations not performed.
 

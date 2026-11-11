@@ -44,6 +44,24 @@ export function dataverseEntry(entry) {
   return /\.(?:xml|json|ya?ml)$/.test(name) && parts.some((part) => folders.has(part));
 }
 
+export function recognizedWithoutRules(file) {
+  const parts = lower(file).replaceAll('\\', '/').split('/');
+  const name = parts.at(-1);
+  if (name === 'ribbondiff.xml') return 'ribbon definition';
+  if (parts.includes('formulas') && /formuladefinitions\.ya?ml$/.test(name)) return 'formula definitions';
+  if (parts.includes('webresources') && !name.endsWith('.data.xml')) return 'web resource content';
+  return null;
+}
+
+export function webResourceMetadata(entry) {
+  if (!/\.xml$/i.test(entry.file)) return false;
+  try {
+    return localName(parseSolutionXml(entry.text)) === 'webresource';
+  } catch {
+    return false;
+  }
+}
+
 export function xmlRows(root, table = null) {
   const rows = [],
     pending = [{ node: root, parent: null, table, depth: 0, fetch: false }];

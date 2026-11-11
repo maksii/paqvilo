@@ -1,4 +1,5 @@
 import { groupDigitRuns } from './group-digit-runs.mjs';
+import { likeTokens, likeTokensMatch, likeTokensSuffixStart } from './dataverse-values.mjs';
 // Dataverse SQL scalar function library with T-SQL semantics for the TDS endpoint.
 // Independent of the parser: callers pass evaluated argument values. The parser maps
 // CAST(x AS t) to castValue(x, t); CONVERT and TRY_CONVERT are registered as functions.
@@ -792,21 +793,11 @@ export function compareValues(a, b, ctx, typeA = null, typeB = null) {
 }
 
 // String functions. Every one returns null for a NULL argument unless noted (CONCAT, CONCAT_WS).
-const likeToRegExp = (pattern, ctx) => {
-  let out = '';
-  for (let i = 0; i < pattern.length; i += 1) {
-    const c = pattern[i];
-    const close = c === '[' ? pattern.indexOf(']', i + 1) : -1;
-    if (c === '%') out += String.raw`[\s\S]*`;
-    else if (c === '_') out += String.raw`[\s\S]`;
-    else if (close > i + 1) {
-      const negate = pattern[i + 1] === '^';
-      const body = pattern.slice(i + 1 + (negate ? 1 : 0), close).replace(/[\\\][]/g, String.raw`\$&`);
-      out += `[${negate ? '^' : ''}${body}]`;
-      i = close; // NOSONAR: loop cursor is advanced in the body on purpose
-    } else out += escapeRe(c);
-  }
-  return new RegExp(out, ctx.caseSensitive ? '' : 'i');
+// Without a leading %, the pattern must match the whole text; with one, the leftmost start whose remaining text
+// matches to its end. -1 when there is none.
+const likePosition = (tokens, text, floating) => {
+  if (floating) return likeTokensSuffixStart(tokens, text);
+  return likeTokensMatch(tokens, text) ? 0 : -1;
 };
 const dateFormatTokens = /yyyy|yy|MMMM|MMM|MM|M|dddd|ddd|dd|d|HH|H|hh|h|mm|m|ss|s|fff|tt|'[^']*'|[\s\S]/g; // NOSONAR: regex kept: a rewrite would change matches or captures
 function dateFormat(d, pattern, locale) {
@@ -899,10 +890,9 @@ def('PATINDEX', 2, 2, INT, ([pattern, s], ctx) => {
   const leadingWildcard = original.startsWith('%');
   const remaining = original.replace(/^%+/, '');
   if (leadingWildcard && remaining === '') return 1;
-  const match = likeToRegExp(remaining, ctx);
-  const re = new RegExp(`${leadingWildcard ? '' : '^'}${match.source}$`, match.flags);
-  const m = re.exec(textOf(s));
-  return m ? m.index + 1 : 0;
+  const tokens = likeTokens(remaining, { ignoreCase: !ctx.caseSensitive, brackets: 'pattern' });
+  const index = likePosition(tokens, textOf(s), leadingWildcard);
+  return index < 0 ? 0 : index + 1;
 });
 def('REPLACE', 3, 3, TEXT, ([s, from, to], ctx) => {
   if (anyNull(s, from, to)) return null;

@@ -6,6 +6,7 @@
 // digest of the complete prefix and are verified in full when opened.
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
+import { dirname } from 'node:path';
 import { brotliCompressSync, brotliDecompressSync, constants, gunzipSync } from 'node:zlib';
 import { openRecordReader } from './record-file-lease.mjs';
 
@@ -22,6 +23,19 @@ const validCount = (kind, count) => Number.isSafeInteger(count) && count > 0 && 
 const signature = (info) => [info.dev, info.ino, info.size, info.mtimeNs].join(':');
 const damaged = (message) => Object.assign(new Error(message), { code: 'StateIntegrity' });
 const hashOf = (bytes) => createHash('sha256').update(bytes).digest();
+
+/** Makes a directory's entries durable after a file in it was created or renamed. Windows cannot sync a directory. */
+export function syncDirectory(directory, io = fs) {
+  let fd;
+  try {
+    fd = io.openSync(directory, 'r');
+    io.fsyncSync(fd);
+  } catch (error) {
+    if (process.platform !== 'win32' || !['EPERM', 'EISDIR', 'EINVAL', 'EACCES'].includes(error.code)) throw error;
+  } finally {
+    if (fd !== undefined) io.closeSync(fd);
+  }
+}
 
 function readExactly(fd, size, position) {
   const bytes = Buffer.allocUnsafe(size);
@@ -330,6 +344,7 @@ export class RecordPageFile {
       result = new RecordPageFile(file, fd, { ...options, writable: true });
       result.write(MAGIC);
       result.headers.update(MAGIC);
+      syncDirectory(dirname(file));
       return result;
     } catch (error) {
       fs.closeSync(fd);

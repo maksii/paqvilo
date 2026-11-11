@@ -28,7 +28,7 @@
 // ponytail: LIKE builds a RegExp per evaluation; no cache.
 
 import { splitBatches } from './dataverse-tds-sql-lexer.mjs';
-import { equalityKey, foldText } from './dataverse-values.mjs';
+import { equalityKey, foldText, likeTokens, likeTokensMatch } from './dataverse-values.mjs';
 import { parseBatch } from './dataverse-tds-sql-parser.mjs';
 import {
   callFunction,
@@ -107,6 +107,8 @@ export async function executeBatch(
   const resultSets = [];
   for (const [i, batch] of batches.entries()) {
     for (let run = 0; run < batch.repeat; run += 1) {
+      if (run > 0) await new Promise((resolve) => setImmediate(resolve));
+      tick(st);
       st.vars = new Map();
       for (const [name, value] of Object.entries(params)) {
         const key = name.startsWith('@') ? name : `@${name}`;
@@ -1681,48 +1683,12 @@ function typeText(targetType) {
 
 // Tokenize before collation folding so an accented escape remains distinct from a literal.
 // A dangling escape produces an invalid pattern, which LIKE treats as a non-match.
+// Keep insensitive matching after accent folding: whole strings and individual pattern tokens can lowercase
+// differently (for example Greek final sigma), so literals and sets compare case-insensitively per character.
 function likeRegex(pattern, escape, collation) {
-  let out = '^';
-  for (let i = 0; i < pattern.length; i += 1) {
-    const parsed = likePatternToken(pattern, i, escape, collation);
-    if (parsed === null) return null;
-    out += parsed.text;
-    i = parsed.end; // NOSONAR: loop cursor is advanced in the body on purpose
-  }
-  // Keep insensitive matching after accent folding: whole strings and individual
-  // pattern tokens can lowercase differently (for example Greek final sigma).
-  return new RegExp(`${out}$`, 'si');
+  const tokens = likeTokens(pattern, { escape, fold: (text) => foldText(text, collation), ignoreCase: true });
+  return tokens && { test: (value) => likeTokensMatch(tokens, value) };
 }
-
-function likePatternToken(pattern, index, escape, collation) {
-  const character = pattern[index];
-  if (escape !== null && character === escape) {
-    if (index + 1 === pattern.length) return null;
-    return { text: escapeRe(foldText(pattern[index + 1], collation)), end: index + 1 };
-  }
-  if (character === '%') return { text: String.raw`[\s\S]*`, end: index };
-  if (character === '_') return { text: String.raw`[\s\S]`, end: index };
-  if (character === '[' && pattern.indexOf(']', index + 1) > index + 1)
-    return likeCharacterSet(pattern, index, escape, collation);
-  return { text: escapeRe(foldText(character, collation)), end: index };
-}
-
-function likeCharacterSet(pattern, index, escape, collation) {
-  let end = index + 1;
-  const negate = pattern[end] === '^' && escape !== '^';
-  if (negate) end++;
-  let set = '';
-  for (; end < pattern.length && pattern[end] !== ']'; end++) {
-    const escaped = escape !== null && pattern[end] === escape;
-    if (escaped && ++end === pattern.length) return null;
-    const member = foldText(pattern[end], collation).replace(/[\\[\]^]/g, String.raw`\$&`);
-    set += escaped ? member.replaceAll('-', String.raw`\-`) : member;
-  }
-  if (end === pattern.length || !set) return null;
-  return { text: `[${negate ? '^' : ''}${set}]`, end };
-}
-
-const escapeRe = (text) => text.replace(/[.*+?^${}()|[\]\\/-]/g, String.raw`\$&`);
 
 function singleColumn(result) {
   if (result.names.length !== 1) {

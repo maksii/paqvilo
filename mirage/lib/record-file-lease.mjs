@@ -248,7 +248,6 @@ function ensureRecordOwner(directory, ownerKey, location, io) {
   return owner;
 }
 
-const markerSharingErrors = new Set(['EPERM', 'EACCES', 'EBUSY']);
 function recordOwnerNeedsMigration(directory, owner, location) {
   const current = readOwner(directory);
   if (current && current.key === owner.key && current.format === 2 && current.state === location) return false;
@@ -256,22 +255,31 @@ function recordOwnerNeedsMigration(directory, owner, location) {
     throw integrity('Record directory owner changed during migration');
   return true;
 }
-function replaceRecordOwner(directory, temporary, owner, location, io) {
-  const wait = new Int32Array(new SharedArrayBuffer(4));
-  for (let attempt = 0; attempt < 100; attempt++) {
-    if (attempt && !recordOwnerNeedsMigration(directory, owner, location)) return;
+// Windows sharing holds can outlast immediate retries. Only these codes are retried.
+const sharingErrors = new Set(['EPERM', 'EACCES', 'EBUSY']);
+// The attempt ceiling for renames held by sharing errors.
+const SHARING_RETRY_ATTEMPTS = 100;
+/** Rename through sharing holds: retry sharing errors with capped exponential backoff, up to
+ * SHARING_RETRY_ATTEMPTS attempts, then rethrow the last error. `beforeRetry(attempt)` runs before
+ * each retry and returns false to stop without renaming. Backoff is at most 100 ms per attempt. */
+function renameThroughSharingHolds(io, from, to, beforeRetry = () => true) {
+  for (let attempt = 0; attempt < SHARING_RETRY_ATTEMPTS; attempt++) {
+    if (attempt && !beforeRetry(attempt)) return;
     try {
-      io.renameSync(temporary, path.join(directory, OWNER));
+      io.renameSync(from, to);
       return;
     } catch (error) {
-      if (!markerSharingErrors.has(error?.code) || attempt === 99) throw error;
-      // Windows sharing holds can outlast 100 immediate 2 ms retries. Back off only for
-      // sharing errors, retaining the attempt bound and rechecking ownership before every retry.
+      if (!sharingErrors.has(error?.code) || attempt === SHARING_RETRY_ATTEMPTS - 1) throw error;
       // Cap exponential backoff at 100 ms: total requested waiting stays below ten seconds.
-      // Permanent refusals still retain the preceding valid marker after exactly 100 attempts.
       Atomics.wait(wait, 0, 0, Math.min(2 ** Math.min(attempt + 1, 7), 100));
     }
   }
+}
+function replaceRecordOwner(directory, temporary, owner, location, io) {
+  // Ownership is rechecked before every retry; a preceding valid marker stays until a rename lands.
+  renameThroughSharingHolds(io, temporary, path.join(directory, OWNER), () =>
+    recordOwnerNeedsMigration(directory, owner, location),
+  );
 }
 function migrateRecordOwner(directory, owner, location, io) {
   if (!location || (owner.format === 2 && owner.state === location)) return;
@@ -317,7 +325,7 @@ export class RecordFileLease {
       } finally {
         this.io.closeSync(fd);
       }
-      this.io.renameSync(temp, this.file);
+      renameThroughSharingHolds(this.io, temp, this.file);
       this.files = next;
     } finally {
       this.io.rmSync(temp, { force: true });

@@ -1,9 +1,11 @@
 // FetchXML column validation, bounded joins with early limits, and the inventory's
 // capability table derived from the evaluator.
+// @test-kind contract: FetchXML engine limits and LIKE matcher behaviour are Paqvilo's designed runtime contract
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';
 import { FETCH_UNSUPPORTED_ATTRIBUTES, parseXmlDocument, planFetch } from '../lib/fetchxml-engine.mjs';
+import { likeMatcher } from '../lib/dataverse-values.mjs';
 import { supportOf } from '../webapi-inventory.mjs';
 
 const G = (n) => `00000000-0000-0000-0000-${String(n).padStart(12, '0')}`;
@@ -249,4 +251,76 @@ test('one high-fanout root respects the join budget without exceeding JavaScript
     () => highFanout.fetchXml(distinct, { admin: true }),
     (error) => error.code === 'UnsupportedQuery' && error.details.limit === 1000,
   );
+});
+
+// @test-kind security: a LIKE pattern from a request must not pin the event loop with backtracking
+test('LIKE patterns with repeated wildcards and a final mismatch return without backtracking', () => {
+  assert.equal(likeMatcher('%'.repeat(200) + 'b')('a'.repeat(1000)), false);
+  assert.equal(likeMatcher('%a'.repeat(60) + 'b')('a'.repeat(2000)), false);
+});
+
+const LIKE_VALUES = [
+  '',
+  'a',
+  'abc',
+  'ax',
+  'a-c',
+  'ABC',
+  'bx',
+  'cx',
+  'dx',
+  'xbc',
+  'aXbXc',
+  'abbc',
+  'a%c',
+  'x[',
+  '[',
+  '[]x',
+  '%]',
+  'a',
+  'b\\x',
+  '-',
+];
+// One digit per LIKE_VALUES entry: 1 when the pattern matches. Recorded from the regex translation before the matcher changed.
+const LIKE_EXPECTED = [
+  ['%', '11111111111111111111'],
+  ['a%', '01111100001110000100'],
+  ['%a', '01000000000000000100'],
+  ['%a%', '01111100001110000100'],
+  ['a_c', '00101100000010000000'],
+  ['_', '01000000000000100101'],
+  ['[abc]x', '00010011000000000000'],
+  ['[a-c]x', '00010011000000000000'],
+  ['[^a-c]x', '00000000100000000000'],
+  ['a%b%c', '00100100001100000000'],
+  ['%%a', '01000000000000000100'],
+  ['', '10000000000000000000'],
+  ['abc', '00100100000000000000'],
+  ['ABC', '00100100000000000000'],
+  ['[]x', '00000000000000000000'],
+  ['[^]x', '00000000000000000000'],
+  ['x[', '00000000000001000000'],
+  ['[ab', '00000000000000000000'],
+  ['[\\-]x', '00000000000000000000'],
+  ['%[%]%', '00000000000010001000'],
+  ['%[^]]%', '00000000000000000000'],
+];
+
+test('LIKE sets with a backwards range match no character and no pattern text throws', () => {
+  assert.equal(likeMatcher('[z-a]x')('bx'), false);
+  assert.equal(likeMatcher('[^z-a]x')('bx'), true);
+  for (const pattern of ['[z-a]', '[z-ab]x', '[ςa-[-z]', '[]', '[^]', '[a-]', '[a-]x', 'a!', '%[]%']) {
+    assert.doesNotThrow(() => likeMatcher(pattern), JSON.stringify(pattern));
+  }
+});
+
+test('LIKE matcher keeps the translation semantics for wildcards, sets, folding and empty patterns', () => {
+  for (const [pattern, expected] of LIKE_EXPECTED) {
+    const match = likeMatcher(pattern);
+    assert.equal(
+      LIKE_VALUES.map((value) => (match(value) ? '1' : '0')).join(''),
+      expected,
+      `LIKE ${JSON.stringify(pattern)}`,
+    );
+  }
 });

@@ -17,8 +17,22 @@ const chooseLazily = (condition, yes, no) => {
 
 // Catalogue URLs and first-tab paths may contain private query values. They are
 // displayed for selection, but the query itself is not needed to identify them.
+// Userinfo (user:password@) is never displayed; a URL that does not parse is replaced by a marker.
 function displayLocation(value) {
   if (typeof value !== 'string') return value;
+  if (value.includes('://')) {
+    let url;
+    try {
+      url = new URL(value);
+    } catch {
+      return '[redacted URL]';
+    }
+    if (url.username || url.password) {
+      url.username = '';
+      url.password = '';
+      value = url.toString();
+    }
+  }
   const query = value.indexOf('?');
   const fragment = value.indexOf('#');
   const end = [query, fragment].filter((index) => index >= 0).reduce((a, b) => Math.min(a, b), value.length);
@@ -151,7 +165,9 @@ function safeSettings(catalogue) {
   return Object.fromEntries(
     Object.entries(catalogue.settings.values).map(([key, value]) => [
       key,
-      key === 'PAQVILO_START_PATH' || /^(?:https?|wss?):\/\//i.test(value) ? displayLocation(value) : value,
+      key === 'PAQVILO_START_PATH' || (typeof value === 'string' && value.includes('://'))
+        ? displayLocation(value)
+        : value,
     ]),
   );
 }

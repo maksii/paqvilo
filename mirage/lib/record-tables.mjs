@@ -1095,8 +1095,10 @@ class PagedRecords {
     for (const id of this.keyTree.lookup(normalizeKey(key))) out.push(...this.positions(id));
     return out.sort((a, b) => a - b);
   }
+  // `looseBraceKeys` records that a stored key differs from its normalised index form: braces, letter case, or
+  // surrounding whitespace. Readers that match keys exactly must then take their conservative path.
   noteKeyShape(key) {
-    if (key.replace(/[{}]/g, '').toLowerCase() !== normalizeKey(key)) this.looseBraceKeys = true;
+    if (key.replace(/[{}]/g, '').toLowerCase() !== normalizeKey(key) || key !== key.trim()) this.looseBraceKeys = true;
   }
   /** Ids among `removed` that still occur outside [start, end) stay indexed. */
   retainOutside(removed, start, end) {

@@ -1,3 +1,4 @@
+// @test-kind contract: T-SQL LIKE, ESCAPE and PATINDEX evaluation are Paqvilo's designed runtime behaviour
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { executeBatch } from '../lib/dataverse-tds-sql-eval.mjs';
@@ -125,4 +126,26 @@ test('SQL LIKE preserves bracket and hyphen escape characters without inventing 
       );
     }
   }
+});
+
+test('SQL LIKE treats a set with a backwards range as matching no character instead of raising', async () => {
+  assert.deepEqual(await evaluate("SELECT CASE WHEN 'b' LIKE '[z-a]' THEN 1 ELSE 0 END AS matched"), [[0]]);
+});
+
+test('PATINDEX reports the leftmost wildcard position and 0 for an anchored miss', async () => {
+  assert.deepEqual(
+    await evaluate(
+      "SELECT PATINDEX('%', 'abc') AS a, PATINDEX('', 'abc') AS b, PATINDEX('abc', 'abc') AS c, PATINDEX('%b%', 'abc') AS d",
+    ),
+    [[1, 0, 1, 2]],
+  );
+});
+
+// @test-kind security: a LIKE or PATINDEX pattern from a request must not pin the event loop with backtracking
+test('SQL LIKE and PATINDEX with repeated wildcards and no match return without backtracking', async () => {
+  assert.deepEqual(
+    await evaluate(`SELECT CASE WHEN '${'a'.repeat(40)}' LIKE '${'%'.repeat(25)}b' THEN 1 ELSE 0 END AS matched`),
+    [[0]],
+  );
+  assert.deepEqual(await evaluate(`SELECT PATINDEX('${'%a'.repeat(18)}%b%', REPLICATE('a', 200)) AS position`), [[0]]);
 });

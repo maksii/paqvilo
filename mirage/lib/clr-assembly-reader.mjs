@@ -12,6 +12,8 @@ const PE_SIGNATURE = 0x00004550;
 const METADATA_SIGNATURE = 0x424a5342; // "BSJB"
 const CLI_DIRECTORY = 14;
 const STRONG_NAME_SIGNED = 0x8; // COMIMAGE_FLAGS_STRONGNAMESIGNED
+// Local safeguard for the simulator process, not a platform limit.
+const MAX_PACKAGE_INFLATED_BYTES = 256 * 1024 * 1024;
 const TYPE_REF = 1,
   TYPE_DEF = 2,
   INTERFACE_IMPL = 9,
@@ -222,17 +224,35 @@ function assemblyTypeRefName(typeRefs, strings, index) {
   return [stringAt(strings, namespace), stringAt(strings, name)].filter(Boolean).join('.');
 }
 
-function assemblyTypeDefName(typeDefs, nested, strings, index, seen = new Set()) {
-  if (seen.has(index)) throw invalid('nested type cycle');
-  seen.add(index);
-  const [, name, namespace] = assemblyRow(typeDefs, index, 'TypeDef');
-  if (nested.has(index))
-    return `${assemblyTypeDefName(typeDefs, nested, strings, nested.get(index), seen)}+${stringAt(strings, name)}`;
-  return [stringAt(strings, namespace), stringAt(strings, name)].filter(Boolean).join('.');
+// `names` caches full names by TypeDef row for one inspectAssembly call. The walk up the enclosing chain is iterative,
+// so a deep nesting cannot exhaust the stack.
+function assemblyTypeDefName(typeDefs, nested, strings, index, names) {
+  const walked = [],
+    seen = new Set();
+  let current = index;
+  while (!names.has(current)) {
+    if (seen.has(current)) throw invalid('nested type cycle');
+    seen.add(current);
+    walked.push(current);
+    if (!nested.has(current)) break;
+    current = nested.get(current);
+  }
+  // The enclosing type is always named before the type it encloses.
+  for (const row of walked.reverse()) {
+    const [, name, namespace] = assemblyRow(typeDefs, row, 'TypeDef');
+    const simple = stringAt(strings, name);
+    names.set(
+      row,
+      nested.has(row)
+        ? `${names.get(nested.get(row))}+${simple}`
+        : [stringAt(strings, namespace), simple].filter(Boolean).join('.'),
+    );
+  }
+  return names.get(index);
 }
 
-function assemblyTypeName(ref, typeRefs, typeDefs, nested, strings) {
-  if (ref?.table === TYPE_DEF) return assemblyTypeDefName(typeDefs, nested, strings, ref.row);
+function assemblyTypeName(ref, typeRefs, typeDefs, nested, strings, names) {
+  if (ref?.table === TYPE_DEF) return assemblyTypeDefName(typeDefs, nested, strings, ref.row, names);
   if (ref?.table === TYPE_REF) return assemblyTypeRefName(typeRefs, strings, ref.row);
   return null;
 }
@@ -241,25 +261,49 @@ function assemblyBase(typeDefs, index) {
   return decodeCoded('TypeDefOrRef', assemblyRow(typeDefs, index, 'TypeDef')[3]);
 }
 
-function assemblyIsPlugin(index, interfaces, typeDefs, typeRefs, nested, strings, seen = new Set()) {
-  if (seen.has(index)) return false;
-  seen.add(index);
-  if (
-    (interfaces.get(index) ?? []).some(
-      (ref) => assemblyTypeName(ref, typeRefs, typeDefs, nested, strings) === PLUGIN_INTERFACE,
-    )
-  )
-    return true;
-  const base = assemblyBase(typeDefs, index);
-  return base?.table === TYPE_DEF && assemblyIsPlugin(base.row, interfaces, typeDefs, typeRefs, nested, strings, seen);
+// Walks the base classes declared in this assembly from `index` and returns true at the first type that `matches`.
+// A base outside the assembly, or a TypeDef already visited on this walk, ends the walk as not matching. `memo` maps
+// TypeDef rows to the result already settled for them in this inspectAssembly call: the walk stops at the first one it
+// reaches and takes that result, then settles every TypeDef it passed with the same result.
+function assemblyBaseWalkMatches(index, typeDefs, matches, memo) {
+  const walked = new Set();
+  let current = index;
+  let result = false;
+  while (!walked.has(current) && !memo.has(current)) {
+    walked.add(current);
+    if (matches(current)) {
+      result = true;
+      break;
+    }
+    const base = assemblyBase(typeDefs, current);
+    if (base?.table !== TYPE_DEF) break;
+    current = base.row;
+  }
+  if (memo.has(current)) result = memo.get(current);
+  for (const row of walked) memo.set(row, result);
+  return result;
 }
 
-function assemblyIsActivity(index, typeDefs, typeRefs, nested, strings, seen = new Set()) {
-  if (seen.has(index)) return false;
-  seen.add(index);
-  const base = assemblyBase(typeDefs, index);
-  if (assemblyTypeName(base, typeRefs, typeDefs, nested, strings) === ACTIVITY_BASE) return true;
-  return base?.table === TYPE_DEF && assemblyIsActivity(base.row, typeDefs, typeRefs, nested, strings, seen);
+function assemblyIsPlugin(index, interfaces, typeDefs, typeRefs, nested, strings, names, plugins) {
+  return assemblyBaseWalkMatches(
+    index,
+    typeDefs,
+    (current) =>
+      (interfaces.get(current) ?? []).some(
+        (ref) => assemblyTypeName(ref, typeRefs, typeDefs, nested, strings, names) === PLUGIN_INTERFACE,
+      ),
+    plugins,
+  );
+}
+
+function assemblyIsActivity(index, typeDefs, typeRefs, nested, strings, names, activities) {
+  return assemblyBaseWalkMatches(
+    index,
+    typeDefs,
+    (current) =>
+      assemblyTypeName(assemblyBase(typeDefs, current), typeRefs, typeDefs, nested, strings, names) === ACTIVITY_BASE,
+    activities,
+  );
 }
 
 /**
@@ -323,14 +367,17 @@ function assemblyIsActivity(index, typeDefs, typeRefs, nested, strings, seen = n
   if (!assembly) throw invalid('no Assembly row');
   const [, major, minor, build, revision, , publicKeyIndex, nameIndex, cultureIndex] = assembly;
   const publicKey = blobAt(blobs, publicKeyIndex);
-  const types = [];
+  const types = [],
+    names = new Map(), // TypeDef row -> full name, shared by every lookup in this call
+    plugins = new Map(), // TypeDef row -> plug-in result, shared by every walk in this call
+    activities = new Map(); // TypeDef row -> workflow activity result, shared by every walk in this call
   for (let index = 1; index <= typeDefs.length; index++) {
-    const fullName = assemblyTypeDefName(typeDefs, nested, strings, index);
+    const fullName = assemblyTypeDefName(typeDefs, nested, strings, index, names);
     if (fullName !== '<Module>')
       types.push({
         fullName,
-        isPlugin: assemblyIsPlugin(index, interfaces, typeDefs, typeRefs, nested, strings),
-        isWorkflowActivity: assemblyIsActivity(index, typeDefs, typeRefs, nested, strings),
+        isPlugin: assemblyIsPlugin(index, interfaces, typeDefs, typeRefs, nested, strings, names, plugins),
+        isWorkflowActivity: assemblyIsActivity(index, typeDefs, typeRefs, nested, strings, names, activities),
       });
   }
   return {
@@ -469,6 +516,7 @@ function* packageEntries(buffer) {
   if (count === 0xffff || u16(buffer, end + 4, 'ZIP disk') || u16(buffer, end + 6, 'ZIP disk'))
     throw invalid('unsupported NuGet package ZIP');
   let offset = u32(buffer, end + 16, 'ZIP central directory');
+  const localOffsets = new Set();
   for (let index = 0; index < count; index++) {
     if (u32(buffer, offset, 'ZIP central entry') !== 0x02014b50) throw invalid('invalid ZIP central entry');
     const flags = u16(buffer, offset + 8, 'ZIP flags'),
@@ -481,8 +529,12 @@ function* packageEntries(buffer) {
     at(buffer, offset + 46, nameLength + extraLength + commentLength, 'ZIP entry');
     const name = buffer.toString('utf8', offset + 46, offset + 46 + nameLength);
     const local = u32(buffer, offset + 42, 'ZIP local offset');
+    // Each local entry is named by one central entry, so no bytes are inflated once per name.
+    if (localOffsets.has(local)) throw invalid('overlapping ZIP entries');
+    localOffsets.add(local);
     yield {
       name,
+      size: expanded,
       bytes(limit) {
         if (flags & 1 || ![0, 8].includes(method) || expanded > limit || compressed > limit)
           throw invalid(`unsupported ZIP entry ${name}`);
@@ -493,7 +545,8 @@ function* packageEntries(buffer) {
         let bytes;
         try {
           bytes = method === 8 ? inflateRawSync(packed, { maxOutputLength: limit }) : packed;
-        } catch {
+        } catch (error) {
+          if (error?.code === 'ERR_BUFFER_TOO_LARGE') throw invalid('package inflates beyond the local limit');
           throw invalid(`invalid compressed ZIP entry ${name}`);
         }
         if (bytes.length !== expanded) throw invalid(`ZIP entry size mismatch ${name}`);
@@ -517,14 +570,26 @@ const xmlText = (xml, tag) =>
  * like inspectAssembly (identity and types; never loaded). Content that is not a NuGet package ZIP throws InvalidAssembly;
  * a lib/ entry that is not a .NET assembly is a resource (not returned).
  */
-export function inspectPackage(input, { limit = 16 * 1024 * 1024 } = {}) {
+export function inspectPackage(
+  input,
+  { limit = 16 * 1024 * 1024, maxInflatedBytes = MAX_PACKAGE_INFLATED_BYTES } = {},
+) {
   const buffer = Buffer.from(input);
-  let nuspec = null;
+  let nuspec = null,
+    inflated = 0;
   const assemblies = [];
+  // Every inflated entry draws on one budget for the whole package.
+  const inflate = (entry, entryLimit) => {
+    const remaining = maxInflatedBytes - inflated;
+    if (entry.size > remaining) throw invalid('package inflates beyond the local limit');
+    const bytes = entry.bytes(Math.min(entryLimit, remaining));
+    inflated += bytes.length;
+    return bytes;
+  };
   for (const entry of packageEntries(buffer)) {
-    if (/^[^/]+\.nuspec$/i.test(entry.name)) nuspec = entry.bytes(1024 * 1024).toString('utf8');
+    if (/^[^/]+\.nuspec$/i.test(entry.name)) nuspec = inflate(entry, 1024 * 1024).toString('utf8');
     else if (/^lib\/[^/]+\/[^/]+\.dll$/i.test(entry.name)) {
-      const bytes = entry.bytes(limit);
+      const bytes = inflate(entry, limit);
       try {
         assemblies.push({ path: entry.name, bytes, ...inspectAssembly(bytes) });
       } catch (error) {

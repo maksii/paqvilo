@@ -46,6 +46,10 @@ page headers rather than every stored byte. Restored files remain read-only. A
 new runtime writes its own file and starts another before one runs out of page
 numbers. Record pages hold up to 64 KiB of JSON.
 
+The state file and its `<state>.records` folder belong together. When a referenced
+page file is missing, for example after copying the state file alone, the start
+fails with `StateIntegrity` and the state file is left as it is.
+
 The directory's `.record-owner.json` holds a random owner key, which the journal
 also records. A state file and its directory therefore load together after they
 are moved, copied or restored to another folder or drive. A different state

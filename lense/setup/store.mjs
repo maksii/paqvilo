@@ -421,6 +421,61 @@ function assertSaveInput(input, linkedSite, localFile) {
     throw setupError('A template creates the shared configuration.');
 }
 
+const SAVE_LOCK_STALE_MS = 30_000;
+
+const processAlive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === 'EPERM';
+  }
+};
+
+// A lock left by an interrupted save names its process. It is removed when that process has gone, when it holds no
+// valid record, or when it is older than the stale window; a lock of a live process within the window stays.
+async function removeStaleSaveLock(lockFile) {
+  let record;
+  try {
+    record = JSON.parse(await fs.readFile(lockFile, 'utf8'));
+  } catch (error) {
+    if (error.code === 'ENOENT') return true;
+    record = null;
+  }
+  const valid = Number.isInteger(record?.pid) && record.pid > 0;
+  const stale = !valid || !processAlive(record.pid) || !(Date.now() - record.at <= SAVE_LOCK_STALE_MS);
+  if (stale) await fs.rm(lockFile, { force: true });
+  return stale;
+}
+
+async function createSaveLock(lockFile) {
+  const lock = await fs.open(lockFile, 'wx');
+  try {
+    await lock.writeFile(JSON.stringify({ pid: process.pid, at: Date.now() }));
+  } catch (error) {
+    await lock.close();
+    await fs.rm(lockFile, { force: true });
+    throw error;
+  }
+  return lock;
+}
+
+async function openSaveLock(lockFile) {
+  try {
+    return await createSaveLock(lockFile);
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    if (await removeStaleSaveLock(lockFile)) {
+      try {
+        return await createSaveLock(lockFile);
+      } catch (retry) {
+        if (retry.code !== 'EEXIST') throw retry;
+      }
+    }
+    throw setupError('Configuration is being saved. Retry shortly.', 409);
+  }
+}
+
 /** Journey stages (docs/setup.md): done, next (the first open stage), blocked (open behind it) or optional. */
 export function setupStages(snapshot, runtime = null) {
   const mirages =
@@ -925,13 +980,7 @@ export class SetupStore {
     if (linkedSite) await fs.mkdir(path.dirname(file), { recursive: true });
     const lockFile = this.file + '.setup.lock';
     await assertScaffoldPath(lockFile);
-    let lock;
-    try {
-      lock = await fs.open(lockFile, 'wx');
-    } catch (error) {
-      if (error.code === 'EEXIST') throw setupError('Configuration is being saved. Retry shortly.', 409);
-      throw error;
-    }
+    const lock = await openSaveLock(lockFile);
     let temporary;
     try {
       const before = await this.files();
@@ -979,7 +1028,7 @@ export class SetupStore {
 
       const ignores = (await textFile(ignoreFile)) ?? '';
       const lines = new Set(ignores.split(/\r?\n/).map((line) => line.trim()));
-      const rules = ['.paqvilo/', '.env', 'paqvilo.config.local.yml'].filter(
+      const rules = ['.paqvilo/', '.env', 'paqvilo.config.local.yml', '*.setup.lock'].filter(
         (rule) => !lines.has(rule) && !lines.has('/' + rule),
       );
       if (rules.length)

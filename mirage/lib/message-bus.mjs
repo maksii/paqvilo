@@ -4,8 +4,9 @@
 // client amqp-client.mjs; serviceBusEmulatorPreflight probes its health endpoint. Nothing here contacts a non-loopback host.
 // Callers already inside a store transaction pass `{ nested: true }` so send, receive, complete, abandon and deadLetter join it.
 import { randomUUID } from 'node:crypto';
+import dns from 'node:dns';
 import { DataError } from './data-error.mjs';
-import { isLoopbackUrl, loopbackFetch } from './dataverse-webhooks.mjs';
+import { isLoopbackUrl, loopbackAddresses, loopbackFetch } from './dataverse-webhooks.mjs';
 import { ProviderError } from './storage-provider.mjs';
 import { CODE, connectAmqp, decodeMessage, described, encodeMessage, sym } from './amqp-client.mjs';
 import { registerSettingParser } from './config-keys.mjs';
@@ -343,6 +344,11 @@ const diagnostic = (code, message, severity = 'error') => ({ code, severity, mes
 const EMULATOR_AMQP_PORT = 5672; // Service Bus emulator default AMQP port.
 const EMULATOR_MAX_MESSAGE = 256 * 1024; // Emulator quota: message size 256 KB, not configurable.
 
+const NOT_LOOPBACK = {
+  code: 'SERVICEBUS_EMULATOR_NOT_LOOPBACK',
+  message: 'The emulator endpoint must be localhost, 127.0.0.0/8 or ::1; other hosts are never contacted.',
+};
+
 /**
  * The one reading of an emulator connection string: { host, bracketed, keyName, key } or { error: { code, message } }.
  * Only Endpoint=sb://<loopback host> with UseDevelopmentEmulator=true is accepted; nothing is contacted here.
@@ -373,11 +379,7 @@ function emulatorConnection(connectionString) {
     return refuse('SERVICEBUS_EMULATOR_ENDPOINT_INVALID', 'The connection string Endpoint must be sb://<host>.');
   }
   const bracketed = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
-  if (!isLoopbackUrl(`http://${bracketed}/`))
-    return refuse(
-      'SERVICEBUS_EMULATOR_NOT_LOOPBACK',
-      'The emulator endpoint must be localhost, 127.0.0.0/8 or ::1; other hosts are never contacted.',
-    );
+  if (!isLoopbackUrl(`http://${bracketed}/`)) return { error: NOT_LOOPBACK };
   return {
     host: bracketed.replace(/^\[|\]$/g, ''),
     bracketed,
@@ -485,6 +487,7 @@ function lockTokenOf(tag) {
  * entity names configuration maps to this provider (preflight attaches a link to each). The connection string is read from env
  * when a connection opens; its key goes to SASL only and never into state, results or errors. One connection, opened lazily,
  * reopened after a failure; links are cached per entity. Every wait is bounded by timeoutMs.
+ * lookup (default dns.promises.lookup) resolves the endpoint name for the loopback check; tests inject it.
  */
 export function createServiceBusEmulatorBus({
   id = 'servicebus-emulator',
@@ -493,6 +496,7 @@ export function createServiceBusEmulatorBus({
   env = process.env,
   timeoutMs = 5000,
   now = Date.now,
+  lookup = dns.promises.lookup,
 } = {}) {
   const variable = /^env:([A-Za-z_]\w*)$/.exec(settings.connectionString ?? '')?.[1];
   if (!variable) throw new TypeError('createServiceBusEmulatorBus requires settings.connectionString as env:NAME');
@@ -513,15 +517,28 @@ export function createServiceBusEmulatorBus({
           : `${target.error.message} (${variable})`;
       return Promise.reject(new ProviderError('Unavailable', message, { provider: id, diagnostic: target.error.code }));
     }
-    return connectAmqp({
-      host: target.host,
-      port,
-      hostname: target.host,
-      timeoutMs: ms,
-      signal,
-      provider: id,
-      credentials: () => ({ user: target.keyName, password: target.key }),
-    });
+    return loopbackAddress(target).then((host) =>
+      connectAmqp({
+        host,
+        port,
+        hostname: target.host,
+        timeoutMs: ms,
+        signal,
+        provider: id,
+        credentials: () => ({ user: target.keyName, password: target.key }),
+      }),
+    );
+  }
+  // The socket goes to the first address that the loopback check accepts for the endpoint name, because a *.localhost name may
+  // resolve to a routable address. Any other answer, or none, refuses the endpoint before a connection is attempted.
+  async function loopbackAddress(target) {
+    const addresses = await loopbackAddresses(`http://${target.bracketed}/`, lookup).catch(() => []);
+    if (addresses === null) return target.host; // localhost and IP literals skip the lookup and connect as written
+    if (!addresses.length) {
+      const { code, message } = NOT_LOOPBACK;
+      throw new ProviderError('Unavailable', `${message} (${variable})`, { provider: id, diagnostic: code });
+    }
+    return addresses[0].address;
   }
   // The live connection, opened on first use and again after it failed (Service Bus has no link recovery: locks die with it).
   async function current() {

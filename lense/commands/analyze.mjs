@@ -22,11 +22,20 @@ export function printAnalysis(analysis) {
       `  ${finding.severity.toUpperCase()} [${finding.ruleId}] ${displayPath(finding.file)}:${finding.line}:${finding.column}${field}: ${finding.message}\n    ${finding.remediation}`,
     );
   }
-  for (const skip of analysis.coverage.skipped) console.log(`  SKIPPED: ${displayPath(skip.file)}: ${skip.reason}`);
+  const reported = new Set();
+  const skipLine = (skip) => {
+    const key = JSON.stringify([skip.file, skip.reason]);
+    if (reported.has(key)) return;
+    reported.add(key);
+    console.log(`  SKIPPED: ${displayPath(skip.file)}: ${skip.reason}`);
+  };
+  for (const skip of analysis.coverage.skipped) skipLine(skip);
   if (analysis.coverage.findingsTruncated) console.log('  SKIPPED: finding limit reached; results are truncated.');
-  for (const domain of analysis.coverage.domains)
+  for (const domain of analysis.coverage.domains) {
     if (domain.recognized > 0 || domain.files > 0)
       console.log(`  ${domain.domain}: ${domain.status} (${domain.recognized} recognized inputs)`);
+    for (const skip of domain.skipped ?? []) skipLine(skip);
+  }
   console.log(
     '  Native builds, host/device tests, connector authorization and tenant/process evidence are separate checks; use --json for operation requirements.',
   );

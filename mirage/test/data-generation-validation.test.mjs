@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's offline data generation and additive merge over paged record state
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mergeDataset, findDanglingLookups, runDataCommand } from '../lib/data-generation.mjs';
@@ -280,4 +281,140 @@ test('scaffold rows without the mapped key are appended even when existing rows 
   const saved = await new DataStore({ file }).init();
   owner.add(() => saved.closeRecordStorage());
   assert.equal(saved.state.tables.x_item.length, 4);
+});
+
+// Saves a state file whose item table is paged on disk, as a large generated state is stored.
+async function savePagedState(owner, file, { mappings, tables }) {
+  const presetLibrary = {};
+  defineLazyPreset(presetLibrary, 'invented', {
+    name: 'Invented records',
+    createOwned: ({ records }) => ({
+      mappings,
+      tables: { ...tables, item: records.table(tables.item, { primaryKey: 'itemid' }) },
+    }),
+  });
+  const source = await new DataStore({ file, presetLibrary }).init();
+  owner.add(() => source.closeRecordStorage());
+  await source.applyPreset('invented', { returnSnapshot: false });
+  source.closeRecordStorage();
+}
+// Runs `data generate` through its public command. The pack returns `fragment`, and the state moves from `file` to `out`.
+// The command copies its state with forkTables, so a paged target stays paged during the merge.
+async function generateInto(directory, { file, out, fragment }) {
+  const dataset = path.join(directory, 'dataset.json'),
+    pack = path.join(directory, 'pack.mjs');
+  await fs.writeFile(dataset, JSON.stringify(fragment));
+  // The pack reads its dataset on every call, so one module serves each generation in this directory.
+  await fs.writeFile(
+    pack,
+    `import fs from 'node:fs';
+export default { id: 'fixture', name: 'Fixture', description: 'Invented rows', matches: () => true, presets: () => ({}), dataset: () => JSON.parse(fs.readFileSync(new URL('./dataset.json', import.meta.url), 'utf8')) };`,
+  );
+  return runDataCommand(['generate'], { pack: 'fixture', 'pack-module': [pack], state: file, out });
+}
+// Opens a state through its own store, closed when the test ends.
+async function openState(owner, file) {
+  const store = await new DataStore({ file }).init();
+  owner.add(() => store.closeRecordStorage());
+  return store.state;
+}
+
+test('additive merge into a paged table answers existing keys from its primary key index', async (t) => {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'invented-paged-merge-')),
+    owner = ownedFixture(t);
+  owner.remove(() => fs.rm(root, { recursive: true, force: true }));
+  const rows = Array.from({ length: 40 }, (_, index) => ({ itemid: `row-${index}`, name: `Local ${index}` })),
+    fragment = {
+      tables: {
+        item: [
+          { itemid: 'row-3', name: 'Incoming 3' },
+          { itemid: 'row-7', name: 'Incoming 7' },
+          { itemid: 'row-100', name: 'Added 100' },
+          { itemid: 'row-101', name: 'Added 101' },
+          { itemid: 'row-102', name: 'Added 102' },
+        ],
+      },
+    };
+  const state = (items) => ({ mappings: { item: { idColumn: 'itemid' } }, permissions: [], tables: { item: items } });
+  const file = path.join(root, 'state.json'),
+    out = path.join(root, 'merged.json'),
+    plainFile = path.join(root, 'plain.json'),
+    plainOut = path.join(root, 'plain-merged.json');
+  await savePagedState(owner, file, { mappings: { item: { idColumn: 'itemid' } }, tables: { item: rows } });
+  const proto = Object.getPrototypeOf(pagedRecordsOf((await openState(owner, file)).tables.item)),
+    original = { raw: proto.raw, primaryPositions: proto.primaryPositions },
+    calls = { raw: 0, primaryPositions: 0 };
+  owner.add(() => Object.assign(proto, original));
+  proto.raw = function (...args) {
+    // The command also reads the table to digest its output after the merge returns; only merge reads count.
+    if (new Error().stack.includes('mergeDatasetState')) calls.raw++;
+    return original.raw.apply(this, args);
+  };
+  proto.primaryPositions = function (...args) {
+    calls.primaryPositions++;
+    return original.primaryPositions.apply(this, args);
+  };
+  const result = await generateInto(root, { file, out, fragment });
+  const reads = calls.raw,
+    lookups = calls.primaryPositions;
+  assert.deepEqual(result.rows.item, { added: 3, alreadyPresent: 2 });
+  const ids = Array.from((await openState(owner, out)).tables.item, (row) => row.itemid);
+  assert.deepEqual(ids, [...rows.map((row) => row.itemid), 'row-100', 'row-101', 'row-102']);
+  assert.equal(new Set(ids).size, ids.length);
+  assert.equal(lookups, fragment.tables.item.length, 'Every incoming id is answered by the key index.');
+  // Validation and the dangling-lookup scan each read the table once; a key set would add a third full pass.
+  assert.ok(reads < 3 * rows.length, 'The merge builds no full-table key set.');
+  await fs.writeFile(plainFile, JSON.stringify(state(rows.map((row) => ({ ...row })))));
+  const plainMerge = await generateInto(root, { file: plainFile, out: plainOut, fragment });
+  assert.deepEqual(plainMerge.rows.item, result.rows.item);
+  assert.deepEqual(
+    Array.from((await openState(owner, plainOut)).tables.item, (row) => row.itemid),
+    ids,
+  );
+});
+
+test('a stored key padded with whitespace answers merges and lookups like its unpadded id', async (t) => {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'invented-padded-keys-')),
+    owner = ownedFixture(t);
+  owner.remove(() => fs.rm(root, { recursive: true, force: true }));
+  const guid = '3f2a9c1e-7b4d-4e8a-9c2f-1a2b3c4d5e6f',
+    stored = [
+      { itemid: ` ${guid} `, name: 'Padded' },
+      ...Array.from({ length: 20 }, (_, index) => ({ itemid: `row-${index}`, name: `Local ${index}` })),
+    ],
+    fragment = {
+      tables: {
+        item: [
+          { itemid: guid, name: 'Incoming' },
+          { itemid: 'row-new', name: 'Added' },
+        ],
+      },
+    },
+    child = [{ childid: 'child-1', parent: { logical_name: 'item', id: guid } }],
+    mappings = { item: { idColumn: 'itemid' }, child: { idColumn: 'childid' } };
+  // Each variant is a state file: the paged one keeps its item table on disk, the plain one as an array.
+  const outcome = async (name, save) => {
+    const file = path.join(root, name + '.json'),
+      out = path.join(root, name + '-merged.json');
+    await save(file);
+    const result = await generateInto(root, { file, out, fragment });
+    return {
+      generated: result.rows.item,
+      count: (await openState(owner, out)).tables.item.length,
+      dangling: findDanglingLookups(await openState(owner, file), ['child']).length,
+    };
+  };
+  const paged = await outcome('paged', (file) =>
+    savePagedState(owner, file, { mappings, tables: { item: stored, child } }),
+  );
+  const plain = await outcome('plain', (file) =>
+    fs.writeFile(
+      file,
+      JSON.stringify({ mappings, permissions: [], tables: { item: stored.map((row) => ({ ...row })), child } }),
+    ),
+  );
+  assert.deepEqual(paged.generated, { added: 1, alreadyPresent: 1 });
+  assert.equal(paged.count, 22);
+  assert.equal(paged.dangling, 0);
+  assert.deepEqual(paged, plain);
 });

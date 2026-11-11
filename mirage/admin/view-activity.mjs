@@ -2181,7 +2181,7 @@ function detailPanel(ctx, d) {
       title(`Activity <code>${e(short(d.traceId))}</code>`) +
       kit.notice(
         tree.status === 404
-          ? `No retained activity has the id ${d.traceId} (it never existed or was dropped as the oldest beyond the limit).`
+          ? `No retained activity has the id ${d.traceId} (it never existed or was dropped as the least recently active beyond the limit).`
           : `Activity ${d.traceId} could not be read: ${failed(tree)}`,
         'warn',
       ) +
@@ -2345,7 +2345,7 @@ function comparePanel(ctx, d) {
         .map(([id, tree]) =>
           kit.notice(
             tree.status === 404
-              ? `No retained activity has the id ${id} (it never existed or was dropped as the oldest beyond the limit).`
+              ? `No retained activity has the id ${id} (it never existed or was dropped as the least recently active beyond the limit).`
               : `Activity ${id} could not be read: ${failed(tree)}`,
             'warn',
           ),

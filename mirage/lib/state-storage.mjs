@@ -437,7 +437,13 @@ export class StateStorage {
     this.signature = await fileSignature(this.file);
     if (before !== this.signature) throw conflict();
     if (this.recordReferences) {
-      const restored = await restoreRecordReferences(state, this.file + '.records', { stateOwner: this.file });
+      let restored;
+      try {
+        restored = await restoreRecordReferences(state, this.file + '.records', { stateOwner: this.file });
+      } catch (cause) {
+        if (cause.code !== 'ENOENT') throw cause;
+        throw Object.assign(new DataError('Local state record pages are missing', 500, 'StateIntegrity'), { cause });
+      }
       state = restored.state;
       this.recordSession = restored.session;
       try {

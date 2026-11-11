@@ -2319,7 +2319,7 @@ test('an activity no longer retained says so; a slow load never overwrites a new
   safeMarkup(html);
   assert.match(
     html,
-    /No retained activity has the id fx-gone \(it never existed or was dropped as the oldest beyond the limit\)\./,
+    /No retained activity has the id fx-gone \(it never existed or was dropped as the least recently active beyond the limit\)\./,
   );
   assert.match(html, /data-activity-action="close-trace"/);
 

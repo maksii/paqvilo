@@ -3,7 +3,7 @@ import { performance } from 'node:perf_hooks';
 
 const secret = /(?:password|passwd|secret|token|authorization|cookie|credential|api[_-]?key|signature)/i;
 // URL query parameters that carry a credential on their own (Azure Functions keys, SAS signatures, OAuth codes).
-const queryCredential = /^(?:code|sig)$/i;
+const queryCredential = /^(?:code|sig|invitation(?:code)?)$/i;
 const secretQueryKey = (key) => secret.test(key) || queryCredential.test(key);
 const limitText = (value, limit = 12000) => String(value ?? '').slice(0, limit);
 

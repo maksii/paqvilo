@@ -1,6 +1,8 @@
+// @test-kind contract: The Dataverse Web API's OData parsing, routing and error envelopes are designed runtime behaviour.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataError } from '../lib/data-error.mjs';
+import { parseODataExpression } from '../lib/odata-query.mjs';
 import { dateTimeRangeError } from '../lib/dataverse-values.mjs';
 import {
   VERSIONS,
@@ -926,4 +928,24 @@ test('baseHeaders carries Expires, Allow and Public on every Dataverse response'
   assert.equal(headers.expires, '-1');
   assert.equal(headers.Allow, 'OPTIONS,GET,HEAD,POST');
   assert.equal(headers.Public, 'OPTIONS,GET,HEAD,POST');
+});
+
+test('a filter nested beyond the parser limit is an unsupported query, and a shallow one still parses', () => {
+  const nested = (depth) => `${'('.repeat(depth)}name eq 'a'${')'.repeat(depth)}`;
+  assert.throws(() => parseODataExpression(nested(2000)), {
+    status: 400,
+    code: 'UnsupportedQuery',
+    message: 'OData filter nesting is too deep',
+  });
+  assert.doesNotThrow(() => parseODataExpression(nested(50)));
+});
+
+test('function calls nested beyond the parser limit are an unsupported query, and shallow ones still parse', () => {
+  const calls = (depth) => `${'tolower('.repeat(depth)}name${')'.repeat(depth)} eq 'a'`;
+  assert.throws(() => parseODataExpression(calls(2000), { dialect: 'extended' }), {
+    status: 400,
+    code: 'UnsupportedQuery',
+    message: 'OData filter nesting is too deep',
+  });
+  assert.doesNotThrow(() => parseODataExpression(calls(3), { dialect: 'extended' }));
 });

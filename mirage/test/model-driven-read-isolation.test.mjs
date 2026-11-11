@@ -1,8 +1,14 @@
+// @test-kind contract: Paqvilo's model-driven lookup formatting and read isolation over local state
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { createModelDrivenData } from '../lib/model-driven/data.mjs';
 import { createModelDrivenHandler } from '../lib/model-driven/http.mjs';
+import { RecordPageSession, pagedRecordsOf } from '../lib/record-tables.mjs';
+import { makeTemporaryDirectory, ownedFixture } from '../testing/owned-fixture.mjs';
 
 const itemId = '11111111-1111-4111-8111-111111111111';
 const targetId = '22222222-2222-4222-8222-222222222222';
@@ -113,4 +119,81 @@ test('catalogue, saved-view selection and lookup formatting cannot observe metad
     ['Original'],
   );
   assert.equal(record.row['reference@OData.Community.Display.V1.FormattedValue'], 'Original target');
+});
+
+test('lookup formatting finds a target row by any spelling of its key, in canonical, loose and padded storage', async (t) => {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'invented-lookup-keys-')),
+    owner = ownedFixture(t);
+  owner.remove(() => fs.rm(root, { recursive: true, force: true }));
+  const session = new RecordPageSession(root);
+  owner.add(() => session.close());
+  const guid = '3f2a9c1e-7b4d-4e8a-9c2f-1a2b3c4d5e6f',
+    other = '7d1e2f3a-4b5c-4d6e-8f70-123456789abc',
+    spellings = [guid, guid.toUpperCase(), `{${guid}}`, ` ${guid} `],
+    // Upper-case and braced GUIDs normalise to the index form, so only the padded table is loose.
+    storage = {
+      canonical: { keys: [guid, other], loose: false },
+      upperCase: { keys: [guid.toUpperCase(), other], loose: false },
+      braced: { keys: [`{${guid}}`, other], loose: false },
+      padded: { keys: [` ${guid} `, other], loose: true },
+    };
+  const catalogue = () => ({
+    apps: [],
+    tables: {
+      x_item: {
+        entity: 'x_item',
+        idColumn: 'x_itemid',
+        nameColumn: 'name',
+        projected: false,
+        fields: {
+          name: { name: 'name', type: 'text' },
+          reference: { name: 'reference', type: 'lookup', targets: ['x_target'] },
+        },
+        views: [],
+      },
+      x_target: {
+        entity: 'x_target',
+        idColumn: 'x_targetid',
+        nameColumn: 'name',
+        projected: false,
+        fields: { name: { name: 'name', type: 'text' } },
+        views: [],
+      },
+    },
+  });
+  // Target rows are paged with their primary key index, so the indexed path answers lookups unless the keys are loose.
+  const formatted = async (keys) => {
+    const state = emptyState();
+    state.mappings = {
+      x_item: {
+        entitySet: 'x_items',
+        idColumn: 'x_itemid',
+        fields: { name: { dataverseType: 'nvarchar' }, reference: { dataverseType: 'lookup', targets: ['x_target'] } },
+      },
+      x_target: { entitySet: 'x_targets', idColumn: 'x_targetid', fields: { name: { dataverseType: 'nvarchar' } } },
+    };
+    state.tables = {
+      x_item: spellings.map((reference, index) => ({ x_itemid: `item-${index}`, name: `Item ${index}`, reference })),
+      x_target: session.from(
+        keys.map((x_targetid, index) => ({ x_targetid, name: index === 0 ? 'Target' : 'Other target' })),
+        { primaryKey: 'x_targetid' },
+      ),
+    };
+    const store = new DataStore({ state });
+    const data = createModelDrivenData({ store, catalogue, portal: () => ({}) });
+    const names = [];
+    for (let index = 0; index < spellings.length; index++) {
+      const record = await data.get('x_item', `item-${index}`);
+      names.push(record.row['reference@OData.Community.Display.V1.FormattedValue']);
+    }
+    return { names, loose: pagedRecordsOf(store.state.tables.x_target).looseBraceKeys };
+  };
+  const canonical = await formatted(storage.canonical.keys);
+  assert.equal(canonical.loose, false);
+  assert.deepEqual(canonical.names, ['Target', 'Target', 'Target', 'Target']);
+  for (const [name, { keys, loose }] of Object.entries(storage)) {
+    const result = await formatted(keys);
+    assert.equal(result.loose, loose, `${name} storage flags its loose keys`);
+    assert.deepEqual(result.names, canonical.names, `${name} storage answers like canonical storage`);
+  }
 });

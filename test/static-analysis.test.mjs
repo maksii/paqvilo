@@ -137,6 +137,52 @@ test('temporary source projects are analyzed while nested temporary and output f
   assert.deepEqual(analyzeProject(root), report);
 });
 
+test('portal content under output-named folders is inventoried while root output folders stay excluded', (t) => {
+  const image = '<img src="a.png">';
+  const root = project(t, {
+    'web-pages/home/Home.webpage.copy.html': image,
+    'web-pages/metrics/Metrics.webpage.copy.html': image,
+    'web-templates/build/Build.webtemplate.source.html': image,
+    'build/ignored.html': image,
+  });
+  const files = analyzeProject(root).findings.map(({ file }) => file);
+  for (const file of [
+    'web-pages/home/Home.webpage.copy.html',
+    'web-pages/metrics/Metrics.webpage.copy.html',
+    'web-templates/build/Build.webtemplate.source.html',
+  ]) {
+    assert.ok(files.includes(file), file);
+  }
+  assert.equal(files.includes('build/ignored.html'), false);
+});
+
+test('a root under an output-named ancestor outside the working directory is analyzed', (t) => {
+  const root = project(t, { 'build/repo/body.html': '<img>' });
+  const report = analyzeProject(path.join(root, 'build', 'repo'));
+  assert.deepEqual(report.coverage.skipped, []);
+  assert.deepEqual(
+    report.findings.map(({ file }) => file),
+    ['body.html'],
+  );
+});
+
+test('a selected root named as an output folder is still refused outside the working directory', (t) => {
+  const root = project(t, { 'repo/dist/body.html': '<img>' });
+  const inventory = collectAnalysisInputs([{ id: 'source', path: path.join(root, 'repo', 'dist') }]);
+  assert.equal(inventory.complete, false);
+  assert.deepEqual(inventory.skipped, [
+    { file: 'source', reason: 'ignored-root' },
+    { file: '.', reason: 'no-supported-sources' },
+  ]);
+});
+
+test('a file root under a non-output folder inside an output-named ancestor is analyzed', (t) => {
+  const root = project(t, { 'build/repo/index.html': '<img>' });
+  const inventory = collectAnalysisInputs([{ id: 'source', path: path.join(root, 'build', 'repo', 'index.html') }]);
+  assert.deepEqual(inventory.skipped, []);
+  assert.equal(inventory.stats.files, 1);
+});
+
 // @test-kind security: system temporary storage never exempts nested private, dependency or generated roots, including aliases.
 test('explicit nested temporary and private roots remain excluded through both paths and aliases', (t) => {
   const canary = 'invented-private-temporary-state';

@@ -64,7 +64,7 @@ const unavailable = () => new DataError('Endpoint unavailable', 400, 'InvalidReq
 
 // Whether every address a URL's host resolves to is loopback (127.0.0.0/8 or ::1). localhost and IP literals answer without a
 // lookup; any other name (*.localhost) is resolved, because a resolver may answer it with a routable address.
-async function loopbackAddresses(text, lookup) {
+export async function loopbackAddresses(text, lookup) {
   const host = new URL(text).hostname.toLowerCase();
   if (host === 'localhost' || host === '[::1]' || /^127(?:\.\d{1,3}){3}$/.test(host)) return null;
   const addresses = await lookup(host, { all: true }).catch(() => []);
