@@ -101,6 +101,10 @@ organization's metadata. Large datasets use far less memory.
   incomplete because of ribbon, formula or web resource content files. The text report names every skipped source.
 - `lense list --settings` and the `verify` sign-in message no longer print credentials or query values from URLs.
   Invitation codes are redacted in traces and audit records.
+- Switching the model-driven target on a slow or loaded machine no longer ends the dev session and closes the
+  browser: retiring a target waits for the browser to finish its cleanup.
+- `lense verify` reads the displayed document when the start page reloads itself or returns from a sign-in round trip
+  on the same address.
 - A span opened after its trace left the retained set no longer recreates a partial trace under the same id.
 - Plug-in packages with overlapping ZIP entries or content beyond the local size limit are refused, and deeply
   nested or deeply derived types no longer exhaust the assembly reader.

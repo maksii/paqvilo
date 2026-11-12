@@ -1,3 +1,4 @@
+// @test-kind contract: the owned page bridge is Paqvilo's designed runtime behaviour: wrapper installation, origin confinement, call and reply limits and cleanup on retirement
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -291,6 +292,47 @@ test('cleanup attempts later real protocol operations and preserves an exact inj
   await assert.rejects(bridge.close(), (error) => error === marker);
   assert.ok(commands.indexOf('Runtime.evaluate') > commands.indexOf('Page.removeScriptToEvaluateOnNewDocument'));
   assert.ok(commands.indexOf('Runtime.removeBinding') > commands.indexOf('Runtime.evaluate'));
+  assert.equal(await f.page.evaluate(() => typeof inventedEcho), 'undefined');
+});
+
+// @test-kind security: retiring a target must complete its cleanup rather than report a slow browser as a failed retirement, which would stop the session
+test('cleanup waits for a slow protocol answer instead of failing the retirement', async (t) => {
+  const f = await fixture(t),
+    original = f.context.newCDPSession.bind(f.context);
+  let release, markSent;
+  const held = new Promise((resolve) => (release = resolve)),
+    sent = new Promise((resolve) => (markSent = resolve));
+  f.context.newCDPSession = async (page) => {
+    const session = await original(page),
+      send = session.send.bind(session);
+    session.send = async (method, params) => {
+      if (method !== 'Runtime.removeBinding') return send(method, params);
+      markSent();
+      await held;
+      return send(method, params);
+    };
+    return session;
+  };
+  const bridge = await createOwnedPageBindings(f.page, {
+    origin: f.origin,
+    bindings: { inventedEcho: (_source, value) => value },
+  });
+  // Mocked before close() so the cleanup deadlines created by close() are the ones tick() advances.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const closing = bridge.close();
+  let settled = null;
+  closing.then(
+    () => (settled = 'resolved'),
+    (error) => (settled = error),
+  );
+  await sent;
+  t.mock.timers.tick(10_000);
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  assert.equal(settled, null);
+  t.mock.timers.reset();
+  release();
+  await assert.doesNotReject(closing);
+  await f.page.goto(f.origin);
   assert.equal(await f.page.evaluate(() => typeof inventedEcho), 'undefined');
 });
 

@@ -153,13 +153,14 @@ export async function createOwnedPageBindings(
   session.on('Runtime.executionContextsCleared', cleared);
   session.on('Page.frameNavigated', navigated);
   session.on('Runtime.bindingCalled', called);
-  const bounded = (operation, timeout = 500) => {
+  const bounded = (operation, timeout) => {
     let timer;
     const deadline = new Promise((_, reject) => {
       timer = setTimeout(() => reject(new Error('Owned page cleanup timed out.')), timeout);
     });
     return Promise.race([Promise.resolve().then(operation), deadline]).finally(() => clearTimeout(timer));
   };
+  // Cleanup waits for each protocol command to settle; a slow browser is not a failed retirement.
   const close = async () => {
     if (closed) return;
     closed = true;
@@ -176,7 +177,7 @@ export async function createOwnedPageBindings(
     const failures = [];
     const drain = async (operation) => {
       try {
-        await bounded(operation);
+        await operation();
       } catch (error) {
         failures.push(error);
       }
