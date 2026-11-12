@@ -10,12 +10,12 @@ import { localOrganizationService } from '../lib/local-organization-service.mjs'
 
 const NOTE = '77777777-7777-4777-8777-7777777777c1';
 const BODY = b64('invented note body '.repeat(40));
-const note = (id = NOTE) => ({
+const note = (id = NOTE, documentbody = BODY) => ({
   annotationid: id,
   subject: 'Invented note',
   filename: 'note.txt',
   mimetype: 'text/plain',
-  documentbody: BODY,
+  documentbody,
 });
 const annotationKeys = async (h) => (await h.blobKeys()).filter((key) => key.startsWith('annotations/'));
 const row = (h, logical, id) => h.store.tableRows(logical).find((r) => r[`${logical}id`] === id);
@@ -235,14 +235,14 @@ test('a note whose provider put fails in flight answers a storage failure and le
 
 // The synchronous SDK drive (IOrganizationService Create) cannot wait for a provider put, so its body stays inline in the row
 // until the put has succeeded; the move to the key is a deferred effect that settle waits for.
-const sdkCreateNote = (h) => {
+const sdkCreateNote = (h, body) => {
   const user = h.store.tableRows('systemuser')[0];
   const sdk = localOrganizationService(h.store, {
     userId: user.systemuserid,
     evidence: 'invented test grants',
     grants: [{ entity: 'annotation', operations: ['create', 'read'] }],
   });
-  return h.store.transact(() => sdk.create('annotation', note()));
+  return h.store.transact(() => sdk.create('annotation', note(NOTE, body)));
 };
 
 test('a note created through the synchronous SDK service keeps its inline body when its provider put rejects', async (t) => {
@@ -272,19 +272,46 @@ test('a note created through the synchronous SDK service moves its body to the p
   assert.equal((await h.call('GET', `annotations(${NOTE})?$select=documentbody`)).json.documentbody, BODY);
 });
 
-// A synchronous write that fails after its beforeWrite (a second create of the same id, refused by the store) keeps no move.
+// A later beforeWrite hook refuses the write after the routing hook registered its put and its pending move.
 test('a synchronous SDK write that fails after its beforeWrite leaves no pending move', async (t) => {
   const h = await routingApi(t);
-  await sdkCreateNote(h);
+  let pendingAtRefusal = null;
+  h.api.recordHooks.add('beforeWrite', (c, mapping) => {
+    if (mapping.logicalName !== 'annotation') return;
+    pendingAtRefusal = h.api.storageRouting.pendingSyncWrites();
+    throw new Error('invented refusal after the routing hook');
+  });
+  await assert.rejects(sdkCreateNote(h), /invented refusal after the routing hook/);
+  assert.equal(pendingAtRefusal, 1, 'the routing hook had registered its pending move');
   await h.settle();
   assert.equal(h.api.storageRouting.pendingSyncWrites(), 0);
-  await assert.rejects(sdkCreateNote(h));
-  await h.settle();
-  // The hold of the refused write settles after its rolled-back transaction; a no-op transaction queued behind it ends after that.
-  await h.store.transact(() => {}, { skipSaveIfUnchanged: true, lazyReadSnapshot: true });
-  assert.equal(h.api.storageRouting.pendingSyncWrites(), 0);
-  assert.equal(row(h, 'annotation', NOTE).__blobkey, `annotations/${NOTE}/1`);
+  assert.equal(row(h, 'annotation', NOTE), undefined);
+  assert.deepEqual(await annotationKeys(h), [], 'the bytes of the refused write are released');
 });
+
+// A second create of a stored id is refused by the store; its body never reaches the stored note's key.
+for (const via of ['the Web API', 'the synchronous SDK service']) {
+  test(`a refused create of a stored note id through ${via} keeps the stored body`, async (t) => {
+    const h = await routingApi(t);
+    const other = b64('another invented body '.repeat(40));
+    if (via === 'the Web API') {
+      assert.equal((await h.call('POST', 'annotations', note())).status, 204);
+      assert.equal((await h.call('POST', 'annotations', note(NOTE, other))).status, 412);
+    } else {
+      await sdkCreateNote(h);
+      await h.settle();
+      await assert.rejects(sdkCreateNote(h, other));
+    }
+    await h.settle();
+    assert.equal(h.api.storageRouting.pendingSyncWrites(), 0);
+    assert.deepEqual(await annotationKeys(h), [`annotations/${NOTE}/1`]);
+    const stored = await h.provider.get(`annotations/${NOTE}/1`);
+    const chunks = [];
+    for await (const chunk of stored.body) chunks.push(chunk);
+    assert.equal(Buffer.concat(chunks).toString('base64'), BODY);
+    assert.equal((await h.call('GET', `annotations(${NOTE})?$select=documentbody`)).json.documentbody, BODY);
+  });
+}
 
 test('a note whose provider put succeeds stores its key and reads the body back', async (t) => {
   const h = await routingApi(t);
@@ -292,6 +319,22 @@ test('a note whose provider put succeeds stores its key and reads the body back'
   assert.equal(row(h, 'annotation', NOTE).__blobkey, `annotations/${NOTE}/1`);
   assert.deepEqual(await annotationKeys(h), [`annotations/${NOTE}/1`]);
   assert.equal((await h.call('GET', `annotations(${NOTE})?$select=documentbody`)).json.documentbody, BODY);
+});
+
+// Only the routing module's own incremental transaction (its release check) is counted.
+test('a committed note create runs no release check for its own key', async (t) => {
+  const h = await routingApi(t);
+  const transact = h.store.transact;
+  let checks = 0;
+  h.store.transact = function (fn, options, ...rest) {
+    if (options?.incremental && new Error().stack.includes('dataverse-storage-routing.mjs')) checks += 1;
+    return transact.call(this, fn, options, ...rest);
+  };
+  assert.equal((await h.call('POST', 'annotations', note())).status, 204);
+  await h.settle();
+  h.store.transact = transact;
+  assert.equal(checks, 0);
+  assert.deepEqual(await annotationKeys(h), [`annotations/${NOTE}/1`]);
 });
 
 // The project hook builds the note id map once per request, not once per listed row.

@@ -60,6 +60,7 @@ test('Power Pages management rejects malformed targets and withholds transport/r
   let called = false;
   const options = {
     environment: 'https://tenant.example.invalid',
+    executable: 'C:/CLI/pac.exe',
     run: async () => {
       called = true;
       return { stdout: JSON.stringify(row) };
@@ -200,6 +201,16 @@ test('without an explicit executable, a missing PAC is reported with its code an
   });
   delete process.env.PAQVILO_PAC_EXECUTABLE;
   process.env.PATH = emptyDirectory;
+  await assert.rejects(
+    readPowerPagesSites({
+      environment: 'https://tenant.example.invalid',
+      timeout: 5,
+      run: async () => {
+        throw new Error('PAC must not be started for a malformed timeout');
+      },
+    }),
+    /timeout must be bounded/,
+  );
   await assert.rejects(
     readPowerPagesSites({
       environment: 'https://tenant.example.invalid',

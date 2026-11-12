@@ -248,6 +248,20 @@ async function chunkedUpload(h) {
   return range(100, CONTENT.length);
 }
 
+// @test-kind contract: a released file entry is removed from the saved state
+test("a deleted row's file entry is removed from the saved state file, not only from memory", async (t) => {
+  const root = await tempRoot(t);
+  const file = path.join(root, 'state.json');
+  const h = await routingApi(t, { root, file });
+  assert.equal((await upload(h)).status, 204);
+  assert.equal(Object.keys(h.store.state.dataverse?.files ?? {}).length, 1);
+  assert.equal((await h.call('DELETE', widget)).status, 204);
+  await h.settle();
+  assert.deepEqual(Object.keys(h.store.state.dataverse?.files ?? {}), []);
+  const saved = JSON.parse(await fs.readFile(file, 'utf8'));
+  assert.deepEqual(Object.keys(saved.dataverse?.files ?? {}), [], 'the saved state holds no entry of the deleted row');
+});
+
 test('a file upload whose provider put rejects answers the write failure and keeps the stored file', async (t) => {
   const h = await routingApi(t);
   assert.equal((await upload(h)).status, 204);

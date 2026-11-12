@@ -193,6 +193,14 @@ function guardDuration(value, fallback, name) {
   return Math.min(ms, MAX_GUARD_MS);
 }
 
+// A browser that has disconnected, or has no page left open (its last window was closed, so it is exiting), is gone.
+// The state is decided before or as a shutdown call fails. The error text differs by platform and browser version
+// (Chromium on Linux answers a call made while it exits with "Browser context management is not supported."), so the
+// message test below is only a secondary signal.
+function browserGone(context) {
+  return context.browser?.()?.isConnected() === false || context.pages?.().length === 0;
+}
+
 // A browser the user has closed cannot answer the final save; the session file then stays as it was, without a notice.
 function browserClosedError(error) {
   return /Target page, context or browser has been closed/.test(error.message);
@@ -204,22 +212,39 @@ function sessionSaveNotice(error, guardMs) {
   return `Session cookies were not saved: ${error.message.split('\n')[0]}`;
 }
 
+// A file-system failure (it names a syscall) and a browser that never answered are always reported; any other failure
+// is reported unless the browser is gone.
+function reportsSaveFailure(context, error) {
+  if (error.syscall || error.code === GUARD_TIMEOUT_CODE) return true;
+  return !browserGone(context) && !browserClosedError(error);
+}
+
+// A close that fails on a browser that exited on its own is not a failure: the browser is disconnected, or it has no page
+// left and the error says the target is closed. Any other rejection is a cleanup failure.
+function closedOnItsOwn(context, error) {
+  if (context.browser?.()?.isConnected() === false) return true;
+  return context.pages?.().length === 0 && browserClosedError(error);
+}
+
 async function closeLaunchedBrowser(context, stopKeeping, previousWindow, guardMs) {
   try {
     try {
       await bounded(stopKeeping(), guardMs);
     } catch (error) {
-      if (!browserClosedError(error)) console.error(sessionSaveNotice(error, guardMs));
+      if (reportsSaveFailure(context, error)) console.error(sessionSaveNotice(error, guardMs));
     }
     if (previousWindow) {
       try {
         await bounded(restoreBrowserWindow(context, previousWindow), guardMs);
       } catch (error) {
-        console.error(`Could not restore browser window placement: ${error.message.split('\n')[0]}`);
+        if (!browserGone(context))
+          console.error(`Could not restore browser window placement: ${error.message.split('\n')[0]}`);
       }
     }
   } finally {
-    await context.close();
+    await context.close().catch((error) => {
+      if (!closedOnItsOwn(context, error)) throw error;
+    });
   }
 }
 

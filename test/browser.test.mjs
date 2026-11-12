@@ -736,6 +736,20 @@ test('a session cookie save that never settles ends at the close guard with one 
   assert.equal(fs.existsSync(fixture.file), false);
 });
 
+test('a session cookie save that never settles is reported even when the browser has no page left', async (t) => {
+  const fixture = closeFixture(t);
+  const opened = await openBrowser(fixture.cfg, { profileDir: fixture.profileDir });
+  fixture.context.cookies = () => new Promise(() => {});
+  fixture.context.pages = () => [];
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const error = t.mock.method(console, 'error', () => {});
+  await settleWhileTicking(t, opened.close(), 1000);
+  assert.deepEqual(
+    error.mock.calls.map((call) => call.arguments[0]),
+    ['Session cookies were not saved: the browser did not answer within 30 s.'],
+  );
+});
+
 test('a final session cookie save that fails prints the write error, not the timeout notice', async (t) => {
   const fixture = closeFixture(t);
   const opened = await openBrowser(fixture.cfg, { profileDir: fixture.profileDir });

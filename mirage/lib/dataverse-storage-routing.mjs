@@ -155,9 +155,10 @@ function hold(state, key) {
 
 // Holds a key put by a record write's beforeWrite hook until that write commits or rolls back: a no-op transaction started
 // outside the caller's transaction queues behind it. `onSettled` runs once the write has settled.
+// The returned promise ends when the write has settled.
 function holdWrite(api, state, key, onSettled) {
   const unhold = hold(state, key);
-  state
+  return state
     .detached(() => api.store.transact(() => {}, { skipSaveIfUnchanged: true, lazyReadSnapshot: true }))
     .catch(() => {})
     .finally(() => {
@@ -173,6 +174,9 @@ async function flush(api, state) {
     const keys = [...state.pending];
     state.pending.clear();
     const providerOf = (key) => (key.startsWith('files/') ? state.files : state.annotations);
+    // Only a file key can change the state here (its entry is deleted); a batch of blob keys alone leaves the state
+    // as it is.
+    const skipSaveIfUnchanged = keys.every((key) => !key.startsWith('files/'));
     // Each dead key's ETag is read inside the liveness transaction and the delete is conditional on it: bytes put again under
     // the same key after the check (a re-created note with the same id) change the ETag and are kept. An in-flight key (put,
     // its row not settled yet) is not dead.
@@ -199,7 +203,7 @@ async function flush(api, state) {
           }
           return tagged;
         },
-        { incremental: true, cloneResult: false },
+        { incremental: true, cloneResult: false, skipSaveIfUnchanged },
       ),
     );
     for (const { key, etag } of dead)
@@ -399,7 +403,8 @@ async function install(api, { storage, diagnostic } = {}) {
     puts: new Map(),
     // Sync SDK writes: the body stays inline until its put succeeds; the pending move waits here for afterWrite, by row id.
     syncPending: new Map(),
-    // Deferred effects of sync SDK writes (they finish after the call returned); settle waits for them.
+    // Provider puts started by beforeWrite and deferred effects of sync SDK writes (they finish after the call
+    // returned); settle waits for them.
     effects: new Set(),
     // Bound here, outside any request: work started through it runs outside the caller's transaction context.
     detached: AsyncResource.bind((fn) => fn()),
@@ -470,6 +475,24 @@ function linkRow(data, column, key, sync) {
   }
 }
 
+// The write's committed row references the key, or a pending move of a synchronous write still holds it: nothing to release.
+function keyTaken(api, state, mapping, id, key) {
+  if (state.inflight.has(key)) return true;
+  const logical = mapping.logicalName,
+    rows = api.store.tableRows(logical),
+    index = api.store.rowIndex(mapping, rows, id);
+  return index >= 0 && blobKeyOf(logical, rows[index]) === key;
+}
+
+// A create whose id is a stored row's id: the store refuses it after the beforeWrite hooks.
+function refusedCreate(api, mapping, info, id) {
+  return (
+    info.operation === 'create' &&
+    !info.existing &&
+    api.store.rowIndex(mapping, api.store.tableRows(mapping.logicalName), id) >= 0
+  );
+}
+
 // beforeWrite: a canonical base64 body moves to annotations/<rowId>/<n>; the row keeps a null column and its key. The size
 // rule runs here because the record pipeline's attachment policy only sees inline bodies. Non-canonical text stays inline
 // so it reads back exactly as written. Rows a module writes with __blobkey already set (block commits) pass through.
@@ -498,7 +521,10 @@ function externalise(api, state, mapping, info) {
     return undefined;
   }
   let id = guidKey(existing?.[mapping.idColumn] ?? data[mapping.idColumn]);
+  // A missing id is generated. A create that names a stored row's id is refused by the store after this hook: it
+  // must not put to that row's live key.
   if (!id) data[mapping.idColumn] = id = (api.ids?.uuid?.() ?? randomUUID()).toLowerCase();
+  else if (refusedCreate(api, mapping, info, id)) return undefined;
   const key = `annotations/${id}/${previous ? Number(previous.split('/')[2]) + 1 : 1}`;
   // A synchronous SDK write keeps the body inline: its put cannot fail the call, so afterWrite moves the body once the put
   // has succeeded. The HTTP write points the row at the key now, and a rejected put rolls the row write back.
@@ -519,7 +545,15 @@ function externalise(api, state, mapping, info) {
   if (info.sync) state.syncPending.set(id, { logical, id, column, key, value, put });
   // Settled after the write: a synchronous write's afterWrite consumes its pending move, so one still here belongs to a write
   // that did not commit.
-  holdWrite(api, state, key, () => forgetPut(state, id, put));
+  const settled = holdWrite(api, state, key, () => forgetPut(state, id, put));
+  // The put belongs to the write even when the write is refused: settle waits for both, and then the key is released
+  // unless the write's committed row (or a pending move) took it.
+  const done = Promise.all([settled, put.catch(() => {})])
+    .then(() =>
+      state.detached(() => (keyTaken(api, state, mapping, id, key) ? undefined : released(api, state, [key]))),
+    )
+    .finally(() => state.effects.delete(done));
+  state.effects.add(done);
   return undefined;
 }
 
@@ -637,7 +671,7 @@ async function reset(api) {
 async function close(api) {
   const state = states.get(api);
   state?.unsubscribe?.();
-  while (state?.flushing) await state.flushing;
+  while (state?.flushing || state?.effects.size) await Promise.all([state.flushing, ...state.effects]);
 }
 
 /**

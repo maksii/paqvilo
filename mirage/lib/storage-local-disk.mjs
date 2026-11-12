@@ -39,6 +39,8 @@ export function createLocalDiskStorage({
   let sequence = 0;
   let closed = false;
   const writingTemps = new Set();
+  // Writes in flight (put, commit, delete), settled or not: close waits for them.
+  const running = new Set();
   let ready;
   const load = () =>
     (ready ??= (async () => {
@@ -407,8 +409,23 @@ export function createLocalDiskStorage({
 
     async close() {
       closed = true;
+      while (running.size) await Promise.all(running);
       await queue;
     },
   };
+  // Nothing writes under the root after close() has resolved: each write is tracked until it settles.
+  for (const name of ['put', 'commit', 'delete']) {
+    const write = provider[name];
+    provider[name] = (...args) => {
+      const work = write.apply(provider, args);
+      const settled = work.then(
+        () => {},
+        () => {},
+      );
+      running.add(settled);
+      settled.finally(() => running.delete(settled));
+      return work;
+    };
+  }
   return provider;
 }

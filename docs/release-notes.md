@@ -97,7 +97,8 @@ organization's metadata. Large datasets use far less memory.
 - **`_sim` layout.** Every view shares one layout: breadcrumb, toolbar, filter drawer and one table style. It
   works at phone width and follows the browser's dark mode.
 - **CLI.** Commands validate their arguments before any file, browser or PAC work. JSON errors go to stdout and
-  readable errors to stderr. Report paths cannot overwrite inputs or credentials.
+  readable errors to stderr. Report paths cannot overwrite inputs or credentials. On Linux, closing the dedicated
+  browser ends `dev` with status 0 while Chromium is still exiting.
 - **Column security.** A column marked not valid for read is hidden from every read path: Web API projections,
   FetchXML attributes and conditions, `$apply`, SOAP and TDS. Using one as an operand answers the error that an
   unknown column gets. The secure configuration of plug-in steps, service endpoints and the plug-in trace log
@@ -114,7 +115,8 @@ organization's metadata. Large datasets use far less memory.
   with the same unique name answers 400 with `0x80072013`. This matches the behaviour observed on a native
   environment.
 - **Notes and files.** A failed write of a note body, file, image or chunk answers 503. The saved row keeps its
-  body inline until the blob write succeeds.
+  body inline until the blob write succeeds. A create that names the id of a stored note is refused without changing
+  the stored note's body, and the bytes of a refused write are released.
 - **TDS.** `decimal`, `money` and `datetime` values are returned, `nvarchar` defaults to 4000 or `max`, a
   statement that builds more than 1,000,000 intermediate rows answers error 40000, and long queries yield so the
   time limit and cancel apply. Pre-login packets over 64 KiB are refused.

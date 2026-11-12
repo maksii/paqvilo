@@ -12,8 +12,8 @@ import { importSolutionOperationSources } from '../lib/operation-catalogue.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const SITE = 'a0000000-0000-4000-8000-000000000001';
-const PINNED_CONTROL_DIGEST = '97446e576ebec3c6259e61fe5a3e15e7e5d474c2ec774ba95af2f4b1390650a2';
-const PINNED_OPERATION_DIGEST = '24c62561c1181dcf2384d467fae356adbd85eb18fae47b5f92474c1b3cf5a527';
+const PINNED_CONTROL_DIGEST = 'c6dc31fa216794133a4114e97afa08981eb22d773301b30e00cbfb362d36467d';
+const PINNED_OPERATION_DIGEST = '232acc772dd30c8ac0e92d074eb7f76f2af211ac7dd9e1eba1baeb8896b83d32';
 const noop = () => {};
 const styles = Array.from({ length: 11 }, (_, index) => `style-${String(index).padStart(2, '0')}.css`);
 const standardResources = [
@@ -100,11 +100,19 @@ function unhandledRejections(t) {
   };
 }
 
-// Digest of the output with the workspace root and the root-derived token replaced, so it is stable across temp folders.
+// Digest of the output with the workspace root replaced by <root> and, on Windows, the two separators swapped inside
+// those root paths (a bijection, so a path that mixes or changes separators still changes the digest), plus the
+// root-derived token: the pinned value is the same on every platform and every temp folder.
 function digestOf(value, root) {
-  const text = JSON.stringify(value, (_, item) => (item instanceof Map ? [...item] : item))
-    .replaceAll(JSON.stringify(root).slice(1, -1), '<root>')
-    .replace(/__sim-static\/pcf\/[0-9a-f]{24}/g, '__sim-static/pcf/<token>');
+  const portable = (item) => (path.sep === '\\' ? item.replace(/[\\/]/g, (sep) => (sep === '\\' ? '/' : '\\')) : item);
+  const text = JSON.stringify(value, (_, item) => {
+    if (item instanceof Map) return [...item];
+    if (typeof item === 'string' && (item === root || item.startsWith(root + path.sep))) {
+      return `<root>${portable(item.slice(root.length))}`;
+    }
+    return item;
+  }).replace(/__sim-static\/pcf\/[0-9a-f]{24}/g, '__sim-static/pcf/<token>');
+  assert.equal(text.includes(JSON.stringify(root).slice(1, -1)), false, 'the workspace root is replaced everywhere');
   return createHash('sha256').update(text).digest('hex');
 }
 

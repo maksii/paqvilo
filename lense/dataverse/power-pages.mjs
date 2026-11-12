@@ -28,13 +28,13 @@ function discoveredExecutable() {
 }
 function configuration(options) {
   const environment = environmentArgument(options.environment);
+  const timeout = options.timeout ?? 120000;
+  if (!Number.isSafeInteger(timeout) || timeout < 1000 || timeout > 120000)
+    throw new Error('Power Pages management timeout must be bounded to 1..120 seconds.');
   const executable = options.executable ?? discoveredExecutable(),
     base = path.basename(executable.replaceAll('\\', '/')).toLowerCase();
   if (!ACCEPTED_EXECUTABLES.has(base) || executable.includes('\0'))
     throw new Error('Power Pages management requires the PAC executable, without a command shell.');
-  const timeout = options.timeout ?? 120000;
-  if (!Number.isSafeInteger(timeout) || timeout < 1000 || timeout > 120000)
-    throw new Error('Power Pages management timeout must be bounded to 1..120 seconds.');
   return { executable, timeout, environment };
 }
 function executableMissing(cause) {

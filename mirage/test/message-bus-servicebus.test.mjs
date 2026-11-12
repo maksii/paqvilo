@@ -243,10 +243,11 @@ test('preflight against a silent port answers not ready at its 1.8 s connect bou
 
 const STEP_MS = 20_000;
 
-// A loopback relay between the bus and the fake broker. Client bytes pass straight through. Each broker answer is held on a mock
-// timer for STEP_MS and released only when the test ticks the clock, so one protocol step takes one tick. A silent relay drops
-// every broker answer instead. Events: 'client-data' for each client write, 'held' for each held answer, 'broker-end' when the
-// broker's side of a closed connection ends.
+// A loopback relay between the bus and the fake broker. Broker bytes pass straight through. Each client request is
+// held on a mock timer for STEP_MS and released only when the test ticks the clock, so one protocol step takes one
+// tick: the client writes one request per step and waits for its answer. A silent relay passes requests on and drops
+// every broker answer. Events: 'client-data' for each client write, 'held' for each held request, 'broker-end' when
+// the broker's side of a closed connection ends.
 async function holdingRelay(t, brokerPort, { silent = false } = {}) {
   const events = new EventEmitter();
   const sockets = new Set();
@@ -257,14 +258,17 @@ async function holdingRelay(t, brokerPort, { silent = false } = {}) {
     upstream.on('error', () => {});
     client.on('data', (chunk) => {
       events.emit('client-data');
-      upstream.write(chunk);
+      if (silent) {
+        upstream.write(chunk);
+        return;
+      }
+      setTimeout(() => {
+        if (!upstream.destroyed) upstream.write(chunk);
+      }, STEP_MS);
+      events.emit('held');
     });
     upstream.on('data', (chunk) => {
-      if (silent) return;
-      events.emit('held');
-      setTimeout(() => {
-        if (!client.destroyed) client.write(chunk);
-      }, STEP_MS);
+      if (!silent && !client.destroyed) client.write(chunk);
     });
     upstream.on('end', () => events.emit('broker-end'));
     client.on('close', () => upstream.end());
@@ -298,7 +302,7 @@ async function probeThroughRelay(t, { silent = false } = {}) {
   return { relay, rows: providerRequirements({ providers, env: env() }) };
 }
 
-// Ticks the mock clock once per held answer until the probe settles; returns the mocked time the probe ran for.
+// Ticks the mock clock once per held request until the probe settles; returns the mocked time the probe ran for.
 async function releaseEachAnswer(t, events, rows) {
   let elapsed = 0;
   for (;;) {
