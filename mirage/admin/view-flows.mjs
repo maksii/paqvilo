@@ -198,8 +198,10 @@ function runsPanel(ctx, d) {
 
 // The approval block of the wait (from GET /flow-waits); an approval without one answers as Approve or Reject.
 const APPROVAL_DEFAULTS = { options: ['Approve', 'Reject'], awaiting: [], responses: [], requireAll: false };
-const responseLine = (response) =>
-  `<li>${e(response.responder ?? 'Unknown responder')} answers ${e(response.response)}${response.comments ? `, comment: ${e(response.comments)}` : ''}.</li>`;
+const responseLine = (response) => {
+  const comment = response.comments ? `, comment: ${e(response.comments)}` : '';
+  return `<li>${e(response.responder ?? 'Unknown responder')} answers ${e(response.response)}${comment}.</li>`;
+};
 // Who has responded with what, and for a wait-for-all approval who is still awaited.
 function responseSummary(approval) {
   const responded = approval.responses.length

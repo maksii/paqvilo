@@ -26,7 +26,7 @@ export const MIRAGE_TOOLS = Object.freeze({
 });
 export const mirageToolHelp = (name) => `Usage: paqvilo mirage ${name} ${MIRAGE_TOOLS[name]}\n`;
 const stripBracketGroups = (text) => {
-  const stripped = text.replace(/\[[^[\]]*\]/g, '');
+  const stripped = text.replaceAll(/\[[^[\]]*\]/g, '');
   return stripped === text ? text : stripBracketGroups(stripped);
 };
 /** The options a tool's usage line lists outside its [ ] groups. */

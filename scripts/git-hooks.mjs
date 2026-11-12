@@ -168,9 +168,8 @@ function pushedCommit(oid) {
   return git(['rev-parse', '--verify', '--quiet', `${oid}^{commit}`], { allowFailure: true });
 }
 
-function prePush() {
-  const head = git(['rev-parse', 'HEAD']);
-  const updates = fs.readFileSync(0, 'utf8').trim().split('\n').filter(Boolean);
+// Every pushed ref must peel to the checked-out commit; a deletion (all-zero object id) is skipped.
+function assertPushedCommitsMatchHead(updates, head) {
   for (const line of updates) {
     const [, localOid] = line.split(' ');
     if (/^0+$/.test(localOid)) continue;
@@ -184,6 +183,12 @@ function prePush() {
         'Pre-push validation can only qualify the checked-out commit. Check out each branch before pushing it.',
       );
   }
+}
+
+function prePush() {
+  const head = git(['rev-parse', 'HEAD']);
+  const updates = fs.readFileSync(0, 'utf8').trim().split('\n').filter(Boolean);
+  assertPushedCommitsMatchHead(updates, head);
   if (updates.length && updates.every((line) => /^0+$/.test(line.split(' ')[1]))) return;
   if (git(['status', '--porcelain']))
     throw new Error(

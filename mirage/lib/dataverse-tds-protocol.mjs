@@ -190,9 +190,9 @@ export function createTdsServer({
       let token;
       try {
         token = fedAuthTokenText(payload);
-      } catch (err) {
-        if (!(err instanceof TdsProtocolError)) throw err;
-        return reply(errorToken({ number: INTERNAL_ERROR, message: err.message }), doneToken({ error: true }));
+      } catch (error) {
+        if (!(error instanceof TdsProtocolError)) throw error;
+        return reply(errorToken({ number: INTERNAL_ERROR, message: error.message }), doneToken({ error: true }));
       }
       const fedAuth = { ...pending.fedAuth, token };
       const decision = await onLogin({ token, fedAuth, login: pending.request });
@@ -379,10 +379,12 @@ export function createMessageAssembler({ maxBytes = MAX_MESSAGE_BYTES, readLengt
   const peek = (count) => {
     const out = Buffer.allocUnsafe(count);
     let filled = 0;
-    for (let i = cursor; filled < count; i += 1) {
+    let i = cursor;
+    while (filled < count) {
       const taken = Math.min(chunks[i].length, count - filled);
       chunks[i].copy(out, filled, 0, taken);
       filled += taken;
+      i += 1;
     }
     return out;
   };

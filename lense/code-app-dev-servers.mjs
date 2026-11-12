@@ -71,12 +71,25 @@ function commandOf(app) {
 // cmd.exe metacharacters: each is escaped with a caret.
 const CMD_METACHARACTERS = /[()[\]%!^"`<>&|;, *?]/g;
 const cmdEscape = (text) => text.replace(CMD_METACHARACTERS, '^$&');
+// Doubles every run of backslashes that precedes a quote, escapes that quote, and doubles a run at the end of the text,
+// so the batch shim's own argument parsing sees the original characters. One pass; no backtracking.
+function doubleBackslashRuns(text) {
+  let result = '';
+  let run = 0;
+  for (const character of text) {
+    if (character === '\\') {
+      run++;
+      continue;
+    }
+    result += character === '"' ? '\\'.repeat(run * 2) + '\\"' : '\\'.repeat(run) + character;
+    run = 0;
+  }
+  return result + '\\'.repeat(run * 2);
+}
 // One argument for a batch shim. It is quoted for the command line and escaped twice, because cmd.exe parses the line and then
 // the shim parses its arguments again.
 function shimArgument(value) {
-  const quoted = `"${String(value)
-    .replace(/(\\*)"/g, String.raw`$1$1\"`)
-    .replace(/(\\*)$/, '$1$1')}"`;
+  const quoted = `"${doubleBackslashRuns(String(value))}"`;
   return cmdEscape(cmdEscape(quoted));
 }
 // cmd.exe ends its command line at a line feed or carriage return and treats NUL as the end of the string, so such a

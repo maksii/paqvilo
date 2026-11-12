@@ -243,11 +243,11 @@ const icsDate = (ms) =>
 // characters are dropped except the tab, which RFC 5545 allows in TEXT.
 const icsText = (value) =>
   String(value ?? '')
-    .replace(/\r\n?/g, '\n')
+    .replaceAll(/\r\n?/g, '\n')
     .replaceAll('\\', '\\\\')
     .replaceAll('\n', String.raw`\n`)
-    .replace(/[,;]/g, (c) => `\\${c}`)
-    .replace(/\p{Cc}/gu, (c) => (c === '\t' ? c : ''));
+    .replaceAll(/[,;]/g, (c) => `\\${c}`)
+    .replaceAll(/\p{Cc}/gu, (c) => (c === '\t' ? c : ''));
 /** iCalendar download of the calendar events. */
 export function calendarIcs(events) {
   const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Paqvilo Mirage//Calendar//EN'];

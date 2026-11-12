@@ -436,22 +436,48 @@ const pickerRefused = () =>
     body: `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Sign-in error</title></head><body><h1>Sign-in error</h1><p>The account choice must be submitted from this sign-in page.</p></body></html>`,
   });
 
+async function stsDeviceVerification(d, c) {
+  const { req, url, origin } = c;
+  if (pickerPostRefused(req, origin)) return pickerRefused();
+  const verification = {
+    origin,
+    url,
+    query: Object.fromEntries(url.searchParams),
+    form: await readForm(req),
+    method: req.method,
+  };
+  return stsReply(d.authority.handleDeviceVerification(verification));
+}
+async function stsAuthorize(d, c, tenantSegment) {
+  const { req, url, origin } = c;
+  if (pickerPostRefused(req, origin)) return pickerRefused();
+  const request = {
+    origin,
+    tenantSegment,
+    url,
+    query: Object.fromEntries(url.searchParams),
+    form: await readForm(req),
+    method: req.method,
+  };
+  return stsReply(d.authority.handleAuthorize(request));
+}
+async function stsToken(d, c, tenantSegment, lower) {
+  const { req, origin, meta } = c;
+  const form = await readForm(req);
+  meta.grant = typeof form.grant_type === 'string' ? form.grant_type : null;
+  const version = lower.includes('v2.0') ? 'v2.0' : 'v1.0';
+  const browserOrigin = browserOriginOf(req, origin);
+  return asJson(
+    await d.authority.handleToken({ origin, tenantSegment, form, headers: req.headers, version, browserOrigin }),
+  );
+}
+
 async function stsRoute(d, c) {
-  const { req, url, origin, meta } = c;
+  const { req, url, origin } = c;
   const path = url.pathname;
   if (/^\/common\/discovery\/instance$/i.test(path))
     return asJson({ status: 200, body: d.authority.instanceDiscovery(origin) });
-  if (/^\/common\/oauth2\/deviceauth$/i.test(path)) {
-    if (pickerPostRefused(req, origin)) return pickerRefused();
-    const verification = {
-      origin,
-      url,
-      query: Object.fromEntries(url.searchParams),
-      form: await readForm(req),
-      method: req.method,
-    };
-    return stsReply(d.authority.handleDeviceVerification(verification));
-  }
+  if (/^\/common\/oauth2\/deviceauth$/i.test(path)) return stsDeviceVerification(d, c);
   if (/^\/common\/userrealm\//i.test(path)) return { status: 204 };
   const match = STS_PATH.exec(path);
   if (!match) return null;
@@ -464,29 +490,10 @@ async function stsRoute(d, c) {
       body: d.authority.openIdConfiguration(origin, lower.startsWith('v2.0/') ? 'v2.0' : 'v1.0'),
     });
   }
-  if (lower.endsWith('/token')) {
-    const form = await readForm(req);
-    meta.grant = typeof form.grant_type === 'string' ? form.grant_type : null;
-    const version = lower.includes('v2.0') ? 'v2.0' : 'v1.0';
-    const browserOrigin = browserOriginOf(req, origin);
-    return asJson(
-      await d.authority.handleToken({ origin, tenantSegment, form, headers: req.headers, version, browserOrigin }),
-    );
-  }
+  if (lower.endsWith('/token')) return stsToken(d, c, tenantSegment, lower);
   if (lower.endsWith('devicecode'))
     return d.authority.handleDeviceCode({ origin, tenantSegment, form: await readForm(req) });
-  if (lower.endsWith('authorize')) {
-    if (pickerPostRefused(req, origin)) return pickerRefused();
-    const request = {
-      origin,
-      tenantSegment,
-      url,
-      query: Object.fromEntries(url.searchParams),
-      form: await readForm(req),
-      method: req.method,
-    };
-    return stsReply(d.authority.handleAuthorize(request));
-  }
+  if (lower.endsWith('authorize')) return stsAuthorize(d, c, tenantSegment);
   return { status: 204 };
 }
 
@@ -1087,6 +1094,45 @@ function entityMetadata(state) {
   return entityMetadataSegment({ ...state, entity });
 }
 
+// The relationship items of a segment (OneToMany, ManyToOne, ManyToMany): the whole filtered list, or the one keyed item.
+function relationshipSegment(
+  items,
+  { set, segment, segmentKey, select, filter, metadata, single, collection, missing },
+) {
+  const projected = (item) => metadata.selectMetadata(item, select);
+  const list = items ?? missing(segment);
+  if (segmentKey == null) return collection(filterItems(metadata, list, filter).map(projected), `${set}/${segment}`);
+  const found = keyedItem(list, segmentKey);
+  return found ? single(projected(found), `${set}/${segment}/$entity`) : missing(segment);
+}
+
+// The Attributes segment: the keyed attribute, or the filtered attribute list, shaped by $select with its expanded navigations.
+function attributesSegment({
+  set,
+  key,
+  cast,
+  segmentKey,
+  select,
+  expand,
+  filter,
+  metadata,
+  single,
+  collection,
+  missing,
+  keyedContext,
+  selectContext,
+}) {
+  const list = metadata.attributes(key, { cast, key: segmentKey, http: true }) ?? missing(set);
+  // The $select keeps the expanded navigations as attributes always do; with no $select the attribute is whole.
+  const shape = (item) => (select ? metadata.selectMetadata(item, [select, ...expand].join(',')) : item);
+  if (segmentKey != null) return list[0] ? single(shape(list[0]), `${set}/Attributes/$entity`) : missing('Attributes');
+  const castContext = cast ? `/Microsoft.Dynamics.CRM.${cast}` : '';
+  return collection(
+    filterItems(metadata, list, filter).map(shape),
+    keyedContext(set, key) + `/Attributes${castContext}${selectContext(select)}`,
+  );
+}
+
 // Attributes and Keys filter the whole item and then select from it (DV1-8): a $select that drops the filtered property cannot filter.
 function entityMetadataSegment({
   set,
@@ -1115,25 +1161,24 @@ function entityMetadataSegment({
     return option ? single(option, `${set}/Attributes/${subSegment}/$entity`) : missing(subSegment);
   }
   const projected = (item) => metadata.selectMetadata(item, select);
-  const relationships = (items) => {
-    const list = items ?? missing(segment);
-    if (segmentKey == null) return collection(filterItems(metadata, list, filter).map(projected), `${set}/${segment}`);
-    const found = keyedItem(list, segmentKey);
-    return found ? single(projected(found), `${set}/${segment}/$entity`) : missing(segment);
-  };
+  const segmentArgs = { set, segment, segmentKey, select, filter, metadata, single, collection, missing };
   switch (segment) {
-    case 'Attributes': {
-      const list = metadata.attributes(key, { cast, key: segmentKey, http: true }) ?? missing(set);
-      // The $select keeps the expanded navigations as attributes always do; with no $select the attribute is whole.
-      const shape = (item) => (select ? metadata.selectMetadata(item, [select, ...expand].join(',')) : item);
-      if (segmentKey != null)
-        return list[0] ? single(shape(list[0]), `${set}/Attributes/$entity`) : missing('Attributes');
-      const castContext = cast ? `/Microsoft.Dynamics.CRM.${cast}` : '';
-      return collection(
-        filterItems(metadata, list, filter).map(shape),
-        keyedContext(set, key) + `/Attributes${castContext}${selectContext(select)}`,
-      );
-    }
+    case 'Attributes':
+      return attributesSegment({
+        set,
+        key,
+        cast,
+        segmentKey,
+        select,
+        expand,
+        filter,
+        metadata,
+        single,
+        collection,
+        missing,
+        keyedContext,
+        selectContext,
+      });
     case 'Keys': {
       const keys = metadata.keys(key) ?? missing('Keys');
       // A key under $select has no @odata.type, as native omits it.
@@ -1149,11 +1194,11 @@ function entityMetadataSegment({
       );
     }
     case 'OneToManyRelationships':
-      return relationships(metadata.oneToMany(logical));
+      return relationshipSegment(metadata.oneToMany(logical), segmentArgs);
     case 'ManyToOneRelationships':
-      return relationships(metadata.manyToOne(logical));
+      return relationshipSegment(metadata.manyToOne(logical), segmentArgs);
     case 'ManyToManyRelationships':
-      return relationships(metadata.manyToMany(logical));
+      return relationshipSegment(metadata.manyToMany(logical), segmentArgs);
     default:
       return missing(segment);
   }

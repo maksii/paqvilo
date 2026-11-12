@@ -112,7 +112,8 @@ export async function downloadVerifiedArchive(
 ) {
   if (!/^[a-f0-9]{64}$/.test(expected) || !Number.isSafeInteger(maxBytes) || maxBytes < 1)
     throw new Error('Expected a SHA-256 pin and a positive archive byte limit.');
-  if (!(idleTimeoutMs > 0)) throw new Error('Expected a positive idle timeout.');
+  const idleTimeoutValid = idleTimeoutMs > 0;
+  if (!idleTimeoutValid) throw new Error('Expected a positive idle timeout.');
   const bytes = await fetchArchive(url, { idleTimeoutMs, maxBytes });
   if (createHash('sha256').update(bytes).digest('hex') !== expected)
     throw new Error('Archive digest mismatch; no unverified content was saved.');

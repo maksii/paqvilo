@@ -249,6 +249,7 @@ test('polymorphic lookup keeps the second target across save and unrelated edits
         .then((response) => response.json())
     ).row;
   assert.equal((await read())['x_customer@Microsoft.Dynamics.CRM.lookuplogicalname'], 'x_targetb');
+  await page.getByRole('tab', { name: 'General', exact: true }).click();
   await page.getByLabel('Name', { exact: true }).fill('Unrelated name edit');
   await page.getByRole('tab', { name: 'Customer details', exact: true }).click();
   const [patch] = await Promise.all([

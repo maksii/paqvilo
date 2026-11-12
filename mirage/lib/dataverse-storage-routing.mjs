@@ -455,6 +455,21 @@ async function install(api, { storage, diagnostic } = {}) {
   await verifyReferenced(api, state);
 }
 
+// Drops the put entry, and the pending synchronous move, that still belong to this write once it has settled.
+function forgetPut(state, id, put) {
+  if (state.puts.get(id) === put) state.puts.delete(id);
+  if (state.syncPending.get(id)?.put === put) state.syncPending.delete(id);
+}
+
+// A synchronous write keeps the body inline; otherwise the column is nulled and the row points at the body's key.
+function linkRow(data, column, key, sync) {
+  if (sync) data.__blobkey = null;
+  else {
+    data[column] = null;
+    data.__blobkey = key;
+  }
+}
+
 // beforeWrite: a canonical base64 body moves to annotations/<rowId>/<n>; the row keeps a null column and its key. The size
 // rule runs here because the record pipeline's attachment policy only sees inline bodies. Non-canonical text stays inline
 // so it reads back exactly as written. Rows a module writes with __blobkey already set (block commits) pass through.
@@ -487,11 +502,7 @@ function externalise(api, state, mapping, info) {
   const key = `annotations/${id}/${previous ? Number(previous.split('/')[2]) + 1 : 1}`;
   // A synchronous SDK write keeps the body inline: its put cannot fail the call, so afterWrite moves the body once the put
   // has succeeded. The HTTP write points the row at the key now, and a rejected put rolls the row write back.
-  if (info.sync) data.__blobkey = null;
-  else {
-    data[column] = null;
-    data.__blobkey = key;
-  }
+  linkRow(data, column, key, info.sync);
   if (previous) released(api, state, [previous]);
   // The hook itself stays synchronous (an SDK drive refuses an async pre hook); the put is awaited by afterWrite and by readers.
   // A rejected put makes afterWrite reject, which rolls the row write back. The entry ends when that write settles.
@@ -508,10 +519,7 @@ function externalise(api, state, mapping, info) {
   if (info.sync) state.syncPending.set(id, { logical, id, column, key, value, put });
   // Settled after the write: a synchronous write's afterWrite consumes its pending move, so one still here belongs to a write
   // that did not commit.
-  holdWrite(api, state, key, () => {
-    if (state.puts.get(id) === put) state.puts.delete(id);
-    if (state.syncPending.get(id)?.put === put) state.syncPending.delete(id);
-  });
+  holdWrite(api, state, key, () => forgetPut(state, id, put));
   return undefined;
 }
 

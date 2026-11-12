@@ -78,7 +78,8 @@ test('Canvas PCF resources load from relative apps URLs and refuse what the port
   assert.equal(component.resources.code.length, 1);
   for (const url of [...component.resources.code, ...component.resources.css]) {
     assert.match(url, /^\/_apps\/canvas\/pcf\//);
-    assert.doesNotMatch(url, /^[a-z]+:|__sim-static/i);
+    assert.doesNotMatch(url, /^[a-z]+:/i);
+    assert.doesNotMatch(url, /__sim-static/i);
   }
   const token = bundle.split('/')[4];
   const declared = await fetch(new URL(bundle, sim.appsUrl));

@@ -1,8 +1,26 @@
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 
-const secret =
-  /(?:password|passwd|secret|token|authorization|cookie|credential|api[_-]?key|signature|pwd|accountkey|sharedaccesskey(?!name)|primarykey|secondarykey|subscription[_-]?key|functions?[_-]?key)/i;
+// Names that mark a credential. `sharedaccesskey` must not match `sharedaccesskeyname`.
+const SECRET_NAMES = [
+  'password',
+  'passwd',
+  'secret',
+  'token',
+  'authorization',
+  'cookie',
+  'credential',
+  'api[_-]?key',
+  'signature',
+  'pwd',
+  'accountkey',
+  'sharedaccesskey(?!name)',
+  'primarykey',
+  'secondarykey',
+  'subscription[_-]?key',
+  'functions?[_-]?key',
+];
+const secret = new RegExp(`(?:${SECRET_NAMES.join('|')})`, 'i');
 // URL query parameters that carry a credential on their own (Azure Functions keys, SAS signatures, OAuth codes,
 // invitation codes). One alternation feeds the key test and the free-text pattern, so the two cannot drift.
 const queryCredentialNames = 'code|sig|invitation(?:code)?';

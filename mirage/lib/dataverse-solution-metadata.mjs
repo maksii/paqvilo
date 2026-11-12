@@ -194,13 +194,18 @@ const mappedTableReads = (metadata, mappings) =>
       .map(([name, mapping]) => [name, fieldReads(mapping)]),
   );
 /**
- * One memo of withMappedTables: rebuilt only when the metadata it extends, a mapping object, a field the mapped tables
- * read or the metadata log changes. The metadata is the overlay's result, which keeps its identity across ordinary
- * record writes.
+ * One memo of withMappedTables. While the revision function returns a value that is unchanged, and the metadata and the
+ * state are the objects of the previous call, the previous value is returned without reading any mapping. Otherwise the
+ * memo compares the mapping objects, the fields the mapped tables read and the metadata log, and rebuilds only when one
+ * differs. A null revision means the store cannot vouch for its content, so every call takes the comparison. The
+ * metadata is the overlay's result, which keeps its identity across ordinary record writes.
  */
-export function createMappedTables() {
+export function createMappedTables({ revision } = {}) {
   let last = null;
   return (metadata, state) => {
+    const current = revision?.() ?? null;
+    if (current !== null && last?.metadata === metadata && last.state === state && last.revision === current)
+      return last.value;
     const seq = state.dataverse?.metadataLog?.at(-1)?.seq ?? 0;
     const tables = mappedTableReads(metadata, state.mappings);
     if (
@@ -216,6 +221,8 @@ export function createMappedTables() {
         tables,
         value: withMappedTables(metadata, state.mappings),
       };
+    last.state = state;
+    last.revision = current;
     return last.value;
   };
 }

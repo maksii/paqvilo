@@ -457,7 +457,7 @@ function inspectPluginImage(document, image, { message, stage }, emit) {
 function stepMessage(node, fields) {
   const named = fields.sdkmessagename ?? fields.messagename ?? nodeValue(directNode(node, 'sdkmessageid'), 'name');
   if (hasValue(named)) return lower(named);
-  const id = lower(fields.sdkmessageid).replace(/[{}]/g, '');
+  const id = lower(fields.sdkmessageid).replaceAll(/[{}]/g, '');
   return Object.hasOwn(SDK_MESSAGES, id) ? lower(SDK_MESSAGES[id]) : '';
 }
 

@@ -787,7 +787,7 @@ const pageSources = (portal, page) => {
 // (route) or at its closing quote (tag), so a longer name that starts with it is a different logic.
 function serverLogicEvidence(name, { body, observedRoutes }) {
   if (!name) return null;
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
+  const escaped = name.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
   const route = new RegExp(String.raw`/_api/serverlogics/${escaped}(?!\w)`, 'i');
   if (route.test(observedRoutes)) return 'observed-request';
   const tag = new RegExp(String.raw`\{%-?\s*serverlogic\s+name\s*:\s*['"]${escaped}['"]`, 'i');

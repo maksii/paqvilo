@@ -484,6 +484,9 @@ export async function executeBatch(parsed, { dispatch, origin, base, continueOnE
   }
 }
 
+// A failed changeset answers with the failing response alone (rollback); a complete one with all of its responses.
+const changesetAnswers = (failure, responses) => (failure ? [failure] : responses);
+
 async function runBatch(parsed, context, continueOnError) {
   const boundary = `batchresponse_${randomUUID()}`;
   const json = parsed.json === true;
@@ -507,7 +510,7 @@ async function runBatch(parsed, context, continueOnError) {
     } else {
       const { responses, failure } = await runChangeset(part, context, refs, ++changesetNumber);
       // A failed changeset answers as a changeset part holding only the failing response (rollback), Content-ID kept.
-      blocks.push(changesetPart(boundary, failure ? [failure] : responses, json));
+      blocks.push(changesetPart(boundary, changesetAnswers(failure, responses), json));
       if (failure && !continueOnError)
         return failed(result(boundary, failure.response.status, blocks), failure.response);
     }

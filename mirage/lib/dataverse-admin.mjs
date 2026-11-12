@@ -10,8 +10,8 @@ const error = (message, status = 400, code = 'INVALID_REQUEST') => Object.assign
 const checkSpaRedirectUris = (value, publicClient) => {
   try {
     return spaRedirectUris(value, publicClient);
-  } catch (failure) {
-    throw error(`${failure.message}.`);
+  } catch (error_) {
+    throw error(`${error_.message}.`);
   }
 };
 const decodeAdminIdentifier = (value) => {

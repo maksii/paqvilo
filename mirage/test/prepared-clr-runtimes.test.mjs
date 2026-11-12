@@ -5,6 +5,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DataStore, emptyState } from '../lib/data.mjs';
+import { pluginCatalogue } from '../lib/exported-plugins.mjs';
+import { createOrganizationBackend } from '../lib/organization-backend.mjs';
 import { createPreparedClrRuntimePreparer } from './fixtures/prepared-clr-runtimes.mjs';
 import { attachClrSteps } from './fixtures/plugin-pipeline.mjs';
 
@@ -239,21 +241,35 @@ test('declared SDK proxy dependency is accepted without implicit duplicate infer
   );
 });
 
-test('custom preparer remains authoritative and exact descriptor lookup rejects clones', async (t) => {
+test('custom preparer remains authoritative for an unmapped step and exact descriptor lookup rejects clones', async (t) => {
   const root = temp(t);
   const selected = makeRuntime(root, 'Custom');
-  const calls = [];
-  const result = await attachClrSteps(t, {
+  const calls = [],
+    runtimes = new Map(),
+    descriptors = new Map([['custom', selected.descriptor]]),
+    diagnostics = [];
+  const items = pluginCatalogue({
+    plugins: { steps: [step('custom', selected.descriptor.typeName)] },
+    runtimes,
+    descriptors,
+    overrides: { 'plugin-step:custom': { mode: 'clr' } },
+  });
+  const backend = await createOrganizationBackend({
     store: new DataStore({ state: emptyState() }),
-    steps: [step('custom', selected.descriptor.typeName)],
-    runtime: () => selected.prepared,
+    items: () => items,
+    runtimes,
+    descriptors,
+    diagnostic: (item) => diagnostics.push(item),
     prepareRuntime: (descriptor) => {
       calls.push(descriptor);
       return selected.prepared;
     },
   });
-  assert.deepEqual(calls, [selected.descriptor]);
-  assert.equal(result.runtimes.get('custom'), selected.prepared);
+  t.after(() => backend.close());
+  assert.deepEqual(diagnostics, []);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0], selected.descriptor);
+  assert.equal(runtimes.get('custom'), selected.prepared);
   const exact = createPreparedClrRuntimePreparer(
     new Map([['step', selected.prepared]]),
     new Map([['step', selected.descriptor]]),

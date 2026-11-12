@@ -725,3 +725,19 @@ test('maskAll resolves the field names once for all its rows, where mask resolve
   for (const row of rows) mask(basic, 'widget', row);
   assert.equal(reads, perResolution * rows.length, 'mask resolves the field names for every row');
 });
+
+// @test-kind contract: one mask resolves the table metadata a bounded number of times, independent of the column count
+test('one mask resolves the table metadata a bounded number of times, independent of the column count', async () => {
+  let resolutions = 0;
+  const source = Object.fromEntries(
+    Array.from({ length: 300 }, (_, index) => ['column' + index, { dataverseType: 'nvarchar' }]),
+  );
+  const t = await setup((logical) => {
+    resolutions += 1;
+    return logical === 'widget' ? source : undefined;
+  });
+  const basic = t.user(BASIC_OID);
+  resolutions = 0;
+  t.api.fieldSecurity.mask(basic, 'widget', t.formatted(W1));
+  assert.ok(resolutions <= 2, `Expected at most two metadata resolutions for one mask, received ${resolutions}`);
+});

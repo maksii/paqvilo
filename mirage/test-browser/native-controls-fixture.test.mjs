@@ -1,15 +1,16 @@
+// @test-kind contract: the control-only fixture page loads the toolkit's model-driven controls from the apps address.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
-import { sharedBrowser } from './shared-browser.mjs';
+import { sharedBrowser, appsOrigin } from './shared-browser.mjs';
 import { prepareNativeControls } from './native-controls-fixture.mjs';
 
 const chrome = sharedBrowser();
 
 test('control-only fixture focus never starts requests from a discarded application shell', async (t) => {
-  const { origin } = await modelDrivenFixture(t);
+  const { sim, origin } = await modelDrivenFixture(t);
   const page = await chrome.page(t);
-  await prepareNativeControls(page, origin);
+  await prepareNativeControls(page, appsOrigin(sim, origin));
   const requested = await page.evaluate(() => {
     const requested = [],
       original = window.fetch;

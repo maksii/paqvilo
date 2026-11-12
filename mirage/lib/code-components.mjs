@@ -480,12 +480,12 @@ async function readControl({ root, manifestFile, identityFile, readFile }) {
       diagnostics: state.diagnostics,
     });
     return { ...state, ...manifest };
-  } catch (cause) {
-    if (cause.code === 'MODEL_CLIENT_IMPORT_LIMIT') return { fatal: cause };
+  } catch (error) {
+    if (error.code === 'MODEL_CLIENT_IMPORT_LIMIT') return { fatal: error };
     state.diagnostics.push({
       code: state.identified ? 'PCF_IMPORT_FAILED' : 'PCF_IDENTITY_UNRESOLVED',
       file: manifestFile,
-      message: cause.message,
+      message: error.message,
     });
     return { ...state, unresolved: !state.identified };
   }

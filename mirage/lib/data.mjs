@@ -7316,7 +7316,7 @@ export function parseEntityReference(value) {
     }
   }
   text = text.replace(/^\/?_api\//, '').replace(/^\//, '');
-  const match = /^([A-Za-z_]\w*)\((.+)\)$/.exec(text);
+  const match = /^([A-Za-z_]\w*)\((.+)\)$/s.exec(text);
   if (!match) return null;
   const key = match[2].trim();
   if (!validEntityReferenceKey(key)) return null;

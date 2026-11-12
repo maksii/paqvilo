@@ -56,6 +56,24 @@
     const language = globalThis.document?.documentElement?.lang ?? '';
     return nameFormatter(LANGUAGE_TAG.test(language) ? language : 'en-US', token).format(date);
   }
+  // Literal text first (quoted or escaped), then the format letters; each letter run takes as many of its letter as the format allows.
+  const FORMAT_TOKEN = new RegExp(
+    [
+      `'[^']*'`,
+      '"[^"]*"',
+      String.raw`\\.`,
+      'y{1,4}',
+      'M{1,4}',
+      'd{1,4}',
+      'H{1,2}',
+      'h{1,2}',
+      'm{1,2}',
+      's{1,2}',
+      'f{1,3}',
+      't{1,2}',
+    ].join('|'),
+    'g',
+  );
   function formatLocal(date, pattern) {
     const h = date.getHours();
     const year = date.getFullYear();
@@ -83,10 +101,7 @@
       tt: h < 12 ? 'AM' : 'PM',
       t: h < 12 ? 'A' : 'P',
     };
-    return String(pattern).replace(
-      /'[^']*'|"[^"]*"|\\.|yyyy|yyy|yy|y|MMMM|MMM|MM|M|dddd|ddd|dd|d|HH|H|hh|h|mm|m|ss|s|fff|ff|f|tt|t/g,
-      (token) => formatToken(token, date, tokens),
-    );
+    return String(pattern).replaceAll(FORMAT_TOKEN, (token) => formatToken(token, date, tokens));
   }
   // Quoted text and backslash escapes are literal; name tokens are looked up only when used.
   function formatToken(token, date, tokens) {

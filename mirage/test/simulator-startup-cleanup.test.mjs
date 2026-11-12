@@ -1,3 +1,4 @@
+// @test-kind contract: a failed Power Pages startup closes every record owner, keeps the startup error and lists close failures on error.cleanupErrors.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -54,11 +55,10 @@ test('a failed startup closes every record owner and reports close failures with
     (error) => error,
   );
   restore();
-  assert.ok(failure instanceof AggregateError, failure.stack);
-  assert.match(failure.errors[0].message, /Preset not found/);
-  assert.equal(failure.cause, failure.errors[0]);
+  assert.ok(failure instanceof Error, String(failure));
+  assert.equal(failure.message, 'Preset not found.', failure.stack);
   assert.deepEqual(
-    failure.errors.slice(1).map((error) => error.message),
+    failure.cleanupErrors.map((error) => error.message),
     ['Invented close failure'],
   );
   assert.equal(storeCloses, 1, 'The store still closes after the first owner failed.');

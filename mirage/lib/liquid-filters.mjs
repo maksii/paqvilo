@@ -896,7 +896,7 @@ const CULTURE_CURRENCIES = new Map(
 function currencyAmount(input) {
   if (isNumber(input)) return Number(input);
   try {
-    return toNetDecimal(String(input).replace(/[$\s]/g, '')).valueOf();
+    return toNetDecimal(String(input).replaceAll(/[$\s]/g, '')).valueOf();
   } catch {
     return null;
   }

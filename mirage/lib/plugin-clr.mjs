@@ -2065,8 +2065,8 @@ export function releaseClrRuntime(runtime, { liveRuntimes = [], diagnostic = () 
   if (!isOwnedCacheDirectory(runtime)) return;
   try {
     syncFs.rmSync(runtime.directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 25 });
-  } catch (cause) {
-    diagnostic({ code: 'PLUGIN_CLR_CLEANUP', message: 'CLR runtime cache cleanup failed: ' + cause.code });
+  } catch (error) {
+    diagnostic({ code: 'PLUGIN_CLR_CLEANUP', message: 'CLR runtime cache cleanup failed: ' + error.code });
   }
 }
 function isOwnedCacheDirectory(runtime) {
@@ -2081,7 +2081,7 @@ function isOwnedCacheDirectory(runtime) {
 // A host reports its exit as a session-level `host-exited` packet. Per-invocation lines stay in their backlog; a session
 // whose exit was reported is stopped and leaves the pool.
 function drainSessionPackets(session) {
-  for (let packet; (packet = receiveMessageOnPort(session.port1));) {
+  for (let packet = receiveMessageOnPort(session.port1); packet; packet = receiveMessageOnPort(session.port1)) {
     if (packet.message.kind === 'host-exited') return true;
     session.backlog.get(packet.message.invocationId)?.push(packet.message);
   }

@@ -1,3 +1,4 @@
+// @test-kind compatibility: Microsoft Learn (Dataverse Liquid tags, entityform and webform) states that only a single entityform or webform tag renders per page; the simulator's postback and action handling for that form is its own contract.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -87,6 +88,7 @@ test('exported native state-action buttons send configured actions without submi
   await page.goto(`${app.url}/?row=${id}`);
   const first = page.locator('#EntityFormControl_entryform'),
     second = page.locator('#EntityFormControl_secondform');
+  assert.equal(await second.count(), 0, 'only the first form tag of a page renders');
   assert.equal(
     await page.locator('#UpdateButton').count(),
     0,
@@ -128,19 +130,7 @@ test('exported native state-action buttons send configured actions without submi
   await first.locator('button.deactivate-link:not(.hidden)').waitFor();
   record = await app.store.get('sample', id, { roles: ['Editor'] });
   assert.deepEqual([record.title, record.statecode, record.statuscode], ['Original', 0, 100]);
-  const secondResponse = action('deactivate');
-  const secondReload = page.waitForEvent('load');
-  await second.locator('button.deactivate-link').click();
-  const secondSaved = await secondResponse;
-  assert.equal(secondSaved.status(), 204);
-  assert.equal(
-    secondSaved.request().postDataJSON().entityReference.Id,
-    secondId,
-    'duplicate button classes retain their owning native form',
-  );
-  await secondReload;
-  await second.locator('button.activate-link:not(.hidden)').waitFor();
   assert.equal((await app.store.get('sample', id, { roles: ['Editor'] })).statecode, 0);
-  assert.equal((await app.store.get('sample', secondId, { roles: ['Editor'] })).statecode, 1);
+  assert.equal((await app.store.get('sample', secondId, { roles: ['Editor'] })).statecode, 0);
   assert.deepEqual(errors, []);
 });

@@ -602,7 +602,7 @@ const JS_TEXT_ESCAPES = {
   '\u2028': String.raw`\u2028`,
   '\u2029': String.raw`\u2029`,
 };
-const jsText = (value) => String(value ?? '').replace(/[\\"'<>&\n\r\u2028\u2029]/g, (char) => JS_TEXT_ESCAPES[char]);
+const jsText = (value) => String(value ?? '').replaceAll(/[\\"'<>&\n\r\u2028\u2029]/g, (char) => JS_TEXT_ESCAPES[char]);
 const fieldOf = (record, name) => portalField(record ?? {}, name);
 const truthy = (value) => value === true || /^(true|1)$/i.test(String(value ?? ''));
 const base64Json = (value) => Buffer.from(JSON.stringify(value)).toString('base64');
@@ -881,7 +881,8 @@ const referenceControlAttribute = (fieldId) =>
 export function summaryLink(fieldId, message, linksEnabled, focusId = fieldId) {
   if (!linksEnabled) return message;
   // The platform inserts the configured message as it is, with links on or off (native observation); only the field id is escaped.
-  return `<a href='#${attr(`${fieldId}_label`)}' onclick='javascript:scrollToAndFocus("${attr(jsText(fieldId + '_label'))}","${attr(jsText(focusId))}");return false;' ${referenceControlAttribute(fieldId)}>${message} </a>`;
+  const labelId = `${fieldId}_label`;
+  return `<a href='#${attr(labelId)}' onclick='javascript:scrollToAndFocus("${attr(jsText(fieldId + '_label'))}","${attr(jsText(focusId))}");return false;' ${referenceControlAttribute(fieldId)}>${message} </a>`;
 }
 
 /** Native validators (ASP.NET ids, Page_Validators expandos) for one field. */

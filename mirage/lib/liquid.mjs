@@ -1088,7 +1088,7 @@ const guidText = (value) =>
 const MISSING_TEMPLATE_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;', '{': '&#123;' };
 /** The text a missing include renders. The name is HTML-encoded and its braces are escaped, so it is never parsed as Liquid. */
 const missingTemplateText = (name) =>
-  `Template "${String(name).replace(/[&<>"'{]/g, (character) => MISSING_TEMPLATE_ESCAPES[character])}" not found.`;
+  `Template "${String(name).replaceAll(/[&<>"'{]/g, (character) => MISSING_TEMPLATE_ESCAPES[character])}" not found.`;
 function templateById(portal, id) {
   const wanted = guidText(id);
   if (!wanted) return null;

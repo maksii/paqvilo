@@ -932,25 +932,42 @@ function standaloneAdminAssetHeaders(res, file, index) {
       runtime: { product: 'Mirage', ...runtime, capabilities: caps },
     });
     const onAdmin = (req) => adminServer.listening && req.socket.localPort === adminServer.address().port;
+    // Refuses what the listener a request arrived on must not serve; true when the response has been answered.
+    const answeredByListener = (req, res, url, onAdminListener) => {
+      let verdict;
+      if (onAdminListener) {
+        verdict = listenerVerdict(req, url, {
+          origin: adminOrigin,
+          fallbackOrigin: localOrigin,
+          serves: (pathname) => adminServes(pathname),
+          kind: 'Admin',
+        });
+      } else {
+        validateMainOrigin(req, localOrigin);
+        verdict = portalVerdict(req, url, { adminOrigin, routes: STANDALONE_ROUTES });
+      }
+      if (!verdict) return false;
+      answerVerdict(res, verdict);
+      return true;
+    };
+    // Answers a standalone administration page asset; the page itself is /_sim and /_sim/ (see the asset pattern).
+    const answerAdminAsset = async (req, res, url) => {
+      // The page answers /_sim and /_sim/ only (as on Power Pages); /_sim/index.html falls under the asset pattern and 404s.
+      const file = url.pathname.replace(/^\/(?:_sim|__sim)\/?/, ''),
+        index = file === '';
+      const source = requireStandaloneAdminAsset(
+        index ? new URL('../admin/index.html', import.meta.url) : await adminAssetFile(file),
+      );
+      standaloneAdminAssetHeaders(res, file, index);
+      res.end(req.method === 'HEAD' ? undefined : await fs.readFile(source));
+    };
     const onRequest = (req, res) => {
       const handle = async () => {
         const onAdminListener = onAdmin(req),
           origin = onAdminListener ? adminOrigin : localOrigin;
         validateStandaloneRequest(req, res, closing, origin);
         const url = new URL(req.url, origin);
-        if (onAdminListener) {
-          const verdict = listenerVerdict(req, url, {
-            origin: adminOrigin,
-            fallbackOrigin: localOrigin,
-            serves: (pathname) => adminServes(pathname),
-            kind: 'Admin',
-          });
-          if (verdict) return answerVerdict(res, verdict);
-        } else {
-          validateMainOrigin(req, localOrigin);
-          const verdict = portalVerdict(req, url, { adminOrigin, routes: STANDALONE_ROUTES });
-          if (verdict) return answerVerdict(res, verdict);
-        }
+        if (answeredByListener(req, res, url, onAdminListener)) return;
         normalizeTokenHeaders(req, url.pathname, { adminToken, pageToken: csrf, appsToken: csrf });
         if (await setup(req, res)) return;
         // GET /_sim/events?channels=trace: the trace channel, with the frames the Power Pages host streams.
@@ -970,14 +987,7 @@ function standaloneAdminAssetHeaders(res, file, index) {
         if (await code(req, res, url)) return;
         if (caps.modelDriven && (await model(req, res, url))) return;
         if (isStandaloneAdminAssetRequest(req, url)) {
-          // The page answers /_sim and /_sim/ only (as on Power Pages); /_sim/index.html falls under the asset pattern and 404s.
-          const file = url.pathname.replace(/^\/(?:_sim|__sim)\/?/, ''),
-            index = file === '';
-          const source = requireStandaloneAdminAsset(
-            index ? new URL('../admin/index.html', import.meta.url) : await adminAssetFile(file),
-          );
-          standaloneAdminAssetHeaders(res, file, index);
-          res.end(req.method === 'HEAD' ? undefined : await fs.readFile(source));
+          await answerAdminAsset(req, res, url);
           return;
         }
         if (standaloneRootRedirect(req, res, url, caps, adminOrigin)) return;

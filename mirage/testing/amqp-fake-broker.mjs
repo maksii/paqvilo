@@ -444,6 +444,14 @@ export async function startFakeBroker({
       socket.end();
     }
 
+    // True when the frame size is within the limit for the connection state; otherwise the connection is refused.
+    function frameSizeAllowed(size) {
+      const limit = opened ? maxFrameSize : MIN_FRAME_SIZE;
+      if (size >= 8 && size <= limit) return true;
+      refuse('amqp:connection:framing-error', `A frame of ${size} bytes is outside the limit of ${limit} bytes.`);
+      return false;
+    }
+
     function handleFrame(body) {
       try {
         const [performative, next] = dec(body, 0);
@@ -462,11 +470,7 @@ export async function startFakeBroker({
         if (headerResult === true) continue;
         if (input.length < 8) return;
         const size = input.readUInt32BE(0);
-        const limit = opened ? maxFrameSize : MIN_FRAME_SIZE;
-        if (size < 8 || size > limit) {
-          refuse('amqp:connection:framing-error', `A frame of ${size} bytes is outside the limit of ${limit} bytes.`);
-          return;
-        }
+        if (!frameSizeAllowed(size)) return;
         if (input.length < size) return;
         const body = input.subarray(input[4] * 4, size);
         input = input.subarray(size);

@@ -20,7 +20,7 @@ const WORKBOOK_RELS = `${XML_HEADER}<Relationships xmlns="${PACKAGE_RELS_NS}"><R
 function xmlText(value) {
   return String(value)
     .replace(ILLEGAL_XML_CHARACTERS, '')
-    .replace(/[&<>"']/g, (character) => XML_ESCAPES[character]);
+    .replaceAll(/[&<>"']/g, (character) => XML_ESCAPES[character]);
 }
 
 // Excel refuses a cell with more than 32,767 characters. The cut follows the illegal-character removal, and a high
@@ -45,7 +45,7 @@ function workbookSheetName(value) {
 function columnName(index) {
   let name = '';
   for (let number = index + 1; number > 0; number = Math.floor((number - 1) / 26))
-    name = String.fromCharCode(65 + ((number - 1) % 26)) + name;
+    name = String.fromCodePoint(65 + ((number - 1) % 26)) + name;
   return name;
 }
 

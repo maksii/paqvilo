@@ -47,7 +47,7 @@ const traceHeader = (res, name) => {
   return typeof value === 'string' && /^[0-9a-f-]{36}$/i.test(value) ? value : '';
 };
 const escapeHtml = (value) =>
-  String(value).replace(
+  String(value).replaceAll(
     /[&<>"']/g,
     (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char],
   );

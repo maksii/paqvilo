@@ -568,6 +568,42 @@ function checkBackgroundSystemWrite(operation, data, existing) {
   Object.assign(data, CANCEL_PATCH);
 }
 
+// One asyncoperation row after a restart. Returns true when the row is Ready again and its job must be started.
+function recoverAsyncOperation(row, stamp) {
+  if (row.statecode !== STATE.Ready && row.statecode !== STATE.Locked) return false;
+  // A durable committed-event job keeps its kind and event in data; its own runner recovers it (committed-work.mjs).
+  if (row.data != null) return false;
+  if (!row.submission) {
+    Object.assign(row, {
+      statecode: STATE.Completed,
+      statuscode: STATUS.Failed,
+      completedon: stamp(),
+      message: 'The system job was interrupted by a restart.',
+    });
+    return false;
+  }
+  // A cancel or pause requested before the restart is finished here: its run cannot continue.
+  if (row.statecode === STATE.Locked && row.statuscode === CANCELING) {
+    Object.assign(row, { statecode: STATE.Completed, statuscode: STATUS.Canceled, completedon: stamp() });
+    return false;
+  }
+  if (row.statecode === STATE.Locked && row.statuscode === PAUSING) {
+    Object.assign(row, { statecode: STATE.Suspended, statuscode: STATUS.Waiting });
+    return false;
+  }
+  Object.assign(row, { statecode: STATE.Ready, statuscode: STATUS.WaitingForResources });
+  return true;
+}
+function failInterruptedBackgroundOperation(row, stamp) {
+  if (row.backgroundoperationstatecode === STATE.Completed) return;
+  Object.assign(row, {
+    backgroundoperationstatecode: STATE.Completed,
+    backgroundoperationstatuscode: STATUS.Failed,
+    endtime: stamp(),
+    errormessage: 'The background operation was interrupted by a restart.',
+  });
+}
+
 /**
  * Registers the BulkDelete action, the background operation call path and the system-table write rules.
  * options.schedule(task, delayMs) runs a task on a later tick (tests inject their own); options.pageSize is the FetchXML
@@ -1361,40 +1397,9 @@ export async function install(
   // flight is failed for the same reason: its request was not kept. ponytail: no re-run of background work.
   const resumed = [];
   await write(() => {
-    for (const row of store.state.tables.asyncoperation) {
-      if (row.statecode !== STATE.Ready && row.statecode !== STATE.Locked) continue;
-      // A durable committed-event job keeps its kind and event in data; its own runner recovers it (committed-work.mjs).
-      if (row.data != null) continue;
-      if (!row.submission) {
-        Object.assign(row, {
-          statecode: STATE.Completed,
-          statuscode: STATUS.Failed,
-          completedon: stamp(),
-          message: 'The system job was interrupted by a restart.',
-        });
-        continue;
-      }
-      // A cancel or pause requested before the restart is finished here: its run cannot continue.
-      if (row.statecode === STATE.Locked && row.statuscode === CANCELING) {
-        Object.assign(row, { statecode: STATE.Completed, statuscode: STATUS.Canceled, completedon: stamp() });
-        continue;
-      }
-      if (row.statecode === STATE.Locked && row.statuscode === PAUSING) {
-        Object.assign(row, { statecode: STATE.Suspended, statuscode: STATUS.Waiting });
-        continue;
-      }
-      Object.assign(row, { statecode: STATE.Ready, statuscode: STATUS.WaitingForResources });
-      resumed.push(row.asyncoperationid);
-    }
-    for (const row of store.state.tables.backgroundoperation) {
-      if (row.backgroundoperationstatecode === STATE.Completed) continue;
-      Object.assign(row, {
-        backgroundoperationstatecode: STATE.Completed,
-        backgroundoperationstatuscode: STATUS.Failed,
-        endtime: stamp(),
-        errormessage: 'The background operation was interrupted by a restart.',
-      });
-    }
+    for (const row of store.state.tables.asyncoperation)
+      if (recoverAsyncOperation(row, stamp)) resumed.push(row.asyncoperationid);
+    for (const row of store.state.tables.backgroundoperation) failInterruptedBackgroundOperation(row, stamp);
   });
   for (const id of resumed) defer(() => start(id));
 }

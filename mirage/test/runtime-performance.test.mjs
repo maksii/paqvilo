@@ -506,7 +506,11 @@ test('unchanged overlay resolutions outside a read epoch scan mapping metadata o
   for (let table = 0; table < 32; table++) {
     const fields = {};
     for (let column = 0; column < 16; column++) fields['x_f' + column] = counted(undefined);
-    entities['x_t' + table] = { fields: { x_f0: { label: 'Exported' } } };
+    const declared = {};
+    for (let column = 0; column < 16; column++)
+      declared['x_f' + column] = { label: column ? 'x_f' + column : 'Exported' };
+    // The solution declares every mapped column, so a mapping field that only names its type carries no metadata.
+    entities['x_t' + table] = { fields: declared };
     mappings['x_t' + table] = { idColumn: 'x_t' + table + 'id', fields };
   }
   const base = { entities, forms: [] },

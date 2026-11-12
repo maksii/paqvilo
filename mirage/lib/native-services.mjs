@@ -2779,7 +2779,7 @@ function exportOwner(_req, context) {
 
 /** A grid export: the table's rows (the first is the header) as a CSV file, or as an Excel workbook. */
 function exportFile(table, { format, viewName, owner }) {
-  const name = String(viewName ?? 'export').replace(/[\\/:*?"<>|]/g, '_');
+  const name = String(viewName ?? 'export').replaceAll(/[\\/:*?"<>|]/g, '_');
   if (format === 'excel')
     return {
       owner,
@@ -2800,7 +2800,7 @@ function serveExport(req, res, url, context) {
   if (!file || file.owner !== owner) {
     res.writeHead(204);
     res.end();
-    return true;
+    return;
   }
   downloads.delete(key);
   res.writeHead(200, {
@@ -2810,7 +2810,6 @@ function serveExport(req, res, url, context) {
     'cache-control': 'no-store',
   });
   res.end(file.body);
-  return true;
 }
 
 /** The signed-in contact's row (token claims read it regardless of table permissions). */
@@ -3001,8 +3000,10 @@ export function antiForgeryCookie(csrf) {
 ) {
   try {
     const normalized = action.toLowerCase();
-    if (/^download-as-(csv|excel)$/.test(normalized) && req.method === 'GET')
-      return serveExport(req, res, url, context);
+    if (/^download-as-(csv|excel)$/.test(normalized) && req.method === 'GET') {
+      serveExport(req, res, url, context);
+      return true;
+    }
     if (req.method !== 'POST') fail('Native portal services require POST.', 405, 'MethodNotAllowed');
     if (/^entity-(notes|form-addnote|form-updatenote|form-deletenote)$/.test(normalized)) {
       // The native notes form posts its token as a field; JSON callers send the header.

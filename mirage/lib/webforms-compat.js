@@ -569,7 +569,7 @@
   const GROUP_BETWEEN_DIGITS = { '.': /(?<=\d)\.(?=\d)/g, ',': /(?<=\d),(?=\d)/g };
   function numberText(text, decimal) {
     const group = decimal === ',' ? '.' : ',';
-    const grouped = text.replace(/\s/g, '').replace(GROUP_BETWEEN_DIGITS[group], '');
+    const grouped = text.replaceAll(/\s/g, '').replaceAll(GROUP_BETWEEN_DIGITS[group], '');
     return grouped.includes(group) ? null : grouped.replaceAll(decimal, '.');
   }
   function richTextControlValue(field, element) {

@@ -1005,7 +1005,7 @@ function checkedPlan(input) {
   try {
     return validatePlan(input);
   } catch (error) {
-    if (!error.code) error.code = 'PLAN';
+    error.code ||= 'PLAN';
     throw error;
   }
 }

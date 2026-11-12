@@ -411,7 +411,8 @@ function pageScriptNonce(html) {
 // A strict CSP admits an inline script only with the nonce of the page, so the injected script carries it.
 function pageScriptOpening(html) {
   const nonce = pageScriptNonce(html);
-  return `<script type="text/javascript"${nonce ? ` nonce="${nonce}"` : ''}>`;
+  const nonceAttribute = nonce ? ` nonce="${nonce}"` : '';
+  return `<script type="text/javascript"${nonceAttribute}>`;
 }
 
 function scriptType(values, useLanguage = true) {

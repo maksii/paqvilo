@@ -527,6 +527,41 @@ test('the mapped-table memo sees a replaced field that keeps its type and a chan
   assert.equal(mapped(metadata, state), targeted);
 });
 
+test('with a revision source the mapped-table memo compares no fields while the revision is unchanged', () => {
+  let reads = 0;
+  let rev = 'r1';
+  const counted = (target) =>
+    new Proxy(target, {
+      ownKeys(object) {
+        reads += 1;
+        return Reflect.ownKeys(object);
+      },
+      get(object, key, receiver) {
+        reads += 1;
+        return Reflect.get(object, key, receiver);
+      },
+    });
+  const metadata = { lcid: 1033, entities: {} };
+  const state = {
+    mappings: { t: { fields: counted({ x: { dataverseType: 'int', label: 'Before' } }) } },
+    dataverse: { metadataLog: [] },
+  };
+  const mapped = createMappedTables({ revision: () => rev });
+  const first = mapped(metadata, state);
+  reads = 0;
+  for (let index = 0; index < 50; index++) assert.equal(mapped(metadata, state), first);
+  assert.equal(reads, 0, 'an unchanged revision reads no mapping field');
+  rev = 'r2';
+  state.mappings.t.fields.x.label = 'Renamed';
+  assert.equal(mapped(metadata, state).entities.t.fields.x.label, 'Renamed');
+  const unrevisioned = createMappedTables({ revision: () => null });
+  const before = unrevisioned(metadata, state);
+  state.mappings.t.fields.x.label = 'Unrevisioned';
+  const after = unrevisioned(metadata, state);
+  assert.equal(after.entities.t.fields.x.label, 'Unrevisioned');
+  assert.notEqual(after, before);
+});
+
 // @test-kind contract: a mapping-only table keeps the label its mapping field declares.
 test('a mapping-only table keeps the label of its mapping field and falls back to the column name', () => {
   const metadata = createMappedTables()(

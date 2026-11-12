@@ -219,6 +219,22 @@ function columnRoute({ table, column }) {
   return `EntityDefinitions(LogicalName='${table}')/Attributes(LogicalName='${column}')`;
 }
 
+const readsExisting = (client, action, missingTables) =>
+  Boolean(client) && !(['column', 'key'].includes(action.kind) && missingTables.has(action.table));
+
+// The plan summary: action statuses and the membership operations counted from the membership list.
+const planSummary = (actions, membership) => {
+  const count = (operation) => membership.filter((entry) => entry.operation === operation).length;
+  return {
+    create: actions.filter((a) => a.status === 'create').length,
+    exists: actions.filter((a) => a.status === 'exists').length,
+    drift: actions.filter((a) => a.status === 'drift').length,
+    membershipAdd: count('membership:add'),
+    rootScoping: count('membership:scope-root'),
+    blocked: count('blocked'),
+  };
+};
+
 export async function planManifest(manifest, { client } = {}) {
   manifest = validateManifest(manifest);
   const compiled = compileManifest(manifest),
@@ -233,28 +249,17 @@ export async function planManifest(manifest, { client } = {}) {
     }
   }
   for (const action of compiled.actions) {
-    const existing =
-      client && !(['column', 'key'].includes(action.kind) && missingTables.has(action.table))
-        ? await existingComponent(client, action)
-        : null;
+    const existing = readsExisting(client, action, missingTables) ? await existingComponent(client, action) : null;
     actions.push(planActionResult(action, existing, publisher));
   }
   const membership = client ? await planMembership(client, actions) : [];
-  const count = (operation) => membership.filter((entry) => entry.operation === operation).length;
   return {
     ...compiled,
     environmentUrl: client?.origin ?? null,
     mode: client ? 'remote-read-only' : 'offline',
     actions,
     membership,
-    summary: {
-      create: actions.filter((a) => a.status === 'create').length,
-      exists: actions.filter((a) => a.status === 'exists').length,
-      drift: actions.filter((a) => a.status === 'drift').length,
-      membershipAdd: count('membership:add'),
-      rootScoping: count('membership:scope-root'),
-      blocked: count('blocked'),
-    },
+    summary: planSummary(actions, membership),
   };
 }
 

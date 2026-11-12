@@ -212,18 +212,18 @@ function createFieldSecurity({
   // administrator included, because only the platform reads its stored value (webhook dispatch, trace writer, import, export
   // read the store directly). An administrator-only column (ADMIN_READ_COLUMNS) hides from every caller but a System Administrator.
   // Returns 'unreadable', 'administrator' or null.
-  function hiddenKind(user, logical, column) {
+  function hiddenKind(user, logical, column, source) {
     const mapping = mappingOf(logical);
     if (!mapping) return null;
-    const source = metadataFields(mapping.logicalName) ?? null;
+    source ??= metadataFields(mapping.logicalName) ?? null;
     if (mappingField(mapping, column, source).validForRead === false) return 'unreadable';
     const administratorOnly = ADMIN_READ_COLUMNS[mapping.logicalName]?.includes(column) === true;
     return administratorOnly && !isAdmin(user) ? 'administrator' : null;
   }
-  const hiddenNames = (user, mapping) =>
-    namedFields(mapping, metadataFields(mapping.logicalName) ?? null).filter(
-      (name) => hiddenKind(user, mapping.logicalName, name) !== null,
-    );
+  const hiddenNames = (user, mapping) => {
+    const source = metadataFields(mapping.logicalName) ?? null;
+    return namedFields(mapping, source).filter((name) => hiddenKind(user, mapping.logicalName, name, source) !== null);
+  };
   // The column names a projection masks, resolved once per projection and shared by every row of it.
   const fieldNames = (user, mapping) => ({ hidden: hiddenNames(user, mapping), secured: securedNames(mapping) });
   // The refusal a hidden column answers as an operand: the unknown-property refusal for validForRead false, 0x80041155 for an

@@ -337,7 +337,11 @@ test('model-driven X-ray binds fields, PCF, handlers and ribbon provenance; boun
   await page.evaluate(modelDrivenInspectorUi, retiredData);
   assert.equal(await page.locator('#paqvilo-panel').count(), 0);
   // Retiring the inspector keeps the session's discovery file; the agent's own close removes it.
-  await fs.access(agent.discoveryFile);
+  assert.equal(
+    (await fs.readdir(path.dirname(agent.discoveryFile))).includes(path.basename(agent.discoveryFile)),
+    true,
+    'retiring the inspector keeps the discovery file',
+  );
   assert.equal((await (await call('/v1/session')).json()).inspection.suspended, true);
   assert.equal(
     methods.some((method) => method !== 'GET'),

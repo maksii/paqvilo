@@ -1117,10 +1117,9 @@ function apply(api, archive, { overwrite, origin, version, caller }, log) {
   return members;
 }
 
-// The solution and publisher rows, created or updated, and the membership of the imported components.
-function recordSolution(api, archive, members) {
-  const { store } = api;
-  const info = archive.solution;
+// The publisher row of an imported solution: found by unique name or created, then refreshed from the archive.
+// Undefined when the archive names no publisher and none is recorded.
+function upsertPublisher(store, info) {
   const publisherRows = store.state.tables.publisher;
   let publisher = publisherRows.find((p) => lower(p.uniquename) === lower(info.publisher.uniqueName));
   if (!publisher && info.publisher.uniqueName) {
@@ -1134,6 +1133,21 @@ function recordSolution(api, archive, members) {
       customizationoptionvalueprefix: info.publisher.optionValuePrefix ?? publisher.customizationoptionvalueprefix,
     });
   }
+  return publisher;
+}
+// Records a holding solution of a staged upgrade against its base (the marker holdingOf reads).
+function recordHoldingBase(dv, solutions, holdingFor, solutionId) {
+  const base = solutions.find((s) => lower(s.uniquename) === lower(holdingFor) && s.parentsolutionid == null);
+  if (!base) throw baseMissingError(holdingFor);
+  dv.holdingSolutions ??= {};
+  dv.holdingSolutions[solutionId] = base.solutionid;
+}
+
+// The solution and publisher rows, created or updated, and the membership of the imported components.
+function recordSolution(api, archive, members) {
+  const { store } = api;
+  const info = archive.solution;
+  const publisher = upsertPublisher(store, info);
   const solutions = store.state.tables.solution;
   let row = solutions.find((s) => lower(s.uniquename) === lower(info.uniqueName));
   if (!row) {
@@ -1166,12 +1180,7 @@ function recordSolution(api, archive, members) {
   const origin = (dv.componentOrigin ??= {});
   for (const member of members)
     if (member.created) origin[lower(componentObjectId(member, api.settings.organizationId))] = row.solutionid;
-  // A holding solution of a staged upgrade is recorded against its base (the marker holdingOf reads).
-  if (archive.holdingFor) {
-    const base = solutions.find((s) => lower(s.uniquename) === lower(archive.holdingFor) && s.parentsolutionid == null);
-    if (!base) throw baseMissingError(archive.holdingFor);
-    (dv.holdingSolutions ??= {})[row.solutionid] = base.solutionid;
-  }
+  if (archive.holdingFor) recordHoldingBase(dv, solutions, archive.holdingFor, row.solutionid);
   for (const layer of Object.values(dv.managedLayers ?? {}))
     for (const entry of layerStack(layer)) if (entry.solutionid == null) entry.solutionid = row.solutionid;
   return row;
@@ -1212,15 +1221,15 @@ function writeJob(api, { jobId, archive, log, error, progress }) {
 // row version, so a versionnumber in the payload is never kept.
 export function stampImportedRow(store, caller, row, mapping, { existing }) {
   const now = isoUtc(store.clock.now());
-  if (!existing) {
+  if (existing) {
+    row.modifiedon = now;
+  } else {
     row.createdon ??= now;
     row.modifiedon ??= now;
     if (mapping.ownership === 'UserOwned' && caller?.systemuserid) {
       const owner = ownerColumns(store, { id: caller.systemuserid, logical_name: 'systemuser' });
       for (const [name, value] of Object.entries(owner)) row[name] ??= value;
     }
-  } else {
-    row.modifiedon = now;
   }
   row.versionnumber = nextRowVersion(store);
   return row;

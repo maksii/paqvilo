@@ -272,6 +272,10 @@ function formatModelDrivenRow(row, table, tables, portal, byId, store) {
   }
   return copy;
 }
+// True when a requested column is neither a column of the table nor a field of the view.
+const unknownColumn = (table, view, name) =>
+  !Object.hasOwn(table.fields, name) && !view.fields.some((field) => field.name === name);
+
 export function createModelDrivenData({
   store,
   catalogue,
@@ -331,7 +335,7 @@ export function createModelDrivenData({
           !Array.isArray(fields) ||
           !fields.length ||
           fields.length > 100 ||
-          fields.some((name) => !Object.hasOwn(table.fields, name) && !view.fields.some((field) => field.name === name))
+          fields.some((name) => unknownColumn(table, view, name))
         )
           throw invalid('Select known columns.');
         const root = view.fetchXml

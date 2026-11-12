@@ -127,6 +127,27 @@ export function modelDrivenComparisonAdmission(response, { page, overlay, origin
   }
 }
 
+// Runs in the page: disposes the model-driven provider that this inspector installed in that frame.
+function disposeOwnedProvider(ownedToken) {
+  const provider = globalThis.__paqviloModelDrivenProvider;
+  if (provider?.token === ownedToken) provider.dispose();
+}
+// Starts the owned provider disposal in one frame; a failure to run it is ignored.
+function disposeOwnedProviderIn(frame, token) {
+  return frame.evaluate(disposeOwnedProvider, token).catch(() => {});
+}
+// Runs in the page: records the retired session in both retired-session lists (64 entries each) and disposes the
+// panel inspector it owned.
+function retireInspectorSession(retired) {
+  const retiredSessions = (globalThis.__paqviloRetiredModelInspectors ??= []);
+  retiredSessions.push(retired);
+  if (retiredSessions.length > 64) retiredSessions.shift();
+  const canonicalRetired = (globalThis.__paqviloRetiredSessions ??= []);
+  canonicalRetired.push(retired);
+  if (canonicalRetired.length > 64) canonicalRetired.shift();
+  const inspector = document.getElementById('paqvilo-panel')?.__paqModelInspector;
+  if (inspector?.token === retired) inspector.dispose();
+}
 /** Native SPA transitions do not emit a document navigation. Keep this key in
  * the browser; no route values or record IDs are returned through the binding.
  */
@@ -837,34 +858,13 @@ export async function startModelDrivenInspector({
         };
         problems.length = 0;
         await Promise.all([
-          ...page.frames().map((frame) =>
-            drain(() =>
-              settle(
-                frame
-                  .evaluate((ownedToken) => {
-                    const provider = globalThis.__paqviloModelDrivenProvider;
-                    if (provider?.token === ownedToken) provider.dispose();
-                  }, token)
-                  .catch(() => {}),
-                'Owned provider disposal',
-              ),
-            ),
-          ),
+          ...page
+            .frames()
+            .map((frame) => drain(() => settle(disposeOwnedProviderIn(frame, token), 'Owned provider disposal'))),
           drain(async () => {
             if (!page.isClosed())
               await settle(
-                page
-                  .evaluate((retired) => {
-                    const retiredSessions = (globalThis.__paqviloRetiredModelInspectors ??= []);
-                    retiredSessions.push(retired);
-                    if (retiredSessions.length > 64) retiredSessions.shift();
-                    const canonicalRetired = (globalThis.__paqviloRetiredSessions ??= []);
-                    canonicalRetired.push(retired);
-                    if (canonicalRetired.length > 64) canonicalRetired.shift();
-                    const inspector = document.getElementById('paqvilo-panel')?.__paqModelInspector;
-                    if (inspector?.token === retired) inspector.dispose();
-                  }, token)
-                  .catch(() => {}),
+                page.evaluate(retireInspectorSession, token).catch(() => {}),
                 'Panel inspector retirement',
               );
           }),

@@ -969,6 +969,41 @@ export function enablePanel(context, session, opts = {}) {
         'templateChain',
       ].every((key) => value[key] === undefined || Array.isArray(value[key])),
     );
+  // Stores the live-source runtime of one page, unless the page has left the portal while it was inspected.
+  const loadLiveSourceRuntime = async (page, pathname) => {
+    const result = await sourceInspector.inspect(pathname);
+    if (!runtimePageStillOnPortal(page, cfg.origin, disposed)) return;
+    const roots = result.roots.map(realNative);
+    runtimeByPage.set(page, {
+      active: true,
+      mode: 'live-sources',
+      status: result.status,
+      summary: summarize(result.report),
+      report: result.report,
+      roots,
+      origin: new URL(pathname, cfg.origin).origin,
+      path: pathname,
+      version: ++runtimeVersion,
+      error: null,
+    });
+    runtimeFilesByPage.set(page, annotateRuntime(result.report, roots));
+  };
+  // Stores the summary of one Mirage page. The status becomes the latest Mirage status before the summary is read.
+  const storeMirageSummary = async (page, pathname, status, summaryResponse, session) => {
+    lastMirageStatus = status;
+    const answer = summaryResponse.ok() ? await summaryResponse.json() : null;
+    storeMiragePageSummary(page, pathname, session, summaryResponse, answer, {
+      status,
+      origin: new URL(pathname, cfg.origin).origin,
+      validInspectionReport,
+      trustedRoots,
+      annotateRuntime,
+      summarize,
+      runtimeByPage,
+      runtimeFilesByPage,
+      nextVersion: () => ++runtimeVersion,
+    });
+  };
   /**
    * Stores the runtime of one page. A failure before the final attempt returns 'retry' and stores nothing,
    * so no redraw shows a transient inactive runtime; otherwise the outcome is stored and this returns 'done'.
@@ -982,22 +1017,7 @@ export function enablePanel(context, session, opts = {}) {
     if (adminPage(new URL(pathname, cfg.origin).href)) return 'done';
     try {
       if (!cfg.mirage) {
-        const result = await sourceInspector.inspect(pathname);
-        if (!runtimePageStillOnPortal(page, cfg.origin, disposed)) return 'done';
-        const roots = result.roots.map(realNative);
-        runtimeByPage.set(page, {
-          active: true,
-          mode: 'live-sources',
-          status: result.status,
-          summary: summarize(result.report),
-          report: result.report,
-          roots,
-          origin: new URL(pathname, cfg.origin).origin,
-          path: pathname,
-          version: ++runtimeVersion,
-          error: null,
-        });
-        runtimeFilesByPage.set(page, annotateRuntime(result.report, roots));
+        await loadLiveSourceRuntime(page, pathname);
         return 'done';
       }
       // Every navigation asks for a small summary; the Inspect tab loads the full report on demand.
@@ -1012,19 +1032,7 @@ export function enablePanel(context, session, opts = {}) {
         if (!finalAttempt) return 'retry';
         storeMissingMirageStatus(page, runtimeByPage, runtimeFilesByPage);
       } else {
-        lastMirageStatus = status;
-        const answer = summaryResponse.ok() ? await summaryResponse.json() : null;
-        storeMiragePageSummary(page, pathname, session, summaryResponse, answer, {
-          status,
-          origin: new URL(pathname, cfg.origin).origin,
-          validInspectionReport,
-          trustedRoots,
-          annotateRuntime,
-          summarize,
-          runtimeByPage,
-          runtimeFilesByPage,
-          nextVersion: () => ++runtimeVersion,
-        });
+        await storeMirageSummary(page, pathname, status, summaryResponse, session);
       }
     } catch (error) {
       if (!finalAttempt) return 'retry';

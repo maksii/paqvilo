@@ -182,6 +182,21 @@ function resolveAmbiguousFlowNames(items, { overrides, diagnostic }) {
   }
 }
 
+// A server logic is routed by its name, so its name is unique; a cloud flow is bound by its process id.
+function claimServerLogicName(names, record) {
+  const nameKey = record.name.toLowerCase();
+  if (names.has(nameKey)) throw new DataError(`Ambiguous operation name: ${record.name}`, 409, 'AmbiguousOperation');
+  names.add(nameKey);
+}
+
+// Exported by default only when every connector call (including a Dataverse trigger) resolves to a usable connection.
+function operationMode(override, registered, record, contract) {
+  if (override != null) return override;
+  if (registered) return 'handler';
+  const callable = record.path || contract?.trigger.kind === 'dataverse';
+  return contract?.supported && callable && contract.connections.every((c) => c.bound) ? 'exported' : 'placeholder';
+}
+
 /** Source discovery is automatic; executable project JavaScript still requires an explicit choice. */
 export function operationCatalogue({
   portal,
@@ -198,13 +213,7 @@ export function operationCatalogue({
     const key = `${kind}:${canonical(record.id ?? record.processId ?? record.name)}`;
     if (keys.has(key)) throw new DataError(`Ambiguous operation identifier: ${key}`, 409, 'AmbiguousOperation');
     keys.add(key);
-    // A server logic is routed by its name, so its name is unique; a cloud flow is bound by its process id.
-    if (kind === 'server-logic') {
-      const nameKey = record.name.toLowerCase();
-      if (names.has(nameKey))
-        throw new DataError(`Ambiguous operation name: ${record.name}`, 409, 'AmbiguousOperation');
-      names.add(nameKey);
-    }
+    if (kind === 'server-logic') claimServerLogicName(names, record);
     const registered =
       handlers?.[kind === 'server-logic' ? 'serverLogics' : 'cloudFlows']?.has(record.name.toLowerCase()) ?? false;
     const contract =
@@ -214,18 +223,7 @@ export function operationCatalogue({
             principal: handlers?.flowIdentities?.get(record.processId),
           })
         : null;
-    // Exported by default only when every connector call (including a Dataverse trigger) resolves to a usable connection.
-    let mode = overrides[key]?.mode;
-    if (mode == null) {
-      if (registered) mode = 'handler';
-      else if (
-        contract?.supported &&
-        (record.path || contract.trigger.kind === 'dataverse') &&
-        contract.connections.every((c) => c.bound)
-      )
-        mode = 'exported';
-      else mode = 'placeholder';
-    }
+    const mode = operationMode(overrides[key]?.mode, registered, record, contract);
     items.push({
       key,
       kind,

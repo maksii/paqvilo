@@ -635,6 +635,17 @@ const SHARED_TRACES = Symbol('shared trace store');
 const SHUTDOWN_BODY_IDLE_MS = 30_000;
 // The anti-forgery cookie the platform issues with each token refresh (lib/native-services.mjs antiForgeryCookie).
 const ANTI_FORGERY_COOKIE = '__RequestVerificationToken';
+// /__sim/api/ paths that are not sim roots: the trace routes, the run-starting flow routes (sim-flow-routes.mjs opens
+// their roots) and the portal ticket.
+const SIM_API_PREFIX = '/__sim/api/';
+const SIM_ROOT_EXEMPT = [
+  /^trace(?:\/|$)/,
+  /^(?:flow-runs|session\/portal-ticket)$/,
+  /^flow-triggers\/[^/]+(?:\/triggers\/[^/]+\/paths\/invoke)?$/,
+];
+const isSimRootPath = (pathname) =>
+  pathname.startsWith(SIM_API_PREFIX) &&
+  !SIM_ROOT_EXEMPT.some((pattern) => pattern.test(pathname.slice(SIM_API_PREFIX.length)));
 export async function createSimulator(options = {}) {
   const runtime = runtimeSettings(options.runtime);
   if (runtime.kind !== 'power-pages') {
@@ -1097,7 +1108,9 @@ export async function createSimulator(options = {}) {
     return state;
   };
   const solutionMetadataOverlay = createSolutionMetadataOverlay({ appsOf: solutionApps });
-  const mappedTables = createMappedTables();
+  const mappedTables = createMappedTables({
+    revision: () => (store.inTransaction() && !store.isUnmodifiedRead() ? null : store.dataRevision()),
+  });
   const modelMetadata = () => mappedTables(solutionMetadataOverlay(solutionMetadata, store.state), store.state);
   const storageAdapter = await createSimulationPersistence({
     settings: simulation,
@@ -7108,11 +7121,17 @@ export async function createSimulator(options = {}) {
   const answerRequestFailure = (err, req, res, context) => {
     try {
       recordRequestErrorDiagnostics(err, req, context);
-      if (res.headersSent) return void res.end();
+      if (res.headersSent) {
+        res.end();
+        return;
+      }
       writeRequestError(err, req, res);
     } catch {
       // The failure is answered with the generic 500 below; its details are not sent to the caller.
-      if (res.headersSent) return void res.end();
+      if (res.headersSent) {
+        res.end();
+        return;
+      }
       json(res, 500, { error: { code: 'SIMULATOR_ERROR', message: 'Simulator request failed.' } });
     }
   };
@@ -7241,13 +7260,7 @@ export async function createSimulator(options = {}) {
     if (audited && traces.enabled) rootSpan = openRoot(identity);
     // A /_sim administration write (a data edit, a reset, a session change) is a root of host sim acting as the
     // simulator; the trace routes and the run-starting flow routes (sim-flow-routes.mjs opens those) have their own (D-R3-7).
-    else if (
-      traces.enabled &&
-      !['GET', 'HEAD', 'OPTIONS'].includes(req.method) &&
-      /^\/__sim\/api\/(?!trace(?:\/|$)|flow-runs$|session\/portal-ticket$|flow-triggers\/[^/]+$|flow-triggers\/[^/]+\/triggers\/[^/]+\/paths\/invoke$)/.test(
-        url.pathname,
-      )
-    )
+    else if (traces.enabled && !['GET', 'HEAD', 'OPTIONS'].includes(req.method) && isSimRootPath(url.pathname))
       rootSpan = traces.start({
         kind: 'http',
         name: `${req.method} ${url.pathname}`,

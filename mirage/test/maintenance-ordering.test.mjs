@@ -60,8 +60,8 @@ test('data-store virtual columns observe the second metadata read', () => {
   assert.equal(reads, 2);
 });
 
-// @test-kind contract: uniqueness metadata lookup retains its precedence even after another validation has failed.
-test('data-store uniqueness resolves mapping before reporting a required-value refusal', () => {
+// @test-kind contract: uniqueness metadata lookup of a present value retains its precedence even after another validation has failed.
+test('data-store uniqueness resolves mapping before reporting another validation refusal of a present value', () => {
   const failure = new Error('invented mapping failure');
   const store = {
     resolveMapping() {
@@ -75,13 +75,25 @@ test('data-store uniqueness resolves mapping before reporting a required-value r
     () =>
       DataStore.prototype.applyRule.call(
         store,
+        { validate: [{ field: 'code', pattern: '^z', unique: true }] },
+        { code: 'a' },
+        {},
+        [],
+        'sample',
+      ),
+    (error) => error === failure,
+  );
+  assert.throws(
+    () =>
+      DataStore.prototype.applyRule.call(
+        store,
         { validate: [{ field: 'missing', required: true, unique: true }] },
         {},
         {},
         [],
         'sample',
       ),
-    (error) => error === failure,
+    (error) => error.code === 'PluginValidation',
   );
 });
 

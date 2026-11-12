@@ -106,29 +106,29 @@
       );
     return value;
   }
+  // Wraps a resolver so that it first stops listening for the caller's abort.
+  const settleOnce = (signal, abort, done) => (value) => {
+    signal.removeEventListener('abort', abort);
+    done(value);
+  };
   // The caller's own abort rejects only that caller's wait; the shared request keeps running for the others.
   function untilCallerAborts(shared, signal) {
     if (!signal) return shared;
     return new Promise((resolve, reject) => {
       const abort = () => reject(canceled(undefined, signal));
-      const settle = (done) => (value) => {
-        signal.removeEventListener('abort', abort);
-        done(value);
-      };
-      shared.then(settle(resolve), settle(reject));
+      shared.then(settleOnce(signal, abort, resolve), settleOnce(signal, abort, reject));
       if (signal.aborted) abort();
       else signal.addEventListener('abort', abort, { once: true });
     });
   }
   // A failed fetch is not cached: the next request asks for a token again. Concurrent callers share this promise.
-  const token = (signal) =>
-    untilCallerAborts(
-      (tokenRequest ??= fetchToken().catch((error) => {
-        tokenRequest = null;
-        throw error;
-      })),
-      signal,
-    );
+  const token = (signal) => {
+    tokenRequest ??= fetchToken().catch((error) => {
+      tokenRequest = null;
+      throw error;
+    });
+    return untilCallerAborts(tokenRequest, signal);
+  };
   const parse = async (response) => {
     const text = await response.text();
     if (!text) return null;

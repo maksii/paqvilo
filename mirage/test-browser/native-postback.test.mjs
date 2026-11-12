@@ -1,3 +1,4 @@
+// @test-kind compatibility: Microsoft Learn (Dataverse Liquid tags, entityform and webform) states that only a single entityform or webform tag renders per page; the simulator's postback and action handling for that form is its own contract.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -18,7 +19,7 @@ test('postback mode submits actual URLencoded successful controls and navigates 
       'adx_pagetemplateid: template\nadx_webtemplateid: main\nadx_usewebsiteheaderandfooter: true',
     'Main.webtemplate.yml': 'adx_webtemplateid: main\nadx_name: Main',
     'Main.webtemplate.source.html':
-      '<!doctype html><html><body><script>window.__typedProbe=0</script><form id="liquid_form">{% entityform name: "First" %}{% entityform name: "Second" %}</form></body></html>',
+      '<!doctype html><html><body><script>window.__typedProbe=0</script><form id="liquid_form">{% entityform name: "Second" %}{% entityform name: "First" %}</form></body></html>',
     'First.basicform.yml':
       'adx_entityformid: first\nadx_name: First\nadx_mode: 100000001\nadx_recordidquerystringparametername: firstrow',
     'Second.basicform.yml':
@@ -80,7 +81,7 @@ test('postback mode submits actual URLencoded successful controls and navigates 
   await page.goto(app.url + route);
   const first = page.locator('#EntityFormControl_first'),
     second = page.locator('#EntityFormControl_second');
-  await first.locator('#title').fill('Unselected first');
+  assert.equal(await first.count(), 0, 'only the first form tag of a page renders');
   const markup = '<img src=x onerror="window.__typedProbe=1"><script>window.__typedProbe=2</script>';
   await second.locator('#title').fill(markup);
   await second.locator('#description').fill('First\nSecond');
@@ -93,7 +94,6 @@ test('postback mode submits actual URLencoded successful controls and navigates 
   await second.locator('#MessageLabel').waitFor();
   assert.equal(await second.locator('#MessageLabel').innerText(), 'Browser saved');
   assert.equal(await second.locator('#title').inputValue(), markup);
-  assert.equal(await first.locator('#title').inputValue(), 'First');
   assert.equal(await page.evaluate(() => window.__typedProbe), 0);
   assert.equal(requests.length, 1);
   const request = requests[0],

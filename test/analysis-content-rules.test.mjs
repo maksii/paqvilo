@@ -169,14 +169,20 @@ const workerSource = `
     });
   });`;
 
-// The worker keeps a pathological analysis out of the test process and is terminated in finally.
+// The worker keeps a pathological analysis out of the test process. It ends by itself after its answer and is
+// terminated only when the wait fails, so a normal run never terminates a worker that is already exiting.
 async function analyzeInWorker(t, root) {
   const worker = new Worker(workerSource, { eval: true, workerData: { module: analysisModule, root } });
+  // A worker error rejects the wait for its message, which is the reported failure (once(worker, 'message', ...)
+  // rejects on 'error' too). The exit wait only ends the worker's life, so its rejection is ignored here.
+  const exited = once(worker, 'exit').catch(() => {});
   try {
     const [summary] = await once(worker, 'message', { signal: t.signal });
+    await exited;
     return summary;
-  } finally {
+  } catch (error) {
     await worker.terminate();
+    throw error;
   }
 }
 

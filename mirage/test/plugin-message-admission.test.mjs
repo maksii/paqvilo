@@ -207,10 +207,13 @@ for (const message of ['Assign', 'ExecuteMultiple', 'ExecuteTransaction', 'Grant
       message === 'Assign'
         ? `<a:KeyValuePairOfstringanyType><b:key>Assignee</b:key><b:value i:type="a:EntityReference"><a:Id>${b}</a:Id><a:LogicalName>systemuser</a:LogicalName></b:value></a:KeyValuePairOfstringanyType>`
         : '';
+    const requests = ['ExecuteMultiple', 'ExecuteTransaction'].includes(message)
+      ? '<a:KeyValuePairOfstringanyType><b:key>Requests</b:key><b:value i:type="l:OrganizationRequestCollection"/></a:KeyValuePairOfstringanyType>'
+      : '';
     const declarations = Object.entries(NS)
       .map(([key, uri]) => `xmlns:${key}="${uri}"`)
       .join(' ');
-    const xml = `<s:Envelope ${declarations}><s:Body><Execute xmlns="${NS.svc}"><request i:type="a:${message}Request"><a:Parameters><a:KeyValuePairOfstringanyType><b:key>${targetKey}</b:key><b:value i:type="a:EntityReference"><a:Id>${a}</a:Id><a:LogicalName>account</a:LogicalName></b:value></a:KeyValuePairOfstringanyType>${assignee}</a:Parameters><a:RequestName>${message}</a:RequestName></request></Execute></s:Body></s:Envelope>`;
+    const xml = `<s:Envelope ${declarations}><s:Body><Execute xmlns="${NS.svc}"><request i:type="a:${message}Request"><a:Parameters><a:KeyValuePairOfstringanyType><b:key>${targetKey}</b:key><b:value i:type="a:EntityReference"><a:Id>${a}</a:Id><a:LogicalName>account</a:LogicalName></b:value></a:KeyValuePairOfstringanyType>${assignee}${requests}</a:Parameters><a:RequestName>${message}</a:RequestName></request></Execute></s:Body></s:Envelope>`;
     const before = structuredClone(f.store.tableRows('account'));
     const result = await handleSoap(
       {

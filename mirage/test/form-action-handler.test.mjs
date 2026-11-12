@@ -364,7 +364,7 @@ test('a configured validation message cannot end the inline script that carries 
     { user: { id: 'current' }, request: { params: {} } },
     { portal, store, schemas },
   );
-  const scripts = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
+  const scripts = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script\b[^>]*>/gi)].map((match) => match[1]);
   const validatorScript = scripts.find((text) => text.includes('Page_Validators'));
   assert.ok(validatorScript, 'the page carries a script that sets the validators');
   assert.ok(validatorScript.includes('a\\u003c/script>'), 'the configured message is carried in the script, escaped');

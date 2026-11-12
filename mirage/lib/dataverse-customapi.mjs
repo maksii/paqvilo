@@ -1974,9 +1974,16 @@ const UNIQUE_NAME_SCOPE = new Map([
   ],
 ]);
 const PARENT_BIND = 'CustomAPIId@odata.bind';
+// The id inside the trailing parentheses of a bind path such as /customapis(<id>), or null.
+function boundParentId(bind) {
+  const text = String(bind);
+  if (!text.endsWith(')')) return null;
+  const body = text.slice(0, -1);
+  const open = body.indexOf('(', body.lastIndexOf(')') + 1);
+  return open < 0 ? null : body.slice(open + 1);
+}
 // The id of the API a parameter or property belongs to: its customapiid, or the id in its CustomAPIId@odata.bind path.
-const parentIdOf = (candidate) =>
-  candidate.customapiid ?? /\(([^)]*)\)$/.exec(candidate[PARENT_BIND] ?? '')?.[1] ?? null;
+const parentIdOf = (candidate) => candidate.customapiid ?? boundParentId(candidate[PARENT_BIND] ?? '');
 
 function exportKeyFailure(attribute, component) {
   return new DataError(

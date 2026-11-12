@@ -194,11 +194,17 @@ test('reset reuses project confinement defaults while returning runtime changes 
 
 test('both administration aliases use the JSON error contract when the origin is rejected', async (t) => {
   const { app } = await fixture(t);
+  const cases = [
+    [app.url, { origin: 'https://invented.invalid' }, 'AdminOriginRequired', /own address/],
+    [app.url, { host: 'invented.invalid' }, 'INVALID_REQUEST', /Host/],
+    [app.adminOrigin, { origin: 'https://invented.invalid' }, 'CrossOriginAdminRequest', /origin/],
+    [app.adminOrigin, { host: 'invented.invalid' }, 'INVALID_REQUEST', /Host/],
+  ];
   for (const prefix of ['/_sim/api', '/__sim/api'])
-    for (const headers of [{ origin: 'https://invented.invalid' }, { host: 'invented.invalid' }]) {
+    for (const [origin, headers, code, message] of cases) {
       const response = await new Promise((resolve, reject) => {
         http
-          .get(app.url + prefix + '/status', { headers }, (res) => {
+          .get(origin + prefix + '/status', { headers }, (res) => {
             let body = '';
             res.setEncoding('utf8');
             res.on('data', (chunk) => {
@@ -211,8 +217,8 @@ test('both administration aliases use the JSON error contract when the origin is
       assert.equal(response.status, 403);
       assert.match(response.headers['content-type'], /^application\/json/);
       const body = JSON.parse(response.body);
-      assert.equal(body.error.code, 'INVALID_REQUEST');
-      assert.match(body.error.message, /origin|Host/);
+      assert.equal(body.error.code, code);
+      assert.match(body.error.message, message);
     }
 });
 

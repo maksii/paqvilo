@@ -58,7 +58,7 @@ const loopback = (value) => {
 // Each run writes into its own folder under the output root; an existing run folder is never reused.
 const createRunDirectory = async (outputRoot, startedAt) => {
   await fs.mkdir(outputRoot, { recursive: true });
-  const runDir = path.join(outputRoot, startedAt.toISOString().replace(/[:.]/g, ''));
+  const runDir = path.join(outputRoot, startedAt.toISOString().replaceAll(/[:.]/g, ''));
   try {
     await fs.mkdir(runDir);
   } catch (error) {

@@ -973,23 +973,33 @@ try {
             const html = await response.text();
             const location = response.headers.get('location');
             const redirected = response.status >= 300 && response.status < 400;
-            if (redirected && !args.output) {
-              await simulator.close();
-              throw new Error(
-                `Render path ${args.path} answered ${response.status} to ${location}; render the target path instead.`,
-              );
-            }
-            if (args.output) {
-              const output = redirected ? null : path.resolve(args.output);
-              if (output) {
-                await fs.mkdir(path.dirname(output), { recursive: true });
-                await fs.writeFile(output, html);
+            if (redirected) {
+              if (!args.output) {
+                await simulator.close();
+                throw new Error(
+                  `Render path ${args.path} answered ${response.status} to ${location}; render the target path instead.`,
+                );
               }
               console.log(
                 JSON.stringify(
                   {
                     status: response.status,
-                    ...(redirected ? { location } : {}),
+                    location,
+                    output: null,
+                    diagnostics: simulator.state().diagnostics,
+                  },
+                  null,
+                  2,
+                ),
+              );
+            } else if (args.output) {
+              const output = path.resolve(args.output);
+              await fs.mkdir(path.dirname(output), { recursive: true });
+              await fs.writeFile(output, html);
+              console.log(
+                JSON.stringify(
+                  {
+                    status: response.status,
                     output,
                     diagnostics: simulator.state().diagnostics,
                   },

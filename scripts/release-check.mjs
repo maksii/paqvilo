@@ -477,7 +477,7 @@ export function validateReleaseFiles(files) {
     /^examples\/project\/solution\/PluginAssemblies\/[A-Za-z0-9_.{} /-]*PaqviloDemoPlugins\.dll$/;
   const allowed = [
     /^(?:package\.json|npm-shrinkwrap\.json|README\.md|CONTRIBUTING\.md|AGENTS\.md|LICENSE|NOTICE|\.env\.example|paqvilo\.config\.yml|bin\/paqvilo\.mjs|scripts\/ensure-dependencies\.mjs)$/,
-    /^licenses\/[a-z0-9-]+(?:\.[0-9]+)?\.txt$/,
+    /^licenses\/[a-z0-9-]+(?:\.\d+)?\.txt$/,
     /^lense\/[a-z0-9/-]+\.mjs$/,
     /^lense\/setup\/[a-z0-9-]+\.(?:html|css)$/,
     /^docs\/[a-z0-9-]+\.md$/,
