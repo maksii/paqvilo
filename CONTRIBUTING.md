@@ -73,6 +73,9 @@ With GitHub CLI authenticated, run `npm run check:pr -- --pr <number>` before re
 pushed HEAD, completed gates and GitHub's effective merge state. Successful historical job results alone are
 insufficient: `BLOCKED` or `UNKNOWN` is not a ready PR.
 
+SonarQube analyses branches and pull requests and is not a required check. When its quality gate fails, the last
+step of the job prints the failed conditions, the open issues in new code and the hotspots to review.
+
 [Security](https://github.com/maksii/paqvilo/blob/main/.github/workflows/security.yml) scans JavaScript/TypeScript, GitHub Actions and the sample C# sources with CodeQL on every PR, main push and weekly run. All three analysis configurations must match main, including documentation-only PRs; omitting an unchanged language can block merging despite successful jobs. Dependency review rejects newly introduced moderate-or-higher vulnerabilities. `Security gate` is required alongside `CI gate`. [Pages](https://github.com/maksii/paqvilo/blob/main/.github/workflows/pages.yml) builds relevant site changes on PRs and deploys only from `main`. See the [repository admin guide](docs/repository-admin.md) for settings and promotion prerequisites.
 
 [Release](https://github.com/maksii/paqvilo/blob/main/.github/workflows/release.yml) publishes normal releases only from a `v<version>` tag on main matching `package.json`, after the full CI run. Main prereleases use `next`. On-demand branch packages use immutable generated preview tags and separate `preview-<branch-token>` npm channels; see [testing branch packages](docs/branch-packages.md). Releases use the existing npm trusted publisher with provenance, configured for `maksii/paqvilo`, workflow `release.yml` and environment `npm`. A manual run takes an existing tag, runs on that tag and defaults to `npm publish --dry-run`. Preview tag pushes do not publish automatically.

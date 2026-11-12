@@ -168,3 +168,10 @@ jobs:
             -Dsonar.javascript.lcov.reportPaths=coverage/sonar-coverage-lense-unit/lcov.info,coverage/sonar-coverage-lense-browser/lcov.info,coverage/sonar-coverage-mirage-unit-1-of-3/lcov.info,coverage/sonar-coverage-mirage-unit-2-of-3/lcov.info,coverage/sonar-coverage-mirage-unit-3-of-3/lcov.info,coverage/sonar-coverage-mirage-browser-1-of-2/lcov.info,coverage/sonar-coverage-mirage-browser-2-of-2/lcov.info,coverage/sonar-coverage-examples-unit/lcov.info,coverage/sonar-coverage-examples-browser/lcov.info
             -Dsonar.typescript.tsconfigPaths=.github/tsconfig.sonar.json
             ${{ steps.target.outputs.args }}
+      - name: Report why the quality gate failed
+        if: failure()
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          SONAR_BRANCH: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
+        run: node scripts/sonar-gate-report.mjs

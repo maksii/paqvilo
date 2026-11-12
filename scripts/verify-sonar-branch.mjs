@@ -26,7 +26,7 @@ function parseReport(text) {
   return values;
 }
 
-async function readApi(base, token, endpoint, query, fetchImpl) {
+export async function readApi(base, token, endpoint, query, fetchImpl) {
   const url = new URL(endpoint, base);
   for (const [key, value] of Object.entries(query)) url.searchParams.set(key, String(value));
   let response;
