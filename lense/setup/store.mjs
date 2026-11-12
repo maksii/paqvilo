@@ -483,8 +483,8 @@ async function openSaveLock(lockFile) {
     if (await removeStaleSaveLock(lockFile)) {
       try {
         return await createSaveLock(lockFile);
-      } catch (retry) {
-        if (retry.code !== 'EEXIST') throw retry;
+      } catch (error_) {
+        if (error_.code !== 'EEXIST') throw error_;
       }
     }
     throw setupError('Configuration is being saved. Retry shortly.', 409);

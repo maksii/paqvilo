@@ -561,7 +561,11 @@ export function analyzeDataverse(entries, emit) {
       'target-connection-and-secret-resolution-not-performed',
       'javascript-dataflow-and-dynamic-query-construction-not-analyzed',
       'complete-solution-XSD-and-SDK-app-spec-validation-not-performed',
-      ...(unreviewed.size ? [`Recognized without rules: ${[...unreviewed].sort().join(', ')}.`] : []),
+      ...(unreviewed.size
+        ? [
+            `Recognized without rules: ${[...unreviewed].sort((left, right) => left.localeCompare(right, 'en')).join(', ')}.`,
+          ]
+        : []),
     ],
   };
   const domainFiles = (names) =>

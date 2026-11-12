@@ -118,7 +118,9 @@ async function main() {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main().catch((error) => {
+  try {
+    await main();
+  } catch (error) {
     console.log(`Sonar gate report could not run: ${error.message}`);
-  });
+  }
 }

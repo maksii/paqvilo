@@ -238,7 +238,7 @@ function assemblyTypeDefName(typeDefs, nested, strings, index, names) {
     current = nested.get(current);
   }
   // The enclosing type is always named before the type it encloses.
-  for (const row of walked.reverse()) {
+  for (const row of walked.toReversed()) {
     const [, name, namespace] = assemblyRow(typeDefs, row, 'TypeDef');
     const simple = stringAt(strings, name);
     names.set(
@@ -251,8 +251,8 @@ function assemblyTypeDefName(typeDefs, nested, strings, index, names) {
   return names.get(index);
 }
 
-function assemblyTypeName(ref, typeRefs, typeDefs, nested, strings, names) {
-  if (ref?.table === TYPE_DEF) return assemblyTypeDefName(typeDefs, nested, strings, ref.row, names);
+function assemblyTypeName(ref, typeRefs, typeDefs, nested, strings, memo) {
+  if (ref?.table === TYPE_DEF) return assemblyTypeDefName(typeDefs, nested, strings, ref.row, memo.names);
   if (ref?.table === TYPE_REF) return assemblyTypeRefName(typeRefs, strings, ref.row);
   return null;
 }
@@ -262,14 +262,14 @@ function assemblyBase(typeDefs, index) {
 }
 
 // Walks the base classes declared in this assembly from `index` and returns true at the first type that `matches`.
-// A base outside the assembly, or a TypeDef already visited on this walk, ends the walk as not matching. `memo` maps
+// A base outside the assembly, or a TypeDef already visited on this walk, ends the walk as not matching. `results` maps
 // TypeDef rows to the result already settled for them in this inspectAssembly call: the walk stops at the first one it
 // reaches and takes that result, then settles every TypeDef it passed with the same result.
-function assemblyBaseWalkMatches(index, typeDefs, matches, memo) {
+function assemblyBaseWalkMatches(index, typeDefs, matches, results) {
   const walked = new Set();
   let current = index;
   let result = false;
-  while (!walked.has(current) && !memo.has(current)) {
+  while (!walked.has(current) && !results.has(current)) {
     walked.add(current);
     if (matches(current)) {
       result = true;
@@ -279,30 +279,30 @@ function assemblyBaseWalkMatches(index, typeDefs, matches, memo) {
     if (base?.table !== TYPE_DEF) break;
     current = base.row;
   }
-  if (memo.has(current)) result = memo.get(current);
-  for (const row of walked) memo.set(row, result);
+  if (results.has(current)) result = results.get(current);
+  for (const row of walked) results.set(row, result);
   return result;
 }
 
-function assemblyIsPlugin(index, interfaces, typeDefs, typeRefs, nested, strings, names, plugins) {
+function assemblyIsPlugin(index, interfaces, typeDefs, typeRefs, nested, strings, memo) {
   return assemblyBaseWalkMatches(
     index,
     typeDefs,
     (current) =>
       (interfaces.get(current) ?? []).some(
-        (ref) => assemblyTypeName(ref, typeRefs, typeDefs, nested, strings, names) === PLUGIN_INTERFACE,
+        (ref) => assemblyTypeName(ref, typeRefs, typeDefs, nested, strings, memo) === PLUGIN_INTERFACE,
       ),
-    plugins,
+    memo.plugins,
   );
 }
 
-function assemblyIsActivity(index, typeDefs, typeRefs, nested, strings, names, activities) {
+function assemblyIsActivity(index, typeDefs, typeRefs, nested, strings, memo) {
   return assemblyBaseWalkMatches(
     index,
     typeDefs,
     (current) =>
-      assemblyTypeName(assemblyBase(typeDefs, current), typeRefs, typeDefs, nested, strings, names) === ACTIVITY_BASE,
-    activities,
+      assemblyTypeName(assemblyBase(typeDefs, current), typeRefs, typeDefs, nested, strings, memo) === ACTIVITY_BASE,
+    memo.activities,
   );
 }
 
@@ -367,17 +367,19 @@ function assemblyIsActivity(index, typeDefs, typeRefs, nested, strings, names, a
   if (!assembly) throw invalid('no Assembly row');
   const [, major, minor, build, revision, , publicKeyIndex, nameIndex, cultureIndex] = assembly;
   const publicKey = blobAt(blobs, publicKeyIndex);
-  const types = [],
-    names = new Map(), // TypeDef row -> full name, shared by every lookup in this call
-    plugins = new Map(), // TypeDef row -> plug-in result, shared by every walk in this call
-    activities = new Map(); // TypeDef row -> workflow activity result, shared by every walk in this call
+  const types = [];
+  const memo = {
+    names: new Map(), // TypeDef row -> full name, shared by every lookup in this call
+    plugins: new Map(), // TypeDef row -> plug-in result, shared by every walk in this call
+    activities: new Map(), // TypeDef row -> workflow activity result, shared by every walk in this call
+  };
   for (let index = 1; index <= typeDefs.length; index++) {
-    const fullName = assemblyTypeDefName(typeDefs, nested, strings, index, names);
+    const fullName = assemblyTypeDefName(typeDefs, nested, strings, index, memo.names);
     if (fullName !== '<Module>')
       types.push({
         fullName,
-        isPlugin: assemblyIsPlugin(index, interfaces, typeDefs, typeRefs, nested, strings, names, plugins),
-        isWorkflowActivity: assemblyIsActivity(index, typeDefs, typeRefs, nested, strings, names, activities),
+        isPlugin: assemblyIsPlugin(index, interfaces, typeDefs, typeRefs, nested, strings, memo),
+        isWorkflowActivity: assemblyIsActivity(index, typeDefs, typeRefs, nested, strings, memo),
       });
   }
   return {

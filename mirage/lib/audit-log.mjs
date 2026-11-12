@@ -6,7 +6,7 @@ const secret = /(?:password|passwd|secret|token|authorization|cookie|credential|
 // invitation codes). One alternation feeds the key test and the free-text pattern, so the two cannot drift.
 const queryCredentialNames = 'code|sig|invitation(?:code)?';
 const queryCredential = new RegExp(`^(?:${queryCredentialNames})$`, 'i');
-const queryCredentialValue = new RegExp(`([?&](?:${queryCredentialNames})=)[^&#\\s"'<>]*`, 'gi');
+const queryCredentialValue = new RegExp(String.raw`([?&](?:${queryCredentialNames})=)[^&#\s"'<>]*`, 'gi');
 const secretQueryKey = (key) => secret.test(key) || queryCredential.test(key);
 // One name=value pair of a query string, redacted by the same key test as the URLSearchParams form.
 const redactQueryPair = (pair) => {

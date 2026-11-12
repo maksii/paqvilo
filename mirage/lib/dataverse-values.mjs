@@ -569,8 +569,9 @@ export function likeMatcher(pattern, collation = 'CI_AI') {
 
 const LIKE_ANY = { any: true };
 const LIKE_ONE = { one: true };
-const LIKE_LITERAL = Symbol('literal');
-const LIKE_INVALID = Symbol('invalid');
+// Every reader of a pattern [ returns one of these shapes: a set with its source and closing index, or a kind.
+const SET_LITERAL = { kind: 'literal' };
+const SET_INVALID = { kind: 'invalid' };
 const identityFold = (text) => text;
 const escapeLikeChar = (char) => char.replace(/[.*+?^${}()|[\]\\/-]/g, String.raw`\$&`);
 
@@ -588,7 +589,7 @@ export function likeTokens(pattern, { escape = null, fold = identityFold, ignore
   let i = 0;
   while (i < pattern.length) {
     const element = likeElementAt(pattern, i, options);
-    if (element === null) return null;
+    if (element.tokens === null) return null;
     for (const token of element.tokens) {
       if (token !== LIKE_ANY || tokens.at(-1) !== LIKE_ANY) tokens.push(token);
     }
@@ -597,12 +598,12 @@ export function likeTokens(pattern, { escape = null, fold = identityFold, ignore
   return tokens;
 }
 
-// The tokens of the pattern element at index i and the index after it, or null when the pattern is invalid there.
+// The pattern element at index i: its tokens (null when the pattern is invalid there) and the index after it.
 function likeElementAt(pattern, i, options) {
   const { escape, fold, ignoreCase } = options;
   const c = pattern[i];
   if (escape !== null && c === escape) {
-    if (i + 1 === pattern.length) return null;
+    if (i + 1 === pattern.length) return { tokens: null, next: i };
     return { tokens: literalTokens(fold(pattern[i + 1]), ignoreCase), next: i + 2 };
   }
   if (c === '%') return { tokens: [LIKE_ANY], next: i + 1 };
@@ -614,8 +615,8 @@ function likeElementAt(pattern, i, options) {
 function likeSetElementAt(pattern, i, options) {
   const { escape, fold, ignoreCase, brackets } = options;
   const set = likeSetAt(pattern, i, escape, fold, brackets);
-  if (set === LIKE_INVALID) return null;
-  if (set === LIKE_LITERAL) return { tokens: literalTokens(fold('['), ignoreCase), next: i + 1 };
+  if (set.kind === 'invalid') return { tokens: null, next: i };
+  if (set.kind === 'literal') return { tokens: literalTokens(fold('['), ignoreCase), next: i + 1 };
   return { tokens: [{ test: caseClassTest(set.source, ignoreCase) }], next: set.end + 1 };
 }
 
@@ -639,13 +640,14 @@ function withoutBackwardRanges(body) {
   return out;
 }
 
-// Atoms of class text: an escape with its character is one atom, every other character is one atom.
+// Atoms of class text: an escape with its character is one atom, every other character is one atom. `unit` is the
+// atom's last UTF-16 unit as a string, so two units compare by code unit value with <= .
 function classAtoms(body) {
   const atoms = [];
   let k = 0;
   while (k < body.length) {
     const width = body[k] === '\\' && k + 1 < body.length ? 2 : 1;
-    atoms.push({ text: body.slice(k, k + width), code: body.charCodeAt(k + width - 1) });
+    atoms.push({ text: body.slice(k, k + width), unit: body[k + width - 1] });
     k += width;
   }
   return atoms;
@@ -656,7 +658,7 @@ const keptClassText = (atom) => (atom.text === '-' ? String.raw`\-` : atom.text)
 // The class text of the member that starts at atom k, and the index of the atom after it.
 function classItemAt(atoms, k) {
   if (k + 2 < atoms.length && atoms[k + 1].text === '-') {
-    const text = atoms[k].code <= atoms[k + 2].code ? `${keptClassText(atoms[k])}-${keptClassText(atoms[k + 2])}` : '';
+    const text = atoms[k].unit <= atoms[k + 2].unit ? `${keptClassText(atoms[k])}-${keptClassText(atoms[k + 2])}` : '';
     return { text, next: k + 3 };
   }
   return { text: keptClassText(atoms[k]), next: k + 1 };
@@ -669,24 +671,24 @@ function classSource(negate, body) {
 function likeSetAt(pattern, index, escape, fold, brackets) {
   const close = pattern.indexOf(']', index + 1);
   if (brackets === 'matcher') return matcherSetAt(pattern, index, close);
-  if (close <= index + 1) return LIKE_LITERAL;
+  if (close <= index + 1) return SET_LITERAL;
   if (brackets === 'pattern') return patternSetAt(pattern, index, close);
   return sqlSetAt(pattern, index, escape, fold);
 }
 
 function matcherSetAt(pattern, index, close) {
-  if (close < 0) return LIKE_LITERAL;
+  if (close < 0) return SET_LITERAL;
   let body = pattern.slice(index + 1, close);
-  if (!body || body === '^') return LIKE_INVALID;
+  if (!body || body === '^') return SET_INVALID;
   const negate = body.length > 1 && body.startsWith('^');
   if (negate) body = body.slice(1);
-  return { source: classSource(negate, body.replace(/[\\\]^]/g, String.raw`\$&`)), end: close };
+  return { kind: 'set', source: classSource(negate, body.replace(/[\\\]^]/g, String.raw`\$&`)), end: close };
 }
 
 function patternSetAt(pattern, index, close) {
   const negate = pattern[index + 1] === '^';
   const body = pattern.slice(index + 1 + (negate ? 1 : 0), close).replace(/[\\\][]/g, String.raw`\$&`);
-  return { source: classSource(negate, body), end: close };
+  return { kind: 'set', source: classSource(negate, body), end: close };
 }
 
 function sqlSetAt(pattern, index, escape, fold) {
@@ -696,12 +698,12 @@ function sqlSetAt(pattern, index, escape, fold) {
   let set = '';
   for (; end < pattern.length && pattern[end] !== ']'; end++) {
     const escaped = escape !== null && pattern[end] === escape;
-    if (escaped && ++end === pattern.length) return LIKE_INVALID;
+    if (escaped && ++end === pattern.length) return SET_INVALID;
     const member = fold(pattern[end]).replace(/[\\[\]^]/g, String.raw`\$&`);
     set += escaped ? member.replaceAll('-', String.raw`\-`) : member;
   }
-  if (end === pattern.length || !set) return LIKE_INVALID;
-  return { source: classSource(negate, set), end };
+  if (end === pattern.length || !set) return SET_INVALID;
+  return { kind: 'set', source: classSource(negate, set), end };
 }
 
 const caseClassTests = new Map();
