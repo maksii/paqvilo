@@ -385,6 +385,7 @@ function storeMiragePageSummary(page, pathname, session, summaryResponse, answer
     session,
     report,
     roots,
+    origin: context.origin,
     path: pathname,
     version: context.nextVersion(),
     error: answer ? null : `Page inspection returned HTTP ${summaryResponse.status()}.`,
@@ -987,6 +988,7 @@ export function enablePanel(context, session, opts = {}) {
           summary: summarize(result.report),
           report: result.report,
           roots,
+          origin: new URL(pathname, cfg.origin).origin,
           path: pathname,
           version: ++runtimeVersion,
           error: null,
@@ -1009,6 +1011,7 @@ export function enablePanel(context, session, opts = {}) {
         const answer = summaryResponse.ok() ? await summaryResponse.json() : null;
         storeMiragePageSummary(page, pathname, session, summaryResponse, answer, {
           status,
+          origin: new URL(pathname, cfg.origin).origin,
           validInspectionReport,
           trustedRoots,
           annotateRuntime,
@@ -1489,11 +1492,19 @@ export function enablePanel(context, session, opts = {}) {
       if (/ERR_ABORTED|ERR_CACHE_MISS/.test(reason) || !sameOrigin(req.url(), cfg.origin)) return;
       problem(page, { type: 'failed', text: `${req.method()} ${new URL(req.url()).pathname}`, where: reason });
     });
+    // The document this tab showed at its last load, whatever its origin: a return to a portal
+    // from another origin is a new document even when the path matches the stored report.
+    let seenDocument = null;
     listen('domcontentloaded', () => {
       schedule(page);
-      // A tab whose report describes another address (history navigation, a missed hit) is re-inspected.
-      if (!adminPage(page.url()) && runtimeByPage.get(page)?.path !== pathOf(page.url()))
-        refreshRuntime(page).catch(() => {});
+      // A tab whose report describes another document (another origin or path after a portal switch,
+      // history navigation, a missed hit) is re-inspected.
+      const { origin, pathname } = new URL(page.url());
+      const documentKey = `${origin}${pathname}`;
+      const stored = runtimeByPage.get(page);
+      const changed = stored?.origin !== origin || stored?.path !== pathname || seenDocument !== documentKey;
+      seenDocument = documentKey;
+      if (!adminPage(page.url()) && changed) refreshRuntime(page).catch(() => {});
     });
     listen('load', () => schedule(page));
     listen('close', () => {

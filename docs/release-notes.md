@@ -103,6 +103,8 @@ organization's metadata. Large datasets use far less memory.
   Invitation codes are redacted in traces and audit records.
 - Switching the model-driven target on a slow or loaded machine no longer ends the dev session and closes the
   browser: retiring a target waits for the browser to finish its cleanup.
+- The panel's Tweaks tab recovers on its own when a read of the local runtime is slow or dropped, and returning to a
+  portal that was visited before refreshes its runtime summary.
 - `lense verify` reads the displayed document when the start page reloads itself or returns from a sign-in round trip
   on the same address.
 - A span opened after its trace left the retained set no longer recreates a partial trace under the same id.
@@ -139,6 +141,8 @@ organization's metadata. Large datasets use far less memory.
   captures, `check` validates every case file and `report` counts cases per oracle kind. One runner replays each
   case into Mirage. A new hand-written test cannot be tagged `parity`; the tags that predate replay cases are listed in
   `scripts/parity-tags-legacy.json`, and that list only shrinks. See [test kinds](test-kinds.md).
+- When the SonarQube quality gate fails, the last step of its job prints the failed conditions and the open issues in
+  new code.
 
 Update with `npm install --save-dev paqvilo@^0.9.8` and commit the lockfile.
 

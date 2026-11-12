@@ -2773,11 +2773,16 @@ function panelBrowserImpl(data) {
         acceptInspection(request, version, r, scope);
       });
     };
+    // A failed read is requested again by the next draws, up to this many reads per runtime version.
+    const TWEAKS_ATTEMPTS = 3;
     const ensureTweaks = () => {
       const c = S.d?.mirage;
-      if (!c?.active || !c.version || (S.tweaks && S.tweaks.version >= c.version) || S.tweaksLoading === c.version)
-        return;
+      if (!c?.active || !c.version || S.tweaksLoading === c.version) return;
+      const current = S.tweaks;
+      const retry = current?.version === c.version && !current.ok && current.failures < TWEAKS_ATTEMPTS;
+      if (current && current.version >= c.version && !retry) return;
       const version = c.version;
+      const failures = current?.version === version && !current.ok ? current.failures : 0;
       S.tweaksLoading = version;
       void api('tweaks').then((r) => {
         if (lifetime.signal.aborted || S.tweaksLoading !== version) return;
@@ -2785,6 +2790,7 @@ function panelBrowserImpl(data) {
         S.tweaks = {
           ...r,
           version,
+          failures: r.ok ? 0 : failures + 1,
           personas: r.personas ?? [],
           presets: r.presets ?? [],
           scenarios: r.scenarios ?? [],
