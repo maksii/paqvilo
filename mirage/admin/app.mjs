@@ -317,7 +317,7 @@ document.addEventListener('click', async (event) => {
 });
 // Model-driven apps, Canvas apps and Code Apps all act as the staff session. The dashboard reports Canvas and Code Apps
 // as `ready` only when the runtime has apps of that kind, so the selector follows the apps the runtime serves.
-const STAFF_APP_SURFACES = ['app:canvas', 'app:code'];
+const STAFF_APP_SURFACES = new Set(['app:canvas', 'app:code']);
 let appSurfaceNodes = [];
 async function loadAppSurfaceNodes() {
   const payload = await request('/dashboard').catch(() => null);
@@ -325,7 +325,7 @@ async function loadAppSurfaceNodes() {
 }
 function usesStaffSession() {
   if (capabilities().modelDriven !== false) return true;
-  return appSurfaceNodes.some((surface) => STAFF_APP_SURFACES.includes(surface.id) && surface.status === 'ready');
+  return appSurfaceNodes.some((surface) => STAFF_APP_SURFACES.has(surface.id) && surface.status === 'ready');
 }
 function staffSessionPanel() {
   if (!usesStaffSession()) return '';

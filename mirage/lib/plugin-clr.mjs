@@ -2088,8 +2088,8 @@ function drainSessionPackets(session) {
   return false;
 }
 function drainPooledSessions(diagnostic = () => {}) {
-  for (const session of [...pooledHosts.values()])
-    if (drainSessionPackets(session)) stopClrHost(session, diagnostic, { failed: true });
+  const sessions = [...pooledHosts.values()];
+  for (const session of sessions) if (drainSessionPackets(session)) stopClrHost(session, diagnostic, { failed: true });
 }
 export function clrHostPoolStatus() {
   drainPooledSessions();

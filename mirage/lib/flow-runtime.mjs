@@ -2128,7 +2128,7 @@ export function executeFlowDefinition({
   const runClock = () => Number(store?.clock?.now?.() ?? Date.now());
   const maxActions = Math.min(limits.maxActions ?? 2000, 10000),
     maxIterations = Math.min(limits.maxIterations ?? 100, 1000),
-    timeoutMs = Number(limits.timeoutMs ?? NaN),
+    timeoutMs = Number(limits.timeoutMs ?? Number.NaN),
     deadline = Number.isFinite(timeoutMs) ? runClock() + timeoutMs : Infinity;
   // A provider call receives the time left on an explicit deadline, capped at the longest timer delay, so a pending call is
   // bounded by the run's limit and no timer fires early.

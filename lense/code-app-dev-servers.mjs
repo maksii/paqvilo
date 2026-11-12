@@ -81,7 +81,7 @@ function doubleBackslashRuns(text) {
       run++;
       continue;
     }
-    result += character === '"' ? '\\'.repeat(run * 2) + '\\"' : '\\'.repeat(run) + character;
+    result += character === '"' ? '\\'.repeat(run * 2) + String.raw`\"` : '\\'.repeat(run) + character;
     run = 0;
   }
   return result + '\\'.repeat(run * 2);
@@ -102,7 +102,7 @@ const SHIM_CONTROL_NAMES = new Map([
 ]);
 function assertShimLineSafe(values) {
   values.forEach((value, index) => {
-    const found = String(value).match(SHIM_CONTROL_CHARACTERS);
+    const found = SHIM_CONTROL_CHARACTERS.exec(String(value));
     if (found)
       throw new Error(
         `Command argument ${index + 1} contains a ${SHIM_CONTROL_NAMES.get(found[0])}; cmd.exe would end the command line there and drop the rest. Remove it from the command.`,

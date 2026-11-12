@@ -602,8 +602,9 @@
     }
     // A handler error belongs to the page: it is reported as uncaught and does not stop the list or the other handlers.
     const emit = (event, payload) => {
-      for (const handler of [...handlers[event]]) {
-        // NOSONAR: snapshot copy guards against mutation while iterating
+      // The list is copied first: a handler may add or remove handlers while the event is emitted.
+      const current = [...handlers[event]];
+      for (const handler of current) {
         try {
           handler(payload);
         } catch (error) {

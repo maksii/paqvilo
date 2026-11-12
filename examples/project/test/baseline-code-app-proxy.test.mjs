@@ -110,7 +110,7 @@ test('code app proxy cancels upstream when the client disconnects before headers
     closed = resolve;
   });
   const upstream = http.createServer((_req, res) => {
-    res.once('close', closed);
+    res.once('close', () => closed(res.destroyed));
     arrived();
   });
   await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve));
@@ -127,5 +127,5 @@ test('code app proxy cancels upstream when the client disconnects before headers
   request.on('error', () => {});
   await requestArrived;
   request.destroy();
-  await responseClosed;
+  assert.equal(await responseClosed, true, 'the upstream response was closed when the client went away');
 });

@@ -1650,7 +1650,8 @@ async function applyOperationOverrides(c, next, commit) {
  * a directory shared with another entry stays until that entry is released too, and a failed release is retried by the next close.
  */
 function releaseHostRuntimes(c) {
-  for (const [id, runtime] of [...c.runtimes]) {
+  const entries = [...c.runtimes];
+  for (const [id, runtime] of entries) {
     if (runtime.uploaded || !c.preparedRuntimes.has(runtime)) continue;
     const others = [...c.runtimes].filter(([key]) => key !== id).map(([, other]) => other);
     releaseClrRuntime(runtime, { liveRuntimes: others, diagnostic: c.diagnostic });

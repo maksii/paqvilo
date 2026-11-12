@@ -271,7 +271,7 @@ function resolveComponentDataset(dataset, { args, metadata, mappings, schema }) 
 }
 
 const admittedFiles = new WeakMap();
-const resourceKinds = ['code', 'css', 'resx', 'img'];
+const resourceKinds = new Set(['code', 'css', 'resx', 'img']);
 const resourceLimit = 8 * 1024 * 1024;
 const attempt = async (task) => {
   try {
@@ -423,7 +423,7 @@ async function readManifestControl({ root, manifestFile, readFile, schemaName, a
     declared = [];
   for (const resource of descendants(control, 'resources')[0]?.children ?? []) {
     if (resource.name === 'platform-library') libraries.push({ ...resource.attrs });
-    else if (resourceKinds.includes(resource.name)) declared.push(resource);
+    else if (resourceKinds.has(resource.name)) declared.push(resource);
   }
   const { resources, stringResources, declaredAssets } = await readDeclaredResources({
     root,

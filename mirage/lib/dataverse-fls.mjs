@@ -180,6 +180,15 @@ function dropAnnotations(row, form) {
   for (const key of Object.keys(row)) if (key.startsWith(`${form}@`)) delete row[key];
 }
 
+// Nulls a column under its plain name and its lookup form (_name_value), with its annotations.
+function nullColumn(row, prefix, name) {
+  for (const form of [`${prefix}${name}`, `${prefix}_${name}_value`]) {
+    if (!Object.hasOwn(row, form)) continue;
+    row[form] = null;
+    dropAnnotations(row, form);
+  }
+}
+
 /** Pure factory over a store and principals. `organizationId()` returns the organization GUID that derives the column MetadataIds. */
 function createFieldSecurity({
   store,
@@ -429,14 +438,6 @@ function createFieldSecurity({
   // unless the read asked UnMaskedData and CanReadUnmasked allows it (All Records, or One Record on a single-record read).
   // Without view (filter evaluation) a readable column keeps its stored value.
   // The aliased lookup form `prefix_name_value` is assumed.
-  // Nulls a column under its plain name and its lookup form (_name_value), with its annotations.
-  function nullColumn(row, prefix, name) {
-    for (const form of [`${prefix}${name}`, `${prefix}_${name}_value`]) {
-      if (!Object.hasOwn(row, form)) continue;
-      row[form] = null;
-      dropAnnotations(row, form);
-    }
-  }
   function maskColumn(user, mapping, row, prefix, view, recordId, name) {
     if (![`${prefix}${name}`, `${prefix}_${name}_value`].some((form) => Object.hasOwn(row, form))) return;
     const access = accessOf(user, mapping.logicalName, name, recordId);

@@ -253,7 +253,7 @@ function commentEnd(text, tags) {
 }
 
 function rawTextEnd(text, tags, name) {
-  const close = new RegExp(`</${name}(?=[\\s/>])`, 'gi');
+  const close = new RegExp(String.raw`</${name}(?=[\s/>])`, 'gi');
   close.lastIndex = tags.lastIndex;
   const match = close.exec(text);
   // The closing tag is read again by the tag scan; an unclosed raw-text element runs to the end.

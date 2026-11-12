@@ -285,6 +285,7 @@ describe('TDS protocol over TDS 8 strict (hand-built client)', () => {
     // Seventeen non-final 4096-byte packets: 69,632 bytes, and the message never ends.
     for (let i = 0; i < 17; i += 1) socket.write(rawPacket(TDS.PRELOGIN, false, Buffer.alloc(4088)));
     await once(socket, 'close');
+    assert.equal(socket.destroyed, true, 'the server closed the connection');
   });
 
   // @test-kind security: over TDS 8 the 64 KiB PRELOGIN limit applies too, so the peer is cut off at 65,537 bytes.
@@ -295,6 +296,7 @@ describe('TDS protocol over TDS 8 strict (hand-built client)', () => {
     for (let i = 0; i < 16; i += 1) client.socket.write(rawPacket(TDS.PRELOGIN, false, Buffer.alloc(4096)));
     client.socket.write(rawPacket(TDS.PRELOGIN, false, Buffer.alloc(1)));
     await closed;
+    assert.equal(client.socket.destroyed, true, 'the server closed the connection');
   });
 
   // @test-kind contract: server error text longer than the ERROR token can carry is capped, not a dropped connection.

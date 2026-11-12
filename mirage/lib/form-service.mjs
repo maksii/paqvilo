@@ -423,7 +423,7 @@ function conditionLike(text, patternText) {
   const segments = String(patternText).toLowerCase().split(/[*%]/);
   if (segments.length === 1) return value === segments[0];
   const first = segments[0];
-  const last = segments.at(-1);
+  const last = segments.at(-1) ?? '';
   if (value.length < first.length + last.length || !value.startsWith(first) || !value.endsWith(last)) return false;
   const end = value.length - last.length;
   let cursor = first.length;

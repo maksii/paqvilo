@@ -33,6 +33,7 @@ test('Code App shutdown waits for actual stdio closure after its owner exits', a
   });
   const gate = childStdioGate(t, child);
   await assertChildStdioDrain(gate, stopCodeAppDevServer);
+  assert.equal(child.stdout.destroyed && child.stderr.destroyed, true, 'both pipes are closed after the stop');
 });
 
 // @test-kind security: loopback-only readiness probing; refused destinations are never requested.

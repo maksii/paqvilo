@@ -14,7 +14,7 @@ const numberControlValue = new Function(
 function numberBox(value, decimalSeparator) {
   return {
     value,
-    getAttribute: (name) => (name === 'data-numberdecimalseparator' ? (decimalSeparator ?? null) : null),
+    dataset: decimalSeparator ? { numberdecimalseparator: decimalSeparator } : {},
   };
 }
 

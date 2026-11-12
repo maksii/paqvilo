@@ -859,6 +859,7 @@ test('every static import of a served model-driven module resolves to a served J
   const entries = modelDrivenAssetNames
     .filter((name) => name.endsWith('.mjs'))
     .map((name) => `${origin}/_apps/assets/${name}`);
+  assert.ok(entries.length > 0, 'the fixture serves model-driven modules');
   await assertStaticImportsServed(entries);
 });
 

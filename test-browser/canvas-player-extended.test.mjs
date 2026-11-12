@@ -539,6 +539,7 @@ test('slider, number input and radio drive native changes with keyboard access',
   await page.waitForFunction(() =>
     document.querySelector('[data-testid="canvas-inspector"]')?.textContent.includes('"radioValue": "Two"'),
   );
+  assert.match(await page.getByTestId('canvas-inspector').textContent(), /"radioValue": "Two"/);
 });
 
 test('observed display settings control logical size, letterboxing and orientation', async (t) => {
@@ -784,6 +785,7 @@ test('a click on a row label selects the row, and a child with its own OnSelect 
   await page.locator('[data-item-index="4"] [data-control="RowButton"]').click();
   await page.waitForFunction(() => document.querySelector('[data-control="PickedRow"]')?.textContent === '5');
   await page.waitForFunction(() => document.querySelector('[data-control="Picked"]')?.textContent === '5');
+  assert.equal(await page.locator('[data-control="Picked"]').textContent(), '5');
 });
 
 // @test-kind unproven: local placeholder model of a classic TextInput HintText; no native capture of the hint exists.

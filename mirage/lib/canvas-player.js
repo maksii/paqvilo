@@ -1020,7 +1020,8 @@
   // expired one. A start or reset clears the banners first.
   function announceNotices(fresh) {
     if (fresh) {
-      for (const id of [...shownNotices.keys()]) removeNotice(id);
+      const shown = [...shownNotices.keys()];
+      for (const id of shown) removeNotice(id);
       notice.replaceChildren();
     }
     const dismissed = dismissedNotices();

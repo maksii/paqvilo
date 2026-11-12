@@ -428,11 +428,11 @@ function formatDateText(fx, date, pattern, language) {
 }
 // Whether the day comes before the month in a language's numeric date (fr-FR is 13/01/2024; en-US is 01/13/2024).
 function dayFirstIn(tag) {
-  const order = new Intl.DateTimeFormat(tag, { year: 'numeric', month: 'numeric', day: 'numeric' })
+  const first = new Intl.DateTimeFormat(tag, { year: 'numeric', month: 'numeric', day: 'numeric' })
     .formatToParts(0)
     .map((part) => part.type)
-    .filter((type) => type === 'day' || type === 'month');
-  return order[0] === 'day';
+    .find((type) => type === 'day' || type === 'month');
+  return first === 'day';
 }
 // Learn "DateValue", "DateTimeValue" and "TimeValue": a language argument sets the day and month order of slash-style text.
 // An invalid tag is BadLanguageCode; a missing or empty one keeps the default order.

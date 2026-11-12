@@ -2796,8 +2796,9 @@ function serveExport(req, res, url, context) {
   const key = url.searchParams.get('key');
   const owner = exportOwner(req, context);
   const downloads = downloadsOf(context);
-  const file = key && owner ? downloads.get(key) : null;
-  if (!file || file.owner !== owner) {
+  const stored = key && owner ? downloads.get(key) : null;
+  const file = stored?.owner === owner ? stored : null;
+  if (!file) {
     res.writeHead(204);
     res.end();
     return;

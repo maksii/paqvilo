@@ -1516,7 +1516,7 @@ function fitCommands(commands) {
 // A list's More commands button is enabled only while a command overflows; a form's button always opens its record commands.
 function setOverflowMenuState(more, commands) {
   if (commands.classList.contains('form-commands')) return;
-  const overflowing = [...commands.children].some((node) => node.hasAttribute('data-command-overflow'));
+  const overflowing = [...commands.children].some((node) => node.dataset.commandOverflow !== undefined);
   more.disabled = !overflowing;
   if (overflowing) more.removeAttribute('title');
   else more.title = 'No additional commands';
@@ -2633,7 +2633,8 @@ function dropRemovedControlState(form) {
     ...cells.map((cell) => cell.sourceControl?.id ?? cell.name),
     ...(form.regionControls ?? []).map((control) => control.id),
   ]);
-  for (const name of [...clientControlState.keys()]) if (!present.has(name)) clientControlState.delete(name);
+  const known = [...clientControlState.keys()];
+  for (const name of known) if (!present.has(name)) clientControlState.delete(name);
 }
 
 // The lookup default that lookupDefaults wrote: the id with the target table and primary name, as a picked value holds them.
@@ -3205,7 +3206,7 @@ function showRequiredMessage(input) {
   const message = document.createElement('p');
   message.id = `required-message-${++requiredMessageSequence}`;
   message.className = 'field-message';
-  message.setAttribute('data-required-message', '');
+  message.dataset.requiredMessage = '';
   message.textContent = REQUIRED_FIELDS_MESSAGE;
   setDescribedBy(input, [...withoutRequiredMessages(input), message.id]);
   input.setAttribute('aria-invalid', 'true');

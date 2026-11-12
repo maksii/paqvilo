@@ -2247,7 +2247,8 @@ export function createConnectorRuntime({
     approvals: { get: approvals.get, list: approvals.list, respond: approvals.respond, close: approvals.close },
     /** Cancels every pending sign-in: its loopback listener and expiry timer close, and its completion rejects. */
     close() {
-      for (const cancel of [...pendingSignIns]) cancel();
+      const pending = [...pendingSignIns];
+      for (const cancel of pending) cancel();
     },
     providers: () => {
       syncCustom();

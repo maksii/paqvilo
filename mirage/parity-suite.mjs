@@ -567,8 +567,11 @@ const WORD_CHARACTER = /[\p{L}\p{N}_]/u;
 
 /** Whether the match at [start, end) has no letter, digit or underscore on either side. */
 function atTokenBoundary(haystack, start, end) {
-  const before = [...haystack.slice(Math.max(0, start - 2), start)].at(-1) ?? '';
-  const after = [...haystack.slice(end, end + 2)][0] ?? '';
+  // Each slice is spread into code points, so a surrogate pair next to the match counts as one character.
+  const textBefore = haystack.slice(Math.max(0, start - 2), start);
+  const textAfter = haystack.slice(end, end + 2);
+  const before = [...textBefore].at(-1) ?? '';
+  const after = [...textAfter][0] ?? '';
   return !WORD_CHARACTER.test(before) && !WORD_CHARACTER.test(after);
 }
 
@@ -2220,9 +2223,10 @@ export async function openCdpTabDriver({
   const popupRoutes = new Map();
   const setBrowserAutoAttach = (autoAttach) =>
     send('Target.setAutoAttach', { autoAttach, waitForDebuggerOnStart: true, flatten: true });
+  // An attach that fails has settled its target itself (paused or closed); the listener has nothing left to do with the failure.
   listeners.add((message) => {
     if (message.method === 'Target.attachedToTarget' && !message.sessionId)
-      attachBrowserTarget(message.params, { send, owned, tabs, popupRoutes });
+      attachBrowserTarget(message.params, { send, owned, tabs, popupRoutes }).catch(() => {});
     else if (message.method === 'Target.detachedFromTarget') forgetPopupRoutes(popupRoutes, message.params.sessionId);
     else if (popupRoutes.has(message.sessionId)) handlePopupMessage(message, { send, fulfil, origins, popupRoutes });
   });
@@ -2267,7 +2271,7 @@ export async function openCdpTabDriver({
     const childSessions = new Set();
     const childListener = (message) => {
       if (message.sessionId === sessionId && message.method === 'Target.attachedToTarget')
-        attachChildTarget(message.params, { send, onIntercepted: (child) => childSessions.add(child) });
+        attachChildTarget(message.params, { send, onIntercepted: (child) => childSessions.add(child) }).catch(() => {});
       else if (message.sessionId === sessionId && message.method === 'Target.detachedFromTarget')
         childSessions.delete(message.params.sessionId);
       else if (childSessions.has(message.sessionId) && message.method === 'Fetch.requestPaused')
@@ -2577,7 +2581,7 @@ function handlePopupMessage(message, { send, fulfil, origins, popupRoutes }) {
     attachChildTarget(message.params, {
       send,
       onIntercepted: (child) => popupRoutes.set(child, { state, parent: message.sessionId }),
-    });
+    }).catch(() => {});
   else if (message.method === 'Fetch.requestPaused')
     handleCdpPausedRequest(message.params, { sessionId: message.sessionId, state, send, fulfil, origins });
 }

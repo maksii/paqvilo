@@ -556,7 +556,7 @@
   function numberControlValue(element) {
     if (element?.value === '' || element == null) return null;
     const text = String(element.value);
-    const decimal = element.getAttribute('data-numberdecimalseparator') === ',' ? ',' : '.';
+    const decimal = element.dataset.numberdecimalseparator === ',' ? ',' : '.';
     const normalized = numberText(text, decimal);
     // Only plain decimal text is a number. Anything else keeps the textbox text, so the native server
     // format validator rejects it without a write (JSON.stringify(NaN) would become null).

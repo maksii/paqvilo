@@ -5085,7 +5085,7 @@ export class DataStore {
   evaluate(expr, context) {
     if (typeof expr === 'string' && expr.startsWith('$')) {
       const [root, ...parts] = expr.slice(1).split('.');
-      return parts.reduce(ownMember, ownMember(context, root));
+      return parts.reduce((value, part) => ownMember(value, part), ownMember(context, root));
     }
     if (!expr || typeof expr !== 'object' || Array.isArray(expr)) return clone(expr);
     if (own(expr, 'literal')) return clone(expr.literal);

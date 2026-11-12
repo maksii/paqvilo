@@ -596,7 +596,7 @@ function parseLocalDateTime(body, text) {
 
 // Seconds east of UTC for a zone match from DATETIME_ZONE_RE; Z and no zone are 0.
 function offsetSeconds(zone) {
-  if (!zone || zone[1] === undefined) return 0;
+  if (zone?.[1] === undefined) return 0;
   const minutes = Number(zone[2]) * 60 + Number(zone[3]);
   return (zone[1] === '-' ? -minutes : minutes) * 60;
 }

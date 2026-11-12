@@ -530,7 +530,7 @@ function execute(command, args, cwd, { signal = null, spawnImpl = spawn, tree } 
       env: { ...hostEnvironment(process.env, { build: true }), MSBUILDDISABLENODEREUSE: '1' },
     });
     const stop = () => {
-      let failure = signal.reason;
+      let failure = signal?.reason;
       try {
         killProcessTree(child, tree);
       } catch (error) {
