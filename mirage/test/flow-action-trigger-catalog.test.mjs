@@ -1,3 +1,4 @@
+// @test-kind contract: a Solution's catalog rows and catalog assignments decide which actions fire the trigger, and an organization without catalogs records one unchecked notice.
 // Catalog and catalogassignment rows are imported from the Solution (catalogs/<name>/catalog.xml,
 // Assets/catalogassignments.xml), so "When an action is performed" fires for the action assigned to its catalog and category
 // and not for an unassigned one; an organization whose Solution ships no catalog records FLOW_TRIGGER_CATALOG_UNCHECKED once.
@@ -126,45 +127,37 @@ async function simulator(t, extra) {
   return { sim, perform, runs, notes };
 }
 
-test(
-  'a Solution catalog and assignment: the assigned action fires its trigger, an unassigned one does not',
-  { timeout: 60000 },
-  async (t) => {
-    const { sim, perform, runs, notes } = await simulator(t, CATALOGS);
-    const catalogs = sim.store.state.tables.catalog ?? [];
-    assert.deepEqual(catalogs.map((row) => row.uniquename).sort(), ['x_events', 'x_invented']);
-    assert.equal(
-      catalogs.find((row) => row.uniquename === 'x_events').parentcatalogid,
-      catalogs.find((row) => row.uniquename === 'x_invented').catalogid,
-    );
-    const [assignment] = sim.store.state.tables.catalogassignment;
-    assert.equal(
-      assignment.object,
-      sim.store.state.tables.customapi.find((row) => row.uniquename === 'x_Notify').customapiid,
-    );
-    await perform('x_Notify');
-    await perform('x_Other');
-    assert.deepEqual(await runs(ASSIGNED), ['Succeeded']);
-    assert.deepEqual(await runs(UNASSIGNED), [], 'x_Other is not assigned to the x_events category');
-    assert.deepEqual(
-      notes('FLOW_TRIGGER_NOT_CATALOGED').map((entry) => entry.operationKey),
-      [`cloud-flow:${UNASSIGNED}`],
-    );
-    assert.equal(notes('FLOW_TRIGGER_CATALOG_UNCHECKED').length, 0);
-  },
-);
+test('a Solution catalog and assignment: the assigned action fires its trigger, an unassigned one does not', async (t) => {
+  const { sim, perform, runs, notes } = await simulator(t, CATALOGS);
+  const catalogs = sim.store.state.tables.catalog ?? [];
+  assert.deepEqual(catalogs.map((row) => row.uniquename).sort(), ['x_events', 'x_invented']);
+  assert.equal(
+    catalogs.find((row) => row.uniquename === 'x_events').parentcatalogid,
+    catalogs.find((row) => row.uniquename === 'x_invented').catalogid,
+  );
+  const [assignment] = sim.store.state.tables.catalogassignment;
+  assert.equal(
+    assignment.object,
+    sim.store.state.tables.customapi.find((row) => row.uniquename === 'x_Notify').customapiid,
+  );
+  await perform('x_Notify');
+  await perform('x_Other');
+  assert.deepEqual(await runs(ASSIGNED), ['Succeeded']);
+  assert.deepEqual(await runs(UNASSIGNED), [], 'x_Other is not assigned to the x_events category');
+  assert.deepEqual(
+    notes('FLOW_TRIGGER_NOT_CATALOGED').map((entry) => entry.operationKey),
+    [`cloud-flow:${UNASSIGNED}`],
+  );
+  assert.equal(notes('FLOW_TRIGGER_CATALOG_UNCHECKED').length, 0);
+});
 
-test(
-  'a Solution without catalogs fires by action name and records FLOW_TRIGGER_CATALOG_UNCHECKED once per trigger',
-  { timeout: 60000 },
-  async (t) => {
-    const { perform, runs, notes } = await simulator(t, {});
-    await perform('x_Notify');
-    await perform('x_Notify');
-    assert.deepEqual(await runs(ASSIGNED), ['Succeeded', 'Succeeded']);
-    assert.deepEqual(
-      notes('FLOW_TRIGGER_CATALOG_UNCHECKED').map((entry) => entry.operationKey),
-      [`cloud-flow:${ASSIGNED}`],
-    );
-  },
-);
+test('a Solution without catalogs fires by action name and records FLOW_TRIGGER_CATALOG_UNCHECKED once per trigger', async (t) => {
+  const { perform, runs, notes } = await simulator(t, {});
+  await perform('x_Notify');
+  await perform('x_Notify');
+  assert.deepEqual(await runs(ASSIGNED), ['Succeeded', 'Succeeded']);
+  assert.deepEqual(
+    notes('FLOW_TRIGGER_CATALOG_UNCHECKED').map((entry) => entry.operationKey),
+    [`cloud-flow:${ASSIGNED}`],
+  );
+});

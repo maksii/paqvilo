@@ -7,6 +7,7 @@ import { createOrganizationRuntime } from '../lib/dataverse-organization.mjs';
 import { dispatchSdkCall } from '../lib/plugin-clr.mjs';
 import { sdkFault } from '../lib/plugin-sdk-messages.mjs';
 import { DataError } from '../lib/data-error.mjs';
+import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
 
 const objectId = '70000000-0000-0000-0000-000000000001';
 
@@ -118,6 +119,20 @@ test('ExecuteMultiple runs each request, reports faults per item and honours Con
     () => execute('ExecuteMultiple', { Requests: [], Settings: settings(false, false) }),
     (error) => error.details?.innerCode === '0x80040203',
   );
+});
+
+test('ExecuteMultiple above the batch size faults before any request runs and names the maximum', async (t) => {
+  const { store, execute } = await organization(t);
+  const batch = {
+    $type: 'Collection',
+    type: 'Microsoft.Xrm.Sdk.OrganizationRequestCollection',
+    values: Array.from({ length: 1001 }, (_, index) => request('Create', { Target: item(`batch ${index}`) })),
+  };
+  assert.throws(
+    () => execute('ExecuteMultiple', { Requests: batch }),
+    (error) => sdkFault(error)?.errorDetails.MaxBatchSize === 1000,
+  );
+  assert.equal(store.tableRows('x_item').length, 0);
 });
 
 test('ExecuteTransaction commits all requests or none and names the faulted request', async (t) => {
@@ -419,4 +434,139 @@ test('a polymorphic lookup stored as a bare GUID takes its table from the type c
       }),
     /one exact source-declared target table/,
   );
+});
+
+const childrenQuery = (entityName) => ({
+  $type: 'QueryExpression',
+  entityName,
+  columnSet: { $type: 'ColumnSet', allColumns: false, columns: ['x_name'] },
+  criteria: { operatorName: 'And', conditions: [], filters: [] },
+  orders: [{ attributeName: 'x_name', descending: false }],
+  linkEntities: [],
+});
+// Retrieves one row through the SDK drive and answers its RelatedEntitiesQuery for one relationship.
+const retrieveRelated = (call, { logicalName, id, columnSet, schemaName, entityName }) =>
+  call('Execute', [
+    request('Retrieve', {
+      Target: { $type: 'EntityReference', logicalName, id },
+      ColumnSet: columnSet,
+      RelatedEntitiesQuery: {
+        $type: 'RelationshipQueryCollection',
+        values: [
+          {
+            relationship: { $type: 'Relationship', schemaName },
+            query: childrenQuery(entityName),
+          },
+        ],
+      },
+    }),
+  ]).results.Entity;
+
+// @test-kind contract: a PostOperation step on Retrieve reads the response, but the RetrieveResponse still carries the related rows the SDK asked for
+test('Retrieve with RelatedEntitiesQuery keeps the related rows when a PostOperation step handles the response', () => {
+  const { store, call } = relatedStore();
+  call('Create', [
+    row('x_parent', { x_name: 'parent' }, [
+      related('x_parent_child', [row('x_child', { x_name: 'a' }), row('x_child', { x_name: 'b' })]),
+    ]),
+  ]);
+  const parent = store.tableRows('x_parent')[0].x_parentid;
+  const step = {
+    id: 'invented-retrieve-observer',
+    entity: 'x_parent',
+    message: 'Retrieve',
+    enabled: true,
+    stage: 40,
+    mode: 0,
+    rank: 1,
+    typeName: 'Invented.RetrieveObserver',
+    assemblyId: 'invented',
+    supportedDeployment: 0,
+    filteringAttributes: [],
+    images: [],
+  };
+  const handlers = new Map([['Invented.RetrieveObserver', () => {}]]);
+  const items = pluginCatalogue({ plugins: { steps: [step] }, handlers });
+  store.setPluginPipeline((context) => runPluginPhase({ ...context, store, items, handlers }));
+  const entity = retrieveRelated(call, {
+    logicalName: 'x_parent',
+    id: parent,
+    columnSet: { $type: 'ColumnSet', allColumns: true, columns: [] },
+    schemaName: 'x_parent_child',
+    entityName: 'x_child',
+  });
+  assert.deepEqual(
+    entity.relatedEntities?.[0]?.entities.entities.map((child) => child.attributes.x_name),
+    ['a', 'b'],
+  );
+});
+
+// @test-kind contract: an N:1 relationship is read from the stored row, so the lookup does not depend on the caller's ColumnSet
+test('Retrieve with an N:1 RelatedEntitiesQuery finds the parent when the ColumnSet omits the lookup column', () => {
+  const { store, call } = relatedStore();
+  call('Create', [
+    row('x_parent', { x_name: 'Parent A' }, [related('x_parent_child', [row('x_child', { x_name: 'kid' })])]),
+  ]);
+  const child = store.tableRows('x_child')[0].x_childid;
+  const entity = retrieveRelated(call, {
+    logicalName: 'x_child',
+    id: child,
+    columnSet: { $type: 'ColumnSet', allColumns: false, columns: ['x_name'] },
+    schemaName: 'x_parent_child',
+    entityName: 'x_parent',
+  });
+  assert.deepEqual(
+    entity.relatedEntities[0].entities.entities.map((parentRow) => parentRow.attributes.x_name),
+    ['Parent A'],
+  );
+  assert.equal('x_parentid' in entity.attributes, false);
+});
+
+// @test-kind contract: a lookup into an elastic table is answered from the table's key index; counting row reads (not time) shows one scan of the table, then one read per lookup
+test('lookups into a 5,000-row elastic table read rows by key, not by a scan per lookup', async () => {
+  const { recordToSdkEntity } = await import('../lib/plugin-clr.mjs');
+  const targetIdOf = (index) => `50000000-0000-0000-0000-${String(index).padStart(12, '0')}`;
+  const state = emptyState();
+  state.mappings.x_item = {
+    entitySet: 'x_items',
+    idColumn: 'x_itemid',
+    fields: { x_targetid: { dataverseType: 'lookup', targets: ['x_target'] } },
+  };
+  state.mappings.x_target = {
+    entitySet: 'x_targets',
+    idColumn: 'x_targetid',
+    nameColumn: 'x_name',
+    tableType: 'Elastic',
+  };
+  const targets = Array.from({ length: 5000 }, (_, index) => ({ x_targetid: targetIdOf(index), x_name: `t${index}` }));
+  state.tables.x_item = [];
+  state.tables.x_target = targets;
+  const store = await new DataStore({ state }).init();
+  let reads = 0;
+  store.state.tables.x_target = new Proxy(targets, {
+    get(target, key, receiver) {
+      if (typeof key === 'string' && /^\d+$/.test(key)) reads += 1;
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  const lookups = 200;
+  for (let index = 0; index < lookups; index++) {
+    const entity = recordToSdkEntity(
+      store,
+      'x_item',
+      { x_itemid: targetIdOf(90000 + index), x_targetid: targetIdOf(index * 25) },
+      { allColumns: true },
+    );
+    assert.equal(entity.attributes.x_targetid.name, `t${index * 25}`);
+  }
+  assert.ok(reads <= targets.length + 10 * lookups, `row reads: ${reads}`);
+  // A row written after the index was built is found by its key.
+  store.insertRow('x_target', store.tableRows('x_target'), { x_targetid: targetIdOf(5000), x_name: 'late' });
+  const late = recordToSdkEntity(
+    store,
+    'x_item',
+    { x_itemid: targetIdOf(90300), x_targetid: targetIdOf(5000) },
+    { allColumns: true },
+  );
+  assert.equal(late.attributes.x_targetid.name, 'late');
 });

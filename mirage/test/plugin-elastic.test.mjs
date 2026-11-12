@@ -106,6 +106,20 @@ test('SDK typed lookup keys preserve their partition and missing partitions neve
   assert.equal(unresolved.readingidpid, null);
   assert.equal(recordToSdkEntity(store, 'widget', unresolved).attributes.readingid.name, null);
 });
+// @test-kind contract: an image's phonetic-name companion of a lookup to an elastic row names that row's own yomi name
+test('an image names a lookup to an elastic row in a partition from that row, not from the bare reference', () => {
+  const store = fixture();
+  store.state.mappings.reading.fields.yomifullname = { dataverseType: 'nvarchar' };
+  store.state.mappings.widget.fields.readingidyominame = { dataverseType: 'nvarchar' };
+  store.state.tables.reading = store.state.tables.reading.map((row) => ({
+    ...row,
+    yomifullname: `Yomi ${row.partitionid}`,
+  }));
+  const row = { widgetid: zero, name: 'Linked', readingid: { id, logical_name: 'reading' }, readingidpid: 'B' };
+  const image = recordToSdkEntity(store, 'widget', row, { allColumns: true, image: true });
+  assert.equal(image.attributes.readingid.name, 'Partition B');
+  assert.equal(image.attributes.readingidyominame, 'Yomi B');
+});
 test('local SDK FetchXML uses elastic default and maximum page/count size 500', () => {
   const store = fixture(),
     service = localOrganizationService(store, profile);

@@ -28,6 +28,7 @@ import { isExactNumeric } from './exact-numeric.mjs';
 import { cloneStateData } from './state-clone.mjs';
 import { collectPackExport } from './pack-exports.mjs';
 import { contextUrl } from './dataverse-odata.mjs';
+import { xmlEscapeAttribute } from './fetchxml-engine.mjs';
 import { pluginFailure } from './plugin-fault.mjs';
 import {
   pluginExecutionLifetime,
@@ -37,10 +38,10 @@ import {
 import { pluginMessageParameters, pluginMessageValues } from './plugin-message-values.mjs';
 import {
   clrContext,
-  closeClrHostPool,
   executeClrPlugin,
   pluginExecutionDepth,
   prepareClrRuntime,
+  releaseClrRuntime,
   PLUGIN_MAX_DEPTH,
   pluginDepthFault,
 } from './plugin-clr.mjs';
@@ -813,6 +814,9 @@ function resolveBoundMessageTarget({ row, messageParameters, entity, c, store, i
   ctx.target = { logicalName: entity, id: reference.id, row: targetRow };
 }
 
+// The runtimes a map holds under other ids: the ones that stay in use while the runtime under `id` is released.
+const runtimesExcept = (runtimes, id) => [...runtimes].filter(([key]) => key !== id).map(([, runtime]) => runtime);
+
 function* resolveClrMainRuntime(store, api, options, original, synchronous) {
   let runtime = options.runtimes.get(original.id);
   if (original.uploaded)
@@ -838,7 +842,12 @@ function* resolveClrMainRuntime(store, api, options, original, synchronous) {
     }
     const previous = runtime;
     runtime = yield (options.prepareRuntime ?? prepareClrRuntime)(original.descriptor);
-    if (previous) yield closeClrHostPool({ runtime: previous, diagnostic: api.diagnostic });
+    // The new runtime is live too: a shared preparer returns it on the replaced runtime's directory.
+    if (previous)
+      releaseClrRuntime(previous, {
+        liveRuntimes: [runtime, ...runtimesExcept(options.runtimes, original.id)],
+        diagnostic: api.diagnostic,
+      });
     options.runtimes.set(original.id, runtime);
     options.mainRuntimeIds.add(original.id);
   }
@@ -1261,34 +1270,43 @@ function* invokeSteps(api, name, c, options, synchronous = false, span = null) {
   }
 }
 
+// The export key rule of the names $metadata carries: a unique name, and a logical name when the row has one.
+const EXPORT_KEY = /^[a-z][a-z0-9_.{}!]*$/i;
+const hasExportKeys = (row, logical = null) =>
+  EXPORT_KEY.test(row.uniquename ?? '') && (logical === null || !row[logical] || EXPORT_KEY.test(row[logical]));
+
 // CSDL for one API; '' when it is left out (private, or a function with no response, which is invalid CSDL).
-// Assumed: private APIs are left out of CSDL.
+// Assumed: private APIs are left out of CSDL. A stored row whose names are not export keys (imported state) is left out, and so
+// is each parameter or property like that. Every name written is XML-escaped.
 function csdlOf(store, name) {
   const row = apiNamed(store, name);
-  if (!row || row.isprivate) return '';
-  const properties = propertiesOf(store, row);
+  if (!row || row.isprivate || !hasExportKeys(row, 'boundentitylogicalname')) return '';
+  const properties = propertiesOf(store, row).filter((p) => hasExportKeys(p, 'logicalentityname'));
   if (row.isfunction && !properties.length) return '';
   const single = properties.length === 1 && SINGLE.has(typeOf(properties[0].type)) ? properties[0] : null;
   const complex = properties.length > 0 && !single;
   let returns = null;
   if (single) returns = edmOf(single);
   else if (complex) returns = `mscrm.${row.uniquename}Response`;
-  const L = row.boundentitylogicalname;
+  const L = xmlEscapeAttribute(row.boundentitylogicalname);
   let bound = '';
   if (row.bindingtype === 1) bound = `<Parameter Name="entity" Type="mscrm.${L}" />`;
   else if (row.bindingtype === 2) bound = `<Parameter Name="entityset" Type="Collection(mscrm.${L})" />`;
   const params = parametersOf(store, row)
-    .map((p) => `<Parameter Name="${p.uniquename}" Type="${edmOf(p)}" />`)
+    .filter((p) => hasExportKeys(p, 'logicalentityname'))
+    .map((p) => `<Parameter Name="${xmlEscapeAttribute(p.uniquename)}" Type="${xmlEscapeAttribute(edmOf(p))}" />`)
     .join('');
   let complexType = '';
   if (complex) {
-    const propertyElements = properties.map((p) => `<Property Name="${p.uniquename}" Type="${edmOf(p)}" />`).join('');
-    complexType = `<ComplexType Name="${row.uniquename}Response">${propertyElements}</ComplexType>`;
+    const propertyElements = properties
+      .map((p) => `<Property Name="${xmlEscapeAttribute(p.uniquename)}" Type="${xmlEscapeAttribute(edmOf(p))}" />`)
+      .join('');
+    complexType = `<ComplexType Name="${xmlEscapeAttribute(row.uniquename)}Response">${propertyElements}</ComplexType>`;
   }
   const element = row.isfunction ? 'Function' : 'Action';
   const attr = row.bindingtype ? ' IsBound="true"' : '';
-  const returnType = returns ? `<ReturnType Type="${returns}" />` : '';
-  return `${complexType}<${element} Name="${row.uniquename}"${attr}>${bound}${params}${returnType}</${element}>`;
+  const returnType = returns ? `<ReturnType Type="${xmlEscapeAttribute(returns)}" />` : '';
+  return `${complexType}<${element} Name="${xmlEscapeAttribute(row.uniquename)}"${attr}>${bound}${params}${returnType}</${element}>`;
 }
 
 // The fxexpression row a custom API names (customapi.fxexpressionid), or null.
@@ -1889,7 +1907,8 @@ async function prepareRuntimesPass(api, options, refresh) {
   for (const id of options.mainRuntimeIds) {
     if (active.has(id)) continue;
     const runtime = options.runtimes.get(id);
-    if (runtime) await closeClrHostPool({ runtime, diagnostic: api.diagnostic }); // NOSONAR: await kept: the value may be a thenable and timing matters
+    if (runtime)
+      releaseClrRuntime(runtime, { liveRuntimes: runtimesExcept(options.runtimes, id), diagnostic: api.diagnostic });
     options.runtimes.delete(id);
     options.mainRuntimeIds.delete(id);
     options.preparationFailures.delete(id);
@@ -1899,7 +1918,11 @@ async function prepareRuntimesPass(api, options, refresh) {
     if (isCurrentMainRuntime(options, original, refresh)) continue;
     try {
       const previous = options.runtimes.get(original.id);
-      if (previous) await closeClrHostPool({ runtime: previous, diagnostic: api.diagnostic }); // NOSONAR: await kept: the value may be a thenable and timing matters
+      if (previous)
+        releaseClrRuntime(previous, {
+          liveRuntimes: runtimesExcept(options.runtimes, original.id),
+          diagnostic: api.diagnostic,
+        });
       options.runtimes.delete(original.id);
       options.runtimes.set(original.id, await (options.prepareRuntime ?? prepareClrRuntime)(original.descriptor));
       options.preparationFailures.delete(original.id);
@@ -1926,6 +1949,82 @@ export function customApiHandlers(packs = []) {
         ? { handler: value, pluginType: null }
         : { handler: value.handler, pluginType: value.pluginType ?? null },
     ]),
+  );
+}
+
+const EXPORT_KEY_COMPONENT = new Map([
+  ['customapi', 'CustomAPI'],
+  ['customapirequestparameter', 'CustomAPIRequestParameter'],
+  ['customapiresponseproperty', 'CustomAPIResponseProperty'],
+]);
+const LOGICAL_NAME_OF = new Map([
+  ['customapi', 'boundentitylogicalname'],
+  ['customapirequestparameter', 'logicalentityname'],
+]);
+// Where a unique name must be unique: its table, its key column, and whether it is unique within one API (scoped) or across APIs.
+const UNIQUE_NAME_SCOPE = new Map([
+  ['customapi', { table: 'customapi', id: 'customapiid', scoped: false }],
+  [
+    'customapirequestparameter',
+    { table: 'customapirequestparameter', id: 'customapirequestparameterid', scoped: true },
+  ],
+  [
+    'customapiresponseproperty',
+    { table: 'customapiresponseproperty', id: 'customapiresponsepropertyid', scoped: true },
+  ],
+]);
+const PARENT_BIND = 'CustomAPIId@odata.bind';
+// The id of the API a parameter or property belongs to: its customapiid, or the id in its CustomAPIId@odata.bind path.
+const parentIdOf = (candidate) =>
+  candidate.customapiid ?? /\(([^)]*)\)$/.exec(candidate[PARENT_BIND] ?? '')?.[1] ?? null;
+
+function exportKeyFailure(attribute, component) {
+  return new DataError(
+    `Export key attribute {0} for component {1} must begin with a letter and only consist of alpha-numeric and _.{}! characters.\r\nData[0] = "${attribute}"\r\nData[1] = "${component}"`,
+    400,
+    'InvalidRequest',
+    { innerCode: '0x800608ab' },
+  );
+}
+
+// Refuses a write whose unique name, or logical name, is not an export key. A name is checked when the write creates the row or gives the name.
+function checkExportKeys(mapping, creating, info, candidate) {
+  const component = EXPORT_KEY_COMPONENT.get(mapping.logicalName);
+  if (!component) return;
+  const written = (attribute) => creating || Object.hasOwn(info.data ?? {}, attribute);
+  if (written('uniquename') && !EXPORT_KEY.test(candidate.uniquename ?? ''))
+    throw exportKeyFailure('uniquename', component);
+  const logical = LOGICAL_NAME_OF.get(mapping.logicalName);
+  if (logical && written(logical) && candidate[logical] && !EXPORT_KEY.test(candidate[logical]))
+    throw exportKeyFailure(logical, component);
+}
+
+// A unique name is unique without regard to case: among the custom APIs, and among the parameters or properties of one API.
+// The API's own row is not a duplicate of itself.
+function checkDuplicateNames(store, mapping, creating, info, candidate) {
+  const scope = UNIQUE_NAME_SCOPE.get(mapping.logicalName);
+  if (!scope || !(creating || Object.hasOwn(info.data ?? {}, 'uniquename'))) return;
+  const name = key(candidate.uniquename);
+  const parent = scope.scoped ? parentIdOf(candidate) : null;
+  const taken = store
+    .tableRows(scope.table)
+    .some(
+      (row) =>
+        !sameId(row[scope.id], info.existing?.[scope.id]) &&
+        (!scope.scoped || sameId(row.customapiid, parent)) &&
+        key(row.uniquename) === name,
+    );
+  if (!taken) return;
+  if (scope.scoped)
+    throw new DataError(`The unique name '${candidate.uniquename}' is already used.`, 412, 'DuplicateRecord', {
+      innerCode: '0x80040237',
+    });
+  // A custom API's name is the database key of its row: the create (probe NP-9) and a rename onto a taken name both refuse with it.
+  throw new DataError(
+    `Cannot complete the creation of CustomAPI because it violates a database constraint. The violation happens on the key uniquename: ${candidate.uniquename}. Please delete the existing record or use update.`,
+    400,
+    'InvalidRequest',
+    { innerCode: '0x80072013' },
   );
 }
 
@@ -1960,7 +2059,8 @@ export function install(api, options = {}) {
       if (previous && previous.runtimes !== resolved.runtimes) {
         for (const id of previous.mainRuntimeIds) {
           const runtime = previous.runtimes.get(id);
-          if (runtime) await closeClrHostPool({ runtime, diagnostic: api.diagnostic }); // NOSONAR: await kept: the value may be a thenable and timing matters
+          if (runtime)
+            releaseClrRuntime(runtime, { liveRuntimes: [...resolved.runtimes.values()], diagnostic: api.diagnostic });
           previous.runtimes.delete(id);
         }
         resolved.mainRuntimeIds.clear();
@@ -1980,6 +2080,8 @@ export function install(api, options = {}) {
       (_context, mapping, info) => {
         const creating = info.operation === 'create' || (info.operation === 'upsert' && !info.existing);
         const candidate = { ...info.existing, ...info.data };
+        checkExportKeys(mapping, creating, info, candidate);
+        checkDuplicateNames(store, mapping, creating, info, candidate);
         if (mapping.logicalName === 'customapirequestparameter') {
           if (
             (creating ||
@@ -1999,16 +2101,6 @@ export function install(api, options = {}) {
           return;
         }
         if (mapping.logicalName !== 'customapi') return;
-        if (
-          (creating || Object.hasOwn(info.data ?? {}, 'uniquename')) &&
-          !/^[a-z][a-z0-9_.{}!]*$/i.test(candidate.uniquename ?? '')
-        )
-          throw new DataError(
-            'Export key attribute {0} for component {1} must begin with a letter and only consist of alpha-numeric and _.{}! characters.\r\nData[0] = "uniquename"\r\nData[1] = "CustomAPI"',
-            400,
-            'InvalidRequest',
-            { innerCode: '0x800608ab' },
-          );
         if (
           (creating ||
             Object.hasOwn(info.data ?? {}, 'bindingtype') ||

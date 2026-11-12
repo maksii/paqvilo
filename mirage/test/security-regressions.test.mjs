@@ -1,3 +1,4 @@
+// @test-kind security: regression tests for security defects (redaction, escaping, bounded parsing, prototypes)
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
@@ -13,7 +14,7 @@ import { JQUERY_CORE_SCRIPT, BOOTSTRAP_CORE_SCRIPT } from '../lib/source-depende
 import { clientPortalObjectRuntime } from '../lib/portal-client-object.mjs';
 import { DataStore } from '../lib/data.mjs';
 import { csvCell } from '../lib/csv.mjs';
-import { derivePersona, __testing, HOSTED_RESOURCES, loadSourceCorpus } from '../parity-suite.mjs';
+import { derivePersona, __testing, HOSTED_RESOURCES, loadSourceCorpus, createRedactor } from '../parity-suite.mjs';
 import { businessRuleClientData } from '../../examples/project/baseline/business-rules.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
@@ -227,6 +228,29 @@ test('source-corpus entity decoding never promotes double-encoded markup into so
   assert.equal(corpus.has('<Double encoded>'), false);
   assert.equal(corpus.has('&lt;Double encoded&gt;'), true);
   assert.equal(corpus.has('<Once encoded>'), true);
+});
+
+test('source-corpus reveals live text only at token boundaries, never inside an identifier', async (t) => {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-corpus-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.writeFile(
+    path.join(root, 'handler.js'),
+    'function bookmarkHandler(){ return "Owned products"; } var mortgageRate = 1;',
+  );
+  const corpus = await loadSourceCorpus(root);
+  assert.equal(corpus.has('mark'), false);
+  assert.equal(corpus.has('Mark'), false);
+  assert.equal(corpus.has('Mortgage'), false);
+  assert.equal(corpus.has('Owned products'), true);
+  const redactor = createRedactor({ corpus });
+  assert.equal(redactor.reveal('Owned products'), 'Owned products');
+  assert.equal(typeof redactor.reveal('Mark'), 'object', 'a substring of an identifier is redacted');
+  const exact = path.join(root, 'exact');
+  await fs.mkdir(exact);
+  await fs.writeFile(path.join(exact, 'solo.txt'), 'Quartz');
+  const whole = await loadSourceCorpus(exact);
+  assert.equal(whole.has('Quartz'), true, 'a value at the start and end of the sources matches');
+  assert.equal(whole.has('artz'), false);
 });
 
 test('browser code construction keeps hostile JSON values as data', async () => {

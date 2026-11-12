@@ -175,7 +175,7 @@ test('form client APIs dispatch async events, track edits and cancel OnSave with
   runtime.destroy();
   assert.throws(() => attribute.getValue(), /disposed/);
   assert.deepEqual(notices.at(-1), [null, null, 'validation']);
-  assert.throws(() => runtime.Xrm.WebApi.updateRecord('x_item', 'id', { x_name: 'stale' }), /disposed/);
+  await assert.rejects(runtime.Xrm.WebApi.updateRecord('x_item', 'id', { x_name: 'stale' }), /disposed/);
 });
 
 function attributeTypesFixture() {
@@ -264,7 +264,43 @@ test('WebApi sends query options unchanged to the canonical local staff query en
   assert.equal((await runtime.Xrm.WebApi.online.retrieveRecord('x_item', 'id', '?$select=x_name')).x_name, 'Copper');
   const online = runtime.Xrm.WebApi.online;
   runtime.destroy();
-  assert.throws(() => online.retrieveRecord('x_item', 'id'), /disposed/);
+  await assert.rejects(online.retrieveRecord('x_item', 'id'), /disposed/);
+});
+
+test('exported script load settles on its load event however long the browser takes', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const appended = [];
+  let removed = false;
+  const environment = {
+    location: { origin: 'http://127.0.0.1:1234', href: 'http://127.0.0.1:1234/main.aspx' },
+    document: {
+      createElement: () => ({
+        remove() {
+          removed = true;
+        },
+      }),
+      head: { append: (script) => appended.push(script) },
+    },
+  };
+  const outcomes = [];
+  const loading = loadClientLibrary(
+    'slow-load.js',
+    { trusted: true, resources: [{ name: 'slow-load.js', type: 'script', url: '/_apps/slow-load.js' }] },
+    environment,
+  ).then(
+    () => outcomes.push('loaded'),
+    (error) => outcomes.push(error.message),
+  );
+  try {
+    const [script] = appended;
+    t.mock.timers.tick(20000);
+    assert.equal(removed, false, 'a pending exported script is not removed by a timer');
+    script.onload();
+    await loading;
+    assert.deepEqual(outcomes, ['loaded']);
+  } finally {
+    t.mock.timers.reset();
+  }
 });
 
 test('exported script loading requires explicit trust and local resource admission', async () => {
@@ -561,7 +597,7 @@ test('overlapping async form events release their save guard even when they fini
     changing = attribute.fireOnChange();
   });
   await runtime.dispatch('onload');
-  assert.throws(() => runtime.formContext.data.save(), /active onchange/);
+  await assert.rejects(runtime.formContext.data.save(), /active onchange/);
   release();
   await changing;
   await runtime.formContext.data.save();
@@ -690,4 +726,395 @@ test('without a shell route the page context describes the open record', () => {
     entityId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
     formId: 'form-1',
   });
+});
+
+// @test-kind compatibility: OnLoad exposes only getDataLoadState and OnChange exposes no save members, as the documented getEventArgs reference lists (learn.microsoft.com executioncontext/geteventargs).
+test('OnLoad exposes its data load state and OnChange exposes no save arguments', async () => {
+  const { runtime } = runtimeFixture();
+  const loadStates = [];
+  runtime.formContext.data.addOnLoad((context) => {
+    loadStates.push(context.getEventArgs().getDataLoadState());
+    assert.throws(() => context.getEventArgs().getSaveMode(), /does not support eventArgs\.getSaveMode\./);
+  });
+  await runtime.dispatch('onload');
+  await runtime.dispatch('onload', undefined, 2);
+  assert.deepEqual(loadStates, [1, 2]);
+  let changeRefused = false;
+  runtime.formContext.getAttribute('x_name').addOnChange((context) => {
+    assert.equal(context.getEventArgs(), undefined);
+    changeRefused = true;
+  });
+  await runtime.dispatch('onchange', 'x_name');
+  assert.equal(changeRefused, true);
+});
+
+// @test-kind compatibility: formContext.data.save(saveOptions) delivers saveMode to OnSave and does not change the action (learn.microsoft.com formcontext-data/save).
+test('data.save and entity.save pass the save mode to the host and refuse saveandnew', async () => {
+  const saves = [];
+  const { runtime } = runtimeFixture({
+    save: async (close, mode) => {
+      saves.push({ close, mode });
+    },
+  });
+  await runtime.formContext.data.save({ saveMode: 70 });
+  await runtime.formContext.data.save();
+  await runtime.formContext.data.entity.save('saveandclose');
+  await assert.rejects(runtime.formContext.data.save({ saveMode: 1.5 }), /saveMode/);
+  assert.throws(
+    () => runtime.formContext.data.entity.save('saveandnew'),
+    /does not support formContext\.data\.entity\.save saveandnew\./,
+  );
+  assert.deepEqual(saves, [
+    { close: false, mode: 70 },
+    { close: false, mode: undefined },
+    { close: true, mode: 2 },
+  ]);
+});
+
+// @test-kind contract: formContext.data.save reports invalid saveOptions as a rejection, as the other promise-returning members do
+test('a data.save call with invalid saveOptions rejects, so a script catch receives it', async () => {
+  const saves = [];
+  const { runtime } = runtimeFixture({
+    save: async (close, mode) => {
+      saves.push({ close, mode });
+    },
+  });
+  const message = await runtime.formContext.data.save({ saveMode: 1.5 }).then(
+    () => 'saved',
+    (error) => error.message,
+  );
+  assert.match(message, /saveMode/);
+  assert.deepEqual(saves, []);
+});
+
+// @test-kind contract: a saveandnew that fails for a reason other than a refusal reports it through the form notification and leaves no unhandled rejection
+test('saveandnew reports a failed create through the form notification, without an unhandled rejection', async () => {
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    let notified;
+    const notice = new Promise((resolve) => {
+      notified = resolve;
+    });
+    const { runtime, notices } = runtimeFixture({
+      save: async () => {
+        throw Object.assign(new Error('Invented server failure'), { status: 500 });
+      },
+      openNewRecord() {},
+      notification: (...args) => {
+        notices.push(args);
+        notified();
+      },
+    });
+    assert.equal(runtime.formContext.data.entity.save('saveandnew'), undefined);
+    await notice;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual([notices, unhandled.length], [[['Invented server failure', 'ERROR', 'save']], 0]);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+});
+
+// @test-kind contract: a saveandnew whose new record fails to open reports the error through the notification captured before the context was detached, without an unhandled rejection
+test('saveandnew reports a failed open of the new record without an unhandled rejection', async () => {
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    const { runtime, notices } = runtimeFixture({
+      save: async () => undefined,
+      openNewRecord: () => Promise.reject(new Error('Invented open failure')),
+      notification: (...args) => notices.push(args),
+    });
+    assert.equal(runtime.formContext.data.entity.save('saveandnew'), undefined);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual([notices, unhandled.length], [[['Invented open failure', 'ERROR', 'save']], 0]);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+});
+
+test('destroy clears the save notification of a failed saveandnew open', async () => {
+  const { runtime, notices } = runtimeFixture({
+    save: async () => undefined,
+    openNewRecord: () => Promise.reject(new Error('Invented open failure')),
+    notification: (...args) => notices.push(args),
+  });
+  runtime.formContext.data.entity.save('saveandnew');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(notices.at(-1), ['Invented open failure', 'ERROR', 'save']);
+  assert.doesNotThrow(() => runtime.destroy());
+  assert.deepEqual(notices.at(-1), [null, null, 'save']);
+});
+
+// @test-kind contract: a completed save makes a copy of the saved values the baseline, so the object the host hands over afterwards cannot change dirty state
+test('a completed save rebases dirty state on a copy of the saved values, not on the object the host handed over', async () => {
+  let handedOver;
+  const { runtime, host } = runtimeFixture({
+    save: async () => {
+      handedOver = { x_itemid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', x_name: 'Draft', x_quantity: 2 };
+      Object.defineProperty(host, 'initialRecord', { get: () => handedOver, configurable: true });
+    },
+  });
+  const name = runtime.formContext.getAttribute('x_name');
+  name.setValue('Draft');
+  assert.equal(name.getIsDirty(), true);
+  await runtime.formContext.data.save();
+  assert.equal(name.getIsDirty(), false, 'the saved values are the baseline');
+  handedOver.x_name = 'Changed after the save';
+  assert.equal(name.getIsDirty(), false, 'changing the handed-over object does not change dirty state');
+  name.setValue('Changed after the save');
+  assert.equal(name.getIsDirty(), true, 'a value that differs from the saved values is dirty');
+});
+
+test('promise-returning form APIs reject after a refused save and after destroy instead of throwing', async () => {
+  const { runtime } = runtimeFixture();
+  const refusals = [];
+  runtime.formContext.data.entity.addOnSave((context) => {
+    refusals.push(
+      assert.rejects(
+        context.getFormContext().data.save(),
+        /Saving from an active onsave handler is not supported\. Finish the event before saving\./,
+      ),
+    );
+  });
+  await runtime.dispatch('onsave');
+  await Promise.all(refusals);
+  runtime.destroy();
+  await assert.rejects(runtime.Xrm.WebApi.retrieveRecord('x_item', 'id'), /disposed/);
+  await assert.rejects(runtime.formContext.data.save(), /disposed/);
+  assert.throws(() => runtime.formContext.data.getIsDirty(), /disposed/);
+});
+
+test('OnSave keeps its save mode and prevention members', async () => {
+  const { runtime } = runtimeFixture();
+  const seen = [];
+  runtime.formContext.data.entity.addOnSave((context) => {
+    const args = context.getEventArgs();
+    seen.push(args.getSaveMode());
+    args.preventDefault();
+    seen.push(args.isDefaultPrevented());
+  });
+  assert.equal((await runtime.dispatch('onsave', undefined, 2)).prevented, true);
+  assert.deepEqual(seen, [2, true]);
+});
+
+// @test-kind observation: native model-driven main form observed 2026-11-12 on a developer environment (single console probe): data.save() rejections are plain objects with errorCode, code, message and title for an OnSave preventDefault, a business-required column, and a save started while another is in flight; the first of two concurrent saves resolves.
+test('script saves reject with the observed plain objects and the first of two concurrent saves resolves', async () => {
+  const outcomes = ['cancelled', 'invalid'];
+  const { runtime } = runtimeFixture({ save: async () => outcomes.shift() });
+  await assert.rejects(runtime.formContext.data.save(), (error) => {
+    assert.deepEqual(error, {
+      errorCode: 2200000005,
+      code: 2200000005,
+      message: 'This form can’t be saved due to a custom setting.',
+      title: 'Unable to save',
+    });
+    return true;
+  });
+  await assert.rejects(runtime.formContext.data.save(), (error) => {
+    assert.deepEqual(error, {
+      errorCode: 2200000007,
+      code: 2200000007,
+      message: 'Please make sure all the field requirements are met.',
+      title: 'Unable to save changes',
+    });
+    return true;
+  });
+  let release;
+  const held = new Promise((resolve) => {
+    release = resolve;
+  });
+  let calls = 0;
+  const { runtime: concurrent } = runtimeFixture({ save: () => (calls++ === 0 ? held : 'busy') });
+  const first = concurrent.formContext.data.save(),
+    second = concurrent.formContext.data.save();
+  await assert.rejects(second, (error) => {
+    assert.deepEqual(error, {
+      errorCode: 2200000003,
+      code: 2200000003,
+      message: 'Please wait while saving is completed',
+      title: 'Saving in Progress',
+    });
+    return true;
+  });
+  release('saved');
+  assert.deepEqual(await first, {
+    savedEntityReference: { entityType: 'x_item', id: '{aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa}', name: 'Copper' },
+  });
+});
+
+// @test-kind observation: native model-driven main form observed 2026-11-12 on a developer environment (single console probe): a successful data.save() resolves with savedEntityReference holding entityType, id and name.
+test('a successful script save resolves with the saved entity reference', async () => {
+  const { runtime } = runtimeFixture({ save: async () => 'saved' });
+  assert.deepEqual(await runtime.formContext.data.save(), {
+    savedEntityReference: { entityType: 'x_item', id: '{aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa}', name: 'Copper' },
+  });
+});
+
+// @test-kind observation: native model-driven main form observed 2026-11-12 on a developer environment (single console probe): OnSave arguments expose getSaveMode, preventDefault, isDefaultPrevented, preventDefaultOnError, shouldPreventDefaultOnError, disableAsyncTimeout and shouldDisableAsyncTimeout.
+test('OnSave arguments expose the observed prevention and timeout members', async () => {
+  const { runtime } = runtimeFixture();
+  const seen = [];
+  runtime.formContext.data.entity.addOnSave((context) => {
+    const args = context.getEventArgs();
+    seen.push(args.getSaveMode(), args.isDefaultPrevented(), args.shouldPreventDefaultOnError());
+    args.preventDefaultOnError();
+    args.disableAsyncTimeout();
+    seen.push(args.shouldPreventDefaultOnError(), args.shouldDisableAsyncTimeout());
+    args.preventDefault();
+    seen.push(args.isDefaultPrevented());
+  });
+  await runtime.dispatch('onsave', undefined, 70);
+  assert.deepEqual(seen, [70, false, false, true, true, true]);
+});
+
+// @test-kind observation: native model-driven main form observed 2026-11-12 on a developer environment (single console probe): entity.save('saveandnew') returns undefined, runs OnSave with save mode 59, saves, and then the form is a blank create form while the saved context still answers with the old id and form type 2.
+test('entity.save saveandnew saves with mode 59 and leaves the saved context readable after the host opens a new record', async () => {
+  const calls = [];
+  let opened;
+  const openedNew = new Promise((resolve) => {
+    opened = resolve;
+  });
+  const { runtime } = runtimeFixture({
+    save: async (close, mode) => {
+      await runtime.dispatch('onsave', undefined, mode);
+      calls.push(['save', close, mode]);
+    },
+    openNewRecord: async () => {
+      calls.push(['openNewRecord']);
+      opened();
+    },
+  });
+  runtime.formContext.data.entity.addOnSave((context) => calls.push(['onsave', context.getEventArgs().getSaveMode()]));
+  const saved = runtime.formContext;
+  assert.equal(runtime.formContext.data.entity.save('saveandnew'), undefined);
+  await openedNew;
+  assert.deepEqual(calls, [['onsave', 59], ['save', false, 59], ['openNewRecord']]);
+  assert.equal(saved.data.entity.getId(), '{aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa}');
+  assert.equal(saved.ui.getFormType(), 2);
+  assert.equal(saved.getAttribute('x_name').getValue(), 'Copper');
+  await assert.rejects(saved.data.save(), /replaced by a new record form/);
+});
+
+// @test-kind contract: the runtime reads the host record and baseline at each call, so a context keeps its dirty state after its form reloads in place.
+test('a runtime context reads the host record and baseline current at each call', () => {
+  const { runtime, host } = runtimeFixture();
+  const saved = { x_itemid: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', x_name: 'Saved', x_quantity: 3 };
+  let current = host.record;
+  let baseline;
+  Object.defineProperty(host, 'record', { get: () => current, configurable: true });
+  Object.defineProperty(host, 'initialRecord', { get: () => baseline, configurable: true });
+  Object.defineProperty(host, 'read', { value: (name) => current[name], configurable: true });
+  current = saved;
+  baseline = saved;
+  assert.equal(runtime.formContext.data.entity.getId(), '{bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb}');
+  assert.equal(runtime.formContext.getAttribute('x_name').getValue(), 'Saved');
+  assert.equal(runtime.formContext.getAttribute('x_name').getIsDirty(), false);
+});
+
+// @test-kind observation: native model-driven main form observed 2026-11-12 on a developer environment (single console probe): in an OnChange handler executionContext.getEventArgs() is undefined, getEventSource().getName() is the changed attribute name, and getDepth() is 0 for a direct fireOnChange.
+test('OnChange has no event arguments and names its changed attribute as the source', async () => {
+  const { runtime } = runtimeFixture();
+  const seen = [];
+  runtime.formContext
+    .getAttribute('x_name')
+    .addOnChange((context) =>
+      seen.push([context.getEventArgs(), context.getEventSource().getName(), context.getDepth()]),
+    );
+  await runtime.formContext.getAttribute('x_name').fireOnChange();
+  assert.deepEqual(seen, [[undefined, 'x_name', 0]]);
+});
+
+// @test-kind observation: native model-driven main form observed 2026-11-12 on a developer environment (single console probe): after data.refresh(false) a script OnLoad handler sees getDataLoadState() 3, and the form-registered OnLoad does not run again.
+test('data.refresh reloads with load state 3 and does not run the form-registered OnLoad again', async () => {
+  const form = compileForm(
+    {
+      id: 'refresh-form',
+      xml: '<form><formLibraries><Library name="x_refresh.js"/></formLibraries><events><event name="onload"><Handlers><Handler libraryName="x_refresh.js" functionName="Invented.formLoad" enabled="true" passExecutionContext="true"/></Handlers></event></events></form>',
+    },
+    {},
+  );
+  const formRuns = [],
+    scriptStates = [];
+  const { runtime } = runtimeFixture({
+    form,
+    scope: { Invented: { formLoad: () => formRuns.push('form') } },
+    extensions: {
+      trusted: true,
+      resources: [{ name: 'x_refresh.js', type: 'script', url: '/_apps/resources/refresh.js' }],
+    },
+    environment: {
+      location: { origin: 'http://127.0.0.1:1234', href: 'http://127.0.0.1:1234/main.aspx' },
+      document: { createElement: () => ({ remove() {} }), head: { append: (script) => script.onload() } },
+    },
+    refresh: () => runtime.dispatch('onload', undefined, 3, { formHandlers: false }),
+  });
+  runtime.formContext.data.addOnLoad((context) => scriptStates.push(context.getEventArgs().getDataLoadState()));
+  await runtime.dispatch('onload');
+  await runtime.formContext.data.refresh(false);
+  assert.deepEqual(scriptStates, [1, 3]);
+  assert.deepEqual(formRuns, ['form']);
+});
+
+// @test-kind contract: a context replaced by saveandnew refuses every form-changing host call with the same error, keeps its reads, and leaves the open form's state unchanged.
+test('a context replaced by saveandnew refuses each form-changing call and keeps answering reads', async () => {
+  const detachedMessage = 'This form context was replaced by a new record form.';
+  const tab = {
+    id: 'general',
+    label: 'General',
+    visible: true,
+    sections: [{ name: 'details', label: 'Details', visible: true }],
+  };
+  const shown = [],
+    labels = [],
+    requirements = [];
+  let opened;
+  const openedNew = new Promise((resolve) => {
+    opened = resolve;
+  });
+  const { runtime, state, notices, writes } = runtimeFixture({
+    form: { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', name: 'Invented form', clientEvents: [], tabs: [tab] },
+    setLayoutVisible: (item, visible) => shown.push([item.name, visible]),
+    setLayoutLabel: (item, label) => labels.push(label),
+    required: (name, value) => {
+      if (value !== undefined) requirements.push(value);
+      return 'none';
+    },
+    save: async (close, mode) => {
+      await runtime.dispatch('onsave', undefined, mode);
+    },
+    openNewRecord: async () => opened(),
+  });
+  const old = runtime.formContext;
+  old.data.entity.save('saveandnew');
+  await openedNew;
+  const attempts = [
+    () => old.getAttribute('x_name').setValue('Changed'),
+    () => old.getControl('x_name').setDisabled(true),
+    () => old.getControl('x_name').setVisible(false),
+    () => old.getAttribute('x_name').setRequiredLevel('required'),
+    () => old.ui.setFormNotification('Stale', 'INFO', 'stale'),
+    () => old.ui.clearFormNotification('stale'),
+    () => old.ui.tabs.get('general').setVisible(false),
+    () => old.ui.tabs.get('general').setLabel('Stale'),
+    () => old.ui.close(),
+    () => old.data.save(),
+    () => old.data.refresh(false),
+  ];
+  for (const attempt of attempts)
+    assert.equal(
+      await Promise.resolve()
+        .then(attempt)
+        .then(
+          () => 'accepted',
+          (error) => error.message,
+        ),
+      detachedMessage,
+    );
+  assert.equal(old.getAttribute('x_name').getValue(), 'Copper');
+  assert.equal(old.data.entity.getId(), '{aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa}');
+  assert.equal(old.ui.getFormType(), 2);
+  assert.deepEqual([state.size, notices.length, writes.length, shown, labels, requirements], [0, 0, 0, [], [], []]);
 });

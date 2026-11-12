@@ -2,6 +2,7 @@ import { DataError } from './data.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { readLocalFile } from '../../lense/local-file.mjs';
+import { orderedMap } from '../../lense/async-map.mjs';
 import { createHash } from 'node:crypto';
 import { parseSolutionXml, child, childText, descendants } from './solution-xml.mjs';
 import { inspectFlowDefinition, inspectFlowTrigger } from './flow-runtime.mjs';
@@ -15,6 +16,87 @@ const fail = (message) => {
 };
 const definitionOf = (workflow) => workflow?.definition?.properties?.definition ?? workflow?.definition?.definition;
 
+const inside = (root, file) => {
+  const relative = path.relative(root, file);
+  return relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
+};
+const attempt = async (task) => {
+  try {
+    return { ok: true, value: await task() };
+  } catch (error) {
+    return { ok: false, error };
+  }
+};
+const roleIds = (value) => (Array.isArray(value) ? value : []).map(canonical);
+
+// Reads one exported cloud flow's trigger route; an invalid optional trigger URL has no callable local route.
+function flowRoute(value) {
+  try {
+    const relative = value.replace(/[\t\r\n]/g, '').trimStart();
+    const url = new URL(value, 'https://local.invalid');
+    if (
+      !URL.canParse(value) &&
+      !/^[\\/]{2}/.test(relative) &&
+      url.origin === 'https://local.invalid' &&
+      /^\/_api\/cloudflow\/v1\.0\/trigger\/[^/]+\/?$/.test(url.pathname)
+    )
+      return url.pathname;
+  } catch {
+    /* An invalid optional trigger URL has no callable local route. */
+  }
+  return null;
+}
+
+async function serverLogicRecord({ file, xml, xmlSource, record, field }) {
+  const filename = childText(xml, 'filecontent');
+  const code =
+    filename && path.basename(filename) === filename
+      ? await fs.realpath(path.join(path.dirname(file), 'filecontent', filename)).catch(() => null)
+      : null;
+  const codeFile = code && inside(path.dirname(file), code) && (await fs.stat(code)).size <= 1024 * 1024 ? code : null;
+  return {
+    ...record,
+    file: codeFile,
+    fingerprint: createHash('sha256')
+      .update(xmlSource)
+      .update(codeFile ? await fs.readFile(codeFile) : '')
+      .digest('hex'),
+    roleIds: roleIds(field('adx_serverlogic_adx_webrole')),
+  };
+}
+
+function cloudFlowRecord(record, field) {
+  return {
+    ...record,
+    path: flowRoute(String(field('flowapiurl') ?? '')),
+    processId: canonical(field('processid')) || null,
+    roleIds: roleIds(field('adx_cloudflowconsumer_adx_webrole')),
+  };
+}
+
+// One powerpagecomponent folder: every check and read stays in order inside the folder; null when it is not selected.
+async function readSolutionComponent(root, folder, websiteId) {
+  const file = await fs.realpath(path.join(root, folder, 'powerpagecomponent.xml')).catch(() => null);
+  if (!file || !inside(root, file) || (await fs.stat(file)).size > 1024 * 1024) return null;
+  const xmlSource = await readLocalFile(file, { root, maxBytes: 1024 * 1024, encoding: 'utf8' });
+  const xml = parseSolutionXml(xmlSource);
+  const type = Number(childText(xml, 'powerpagecomponenttype'));
+  if (![33, 35].includes(type) || Number(childText(xml, 'statecode') ?? 0) !== 0) return null;
+  const site = child(xml, 'powerpagesiteid');
+  if (canonical(site?.text.trim() || descendants(site, 'powerpagesiteid')[0]?.text) !== websiteId) return null;
+  const content = JSON.parse(childText(xml, 'content') || '{}');
+  const field = (name) => content[Object.keys(content).find((key) => key.toLowerCase() === name.toLowerCase())];
+  const record = {
+    id: canonical(xml.attrs.powerpagecomponentid),
+    name: childText(xml, 'name') ?? '',
+    metadataFile: file,
+  };
+  if (!record.name || !record.id) return null;
+  if (type === 35)
+    return { kind: 'serverLogics', record: await serverLogicRecord({ file, xml, xmlSource, record, field }) };
+  return { kind: 'cloudFlows', record: cloudFlowRecord(record, field) };
+}
+
 /* NOSONAR */
 
 /** Selected enhanced solution components belonging to this exact exported website only. */
@@ -25,74 +107,21 @@ const definitionOf = (workflow) => workflow?.definition?.properties?.definition 
   const result = { serverLogics: [], cloudFlows: [] };
   const websiteId = canonical(website?.id ?? website?.adx_websiteid);
   if (!websiteId) return result;
-  const inside = (root, file) => {
-    const relative = path.relative(root, file);
-    return relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
-  };
   for (const layer of layers ?? []) {
     if (!layer.dir) continue;
     const layerRoot = await fs.realpath(layer.dir);
     const root = await fs.realpath(path.join(layerRoot, 'powerpagecomponents')).catch(() => null);
     if (!root || !inside(layerRoot, root)) continue;
-    for (const entry of await fs.readdir(root, { withFileTypes: true })) {
-      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
-      const file = await fs.realpath(path.join(root, entry.name, 'powerpagecomponent.xml')).catch(() => null);
-      if (!file || !inside(root, file) || (await fs.stat(file)).size > 1024 * 1024) continue;
-      const xmlSource = await readLocalFile(file, { root, maxBytes: 1024 * 1024, encoding: 'utf8' });
-      const xml = parseSolutionXml(xmlSource);
-      const type = Number(childText(xml, 'powerpagecomponenttype'));
-      if (![33, 35].includes(type) || Number(childText(xml, 'statecode') ?? 0) !== 0) continue;
-      const site = child(xml, 'powerpagesiteid');
-      if (canonical(site?.text.trim() || descendants(site, 'powerpagesiteid')[0]?.text) !== websiteId) continue;
-      const content = JSON.parse(childText(xml, 'content') || '{}');
-      const field = (name) => content[Object.keys(content).find((key) => key.toLowerCase() === name.toLowerCase())];
-      const roleIds = (value) => (Array.isArray(value) ? value : []).map(canonical);
-      const record = {
-        id: canonical(xml.attrs.powerpagecomponentid),
-        name: childText(xml, 'name') ?? '',
-        metadataFile: file,
-      };
-      if (!record.name || !record.id) continue;
-      if (type === 35) {
-        const filename = childText(xml, 'filecontent');
-        const code =
-          filename && path.basename(filename) === filename
-            ? await fs.realpath(path.join(path.dirname(file), 'filecontent', filename)).catch(() => null)
-            : null;
-        const codeFile =
-          code && inside(path.dirname(file), code) && (await fs.stat(code)).size <= 1024 * 1024 ? code : null;
-        result.serverLogics.push({
-          ...record,
-          file: codeFile,
-          fingerprint: createHash('sha256')
-            .update(xmlSource)
-            .update(codeFile ? await fs.readFile(codeFile) : '')
-            .digest('hex'),
-          roleIds: roleIds(field('adx_serverlogic_adx_webrole')),
-        });
-      } else {
-        let route = null;
-        try {
-          const value = String(field('flowapiurl') ?? '');
-          const relative = value.replace(/[\t\r\n]/g, '').trimStart();
-          const url = new URL(value, 'https://local.invalid');
-          if (
-            !URL.canParse(value) &&
-            !/^[\\/]{2}/.test(relative) &&
-            url.origin === 'https://local.invalid' &&
-            /^\/_api\/cloudflow\/v1\.0\/trigger\/[^/]+\/?$/.test(url.pathname)
-          )
-            route = url.pathname;
-        } catch {
-          /* An invalid optional trigger URL has no callable local route. */
-        }
-        result.cloudFlows.push({
-          ...record,
-          path: route,
-          processId: canonical(field('processid')) || null,
-          roleIds: roleIds(field('adx_cloudflowconsumer_adx_webrole')),
-        });
-      }
+    const folders = (await fs.readdir(root, { withFileTypes: true })).filter(
+      (entry) => entry.isDirectory() && !entry.isSymbolicLink(),
+    );
+    // Reads run concurrently but settle before the fold, which applies them in readdir order and rethrows the first failure.
+    const outcomes = await orderedMap(folders, 16, (entry) =>
+      attempt(() => readSolutionComponent(root, entry.name, websiteId)),
+    );
+    for (const outcome of outcomes) {
+      if (!outcome.ok) throw outcome.error;
+      if (outcome.value) result[outcome.value.kind].push(outcome.value.record);
     }
   }
   return result;
@@ -128,8 +157,40 @@ function flowContract(workflow, steps = {}, { connectors, principal } = {}) {
   };
 }
 
+/** A name-bound handler cannot tell apart cloud flows that share a display name, so each of them falls back to a placeholder. */
+function resolveAmbiguousFlowNames(items, { overrides, diagnostic }) {
+  const byName = new Map();
+  for (const item of items) {
+    if (item.kind !== 'cloud-flow') continue;
+    const name = item.name.toLowerCase();
+    byName.set(name, [...(byName.get(name) ?? []), item]);
+  }
+  for (const group of byName.values()) {
+    if (group.length < 2) continue;
+    diagnostic({
+      code: 'OPERATION_NAME_AMBIGUOUS',
+      severity: 'warning',
+      kind: 'cloud-flow',
+      keys: group.map((item) => item.key),
+      message: 'Cloud flows share a display name, so a name-bound handler does not bind them.',
+    });
+    for (const item of group) {
+      if (!item.registered) continue;
+      item.registered = false;
+      if (overrides[item.key]?.mode == null) item.mode = 'placeholder';
+    }
+  }
+}
+
 /** Source discovery is automatic; executable project JavaScript still requires an explicit choice. */
-export function operationCatalogue({ portal, workflows = new Map(), handlers, overrides = {}, connectors }) {
+export function operationCatalogue({
+  portal,
+  workflows = new Map(),
+  handlers,
+  overrides = {},
+  connectors,
+  diagnostic = () => {},
+}) {
   const items = [];
   const keys = new Set();
   const names = new Set();
@@ -137,9 +198,13 @@ export function operationCatalogue({ portal, workflows = new Map(), handlers, ov
     const key = `${kind}:${canonical(record.id ?? record.processId ?? record.name)}`;
     if (keys.has(key)) throw new DataError(`Ambiguous operation identifier: ${key}`, 409, 'AmbiguousOperation');
     keys.add(key);
-    const nameKey = `${kind}:${record.name.toLowerCase()}`;
-    if (names.has(nameKey)) throw new DataError(`Ambiguous operation name: ${record.name}`, 409, 'AmbiguousOperation');
-    names.add(nameKey);
+    // A server logic is routed by its name, so its name is unique; a cloud flow is bound by its process id.
+    if (kind === 'server-logic') {
+      const nameKey = record.name.toLowerCase();
+      if (names.has(nameKey))
+        throw new DataError(`Ambiguous operation name: ${record.name}`, 409, 'AmbiguousOperation');
+      names.add(nameKey);
+    }
     const registered =
       handlers?.[kind === 'server-logic' ? 'serverLogics' : 'cloudFlows']?.has(record.name.toLowerCase()) ?? false;
     const contract =
@@ -192,6 +257,7 @@ export function operationCatalogue({ portal, workflows = new Map(), handlers, ov
       workflow,
     );
   }
+  resolveAmbiguousFlowNames(items, { overrides, diagnostic });
   return items;
 }
 

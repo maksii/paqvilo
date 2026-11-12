@@ -183,7 +183,7 @@ test(
 // @test-kind unproven: restart durability of the attempt budget is Paqvilo design; the five-execution budget is native asyncRetry
 test(
   'async retry attempts persist before execution and survive a runtime restart without resetting the five-attempt budget',
-  { skip: CLR_SKIP, timeout: 180000 },
+  { skip: CLR_SKIP },
   async (t) => {
     const f = await fixture(t),
       file = path.join(f.root, 'state.json');

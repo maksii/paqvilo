@@ -2,7 +2,7 @@ import { copyPlainGraph, plainDataObject } from '../state-clone.mjs';
 import { compileForm, parseRibbonCommands, dashboardPage, customPageResolution } from './solution.mjs';
 import { powerPagesProvider } from './providers.mjs';
 import { controlDescriptor } from './control-descriptors.mjs';
-import { pickLabel } from '../solution-xml.mjs';
+import { child, parseSolutionXml, pickLabel } from '../solution-xml.mjs';
 import { sourceRecordId } from '../source-record-id.mjs';
 import { setImmediate } from 'node:timers/promises';
 import { webResourcePage } from './client-runtime.mjs';
@@ -264,8 +264,26 @@ function generatedForm(fields) {
   };
 }
 
+// A condition is a find column under a filter marked isquickfindfields="1", or when it is marked itself.
+function quickFindAttributes(node, flagged = false) {
+  return node.children.flatMap((item) => {
+    if (item.name === 'condition') return flagged || item.attrs.isquickfindfields === '1' ? [item.attrs.attribute] : [];
+    if (item.name !== 'filter') return [];
+    return quickFindAttributes(item, flagged || item.attrs.isquickfindfields === '1');
+  });
+}
+
+function quickFindColumnsOf(view, table) {
+  const entity = child(parseSolutionXml(view.fetchXml, { recover: true }), 'entity');
+  if (!entity) return [];
+  return [...new Set(quickFindAttributes(entity))].filter((name) => Object.hasOwn(table.fields, name));
+}
+
 function prepareTableViews(table, viewsOf) {
   const views = viewsOf.get(table.entity) ?? NONE;
+  const quickFind = views.find((view) => view.queryType === 4 && view.fetchXml);
+  const quickFindColumns = quickFind ? quickFindColumnsOf(quickFind, table) : [];
+  if (quickFindColumns.length) table.quickFindColumns = quickFindColumns;
   table.views = views
     .filter((view) => view.queryType === 0)
     .map((view) => ({

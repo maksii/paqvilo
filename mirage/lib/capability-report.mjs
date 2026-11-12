@@ -102,6 +102,7 @@ function addProbeRequirements(localServices, providers, push) {
       status: provider.status ?? (provider.reachable ? 'satisfied' : 'missing'),
       resolution: provider.resolution ?? (provider.reachable ? { by: 'probe' } : null),
       message: provider.message ?? null,
+      reason: provider.reason ?? null,
     });
 }
 

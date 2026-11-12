@@ -29,7 +29,7 @@ test(
     const manifest = { name: 'invented-sdk', version: '1.0.0' };
     await fs.writeFile(path.join(pkg, 'package.json'), JSON.stringify(manifest));
     await fs.writeFile(path.join(pkg, 'index.js'), 'export default 1;');
-    const run = (args, cwd) => exec(process.execPath, [npm, ...args], { cwd, windowsHide: true, timeout: 60000 });
+    const run = (args, cwd) => exec(process.execPath, [npm, ...args], { cwd, windowsHide: true });
     const packed = JSON.parse(
       (await run(['pack', '--json', '--ignore-scripts', '--offline', '--cache', cache], pkg)).stdout,
     )[0];
@@ -112,7 +112,6 @@ test(
       cwd: primerRoot,
       env: primerEnvironment,
       windowsHide: true,
-      timeout: 120_000,
       maxBuffer: 4 * 1024 * 1024,
     });
     await run(['install', '--offline', '--package-lock=false', ...options], consumer);

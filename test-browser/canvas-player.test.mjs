@@ -1,3 +1,4 @@
+// @test-kind contract: the Canvas player's launch, start, restart and browser-load behaviour for the invented source.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -16,6 +17,15 @@ for (const format of ['directory', 'archive']) {
     const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     await signInContext(context, sim, 'alex');
     const page = await context.newPage();
+    const consoleErrors = [];
+    const failedResponses = [];
+    page.on('console', (message) => {
+      if (message.type() === 'error') consoleErrors.push(message.text());
+    });
+    page.on('pageerror', (error) => consoleErrors.push(error.message));
+    page.on('response', (response) => {
+      if (response.status() >= 400) failedResponses.push(`${response.status()} ${response.url()}`);
+    });
     const app = format === 'archive' ? 'Invented' : 'invented';
     const ready = Promise.all([
       page.waitForResponse(
@@ -113,98 +123,128 @@ for (const format of ['directory', 'archive']) {
       await fs.mkdir(evidence, { recursive: true });
       await page.screenshot({ path: path.join(evidence, 'player-mobile.png'), fullPage: true });
     }
+    // Checked after the flows above, so the browser's own favicon request has been made by then.
+    assert.deepEqual(consoleErrors, []);
+    assert.deepEqual(failedResponses, []);
   });
 }
-test(
-  'player reports source gaps and serializes actions, including a refused action snapshot',
-  { timeout: 60_000 },
-  async (t) => {
-    let release, releaseSecond;
-    ownedFixture(t).add(() => {
-      release?.();
-      releaseSecond?.();
-    });
-    const sim = await canvasPlayerFixture(t, 'directory', { gaps: true });
-    const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-    ownedFixture(t).add(() => browser.close());
-    const context = await browser.newContext();
-    await signInContext(context, sim, 'alex');
-    const page = await context.newPage();
-    await page.goto(`${sim.url}/_apps/canvas/invented`);
-    await page.getByTestId('canvas-start').click();
-    await page.locator('[data-control="Next"]').waitFor();
-    const inventory = await (await context.request.get(sim.url + '/_apps/canvas/api/invented')).json();
-    assert.ok(inventory.diagnostics.some((d) => d.code === 'CANVAS_SOURCE_YAML_INVALID'));
-    assert.match(await page.getByTestId('canvas-inspector').textContent(), /Unsupported|PieChart/i);
-    const report = await sim.preflight();
-    assert.ok(report.requirements.some((row) => row.id === 'canvas:rendering' && row.status === 'unsupported'));
+test('player reports source gaps and serializes actions, including a refused action snapshot', async (t) => {
+  let release, releaseSecond;
+  ownedFixture(t).add(() => {
+    release?.();
+    releaseSecond?.();
+  });
+  const sim = await canvasPlayerFixture(t, 'directory', { gaps: true });
+  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
+  ownedFixture(t).add(() => browser.close());
+  const context = await browser.newContext();
+  await signInContext(context, sim, 'alex');
+  const page = await context.newPage();
+  await page.goto(`${sim.url}/_apps/canvas/invented`);
+  await page.getByTestId('canvas-start').click();
+  await page.locator('[data-control="Next"]').waitFor();
+  const inventory = await (await context.request.get(sim.url + '/_apps/canvas/api/invented')).json();
+  assert.ok(inventory.diagnostics.some((d) => d.code === 'CANVAS_SOURCE_YAML_INVALID'));
+  assert.match(await page.getByTestId('canvas-inspector').textContent(), /Unsupported|PieChart/i);
+  const report = await sim.preflight();
+  assert.ok(report.requirements.some((row) => row.id === 'canvas:rendering' && row.status === 'unsupported'));
 
-    const gate = new Promise((resolve) => {
-      release = resolve;
-    });
-    let firstSeen;
-    const seen = new Promise((resolve) => {
-      firstSeen = resolve;
-    });
-    let secondSeen;
-    const secondGate = new Promise((resolve) => {
-      releaseSecond = resolve;
-    });
-    const secondArrived = new Promise((resolve) => {
-      secondSeen = resolve;
-    });
-    const received = [];
-    await page.route('**/_apps/api/canvas/invented', async (route) => {
-      const payload = route.request().postDataJSON();
-      received.push(payload);
-      if (received.length === 1) {
-        firstSeen();
-        await gate;
-        const response = await route.fetch();
-        const body = await response.json();
-        body.snapshot.variables.refusedMarker = 'shown after refusal';
-        body.errors = [{ message: 'Invented refusal' }];
-        await route.fulfill({ response, status: 403, json: body });
-      } else {
-        secondSeen();
-        await secondGate;
-        await route.continue();
-      }
-    });
-    await page.evaluate(() => {
-      const check = document.querySelector('[data-control="Check"]');
-      const toggle = document.querySelector('[data-control="Switch"]');
-      check.checked = true;
-      check.dispatchEvent(new Event('change', { bubbles: true }));
-      toggle.checked = true;
-      toggle.dispatchEvent(new Event('change', { bubbles: true }));
-    });
-    await seen;
-    assert.equal(received.length, 1);
-    const second = page.waitForResponse(
-      (r) => r.url().endsWith('/_apps/api/canvas/invented') && r.request().postDataJSON()?.control === 'Switch',
-    );
-    release();
-    try {
-      // The queued second request proves the first response was applied; hold its response
-      // so that its snapshot cannot replace the refused snapshot before inspection.
-      await secondArrived;
-      await page.waitForFunction(() =>
-        document.querySelector('[data-testid="canvas-inspector"]')?.textContent.includes('shown after refusal'),
-      );
-    } finally {
-      releaseSecond();
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  let firstSeen;
+  const seen = new Promise((resolve) => {
+    firstSeen = resolve;
+  });
+  let secondSeen;
+  const secondGate = new Promise((resolve) => {
+    releaseSecond = resolve;
+  });
+  const secondArrived = new Promise((resolve) => {
+    secondSeen = resolve;
+  });
+  const received = [];
+  await page.route('**/_apps/api/canvas/invented', async (route) => {
+    const payload = route.request().postDataJSON();
+    received.push(payload);
+    if (received.length === 1) {
+      firstSeen();
+      await gate;
+      const response = await route.fetch();
+      const body = await response.json();
+      body.snapshot.variables.refusedMarker = 'shown after refusal';
+      body.errors = [{ message: 'Invented refusal' }];
+      await route.fulfill({ response, status: 403, json: body });
+    } else {
+      secondSeen();
+      await secondGate;
+      await route.continue();
     }
-    await second;
-    await page.waitForFunction(
-      () =>
-        document.querySelector('[data-control="Check"]')?.checked &&
-        document.querySelector('[data-control="Switch"]')?.checked &&
-        !document.querySelector('[data-testid="canvas-inspector"]')?.textContent.includes('shown after refusal'),
+  });
+  await page.evaluate(() => {
+    const check = document.querySelector('[data-control="Check"]');
+    const toggle = document.querySelector('[data-control="Switch"]');
+    check.checked = true;
+    check.dispatchEvent(new Event('change', { bubbles: true }));
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await seen;
+  assert.equal(received.length, 1);
+  const second = page.waitForResponse(
+    (r) => r.url().endsWith('/_apps/api/canvas/invented') && r.request().postDataJSON()?.control === 'Switch',
+  );
+  release();
+  try {
+    // The queued second request proves the first response was applied; hold its response
+    // so that its snapshot cannot replace the refused snapshot before inspection.
+    await secondArrived;
+    await page.waitForFunction(() =>
+      document.querySelector('[data-testid="canvas-inspector"]')?.textContent.includes('shown after refusal'),
     );
-    assert.deepEqual(
-      received.map((a) => a.control),
-      ['Check', 'Switch'],
-    );
-  },
-);
+  } finally {
+    releaseSecond();
+  }
+  await second;
+  await page.waitForFunction(
+    () =>
+      document.querySelector('[data-control="Check"]')?.checked &&
+      document.querySelector('[data-control="Switch"]')?.checked &&
+      !document.querySelector('[data-testid="canvas-inspector"]')?.textContent.includes('shown after refusal'),
+  );
+  assert.deepEqual(
+    received.map((a) => a.control),
+    ['Check', 'Switch'],
+  );
+});
+test('Start on a reopened player runs OnStart again, and Restart does the same', async (t) => {
+  const sim = await canvasPlayerFixture(t, 'directory');
+  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
+  ownedFixture(t).add(() => browser.close());
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  await signInContext(context, sim, 'alex');
+  const page = await context.newPage();
+  const control = (name) => page.locator(`[data-control="${name}"]`);
+  const loaded = () =>
+    page.waitForFunction(() => document.querySelector('[data-testid="canvas-start"]')?.disabled === false);
+  await page.goto(`${sim.url}/_apps/canvas/invented`);
+  await loaded();
+  await page.getByTestId('canvas-resolution').selectOption('390x844');
+  await page.getByTestId('canvas-start').click();
+  await control('Next').click();
+  await control('Return').waitFor();
+  await page.reload();
+  await loaded();
+  await control('Return').waitFor();
+  await page.getByTestId('canvas-start').click();
+  await control('VisitStatus').waitFor();
+  assert.equal(await control('Return').count(), 0, 'Start shows the start screen, not the screen it left');
+  assert.equal(await control('VisitStatus').innerText(), 'new', 'the UpdateContext from the earlier run is gone');
+  const state = await (await context.request.get(`${sim.url}/_apps/api/canvas/invented`)).json();
+  assert.equal(state.variables.initialWidth, 390, 'OnStart sets its variable from the selected resolution');
+  await control('Next').click();
+  await control('Return').waitFor();
+  await page.getByTestId('canvas-restart').click();
+  await control('VisitStatus').waitFor();
+  assert.equal(await control('Return').count(), 0, 'Restart shows the start screen');
+});

@@ -3,6 +3,7 @@ import { parseArgs } from 'node:util';
 import path from 'node:path';
 import { loadConfig, loadCatalogue } from './config.mjs';
 import { startupProgress } from './startup-progress.mjs';
+import { parseOptions } from './cli-options.mjs';
 
 const HELP = `paqvilo lense - work on Power Pages portal sources locally, laid over an online environment
 
@@ -36,7 +37,8 @@ Which site and environment (default: .env, then paqvilo.config.yml)
   --env <name>      catalogue environment, or declared model-driven reference ID
   --pick            ask for site and environment now
   --url <url>       use this site URL instead of a configured environment
-  --source <dir>    use this extract folder instead of the configured one
+  --source <dir>    use this extract folder instead of the configured one; with analyze --config,
+                    it overrides the selected site's portal source; analyze without --config reads it as a standalone folder
   --repo <dir>      portal checkout/worktree root for all shared relative site sources
   --config <file>   another catalogue file
   --portals <selected|all> dev/list: one origin or the catalogue; mirage init/start/dev/stop:
@@ -60,6 +62,7 @@ Other
   --signed-in       verify: use the signed-in profile of "dev" instead of an anonymous one
   --no-write        map: return the report without writing mapping files
   --no-reload       dev: do not reload tabs when sources change
+  --no-overrides    dev: show the environment as it is served, with no local sources laid over it (reference view)
   --debug-port <n>  dev: launched browser's debugger port (0 = off; incompatible with CDP attachment)
   --check           map: request every mapped URL online
   --settings        list: also show every setting .env understands
@@ -68,7 +71,8 @@ Other
   --lint-profiles   doctor: lint all exported deployment-profiles as warnings
   --fail-on <none|error|warning|hint> doctor/analyze: static analysis threshold
                     doctor defaults to none (advisory); analyze defaults to error
-  --json            list/map/status/doctor/analyze/audit/resources/verify: machine readable output
+  --json            list/map/status/doctor/analyze/audit/resources/verify/agent: machine readable output;
+                    mirage (except dev) and model-driven inspect too
   --event-cursor <token> model-driven inspect: continue its source event registration report
   --include-event-parameters model-driven inspect: explicitly include source parameter literals
 
@@ -86,7 +90,7 @@ Agent session access
   --selector <css>  agent: DOM selector for snapshot
   --after <n>       agent: event sequence cursor
   --output <path>   agent screenshot: PNG destination
-  --timeout <ms>   agent: operation deadline
+  --timeout <ms>   agent: operation deadline (sessions: per-session probe budget)
   --full-page       agent screenshot: capture the full page
   --include-panel   agent screenshot: keep the dev panel in the image
   --width <n>       agent viewport: viewport width
@@ -102,12 +106,16 @@ Agent session access
   --apply-configuration          mirage: also apply the selected preset’s linked configuration
   --preset-mode bootstrap|always  mirage: seed new state only, or reset on every start
   --preset <name>   mirage: apply a scenario preset when starting (default: mirage.preset)
+  --runtime <kind>  mirage: power-pages, model-driven or dataverse-api (default: the project's or catalogue's)
+  --simulation <level> mirage: dry-run keeps records in memory, simulation saves them as pack data,
+                    deep also allows schema changes
   --solution-root <dir> mirage: add a solution source root (repeatable; default:
                     mirage.solutionRoots, else unpacked solutions next to the portal repository)
   --resource-map <file> model-driven: JSON version 1 resources [{path,resource}] binding
                     observed native PCF paths to declared Solution component resources
   --local-simulation model-driven: loopback-only panel workflow; no remote targets
-  --startup-timeout <ms> mirage/model-driven dev: startup deadline (default: 120000)
+  --startup-timeout <ms> mirage start/dev and model-driven dev: longest start-up silence without progress
+                    (default: 120000; absolute cap 600000 ms)
   --allow-live-writes mirage dev/start: let the runtime send create, update and delete
                     requests to the live environment once _sim's live-writes switch is on
                     (default: off; without it no live write can leave the runtime)
@@ -115,6 +123,24 @@ Agent session access
                     mirage.project, else .paqvilo/mirage/<site>.project.yml)
   --force           mirage init: replace an existing project file
   --strict          verify: fail on new diagnostics; audit: fail on blocked or unmapped resources
+`;
+
+const MIRAGE_INIT_HELP = `paqvilo mirage init — write the Mirage project file for a catalogue site
+
+Usage: paqvilo mirage init --config FILE --site SITE [--env ENV] [--url URL] [--source DIR] [--repo DIR]
+                           [--portals selected|all] [--out FILE] [--force] [--json]
+
+  --config FILE     another catalogue file
+  --site <name>     site from paqvilo.config.yml
+  --env <name>      catalogue environment, or declared model-driven reference ID
+  --url <url>       use this site URL instead of a configured environment
+  --source <dir>    use this extract folder instead of the configured one
+  --repo <dir>      portal checkout/worktree root for all shared relative site sources
+  --portals <selected|all>  mirage init: one Mirage or one per catalogue site (default from config)
+  --out <file>      project file to write (default: the site's catalogued
+                    mirage.project, else .paqvilo/mirage/<site>.project.yml)
+  --force           replace an existing project file
+  --json            machine readable output
 `;
 
 const options = {
@@ -190,7 +216,7 @@ const options = {
 
 let values, positionals;
 try {
-  ({ values, positionals } = parseArgs({
+  ({ values, positionals } = parseOptions({
     allowPositionals: true,
     options,
   }));
@@ -327,9 +353,10 @@ if (!Object.hasOwn(commands, command)) {
 }
 
 if (values.help) {
+  const usage = command === 'mirage' && positionals[1] === 'init' ? MIRAGE_INIT_HELP : HELP;
   if (values.json || command === 'agent')
-    console.log(JSON.stringify({ schemaVersion: 1, command: 'help', ok: true, usage: HELP }));
-  else console.log(HELP);
+    console.log(JSON.stringify({ schemaVersion: 1, command: 'help', ok: true, usage }));
+  else console.log(usage);
   process.exit(0);
 }
 
@@ -375,7 +402,7 @@ try {
       'sign-in-timeout',
     ],
     doctor: [...selection, ...browserSelection, 'cdp-url', 'all', 'mirage', 'lint-profiles', 'fail-on', 'json'],
-    analyze: [...selection, 'project', 'all', 'fail-on', 'json'],
+    analyze: ['site', 'env', 'source', 'repo', 'config', 'project', 'all', 'fail-on', 'json'],
     list: [...selection, ...browserSelection, 'cdp-url', 'portals', 'settings', 'json'],
     audit: [...selection, 'all', 'strict', 'json'],
     use: ['config', 'repo', 'site', 'env'],

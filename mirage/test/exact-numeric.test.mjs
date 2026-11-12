@@ -1,3 +1,4 @@
+// @test-kind contract: exact numeric arithmetic, JSON lexemes and formatting over invented values and loopback fixtures.
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk } from './fixtures/clr-sdk.mjs';
@@ -20,6 +21,7 @@ import {
   compareNumeric,
   roundNumeric,
   averageNumeric,
+  formatExactNumeric,
 } from '../lib/exact-numeric.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
@@ -47,9 +49,18 @@ const profile = {
   grants: [{ entity: 'precisionrow', operations: ['read', 'create', 'update', 'delete'] }],
 };
 // A hang guard for the one-file csc.exe build of the invented plug-in; a normal build finishes in about a second.
-const COMPILE_TIMEOUT_MS = 150_000;
+// hang guard only: a blocked synchronous child cannot be ended by the test runner
+const CLI_HANG_GUARD_MS = 170_000;
 const text = (value) => (typeof value === 'object' ? value.value : String(value));
 const typed = (type, value) => ({ $type: type, value });
+
+test('formatted exact decimals never use exponent notation and keep rounding and separators', () => {
+  assert.equal(formatExactNumeric(exactNumeric('0.00000012345678901234567890123'), 10), '0.0000001235');
+  assert.equal(formatExactNumeric(exactNumeric('0.0000001'), 7), '0.0000001');
+  assert.equal(formatExactNumeric(exactNumeric('1234567.891'), 2), '1,234,567.89');
+  assert.equal(formatExactNumeric(exactNumeric('2.5'), 0), '3');
+  assert.equal(formatExactNumeric(exactNumeric('-0.125'), 2), '-0.13');
+});
 
 test('Exact numeric arithmetic bounds precision and never accepts forged JSON scalar objects', () => {
   assert.equal(compareNumeric(exactNumeric('9007199254740993', 'Int64'), '9007199254740992'), 1);
@@ -300,7 +311,7 @@ var link=q.AddLink("precisionrow","precisionrowid","precisionrowid");link.Entity
     const build = spawnSync(
       path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
       ['/nologo', '/target:library', '/out:' + assembly, '/reference:' + sdk, source],
-      { shell: false, windowsHide: true, encoding: 'utf8', timeout: COMPILE_TIMEOUT_MS },
+      { shell: false, windowsHide: true, encoding: 'utf8', timeout: CLI_HANG_GUARD_MS },
     );
     assert.equal(build.status, 0, build.stdout + build.stderr);
     const runtime = await prepareClrRuntime({

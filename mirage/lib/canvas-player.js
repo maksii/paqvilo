@@ -8,7 +8,9 @@
   const status = document.querySelector('[data-testid="canvas-status"]');
   const inspector = document.querySelector('[data-testid="canvas-inspector"]');
   const start = document.querySelector('[data-testid="canvas-start"]');
+  const restart = document.querySelector('[data-testid="canvas-restart"]');
   const resolution = document.querySelector('[data-testid="canvas-resolution"]');
+  const notice = document.querySelector('[data-testid="canvas-notifications"]');
   let source,
     snapshot,
     pending = Promise.resolve(),
@@ -106,6 +108,7 @@
         body: JSON.stringify({ ...action, sourceRevision: source?.revision }),
       });
       snapshot = result.snapshot;
+      announceNotices(action.action === 'start' || action.action === 'reset');
       render();
       if (result.errors?.length)
         status.textContent = result.errors.map((error) => error.message || error.kind).join('; ');
@@ -332,9 +335,12 @@
       if (row.templateProperties?.TemplateFill)
         rowEl.style.backgroundColor = valueText(row.templateProperties.TemplateFill);
       rowEl.style.height = `${num(p.TemplateSize, 80)}px`;
-      rowEl.addEventListener('click', (event) => {
-        if (event.target === rowEl) void act({ action: 'select', control: control.name, item: row.index });
-      });
+      // Capture phase: the row selection is queued before a child's own OnSelect, which then reads the selected row.
+      rowEl.addEventListener(
+        'click',
+        () => void act({ action: 'select', control: control.name, item: row.index }),
+        true,
+      );
       const models = (source.tree?.screens || source.screens || []).flatMap((s) => s.controls || []);
       const rowElements = galleryRowElements(control, row, models);
       attachGalleryRow(control, row, rowEl, rowElements, models);
@@ -594,7 +600,8 @@
       if (kind === 'datepicker') el.type = 'date';
       else if (mode.includes('password')) el.type = 'password';
       else el.type = 'text';
-    if (kind === 'textinput' && p.Placeholder != null) el.placeholder = valueText(p.Placeholder);
+    const hint = p.Placeholder ?? p.HintText;
+    if (kind === 'textinput' && hint != null) el.placeholder = valueText(hint);
     if (kind === 'textinput' && Number.isInteger(p.MaxLength) && p.MaxLength >= 0) el.maxLength = p.MaxLength;
     el.value = valueText(p.Text ?? p.SelectedDate ?? p.Default);
     if (kind === 'datepicker') el.value = valueText(p.SelectedDate).slice(0, 10);
@@ -949,6 +956,80 @@
     else if (transition.startsWith('uncover')) effect = 'uncover';
     if (effect) stage.classList.add(`canvas-transition-${effect}`);
   }
+  function noticeElement(item) {
+    const kind = valueText(item.type).split('.').pop().toLowerCase();
+    const el = node('div');
+    el.className = 'canvas-notice';
+    el.setAttribute('role', ['error', 'warning'].includes(kind) ? 'alert' : 'status');
+    el.append(node('span', item.message));
+    const close = node('button', '×');
+    close.type = 'button';
+    close.setAttribute('aria-label', 'Dismiss notification');
+    el.append(close);
+    return el;
+  }
+  // Banners by notification id; dismissed ids are kept per app and session in sessionStorage (storage can be unavailable).
+  const shownNotices = new Map();
+  const dismissedKey = () => `paqvilo-canvas-dismissed:${app}:${snapshot?.clockKey ?? ''}`;
+  function dismissedNotices() {
+    try {
+      return new Set(JSON.parse(sessionStorage.getItem(dismissedKey()) ?? '[]'));
+    } catch {
+      return new Set();
+    }
+  }
+  function rememberDismissed(id) {
+    try {
+      sessionStorage.setItem(dismissedKey(), JSON.stringify([...dismissedNotices(), id]));
+    } catch {
+      // Unavailable storage: the banner stays dismissed for this page only.
+    }
+  }
+  // Milliseconds a notification has left, measured on the server's clock (snapshot.now); Infinity when its Timeout is 0.
+  const noticeRemaining = (item) => (item.timeout === 0 ? Infinity : item.timeout - (snapshot.now - item.createdAt));
+  function removeNotice(id) {
+    const shown = shownNotices.get(id);
+    if (!shown) return;
+    clearTimeout(shown.timer);
+    shown.el.remove();
+    shownNotices.delete(id);
+  }
+  function dismissNotice(id) {
+    removeNotice(id);
+    rememberDismissed(id);
+  }
+  function showNotice(item, remaining) {
+    const el = noticeElement(item);
+    const entry = { el, timer: null };
+    el.querySelector('button').addEventListener('click', () => dismissNotice(item.id));
+    if (Number.isFinite(remaining)) armNoticeTimer(item.id, entry, remaining);
+    shownNotices.set(item.id, entry);
+    notice.append(el);
+  }
+  // A browser fires a delay above 2,147,483,647 ms at once, so a longer wait is armed in steps of that size.
+  function armNoticeTimer(id, entry, remaining) {
+    const maxDelay = 2147483647;
+    const step = Math.min(remaining, maxDelay);
+    entry.timer = setTimeout(() => {
+      if (step < remaining) armNoticeTimer(id, entry, remaining - step);
+      else removeNotice(id);
+    }, step);
+  }
+  // The snapshot keeps every notification for the inspector. A banner is kept by id: a shown one keeps its timer, a
+  // dismissed one stays hidden, and a timed one shows for the time left, so a reload neither restarts it nor shows an
+  // expired one. A start or reset clears the banners first.
+  function announceNotices(fresh) {
+    if (fresh) {
+      for (const id of [...shownNotices.keys()]) removeNotice(id);
+      notice.replaceChildren();
+    }
+    const dismissed = dismissedNotices();
+    for (const item of snapshot.notifications ?? []) {
+      if (shownNotices.has(item.id) || dismissed.has(item.id)) continue;
+      const remaining = noticeRemaining(item);
+      if (remaining > 0) showNotice(item, remaining);
+    }
+  }
   function applyScreenLayouts(screen, elements) {
     for (const control of screen?.controls || [])
       if (control.kind === 'container')
@@ -957,6 +1038,7 @@
   function render() {
     globalThis.paqviloCanvasPcf?.begin();
     const focus = prepareRenderStage();
+    restart.hidden = !(snapshot && snapshot.started !== false);
     if (!snapshot || snapshot.started === false) {
       for (const el of preservedMedia.values()) el.remove();
       status.textContent = 'The app has not been started. Start runs its OnStart formula.';
@@ -1053,8 +1135,10 @@
   stage.addEventListener('animationend', () =>
     stage.classList.remove('canvas-transition-fade', 'canvas-transition-cover', 'canvas-transition-uncover'),
   );
-  start.addEventListener('click', async () => {
+  // A running instance is reset first, so its OnStart runs again; start then launches it as a first start does.
+  async function launch() {
     const [width, height] = logicalViewport();
+    if (snapshot && snapshot.started !== false) await act({ action: 'reset', viewport: { width, height } });
     await act({ action: 'start', viewport: { width, height } });
     const [desiredWidth, desiredHeight] = logicalViewport();
     if (
@@ -1063,7 +1147,9 @@
       (snapshot.viewport?.width !== desiredWidth || snapshot.viewport?.height !== desiredHeight)
     )
       await act({ action: 'resize', width: desiredWidth, height: desiredHeight });
-  });
+  }
+  start.addEventListener('click', launch);
+  restart.addEventListener('click', launch);
   resolution.addEventListener('change', () => {
     const [width, height] = logicalViewport();
     if (snapshot && snapshot.started !== false) void act({ action: 'resize', width, height });
@@ -1156,6 +1242,7 @@
       }
       source = inventory;
       snapshot = state;
+      announceNotices(false);
       if (state.viewport && !inventory.app?.display?.scaleToFit && !inventory.app?.display?.lockOrientation) {
         const { width, height } = state.viewport;
         const selected = `${width}x${height}`;

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
-import { sharedBrowser, fileScope } from './shared-browser.mjs';
+import { sharedBrowser, fileScope, appsOrigin } from './shared-browser.mjs';
 import { prepareNativeControls } from './native-controls-fixture.mjs';
 
 const chrome = sharedBrowser();
@@ -12,9 +12,9 @@ const scope = fileScope();
 let sharedApp;
 
 async function fixture(t, { timezoneId = 'America/New_York' } = {}) {
-  const { origin } = await (sharedApp ??= modelDrivenFixture(scope));
+  const { sim, origin } = await (sharedApp ??= modelDrivenFixture(scope));
   const page = await chrome.page(t, { timezoneId, viewport: { width: 1200, height: 900 } });
-  await prepareNativeControls(page, origin);
+  await prepareNativeControls(page, appsOrigin(sim, origin));
   await page.evaluate(async () => {
     const renderControl = window.renderFixtureControl;
     document.body.replaceChildren();
@@ -456,7 +456,7 @@ for (const kind of ['portal', 'model-driven'])
     const evidence = savedPageDiagnostics(page);
     try {
       await page.goto(
-        origin +
+        appsOrigin(sim, origin) +
           '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       );
       const time = page.getByRole('combobox', { name: 'Appointment Time', exact: true });
@@ -476,7 +476,7 @@ for (const kind of ['portal', 'model-driven'])
       await page.getByRole('button', { name: 'Save', exact: true }).click();
       await page.getByRole('status').filter({ hasText: 'Record saved locally.' }).waitFor();
       const saved = await (
-        await fetch(origin + '/_apps/api/tables/x_item/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')
+        await fetch(appsOrigin(sim, origin) + '/_apps/api/tables/x_item/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')
       ).json();
       assert.equal(new Date(saved.row.x_appointment).toISOString(), '2026-10-22T10:47:00.000Z');
       await page.reload();

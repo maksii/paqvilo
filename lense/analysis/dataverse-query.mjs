@@ -152,11 +152,14 @@ function inspectHttpQueries(entry, emit) {
   return { queries, truncated: false };
 }
 
+// Only a literal that starts with '?' can be an Xrm.WebApi options string, so only those pay the per-literal context lookup;
+// the budget counts them alone and every other literal is bounded by the 2 MiB file limit.
+const OPTION_LITERAL_LIMIT = 100000;
 function inspectScriptQueries(entry, emit) {
   let queries = 0,
-    literals = 0;
+    optionLiterals = 0;
   for (const literal of stringLiterals(entry.text)) {
-    if (++literals > 100000) return { queries, truncated: true };
+    if (literal.value.startsWith('?') && ++optionLiterals > OPTION_LITERAL_LIMIT) return { queries, truncated: true };
     if (inspectQuery(entry, literal, emit, xrmOptions(entry.text, literal))) queries++;
   }
   return { queries, truncated: false };
@@ -171,7 +174,7 @@ export function analyzeDataverseQueries(entries, emit) {
     if (/\.(?:http|rest)$/i.test(entry.file)) result = inspectHttpQueries(entry, emit);
     else if (/\.(?:[cm]?js|jsx|tsx?|json)$/i.test(entry.file)) result = inspectScriptQueries(entry, emit);
     else continue;
-    fileNames.push(entry.file);
+    if (result.queries) fileNames.push(entry.file);
     queries += result.queries;
     if (result.truncated) skipped.push({ file: entry.file, reason: 'dataverse-query-literal-limit' });
   }

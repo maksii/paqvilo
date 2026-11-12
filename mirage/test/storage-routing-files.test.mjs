@@ -1,5 +1,6 @@
 // File and image column bytes through the storage routing extension, with a local-disk storage router and without one:
 // upload, download, ranges, blocks, SAS, delete-after-commit and the orphan sweep.
+// @test-kind contract: Paqvilo's own storage routing design; a rejected provider put fails the file or image write as a note's does.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -198,6 +199,151 @@ for (const mode of MODES) {
     assert.ok(h.diagnostics.some((d) => d.code === 'STORAGE_SWEPT'));
   });
 }
+
+const providerFailure = () =>
+  Object.assign(new Error('connection refused: Endpoint=invented.invalid;SharedAccessKey=INVENTED-KEY'), {
+    code: 'ProviderUnavailable',
+  });
+const rejectingPuts = (h) => {
+  h.provider.put = async () => {
+    throw providerFailure();
+  };
+};
+// Rejects the nth provider put from now on; the puts before it reach the provider.
+const failNthPut = (h, n) => {
+  const put = h.provider.put;
+  let calls = 0;
+  h.provider.put = (...args) => {
+    calls += 1;
+    if (calls === n) return Promise.reject(providerFailure());
+    return put(...args);
+  };
+};
+// The note path's answer: 503 with the same envelope code and message, and no provider, key or path detail.
+const assertWriteFailed = (h, res) => {
+  const text = res.buffer.toString('utf8');
+  assert.equal(res.status, 503, text);
+  assert.equal(res.json.error.code, '0x80040216', text);
+  assert.equal(
+    res.json.error.message,
+    'The body could not be written to its storage provider; the write was rolled back.',
+  );
+  for (const leak of ['INVENTED-KEY', 'Endpoint=', h.root]) assert.equal(text.includes(leak), false);
+};
+// Starts a chunked upload of CONTENT in two ranges and answers the second, last range.
+async function chunkedUpload(h) {
+  const start = await h.call('PATCH', `${widget}/fx_doc`, Buffer.alloc(0), {
+    'x-ms-transfer-mode': 'chunked',
+    'x-ms-file-name': 'chunked.txt',
+  });
+  assert.equal(start.status, 200);
+  const location = new URL(start.headers.get('location'));
+  const target = `${location.pathname.replace(/^\/api\/data\/v9\.2\//, '')}${location.search}`;
+  const range = (from, to) =>
+    h.call('PATCH', target, CONTENT.subarray(from, to), {
+      'content-type': 'application/octet-stream',
+      'content-range': `bytes ${from}-${to - 1}/${CONTENT.length}`,
+    });
+  assert.equal((await range(0, 100)).status, 206);
+  return range(100, CONTENT.length);
+}
+
+test('a file upload whose provider put rejects answers the write failure and keeps the stored file', async (t) => {
+  const h = await routingApi(t);
+  assert.equal((await upload(h)).status, 204);
+  rejectingPuts(h);
+  assertWriteFailed(h, await upload(h, Buffer.from('replacement bytes')));
+  await h.settle();
+  assert.deepEqual((await h.call('GET', `${widget}/fx_doc/$value`)).buffer, CONTENT);
+  assert.equal(fileEntries(h.store).length, 1);
+});
+
+test('an image write whose provider put rejects answers the write failure and leaves the column empty', async (t) => {
+  const h = await routingApi(t);
+  rejectingPuts(h);
+  assertWriteFailed(h, await h.call('PATCH', widget, { fx_photo: PNG.toString('base64') }));
+  await h.settle();
+  assert.equal((await h.call('GET', `${widget}?$select=fx_photo`)).json.fx_photo, null);
+  assert.deepEqual(fileEntries(h.store), []);
+});
+
+for (const [label, arm] of [
+  ['put', (h) => failNthPut(h, 2)],
+  [
+    'commit',
+    (h) => {
+      h.provider.commit = async () => {
+        throw providerFailure();
+      };
+    },
+  ],
+]) {
+  test(`the last chunk of a chunked upload whose provider ${label} rejects answers the write failure and keeps the stored file`, async (t) => {
+    const h = await routingApi(t);
+    assert.equal((await upload(h)).status, 204);
+    arm(h);
+    assertWriteFailed(h, await chunkedUpload(h));
+    await h.settle();
+    assert.deepEqual((await h.call('GET', `${widget}/fx_doc/$value`)).buffer, CONTENT);
+    assert.equal(fileEntries(h.store).length, 1);
+  });
+}
+
+const blockInit = async (h) => {
+  const init = await h.call('POST', 'InitializeFileBlocksUpload', {
+    Target: widgetRef,
+    FileAttributeName: 'fx_doc',
+    FileName: 'blocks.txt',
+  });
+  assert.equal(init.status, 200, JSON.stringify(init.json));
+  return init.json.FileContinuationToken;
+};
+const stageBlock = (h, token) =>
+  h.call('POST', 'UploadBlock', {
+    BlockId: b64('block-0'),
+    BlockData: b64('block bytes'),
+    FileContinuationToken: token,
+  });
+
+test('a block upload whose provider put or commit rejects answers the write failure and keeps the stored file', async (t) => {
+  const h = await routingApi(t);
+  assert.equal((await upload(h)).status, 204);
+  const put = h.provider.put;
+  rejectingPuts(h);
+  assertWriteFailed(h, await stageBlock(h, await blockInit(h)));
+  h.provider.put = put;
+  const token = await blockInit(h);
+  assert.equal((await stageBlock(h, token)).status, 204);
+  h.provider.commit = async () => {
+    throw providerFailure();
+  };
+  assertWriteFailed(
+    h,
+    await h.call('POST', 'CommitFileBlocksUpload', {
+      FileName: 'blocks.txt',
+      MimeType: 'text/plain',
+      BlockList: [b64('block-0')],
+      FileContinuationToken: token,
+    }),
+  );
+  await h.settle();
+  assert.deepEqual((await h.call('GET', `${widget}/fx_doc/$value`)).buffer, CONTENT);
+  assert.equal(fileEntries(h.store).length, 1);
+});
+
+test('a failed file or image write records a STORAGE_WRITE_FAILED diagnostic for its key', async (t) => {
+  const h = await routingApi(t);
+  rejectingPuts(h);
+  assertWriteFailed(h, await upload(h));
+  assertWriteFailed(h, await h.call('PATCH', widget, { fx_photo: PNG.toString('base64') }));
+  const failures = h.diagnostics.filter((d) => d.code === 'STORAGE_WRITE_FAILED');
+  assert.equal(failures.length, 2);
+  assert.deepEqual(
+    failures.map((d) => d.entity),
+    ['fx_widget', 'fx_widget'],
+  );
+  assert.ok(failures.every((d) => /^files\/[0-9a-f-]{36}$/.test(d.key)));
+});
 
 // Each key follows its own route; an unserved route keeps its bytes in state as a runtime without storage does.
 const noteBlocks = async (h, text) => {

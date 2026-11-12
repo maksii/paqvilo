@@ -1,10 +1,14 @@
+// @test-kind contract: Paqvilo's connector runtime designed to close its pending sign-in listeners with the host and to answer definition and inspection faults deterministically
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { createCodeAppsHandler } from '../lib/code-apps-http.mjs';
-import { createConnectorRuntime, CONNECTOR_PACK_EXPORTS } from '../lib/connector-runtime.mjs';
+import { connectionSettings, createConnectorRuntime, CONNECTOR_PACK_EXPORTS } from '../lib/connector-runtime.mjs';
+import { customConnectorsOf } from '../lib/custom-connector.mjs';
+import { DataStore, emptyState } from '../lib/data.mjs';
 import { compileDefinition, validateDefinition } from '../lib/connector-definition.mjs';
-import { codeAppConnectors } from '../lib/organization-host.mjs';
+import { closeProviders, codeAppConnectors, composeProviders } from '../lib/organization-host.mjs';
+import { inventoryEntry, mergeInventory } from '../lib/solution-inventory.mjs';
 import { inspectFlowDefinition } from '../lib/flow-runtime.mjs';
 import { validatePackExports } from '../lib/pack-exports.mjs';
 
@@ -450,4 +454,68 @@ test('metadata-only bound connections report ConnectorNotSimulated without a pro
     () => invalid.resolve({ connectorId: 'shared_invented', connectionName: 'missing' }),
     (error) => error.code === 'ConnectionNotBound',
   );
+});
+
+const SIGN_IN = 'x_5fclosesignin';
+const signInDefinition = {
+  swagger: '2.0',
+  info: { title: 'Invented sign-in' },
+  host: 'api.example.test',
+  basePath: '/v1',
+  schemes: ['https'],
+  securityDefinitions: {
+    o: {
+      type: 'oauth2',
+      flow: 'accessCode',
+      authorizationUrl: 'https://login.example.test/authorize',
+      tokenUrl: 'https://login.example.test/token',
+      scopes: {},
+    },
+  },
+  paths: {
+    '/people': {
+      get: { operationId: 'GetPeople', responses: { 200: { description: 'ok' } } },
+    },
+  },
+};
+
+test('closing the host cancels a pending authorization sign-in and refuses its loopback redirect', async (t) => {
+  process.env.X_CLOSE_SIGN_IN_CLIENT = 'invented-client';
+  t.after(() => {
+    delete process.env.X_CLOSE_SIGN_IN_CLIENT;
+  });
+  const file = `Connectors/${SIGN_IN}/${SIGN_IN}_openapidefinition.json`;
+  const list = customConnectorsOf(
+    mergeInventory([
+      inventoryEntry(file, {
+        size: 100,
+        text: JSON.stringify(signInDefinition),
+        component: 'connector',
+        componentName: SIGN_IN,
+      })[0],
+    ]),
+  );
+  const store = await new DataStore({ state: emptyState() }).init();
+  const providers = await composeProviders({
+    store,
+    packs: [],
+    config: {
+      connections: connectionSettings({
+        'conn-sign-in': {
+          connector: SIGN_IN,
+          provider: `custom-connector:${SIGN_IN}`,
+          settings: { auth: { clientId: 'env:X_CLOSE_SIGN_IN_CLIENT' } },
+        },
+      }),
+    },
+  });
+  providers.connectors.useCustomConnectors(list);
+  const started = await providers.connectors.oauth.authorize('conn-sign-in');
+  const outcome = started.completion.then(
+    () => 'signed in',
+    (error) => error.code,
+  );
+  await closeProviders(providers);
+  await assert.rejects(fetch(started.redirectUri));
+  assert.equal(await outcome, 'ConnectionAuthorizationCancelled');
 });

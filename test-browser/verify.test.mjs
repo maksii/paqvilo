@@ -14,6 +14,7 @@ import verify, { diagnosticSnapshot } from '../lense/commands/verify.mjs';
 import { editSource } from '../lense/source-edit.mjs';
 import { createFixture, HOME_ID, SITE } from '../test/fixture.mjs';
 
+const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
 const PAGE_JS = 'window.fixturePage = "original";\n';
 const PAGE_CSS = '.fixture-page { color: rgb(10, 20, 30); }\n';
 const FORM_JS = 'window.fixtureForm = "original";\n';
@@ -148,7 +149,7 @@ async function fixture(t, layout, uncommittedInline = false, startHeadMarkup = '
       execFileSync(
         'git',
         ['-c', 'core.autocrlf=false', '-c', 'core.hooksPath=', '-c', 'commit.gpgsign=false', ...args],
-        { cwd: sourceDir, env, stdio: 'ignore', windowsHide: true, timeout: 30_000 },
+        { cwd: sourceDir, env, stdio: 'ignore', windowsHide: true, timeout: CLI_HANG_GUARD_MS },
       );
     git('init', '-q');
     git('add', '-A');
@@ -261,224 +262,216 @@ function assertCopyIsolation(work) {
 
 for (const layout of ['classic', 'enhanced'])
   for (const uncommittedInline of [false, true]) {
-    test(
-      `verify command exercises ${layout} resources${uncommittedInline ? ' with uncommitted inline CSS/JS and an empty deployed CSS baseline' : ' with structured/strict reporting'} on loopback`,
-      { timeout: 120_000 },
-      async (t) => {
-        const fx = await fixture(t, layout, uncommittedInline);
-        const strict = layout === 'classic' && !uncommittedInline;
-        if (layout === 'classic') {
-          fx.cfg.sourceDir = path.join(fx.work, 'source-root-junction');
-          fs.symlinkSync(fx.sourceDir, fx.cfg.sourceDir, process.platform === 'win32' ? 'junction' : 'dir');
-        }
-        const launch = chromium.launchPersistentContext;
-        let temporaryWork;
-        let opened;
-        chromium.launchPersistentContext = async function (profileDir, options) {
-          temporaryWork = path.dirname(profileDir);
-          assertCopyIsolation(temporaryWork);
-          opened = await launch.call(this, profileDir, {
-            ...options,
-            proxy: { server: fx.cfg.origin, bypass: '127.0.0.1,localhost' },
-            args: [
-              ...options.args,
-              '--disable-background-networking',
-              '--disable-component-update',
-              '--disable-sync',
-              '--disable-domain-reliability',
-              '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost',
-            ],
-          });
-          if (uncommittedInline) {
-            const close = opened.close.bind(opened);
-            opened.close = async (...args) => {
-              try {
-                const page = opened.pages().find((page) => page.url().startsWith(fx.cfg.origin));
-                assert.ok(page, 'verification reached the fixture page');
-                assert.deepEqual(
-                  await page.evaluate(() => ({
-                    css: getComputedStyle(document.documentElement).getPropertyValue('--fixture-working-copy').trim(),
-                    js: window.fixtureWorkingInline,
-                  })),
-                  { css: 'yes', js: 'yes' },
-                  'selected edits preserve original working-copy content as well as the verification marker',
-                );
-              } finally {
-                await close(...args);
-              }
-            };
-          }
-          opened.once('close', () => {
-            closed = true;
-          });
-          return opened;
-        };
-        let closed = false;
-        const stdout = [];
-        const log = console.log;
-        if (layout === 'enhanced') console.log = (line) => stdout.push(line);
-        let result;
-        try {
-          result = await verify(fx.cfg, { strict, json: layout === 'enhanced' });
-        } finally {
-          chromium.launchPersistentContext = launch;
-          console.log = log;
-          const evidenceDir = new URL('../.paqvilo/extended-round/', import.meta.url);
-          const report = reportFor(fx.cfg).report;
-          fs.mkdirSync(evidenceDir, { recursive: true });
-          fs.writeFileSync(
-            new URL(`verify-${layout}-${uncommittedInline ? 'working-copy' : 'baseline'}.json`, evidenceDir),
-            JSON.stringify(report, null, 2),
-          );
-        }
-        assert.equal(result, strict ? 1 : 0);
-        const { report, screenshot } = reportFor(fx.cfg);
-        assert.equal(report.passed, !strict, 'strict mode fails the newly observed post-edit console error');
-        assert.equal(report.inlineBaseline.available, layout === 'classic' || uncommittedInline);
+    test(`verify command exercises ${layout} resources${uncommittedInline ? ' with uncommitted inline CSS/JS and an empty deployed CSS baseline' : ' with structured/strict reporting'} on loopback`, async (t) => {
+      const fx = await fixture(t, layout, uncommittedInline);
+      const strict = layout === 'classic' && !uncommittedInline;
+      if (layout === 'classic') {
+        fx.cfg.sourceDir = path.join(fx.work, 'source-root-junction');
+        fs.symlinkSync(fx.sourceDir, fx.cfg.sourceDir, process.platform === 'win32' ? 'junction' : 'dir');
+      }
+      const launch = chromium.launchPersistentContext;
+      let temporaryWork;
+      let opened;
+      chromium.launchPersistentContext = async function (profileDir, options) {
+        temporaryWork = path.dirname(profileDir);
+        assertCopyIsolation(temporaryWork);
+        opened = await launch.call(this, profileDir, {
+          ...options,
+          proxy: { server: fx.cfg.origin, bypass: '127.0.0.1,localhost' },
+          args: [
+            ...options.args,
+            '--disable-background-networking',
+            '--disable-component-update',
+            '--disable-sync',
+            '--disable-domain-reliability',
+            '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost',
+          ],
+        });
         if (uncommittedInline) {
-          assert.equal(report.inlineBaseline.strategy, 'selected-git-reference');
-          assert.equal(report.inlineBaseline.seededSources.length, 2);
-          assert.equal(report.checks.find((check) => check.name === 'nothing is overridden before any edit').ok, true);
-        } else if (layout === 'enhanced') {
-          assert.equal(report.inlineBaseline.strategy, 'working-copy');
-          assert.match(report.inlineBaseline.fallbackReason, /Cannot read baseline/);
+          const close = opened.close.bind(opened);
+          opened.close = async (...args) => {
+            try {
+              const page = opened.pages().find((page) => page.url().startsWith(fx.cfg.origin));
+              assert.ok(page, 'verification reached the fixture page');
+              assert.deepEqual(
+                await page.evaluate(() => ({
+                  css: getComputedStyle(document.documentElement).getPropertyValue('--fixture-working-copy').trim(),
+                  js: window.fixtureWorkingInline,
+                })),
+                { css: 'yes', js: 'yes' },
+                'selected edits preserve original working-copy content as well as the verification marker',
+              );
+            } finally {
+              await close(...args);
+            }
+          };
         }
-        if (layout === 'enhanced') {
-          assert.equal(stdout.length, 1, 'JSON mode writes exactly one JSON document to stdout');
-          assert.deepEqual(JSON.parse(stdout[0]), report);
-        }
-        assert.ok(fs.statSync(screenshot).size > 0);
-        const required = [
-          'web file (CSS)',
-          'web file (JS)',
-          'web file (image)',
-          'page custom CSS',
-          'page custom JS',
-          'web template',
-          'content snippet',
-        ];
-        required.push('basic-form-js');
-        if (layout === 'classic') required.push('advanced-form-step-js', 'list-js');
-        for (const prefix of required) {
-          const check = report.checks.find((entry) => entry.name.startsWith(prefix));
-          assert.ok(check, `missing coverage: ${prefix}`);
-          assert.equal(check.ok, true, `${prefix}: ${check.detail}`);
-        }
-        const skipped = report.checks.filter((entry) => entry.ok === null).map((entry) => entry.name);
-        assert.deepEqual(skipped, []);
-        assert.equal(report.coverage, 'complete');
-        const templateCheck = report.checks.find((entry) => entry.name.startsWith('web template'));
-        assert.ok(
-          !templateCheck.name.includes('a-unused'),
-          'generic shared containers never attribute an unused conditional template',
+        opened.once('close', () => {
+          closed = true;
+        });
+        return opened;
+      };
+      let closed = false;
+      const stdout = [];
+      const log = console.log;
+      if (layout === 'enhanced') console.log = (line) => stdout.push(line);
+      let result;
+      try {
+        result = await verify(fx.cfg, { strict, json: layout === 'enhanced' });
+      } finally {
+        chromium.launchPersistentContext = launch;
+        console.log = log;
+        const evidenceDir = new URL('../.paqvilo/extended-round/', import.meta.url);
+        const report = reportFor(fx.cfg).report;
+        fs.mkdirSync(evidenceDir, { recursive: true });
+        fs.writeFileSync(
+          new URL(`verify-${layout}-${uncommittedInline ? 'working-copy' : 'baseline'}.json`, evidenceDir),
+          JSON.stringify(report, null, 2),
         );
-        assert.match(templateCheck.detail, /server-side template execution is not inferred/);
-        assert.ok(
-          !report.checks.find((entry) => entry.name.startsWith('content snippet')).name.includes('instrumentation'),
-          'a configuration GUID occurring only in original JavaScript is never edited, even if JavaScript later prints it in the page',
-        );
-        assert.ok(
-          report.diagnostics.baseline.problems.some(
-            (problem) => problem.type === 'error' && problem.text === 'fixture-existing-runtime-error',
-          ),
-        );
-        assert.ok(
-          report.diagnostics.afterEdits.problems.some((problem) => problem.text === 'fixture-existing-runtime-error'),
-        );
-        assert.ok(report.diagnostics.comparison.problems.existingCount >= 1);
-        assert.ok(
-          !report.diagnostics.comparison.problems.newObservations.some(
-            (problem) => problem.text === 'fixture-existing-runtime-error',
-          ),
-          'shifted line numbers do not reclassify a baseline error',
-        );
-        assert.ok(
-          report.diagnostics.comparison.problems.newObservations.some(
-            (problem) => problem.type === 'console' && problem.text === 'fixture-post-edit-console-observation',
-          ),
-        );
-        assert.ok(!JSON.stringify(report.diagnostics).includes('sourceDir'));
-        assert.ok(!JSON.stringify(report.diagnostics).includes('"token"'));
-        assert.equal(closed, true, 'verify closes its browser');
-        assert.equal(fs.existsSync(temporaryWork), false, 'verify deletes its temporary source and profile');
-        assert.ok(
-          fx.requests.every((request) => request.method === 'GET'),
-          'the fixture receives only reads',
-        );
-        assert.ok(fx.requests.some((request) => request.pathname === CSS_URL));
-        assert.ok(fx.requests.some((request) => request.pathname === IMAGE_URL));
-        for (const [file, original] of fx.sourceFiles)
-          assert.equal(fs.readFileSync(file, 'utf8'), original, 'the caller source stays unchanged');
-      },
-    );
+      }
+      assert.equal(result, strict ? 1 : 0);
+      const { report, screenshot } = reportFor(fx.cfg);
+      assert.equal(report.passed, !strict, 'strict mode fails the newly observed post-edit console error');
+      assert.equal(report.inlineBaseline.available, layout === 'classic' || uncommittedInline);
+      if (uncommittedInline) {
+        assert.equal(report.inlineBaseline.strategy, 'selected-git-reference');
+        assert.equal(report.inlineBaseline.seededSources.length, 2);
+        assert.equal(report.checks.find((check) => check.name === 'nothing is overridden before any edit').ok, true);
+      } else if (layout === 'enhanced') {
+        assert.equal(report.inlineBaseline.strategy, 'working-copy');
+        assert.match(report.inlineBaseline.fallbackReason, /Cannot read baseline/);
+      }
+      if (layout === 'enhanced') {
+        assert.equal(stdout.length, 1, 'JSON mode writes exactly one JSON document to stdout');
+        assert.deepEqual(JSON.parse(stdout[0]), report);
+      }
+      assert.ok(fs.statSync(screenshot).size > 0);
+      const required = [
+        'web file (CSS)',
+        'web file (JS)',
+        'web file (image)',
+        'page custom CSS',
+        'page custom JS',
+        'web template',
+        'content snippet',
+      ];
+      required.push('basic-form-js');
+      if (layout === 'classic') required.push('advanced-form-step-js', 'list-js');
+      for (const prefix of required) {
+        const check = report.checks.find((entry) => entry.name.startsWith(prefix));
+        assert.ok(check, `missing coverage: ${prefix}`);
+        assert.equal(check.ok, true, `${prefix}: ${check.detail}`);
+      }
+      const skipped = report.checks.filter((entry) => entry.ok === null).map((entry) => entry.name);
+      assert.deepEqual(skipped, []);
+      assert.equal(report.coverage, 'complete');
+      const templateCheck = report.checks.find((entry) => entry.name.startsWith('web template'));
+      assert.ok(
+        !templateCheck.name.includes('a-unused'),
+        'generic shared containers never attribute an unused conditional template',
+      );
+      assert.match(templateCheck.detail, /server-side template execution is not inferred/);
+      assert.ok(
+        !report.checks.find((entry) => entry.name.startsWith('content snippet')).name.includes('instrumentation'),
+        'a configuration GUID occurring only in original JavaScript is never edited, even if JavaScript later prints it in the page',
+      );
+      assert.ok(
+        report.diagnostics.baseline.problems.some(
+          (problem) => problem.type === 'error' && problem.text === 'fixture-existing-runtime-error',
+        ),
+      );
+      assert.ok(
+        report.diagnostics.afterEdits.problems.some((problem) => problem.text === 'fixture-existing-runtime-error'),
+      );
+      assert.ok(report.diagnostics.comparison.problems.existingCount >= 1);
+      assert.ok(
+        !report.diagnostics.comparison.problems.newObservations.some(
+          (problem) => problem.text === 'fixture-existing-runtime-error',
+        ),
+        'shifted line numbers do not reclassify a baseline error',
+      );
+      assert.ok(
+        report.diagnostics.comparison.problems.newObservations.some(
+          (problem) => problem.type === 'console' && problem.text === 'fixture-post-edit-console-observation',
+        ),
+      );
+      assert.ok(!JSON.stringify(report.diagnostics).includes('sourceDir'));
+      assert.ok(!JSON.stringify(report.diagnostics).includes('"token"'));
+      assert.equal(closed, true, 'verify closes its browser');
+      assert.equal(fs.existsSync(temporaryWork), false, 'verify deletes its temporary source and profile');
+      assert.ok(
+        fx.requests.every((request) => request.method === 'GET'),
+        'the fixture receives only reads',
+      );
+      assert.ok(fx.requests.some((request) => request.pathname === CSS_URL));
+      assert.ok(fx.requests.some((request) => request.pathname === IMAGE_URL));
+      for (const [file, original] of fx.sourceFiles)
+        assert.equal(fs.readFileSync(file, 'utf8'), original, 'the caller source stays unchanged');
+    });
   }
 
-test(
-  'verify reads the displayed document when the start page reloads itself after its first document',
-  { timeout: 120_000 },
-  async (t) => {
-    const reloadOnce = `<script>addEventListener('load', () => { if (!sessionStorage.getItem('reloaded')) { sessionStorage.setItem('reloaded', '1'); location.reload(); } });</script>`;
-    const fx = await fixture(t, 'classic', false, reloadOnce);
-    fx.cfg.sourceDir = path.join(fx.work, 'source-root-junction');
-    fs.symlinkSync(fx.sourceDir, fx.cfg.sourceDir, process.platform === 'win32' ? 'junction' : 'dir');
-    const launch = chromium.launchPersistentContext;
-    chromium.launchPersistentContext = async function (profileDir, options) {
-      assertCopyIsolation(path.dirname(profileDir));
-      return launch.call(this, profileDir, {
-        ...options,
-        proxy: { server: fx.cfg.origin, bypass: '127.0.0.1,localhost' },
-        args: [
-          ...options.args,
-          '--disable-background-networking',
-          '--disable-component-update',
-          '--disable-sync',
-          '--disable-domain-reliability',
-          '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost',
-        ],
-      });
-    };
-    const output = [];
-    const log = console.log;
-    const logError = console.error;
-    console.log = (...values) => output.push(values.join(' '));
-    console.error = (...values) => output.push(values.join(' '));
-    let result;
-    try {
-      result = await verify(fx.cfg, { strict: true });
-    } finally {
-      chromium.launchPersistentContext = launch;
-      console.log = log;
-      console.error = logError;
-    }
-    const { report } = reportFor(fx.cfg);
-    assert.doesNotMatch(output.join('\n'), /Response body is not available/);
-    assert.doesNotMatch(String(report.error ?? ''), /Response body is not available/);
-    assert.ok(
-      fx.requests.filter((request) => request.pathname === '/').length >= 2,
-      'the start page really reloaded itself',
-    );
-    assert.equal(result, 1);
-    assert.equal(report.passed, false, 'strict mode fails the newly observed post-edit console error');
-    assert.equal(report.checks.find((check) => check.name === 'page loads through the overlay')?.ok, true);
-    const required = [
-      'web file (CSS)',
-      'web file (JS)',
-      'web file (image)',
-      'page custom CSS',
-      'page custom JS',
-      'web template',
-      'content snippet',
-      'basic-form-js',
-      'advanced-form-step-js',
-      'list-js',
-    ];
-    for (const prefix of required) {
-      const check = report.checks.find((entry) => entry.name.startsWith(prefix));
-      assert.ok(check, `missing coverage: ${prefix}`);
-      assert.equal(check.ok, true, `${prefix}: ${check.detail}`);
-    }
-  },
-);
+test('verify reads the displayed document when the start page reloads itself after its first document', async (t) => {
+  const reloadOnce = `<script>addEventListener('load', () => { if (!sessionStorage.getItem('reloaded')) { sessionStorage.setItem('reloaded', '1'); location.reload(); } });</script>`;
+  const fx = await fixture(t, 'classic', false, reloadOnce);
+  fx.cfg.sourceDir = path.join(fx.work, 'source-root-junction');
+  fs.symlinkSync(fx.sourceDir, fx.cfg.sourceDir, process.platform === 'win32' ? 'junction' : 'dir');
+  const launch = chromium.launchPersistentContext;
+  chromium.launchPersistentContext = async function (profileDir, options) {
+    assertCopyIsolation(path.dirname(profileDir));
+    return launch.call(this, profileDir, {
+      ...options,
+      proxy: { server: fx.cfg.origin, bypass: '127.0.0.1,localhost' },
+      args: [
+        ...options.args,
+        '--disable-background-networking',
+        '--disable-component-update',
+        '--disable-sync',
+        '--disable-domain-reliability',
+        '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost',
+      ],
+    });
+  };
+  const output = [];
+  const log = console.log;
+  const logError = console.error;
+  console.log = (...values) => output.push(values.join(' '));
+  console.error = (...values) => output.push(values.join(' '));
+  let result;
+  try {
+    result = await verify(fx.cfg, { strict: true });
+  } finally {
+    chromium.launchPersistentContext = launch;
+    console.log = log;
+    console.error = logError;
+  }
+  const { report } = reportFor(fx.cfg);
+  assert.doesNotMatch(output.join('\n'), /Response body is not available/);
+  assert.doesNotMatch(String(report.error ?? ''), /Response body is not available/);
+  assert.ok(
+    fx.requests.filter((request) => request.pathname === '/').length >= 2,
+    'the start page really reloaded itself',
+  );
+  assert.equal(result, 1);
+  assert.equal(report.passed, false, 'strict mode fails the newly observed post-edit console error');
+  assert.equal(report.checks.find((check) => check.name === 'page loads through the overlay')?.ok, true);
+  const required = [
+    'web file (CSS)',
+    'web file (JS)',
+    'web file (image)',
+    'page custom CSS',
+    'page custom JS',
+    'web template',
+    'content snippet',
+    'basic-form-js',
+    'advanced-form-step-js',
+    'list-js',
+  ];
+  for (const prefix of required) {
+    const check = report.checks.find((entry) => entry.name.startsWith(prefix));
+    assert.ok(check, `missing coverage: ${prefix}`);
+    assert.equal(check.ok, true, `${prefix}: ${check.detail}`);
+  }
+});
 
 test('verify writes failure evidence and removes its temporary copy when browser setup fails', async (t) => {
   const fx = await fixture(t, 'classic');
@@ -512,7 +505,6 @@ test('verify writes failure evidence and removes its temporary copy when browser
 test(
   'verify keeps its event loop running while a busy profile file blocks temporary-copy removal',
   {
-    timeout: 60_000,
     // Exclusive (non-shared) file handles that block deletion are a Windows capability.
     skip: process.platform !== 'win32' && 'mandatory file locks exist only on Windows',
   },

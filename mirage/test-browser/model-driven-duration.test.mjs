@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
-import { sharedBrowser, fileScope } from './shared-browser.mjs';
+import { sharedBrowser, fileScope, appsOrigin } from './shared-browser.mjs';
 import { prepareNativeControls } from './native-controls-fixture.mjs';
 
 const chrome = sharedBrowser();
@@ -13,9 +13,9 @@ let sharedApp;
 const readOnlyApp = () => (sharedApp ??= modelDrivenFixture(scope));
 
 test('duration choices and typed units preserve numeric minutes, keyboard focus and validation', async (t) => {
-  const { origin } = await readOnlyApp();
+  const { sim, origin } = await readOnlyApp();
   const page = await chrome.page(t, { viewport: { width: 1582, height: 1000 } });
-  await prepareNativeControls(page, origin);
+  await prepareNativeControls(page, appsOrigin(sim, origin));
   await page.evaluate(async () => {
     const renderControl = window.renderFixtureControl;
     const form = document.createElement('form');
@@ -112,7 +112,7 @@ test('exported duration formats create the duration control and save whole minut
     ),
   );
   const sim = await source.start();
-  const origin = sim.origin ?? sim.url;
+  const origin = appsOrigin(sim, sim.url);
   const page = await chrome.page(t);
   await page.goto(
     origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
@@ -159,9 +159,9 @@ test('exported duration formats create the duration control and save whole minut
 });
 
 test('opening duration below a sticky form header restores the field and full popup while keyboard scrolling stays inside the list', async (t) => {
-  const { origin } = await readOnlyApp();
+  const { sim, origin } = await readOnlyApp();
   const page = await chrome.page(t, { viewport: { width: 1582, height: 1000 } });
-  await prepareNativeControls(page, origin);
+  await prepareNativeControls(page, appsOrigin(sim, origin));
   await page.evaluate(async () => {
     const renderControl = window.renderFixtureControl;
     document.body.replaceChildren();

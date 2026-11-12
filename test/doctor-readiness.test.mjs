@@ -19,7 +19,7 @@ const doctor = (cwd, ...args) =>
         execFile(
           process.execPath,
           [cli, 'lense', 'doctor', ...args],
-          { cwd, env, encoding: 'utf8', windowsHide: true, timeout: 30000, maxBuffer: 64 << 20 },
+          { cwd, env, encoding: 'utf8', windowsHide: true, maxBuffer: 64 << 20 },
           (error, stdout, stderr) =>
             resolve({ status: error ? (typeof error.code === 'number' ? error.code : null) : 0, stdout, stderr }),
         ),

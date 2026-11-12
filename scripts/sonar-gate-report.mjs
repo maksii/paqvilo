@@ -70,11 +70,16 @@ async function hotspotLines(call, projectKey) {
   return [`Security hotspots to review in new code: ${data.paging.total}`, ...items];
 }
 
-async function section(endpoint, build) {
+const HOTSPOT_REFUSAL =
+  '(the token is not allowed to read security hotspots; the quality gate conditions above already count them)';
+
+async function section(endpoint, build, refusal = null) {
   try {
     return await build();
   } catch (error) {
-    return [clip(`  (could not read ${endpoint}: ${readReason(error)})`, MAX_LINE)];
+    const reason = readReason(error);
+    if (refusal && /^HTTP (401|403)$/.test(reason)) return [clip(`  ${refusal}`, MAX_LINE)];
+    return [clip(`  (could not read ${endpoint}: ${reason})`, MAX_LINE)];
   }
 }
 
@@ -88,7 +93,7 @@ export async function sonarGateReport({ base, token, project, branch = null, pul
   const parts = await Promise.all([
     section('api/qualitygates/project_status', () => gateLines(call, project)),
     section('api/issues/search', () => issueLines(call, project)),
-    section('api/hotspots/search', () => hotspotLines(call, project)),
+    section('api/hotspots/search', () => hotspotLines(call, project), HOTSPOT_REFUSAL),
   ]);
   return parts.flat();
 }

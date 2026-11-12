@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own solution ZIP reader and writer; no native capture is involved in these assertions
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
@@ -9,6 +10,7 @@ import {
   reassignSolutionAssetLayers,
   removeSolutionAssetLayers,
   solutionAssetLayers,
+  validateSolutionZipDirectory,
   writeSolutionAssetEntries,
 } from '../lib/dataverse-solution-assets.mjs';
 
@@ -215,4 +217,29 @@ test('solution ZIP include option validates every header but inflates and CRC-ch
     () => readSolutionAssetEntries(header, { include: (name) => name.endsWith('.pa.yaml') }),
     refused('InvalidArchive'),
   );
+});
+
+test('a scan of kept names skips the header refusals of an unkept entry and still refuses the same flaw on a kept entry', () => {
+  const zip = writeSolutionAssetEntries([file('a.xml', 'x'), file('Assets/media.bin', 'y')]);
+  const kept = (name) => name === 'a.xml';
+  const scan = (bytes) => validateSolutionZipDirectory(bytes, { deferLocalHeaders: true, strictNames: kept }).members;
+  const centralOf = (bytes, name) => bytes.lastIndexOf(Buffer.from(name)) - 46;
+  const flaws = {
+    'method 9': (bytes, at) => bytes.writeUInt16LE(9, at + 10),
+    encrypted: (bytes, at) => bytes.writeUInt16LE(bytes.readUInt16LE(at + 8) | 1, at + 8),
+  };
+  for (const [label, flaw] of Object.entries(flaws)) {
+    const unkept = Buffer.from(zip);
+    flaw(unkept, centralOf(unkept, 'Assets/media.bin'));
+    const members = scan(unkept);
+    assert.deepEqual(
+      members.filter((member) => !member.error).map((member) => member.name),
+      ['a.xml'],
+      `${label}: the kept document is still returned`,
+    );
+    assert.ok(refused('UnsupportedArchive')(members.find((member) => member.name === 'Assets/media.bin').error), label);
+    const keptFlaw = Buffer.from(zip);
+    flaw(keptFlaw, centralOf(keptFlaw, 'a.xml'));
+    assert.throws(() => scan(keptFlaw), refused('UnsupportedArchive'), `${label}: a kept entry still throws`);
+  }
 });

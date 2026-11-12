@@ -9,6 +9,9 @@ import { createSimulator } from '../server.mjs';
 import { sharedBrowser, loopbackServer } from './shared-browser.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
+// The runner's action budget for these flows: never the limiting factor on a loaded host.
+const ACTION_BUDGET_MS = 120_000;
+
 const browser = sharedBrowser();
 async function output(t) {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-sandbox-'));
@@ -72,6 +75,7 @@ test('valid script-disabled srcdoc acceptance matches an ordinary browser and st
     { action: 'text', frame: '#editor', selector: 'body', value: 'Invented value' },
   ];
   const result = await runAcceptance({
+    timeout: ACTION_BUDGET_MS,
     localUrl: origin,
     outputDir: root,
     flows: ['/', '/console', '/exception', '/request', '/blocked'].map((route) => ({
@@ -171,6 +175,7 @@ test('acceptance edits, saves and reopens two real compatibility editors twice w
     );
   }
   const result = await runAcceptance({
+    timeout: ACTION_BUDGET_MS,
     localUrl: app.url,
     outputDir: path.join(root, 'report'),
     flows: [{ name: 'Editor round trips', steps }],

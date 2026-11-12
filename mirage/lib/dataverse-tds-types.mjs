@@ -8,6 +8,7 @@
 //   encodeTypedValue(column, value)    -> Buffer, TYPE_INFO + value (sp_executesql parameter form)
 //   decodeTypedValue(buffer, offset)   -> { value, type, next }
 //   decodeRow(columns, buffer, offset) -> { values, next } for ROW or NBCROW
+//   row and nbcRow convert each value to the column's wire input with a module-local helper.
 //
 // column: { name, type, length?, precision?, scale?, nullable? (default true) }
 //   type: int bigint smallint tinyint bit float real money decimal numeric
@@ -26,6 +27,24 @@
 //   nvarchar: string.
 // ponytail: time, datetimeoffset, varchar, smallmoney and sql_variant are not implemented;
 //   add each when a catalog column needs it.
+
+import { decimalParts, decimalText } from './exact-numeric.mjs';
+
+// Malformed or unsupported client input. messages.mjs re-exports it as the RPC and SQL_BATCH decode error.
+export class TdsProtocolError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'TdsProtocolError';
+  }
+}
+
+// Throws unless the n bytes at o lie inside the buffer, so a read never silently clamps to the payload.
+function need(b, o, n) {
+  const inside = Number.isInteger(o) && Number.isInteger(n) && o >= 0 && n >= 0 && o + n <= b.length;
+  if (!inside) throw new TdsProtocolError(`typed value truncated at byte ${o}`);
+}
+
+const TYPE_NAME = { 0x29: 'time', 0x2b: 'datetimeoffset', 0xa7: 'varchar' };
 
 const TYPE_ID = {
   intn: 0x26,
@@ -46,7 +65,11 @@ const COLLATION = Buffer.from([0x09, 0x04, 0xd0, 0x00, 0x34]); // Latin1_General
 const PLP_NULL = 0xffffffffffffffffn;
 const PLP_UNKNOWN = 0xfffffffffffffffen; // accepted on decode only
 const PLP_CHUNK = 8000; // bytes; even, so chunks never split a UTF-16 code unit
-const TICKS_PER_DAY = 25920000; // datetime ticks of 1/300 s
+const TICKS_PER_SECOND = 300; // datetime ticks are 1/300 s
+const MONEY_SCALE = 4;
+const MONEY_MIN = -(1n << 63n); // money is an int64 of 1/10000
+const MONEY_MAX = (1n << 63n) - 1n;
+const DATETIME_ZONE_RE = /(?:Z|([+-])(\d{2}):(\d{2}))$/;
 
 const DAYS_0001 = daysFromCivil(1, 1, 1);
 const DAYS_1900 = daysFromCivil(1900, 1, 1);
@@ -72,7 +95,7 @@ export function columnMetadata(columns) {
 
 export function row(columns, values) {
   const ds = describe(columns, values);
-  return Buffer.concat([Buffer.from([0xd1]), ...ds.map((d, i) => encodeValue(d, values[i]))]);
+  return Buffer.concat([Buffer.from([0xd1]), ...ds.map((d, i) => encodeValue(d, toWireValue(d, values[i])))]);
 }
 
 export function nbcRow(columns, values) {
@@ -83,9 +106,29 @@ export function nbcRow(columns, values) {
     if (isNull(values[i])) {
       nullValue(d);
       bitmap[i >> 3] |= 1 << (i & 7);
-    } else data.push(encodeValue(d, values[i]));
+    } else data.push(encodeValue(d, toWireValue(d, values[i])));
   });
   return Buffer.concat([Buffer.from([0xd2]), bitmap, ...data]);
+}
+
+// The value as the column's wire input. Exact decimals (a { decimal } object, a number or a bigint) become text with the
+// column scale, rounded half away from zero; datetimes become UTC text whose fraction digits the encoder rounds.
+function toWireValue(column, value) {
+  if (isNull(value)) return null;
+  switch (column.type) {
+    case 'money':
+      return decimalWire(value, MONEY_SCALE);
+    case 'decimal':
+    case 'numeric':
+      return decimalWire(value, column.scale ?? 0);
+    case 'date':
+    case 'datetime':
+    case 'smalldatetime':
+    case 'datetime2':
+      return dateTimeWire(value);
+    default:
+      return value;
+  }
 }
 
 export function encodeTypedValue(column, value) {
@@ -93,10 +136,16 @@ export function encodeTypedValue(column, value) {
   return Buffer.concat([typeInfo(d), encodeValue(d, value)]);
 }
 
+// Any decode failure, including a Buffer read past the payload, is reported as a protocol error.
 export function decodeTypedValue(buffer, offset = 0) {
-  const { d, next } = parseTypeInfo(buffer, offset);
-  const { value, next: end } = decodeValue(d, buffer, next);
-  return { value, type: d.type, next: end };
+  try {
+    const { d, next } = parseTypeInfo(buffer, offset);
+    const { value, next: end } = decodeValue(d, buffer, next);
+    return { value, type: d.type, next: end };
+  } catch (error) {
+    if (error instanceof TdsProtocolError) throw error;
+    throw new TdsProtocolError(`malformed typed value at byte ${offset}: ${error.message}`);
+  }
 }
 
 export function decodeRow(columns, buffer, offset = 0) {
@@ -211,6 +260,7 @@ function typeInfo(d) {
 
 // Reads TYPE_INFO at o and returns the descriptor with the offset after it.
 function parseTypeInfo(b, o) {
+  need(b, o, 1);
   const id = b[o];
   const d = { id, nullable: true };
   let next = o + 2;
@@ -266,10 +316,15 @@ function parseTypeInfo(b, o) {
       next = o + 8; // 2-byte length, 5-byte collation
       break;
     default:
-      throw new TypeError(`unsupported TDS type id 0x${id.toString(16)}`);
+      throw unsupportedType(id);
   }
-  if (!d.type) throw new TypeError(`unsupported TDS type 0x${id.toString(16)} with length ${d.size}`);
+  if (!d.type) throw unsupportedType(id);
   return { d, next };
+}
+
+function unsupportedType(id) {
+  const name = TYPE_NAME[id] ? ` (${TYPE_NAME[id]})` : '';
+  return new TdsProtocolError(`unsupported parameter type 0x${id.toString(16)}${name}`);
 }
 
 // ---- values
@@ -321,9 +376,11 @@ function encodeValue(d, v) {
 
 function decodeValue(d, b, o) {
   if (d.id === TYPE_ID.nvarchar) return decodeNvarchar(d, b, o);
+  need(b, o, 1);
   const len = b[o];
   if (len === 0) return { value: null, next: o + 1 };
   const data = o + 1;
+  need(b, data, len);
   const next = data + len;
   switch (d.id) {
     case TYPE_ID.intn:
@@ -377,7 +434,8 @@ function readInt(size, b, o) {
 }
 
 function encodeMoney(v) {
-  const u = parseDecimal(v, 4);
+  const u = parseDecimal(v, MONEY_SCALE);
+  if (u < MONEY_MIN || u > MONEY_MAX) throw new RangeError(`${v} is outside the money range`);
   const b = Buffer.alloc(9);
   b[0] = 8;
   b.writeInt32LE(Number(u >> 32n), 1); // MoneyHigh, then MoneyLow (both little-endian)
@@ -397,18 +455,12 @@ function encodeDecimal(d, v) {
 }
 
 function encodeDatetime(v) {
-  const p = parseDateTime(v);
-  let days = p.days - DAYS_1900;
-  let ticks = Math.round(((p.sod * 1000 + Number(fraction(p.frac, 3))) * 300) / 1000);
-  if (ticks >= TICKS_PER_DAY) {
-    days += 1;
-    ticks -= TICKS_PER_DAY;
-  } // rounds up to the next midnight
-  inRange(days, DATETIME_MIN, DATETIME_MAX, 'datetime');
+  const t = roundedTime(parseDateTime(v), TICKS_PER_SECOND);
+  const days = inRange(t.days - DAYS_1900, DATETIME_MIN, DATETIME_MAX, 'datetime');
   const b = Buffer.alloc(9);
   b[0] = 8;
   b.writeInt32LE(days, 1);
-  b.writeUInt32LE(ticks, 5);
+  b.writeUInt32LE(t.units, 5);
   return b;
 }
 
@@ -439,13 +491,12 @@ function decodeSmalldatetime(b, o) {
 }
 
 function encodeDatetime2(scale, v) {
-  const p = parseDateTime(v);
-  const days = inRange(p.days - DAYS_0001, 0, DATE_MAX, 'datetime2');
+  const t = roundedTime(parseDateTime(v), 10 ** scale);
+  const days = inRange(t.days - DAYS_0001, 0, DATE_MAX, 'datetime2');
   let timeBytes = 5;
   if (scale <= 2) timeBytes = 3;
   else if (scale <= 4) timeBytes = 4;
-  const ticks = p.sod * 10 ** scale + Number(fraction(p.frac, scale));
-  return Buffer.concat([Buffer.from([timeBytes + 3]), leBytes(ticks, timeBytes), leBytes(days, 3)]);
+  return Buffer.concat([Buffer.from([timeBytes + 3]), leBytes(t.units, timeBytes), leBytes(days, 3)]);
 }
 
 function encodeNvarchar(d, v) {
@@ -464,17 +515,26 @@ function encodeNvarchar(d, v) {
   return Buffer.concat(parts);
 }
 
+function plpChunkLength(b, p) {
+  need(b, p, 4);
+  return b.readUInt32LE(p);
+}
+
 function decodeNvarchar(d, b, o) {
   if (!d.plp) {
+    need(b, o, 2);
     const n = b.readUInt16LE(o);
     if (n === 0xffff) return { value: null, next: o + 2 };
+    need(b, o + 2, n);
     return { value: b.toString('utf16le', o + 2, o + 2 + n), next: o + 2 + n };
   }
+  need(b, o, 8);
   const total = b.readBigUInt64LE(o);
   if (total === PLP_NULL) return { value: null, next: o + 8 };
   let p = o + 8;
   const parts = [];
-  for (let n = b.readUInt32LE(p); n !== 0; n = b.readUInt32LE(p)) {
+  for (let n = plpChunkLength(b, p); n !== 0; n = plpChunkLength(b, p)) {
+    need(b, p + 4, n);
     parts.push(b.subarray(p + 4, p + 4 + n));
     p += 4 + n;
   }
@@ -507,14 +567,24 @@ const DATETIME_DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const DATETIME_DATE_PREFIX_RE = /^(\d{4})-(\d{2})-(\d{2})/;
 const DATETIME_TIME_RE = /^([ T])(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?$/;
 
-// Returns days since 1970-01-01, seconds of day and the raw fraction digits.
+// Returns days since 1970-01-01, seconds of day and the raw fraction digits, in UTC. Accepts a Date, date and time text,
+// and ISO text ending in Z or in a +hh:mm / -hh:mm offset.
 function parseDateTime(text) {
-  const value = String(text);
-  let m = DATETIME_DATE_ONLY_RE.exec(value);
+  const value = text instanceof Date ? text.toISOString() : String(text);
+  const zone = DATETIME_ZONE_RE.exec(value);
+  const local = parseLocalDateTime(zone ? value.slice(0, zone.index) : value, text);
+  const total = local.days * 86400 + local.sod - offsetSeconds(zone);
+  const days = Math.floor(total / 86400);
+  return { days, sod: total - days * 86400, frac: local.frac };
+}
+
+// Date and time without a zone, as in parseDateTime.
+function parseLocalDateTime(body, text) {
+  let m = DATETIME_DATE_ONLY_RE.exec(body);
   if (!m) {
-    const date = DATETIME_DATE_PREFIX_RE.exec(value);
-    const time = date && DATETIME_TIME_RE.exec(value.slice(date[0].length));
-    if (date && time) m = [value, date[1], date[2], date[3], time[2], time[3], time[4], time[5]];
+    const date = DATETIME_DATE_PREFIX_RE.exec(body);
+    const time = date && DATETIME_TIME_RE.exec(body.slice(date[0].length));
+    if (date && time) m = [body, date[1], date[2], date[3], time[2], time[3], time[4], time[5]];
   }
   if (!m) throw new TypeError(`not a date/time: ${text}`);
   const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
@@ -524,11 +594,44 @@ function parseDateTime(text) {
   return { days, sod, frac: m[7] ?? '' };
 }
 
-// Pads a fraction to `digits` digits; rejects digits beyond the type's precision.
-function fraction(frac, digits) {
-  const t = stripTrailingZeros(frac);
-  if (t.length > digits) throw new RangeError(`fraction ${frac} exceeds ${digits} digits`);
-  return t.padEnd(digits, '0');
+// Seconds east of UTC for a zone match from DATETIME_ZONE_RE; Z and no zone are 0.
+function offsetSeconds(zone) {
+  if (!zone || zone[1] === undefined) return 0;
+  const minutes = Number(zone[2]) * 60 + Number(zone[3]);
+  return (zone[1] === '-' ? -minutes : minutes) * 60;
+}
+
+// The time of day rounded half up to `unitsPerSecond` units, as SQL Server rounds fractions. Returns days since
+// 1970-01-01 (a carry moves to the next day) and the units into that day.
+function roundedTime(parts, unitsPerSecond) {
+  const ups = BigInt(unitsPerSecond);
+  const base = 10n ** BigInt(parts.frac.length);
+  const scaled = (BigInt(parts.sod) * base + BigInt(parts.frac || '0')) * ups;
+  const units = (2n * scaled + base) / (2n * base);
+  const perDay = 86400n * ups;
+  return { days: parts.days + Number(units / perDay), units: Number(units % perDay) };
+}
+
+// Exact decimal text with `scale` places: the value's digits rounded half away from zero, then padded.
+function decimalWire(value, scale) {
+  const parts = decimalParts(value?.decimal ?? value);
+  if (!parts) throw new TypeError(`not a decimal: ${value?.decimal ?? value}`);
+  return decimalText({ coefficient: roundedCoefficient(parts, scale), scale });
+}
+
+function roundedCoefficient({ coefficient, scale }, target) {
+  if (scale <= target) return coefficient * 10n ** BigInt(target - scale);
+  const divisor = 10n ** BigInt(scale - target);
+  const magnitude = coefficient < 0n ? -coefficient : coefficient;
+  const units = (magnitude + divisor / 2n) / divisor;
+  return coefficient < 0n ? -units : units;
+}
+
+// UTC text 'YYYY-MM-DD hh:mm:ss' with the fraction digits kept, for the datetime encoders to round.
+function dateTimeWire(value) {
+  const p = parseDateTime(value);
+  const fractionText = p.frac ? `.${p.frac}` : '';
+  return `${formatDate(p.days)} ${hms(p.sod)}${fractionText}`;
 }
 
 function stripTrailingZeros(value) {

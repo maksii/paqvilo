@@ -615,6 +615,8 @@ export function createCanvasApp({
         diagnostic: (entry) => hostDiagnostic(entry, 'Dataverse'),
       })
     : null;
+  // The clock Now() reads: the Dataverse host's when there is one, otherwise the system clock.
+  const clockNow = () => (records ? records.now() : Date.now());
   // ---- static model ----
   const { formulas, screens, controls, lower, screenNames, dataSources, unsupported, namedFormulas } =
     prepareCanvasModel(source);
@@ -660,6 +662,8 @@ export function createCanvasApp({
     media: new Map(),
     forms: new Map(),
     notifications: [],
+    // Counts every notification ever raised, so a rolled-back attempt never reuses an id.
+    noticeCount: 0,
     launches: [],
     errors: [],
     log: [],
@@ -954,10 +958,13 @@ export function createCanvasApp({
             return true;
           },
           notify: (message, type, timeout) => {
+            state.noticeCount += 1;
             state.notifications.push({
+              id: `${state.clockKey}-${state.noticeCount}`,
               message: String(message ?? ''),
               type: type || 'Information',
-              timeout: timeout || 10000,
+              timeout: noticeTimeout(timeout),
+              createdAt: journaled('now', clockNow),
             });
             log({ event: 'notify', type });
           },
@@ -972,11 +979,14 @@ export function createCanvasApp({
             },
           }),
         };
-  const evaluate = (text, scope, where) =>
-    core
-      ? evaluateFx(text, { values: values(scope), host: hostFor(scope, where) }).value
-      : evaluator.evaluateSync(text, { symbols: {}, values: values(scope), principal, host: hostFor(scope, where) })
-          .value;
+  // One row-scope counter per top-level evaluation: nested component calls receive the scope that carries it.
+  const evaluate = (text, scope, where) => {
+    const counted = scope.scopeCounter ? scope : { ...scope, scopeCounter: { entered: 0 } };
+    const host = { ...hostFor(counted, where), scopeCounter: counted.scopeCounter };
+    return core
+      ? evaluateFx(text, { values: values(counted), host }).value
+      : evaluator.evaluateSync(text, { symbols: {}, values: values(counted), principal, host }).value;
+  };
 
   // ---- reactive properties ----
   const keyOf = (name, property, scope) =>
@@ -1381,9 +1391,10 @@ export function createCanvasApp({
       case 'form.Valid':
         return { found: true, value: cards(name).every((card) => read(card, 'Valid', {}) !== false) };
       case 'form.Unsaved':
+        // The user has typed into a control inside a card since the form was last loaded, submitted or reset.
         return {
           found: true,
-          value: cards(name).some((card) => read(card, 'Update', {}) !== read(card, 'Default', {})),
+          value: cards(name).some((card) => descendants(card).some((child) => input(child, scope) !== undefined)),
         };
       case 'form.LastSubmit':
         return { found: true, value: formState(name).lastSubmit ?? null };
@@ -2640,6 +2651,7 @@ export function createCanvasApp({
         name: source.app?.name ?? app.uniqueName,
         rendered: false,
         clockKey: state.clockKey,
+        now: clockNow(),
         viewport: { ...state.viewport },
         currentScreen: state.current,
         transition: state.transition,
@@ -2702,6 +2714,10 @@ export function createCanvasApp({
   };
   return instance;
 }
+// Notify's Timeout: a missing or blank value (undefined) is 10 seconds; 0 keeps the notification until it is dismissed.
+// A negative or non-numeric (NaN) value also gets the 10-second default.
+const NOTICE_DEFAULT_TIMEOUT = 10000;
+const noticeTimeout = (timeout) => (Number.isFinite(timeout) && timeout >= 0 ? timeout : NOTICE_DEFAULT_TIMEOUT);
 const SNAPSHOT_ITEMS = 50; // Gallery windows bound each snapshot; gallery-window selects subsequent rows.
 // Properties the runtime maintains for each kind (beyond the declared ones).
 const OUTPUTS = Object.freeze({
@@ -2745,6 +2761,37 @@ export function createCanvasRuntime({
   const keyOf = (uniqueName, principal) =>
     `${uniqueName}\u0000${principal?.kind ?? 'anonymous'}:${principal?.principalId ?? ''}`;
   const resolve = (value) => (typeof value === 'function' ? value() : value);
+  // The record is registered before OnStart runs so that concurrent callers share this start; a failed start removes it.
+  const startInstance = (key, app, { principal, parameters, viewport }) => {
+    const revision = app.source?.revision;
+    const created = createCanvasApp({
+      app,
+      evaluator: resolve(evaluator),
+      principal,
+      api: resolve(api),
+      caller,
+      transact,
+      connectors,
+      launch,
+      diagnostic,
+      parameters,
+      ...(viewport === undefined ? {} : { viewport }),
+    });
+    const originalSnapshot = created.snapshot.bind(created);
+    created.snapshot = () => ({ ...originalSnapshot(), sourceRevision: revision ?? null });
+    const record = { instance: created, revision, started: false, ready: null };
+    instances.set(key, record);
+    record.ready = created.start().then(
+      () => {
+        record.started = true;
+      },
+      (error) => {
+        if (instances.get(key) === record) instances.delete(key);
+        throw error;
+      },
+    );
+    return record;
+  };
   return {
     async session(uniqueName, principal, { parameters = {}, viewport } = {}) {
       const key = keyOf(uniqueName, principal);
@@ -2762,34 +2809,14 @@ export function createCanvasRuntime({
         previous.revision !== revision
       )
         instances.delete(key);
-      if (!instances.has(key)) {
-        const created = createCanvasApp({
-          app,
-          evaluator: resolve(evaluator),
-          principal,
-          api: resolve(api),
-          caller,
-          transact,
-          connectors,
-          launch,
-          diagnostic,
-          parameters,
-          ...(viewport === undefined ? {} : { viewport }),
-        });
-        const originalSnapshot = created.snapshot.bind(created);
-        created.snapshot = () => ({ ...originalSnapshot(), sourceRevision: revision ?? null });
-        const record = { instance: created, revision };
-        instances.set(key, record);
-        await created.start().catch((error) => {
-          if (instances.get(key) === record) instances.delete(key);
-          throw error;
-        });
-        if (instances.get(key) !== record)
-          throw fail('Canvas source changed while the app was starting.', 'CanvasSourceChanged', 409);
-      }
-      return instances.get(key).instance;
+      if (!instances.has(key)) startInstance(key, app, { principal, parameters, viewport });
+      const record = instances.get(key);
+      await record.ready;
+      if (instances.get(key) !== record)
+        throw fail('Canvas source changed while the app was starting.', 'CanvasSourceChanged', 409);
+      return record.instance;
     },
-    /** Reads do not start apps; a changed revision evicts the old session. */
+    /** Reads do not start apps and do not wait for a start: a start still running is not yet an existing session. */
     existing(uniqueName, principal) {
       const key = keyOf(uniqueName, principal),
         record = instances.get(key);
@@ -2803,7 +2830,7 @@ export function createCanvasRuntime({
         instances.delete(key);
         return null;
       }
-      return record.instance;
+      return record.started ? record.instance : null;
     },
     reset(uniqueName, principal) {
       return instances.delete(keyOf(uniqueName, principal));

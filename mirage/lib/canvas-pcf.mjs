@@ -3,9 +3,20 @@
 import { prepareCanvasSource } from './canvas-components.mjs';
 import { pcfAdmission } from './model-driven/pcf-runtime.mjs';
 import { createHash } from 'node:crypto';
+import fs from 'node:fs/promises';
 import { CANVAS_ASSETS } from './canvas-assets.mjs';
+import { readLocalFile } from '../../lense/local-file.mjs';
 
 const prepared = new WeakMap();
+// The portal key of every declared PCF resource; a Canvas page names the same resource under its own apps prefix.
+export const PORTAL_PCF = '/__sim-static/pcf/';
+export const CANVAS_PCF = '/_apps/canvas/pcf/';
+const MAX_RESOURCE_BYTES = 8 * 1024 * 1024;
+const RESOURCE_TYPES = new Map([
+  ['code', 'text/javascript; charset=utf-8'],
+  ['css', 'text/css; charset=utf-8'],
+  ['resx', 'application/xml; charset=utf-8'],
+]);
 
 const SCALAR =
   /^(?:SingleLine\.(?:Text(?:Area)?|Email|Phone|URL|Ticker)|Multiple|Whole\.(?:None|Duration|TimeZone|Language)|Decimal|FP|Currency|Enum|OptionSet|TwoOptions|DateAndTime\.Date(?:AndTime|Only))$/i; // NOSONAR: regex kept: a rewrite would change matches or captures
@@ -83,8 +94,10 @@ function canvasCodeComponent(control, catalog, { enabled = false, platformLibrar
     resource.url + (component.fingerprint ? `?v=${encodeURIComponent(component.fingerprint)}` : '');
   const code = resources.filter((resource) => resource.kind === 'code').map(versioned);
   const css = resources.filter((resource) => resource.kind === 'css').map(versioned);
-  if (!code.length || [...code, ...css].some((url) => !String(url).startsWith('/__sim-static/pcf/')))
+  if (!code.length || [...code, ...css].some((url) => !String(url).startsWith(PORTAL_PCF)))
     return refuse('CANVAS_PCF_RESOURCE_UNAVAILABLE', 'Only declared, local exported resources can run.');
+  // The page loads its own resources: a same-origin apps path, so the page's script-src 'self' admits them.
+  const canvasUrl = (url) => CANVAS_PCF + url.slice(PORTAL_PCF.length);
   const events = (component.events ?? []).map((event) => event.name);
   if (events.some((name) => !safeProperty(name)) || new Set(events).size !== events.length)
     return refuse('CANVAS_PCF_EVENT_UNSUPPORTED', 'The manifest contains invalid or duplicate event names.');
@@ -97,13 +110,34 @@ function canvasCodeComponent(control, catalog, { enabled = false, platformLibrar
     libraries: component.libraries ?? [],
     platformLibraries: admission.libraries,
     resources: {
-      code,
-      css,
+      code: code.map(canvasUrl),
+      css: css.map(canvasUrl),
       exports: resources.filter((resource) => resource.exportGlobal).map((resource) => resource.exportGlobal),
       resx: {},
     },
     events,
   };
+}
+
+/**
+ * Serves one declared PCF resource for GET or HEAD. `assets` maps portal keys to admitted files; `fail(status, message)`
+ * builds the refusal of the calling route.
+ */
+export async function servePcfResource(req, res, { assets, key, fail }) {
+  if (!['GET', 'HEAD'].includes(req.method)) throw fail(405, 'PCF resources require GET or HEAD.');
+  const asset = assets.get(key);
+  if (!asset) throw fail(404, 'This PCF resource is not declared in a selected manifest.');
+  const real = await fs.realpath(asset.file);
+  if (real !== asset.file || (await fs.stat(real)).size > MAX_RESOURCE_BYTES)
+    throw fail(404, 'The declared PCF resource changed outside its source boundary.');
+  res.writeHead(200, {
+    'content-type': RESOURCE_TYPES.get(asset.kind) ?? 'application/octet-stream',
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+  });
+  return res.end(
+    req.method === 'HEAD' ? undefined : await readLocalFile(real, { root: asset.root, maxBytes: MAX_RESOURCE_BYTES }),
+  );
 }
 
 /** Prepare scopes once before mapping the expanded instance names to manifest descriptors. */

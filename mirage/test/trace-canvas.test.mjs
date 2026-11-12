@@ -331,3 +331,19 @@ test('a write a plug-in refuses names the fault identity of its Dataverse spans 
       span.name,
     );
 });
+
+// @test-kind contract: the player's source watch polls are not user activity and must not evict the traces of real requests.
+test('20 revision probes leave the trace list unchanged while an ordinary action request still produces one trace', async () => {
+  const { sim, admin } = await runtime();
+  const before = sim.trace.query({}).total;
+  for (let probe = 0; probe < 20; probe += 1) {
+    const response = await fetch(`${sim.url}/_apps/canvas/api/fx_trace?revision=1`, {
+      headers: { cookie: admin.cookie },
+    });
+    assert.equal(response.status, 200);
+    await response.text();
+  }
+  assert.equal(sim.trace.query({}).total, before);
+  await drive({ action: 'start' }, { cookie: admin.cookie });
+  assert.equal(sim.trace.query({}).total, before + 1);
+});

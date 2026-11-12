@@ -1,3 +1,4 @@
+// @test-kind tooling: test-only Chromium backport bootstrap keeps browser defaults and real loopback HTTP
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -14,17 +15,14 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const bootstrap = new URL('../test/browser-bootstrap.mjs', import.meta.url).href;
 const require = createRequire(import.meta.url);
 
-test(
-  'effective CDP arguments retain browser defaults and real HTTP across package copies and persistent launches',
-  { timeout: 180000 },
-  async (t) => {
-    const directory = await browserWorkspace(t);
-    const third = path.join(directory, 'example/node_modules/playwright-core');
-    await fs.cp(path.dirname(require.resolve('playwright-core/package.json')), third, { recursive: true });
-    const script = path.join(directory, 'probe.mjs');
-    await fs.writeFile(
-      script,
-      `
+async function probeFixture(t) {
+  const directory = await browserWorkspace(t);
+  const third = path.join(directory, 'example/node_modules/playwright-core');
+  await fs.cp(path.dirname(require.resolve('playwright-core/package.json')), third, { recursive: true });
+  const script = path.join(directory, 'probe.mjs');
+  await fs.writeFile(
+    script,
+    `
     import fs from 'node:fs/promises'; import http from 'node:http'; import path from 'node:path';
     import {createRequire} from 'node:module'; import {pathToFileURL} from 'node:url';
     const [mode,copy,profile,role]=process.argv.slice(2);
@@ -57,60 +55,78 @@ test(
       if(failures.length)throw new AggregateError(failures,'Browser probe cleanup failed');
     }
   `,
+  );
+  const env = { ...process.env };
+  delete env.NODE_OPTIONS; // Baseline must bypass inherited test activation too.
+  const copies = [root, path.join(root, 'mirage'), path.join(directory, 'example')];
+  const run = async (mode, copy, activated) => {
+    const result = await execute(
+      process.execPath,
+      [
+        ...(activated ? ['--import', typeof activated === 'string' ? activated : bootstrap] : []),
+        script,
+        mode,
+        copy,
+        path.join(directory, `profile-${Math.random().toString(36).slice(2)}`),
+        activated ? 'exercise' : 'baseline',
+      ],
+      {
+        cwd: root,
+        env: typeof activated === 'string' ? { ...env, PAQVILO_TEST_LOOPBACK_PROXY: 'http://127.0.0.1:1' } : env,
+        signal: t.signal,
+        windowsHide: true,
+      },
     );
-    const env = { ...process.env };
-    delete env.NODE_OPTIONS; // Baseline must bypass inherited test activation too.
-    const copies = [root, path.join(root, 'mirage'), path.join(directory, 'example')];
-    const run = async (mode, copy, activated) => {
-      const result = await execute(
-        process.execPath,
-        [
-          ...(activated ? ['--import', typeof activated === 'string' ? activated : bootstrap] : []),
-          script,
-          mode,
-          copy,
-          path.join(directory, `profile-${Math.random().toString(36).slice(2)}`),
-          activated ? 'exercise' : 'baseline',
-        ],
-        {
-          cwd: root,
-          env: typeof activated === 'string' ? { ...env, PAQVILO_TEST_LOOPBACK_PROXY: 'http://127.0.0.1:1' } : env,
-          signal: t.signal,
-          windowsHide: true,
-        },
-      );
-      return JSON.parse(result.stdout.trim());
-    };
-    for (const mode of ['launch', 'persistent', 'server']) {
-      const before = await run(mode, root, false);
-      assert.equal(before.hits, 0, 'argument-only reference must not use the unmitigated application HTTP path');
-      assert.equal(before.args.includes(DEFAULT_DISABLED_FEATURES), true);
-      assert.equal(before.args.includes('--mute-audio'), false);
-      for (const copy of copies) {
-        const after = await run(mode, copy, true);
-        assert.ok(after.hits >= 1);
-        assert.equal(after.args.filter((arg) => arg.startsWith('--disable-features=')).length, 1);
-        assert.equal(
-          after.args.includes(process.platform === 'win32' ? BACKPORTED_DISABLED_FEATURES : DEFAULT_DISABLED_FEATURES),
-          true,
-        );
-        const normalize = (args) =>
-          args.filter((arg) => !arg.startsWith('--user-data-dir=') && !arg.startsWith('--disable-features='));
-        assert.deepEqual(normalize(after.args), normalize(before.args));
-      }
-    }
-    const sanitized = await run(
-      'persistent',
-      root,
-      new URL('./helpers/browser-loopback-preload.mjs', import.meta.url).href,
-    );
-    assert.ok(sanitized.hits >= 1, 'sanitized CLI fixture retains real loopback HTTP');
+    return JSON.parse(result.stdout.trim());
+  };
+  return { run, copies };
+}
+
+async function assertBackportedMode(t, mode) {
+  const { run, copies } = await probeFixture(t);
+  const before = await run(mode, root, false);
+  assert.equal(before.hits, 0, 'argument-only reference must not use the unmitigated application HTTP path');
+  assert.equal(before.args.includes(DEFAULT_DISABLED_FEATURES), true);
+  assert.equal(before.args.includes('--mute-audio'), false);
+  for (const copy of copies) {
+    const after = await run(mode, copy, true);
+    assert.ok(after.hits >= 1);
+    assert.equal(after.args.filter((arg) => arg.startsWith('--disable-features=')).length, 1);
     assert.equal(
-      sanitized.args.includes(process.platform === 'win32' ? BACKPORTED_DISABLED_FEATURES : DEFAULT_DISABLED_FEATURES),
+      after.args.includes(process.platform === 'win32' ? BACKPORTED_DISABLED_FEATURES : DEFAULT_DISABLED_FEATURES),
       true,
     );
-    assert.equal(sanitized.args.includes('--proxy-server=http://127.0.0.1:1'), true);
-    assert.equal(sanitized.args.includes('--proxy-bypass-list=127.0.0.1;localhost'), true);
-    assert.equal(sanitized.args.includes('--paqvilo-invented-retained'), true);
-  },
-);
+    const normalize = (args) =>
+      args.filter((arg) => !arg.startsWith('--user-data-dir=') && !arg.startsWith('--disable-features='));
+    assert.deepEqual(normalize(after.args), normalize(before.args));
+  }
+}
+
+test('launch keeps browser defaults and real HTTP across package copies', async (t) => {
+  await assertBackportedMode(t, 'launch');
+});
+
+test('persistent launch keeps browser defaults and real HTTP across package copies', async (t) => {
+  await assertBackportedMode(t, 'persistent');
+});
+
+test('server connection keeps browser defaults and real HTTP across package copies', async (t) => {
+  await assertBackportedMode(t, 'server');
+});
+
+test('sanitized CLI fixture keeps loopback proxy arguments and real HTTP', async (t) => {
+  const { run } = await probeFixture(t);
+  const sanitized = await run(
+    'persistent',
+    root,
+    new URL('./helpers/browser-loopback-preload.mjs', import.meta.url).href,
+  );
+  assert.ok(sanitized.hits >= 1, 'sanitized CLI fixture retains real loopback HTTP');
+  assert.equal(
+    sanitized.args.includes(process.platform === 'win32' ? BACKPORTED_DISABLED_FEATURES : DEFAULT_DISABLED_FEATURES),
+    true,
+  );
+  assert.equal(sanitized.args.includes('--proxy-server=http://127.0.0.1:1'), true);
+  assert.equal(sanitized.args.includes('--proxy-bypass-list=127.0.0.1;localhost'), true);
+  assert.equal(sanitized.args.includes('--paqvilo-invented-retained'), true);
+});

@@ -33,3 +33,23 @@ test('client tab, section and field labels render together and survive returning
   assert.equal(await page.getByLabel('Invented quantity', { exact: true }).inputValue(), '2');
   assert.equal(await fs.readFile(formFile, 'utf8'), source);
 });
+
+test('phone-width list commands that do not fit move into a keyboard-reachable More commands menu', async (t) => {
+  const fixture = await modelDrivenFixture(t);
+  const page = await browser.page(t, { viewport: { width: 375, height: 812 } });
+  await page.goto(fixture.origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
+  await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: 'Share', exact: true }).isVisible(), true);
+  assert.equal(await page.locator('#commands').evaluate((node) => node.scrollWidth <= node.clientWidth), true);
+  assert.equal(
+    await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth),
+    true,
+    'the page does not scroll horizontally',
+  );
+  assert.equal(await page.getByRole('button', { name: 'Refresh', exact: true }).count(), 0);
+  await page.getByRole('button', { name: 'More commands', exact: true }).focus();
+  await page.keyboard.press('Enter');
+  const menu = page.getByRole('menu', { name: 'More commands', exact: true });
+  await menu.waitFor();
+  assert.equal(await menu.getByRole('menuitem', { name: 'Refresh', exact: true }).count(), 1);
+});

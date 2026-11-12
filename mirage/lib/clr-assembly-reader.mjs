@@ -565,8 +565,10 @@ function packageSignature(buffer) {
   return null;
 }
 
-const xmlText = (xml, tag) =>
-  new RegExp(String.raw`<(?:\w+:)?${tag}>\s*([^<]*?)\s*</(?:\w+:)?${tag}>`).exec(xml)?.[1] ?? null;
+const xmlText = (xml, tag) => {
+  const value = new RegExp(String.raw`<(?:\w+:)?${tag}>([^<]*)</(?:\w+:)?${tag}>`).exec(xml)?.[1];
+  return value === undefined ? null : value.trim();
+};
 /**
  * A NuGet plug-in package (dependent assemblies): its nuspec id and version and every assembly under lib/, each inspected
  * like inspectAssembly (identity and types; never loaded). Content that is not a NuGet package ZIP throws InvalidAssembly;

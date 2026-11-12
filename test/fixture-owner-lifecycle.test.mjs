@@ -1,3 +1,4 @@
+// @test-kind tooling: test fixture ownership releases every loopback listener it opened before a test ends.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -15,7 +16,7 @@ for (const mode of [
   'concurrent-first-close-failure',
   'diagnostic-failure',
 ]) {
-  test(`fixture ownership drains actual loopback listeners after ${mode}`, { timeout: 180_000 }, async (t) => {
+  test(`fixture ownership drains actual loopback listeners after ${mode}`, async (t) => {
     const directory = await tempDir('paqvilo-owner-lifecycle-');
     const state = path.join(directory, 'state');
     await fs.mkdir(state);

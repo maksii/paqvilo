@@ -1,4 +1,5 @@
 import { icon } from './icons.mjs';
+import { isDateOnlyFormat } from '../date-only-format.mjs';
 
 const pad = (value) => String(value).padStart(2, '0');
 const keyOf = (date) =>
@@ -108,7 +109,7 @@ function dateForCalendarKey(event, date) {
 }
 
 export function renderDate(field, initialValue, context = {}) {
-  const onlyDate = String(field.format).toLowerCase() === 'dateonly' || field.dateTimeBehavior === 'DateOnly';
+  const onlyDate = isDateOnlyFormat(field.format) || field.dateTimeBehavior === 'DateOnly';
   const independent = field.dateTimeBehavior === 'TimeZoneIndependent';
   const offset = context.formatting?.timeZoneOffsetMinutes,
     staffTimeZone = !onlyDate && !independent && Number.isInteger(offset);

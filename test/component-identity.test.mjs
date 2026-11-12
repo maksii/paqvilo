@@ -1,3 +1,4 @@
+// @test-kind contract: component identity refuses large malformed whitespace and incomplete XML tags with a semantic refusal.
 import { Worker } from 'node:worker_threads';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -154,12 +155,10 @@ test('identity ignores record-like text in comments, CDATA and processing instru
   assert.ok(fx.read(rel).endsWith(before.slice(before.indexOf('</content>'))));
 });
 
-test(
-  'large malformed whitespace and incomplete XML tags are refused in a bounded worker',
-  { timeout: 10000 },
-  async () => {
-    const worker = new Worker(
-      `
+// @test-kind security: hostile large malformed input cannot cause unbounded parsing
+test('large malformed whitespace and incomplete XML tags are refused in a bounded worker', async () => {
+  const worker = new Worker(
+    `
     const { parentPort, workerData } = require('node:worker_threads');
     import(workerData.module).then(({ componentIdentity }) => {
       parentPort.postMessage('imported');
@@ -167,25 +166,24 @@ test(
       parentPort.postMessage([componentIdentity(text), componentIdentity('<a '.repeat(500000))]);
     }).catch(error => { throw error; });
   `,
-      { eval: true, workerData: { module: new URL('../lense/portal-model.mjs', import.meta.url).href } },
-    );
-    let timer;
-    try {
-      const result = await new Promise((resolve, reject) => {
-        worker.on('message', (message) => {
-          if (message !== 'imported') return resolve(message);
-          // The scans take milliseconds; a nonlinear scan of these megabyte inputs would take hours.
-          timer = setTimeout(() => reject(new Error('Component identity exceeded its worker deadline.')), 5000);
-        });
-        worker.once('error', reject);
-        worker.once('exit', (code) => {
-          if (code) reject(new Error('Component identity worker exited early.'));
-        });
+    { eval: true, workerData: { module: new URL('../lense/portal-model.mjs', import.meta.url).href } },
+  );
+  let timer;
+  try {
+    const result = await new Promise((resolve, reject) => {
+      worker.on('message', (message) => {
+        if (message !== 'imported') return resolve(message);
+        // The scans take milliseconds; a nonlinear scan of these megabyte inputs would take hours.
+        timer = setTimeout(() => reject(new Error('Component identity exceeded its worker deadline.')), 5000);
       });
-      assert.deepEqual(result, [null, null]);
-    } finally {
-      clearTimeout(timer);
-      await worker.terminate();
-    }
-  },
-);
+      worker.once('error', reject);
+      worker.once('exit', (code) => {
+        if (code) reject(new Error('Component identity worker exited early.'));
+      });
+    });
+    assert.deepEqual(result, [null, null]);
+  } finally {
+    clearTimeout(timer);
+    await worker.terminate();
+  }
+});

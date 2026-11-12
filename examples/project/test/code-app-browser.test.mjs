@@ -7,7 +7,7 @@ import { startCodeApp } from './code-app-process.mjs';
 import { chromium } from 'playwright-core';
 import { createSimulator } from 'paqvilo/mirage';
 import { browserLaunchOptions } from 'paqvilo/mirage/lib/browser-launch.mjs';
-test('example uses the standalone organization and selected staff session', { timeout: 180_000 }, async (t) => {
+test('example uses the standalone organization and selected staff session', async (t) => {
   const root = fileURLToPath(new URL('../', import.meta.url));
   const { child, port } = await startCodeApp(
     t,
@@ -40,12 +40,12 @@ test('example uses the standalone organization and selected staff session', { ti
   const unauthorized = await page.request.get(`${origin}/_apps/code/invented-items/context`);
   assert.equal(unauthorized.status(), 401);
   const csrf = sim.state().csrf;
-  const made = await page.request.post(`${origin}/_sim/api/dataverse/users`, {
+  const made = await page.request.post(`${sim.adminOrigin}/_sim/api/dataverse/users`, {
     headers: { 'x-sim-csrf': csrf },
     data: { fullname: 'Example Staff', domainname: 'example@example.test', roles: ['System Administrator'] },
   });
   assert.equal(made.status(), 201);
-  const selected = await page.request.post(`${origin}/_sim/api/dataverse/session`, {
+  const selected = await page.request.post(`${sim.adminOrigin}/_sim/api/dataverse/session`, {
     headers: { 'x-sim-csrf': csrf },
     data: { userId: (await made.json()).systemuserid },
   });

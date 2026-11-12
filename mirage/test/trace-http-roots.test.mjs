@@ -904,6 +904,32 @@ test('Power Pages: a /_sim administration write is a sim root acting as the simu
   assert.equal(read.headers.get('x-trace-id'), null, 'an administration read opens no root');
 });
 
+// @test-kind contract: Paqvilo's tracing design (docs/design/tracing.md, D-M-4): a refused administration write names its code and message on its root and in a finding carrying the root's trace ids
+test('Power Pages: a staff-session write without the simulator CSRF token is a refused sim root and adds no runtime diagnostic', async () => {
+  const sim = await powerPages();
+  const diagnosticsOf = async () => (await (await fetch(sim.url + '/_sim/api/diagnostics')).json()).diagnostics;
+  const before = await diagnosticsOf();
+  const response = await fetch(sim.url + '/_sim/api/dataverse/session', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ userId: CLIENT }),
+  });
+  const answer = await response.json();
+  assert.equal(response.status, 403);
+  assert.deepEqual(answer.error, { code: 'INVALID_REQUEST', message: 'Missing simulator CSRF token.' });
+  const { root } = await ended(sim.trace, response.headers.get('x-trace-id'));
+  assert.deepEqual(
+    [root.kind, root.module, root.origin.host, root.status, root.error.code, root.error.message, root.error.status],
+    ['http', 'sim', 'sim', 'denied', answer.error.code, answer.error.message, 403],
+  );
+  const after = await diagnosticsOf();
+  assert.equal(after.length, before.length, 'the refusal adds no runtime diagnostic');
+  assert.equal(
+    after.some((item) => item.code === answer.error.code && item.message === answer.error.message),
+    false,
+  );
+});
+
 // @test-kind contract+security+unproven: trace behavior is local; the portal or service result has no native capture.
 test('Azurite Blob requests are http-out spans of the current trace without their bytes; a refused key names the Azure code', async (t) => {
   const traces = createTraceStore({ settings: { level: 'full' } });

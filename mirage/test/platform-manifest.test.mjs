@@ -356,7 +356,7 @@ test('anti-forgery endpoints return the native self-closing input with the cooki
     assert.equal(response.headers.get('content-type'), 'text/html; charset=utf-8');
     assert.equal(
       await response.text(),
-      `<input name="__RequestVerificationToken" type="hidden" value="${app.csrf}" />`,
+      `<input name="__RequestVerificationToken" type="hidden" value="${app.portalToken}" />`,
     );
     assert.match(
       response.headers.get('set-cookie'),

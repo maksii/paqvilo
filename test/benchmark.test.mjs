@@ -1,3 +1,4 @@
+// @test-kind tooling: the offline benchmark script loads the current Lense implementation and measures refreshes without source writes.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -5,6 +6,8 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createFixture, HOME_ID } from './fixture.mjs';
+
+const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
 
 test('offline benchmark loads the current Lense implementation and measures refreshes without source writes', (t) => {
   const fixture = createFixture();
@@ -45,7 +48,7 @@ test('offline benchmark loads the current Lense implementation and measures refr
       ),
       encoding: 'utf8',
       windowsHide: true,
-      timeout: 30_000,
+      timeout: CLI_HANG_GUARD_MS,
     },
   );
   assert.ifError(result.error);

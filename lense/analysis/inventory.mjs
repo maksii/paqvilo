@@ -164,7 +164,7 @@ function classify(file, platform = false) {
   if (record) return { record: record === 'entitypermission' ? 'tablepermission' : record };
   if (name.toLowerCase() === 'powerpagecomponent.xml') return { component: true };
   const extension = path.extname(name).toLowerCase();
-  if (platform && ['yarn.lock', 'bun.lock', 'Podfile'].includes(name)) return { platform: true };
+  if (platform && ['yarn.lock', 'bun.lock', 'bun.lockb', 'Podfile'].includes(name)) return { platform: true };
   if (['.html', '.htm', '.liquid'].includes(extension)) return { kind: 'html' };
   if (extension === '.css') return { kind: 'css' };
   if (['.js', '.mjs', '.cjs'].includes(extension)) return { kind: 'js' };
@@ -206,6 +206,11 @@ function skip(state, file, reason) {
   if (state.skipped.length < state.limits.files) state.skipped.push({ file, reason });
 }
 
+/** Editors write a UTF-8 byte order mark; it is not content, so analysis reads the text after it. */
+export function stripByteOrderMark(text) {
+  return text.startsWith(String.fromCodePoint(0xfeff)) ? text.slice(1) : text;
+}
+
 function addSourceBytes(state, bytes, file, type, relativeFile = file, archiveDepth = 0, rootId = state.rootId) {
   state.stats.bytes += bytes.length;
   state.stats.files++;
@@ -223,7 +228,7 @@ function addSourceBytes(state, bytes, file, type, relativeFile = file, archiveDe
     state.inputs.push(container);
     return readArchive(state, bytes, file, archiveDepth, rootId, container);
   }
-  const text = bytes.toString('utf8');
+  const text = stripByteOrderMark(bytes.toString('utf8'));
   state.inputs.push({ file, relativeFile, rootId, text, line: 1, column: 1, exactLocation: true });
   const first = state.records.length;
   try {

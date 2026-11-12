@@ -85,14 +85,38 @@ function validClient(res, portal, clientId) {
   return false;
 }
 
+// A form body larger than this is refused with 413; the rest of it is read and discarded, never buffered.
+const MAX_FORM_BYTES = 64 * 1024;
+// The state is echoed as a response header, so only tab and printable ASCII can pass.
+const STATE_CHARACTERS = /^[\t\x20-\x7e]*$/;
+
+async function readForm(req) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size <= MAX_FORM_BYTES) chunks.push(chunk);
+  }
+  return size <= MAX_FORM_BYTES ? Buffer.concat(chunks).toString('utf8') : null;
+}
+
+// Returns the query and form values, or null when the form body is over the limit.
 async function parameters(req, url) {
   const values = Object.fromEntries(url.searchParams);
   if (req.method === 'POST' && /application\/x-www-form-urlencoded/i.test(req.headers['content-type'] ?? '')) {
-    const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
-    Object.assign(values, Object.fromEntries(new URLSearchParams(Buffer.concat(chunks).toString('utf8'))));
+    const body = await readForm(req);
+    if (body === null) return null;
+    Object.assign(values, Object.fromEntries(new URLSearchParams(body)));
   }
   return values;
+}
+
+// Answers a request that cannot be served as given and returns true, or returns false. The error ids are Mirage's own, not Microsoft's.
+function refuseInput(res, params) {
+  if (!params) return tokenError(res, 413, 'PortalSTS0003', 'The request body is too large.');
+  if (params.state && !STATE_CHARACTERS.test(params.state))
+    return tokenError(res, 400, 'PortalSTS0002', 'The state parameter is not valid.');
+  return false;
 }
 
 /**
@@ -123,6 +147,7 @@ export async function handleImplicitGrant(
     return true;
   }
   const params = await parameters(req, url);
+  if (refuseInput(res, params)) return true;
   const clientId = params.client_id;
   if (!validClient(res, portal, clientId)) return true;
   const now = Math.floor(clock() / 1000);

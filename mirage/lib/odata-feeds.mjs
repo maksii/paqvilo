@@ -2,6 +2,13 @@ import { portalField } from './importer.mjs';
 import { contextualViewFetchXml } from './platform.mjs';
 import { parseFetchTree, serializeFetchTree } from './native-services.mjs';
 import { stripTrailingCharacter } from './text-scanning.mjs';
+import {
+  compareNumeric,
+  exactNumeric,
+  isExactNumeric,
+  parseNumericLiteral,
+  stringifyExactJson,
+} from './exact-numeric.mjs';
 
 /*
  * Entity list OData feeds: lists with adx_odata_enabled publish their OData view
@@ -101,6 +108,19 @@ const kindOf = (definition, value) => {
   return 'string';
 };
 
+// A decimal keeps its exact digits when a JavaScript number cannot hold them; ordinary values stay numbers.
+function decimalValue(value) {
+  const raw = value?.value ?? value;
+  const number = Number(raw);
+  if (typeof raw === 'number' || !Number.isFinite(number)) return number;
+  try {
+    return exactNumeric(raw, 'Decimal');
+  } catch (error) {
+    if (error.code === 'NumericPrecisionUnsupported') return number;
+    throw error;
+  }
+}
+
 /* NOSONAR: mixed return values are part of the contract */ function propertyValue(column, value) {
   const kind = kindOf(column.definition, value);
   if (value == null || value === '') return null;
@@ -110,7 +130,7 @@ const kindOf = (definition, value) => {
     const option = (column.definition.options ?? []).find((candidate) => Number(candidate.value) === number);
     return { Name: value?.label ?? option?.label ?? null, Value: Number.isFinite(number) ? number : null };
   }
-  if (kind === 'decimal') return Number(value?.value ?? value);
+  if (kind === 'decimal') return decimalValue(value);
   if (kind === 'integer') return Number(value);
   if (kind === 'boolean') return value === true || value === 1 || /^(true|1)$/i.test(String(value));
   if (kind === 'datetime') {
@@ -149,20 +169,36 @@ function tokenize(text) {
   return tokens;
 }
 
+// An integer literal stays a number; a decimal literal keeps its exact digits (a number when that is exact).
+const numericLiteral = (text) => (text.includes('.') ? parseNumericLiteral(text) : Number(text));
+
 function appendToken(tokens, match) {
   if (match[2]) tokens.push({ type: 'literal', value: canonical(match[2]) });
   else if (match[3]) tokens.push({ type: 'literal', value: new Date(match[4]).getTime() });
   else if (match[5]) tokens.push({ type: 'literal', value: match[6].replaceAll("''", "'") });
-  else if (match[7]) tokens.push({ type: 'literal', value: Number(match[7]) });
+  else if (match[7]) tokens.push({ type: 'literal', value: numericLiteral(match[7]) });
   else if (match[8]) tokens.push({ type: '(' });
   else if (match[9]) tokens.push({ type: ')' });
   else if (match[10]) tokens.push({ type: ',' });
   else tokens.push({ type: 'word', value: match[11] });
 }
 
+// Parenthesised groups, function arguments and `not` operands may nest this deep; deeper input is refused as a bad $filter.
+const MAX_FILTER_DEPTH = 100;
+
 function parseFilter(text) {
   const tokens = tokenize(text);
   let position = 0;
+  let depth = 0;
+  const nested = (parse) => {
+    if (++depth > MAX_FILTER_DEPTH) throw new ODataError('The $filter expression is nested too deeply.');
+    try {
+      return parse();
+    } finally {
+      depth--;
+    }
+  };
+  const group = () => nested(expression);
   const peek = () => tokens[position];
   const take = (type, value) => {
     const token = tokens[position];
@@ -177,7 +213,7 @@ function parseFilter(text) {
     if (!token) throw new ODataError('Incomplete $filter expression.');
     if (token.type === '(') {
       position++;
-      const inner = expression();
+      const inner = group();
       take(')');
       return inner;
     }
@@ -192,10 +228,10 @@ function parseFilter(text) {
       if (/^null$/i.test(word)) return { literal: null };
       if (peek()?.type === '(' && /^(substringof|startswith|endswith|tolower|toupper)$/i.test(word)) {
         position++;
-        const args = [expression()];
+        const args = [group()];
         while (peek()?.type === ',') {
           position++;
-          args.push(expression());
+          args.push(group());
         }
         take(')');
         return { call: word.toLowerCase(), args };
@@ -207,7 +243,7 @@ function parseFilter(text) {
   const comparison = () => {
     if (isWord('not')) {
       position++;
-      return { not: comparison() };
+      return { not: nested(comparison) };
     }
     const left = operand();
     const operator =
@@ -216,21 +252,22 @@ function parseFilter(text) {
         : null;
     return operator ? { operator, left, right: operand() } : left;
   };
+  // Chains are flat n-ary nodes, so a long chain adds no tree depth for evaluate() to recurse through.
   const conjunction = () => {
-    let node = comparison();
+    const terms = [comparison()];
     while (isWord('and')) {
       position++;
-      node = { and: [node, comparison()] };
+      terms.push(comparison());
     }
-    return node;
+    return terms.length === 1 ? terms[0] : { and: terms };
   };
   const expression = () => {
-    let node = conjunction();
+    const terms = [conjunction()];
     while (isWord('or')) {
       position++;
-      node = { or: [node, conjunction()] };
+      terms.push(conjunction());
     }
-    return node;
+    return terms.length === 1 ? terms[0] : { or: terms };
   };
   const tree = expression();
   if (position !== tokens.length) throw new ODataError('Unsupported trailing $filter syntax.');
@@ -259,6 +296,14 @@ function comparable(value) {
     return Date.parse(value);
   return value;
 }
+
+// A pair of numbers where one is an exact numeric compares by digits.
+const isNumeric = (value) => typeof value === 'number' || isExactNumeric(value);
+const exactNumericPair = (left, right) =>
+  isNumeric(left) && isNumeric(right) && (isExactNumeric(left) || isExactNumeric(right));
+// The operands of such a pair become its digit comparison (-1, 0, 1, or NaN when not comparable) and zero.
+const comparisonOperands = (left, right) =>
+  exactNumericPair(left, right) ? [compareNumeric(left, right), 0] : [left, right];
 
 function equalValues(left, right) {
   return left === right || (left == null && right == null);
@@ -307,8 +352,10 @@ function evaluate(node, entry) {
   if (node.and) return node.and.every((child) => evaluate(child, entry));
   if (node.or) return node.or.some((child) => evaluate(child, entry));
   if (node.call) return evaluateCall(node, entry);
-  const left = comparable(evaluate(node.left, entry));
-  const right = comparable(evaluate(node.right, entry));
+  const [left, right] = comparisonOperands(
+    comparable(evaluate(node.left, entry)),
+    comparable(evaluate(node.right, entry)),
+  );
   return compareValues(node.operator, left, right);
 }
 
@@ -322,16 +369,19 @@ function orderBy(entries, clause) {
     for (const { path, descending } of keys) {
       const left = resolvePath(a, path);
       const right = resolvePath(b, path);
-      if (left === right) continue;
-      let order;
-      if (left == null) order = -1;
-      else if (right == null) order = 1;
-      else if (left < right) order = -1;
-      else order = 1;
-      return descending ? -order : order;
+      const order = left === right ? 0 : compareForOrder(left, right);
+      if (order !== 0) return descending ? -order : order;
     }
     return 0;
   });
+}
+
+// Nulls first; exact numerics by their digits; other values by JavaScript order.
+function compareForOrder(left, right) {
+  if (left == null) return -1;
+  if (right == null) return 1;
+  if (exactNumericPair(left, right)) return compareNumeric(left, right) || 0; // NaN: not comparable, a tie
+  return left < right ? -1 : 1;
 }
 
 const EDM = {
@@ -460,7 +510,7 @@ function responseSender(req, res) {
     let responseBody;
     if (req.method !== 'HEAD') {
       if (typeof body === 'string') responseBody = body;
-      else responseBody = JSON.stringify(body);
+      else responseBody = stringifyExactJson(body);
     }
     res.end(responseBody);
     return true;

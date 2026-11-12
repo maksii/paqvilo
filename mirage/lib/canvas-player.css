@@ -57,6 +57,39 @@ aside pre {
   position: absolute;
   overflow: hidden;
 }
+.canvas-notifications {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.5rem;
+  pointer-events: none;
+}
+.canvas-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 4px;
+  background: #1f2937;
+  color: #fff;
+  pointer-events: auto;
+}
+.canvas-notice[role='alert'] {
+  background: #7f1d1d;
+}
+.canvas-notice button {
+  border: 0;
+  background: none;
+  color: inherit;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
 .canvas-container {
   overflow: hidden;
 }

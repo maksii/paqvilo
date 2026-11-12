@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of the platform shell chrome, anti-forgery holder, Datejs and bundles; no native capture in this file.
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -6,8 +7,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
-import { createSimulator } from '../server.mjs';
-import { signInContext } from '../testing/session.mjs';
+import { signedInSimulatorPage } from './shared-browser.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const require = createRequire(import.meta.url);
@@ -102,15 +102,8 @@ async function portalFixture(t, { settings = [], home = null } = {}) {
       },
     },
   };
-  const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, 'state.json'), initial, watch: false });
-  ownedFixture(t).add(() => app.close());
-  const context = await browser.newContext();
-  ownedFixture(t).add(() => context.close());
-  await signInContext(context, app, CONTACT, { roles: ['Member'] });
-  const page = await context.newPage();
-  const errors = [];
+  const { app, page, errors } = await signedInSimulatorPage(t, browser, { dir, initial, contact: CONTACT });
   const requests = [];
-  page.on('pageerror', (error) => errors.push(error.message));
   page.on('request', (request) => requests.push(`${request.method()} ${request.url().replace(app.url, '')}`));
   await page.route('**/*', (route) => (route.request().url().startsWith(app.url) ? route.continue() : route.abort()));
   return { app, page, errors, requests };
@@ -140,10 +133,10 @@ test('platform chrome, lazy anti-forgery token, app-bundle accessibility and Dat
   const tokens = await page.evaluate(() =>
     Promise.all([0, 1].map(() => new Promise((resolve) => window.shell.getTokenDeferred().done(resolve)))),
   );
-  assert.deepEqual(tokens, [app.state().csrf, app.state().csrf]);
+  assert.deepEqual(tokens, [app.portalToken, app.portalToken]);
   assert.equal(
     await page.locator('#antiforgerytoken input[name="__RequestVerificationToken"]').getAttribute('value'),
-    app.state().csrf,
+    app.portalToken,
   );
   assert.equal(requests.filter((request) => /^GET \/_layout\/tokenhtml\?_=\d+$/.test(request)).length, 1);
   // app.bundle accessibility block: dropdown toggles.

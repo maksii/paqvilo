@@ -1,3 +1,4 @@
+// @test-kind contract: the Lense model-driven panel's native comparison budgets, lease handling and Issues shape are Paqvilo's own designed behaviour, checked on owned loopback fixtures.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createModelDrivenOverlay } from '../lense/model-driven.mjs';
@@ -6,7 +7,11 @@ import {
   modelDrivenPanelData,
   modelDrivenPanelUi,
 } from '../lense/model-driven-panel.mjs';
-import { modelDrivenComparisonAdmission } from '../lense/model-driven-inspector.mjs';
+import {
+  NATIVE_READ_GUARD_MS,
+  modelDrivenComparisonAdmission,
+  startModelDrivenInspector,
+} from '../lense/model-driven-inspector.mjs';
 import { GitBaseline } from '../lense/git.mjs';
 import { createFixture } from './fixture.mjs';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
@@ -130,6 +135,51 @@ test('internal comparison markers are stripped on invalid, expired, wrong-resour
   lease.release();
 });
 
+test('a native comparison lease is honoured however long the browser takes to answer, and only once', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'] });
+  const overlay = createModelDrivenOverlay({ origin, imported: imported(1) });
+  const lease = overlay.nativeRead('x_0.js');
+  const calls = [];
+  const answer = (token) => {
+    const headers = { 'x-paqvilo-native-comparison': token };
+    return overlay.handle({
+      request: () => ({
+        url: () => origin + '/WebResources/x_0.js',
+        method: () => 'GET',
+        headers: () => headers,
+      }),
+      removeRequestHeader(name) {
+        delete headers[name];
+      },
+      async fallback() {
+        calls.push('fallback');
+      },
+      async fulfill() {
+        calls.push('fulfill');
+      },
+    });
+  };
+  try {
+    t.mock.timers.tick(20000);
+    await answer(lease.token);
+    await answer(lease.token);
+    assert.deepEqual(calls, ['fallback', 'fulfill'], 'the lease reaches the native file once and then expires by use');
+  } finally {
+    lease.release();
+    t.mock.timers.reset();
+  }
+});
+
+test('the native read guard is a positive integer millisecond option with a 30 second default', async () => {
+  assert.equal(NATIVE_READ_GUARD_MS, 30_000);
+  for (const nativeReadGuardMs of [0, -1, 1.5, '1000', 2_147_483_648]) {
+    await assert.rejects(
+      startModelDrivenInspector({ page: {}, overlay: {}, cfg: {}, imported: {}, nativeReadGuardMs }),
+      /nativeReadGuardMs must be a positive integer/,
+    );
+  }
+});
+
 test('diagnostics and native warning/request failure types satisfy the shared Issues contract', () => {
   const state = {
     origin,
@@ -158,69 +208,65 @@ test('diagnostics and native warning/request failure types satisfy the shared Is
   );
 });
 
-test(
-  'overlapping real Git source updates retain only the latest catalogue and coalesce pending revisions',
-  { timeout: 180_000 },
-  async (t) => {
-    const fixture = createFixture();
-    const owner = ownedFixture(t);
-    owner.remove(() => fixture.cleanup());
-    const firstFile = 'web-files/source-a.js';
-    const latestFile = 'web-files/source-b.js';
-    fixture.write(firstFile, 'window.sourceA = 1;');
-    fixture.write(latestFile, 'window.sourceB = 1;');
-    fixture.commit();
-    const catalogue = (name, file, body) => ({
-      assets: new Map([[name, { name, file: fixture.file(file), mime: 'text/javascript', data: Buffer.from(body) }]]),
-      layers: [{ dir: fixture.dir, documents: [] }],
-    });
-    const first = catalogue('x_a.js', firstFile, 'window.sourceA = 1;');
-    const sources = await createModelDrivenPanelSources(first);
-    let enter, release;
-    const entered = new Promise((resolve) => {
-      enter = resolve;
-    });
-    const gate = new Promise((resolve) => {
-      release = resolve;
-    });
-    const read = GitBaseline.prototype.changedFilesAsync;
-    let reads = 0;
-    t.mock.method(GitBaseline.prototype, 'changedFilesAsync', async function (...args) {
-      reads++;
-      if (reads === 1) {
-        enter();
-        await gate;
-      }
-      return read.apply(this, args);
-    });
-    const updates = [];
-    owner.add(async () => {
-      release();
-      await Promise.all(updates);
-    });
-    updates.push(sources.update(first));
-    await entered;
-    for (let revision = 0; revision < 20; revision++) {
-      const body = `window.sourceB = ${revision + 2};`;
-      fixture.write(latestFile, body);
-      updates.push(sources.update(catalogue('x_b.js', latestFile, body)));
+test('overlapping real Git source updates retain only the latest catalogue and coalesce pending revisions', async (t) => {
+  const fixture = createFixture();
+  const owner = ownedFixture(t);
+  owner.remove(() => fixture.cleanup());
+  const firstFile = 'web-files/source-a.js';
+  const latestFile = 'web-files/source-b.js';
+  fixture.write(firstFile, 'window.sourceA = 1;');
+  fixture.write(latestFile, 'window.sourceB = 1;');
+  fixture.commit();
+  const catalogue = (name, file, body) => ({
+    assets: new Map([[name, { name, file: fixture.file(file), mime: 'text/javascript', data: Buffer.from(body) }]]),
+    layers: [{ dir: fixture.dir, documents: [] }],
+  });
+  const first = catalogue('x_a.js', firstFile, 'window.sourceA = 1;');
+  const sources = await createModelDrivenPanelSources(first);
+  let enter, release;
+  const entered = new Promise((resolve) => {
+    enter = resolve;
+  });
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const read = GitBaseline.prototype.changedFilesAsync;
+  let reads = 0;
+  t.mock.method(GitBaseline.prototype, 'changedFilesAsync', async function (...args) {
+    reads++;
+    if (reads === 1) {
+      enter();
+      await gate;
     }
-    // No event marks an update that did not start a second read; one macrotask lets any update queued behind the
-    // gated read reach it. The final count below (exactly two reads) proves coalescing independently of this check.
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(reads, 1, 'a pending Git read cannot publish a concurrent obsolete catalogue');
+    return read.apply(this, args);
+  });
+  const updates = [];
+  owner.add(async () => {
     release();
     await Promise.all(updates);
-    assert.equal(reads, 2, 'the running revision is followed by only the latest pending revision');
-    assert.deepEqual([...sources.state.facts.keys()], ['x_b.js']);
-    assert.doesNotThrow(() => sources.setScope('changed'));
-    assert.deepEqual([...sources.changed()], ['x_b.js']);
-    const diff = sources.diff('x_b.js', 'Online');
-    assert.equal(diff.ok, true);
-    assert.equal(diff.against, 'Git HEAD');
-    assert.ok(diff.added > 0, 'the latest actual source edit is compared with its committed Git bytes');
-  },
-);
+  });
+  updates.push(sources.update(first));
+  await entered;
+  for (let revision = 0; revision < 20; revision++) {
+    const body = `window.sourceB = ${revision + 2};`;
+    fixture.write(latestFile, body);
+    updates.push(sources.update(catalogue('x_b.js', latestFile, body)));
+  }
+  // No event marks an update that did not start a second read; one macrotask lets any update queued behind the
+  // gated read reach it. The final count below (exactly two reads) proves coalescing independently of this check.
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(reads, 1, 'a pending Git read cannot publish a concurrent obsolete catalogue');
+  release();
+  await Promise.all(updates);
+  assert.equal(reads, 2, 'the running revision is followed by only the latest pending revision');
+  assert.deepEqual([...sources.state.facts.keys()], ['x_b.js']);
+  assert.doesNotThrow(() => sources.setScope('changed'));
+  assert.deepEqual([...sources.changed()], ['x_b.js']);
+  const diff = sources.diff('x_b.js', 'Online');
+  assert.equal(diff.ok, true);
+  assert.equal(diff.against, 'Git HEAD');
+  assert.ok(diff.added > 0, 'the latest actual source edit is compared with its committed Git bytes');
+});
 
 test('only exact owned resource locations become source links and browser positions become one-based', () => {
   const state = {

@@ -115,6 +115,15 @@ test('query redaction preserves protected fields and adjacent ordinary values', 
     assert.equal(redact(input), expected);
 });
 
+test('a protected field that is the first query parameter of a leading URL is redacted', () => {
+  for (const [input, expected] of [
+    ['https://h/p?x-ms-form-session-id=SECRET', 'https://h/p?x-ms-form-session-id={token}'],
+    ['?base64SecureConfiguration=SECRET', '?base64SecureConfiguration={token}'],
+    ['/p?AttachFile_HiddenField_InstanceId=SECRET&a=1', '/p?AttachFile_HiddenField_InstanceId={token}&a=1'],
+  ])
+    assert.equal(redact(input), expected);
+});
+
 test('direct structured field and nested response body remove raw digest input', () => {
   const body = JSON.stringify({
       base64SecureConfiguration: token,

@@ -10,7 +10,7 @@ export const MIRAGE_TOOLS = Object.freeze({
   'parity-suite':
     '((--local LOOPBACK_ORIGIN | --source DIR | --site ID) --out DIR | --reclassify FILE) [--config FILE] [--env ID] [--repo DIR] [--state FILE] [--preset NAME] [--origin HTTPS_ORIGIN] [--cdp LOOPBACK_URL] [--local-owned] [--anonymous-browser owned|cdp] [--scenarios FILE] [--core | --no-core] [--pack ID ...] [--packs auto|all|none] [--pack-module FILE ...] [--only IDS] [--tags TAGS] [--exclude-tags TAGS] [--label NAME] [--delay-ms N] [--work-dir DIR] [--persona-contact ID] [--no-persona] [--browser NAME] [--ids FILE] [--deployment-profile NAME]',
   'baseline-suite':
-    'capture|compare --matrix FILE --out DIRECTORY [--side live|mirage] [--config FILE --site ID] [--ids FILE] [--allow-writes] [--allowlist FILE] [--second-live LABEL] [--evidence-changes FILE] [--label NAME] [--only IDS] [--env ID] [--source DIR] [--state FILE] [--headed] [--work-dir DIR] [--live DIR] [--mirage DIR]',
+    'capture|compare --matrix FILE --out DIRECTORY [--side live|mirage] [--config FILE --site ID] [--ids FILE] [--allow-writes] [--allowlist FILE] [--second-live LABEL] [--evidence-changes FILE] [--label NAME] [--only IDS|@FILE] [--all-scenarios] [--env ID] [--source DIR] [--state FILE] [--headed] [--work-dir DIR] [--live DIR] [--mirage DIR]',
   'liquid-conformance': '--suite FILE [--rules FILE] [--json | --markdown] [--out FILE] [--timeout MS]',
   acceptance:
     '--local LOOPBACK_ORIGIN --plan FILE [--origin HTTPS_ORIGIN --cdp LOOPBACK_URL] [--output DIRECTORY] [--requires NAME ...] [--strict]',
@@ -25,15 +25,27 @@ export const MIRAGE_TOOLS = Object.freeze({
   trace: `list|show TRACE_ID|spans|stats|settings|clear|flush|export|watch ${toolOptionsHelp('trace')}`,
 });
 export const mirageToolHelp = (name) => `Usage: paqvilo mirage ${name} ${MIRAGE_TOOLS[name]}\n`;
+const stripBracketGroups = (text) => {
+  const stripped = text.replace(/\[[^[\]]*\]/g, '');
+  return stripped === text ? text : stripBracketGroups(stripped);
+};
+/** The options a tool's usage line lists outside its [ ] groups. */
+const requiredToolOptions = (name) =>
+  [...stripBracketGroups(MIRAGE_TOOLS[name]).matchAll(/--([\w-]+)/g)].map(([, option]) => option);
+/** Refuses a start without a required option, or with a malformed URL value, before any input is read. */
+export function assertToolOptions(name, values, urlOptions = []) {
+  const missing = requiredToolOptions(name).find((option) => values[option] === undefined);
+  if (missing) throw new Error(`--${missing} is required.\n${mirageToolHelp(name)}`.trimEnd());
+  const malformed = urlOptions.find((option) => values[option] !== undefined && !URL.canParse(values[option]));
+  if (malformed) throw new Error(`--${malformed} must be a valid URL.`);
+}
 export const MIRAGE_LIFECYCLE = Object.freeze(['init', 'dev', 'start', 'status', 'stop']);
 export const MIRAGE_CORE_COMMANDS = Object.freeze([
   'serve',
   'inspect',
   'render',
-  'capture-shell',
   'capture-stylesheets',
   'capture-snippet-composition',
-  'verify',
   'data',
   'preflight',
 ]);

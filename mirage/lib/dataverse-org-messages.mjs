@@ -157,14 +157,33 @@ const WALL_PARAMS = [
 // The definition named by a schema name (case-insensitive), or null.
 const definitionNamed = (store, schemaName) =>
   tableOf(store, ENV_DEFINITION).find((d) => sameId(d.schemaname, schemaName)) ?? null;
-// The value row of a definition, or null: a definition has at most one value in this module.
-const valueOf = (store, definitionId) =>
-  tableOf(store, ENV_VALUE).find((v) => sameId(refId(v.environmentvariabledefinitionid), definitionId)) ?? null;
-// The value a reader sees: the value row when one exists, else the definition's default value, else null.
-const currentValue = (store, definition) => {
-  const row = valueOf(store, definition.environmentvariabledefinitionid);
-  return row ? (row.value ?? null) : (definition.defaultvalue ?? null);
-};
+// The value row of a definition, or null. A definition has one value row whichever message wrote it; the composite data sources
+// (dataverse-misc-messages.mjs) find the same row.
+export const valueRowOf = (store, definitionId) =>
+  store.tableRows(ENV_VALUE).find((v) => sameId(refId(v.environmentvariabledefinitionid), definitionId)) ?? null;
+// The fields an UpsertEnvironmentVariable call sends: a field it leaves out keeps its stored value on an update.
+function definitionFieldsOf(args, type) {
+  const fields = { type };
+  const put = (field, value) => {
+    if (value !== undefined) fields[field] = value;
+  };
+  put('displayname', args.DisplayName);
+  put('defaultvalue', args.DefaultValue);
+  put('secretstore', args.SecretStore === undefined || args.SecretStore === null ? undefined : KEY_VAULT);
+  put('parameterkey', args.ParameterKey);
+  put('apiid', args.ApiId);
+  return fields;
+}
+// The checked input of UpsertEnvironmentVariable: the schema name and the type, or the documented 400.
+function upsertInputOf(args) {
+  const schemaName = requiredText(args.SchemaName, 'SchemaName');
+  const type = Number(args.Type);
+  if (args.Type === undefined || args.Type === null || !ENV_TYPES.has(type))
+    throw invalid('Type must be one of the environment variable types.');
+  if (args.SecretStore !== undefined && args.SecretStore !== null && Number(args.SecretStore) !== KEY_VAULT)
+    throw invalid('SecretStore must be 0, the Key Vault store.');
+  return { schemaName, type };
+}
 
 function organizationInfo(store) {
   return {
@@ -291,6 +310,78 @@ function operations(api) {
       row,
       mapping: store.resolveMapping(logical),
     });
+  // The row check of an upsert, refused with the Web API 403: write on the stored row, create when there is none.
+  const authorizeUpsert = (c, logical, row) =>
+    api.principals.authorize({
+      user: c.user,
+      entity: logical,
+      operation: row ? 'write' : 'create',
+      row,
+      mapping: store.resolveMapping(logical),
+    });
+  // Creates or updates the definition of a schema name through the record layer (stamps, version, plug-in steps); returns its id.
+  async function upsertDefinition(c, schemaName, definition, fields) {
+    if (definition) {
+      const id = definition.environmentvariabledefinitionid;
+      await api.records.updateInternal(c, ENV_DEFINITION, id, fields, { authorized: true });
+      return id;
+    }
+    const organizationId = organizationRecord(store)?.organizationid ?? ZERO_GUID;
+    const id = uuidV5(organizationId, `${ENV_DEFINITION}:${schemaName.toLowerCase()}`);
+    const row = { environmentvariabledefinitionid: id, schemaname: schemaName, statecode: 0, statuscode: 1, ...fields };
+    await api.records.createInternal(c, ENV_DEFINITION, row, { authorized: true });
+    return id;
+  }
+  // Creates or updates the value of a definition, one value row per definition, through the record layer.
+  async function upsertValue(c, definitionId, schemaName, value) {
+    const row = valueRowOf(store, definitionId);
+    if (row) {
+      await api.records.updateInternal(c, ENV_VALUE, row.environmentvariablevalueid, { value }, { authorized: true });
+      return;
+    }
+    const created = {
+      environmentvariablevalueid: uuidV5(definitionId, ENV_VALUE),
+      environmentvariabledefinitionid: ref(ENV_DEFINITION, definitionId),
+      schemaname: schemaName,
+      statecode: 0,
+      statuscode: 1,
+      value,
+    };
+    await api.records.createInternal(c, ENV_VALUE, created, { authorized: true });
+  }
+
+  // The rows of a table that pass the caller's read filter; every row when the caller has no row filter there.
+  const readableRows = (c, logical, rows) => {
+    const readable = api.principals.readFilter({
+      user: c.user,
+      entity: logical,
+      mapping: store.resolveMapping(logical),
+    });
+    return readable ? rows.filter((row) => readable(row)) : rows;
+  };
+  // Whether the caller may read a value row: the value table's read privilege and row filter, refused as an ordinary read is.
+  const mayReadValue = (c, row) => {
+    try {
+      authorizeRead(c, ENV_VALUE, row);
+      return true;
+    } catch (error) {
+      if (error.status === 403) return false;
+      throw error;
+    }
+  };
+  // The value of a single read: the default when no value row exists, else the value row once the caller may read it.
+  const singleValue = (c, definition) => {
+    const row = valueRowOf(store, definition.environmentvariabledefinitionid);
+    if (!row) return definition.defaultvalue ?? null;
+    authorizeRead(c, ENV_VALUE, row);
+    return row.value ?? null;
+  };
+  // The value shown in a list: the default when no value row exists, else the value row when the caller may read it, else null.
+  const listedValue = (c, definition) => {
+    const row = valueRowOf(store, definition.environmentvariabledefinitionid);
+    if (!row) return definition.defaultvalue ?? null;
+    return mayReadValue(c, row) ? (row.value ?? null) : null;
+  };
 
   // SharePoint: the parent of a site or location row (parentsite, or parentsiteorlocation with its logical name), or null.
   const parentOfSharePoint = (row, logical) => {
@@ -451,7 +542,8 @@ function operations(api) {
           throw new DataError(`${ENV_DEFINITION} With SchemaName = ${schemaName} Does Not Exist`, 404, 'NotFound', {
             innerCode: '0x80040217',
           });
-        return respond(c, 'RetrieveEnvironmentVariableValue', { Value: currentValue(store, definition) });
+        authorizeRead(c, ENV_DEFINITION, definition);
+        return respond(c, 'RetrieveEnvironmentVariableValue', { Value: singleValue(c, definition) });
       },
       csdl: csdlOf('function', 'RetrieveEnvironmentVariableValue', {
         params: [['DefinitionSchemaName', 'Edm.String']],
@@ -467,9 +559,9 @@ function operations(api) {
         need(c, ENV_DEFINITION, 'Read');
         const names = argsOf(c).SchemaNames;
         const wanted = Array.isArray(names) && names.length ? names : null;
-        const rows = tableOf(store, ENV_DEFINITION)
+        const rows = readableRows(c, ENV_DEFINITION, tableOf(store, ENV_DEFINITION))
           .filter((d) => !wanted || wanted.some((name) => sameId(name, d.schemaname)))
-          .map((d) => ({ ...d, value: currentValue(store, d) }));
+          .map((d) => ({ ...d, value: listedValue(c, d) }));
         return {
           status: 200,
           body: { '@odata.context': contextUrl(c.origin, c.version, 'environmentvariabledefinitions'), value: rows },
@@ -487,50 +579,15 @@ function operations(api) {
       handle: async (c) => {
         need(c, ENV_DEFINITION, 'Write');
         const args = argsOf(c);
-        const schemaName = requiredText(args.SchemaName, 'SchemaName');
-        const type = Number(args.Type);
-        if (args.Type === undefined || args.Type === null || !ENV_TYPES.has(type))
-          throw invalid('Type must be one of the environment variable types.');
-        if (args.SecretStore !== undefined && args.SecretStore !== null && Number(args.SecretStore) !== KEY_VAULT) {
-          throw invalid('SecretStore must be 0, the Key Vault store.');
-        }
+        const { schemaName, type } = upsertInputOf(args);
         if (args.Value !== undefined) need(c, ENV_VALUE, 'Write');
-        const organizationId = organizationRecord(store)?.organizationid ?? ZERO_GUID;
-        await write(() => {
-          const definitions = tableOf(store, ENV_DEFINITION);
-          let definition = definitionNamed(store, schemaName);
-          if (!definition) {
-            definition = {
-              environmentvariabledefinitionid: uuidV5(organizationId, `${ENV_DEFINITION}:${schemaName.toLowerCase()}`),
-              schemaname: schemaName,
-              statecode: 0,
-              statuscode: 1,
-            };
-            definitions.push(definition);
-          }
-          const set = (field, value) => {
-            if (value !== undefined) definition[field] = value;
-          };
-          set('displayname', args.DisplayName);
-          definition.type = type;
-          set('defaultvalue', args.DefaultValue);
-          set('secretstore', args.SecretStore === undefined || args.SecretStore === null ? undefined : KEY_VAULT);
-          set('parameterkey', args.ParameterKey);
-          set('apiid', args.ApiId);
-          if (args.Value !== undefined) {
-            let row = valueOf(store, definition.environmentvariabledefinitionid);
-            if (!row) {
-              row = {
-                environmentvariablevalueid: uuidV5(definition.environmentvariabledefinitionid, ENV_VALUE),
-                environmentvariabledefinitionid: ref(ENV_DEFINITION, definition.environmentvariabledefinitionid),
-                schemaname: schemaName,
-                statecode: 0,
-                statuscode: 1,
-              };
-              tableOf(store, ENV_VALUE).push(row);
-            }
-            row.value = args.Value;
-          }
+        const definition = definitionNamed(store, schemaName);
+        authorizeUpsert(c, ENV_DEFINITION, definition);
+        const valueRow = definition ? valueRowOf(store, definition.environmentvariabledefinitionid) : null;
+        if (args.Value !== undefined) authorizeUpsert(c, ENV_VALUE, valueRow);
+        await write(async () => {
+          const id = await upsertDefinition(c, schemaName, definition, definitionFieldsOf(args, type));
+          if (args.Value !== undefined) await upsertValue(c, id, schemaName, args.Value);
         });
         return { status: 204 };
       },
@@ -562,6 +619,8 @@ function operations(api) {
           throw new DataError(`${ENV_DEFINITION} With SchemaName = ${name} Does Not Exist`, 404, 'NotFound', {
             innerCode: '0x80040217',
           });
+        authorizeRead(c, ENV_DEFINITION, definition);
+        const reference = singleValue(c, definition);
         const secrets = api.secrets ?? null;
         if (!secrets)
           throw new DataError(
@@ -572,7 +631,7 @@ function operations(api) {
           );
         if (Number(definition.type) !== 100000005 || Number(definition.secretstore ?? KEY_VAULT) !== KEY_VAULT)
           throw invalid(`${name} is not a Key Vault Secret environment variable.`); // code and wording are guesses
-        const answer = await secrets.resolve(currentValue(store, definition), {
+        const answer = await secrets.resolve(reference, {
           principalId: (c.caller ?? c.user)?.systemuserid,
           purpose: 'RetrieveEnvironmentVariableSecretValue',
         });

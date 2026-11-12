@@ -1,8 +1,9 @@
+// @test-kind contract: Paqvilo's own compilation of custom connector definitions and the blocking diagnostics it names
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { inventoryEntry, mergeInventory } from '../lib/solution-inventory.mjs';
-import { customConnectorsOf, buildRequest } from '../lib/custom-connector.mjs';
+import { compileConnector, compileOpenApi, customConnectorsOf, buildRequest } from '../lib/custom-connector.mjs';
 import { createConnectorRuntime, connectionSettings } from '../lib/connector-runtime.mjs';
 import { scriptHash } from '../lib/custom-connector-script.mjs';
 import fs from 'node:fs';
@@ -304,6 +305,7 @@ test('an unsupported policy blocks the connector; a script operation without the
   );
 });
 
+// @test-kind security: a literal credential cannot be stored in connection settings
 test('a literal credential in connection settings is rejected', () => {
   assert.throws(() => connectionSettings({ fx: { settings: { auth: { apiKey: 'literal-key' } } } }), /references only/);
   assert.throws(
@@ -318,4 +320,23 @@ test('a literal credential in connection settings is rejected', () => {
       },
     }),
   );
+});
+
+test('a definition whose parameters or consumes is not an array is blocked by a named diagnostic, not a thrown error', () => {
+  const pathParametersNotList = {
+    swagger: '2.0',
+    host: 'service.invalid',
+    paths: { '/a': { parameters: {}, get: { operationId: 'x' } } },
+  };
+  const consumesNotList = {
+    swagger: '2.0',
+    host: 'service.invalid',
+    paths: {
+      '/a': { post: { operationId: 'x', consumes: 'application/json', parameters: [{ name: 'b', in: 'body' }] } },
+    },
+  };
+  for (const document of [pathParametersNotList, consumesNotList]) {
+    const compiled = compileConnector({ name: 'Invalid_Definition', compiled: compileOpenApi(document) });
+    assert.equal(compiled.blocked.code, 'CONNECTOR_OPENAPI_INVALID');
+  }
 });

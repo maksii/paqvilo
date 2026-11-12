@@ -11,6 +11,7 @@
 import sanitize from 'sanitize-html';
 import { parseFragment, serializeOuter } from 'parse5';
 import { stripTrailingCharacter } from './text-scanning.mjs';
+import { clockFunction, systemClock } from './runtime-clock.mjs';
 import {
   LiquidError,
   NetDecimal,
@@ -839,7 +840,84 @@ function validateObservedTimes(input, operand) {
 }
 
 /** `this` is the LiquidContext for every filter. */
+// The currency of each culture the portal ships resources for (liquid-resx.mjs) and of en-US. currency(value, tag) formats
+// in these cultures; a culture outside the table is refused. Keys are lowercase, as .NET culture names compare.
+const CULTURE_CURRENCIES = new Map(
+  Object.entries({
+    'en-US': 'USD',
+    'bg-BG': 'BGN',
+    'ca-ES': 'EUR',
+    'cs-CZ': 'CZK',
+    'da-DK': 'DKK',
+    'de-DE': 'EUR',
+    'el-GR': 'EUR',
+    'es-ES': 'EUR',
+    'et-EE': 'EUR',
+    'eu-ES': 'EUR',
+    'fi-FI': 'EUR',
+    'fr-FR': 'EUR',
+    'gl-ES': 'EUR',
+    'hi-IN': 'INR',
+    'hr-HR': 'EUR',
+    'hu-HU': 'HUF',
+    'id-ID': 'IDR',
+    'it-IT': 'EUR',
+    'ja-JP': 'JPY',
+    'kk-KZ': 'KZT',
+    'ko-KR': 'KRW',
+    'lt-LT': 'EUR',
+    'lv-LV': 'EUR',
+    'ms-MY': 'MYR',
+    'nb-NO': 'NOK',
+    'nl-NL': 'EUR',
+    'pl-PL': 'PLN',
+    'pt-BR': 'BRL',
+    'pt-PT': 'EUR',
+    'ro-RO': 'RON',
+    'ru-RU': 'RUB',
+    'sk-SK': 'EUR',
+    'sl-SI': 'EUR',
+    'sr-Cyrl-CS': 'CSD',
+    'sr-Cyrl-RS': 'RSD',
+    'sr-Latn-CS': 'CSD',
+    'sr-Latn-RS': 'RSD',
+    'sv-SE': 'SEK',
+    'th-TH': 'THB',
+    'tr-TR': 'TRY',
+    'uk-UA': 'UAH',
+    'vi-VN': 'VND',
+    'zh-CN': 'CNY',
+    'zh-HK': 'HKD',
+    'zh-TW': 'TWD',
+  }).map(([culture, code]) => [culture.toLowerCase(), code]),
+);
+
+/** The number a currency filter formats: a number, or a numeric string (currency symbols and spaces ignored); null otherwise. */
+function currencyAmount(input) {
+  if (isNumber(input)) return Number(input);
+  try {
+    return toNetDecimal(String(input).replace(/[$\s]/g, '')).valueOf();
+  } catch {
+    return null;
+  }
+}
+
+/** currency(value, tag) for a culture: the culture's currency pattern from Intl, as the .NET CultureInfo lookup refuses an unknown culture. */
+function currencyInCulture(input, tag) {
+  const currency = CULTURE_CURRENCIES.get(tag.toLowerCase());
+  if (!currency)
+    throw new LiquidError(
+      `Culture is not supported.\r\nParameter name: name\r\nActual value was ${tag}.`,
+      'System.Globalization.CultureNotFoundException',
+    );
+  const amount = currencyAmount(input);
+  if (amount === null) return formatItem(input);
+  return new Intl.NumberFormat(tag, { style: 'currency', currency }).format(amount);
+}
+
 export function createFilters(host = {}) {
+  // host.clock is the runtime clock (wall time when absent): the date filter's now and today, and time-only values.
+  const clock = clockFunction(host.clock ?? systemClock);
   const filters = {
     // ---- DotLiquid StandardFilters (DotLiquid20)
     size: (input) => {
@@ -1026,10 +1104,10 @@ export function createFilters(host = {}) {
       const value = formatItem(input);
       let date;
       if (/^(now|today)$/i.test(value)) {
-        date = new Date();
+        date = new Date(clock());
         if (isNullOrWhiteSpace(pattern)) return dateToNetString(date);
       } else {
-        date = parseNetDate(value);
+        date = parseNetDate(value, { clock });
         if (!date) return value;
       }
       if (isNullOrWhiteSpace(pattern)) return value;
@@ -1160,7 +1238,9 @@ export function createFilters(host = {}) {
     },
     currency(input, languageTag) {
       if (input == null) return null;
-      void languageTag; // NOSONAR: void is intentional here
+      const tag = languageTag == null ? '' : asString(languageTag);
+      // en-US uses the .NET en-US pattern that the tag-less path formats with, so both paths agree.
+      if (tag && tag.toLowerCase() !== 'en-us') return currencyInCulture(input, tag);
       if (isNumber(input)) return formatNumberString(input, 'C');
       try {
         return formatNumberString(toNetDecimal(String(input).replace(/[$\s]/g, '')), 'C');

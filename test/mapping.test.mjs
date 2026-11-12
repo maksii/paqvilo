@@ -3,12 +3,15 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import fs from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { PortalModel, sourceText } from '../lense/portal-model.mjs';
 import { Resolver, globToRegExp } from '../lense/resolver.mjs';
 import { GitBaseline } from '../lense/git.mjs';
 import { diffLines } from '../lense/line-diff.mjs';
 import { createFixture, SITE, HOME_ID, ABOUT_ID, tempDirSync } from './fixture.mjs';
+
+const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
 
 const fx = createFixture();
 after(() => fx.cleanup());
@@ -371,4 +374,31 @@ test('changed classic portal metadata reports deployment needs without flagging 
   assert.equal(changes.length, 1);
   assert.equal(changes[0].rel, 'web-pages/about/About.webpage.yml');
   assert.match(changes[0].reason, /require deployment/);
+});
+
+// @test-kind contract: map --check reports every failed online URL as a coded error that names the URL it could not inspect.
+test('map --check --json reports each unreachable URL as an error with its code and path', (t) => {
+  const dir = tempDirSync('paqvilo-map-check-');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const config = path.join(dir, 'paqvilo.config.json');
+  fs.writeFileSync(
+    config,
+    JSON.stringify({ sites: { sample: { source: fx.dir, environments: { local: 'http://127.0.0.1:9' } } } }),
+  );
+  const cli = fileURLToPath(new URL('../lense/cli.mjs', import.meta.url));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:PAQVILO_|GIT_)/.test(key)));
+  const result = spawnSync(process.execPath, [cli, 'map', '--check', '--no-write', '--json', '--config', config], {
+    env,
+    encoding: 'utf8',
+    windowsHide: true,
+    timeout: CLI_HANG_GUARD_MS,
+  });
+  const report = JSON.parse(result.stdout);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.equal(report.ok, false);
+  assert.ok(report.errors.length > 0, result.stdout);
+  for (const error of report.errors) {
+    assert.equal(typeof error.code, 'string');
+    assert.match(error.path, /^\//);
+  }
 });

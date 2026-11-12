@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own local-service declarations, probe bounds (the shared idle window, or the caller's timeoutMs) and capability records.
 // localServices: loopback-only validation, probes against a loopback stub, a closed port and a redirect, the
 // Service Bus declaration without printing its connection string, and the capability records.
 import test from 'node:test';
@@ -5,6 +6,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import net from 'node:net';
 import { localServiceSettings, preflightLocalServices, describeLocalServices } from '../lib/local-services.mjs';
+import { PREFLIGHT_IDLE_TIMEOUT_MS } from '../lib/storage-provider.mjs';
 
 async function stub(t, handler) {
   const server = http.createServer(handler);
@@ -23,6 +25,7 @@ async function closedPort() {
   return port;
 }
 
+// @test-kind security: local services must be loopback and cannot carry connection strings
 test('the validator accepts loopback services and rejects other hosts, connection strings and unknown keys', () => {
   const settings = localServiceSettings({
     functions: { kind: 'http', baseUrl: 'http://localhost:7071', probe: '/admin/host/status', required: true },
@@ -65,6 +68,7 @@ test('the validator accepts loopback services and rejects other hosts, connectio
   );
 });
 
+// @test-kind security: a service URL cannot carry credentials
 test('baseUrl and blob reject credentials, query strings and fragments', () => {
   for (const baseUrl of [
     'http://u:p@localhost:7071',
@@ -116,6 +120,7 @@ test('preflight reports a loopback stub, a closed port and a refused redirect wi
   assert.match(byId.moved.message, /redirect/);
 });
 
+// @test-kind security: a redirect away from the loopback service is refused
 test('an injected fetch that returns a redirect response is still refused', async () => {
   const [result] = await preflightLocalServices(
     { fx: { kind: 'http', baseUrl: 'http://localhost:9' } },
@@ -130,6 +135,7 @@ test('invalid settings answer one result instead of throwing', async () => {
   assert.match(result.message, /localhost/);
 });
 
+// @test-kind security: a declaration never reports its connection string
 test('a Service Bus declaration never reports its connection string', async () => {
   const secret =
     'Endpoint=sb://fx.example.test;SharedAccessKeyName=k;SharedAccessKey=fx-sb-key;UseDevelopmentEmulator=true';
@@ -165,4 +171,53 @@ test('describeLocalServices answers contract-level external-process capability r
       },
     ],
   );
+});
+
+// A fetch that answers after delayMs on the mocked clock, or never when delayMs is null; an abort ends it with the signal's reason.
+function mockedFetch(delayMs) {
+  return (href, { signal }) =>
+    new Promise((resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      if (delayMs !== null) setTimeout(() => resolve(new Response(null, { status: 200 })), delayMs);
+    });
+}
+
+test('a local service that answers after 10 mocked seconds is ready under the default idle window', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const probe = preflightLocalServices(
+    { slow: { kind: 'http', baseUrl: 'http://127.0.0.1:7071' } },
+    { fetch: mockedFetch(10_000) },
+  );
+  t.mock.timers.tick(10_000);
+  const [result] = await probe;
+  assert.deepEqual([result.reachable, result.status], [true, 200], result.message);
+});
+
+test('a silent local service is reported not ready when the default idle window ends, not at a fixed 2 s bound', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let settled = false;
+  const probe = preflightLocalServices(
+    { silent: { kind: 'http', baseUrl: 'http://127.0.0.1:7071' } },
+    { fetch: mockedFetch(null) },
+  ).then((results) => {
+    settled = true;
+    return results;
+  });
+  t.mock.timers.tick(PREFLIGHT_IDLE_TIMEOUT_MS - 1);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false, 'the idle window has not ended one millisecond early');
+  t.mock.timers.tick(1);
+  const [result] = await probe;
+  assert.equal(result.reachable, false);
+  assert.match(result.message, /no answer within 30000 ms/);
+});
+
+test('an explicit timeoutMs still bounds the probe of a silent local service', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const [result] = await preflightLocalServices(
+    { silent: { kind: 'http', baseUrl: 'http://127.0.0.1:7071' } },
+    { fetch: mockedFetch(null), timeoutMs: 50 },
+  );
+  assert.equal(result.reachable, false);
+  assert.match(result.message, /no answer within 50 ms/);
 });

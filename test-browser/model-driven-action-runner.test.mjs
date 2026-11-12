@@ -300,48 +300,31 @@ test('client overrides restore exact states and autosave guard blocks only 70 wi
 });
 
 // @test-kind contract: late server results cancel after record navigation and retired, foreign or unowned sessions cannot execute
-test(
-  'late server results cancel after record navigation and retired, foreign or unowned sessions cannot execute',
-  { timeout: 60_000 },
-  async (t) => {
-    const { page, origin, waits } = await fixture(t);
-    const blocked = {};
-    const requested = new Promise((resolve) => {
-      blocked.requested = resolve;
-    });
-    waits.set('record', blocked);
-    const pending = page.evaluate(runModelDrivenAction, {
-      origin,
-      token: 'invented-owned-session',
-      action: 'form:all-fields',
-      params: {},
-      requestId: 'slow',
-    });
-    await page.waitForFunction(() => window.nativeFixture.idReads > 1);
-    await requested;
-    await page.evaluate(() => (window.nativeFixture.id = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'));
-    blocked.release();
-    assert.deepEqual(await pending, { accepted: true, requestId: 'slow' });
-    const outcome = await page.evaluate(
-      () => document.getElementById('paqvilo-model-inspector').__paqModelActions.results.at(-1).result,
-    );
-    assert.equal(outcome.status, 'cancelled');
-    assert.doesNotMatch(JSON.stringify(outcome), /PRIVATE_/);
-    for (const extra of [{ token: 'foreign' }, { origin: 'https://foreign.invalid' }])
-      assert.equal(
-        (
-          await page.evaluate(runModelDrivenAction, {
-            origin,
-            token: 'invented-owned-session',
-            action: 'form:record-id',
-            params: {},
-            requestId: 'denied',
-            ...extra,
-          })
-        ).accepted,
-        false,
-      );
-    await page.evaluate(() => (window.__paqviloRetiredModelInspectors = ['invented-owned-session']));
+test('late server results cancel after record navigation and retired, foreign or unowned sessions cannot execute', async (t) => {
+  const { page, origin, waits } = await fixture(t);
+  const blocked = {};
+  const requested = new Promise((resolve) => {
+    blocked.requested = resolve;
+  });
+  waits.set('record', blocked);
+  const pending = page.evaluate(runModelDrivenAction, {
+    origin,
+    token: 'invented-owned-session',
+    action: 'form:all-fields',
+    params: {},
+    requestId: 'slow',
+  });
+  await page.waitForFunction(() => window.nativeFixture.idReads > 1);
+  await requested;
+  await page.evaluate(() => (window.nativeFixture.id = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'));
+  blocked.release();
+  assert.deepEqual(await pending, { accepted: true, requestId: 'slow' });
+  const outcome = await page.evaluate(
+    () => document.getElementById('paqvilo-model-inspector').__paqModelActions.results.at(-1).result,
+  );
+  assert.equal(outcome.status, 'cancelled');
+  assert.doesNotMatch(JSON.stringify(outcome), /PRIVATE_/);
+  for (const extra of [{ token: 'foreign' }, { origin: 'https://foreign.invalid' }])
     assert.equal(
       (
         await page.evaluate(runModelDrivenAction, {
@@ -349,13 +332,26 @@ test(
           token: 'invented-owned-session',
           action: 'form:record-id',
           params: {},
-          requestId: 'retired',
+          requestId: 'denied',
+          ...extra,
         })
       ).accepted,
       false,
     );
-  },
-);
+  await page.evaluate(() => (window.__paqviloRetiredModelInspectors = ['invented-owned-session']));
+  assert.equal(
+    (
+      await page.evaluate(runModelDrivenAction, {
+        origin,
+        token: 'invented-owned-session',
+        action: 'form:record-id',
+        params: {},
+        requestId: 'retired',
+      })
+    ).accepted,
+    false,
+  );
+});
 
 test('native identity reads use exact privilege names and bounded active-user queries with browser-only choices', async (t) => {
   const { page, run, requests } = await fixture(t);

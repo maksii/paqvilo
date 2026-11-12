@@ -8,8 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
-import { createSimulator } from '../server.mjs';
-import { signInContext } from '../testing/session.mjs';
+import { signedInSimulatorPage } from './shared-browser.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 let browser;
@@ -124,14 +123,7 @@ test('$pages forms bind to the rendered basic form: tabs, sections, values, visi
       },
     },
   };
-  const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, 'state.json'), initial, watch: false });
-  ownedFixture(t).add(() => app.close());
-  const context = await browser.newContext();
-  ownedFixture(t).add(() => context.close());
-  await signInContext(context, app, CONTACT, { roles: ['Member'] });
-  const page = await context.newPage();
-  const errors = [];
-  page.on('pageerror', (error) => errors.push(error.message));
+  const { app, page, errors } = await signedInSimulatorPage(t, browser, { dir, initial, contact: CONTACT });
   await page.route('**/*', (route) => (route.request().url().startsWith(app.url) ? route.continue() : route.abort()));
   await page.goto(`${app.url}/?id=${ROW}`);
 

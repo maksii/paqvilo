@@ -1,3 +1,4 @@
+import { isDateOnlyFormat } from '../date-only-format.mjs';
 // Trusted, exported standard field components. This adapter deliberately has no
 // native credentials or remote service fallback; unsupported APIs fail visibly.
 const loaded = new Map();
@@ -15,8 +16,7 @@ const scalarType = (type) =>
   /* NOSONAR */ /^(?:SingleLine\.(?:Text|TextArea|Email|Phone|URL|Ticker)|Multiple|Whole\.(?:None|Duration|TimeZone|Language)|Decimal|FP|Currency|Enum|OptionSet|TwoOptions|DateAndTime\.(?:DateAndTime|DateOnly))$/i.test(
     type ?? '',
   );
-const dateOnly = (field) =>
-  String(field?.format).toLowerCase() === 'dateonly' || field?.dateTimeBehavior === 'DateOnly';
+const dateOnly = (field) => isDateOnlyFormat(field?.format) || field?.dateTimeBehavior === 'DateOnly';
 const pad = (value) => String(value).padStart(2, '0');
 const wallDate = (date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 function rawDate(source, field) {
@@ -133,18 +133,12 @@ function resource(url, kind) {
       element.href = parsed.href;
     }
     const promise = new Promise((resolve, reject) => {
-      let timer;
-      element.onload = () => {
-        clearTimeout(timer);
-        resolve();
-      };
+      element.onload = () => resolve();
       element.onerror = () => {
-        clearTimeout(timer);
         element.remove();
         loaded.delete(key);
         reject(new Error(`Unable to load local PCF ${kind} resource.`));
       };
-      timer = setTimeout(element.onerror, 15000);
       document.head.append(element);
     });
     loaded.set(key, promise);
@@ -624,14 +618,18 @@ export function renderPcfControl(field, initialValue, options = {}) {
     for (const property of properties)
       refreshPcfParameter(context, property, bindings, field, value, options, disabled);
   }
+  const pendingChanges = new Set();
   function schedule(changed) {
+    for (const name of changed) pendingChanges.add(name);
     if (destroyed || failed || updateQueued) return;
     updateQueued = true;
     queueMicrotask(() => {
       updateQueued = false;
+      const batch = [...pendingChanges];
+      pendingChanges.clear();
       if (destroyed || failed || !instance) return;
       try {
-        refresh(changed);
+        refresh(batch);
         show(instance.updateView(context));
       } catch (error) {
         showError(error);
@@ -876,14 +874,18 @@ export function renderCanvasPcfControl(definition, initialProperties, options = 
     }
     context.parameters = next;
   }
+  const pendingChanges = new Set();
   function schedule(changed) {
+    for (const name of changed) pendingChanges.add(name);
     if (queued || destroyed || failed) return;
     queued = true;
     queueMicrotask(() => {
       queued = false;
+      const batch = [...pendingChanges];
+      pendingChanges.clear();
       if (!instance || destroyed || failed) return;
       try {
-        refresh(changed);
+        refresh(batch);
         trace('updateView');
         const result = instance.updateView(context);
         view?.render(result);
@@ -1064,6 +1066,7 @@ export function createDatasetHost({
       hasNextPage: false,
       hasPreviousPage: false,
       pageSize,
+      pageNumber: 1,
       firstPageNumber: 1,
       lastPageNumber: 1,
       setPageSize: (size) => {
@@ -1162,7 +1165,8 @@ export function createDatasetHost({
         pageSize,
         hasPreviousPage: page > 1,
         hasNextPage: total >= 0 ? page * pageSize < total : Boolean(result.more),
-        firstPageNumber: 1,
+        pageNumber: page,
+        firstPageNumber: page,
         lastPageNumber: total >= 0 ? Math.max(1, Math.ceil(total / pageSize)) : page,
       });
     } catch (error) {

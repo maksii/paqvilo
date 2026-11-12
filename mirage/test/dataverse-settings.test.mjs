@@ -478,3 +478,44 @@ test('managed identity endpoint modes are validated and survive configuration no
   ])
     assert.throws(() => dataverseSettings({ managedIdentity }), message);
 });
+
+test('spaRedirectUris default to none and survive normalization for a public client', () => {
+  const app = { appId: APP, displayName: 'Invented single-page', publicClient: true };
+  assert.deepEqual(dataverseSettings({ applications: [app] }).applications[0].spaRedirectUris, []);
+  const settings = dataverseSettings({
+    applications: [{ ...app, spaRedirectUris: ['http://localhost:2/callback'] }],
+  });
+  assert.deepEqual(settings.applications[0].spaRedirectUris, ['http://localhost:2/callback']);
+  assert.deepEqual(dataverseSettings(JSON.parse(JSON.stringify(settings))), settings);
+});
+
+test('spaRedirectUris are http(s) URLs without a fragment or a wildcard, and need a public client', () => {
+  const app = (fields) => ({ applications: [{ appId: APP, displayName: 'x', publicClient: true, ...fields }] });
+  const cases = [
+    [
+      { spaRedirectUris: 'http://localhost:2/callback' },
+      /dataverse\.applications\[0\]\.spaRedirectUris must be an array/,
+    ],
+    [
+      { spaRedirectUris: ['ftp://localhost:2/callback'] },
+      /dataverse\.applications\[0\]\.spaRedirectUris\[0\] must be an http\(s\) URL/,
+    ],
+    [
+      { spaRedirectUris: ['http://localhost:2/callback#token'] },
+      /dataverse\.applications\[0\]\.spaRedirectUris\[0\] must not contain a fragment/,
+    ],
+    [
+      { spaRedirectUris: ['http://*.localhost:2/callback'] },
+      /dataverse\.applications\[0\]\.spaRedirectUris\[0\] must not contain a wildcard/,
+    ],
+  ];
+  for (const [fields, pattern] of cases)
+    assert.throws(() => dataverseSettings(app(fields)), pattern, JSON.stringify(fields));
+  assert.throws(
+    () =>
+      dataverseSettings({
+        applications: [{ appId: APP, displayName: 'x', spaRedirectUris: ['http://localhost:2/callback'] }],
+      }),
+    /dataverse\.applications\[0\]\.spaRedirectUris requires publicClient: true/,
+  );
+});

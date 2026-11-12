@@ -153,15 +153,20 @@ export function codeApps(options = {}) {
         const port = server.httpServer?.address()?.port;
         const scheme = server.config.server.https ? 'https:' : 'http:';
         const hosts = ['127.0.0.1', 'localhost', '[::1]'].map((host) => `${host}:${port}`);
+        // A cross-site fetch is refused here: the metadata stripped below would otherwise make it look programmatic.
+        const fetchSite = req.headers['sec-fetch-site'];
         if (
           !hosts.includes(req.headers.host) ||
-          (req.headers.origin && req.headers.origin !== `${scheme}//${req.headers.host}`)
+          (req.headers.origin && req.headers.origin !== `${scheme}//${req.headers.host}`) ||
+          (fetchSite !== undefined && !['same-origin', 'same-site', 'none'].includes(fetchSite))
         ) {
           res.writeHead(403);
           res.end('Invalid Code Apps proxy origin');
           return;
         }
-        if (req.headers.origin) req.headers.origin = origin;
+        // The browser's origin and fetch-metadata headers describe the page, not the proxied call: the target sees none.
+        for (const name of ['origin', 'sec-fetch-site', 'sec-fetch-mode', 'sec-fetch-dest', 'sec-fetch-user'])
+          delete req.headers[name];
         next();
       });
       configFile = path.resolve(server.config.root, options.config ?? 'power.config.json');

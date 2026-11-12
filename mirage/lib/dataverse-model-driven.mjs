@@ -262,7 +262,8 @@ export function createModelDrivenRecordService({
     );
   const request = (method, entity, id, options = {}, body) => {
     const mapping = store.resolveMapping(entity),
-      url = new URL(`/api/data/v9.2/${mapping.entitySet}${id ? `(${id})` : ''}`, origin()); // NOSONAR: template coercion is intentional
+      // The listener that received the read names its origin in the links it returns (options.origin), else the host's.
+      url = new URL(`/api/data/v9.2/${mapping.entitySet}${id ? `(${id})` : ''}`, options.origin ?? origin()); // NOSONAR: template coercion is intentional
     if (options.fetchXml) url.searchParams.set('fetchXml', options.fetchXml);
     if (options.query) url.search = options.query;
     return records.handle({

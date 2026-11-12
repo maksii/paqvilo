@@ -2,9 +2,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { parseToolArgs } from './tool-options.mjs';
+import { assertToolOptions } from './tool-registry.mjs';
 import { fileURLToPath } from 'node:url';
 import { LiveBridge, validateLivePath } from './lib/live.mjs';
 import { createPortalSession } from './testing/sessions.mjs';
+import { fetchLocalState } from './lib/local-state-fetch.mjs';
 
 const hash = (value) =>
   createHash('sha256')
@@ -179,11 +181,10 @@ export function normalizeContract(body, contract) {
   if (!outputDir) throw new Error('Supply an ignored evidence output directory.');
   validateVisitorOptions(localSession, localVisitor, local.origin);
   const readState = async () => {
-    const response = await fetch(local.origin + '/__sim/api/state', {
+    const response = await fetchLocalState(local.origin + '/__sim/api/state', {
       redirect: 'error',
       signal: AbortSignal.timeout(30000),
     });
-    if (!response.ok) throw new Error('Local runtime state is unavailable.');
     const state = await response.json();
     if (
       state.config?.mode !== 'local' ||
@@ -318,6 +319,7 @@ export function normalizeContract(body, contract) {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const values = parseToolArgs('reference-parity', process.argv.slice(2));
+    assertToolOptions('reference-parity', values, ['local', 'origin', 'cdp']);
     const localVisitor =
       values['local-contact'] !== undefined || values['local-role'] !== undefined || values['local-configured-persona']
         ? {

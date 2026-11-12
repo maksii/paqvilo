@@ -17,7 +17,12 @@ import { ownsChange, runOwned, runAtomic } from './dataverse-transaction-context
 import { clockFunction, storeScheduler, systemClock, systemIds } from './runtime-clock.mjs';
 import { collectPackExport } from './pack-exports.mjs';
 import { createCounters } from './runtime-counters.mjs';
-import { QUEUE_MESSAGE_MAPPING, QUEUE_MESSAGE_TABLE } from './message-bus.mjs';
+import {
+  QUEUE_MESSAGE_MAPPING,
+  QUEUE_MESSAGE_TABLE,
+  QUEUE_SEQUENCE_MAPPING,
+  QUEUE_SEQUENCE_TABLE,
+} from './message-bus.mjs';
 import { OUTBOX_MAPPING, OUTBOX_TABLE } from './outbox.mjs';
 import { FLOW_RUN_TABLE } from './flow-runs.mjs';
 
@@ -35,6 +40,7 @@ const ZERO_GUID = '00000000-0000-0000-0000-000000000000';
 // Async operations (asyncoperation) are a seeded security-model table already.
 const INTERNAL_TABLE_MAPPINGS = Object.freeze({
   [QUEUE_MESSAGE_TABLE]: QUEUE_MESSAGE_MAPPING,
+  [QUEUE_SEQUENCE_TABLE]: QUEUE_SEQUENCE_MAPPING,
   [OUTBOX_TABLE]: OUTBOX_MAPPING,
   [FLOW_RUN_TABLE]: null,
 });
@@ -66,6 +72,7 @@ function seedRegistrations(store, settings, ids, clock) {
     const registration = {
       publicClient: app.publicClient ?? false,
       redirectUris: app.redirectUris ?? [],
+      spaRedirectUris: app.spaRedirectUris ?? [],
       // Stored as configured (short names); dataverse-settings grantAllowed maps them at the token endpoint.
       allowedGrants: app.allowedGrants,
       federatedCredentials: app.federatedCredentials ?? [],

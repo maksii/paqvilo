@@ -2,7 +2,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { tempDirSync } from './fixture.mjs';
 import { analyzeDataverse, dataverseRules } from '../lense/analysis/dataverse-rules.mjs';
+import { analyzeProject } from '../lense/analysis/index.mjs';
+
+const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
 
 const entry = (file, text, rootId = 'invented') => ({ file, relativeFile: file, rootId, text });
 const xml = (text, file = 'Other/Solution.xml', rootId) => entry(file, text, rootId);
@@ -126,6 +132,22 @@ test('literal secret defaults warn, but client IDs and Key Vault references do n
   );
 });
 
+test('a literal secret taken from a selected current value is reported on the file that holds it', () => {
+  const secretDefinition = xml(
+    '<environmentvariabledefinition schemaname="invented_secret"><type>100000000</type></environmentvariabledefinition>',
+    'environmentvariabledefinitions/invented_secret/environmentvariabledefinition.xml',
+  );
+  const settings = json(
+    { EnvironmentVariables: [{ SchemaName: 'invented_secret', Value: 'invented-literal' }], ConnectionReferences: [] },
+    'deploymentSettings.json',
+  );
+  const result = inspect([secretDefinition, settings]);
+  assert.deepEqual(
+    result.findings.filter((finding) => finding.ruleId === 'DV-ENV-001').map((finding) => finding.file),
+    ['deploymentSettings.json'],
+  );
+});
+
 test('connection IDs stay target-owned hints without asserting the target is missing', () => {
   const result = inspect([
     json(
@@ -176,6 +198,27 @@ test('Create has no pre-image and Delete has no post-image', () => {
   }
 });
 
+test('exported plug-in steps name their message from the well-known SdkMessageId', () => {
+  const create = '9ebdbb1b-ea3e-db11-86a7-000a3a5473e8';
+  const update = '20bebb1b-ea3e-db11-86a7-000a3a5473e8';
+  const deleteId = 'a1bdbb1b-ea3e-db11-86a7-000a3a5473e8';
+  const unknown = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
+  const image = (type) =>
+    `<SdkMessageProcessingStepImages><SdkMessageProcessingStepImage><ImageType>${type}</ImageType><Attributes>invented_name</Attributes></SdkMessageProcessingStepImage></SdkMessageProcessingStepImages>`;
+  const step = (messageId, body = '') =>
+    pluginStep(`<SdkMessageId>${messageId}</SdkMessageId><Stage>40</Stage><Mode>0</Mode>${body}`);
+  assert.deepEqual(inspect([step(update)]).ids, ['DV-PLUGIN-001']);
+  assert.deepEqual(inspect([step(create, image(0))]).ids, ['DV-PLUGIN-004']);
+  assert.deepEqual(inspect([step(deleteId, image(1))]).ids, ['DV-PLUGIN-004']);
+  assert.deepEqual(inspect([step(update, '<FilteringAttributes>invented_name</FilteringAttributes>')]).ids, []);
+  assert.deepEqual(inspect([step(unknown, image(0))]).ids, []);
+  assert.deepEqual(
+    inspect([pluginStep(`<SdkMessageName>Create</SdkMessageName><SdkMessageId>${update}</SdkMessageId>${image(0)}`)])
+      .ids,
+    ['DV-PLUGIN-004'],
+  );
+});
+
 test('form library binding uses declared resource identity and respects root isolation', () => {
   const form = xml(
     '<systemform><form><events><event><Handlers><Handler libraryName="invented_script.js" functionName="Handlers.load" enabled="true"/></Handlers></event></events></form></systemform>',
@@ -188,6 +231,62 @@ test('form library binding uses declared resource identity and respects root iso
   assert.deepEqual(inspect([form]).ids, ['DV-MODEL-001']);
   assert.deepEqual(inspect([form, resource]).ids, []);
   assert.deepEqual(inspect([form, { ...resource, rootId: 'other' }]).ids, ['DV-MODEL-001']);
+});
+
+test('unpacked form files take their table from the Entities folder for column checks', () => {
+  const table = entityXml(
+    '<EntityInfo><entity Name="invented_table"><attributes><attribute PhysicalName="a"><LogicalName>a</LogicalName></attribute></attributes></entity></EntityInfo>',
+  );
+  const form = (column) =>
+    xml(
+      `<forms><systemform><form><control datafieldname="${column}"/></form></systemform></forms>`,
+      'Entities/invented_table/FormXml/main/invented.xml',
+    );
+  const missing = inspect([table, form('b')]);
+  assert.deepEqual(missing.ids, ['DV-MODEL-003']);
+  assert.equal(missing.findings[0].file, 'Entities/invented_table/FormXml/main/invented.xml');
+  assert.deepEqual(inspect([table, form('a')]).ids, []);
+});
+
+test('standard table forms report only columns neither the sources nor the standard table reference declare', () => {
+  const controls = (columns) => columns.map((column) => `<control datafieldname="${column}"/>`).join('');
+  const attributes =
+    '<EntityInfo><entity Name="account"><attributes><attribute PhysicalName="new_custom"><LogicalName>new_custom</LogicalName></attribute></attributes></entity></EntityInfo>';
+  const accountEntity = xml(`<Entity><Name>account</Name>${attributes}</Entity>`, 'Entities/account/Entity.xml');
+  const unpacked = (columns) =>
+    xml(
+      `<forms><systemform><form>${controls(columns)}</form></systemform></forms>`,
+      'Entities/account/FormXml/main/invented.xml',
+    );
+  const embedded = (columns) =>
+    xml(
+      `<Entity><Name>account</Name>${attributes}<FormXml><forms><systemform><form>${controls(columns)}</form></systemform></forms></FormXml></Entity>`,
+      'Entities/account/Entity.xml',
+    );
+  assert.deepEqual(inspect([accountEntity, unpacked(['telephone1', 'new_custom'])]).ids, []);
+  assert.deepEqual(inspect([accountEntity, unpacked(['telephone1', 'new_doesnotexist'])]).ids, ['DV-MODEL-003']);
+  assert.deepEqual(inspect([embedded(['telephone1', 'new_custom'])]).ids, []);
+  assert.deepEqual(inspect([embedded(['telephone1', 'new_doesnotexist'])]).ids, ['DV-MODEL-003']);
+  const customTable = entityXml(
+    '<EntityInfo><entity Name="invented_table"><attributes><attribute PhysicalName="a"><LogicalName>a</LogicalName></attribute></attributes></entity></EntityInfo>',
+  );
+  const customForm = xml(
+    `<forms><systemform><form>${controls(['b'])}</form></systemform></forms>`,
+    'Entities/invented_table/FormXml/main/invented.xml',
+  );
+  assert.deepEqual(inspect([customTable, customForm]).ids, ['DV-MODEL-003']);
+  const unknownForm = xml(
+    `<forms><systemform><form>${controls(['new_doesnotexist'])}</form></systemform></forms>`,
+    'Entities/invented_unknown/FormXml/main/invented.xml',
+  );
+  assert.deepEqual(inspect([unknownForm]).ids, []);
+  const savedQuery = (column) =>
+    xml(
+      `<savedquery><fetchxml><fetch><entity name="account"><attribute name="${column}"/></entity></fetch></fetchxml></savedquery>`,
+      'Entities/account/SavedQueries/invented.xml',
+    );
+  assert.deepEqual(inspect([accountEntity, savedQuery('telephone1')]).ids, []);
+  assert.deepEqual(inspect([accountEntity, savedQuery('new_doesnotexist')]).ids, ['DV-MODEL-004']);
 });
 
 test('duplicate handlers are compared within an event and preserve different parameters and disabled handlers', () => {
@@ -375,9 +474,28 @@ test('large repeated identities and dense query literals stop at explicit struct
     if (result.complete || result.skipped.length !== 2) process.exitCode = 1;`;
   const result = spawnSync(process.execPath, ['--input-type=module', '--eval', script], {
     encoding: 'utf8',
-    timeout: 10000,
+    timeout: CLI_HANG_GUARD_MS,
   });
   assert.equal(result.status, 0, 'bounded metadata/query analysis must complete without an unbounded repeated scan');
+});
+
+test('a folder of plain scripts without Dataverse queries leaves the Dataverse domain not detected', (t) => {
+  const root = tempDirSync('paq-dataverse-plain-');
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.writeFileSync(
+    path.join(root, 'plain.js'),
+    'export const total = [1, 2].reduce((sum, value) => sum + value, 0);\n',
+  );
+  const domain = analyzeProject(root, { failOn: 'none' }).coverage.domains.find((item) => item.domain === 'dataverse');
+  assert.equal(domain.status, 'not-detected');
+});
+
+test('a JSON file with many short strings and no Dataverse URL keeps the report complete', () => {
+  const values = Array.from({ length: 150000 }, (_, index) => `s${index}`);
+  const result = inspect([entry('app/translations.json', JSON.stringify(values))]);
+  assert.deepEqual(result.ids, []);
+  assert.equal(result.coverage.complete, true);
+  assert.deepEqual(result.coverage.skipped, []);
 });
 
 test('a FetchXML table reference is not mistaken for declared table metadata', () => {

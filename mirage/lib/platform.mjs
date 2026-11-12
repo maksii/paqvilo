@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { createHash, randomUUID } from 'node:crypto';
 import { renderFormLabel } from './form-labels.mjs';
+import { clockFunction, systemClock } from './runtime-clock.mjs';
 import { clientManagedControlsRuntime, validateManagedControlDefinition } from './managed-controls.mjs';
 import { mountRichTextEditors } from './richtext-client.mjs';
 import { clientLocalSelfOriginRuntime } from './local-self-origin.mjs';
@@ -62,6 +63,8 @@ import {
 import { renderCalendarList } from './list-views.mjs';
 import { portalSearch } from './portal-search.mjs';
 import { LiquidError } from './liquid-engine.mjs';
+import { attributeTypeCode, attributeTypeCodeName } from './attribute-metadata.mjs';
+import { choiceColumnsOf, choiceTextRow } from './liquid.mjs';
 const escape = (value) =>
   String(value ?? '').replace(
     /[&<>"']/g,
@@ -429,7 +432,7 @@ function captchaChallenge(unique, pathname, guid = randomUUID(), selfClose = fal
   const client = unique.replaceAll('$', '_');
   const resource = (type) =>
     `${applicationRoot(pathname)}Telerik.Web.UI.WebResource.axd?type=${type}&amp;isc=cust&amp;guid=${guid}`;
-  return `<img id="${client}_CaptchaImageUP" alt="This&#32;is&#32;a&#32;CAPTCHA&#32;image,&#32;use&#32;shortcut&#32;Ctrl&#32;+&#32;Alt&#32;+&#32;P&#32;to&#32;play&#32;the&#32;alphabet&#32;audio&#32;for&#32;this&#32;image" src="${resource('rca')}" style="height:50px;width:180px;display:block;"${selfClose ? ' /' : ''}><a id="${client}_CaptchaLinkButton" class="rcRefreshImage" title="Generate&#32;a&#32;new&#32;image" href="javascript:__doPostBack(&#39;${unique}$CaptchaLinkButton&#39;,&#39;&#39;)" style="display:block;">Generate a new image</a><a href="${resource('cah')}" id="${client}_CaptchaAudioCodeUP" title="Play&#32;the&#32;audio&#32;code" class="rcCaptchaAudioLink" style="display:block;">Play the audio code</a>`;
+  return `<img id="${client}_CaptchaImageUP" alt="This&#32;is&#32;a&#32;CAPTCHA&#32;image,&#32;use&#32;shortcut&#32;Ctrl&#32;+&#32;Alt&#32;+&#32;P&#32;to&#32;play&#32;the&#32;alphabet&#32;audio&#32;for&#32;this&#32;image" src="${resource('rca')}" style="height:50px;width:180px;display:block;"${selfClose ? ' /' : ''}><a id="${client}_CaptchaLinkButton" class="rcRefreshImage" title="Generate&#32;a&#32;new&#32;image" href="javascript:__doPostBack(&#39;${attr(jsText(unique))}$CaptchaLinkButton&#39;,&#39;&#39;)" style="display:block;">Generate a new image</a><a href="${resource('cah')}" id="${client}_CaptchaAudioCodeUP" title="Play&#32;the&#32;audio&#32;code" class="rcCaptchaAudioLink" style="display:block;">Play the audio code</a>`;
 }
 /** The RadCaptcha control after a form's honeypot box; rcInvalid after a rejected answer. */
 function captchaControl(unique, pathname, invalid = false) {
@@ -585,6 +588,21 @@ const canonicalId = (value) =>
 const scalarValue = (value) => (value && typeof value === 'object' ? (value.id ?? value.value) : value);
 const json = (value) => JSON.stringify(value).replaceAll('<', String.raw`\u003c`);
 const attr = (value) => escape(value);
+// Escapes text for the inside of a JavaScript string literal. Callers add the quotes, and inside an
+// HTML attribute they also attribute-escape the result.
+const JS_TEXT_ESCAPES = {
+  '\\': String.raw`\\`,
+  '"': String.raw`\"`,
+  "'": String.raw`\'`,
+  '<': String.raw`\u003c`,
+  '>': String.raw`\u003e`,
+  '&': String.raw`\u0026`,
+  '\n': String.raw`\n`,
+  '\r': String.raw`\r`,
+  '\u2028': String.raw`\u2028`,
+  '\u2029': String.raw`\u2029`,
+};
+const jsText = (value) => String(value ?? '').replace(/[\\"'<>&\n\r\u2028\u2029]/g, (char) => JS_TEXT_ESCAPES[char]);
 const fieldOf = (record, name) => portalField(record ?? {}, name);
 const truthy = (value) => value === true || /^(true|1)$/i.test(String(value ?? ''));
 const base64Json = (value) => Buffer.from(JSON.stringify(value)).toString('base64');
@@ -854,10 +872,16 @@ function validatorStyle(validator) {
   return ` style="${validator.display === 'Dynamic' || validator.display === 'None' ? 'display:none;' : 'visibility:hidden;'}"`;
 }
 
+// Field ids the platform generates: letters, digits, '_', '-', '.' and ':'. Other ids are attribute-escaped and quoted.
+const PLAIN_FIELD_ID = /^[\w.:-]+$/;
+const referenceControlAttribute = (fieldId) =>
+  PLAIN_FIELD_ID.test(String(fieldId)) ? `referenceControlId=${fieldId}` : `referenceControlId="${attr(fieldId)}"`;
+
 // A lookup box focuses its visible name box.
-function summaryLink(fieldId, message, linksEnabled, focusId = fieldId) {
+export function summaryLink(fieldId, message, linksEnabled, focusId = fieldId) {
   if (!linksEnabled) return message;
-  return `<a href='#${fieldId}_label' onclick='javascript:scrollToAndFocus("${fieldId}_label","${focusId}");return false;' referenceControlId=${fieldId}>${escape(message)} </a>`;
+  // The platform inserts the configured message as it is, with links on or off (native observation); only the field id is escaped.
+  return `<a href='#${attr(`${fieldId}_label`)}' onclick='javascript:scrollToAndFocus("${attr(jsText(fieldId + '_label'))}","${attr(jsText(focusId))}");return false;' ${referenceControlAttribute(fieldId)}>${message} </a>`;
 }
 
 /** Native validators (ASP.NET ids, Page_Validators expandos) for one field. */
@@ -1999,7 +2023,7 @@ function entityListDrop(model, options, context) {
           logical_name: column.LogicalName,
           name: column.Name,
           width: column.Width,
-          attribute_type: fields[column.LogicalName]?.dataverseType ?? null,
+          attribute_type: attributeTypeCode(fields[column.LogicalName]?.dataverseType),
           sort_disabled: column.SortDisabled,
           sort_enabled: !column.SortDisabled,
           sort_ascending: `${column.LogicalName} ASC`,
@@ -2182,9 +2206,9 @@ async function renderEntityView(name, context, options) {
           sort_enabled: !column.SortDisabled,
           sort_ascending: `${column.LogicalName} ASC`,
           sort_descending: `${column.LogicalName} DESC`,
-          attribute_type: column.Metadata?.AttributeTypeName?.Value ?? null,
+          attribute_type: attributeTypeCodeName(column.Metadata?.AttributeTypeName?.Value),
         })),
-        records: query.rows ?? [],
+        records: (query.rows ?? []).map((row) => choiceTextRow(row, choiceColumnsOf(options.metadata, model.entity))),
         page,
         page_size: pageSize,
         pages: Array.from({ length: totalPages }, (_, index) => index + 1),
@@ -2341,6 +2365,11 @@ async function resolveEntityReference({ componentMetadata, mode, params, store, 
       name: String(row[mapping.nameColumn] ?? ''),
     },
   };
+}
+
+// The portal's host clock (the store's clock, the same one the renderer uses); system time only when no store is injected.
+function renderNow(store) {
+  return new Date(clockFunction(store?.clock ?? systemClock)());
 }
 
 function prepopulateValue(row, identity, now) {
@@ -2857,7 +2886,7 @@ function prepopulateValue(row, identity, now) {
   const linksEnabled = fieldOf(componentMetadata, 'validationsummarylinksenabled') !== false;
   const forceRequired = truthy(fieldOf(componentMetadata, 'forceallfieldsrequired'));
   const recommendedRequired = truthy(fieldOf(componentMetadata, 'recommendedfieldsrequired'));
-  const now = new Date();
+  const now = renderNow(store);
   // Labels follow the platform: metadata override, the form cell label, then the
   // column display name; the logical name is used only when the table metadata is absent.
   const tableFields = metadata?.entities?.[canonicalId(schema.entity)]?.fields ?? {};
@@ -3291,7 +3320,7 @@ function prepopulateValue(row, identity, now) {
             return `<input name="${nameAttr(field)}" type="text"${valueAttr(displayed)} id="${attr(field.id)}" class="form-control text integer${css} ${group}" onchange="setPrecision(this.id);setIsDirty(this.id);" style="width:30px;"${readonlyAttr}>${rankTieValidator(field)}`;
           // The group's last box carries the read-only total (0 until the client sums) and its validator.
           const last = surveyGroup(field).at(-1)?.name === field.name;
-          return `<input name="${nameAttr(field)}" type="text"${valueAttr(displayed)} id="${attr(field.id)}" class="text integer ${group}${css}" onchange="setIsDirty(this.id);setPrecision(this.id);updateConstantSum('${group}');" style="width:30px;"${readonlyAttr}>${constantSumMarkup(last, ids.names, group)}`;
+          return `<input name="${nameAttr(field)}" type="text"${valueAttr(displayed)} id="${attr(field.id)}" class="text integer ${group}${css}" onchange="setIsDirty(this.id);setPrecision(this.id);updateConstantSum('${attr(jsText(field.groupName))}');" style="width:30px;"${readonlyAttr}>${constantSumMarkup(last, ids.names, group)}`;
         }
         const control = `<input name="${nameAttr(field)}" type="text"${valueAttr(displayed)} id="${attr(field.id)}" class="text ${field.control} form-control${css}${fieldLevel ? ' readonly' : ''}"${numberSeparatorAttribute(field, decimalSeparator, attr)} onchange="setIsDirty(this.id);"${disabled ? ' readonly="readonly"' : ''}${requiredInputAttribute(field, disabled)}>`;
         if (field.control !== 'money') return control;
@@ -4034,8 +4063,10 @@ function prepopulateValue(row, identity, now) {
     'Processing...';
   const hook = kind === 'webform' ? 'webFormClientValidate' : 'entityFormClientValidate';
   const group = fieldOf(componentMetadata, 'validationgroup') ?? '';
+  const busyJs = jsText(busy);
+  const groupJs = jsText(group);
   const onclick = (buttonName) =>
-    `javascript:if(typeof ${hook} === 'function'){if(${hook}()){if(typeof Page_ClientValidate === 'function'){if(Page_ClientValidate('${group}')){clearIsDirty();disableButtons();this.value = '${busy}';}}else{clearIsDirty();disableButtons();this.value = '${busy}';}}else{return false;}}else{if(typeof Page_ClientValidate === 'function'){if(Page_ClientValidate('${group}')){clearIsDirty();disableButtons();this.value = '${busy}';}}else{clearIsDirty();disableButtons();this.value = '${busy}';}};WebForm_DoPostBackWithOptions(new WebForm_PostBackOptions("${buttonName}", "", true, "${group}", "", false, true))`; // NOSONAR: intentional local script execution or generated handler
+    `javascript:if(typeof ${hook} === 'function'){if(${hook}()){if(typeof Page_ClientValidate === 'function'){if(Page_ClientValidate('${groupJs}')){clearIsDirty();disableButtons();this.value = '${busyJs}';}}else{clearIsDirty();disableButtons();this.value = '${busyJs}';}}else{return false;}}else{if(typeof Page_ClientValidate === 'function'){if(Page_ClientValidate('${groupJs}')){clearIsDirty();disableButtons();this.value = '${busyJs}';}}else{clearIsDirty();disableButtons();this.value = '${busyJs}';}};WebForm_DoPostBackWithOptions(new WebForm_PostBackOptions("${jsText(buttonName)}", "", true, "${groupJs}", "", false, true))`; // NOSONAR: intentional local script execution or generated handler
   let actionsHtml = '';
   // The configured Create related record action as the layout configuration describes it.
   let createRelatedLink = null;
@@ -4058,7 +4089,7 @@ function prepopulateValue(row, identity, now) {
     const previousAllowed = stepIndex > 0 && fieldOf(step, 'movepreviouspermitted') !== false;
     defaultButton = 'NextButton';
     const previous = previousAllowed
-      ? `<div role="group" class="btn-group entity-action-button"><input type="button" name="${attr(ids.buttons)}PreviousButton" value="${attr(formLabel(fieldOf(step, 'previousbuttontext'), 'Previous'))}" onclick="javascript:__doPostBack('${attr(ids.buttons)}PreviousButton','')" id="PreviousButton" class="${attr(fieldOf(step, 'previousbuttoncssclass') || 'btn btn-default button previous previous-btn')}" nonactionlinkbutton="true"></div>`
+      ? `<div role="group" class="btn-group entity-action-button"><input type="button" name="${attr(ids.buttons)}PreviousButton" value="${attr(formLabel(fieldOf(step, 'previousbuttontext'), 'Previous'))}" onclick="javascript:__doPostBack('${attr(jsText(ids.buttons))}PreviousButton','')" id="PreviousButton" class="${attr(fieldOf(step, 'previousbuttoncssclass') || 'btn btn-default button previous previous-btn')}" nonactionlinkbutton="true"></div>`
       : '';
     const next = webFormNextMarkup(readOnly, terminal, ids, nextLabel, onclick, step);
     if (previous) renderedActions.push({ button: 'PreviousButton', action: 'previous' });
@@ -4289,7 +4320,7 @@ function prepopulateValue(row, identity, now) {
   let stepButtons = '';
   if (autoSteps) {
     const stepButton = (button, text, css, validate) =>
-      `<input type="submit" name="${attr(ids.names)}${button}" value="${attr(text)}" onclick="javascript:WebForm_DoPostBackWithOptions(new WebForm_PostBackOptions(&quot;${attr(ids.names)}${button}&quot;, &quot;&quot;, ${validate}, &quot;&quot;, &quot;&quot;, false, false))" id="${button}" class="${attr(css)} form-action-container-left">`;
+      `<input type="submit" name="${attr(ids.names)}${button}" value="${attr(text)}" onclick="javascript:WebForm_DoPostBackWithOptions(new WebForm_PostBackOptions(&quot;${attr(jsText(ids.names))}${attr(jsText(button))}&quot;, &quot;&quot;, ${validate}, &quot;&quot;, &quot;&quot;, false, false))" id="${button}" class="${attr(css)} form-action-container-left">`;
     if (autoSteps.index > 0) {
       renderedActions.push({ button: 'PreviousButton', action: 'tab', actionIndex: autoSteps.index - 1, view: true });
       stepButtons += stepButton(
@@ -4458,7 +4489,7 @@ function formLayoutAttribute(referenceForm, layoutConfig) {
   return ` data-form-layout="${attr(JSON.stringify(layoutConfig))}"`;
 }
 
-function validationSummaryMarkup(errors, summaryHeader, linksEnabled) {
+export function validationSummaryMarkup(errors, summaryHeader, linksEnabled) {
   if (!errors?.validationErrors) return '';
   return (
     summaryHeader +
@@ -4471,7 +4502,7 @@ function validationSummaryMarkup(errors, summaryHeader, linksEnabled) {
 function validationSummaryItem(item, linksEnabled) {
   if (item.field === 'captcha')
     return `<li><a href='#captcha' onclick='javascript:scrollToAndFocusCapatch();return false;'>${escape(item.message)}</a></li>`;
-  return `<li>${summaryLink(attr(item.field), item.message, linksEnabled)}</li>`;
+  return `<li>${summaryLink(item.field, item.message, linksEnabled)}</li>`;
 }
 
 function defaultButtonAttribute(defaultButton) {
@@ -4721,7 +4752,7 @@ function notesControlV5({ id, entity, websiteId, settings, page, addEnabled, bs,
 // The platform file and image controls' upload size argument (KB) as the platform controls render it.
 const FILE_CONTROL_MAX_KB = 1048576;
 /** Selected option values of a multi-select column: a record array, a comma list or the control's posted JSON array. */
-function multiSelectValues(current) {
+export function multiSelectValues(current) {
   if (Array.isArray(current)) return current.map((item) => String(scalarValue(item)));
   const text = String(scalarValue(current) ?? '').trim();
   if (text.startsWith('[')) {
@@ -4959,7 +4990,7 @@ function fieldValidatorsMarkup(fieldLevelReadOnly, resolved, validators, readOnl
 
 function imageDeleteMarkup(readOnly, fieldId, trash) {
   if (readOnly) return '';
-  return `<div><button type="button" class="buttonfordeleteimage btn btn-default btnforimage" onclick="deleteImage(this, '${attr(fieldId)}');" style="display:none">${trash}</button></div>`;
+  return `<div><button type="button" class="buttonfordeleteimage btn btn-default btnforimage" onclick="deleteImage(this, '${attr(jsText(fieldId))}');" style="display:none">${trash}</button></div>`;
 }
 
 function fileColumnValidator(image, fieldId, readOnly) {
@@ -4975,7 +5006,7 @@ function fileNameMarkup(fileName, download, fieldId, none) {
 
 function fileDeleteMarkup(fileName, fieldId, hide, trash) {
   if (!fileName) return '';
-  return `<div><button id="${attr(fieldId)}_delete_button" type="button" class="btn btn-default btn-for-delete btn-without-border" onclick="deleteFile(this, '${attr(fieldId)}');"${hide}>${trash}</button></div>`;
+  return `<div><button id="${attr(fieldId)}_delete_button" type="button" class="btn btn-default btn-for-delete btn-without-border" onclick="deleteFile(this, '${attr(jsText(fieldId))}');"${hide}>${trash}</button></div>`;
 }
 
 /**
@@ -5009,12 +5040,12 @@ function fileColumnInput(field, { id, entity, record, scalar, nameAttr, readOnly
     return `<div><div>${escape(image ? "This record hasn't been created yet. To enable image upload, create this record" : "This record hasn't been created yet. To enable file upload, create this record.")}</div></div>${hidden}${validator}`;
   const trash = "<span class='fa fa-trash iconforimage'></span>Delete";
   if (image)
-    return `<div><input name="${nameAttr(field, '_input_file')}" type="file" accept="image/*" id="${attr(fieldId)}" aria-label="${attr(field.name)}" style="display:none" onchange="imageLoad(this, '1', '${FILE_CONTROL_MAX_KB}');"><div><button id="${attr(fieldId)}_input_image" type="button" class="btn btn-default btn-for-image-input btn-for-inputofimage" onclick="chooseImage(this, '${attr(fieldId)}');"${hide}>Choose File</button><div class="gap-between-vertical-element break-image-name">${none}</div></div></div><div><div class="image-inline" style="display:none"><a target="_blank"><img src="" height="144px" width="144px" class="image-render" alt="${attr(field.label)}"></a></div>${imageDeleteMarkup(readOnly, fieldId, trash)}</div>${hidden}`;
+    return `<div><input name="${nameAttr(field, '_input_file')}" type="file" accept="image/*" id="${attr(fieldId)}" aria-label="${attr(field.name)}" style="display:none" onchange="imageLoad(this, '1', '${FILE_CONTROL_MAX_KB}');"><div><button id="${attr(fieldId)}_input_image" type="button" class="btn btn-default btn-for-image-input btn-for-inputofimage" onclick="chooseImage(this, '${attr(jsText(fieldId))}');"${hide}>Choose File</button><div class="gap-between-vertical-element break-image-name">${none}</div></div></div><div><div class="image-inline" style="display:none"><a target="_blank"><img src="" height="144px" width="144px" class="image-render" alt="${attr(field.label)}"></a></div>${imageDeleteMarkup(readOnly, fieldId, trash)}</div>${hidden}`;
   // The download link is absolute on the request origin.
   const download = fileName
     ? `${origin}/File/download.aspx?Entity=${encodeURIComponent(entity ?? '')}&Attribute=${encodeURIComponent(field.name)}&Id=${canonicalId(id)}`
     : '';
-  return `${validator}<div class="file-control-container"><div${readOnly ? '' : ' class="container-file-input"'}><div><input type="file" name="${nameAttr(field, '_input_file')}"${readOnly ? ' disabled="disabled" class="aspNetDisabled"' : ''} id="${attr(fieldId)}_input_file" aria-label="${attr(field.label)}" onchange="fileLoad(this, '${attr(fieldId)}', '${FILE_CONTROL_MAX_KB}', '1');"${readOnly ? ' value=" " readonly="readonly"' : ''} style="display:none"><button id="${attr(fieldId)}" type="button" class="btn btn-default btn-for-file-input " onclick="chooseFile(this, '${attr(fieldId)}');" aria-labelledby="Choose File" aria-label="Choose File for ${attr(field.label)}"${hide}>${fileName ? 'Change File' : 'Choose File'}</button></div></div><div class="container-filelink-delete file-link-and-delete"><div class="break-file-name file-name-container">${fileNameMarkup(fileName, download, fieldId, none)}</div>${fileDeleteMarkup(fileName, fieldId, hide, trash)}</div></div>${hidden}`;
+  return `${validator}<div class="file-control-container"><div${readOnly ? '' : ' class="container-file-input"'}><div><input type="file" name="${nameAttr(field, '_input_file')}"${readOnly ? ' disabled="disabled" class="aspNetDisabled"' : ''} id="${attr(fieldId)}_input_file" aria-label="${attr(field.label)}" onchange="fileLoad(this, '${attr(jsText(fieldId))}', '${FILE_CONTROL_MAX_KB}', '1');"${readOnly ? ' value=" " readonly="readonly"' : ''} style="display:none"><button id="${attr(fieldId)}" type="button" class="btn btn-default btn-for-file-input " onclick="chooseFile(this, '${attr(jsText(fieldId))}');" aria-labelledby="Choose File" aria-label="Choose File for ${attr(field.label)}"${hide}>${fileName ? 'Change File' : 'Choose File'}</button></div></div><div class="container-filelink-delete file-link-and-delete"><div class="break-file-name file-name-container">${fileNameMarkup(fileName, download, fieldId, none)}</div>${fileDeleteMarkup(fileName, fieldId, hide, trash)}</div></div>${hidden}`;
 }
 
 function richTextInput(field, current, { portal, managedControls, nameAttr }) {

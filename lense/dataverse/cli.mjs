@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import path from 'node:path';
-import { parseArgs } from 'node:util';
 import { randomUUID } from 'node:crypto';
+import { parseOptions } from '../cli-options.mjs';
 import fs from 'node:fs/promises';
 import { fileIdentity, sameFile } from '../file-identity.mjs';
 import {
@@ -29,6 +29,11 @@ const HELP = `paqvilo dataverse — provision schema through Dataverse, then exp
 
   register --connection .paqvilo/dataverse/connection.json --name NAME [--role ROLE]
            [--environment HTTPS-ORG-ORIGIN]  Uses the active PAC administrator profile.
+           Refused with REGISTRATION_EXISTS when any *.json file beside --connection
+           records this environment or name, or when the tenant already lists an application
+           with this name (matched by name); reuse it with inspect or verify. If PAC cannot
+           list applications, registration stops. --allow-additional-application skips both
+           checks and creates another app deliberately.
   inspect  --connection FILE               Show connection details without credentials.
   connect  --registration FILE --secret-file FILE --connection FILE [--role ROLE]
            [--consume-secret-file]  Finish a partial registration using the same app.
@@ -109,6 +114,7 @@ function executeEarlyCommand(command, values, output) {
       environment: values.environment,
       applicationName: values.name,
       role: values.role,
+      allowAdditionalApplication: values['allow-additional-application'],
     }).then(output);
   }
   if (command === 'connect') {
@@ -197,6 +203,7 @@ async function executeManifestCommand(command, values, connection, client, outpu
             environmentUrl: plan.environmentUrl,
             summary: plan.summary,
             drift: plan.actions.filter((a) => a.status === 'drift').map((a) => a.key),
+            blockedRoots: plan.membership.filter((e) => e.operation === 'blocked').map((e) => e.objectId),
             savedTo: path.resolve(values.out),
           },
     );
@@ -268,7 +275,10 @@ async function main() {
     return;
   }
   const commands = {
-    register: { allowed: ['connection', 'name', 'role', 'environment'], required: ['connection', 'name'] },
+    register: {
+      allowed: ['connection', 'name', 'role', 'environment', 'allow-additional-application'],
+      required: ['connection', 'name'],
+    },
     connect: {
       allowed: ['registration', 'secret-file', 'connection', 'role', 'consume-secret-file'],
       required: ['registration', 'secret-file', 'connection'],
@@ -289,7 +299,7 @@ async function main() {
   };
   const contract = Object.hasOwn(commands, command) ? commands[command] : null;
   if (!contract) throw new Error('Unknown dataverse command; run paqvilo dataverse --help.');
-  const { values } = parseArgs({
+  const { values } = parseOptions({
     args,
     options: {
       connection: { type: 'string' },
@@ -305,6 +315,7 @@ async function main() {
       registration: { type: 'string' },
       'secret-file': { type: 'string' },
       'consume-secret-file': { type: 'boolean' },
+      'allow-additional-application': { type: 'boolean' },
       help: { type: 'boolean', short: 'h' },
     },
   });

@@ -1,3 +1,4 @@
+// @test-kind contract: the baseline paths refuse labels and destinations that escape the capture root, with the CLI refusal as the observed behaviour.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -9,12 +10,15 @@ import { validateMatrix, scenarioDir, captureMatrix } from '../baseline-suite.mj
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // The CLI refuses within about a second; this bound only stops a hung child (a stopped child fails on its signal).
-const CLI_HANG_MS = 60_000;
+// hang guard only: a blocked synchronous child cannot be ended by the test runner
+const CLI_HANG_MS = 170_000;
 const scenario = (id) => ({ id, steps: [{ goto: '/invented/' }] }),
   matrix = (id) => ({ version: 1, scenarios: [scenario(id)] });
 const BAD_ID = /scenario id must contain safe nonempty relative directory segments/;
 const BAD_LABEL = /capture label must be one portable directory name/;
 
+// @test-kind security: a scenario id cannot traverse, be absolute or be reserved, so it cannot place
+// output outside the capture root
 test('traversing, absolute, empty-segment and reserved scenario ids are refused by the matrix and the path builder', () => {
   for (const id of [
     'a/../../outside',
@@ -35,6 +39,8 @@ test('traversing, absolute, empty-segment and reserved scenario ids are refused 
     assert.throws(() => scenarioDir('root', scenario(id), 'native'), BAD_ID, id);
   }
 });
+// @test-kind security: a capture label cannot traverse, be absolute or be reserved, so it cannot place
+// output outside the capture root
 test('CLI labels that are not one portable directory name are refused', () => {
   for (const label of [
     '../outside',
@@ -58,6 +64,7 @@ test('genuine nested IDs and authored labels retain original paths', () => {
     path.join('root', 'form', 'test_case.v2', 'render', 'native current-2'),
   );
 });
+// @test-kind security: a traversing scenario id or label fails before any callback runs or any output is written
 test('whole matrix and label fail before capture callbacks or output writes', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-case-boundary-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -98,6 +105,7 @@ test('whole matrix and label fail before capture callbacks or output writes', as
   assert.equal(calls, 0);
   assert.deepEqual(await fs.readdir(root), []);
 });
+// @test-kind security: a traversing CLI label is refused before runtime setup and no evidence is written
 test('CLI label rejection precedes browser/runtime setup and any evidence write', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-label-boundary-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));

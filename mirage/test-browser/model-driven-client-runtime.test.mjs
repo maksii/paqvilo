@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
-import { sharedBrowser } from './shared-browser.mjs';
+import { sharedBrowser, appOrigins, appsOrigin } from './shared-browser.mjs';
 
 const chrome = sharedBrowser();
 
@@ -64,10 +64,10 @@ async function fixture(t, trusted = true) {
     external = [];
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('request', (request) => {
-    if (new URL(request.url()).origin !== sim.origin) external.push(request.url());
+    if (!appOrigins(sim, sim.origin).includes(new URL(request.url()).origin)) external.push(request.url());
   });
   await page.goto(
-    sim.origin +
+    appsOrigin(sim, sim.origin) +
       '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
   );
   await page.getByRole('heading', { name: 'Copper', exact: true }).waitFor();
@@ -82,7 +82,7 @@ async function openReadyRecord(t, initial) {
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto(
-    sim.origin +
+    appsOrigin(sim, sim.origin) +
       '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
   );
   await page.getByRole('heading', { name: 'Copper', exact: true }).waitFor();
@@ -132,7 +132,7 @@ test('Solution form events and ribbon JS run locally through the staff API with 
   await (await formCommand(page, 'Save')).click();
   await page.getByText('Choose a different name', { exact: true }).waitFor();
   const unchanged = await (
-    await fetch(sim.origin + '/_apps/api/tables/x_item/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')
+    await fetch(appsOrigin(sim, sim.origin) + '/_apps/api/tables/x_item/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')
   ).json();
   assert.equal(unchanged.row.x_name, 'Copper');
   assert.equal(unchanged.row.x_quantity, 2);
@@ -230,7 +230,9 @@ test('a source zero-sequence modern form command precedes standard actions and e
   assert.ok(labels.indexOf('Early reviewed') < labels.indexOf('Save'));
   await (await formCommand(page, 'Early reviewed')).click();
   await page.getByRole('heading', { name: 'Reviewed 2', exact: true }).waitFor();
-  const row = await (await fetch(sim.url + '/_apps/api/tables/x_item/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')).json();
+  const row = await (
+    await fetch(appsOrigin(sim, sim.url) + '/_apps/api/tables/x_item/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')
+  ).json();
   assert.equal(row.row.x_name, 'Reviewed 2');
   assert.equal(row.row.x_quantity, 2);
   assert.deepEqual(errors, []);
@@ -275,17 +277,20 @@ test('a staff change in another tab revokes extension contexts while retaining t
     }),
     /disposed/,
   );
-  assert.match(
-    await page.evaluate(() => {
-      try {
-        window.priorWebApi.createRecord('x_item', { x_name: 'stale' });
-        return 'unexpected';
-      } catch (error) {
-        return error.message;
-      }
-    }),
-    /disposed/,
+  const webApiRequests = [];
+  const countWebApiRequest = (request) => {
+    if (request.url().startsWith(appsOrigin(sim, sim.origin) + '/_apps/api/')) webApiRequests.push(request.url());
+  };
+  page.on('request', countWebApiRequest);
+  const revoked = await page.evaluate(() =>
+    window.priorWebApi.createRecord('x_item', { x_name: 'stale' }).then(
+      () => 'resolved',
+      (error) => error.message,
+    ),
   );
+  page.off('request', countWebApiRequest);
+  assert.match(revoked, /disposed/);
+  assert.deepEqual(webApiRequests, [], 'a revoked context sends no Web API request');
   assert.deepEqual(errors, []);
 });
 
@@ -297,7 +302,7 @@ test('Solution code stays inert by default while ordinary CRUD continues to work
   await (await formCommand(page, 'Save')).click();
   await page.getByRole('heading', { name: 'BLOCK', exact: true }).waitFor();
   const result = await (
-    await fetch(sim.origin + '/_apps/api/tables/x_item/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')
+    await fetch(appsOrigin(sim, sim.origin) + '/_apps/api/tables/x_item/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')
   ).json();
   assert.equal(result.row.x_name, 'BLOCK');
   assert.deepEqual(errors, []);
@@ -330,7 +335,7 @@ test('application form and view components select the authored surface before ge
   );
   const sim = await initial.start();
   const page = await chrome.page(t);
-  await page.goto((sim.origin ?? sim.url) + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
+  await page.goto(appsOrigin(sim, sim.url) + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
   await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
   await page.getByRole('button', { name: 'View', exact: true }).click();
   assert.deepEqual(
@@ -376,7 +381,8 @@ test('form deep links, picker changes, saves and Xrm openForm preserve the selec
     errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   const route =
-    sim.url + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    appsOrigin(sim, sim.url) +
+    '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
   await page.goto(route + '&formid=' + encodeURIComponent(`{${reviewId.toUpperCase()}}`));
   await page.getByRole('tab', { name: 'Review details', exact: true }).waitFor();
   assert.equal(new URL(page.url()).searchParams.get('formid'), reviewId);
@@ -404,7 +410,7 @@ test('form deep links, picker changes, saves and Xrm openForm preserve the selec
   await page.reload();
   await page.getByRole('tab', { name: 'Review details', exact: true }).waitFor();
   assert.equal(await page.getByLabel('Name', { exact: true }).inputValue(), 'Draft across forms');
-  await page.goto(sim.url + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
+  await page.goto(appsOrigin(sim, sim.url) + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
   await page.locator('tbody').getByRole('button', { name: 'Draft across forms', exact: true }).click();
   await page.getByRole('tab', { name: 'Review details', exact: true }).waitFor();
   assert.equal(
@@ -466,7 +472,8 @@ test('known excluded source forms fall back inside the app while genuinely missi
     errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   const route =
-    sim.url + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    appsOrigin(sim, sim.url) +
+    '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
   const ready = () =>
     page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready' && window.Xrm?.Page);
   // Each fresh route hydrates source metadata before deciding app eligibility.
@@ -526,7 +533,8 @@ test('switching source forms clears stale explicit tab context before reload and
     errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   const route =
-    sim.url + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    appsOrigin(sim, sim.url) +
+    '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
   const openReview = async () => {
     await page.goto(route + `&formid=${reviewId}&tabname=review-tab`);
     await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready' && window.Xrm?.Page);
@@ -638,7 +646,7 @@ test('a persisted inactive two-state record disables its default UI while explic
       writes.push(request.method());
   });
   const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
-  await page.goto(sim.url + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=' + id);
+  await page.goto(appsOrigin(sim, sim.url) + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=' + id);
   await page.waitForFunction(
     () => document.documentElement.dataset.mirageAppState === 'ready' && Boolean(globalThis.Xrm),
   );
@@ -746,7 +754,9 @@ test('a persisted inactive two-state record disables its default UI while explic
   });
   await page.getByRole('status').filter({ hasText: 'Record saved locally.' }).waitFor();
   assert.deepEqual(writes, ['PATCH'], 'an explicit SDK save persists the inactive draft once');
-  const inactiveSaved = await (await page.request.get(sim.url + '/_apps/api/tables/x_item/' + id)).json();
+  const inactiveSaved = await (
+    await page.request.get(appsOrigin(sim, sim.url) + '/_apps/api/tables/x_item/' + id)
+  ).json();
   assert.equal(inactiveSaved.row.x_name, 'Inactive SDK edit');
   assert.equal(inactiveSaved.row.statecode, 1);
   assert.equal(await page.evaluate(() => window.Xrm.Page.ui.getFormType()), 4);
@@ -763,7 +773,7 @@ test('a persisted inactive two-state record disables its default UI while explic
     4,
     'the loaded form remains disabled until refreshed',
   );
-  const recordRead = sim.url + '/_apps/api/tables/x_item/' + id;
+  const recordRead = appsOrigin(sim, sim.url) + '/_apps/api/tables/x_item/' + id;
   await page.route(
     recordRead,
     async (route) => {
@@ -824,11 +834,11 @@ test('a persisted inactive two-state record disables its default UI while explic
   await (await formCommand(page, 'Save')).click();
   await page.getByRole('status').filter({ hasText: 'Record saved locally.' }).waitFor();
   assert.equal(await page.evaluate(() => window.Xrm.Page.ui.getFormType()), 4);
-  const saved = await (await page.request.get(sim.url + '/_apps/api/tables/x_item/' + id)).json();
+  const saved = await (await page.request.get(appsOrigin(sim, sim.url) + '/_apps/api/tables/x_item/' + id)).json();
   assert.equal(saved.row.statecode, 1);
   assert.equal(saved.row.x_name, 'Copper');
   assert.equal(await page.locator('#record-status').count(), 1);
-  await page.goto(sim.url + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
+  await page.goto(appsOrigin(sim, sim.url) + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
   await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
   assert.equal(await page.locator('#record-status').count(), 0, 'the inactive record strip cannot leak onto a grid');
   assert.deepEqual(errors, []);
@@ -863,7 +873,9 @@ test('a header-only column set through the client API is saved with the record; 
   );
   await page.getByRole('button', { name: 'Save', exact: true }).first().click();
   await page.getByText('Record saved locally.', { exact: true }).waitFor();
-  const row = await (await fetch(sim.origin + '/_apps/api/tables/x_item/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')).json();
+  const row = await (
+    await fetch(appsOrigin(sim, sim.origin) + '/_apps/api/tables/x_item/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')
+  ).json();
   assert.equal(row.row.x_quantity, 42);
   assert.equal(row.row.x_name, 'Copper');
   await page.waitForFunction(
@@ -901,7 +913,686 @@ test('a save that cannot carry every changed column still runs Save & Close, the
     .getByText('Record saved locally. These changed columns cannot be saved locally: x_quantity.', { exact: true })
     .waitFor();
   assert.doesNotMatch(page.url(), /pagetype=entityrecord/);
-  const row = await (await fetch(sim.origin + '/_apps/api/tables/x_item/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')).json();
+  const row = await (
+    await fetch(appsOrigin(sim, sim.origin) + '/_apps/api/tables/x_item/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')
+  ).json();
   assert.deepEqual([row.row.x_name, row.row.x_quantity], ['Copper two', 2]);
+  assert.deepEqual(errors, []);
+});
+
+// @test-kind observation: native model-driven main form observed 2026-11-12 on a developer environment (single console probe): a create-form save resolves and the captured context stays on the saved record (update form type, id and values, not dirty), load state after a save is 2, a refused OnSave rejects with the observed plain object, the form-registered OnLoad is not replayed, and saveandnew leaves the saved context readable while the open form is a new record.
+test('a create-form context keeps answering after its save, a refused OnSave sends no PATCH, and saveandnew opens a new form', async (t) => {
+  const { page, sim, errors } = await fixture(t);
+  const writes = [];
+  page.on('request', (request) => {
+    if (
+      request.url().startsWith(appsOrigin(sim, sim.origin) + '/_apps/api/tables/x_item') &&
+      ['POST', 'PATCH'].includes(request.method())
+    )
+      writes.push(request.method());
+  });
+  await page.goto(appsOrigin(sim, sim.origin) + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item');
+  await page.waitForFunction(
+    () => document.documentElement.dataset.mirageAppState === 'ready' && Boolean(globalThis.Xrm),
+  );
+  const created = await page.evaluate(() => {
+    const context = window.Xrm.Page;
+    window.createdContext = context;
+    window.loadStates = [];
+    context.data.addOnLoad((loadContext) => window.loadStates.push(loadContext.getEventArgs().getDataLoadState()));
+    context.getAttribute('x_name').setValue('Created copper');
+    return context.data.save().then(() => ({
+      id: context.data.entity.getId(),
+      formType: context.ui.getFormType(),
+      value: context.getAttribute('x_name').getValue(),
+      dirty: context.data.getIsDirty(),
+      loadStates: window.loadStates.slice(),
+      formLoads: window.clientLoads,
+    }));
+  });
+  assert.match(created.id, /^\{[\da-f-]{36}\}$/);
+  assert.equal(created.formType, 2);
+  assert.equal(created.value, 'Created copper');
+  assert.equal(created.dirty, false);
+  assert.deepEqual(created.loadStates, [2]);
+  assert.equal(created.formLoads, 1, 'the form-registered OnLoad is not replayed after a save');
+  assert.deepEqual(writes, ['POST']);
+  await page.getByLabel('Name', { exact: true }).fill('BLOCK');
+  const refusal = await page.evaluate(() =>
+    window.Xrm.Page.data.save().then(
+      () => 'resolved',
+      (error) => error,
+    ),
+  );
+  assert.deepEqual(refusal, {
+    errorCode: 2200000005,
+    code: 2200000005,
+    message: 'This form can’t be saved due to a custom setting.',
+    title: 'Unable to save',
+  });
+  assert.deepEqual(writes, ['POST'], 'a refused OnSave sends no PATCH');
+  assert.equal(await page.evaluate(() => window.Xrm.Page.data.getIsDirty()), true);
+  // saveandnew saves the record, then the open form is a new record while the saved context keeps the record.
+  await page.getByLabel('Name', { exact: true }).fill('Created copper two');
+  assert.equal(
+    await page.evaluate(() => window.Xrm.Page.data.entity.save('saveandnew')),
+    undefined,
+    'saveandnew returns no promise',
+  );
+  await page.waitForFunction(
+    () => window.Xrm.Page.ui.getFormType() === 1 && document.documentElement.dataset.mirageAppState === 'ready',
+  );
+  const afterNew = await page.evaluate(() => ({
+    fresh: window.Xrm.Page !== window.createdContext,
+    newId: window.Xrm.Page.data.entity.getId(),
+    oldId: window.createdContext.data.entity.getId(),
+    oldType: window.createdContext.ui.getFormType(),
+    oldValue: window.createdContext.getAttribute('x_name').getValue(),
+  }));
+  assert.deepEqual(afterNew, { fresh: true, newId: '', oldId: created.id, oldType: 2, oldValue: 'Created copper two' });
+  assert.deepEqual(writes, ['POST', 'PATCH'], 'saveandnew saves the record once before the new form opens');
+  assert.deepEqual(errors, []);
+});
+
+// @test-kind contract: a second data.save() started while the first is in flight rejects with the Saving in Progress object, and only the first save writes; a route gate holds the first write open so it is provably in flight when the second starts.
+test('a second script save started while the first is in flight rejects and sends no write', async (t) => {
+  const { page, sim, errors } = await fixture(t);
+  const writes = [];
+  page.on('request', (request) => {
+    if (
+      request.url().startsWith(appsOrigin(sim, sim.origin) + '/_apps/api/tables/x_item') &&
+      ['POST', 'PATCH'].includes(request.method())
+    )
+      writes.push(request.method());
+  });
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  await page.route(
+    (url) => url.pathname === '/_apps/api/tables/x_item/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    async (route) => {
+      if (route.request().method() === 'PATCH') await gate;
+      await route.continue();
+    },
+  );
+  const firstWriteInFlight = page.waitForRequest(
+    (request) => request.method() === 'PATCH' && request.url().includes('/_apps/api/tables/x_item/aaaaaaaa'),
+  );
+  await page.evaluate(() => {
+    window.Xrm.Page.getAttribute('x_name').setValue('Copper gated');
+    window.firstSave = window.Xrm.Page.data.save();
+  });
+  await firstWriteInFlight;
+  const second = await page.evaluate(() =>
+    window.Xrm.Page.data.save().then(
+      () => 'resolved',
+      (error) => error,
+    ),
+  );
+  assert.deepEqual(second, {
+    errorCode: 2200000003,
+    code: 2200000003,
+    message: 'Please wait while saving is completed',
+    title: 'Saving in Progress',
+  });
+  release();
+  const first = await page.evaluate(() => window.firstSave);
+  assert.deepEqual(first, {
+    savedEntityReference: {
+      entityType: 'x_item',
+      id: '{aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa}',
+      name: 'Copper gated',
+    },
+  });
+  assert.deepEqual(writes, ['PATCH'], 'only the first save sends a write');
+  assert.deepEqual(errors, []);
+});
+
+// @test-kind observation: native model-driven main form observed 2026-11-12 on a developer environment (single console probe): data.refresh fires script-added OnLoad handlers with load state 3 and does not re-run the form-registered OnLoad.
+test('data.refresh on an open record runs script-added OnLoad with load state 3 and keeps the captured context readable', async (t) => {
+  const { page, errors } = await fixture(t);
+  await page.waitForFunction(() => window.clientLoads === 1 && Boolean(window.Xrm?.Page));
+  const outcome = await page.evaluate(async () => {
+    const formContext = window.Xrm.Page;
+    window.refreshLoads = [];
+    formContext.data.addOnLoad((loadContext) =>
+      window.refreshLoads.push(loadContext.getEventArgs().getDataLoadState()),
+    );
+    await formContext.data.refresh(false);
+    return {
+      loads: window.refreshLoads.slice(),
+      formLoads: window.clientLoads,
+      id: formContext.data.entity.getId(),
+      name: formContext.getAttribute('x_name').getValue(),
+    };
+  });
+  assert.deepEqual(outcome.loads, [3]);
+  assert.equal(outcome.formLoads, 1, 'the form-registered OnLoad is not replayed by data.refresh');
+  assert.match(outcome.id, /^\{[\da-f-]{36}\}$/);
+  assert.equal(outcome.name, 'Copper');
+  assert.deepEqual(errors, []);
+});
+
+// The form OnLoad registers a script OnLoad handler, and the handler changes section visibility, as scripts do.
+const loopScript = `var LoopClient = {
+  load(executionContext) {
+    executionContext.getFormContext().data.addOnLoad(function (loadContext) {
+      window.loopLoads = (window.loopLoads || 0) + 1;
+      window.loopStates = (window.loopStates || []).concat([loadContext.getEventArgs().getDataLoadState()]);
+      loadContext.getFormContext().ui.tabs.get('related').sections.get('children').setVisible(true);
+    });
+  }
+};`;
+
+/** The Copper form whose OnLoad registers the loop script's handler, opened once its Xrm context is ready. */
+async function loopFixture(t) {
+  const initial = await modelDrivenFixture(t, { defer: true, modelDriven: { trustedExtensions: true } });
+  const formFile = path.join(initial.solutionDir, 'Entities/x_item/FormXml/main/item.xml');
+  const xml = (await fs.readFile(formFile, 'utf8')).replace(
+    '</form>',
+    '<formLibraries><Library name="x_/loop.js"/></formLibraries><events><event name="onload"><Handlers><Handler libraryName="x_/loop.js" functionName="LoopClient.load" enabled="true" passExecutionContext="true"/></Handlers></event></events></form>',
+  );
+  await fs.writeFile(formFile, xml);
+  await fs.mkdir(path.join(initial.solutionDir, 'WebResources'), { recursive: true });
+  await fs.writeFile(path.join(initial.solutionDir, 'WebResources/loop.js'), loopScript);
+  await fs.writeFile(
+    path.join(initial.solutionDir, 'WebResources/loop.js.data.xml'),
+    '<WebResource><WebResourceId>dddddddd-dddd-4ddd-8ddd-dddddddddddd</WebResourceId><Name>x_/loop.js</Name><WebResourceType>3</WebResourceType><FileName>WebResources/loop.js</FileName></WebResource>',
+  );
+  const sim = await initial.start();
+  sim.origin = sim.origin ?? sim.url;
+  const page = await chrome.page(t);
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto(
+    appsOrigin(sim, sim.origin) +
+      '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  );
+  await page.getByRole('heading', { name: 'Copper', exact: true }).waitFor();
+  return { page, errors };
+}
+
+// @test-kind contract: a script OnLoad handler runs on open and on each data load only; tab, label and visibility re-renders from the page or a script do not replay it.
+test('script-added OnLoad runs on open and data load only, not on tab or layout re-renders', async (t) => {
+  const { page, errors } = await loopFixture(t);
+  await page.waitForFunction(() => window.loopLoads >= 1 && Boolean(window.Xrm?.Page));
+  const loadCount = () => page.evaluate(() => window.loopLoads);
+  assert.equal(await loadCount(), 1, 'the script OnLoad runs once when the form opens');
+  // Tabs are clicked in the page so that a re-render loop shows as a failed count, not as a stalled click.
+  const clickTab = (id) => page.evaluate((id) => document.querySelector(`[data-id="tablist-${id}"]`).click(), id);
+  await clickTab('related');
+  await page.waitForFunction(() => document.querySelector('.form-section[data-id="children"]'));
+  assert.equal(await loadCount(), 1, 'a tab change does not replay OnLoad');
+  await page.evaluate(() =>
+    window.Xrm.Page.ui.tabs.get('related').sections.get('children').setLabel('Renamed children'),
+  );
+  await page.waitForFunction(
+    () => document.querySelector('.form-section[data-id="children"] h2')?.textContent === 'Renamed children',
+  );
+  assert.equal(await loadCount(), 1, 'a section label change does not replay OnLoad');
+  await page.evaluate(() => window.Xrm.Page.ui.tabs.get('general').setVisible(false));
+  await page.waitForFunction(() => !document.querySelector('[data-id="tablist-general"]'));
+  await page.evaluate(() => window.Xrm.Page.ui.tabs.get('general').setVisible(true));
+  await page.waitForFunction(() => Boolean(document.querySelector('[data-id="tablist-general"]')));
+  assert.equal(await loadCount(), 1, 'a tab visibility change does not replay OnLoad');
+  await clickTab('general');
+  await page.waitForFunction(() => document.querySelector('.form-section[data-id="details"]'));
+  assert.equal(await loadCount(), 1, 'the tab change back does not replay OnLoad');
+  await page.evaluate(() => window.Xrm.Page.data.refresh(false));
+  await page.waitForFunction(() => window.loopLoads >= 2);
+  assert.equal(await loadCount(), 2, 'data.refresh runs the script OnLoad once more');
+  assert.deepEqual(await page.evaluate(() => window.loopStates), [1, 3], 'the refresh load state is 3');
+  assert.deepEqual(errors, []);
+});
+
+// @test-kind contract: a successful save clears the required-fields form notice, and a notice a script set under its own id stays.
+test('a successful save clears the required-fields notice and keeps a script notice', async (t) => {
+  const { page, errors } = await fixture(t);
+  await page.waitForFunction(() => window.clientLoads === 1 && Boolean(window.Xrm?.Page));
+  await page.evaluate(() => window.Xrm.Page.ui.setFormNotification('note', 'INFO', 'mine'));
+  await page.evaluate(() => window.Xrm.Page.getAttribute('x_name').setValue(null));
+  await (await formCommand(page, 'Save')).click();
+  const requiredNotice = page.locator('#form-notifications [data-form-notification="required-fields"]');
+  await requiredNotice.waitFor();
+  // A script write makes the field valid without an input event, so the save is what has to clear the notice.
+  await page.evaluate(() => window.Xrm.Page.getAttribute('x_name').setValue('Copper updated'));
+  await (await formCommand(page, 'Save')).click();
+  await page.getByRole('status').filter({ hasText: 'Record saved locally.' }).waitFor();
+  assert.equal(await requiredNotice.count(), 0, 'the saved form drops the required-fields notice');
+  assert.equal(
+    await page.locator('#form-notifications [data-form-notification="mine"]').count(),
+    1,
+    'the script notice stays until the script clears it',
+  );
+  assert.deepEqual(errors, []);
+});
+
+test('a save without changes clears the required-fields notice', async (t) => {
+  const { page, errors } = await fixture(t);
+  await page.waitForFunction(() => window.clientLoads === 1 && Boolean(window.Xrm?.Page));
+  await page.evaluate(() => window.Xrm.Page.getAttribute('x_name').setValue(null));
+  await (await formCommand(page, 'Save')).click();
+  const requiredNotice = page.locator('#form-notifications [data-form-notification="required-fields"]');
+  await requiredNotice.waitFor();
+  // Restoring the loaded value leaves no attribute dirty, so the save takes the unchanged path.
+  await page.evaluate(() => window.Xrm.Page.getAttribute('x_name').setValue('Copper'));
+  await (await formCommand(page, 'Save')).click();
+  await page.getByRole('status').filter({ hasText: 'No record changes to save.' }).waitFor();
+  assert.equal(await requiredNotice.count(), 0, 'the unchanged save drops the required-fields notice');
+  assert.deepEqual(errors, []);
+});
+
+/** The Copper form with a second section named details in the Related tab, next to the General tab's details section. */
+async function sameNameFixture(t) {
+  const initial = await modelDrivenFixture(t, { defer: true });
+  const formFile = path.join(initial.solutionDir, 'Entities/x_item/FormXml/main/item.xml');
+  const xml = (await fs.readFile(formFile, 'utf8')).replace(
+    '<section name="children">',
+    '<section name="details"><labels><label description="Related details" languagecode="1033"/></labels><rows></rows></section><section name="children">',
+  );
+  await fs.writeFile(formFile, xml);
+  return openReadyRecord(t, initial);
+}
+
+// @test-kind contract: script section visibility applies to the section of its own tab, so a same-named section in another tab stays shown through a save.
+test('a section hidden in one tab stays shown under the same name in another tab, through a save', async (t) => {
+  const { page, errors } = await sameNameFixture(t);
+  const clickTab = (id) => page.evaluate((id) => document.querySelector(`[data-id="tablist-${id}"]`).click(), id);
+  const detailsHeadings = () => page.locator('.form-section[data-id="details"] h2').allTextContents();
+  assert.deepEqual(await detailsHeadings(), ['Item details'], 'the General tab opens with its details section');
+  await page.evaluate(() => window.Xrm.Page.ui.tabs.get('general').sections.get('details').setVisible(false));
+  await page.waitForFunction(() => !document.querySelector('.form-section[data-id="details"]'));
+  await clickTab('related');
+  await page.waitForFunction(() => document.querySelector('.form-section[data-id="children"]'));
+  assert.deepEqual(await detailsHeadings(), ['Related details'], 'the Related tab keeps its same-named section shown');
+  await page.evaluate(() => window.Xrm.Page.getAttribute('x_quantity').setValue(5));
+  await page.evaluate(() => window.Xrm.Page.data.save());
+  await page.getByRole('status').filter({ hasText: 'Record saved locally.' }).waitFor();
+  // The save keeps the Related tab selected, so the General tab is opened to check its hidden section.
+  await clickTab('general');
+  await page.waitForFunction(
+    () => document.querySelector('[data-id="tablist-general"]')?.getAttribute('aria-selected') === 'true',
+  );
+  assert.deepEqual(await detailsHeadings(), [], 'the save keeps the General section hidden');
+  await clickTab('related');
+  await page.waitForFunction(() => document.querySelector('.form-section[data-id="children"]'));
+  assert.deepEqual(await detailsHeadings(), ['Related details'], 'the save keeps the Related section shown');
+  assert.deepEqual(errors, []);
+});
+
+test('sections of two tabs without an id keep separate visibility under the same name', async (t) => {
+  const initial = await modelDrivenFixture(t, { defer: true });
+  const formFile = path.join(initial.solutionDir, 'Entities/x_item/FormXml/main/item.xml');
+  const xml = (await fs.readFile(formFile, 'utf8'))
+    .replace('<tab name="general">', '<tab>')
+    .replace('<tab name="related">', '<tab>')
+    .replace(
+      '<section name="children">',
+      '<section name="details"><labels><label description="Related details" languagecode="1033"/></labels><rows></rows></section><section name="children">',
+    );
+  await fs.writeFile(formFile, xml);
+  const { page, errors } = await openReadyRecord(t, initial);
+  const clickTab = (id) => page.evaluate((id) => document.querySelector(`[data-id="tablist-${id}"]`).click(), id);
+  const detailsHeadings = () => page.locator('.form-section[data-id="details"] h2').allTextContents();
+  assert.deepEqual(await detailsHeadings(), ['Item details'], 'the first tab opens with its details section');
+  await page.evaluate(() => window.Xrm.Page.ui.tabs.get('tab-0').sections.get('details').setVisible(false));
+  await page.waitForFunction(() => !document.querySelector('.form-section[data-id="details"]'));
+  await clickTab('tab-1');
+  await page.waitForFunction(() => document.querySelector('.form-section[data-id="children"]'));
+  assert.deepEqual(await detailsHeadings(), ['Related details'], 'the second tab keeps its same-named section shown');
+  await page.evaluate(() => window.Xrm.Page.getAttribute('x_quantity').setValue(5));
+  await page.evaluate(() => window.Xrm.Page.data.save());
+  await page.getByRole('status').filter({ hasText: 'Record saved locally.' }).waitFor();
+  // The save keeps the second tab selected, so the first tab is opened to check its hidden section.
+  await clickTab('tab-0');
+  await page.waitForFunction(
+    () => document.querySelector('[data-id="tablist-tab-0"]')?.getAttribute('aria-selected') === 'true',
+  );
+  assert.deepEqual(await detailsHeadings(), [], 'the save keeps the first tab section hidden');
+  await clickTab('tab-1');
+  await page.waitForFunction(() => document.querySelector('.form-section[data-id="children"]'));
+  assert.deepEqual(await detailsHeadings(), ['Related details'], 'the save keeps the second tab section shown');
+  assert.deepEqual(errors, []);
+});
+
+// @test-kind unproven: the tab kept across a save and a refresh models the Unified Interface as described in its documentation; no recorded capture backs it.
+test('the selected tab stays selected after a save and after data.refresh, and resets when another record opens', async (t) => {
+  const initial = await modelDrivenFixture(t, { defer: true });
+  const entityFile = path.join(initial.solutionDir, 'Entities/x_item/Entity.xml');
+  await fs.writeFile(
+    entityFile,
+    (await fs.readFile(entityFile, 'utf8')).replace(
+      '</attributes>',
+      '<attribute PhysicalName="x_notes"><Name>x_notes</Name><LogicalName>x_notes</LogicalName><Type>nvarchar</Type><displaynames><displayname description="Notes" languagecode="1033"/></displaynames></attribute></attributes>',
+    ),
+  );
+  // The Related tab gets a text column in its own section, so the second tab holds an editable field.
+  const formFile = path.join(initial.solutionDir, 'Entities/x_item/FormXml/main/item.xml');
+  await fs.writeFile(
+    formFile,
+    (await fs.readFile(formFile, 'utf8')).replace(
+      '<section name="children">',
+      '<section name="notes"><labels><label description="Related notes" languagecode="1033"/></labels><rows><row><cell><labels><label description="Notes" languagecode="1033"/></labels><control datafieldname="x_notes"/></cell></row></rows></section><section name="children">',
+    ),
+  );
+  const { page, errors } = await openReadyRecord(t, initial);
+  const selectedTab = () => page.locator('[role="tab"][aria-selected="true"]').getAttribute('data-id');
+  await page.getByRole('tab', { name: 'Related items', exact: true }).click();
+  await page.getByLabel('Notes', { exact: true }).fill('Copper note');
+  await (await formCommand(page, 'Save')).click();
+  await page.getByRole('status').filter({ hasText: 'Record saved locally.' }).waitFor();
+  assert.equal(await selectedTab(), 'tablist-related', 'the save keeps the Related tab selected');
+  await page.evaluate(() => window.Xrm.Page.data.refresh(false));
+  assert.equal(await selectedTab(), 'tablist-related', 'data.refresh keeps the Related tab selected');
+  await page.evaluate(() =>
+    window.Xrm.Navigation.openForm({ entityName: 'x_item', entityId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }),
+  );
+  await page.getByRole('heading', { name: 'Silver', exact: true }).waitFor();
+  assert.equal(await selectedTab(), 'tablist-general', 'another record opens on its first tab');
+  // The URL names the first tab: a refresh keeps the tab the user selected, not the one the URL names.
+  await page.evaluate(() =>
+    window.Xrm.Navigation.navigateTo({
+      pageType: 'entityrecord',
+      entityName: 'x_item',
+      entityId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      tabName: 'general',
+    }),
+  );
+  await page.getByRole('heading', { name: 'Silver', exact: true }).waitFor();
+  assert.equal(await selectedTab(), 'tablist-general', 'a record opened with the first tab in the URL opens on it');
+  await page.getByRole('tab', { name: 'Related items', exact: true }).click();
+  await page.evaluate(() => window.Xrm.Page.data.refresh(false));
+  assert.equal(
+    await selectedTab(),
+    'tablist-related',
+    'data.refresh keeps the selected tab although the URL names the first tab',
+  );
+  await page.getByRole('tab', { name: 'Related items', exact: true }).click();
+  await page.evaluate(() => window.Xrm.Navigation.navigateTo({ pageType: 'entitylist', entityName: 'x_item' }));
+  await page.waitForFunction(() => !document.querySelector('[data-id="tablist-related"]'));
+  await page.evaluate(() =>
+    window.Xrm.Navigation.openForm({ entityName: 'x_item', entityId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }),
+  );
+  await page.getByRole('heading', { name: 'Silver', exact: true }).waitFor();
+  assert.equal(await selectedTab(), 'tablist-general', 'the same record reopened from the list opens on its first tab');
+  await page.getByRole('tab', { name: 'Related items', exact: true }).click();
+  await page.evaluate(() => window.Xrm.Navigation.openForm({ entityName: 'x_item' }));
+  await page.getByRole('tab', { name: 'Related items', exact: true }).waitFor();
+  await page.getByRole('tab', { name: 'Related items', exact: true }).click();
+  await page.evaluate(() => window.Xrm.Navigation.openForm({ entityName: 'x_item' }));
+  assert.equal(await selectedTab(), 'tablist-general', 'a second new-record form opens on its first tab');
+  assert.deepEqual(errors, []);
+});
+
+// @test-kind contract: a new-record lookup default takes its table from the link only when the field targets it and the catalogue has it, so a link naming another table falls back to the field's single target.
+test('a new-record lookup default ignores a table link the field does not target', async (t) => {
+  const { origin } = await modelDrivenFixture(t);
+  const page = await chrome.page(t);
+  const copper = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  // The lookup's table is what scripts read back as entityType; the name shown is the link's name either way.
+  const openNewChild = async (entity) => {
+    const defaults = new URLSearchParams([
+      ['x_parentid', copper],
+      ['x_parentidtype', entity],
+      ['x_parentidname', 'Copper'],
+    ]);
+    const query = new URLSearchParams({
+      appname: 'x_example',
+      pagetype: 'entityrecord',
+      etn: 'x_child',
+      extraqs: defaults.toString(),
+    });
+    await page.goto(`${origin}/main.aspx?${query}`);
+    await page.waitForFunction(
+      () => document.documentElement.dataset.mirageAppState === 'ready' && Boolean(globalThis.Xrm),
+    );
+    const [reference] = await page.evaluate(() => window.Xrm.Page.getAttribute('x_parentid').getValue());
+    return { shown: await page.getByLabel('Parent', { exact: true }).inputValue(), entityType: reference?.entityType };
+  };
+  assert.deepEqual(
+    await openNewChild('x_child'),
+    { shown: 'Copper', entityType: 'x_item' },
+    'a table the field does not target falls back to its single target',
+  );
+  assert.deepEqual(
+    await openNewChild('x_item'),
+    { shown: 'Copper', entityType: 'x_item' },
+    'a table the field targets is kept',
+  );
+});
+
+test('a new-record lookup default without a type on a field with several targets shows its name and asks for the target table', async (t) => {
+  const initial = await modelDrivenFixture(t, { defer: true });
+  // A second relationship on x_parentid gives the lookup a second target, as a polymorphic lookup has.
+  const relationshipsFile = path.join(initial.solutionDir, 'Other/Relationships.xml');
+  await fs.writeFile(
+    relationshipsFile,
+    (await fs.readFile(relationshipsFile, 'utf8')).replace(
+      '</EntityRelationships>',
+      '<EntityRelationship Name="x_child_parent"><EntityRelationshipType>OneToMany</EntityRelationshipType><ReferencingEntityName>x_child</ReferencingEntityName><ReferencedEntityName>x_child</ReferencedEntityName><ReferencingAttributeName>x_parentid</ReferencingAttributeName><ReferencedAttributeName>x_childid</ReferencedAttributeName></EntityRelationship></EntityRelationships>',
+    ),
+  );
+  const sim = await initial.start();
+  const page = await chrome.page(t);
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  // Only the id and the name are linked: no table name, so the field's several targets leave the entity unknown.
+  const query = new URLSearchParams({
+    appname: 'x_example',
+    pagetype: 'entityrecord',
+    etn: 'x_child',
+    extraqs: new URLSearchParams([
+      ['x_parentid', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'],
+      ['x_parentidname', 'Copper'],
+    ]).toString(),
+  });
+  await page.goto(`${appsOrigin(sim, sim.origin ?? sim.url)}/main.aspx?${query}`);
+  await page.waitForFunction(
+    () => document.documentElement.dataset.mirageAppState === 'ready' && Boolean(globalThis.Xrm),
+  );
+  assert.equal(await page.getByLabel('Parent', { exact: true }).inputValue(), 'Copper', 'the URL name is shown');
+  // With several targets and no table, the value cannot be read until the user chooses the target table.
+  const read = await page.evaluate(() => {
+    try {
+      window.Xrm.Page.getAttribute('x_parentid').getValue();
+      return 'read';
+    } catch (error) {
+      return error.message;
+    }
+  });
+  assert.match(read, /Choose a target table/);
+  assert.deepEqual(errors, []);
+});
+
+// The OnLoad script only changes the Copper record: a record opened later must not inherit the script's state.
+const stateScript = `var StateClient = {
+  load(executionContext) {
+    window.stateLoads = (window.stateLoads || 0) + 1;
+    window.loadStates = (window.loadStates || []).concat([executionContext.getEventArgs().getDataLoadState()]);
+    var form = executionContext.getFormContext();
+    if (form.data.entity.getId().indexOf('aaaaaaaa') < 0) return;
+    form.getControl('x_quantity').setVisible(false);
+    form.getControl('x_name').setDisabled(true);
+    form.getControl('x_name').setLabel('Scripted name');
+    form.getControl('x_name').setNotification('Name is under review', 'name-review');
+    form.ui.tabs.get('extras').setVisible(false);
+    form.ui.setFormNotification('Form scripted notice', 'WARNING', 'scripted-form');
+  }
+};`;
+
+/** The Copper form with an extra tab and an OnLoad script that sets control, label, notification and tab state. */
+async function stateFixture(t) {
+  const initial = await modelDrivenFixture(t, { defer: true, modelDriven: { trustedExtensions: true } });
+  const formFile = path.join(initial.solutionDir, 'Entities/x_item/FormXml/main/item.xml');
+  const extraTab =
+    '<tab name="extras"><labels><label description="Extras" languagecode="1033"/></labels><columns><column><sections><section name="extra_inputs"><labels><label description="Extra inputs" languagecode="1033"/></labels><rows></rows></section></sections></column></columns></tab>';
+  let xml = (await fs.readFile(formFile, 'utf8')).replace('</tabs>', extraTab + '</tabs>');
+  xml = xml.replace(
+    '</form>',
+    '<formLibraries><Library name="x_/state.js"/></formLibraries><events><event name="onload"><Handlers><Handler libraryName="x_/state.js" functionName="StateClient.load" enabled="true" passExecutionContext="true"/></Handlers></event></events></form>',
+  );
+  await fs.writeFile(formFile, xml);
+  await fs.mkdir(path.join(initial.solutionDir, 'WebResources'), { recursive: true });
+  await fs.writeFile(path.join(initial.solutionDir, 'WebResources/state.js'), stateScript);
+  await fs.writeFile(
+    path.join(initial.solutionDir, 'WebResources/state.js.data.xml'),
+    '<WebResource><WebResourceId>bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb</WebResourceId><Name>x_/state.js</Name><WebResourceType>3</WebResourceType><FileName>WebResources/state.js</FileName></WebResource>',
+  );
+  const sim = await initial.start();
+  sim.origin = sim.origin ?? sim.url;
+  const page = await chrome.page(t);
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto(
+    appsOrigin(sim, sim.origin) +
+      '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  );
+  await page.waitForFunction(() => window.stateLoads === 1 && Boolean(window.Xrm?.Page));
+  return { page, errors };
+}
+
+/** Asserts the script-set state in the DOM: the hidden and disabled controls, the label, notification, tab and form notice. */
+async function assertScriptState(page, when, { expected }) {
+  const quantity = page.locator('.field[data-id="x_quantity"]').first();
+  assert.equal(await quantity.isVisible(), !expected, `${when}: the script hides Quantity`);
+  const name = page.getByLabel(expected ? 'Scripted name' : 'Name', { exact: true });
+  assert.equal(await name.isDisabled(), expected, `${when}: the script disables Name`);
+  assert.equal(
+    await name.evaluate((input) => input.validity.customError),
+    expected,
+    `${when}: the script's field notification stays set`,
+  );
+  assert.equal(
+    await page.getByRole('tab', { name: 'Extras', exact: true }).count(),
+    expected ? 0 : 1,
+    `${when}: the script hides the Extras tab`,
+  );
+  assert.equal(
+    await page.locator('#form-notifications p.warning').count(),
+    expected ? 1 : 0,
+    `${when}: the form notification stays shown`,
+  );
+}
+
+// @test-kind contract: script-set control, tab, label and notification state is part of the open form and survives an in-place reload; the reload does not replay OnLoad.
+test('script-set state stays in effect across a save and a data.refresh, and another record starts clean', async (t) => {
+  const { page, errors } = await stateFixture(t);
+  await assertScriptState(page, 'after OnLoad', { expected: true });
+  await page.evaluate(() => window.Xrm.Page.getAttribute('x_quantity').setValue(5));
+  await page.evaluate(() => window.Xrm.Page.data.save());
+  await assertScriptState(page, 'after save', { expected: true });
+  assert.equal(await page.evaluate(() => window.stateLoads), 1, 'the form OnLoad is not replayed by save');
+  await page.evaluate(() => window.Xrm.Page.data.refresh(false));
+  await assertScriptState(page, 'after refresh', { expected: true });
+  assert.equal(await page.evaluate(() => window.stateLoads), 1, 'the form OnLoad is not replayed by refresh');
+  await page.evaluate(() =>
+    window.Xrm.Navigation.openForm({ entityName: 'x_item', entityId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }),
+  );
+  await page.getByRole('heading', { name: 'Silver', exact: true }).waitFor();
+  await assertScriptState(page, 'on another record', { expected: false });
+  assert.deepEqual(errors, []);
+});
+
+/**
+ * Holds the record reads that follow the first write on the path, in order. Each gate's `reached` resolves when its read
+ * arrives and the read waits until the gate's `open` is called.
+ */
+async function holdRecordReadsAfterWrite(page, pathname, count) {
+  const gates = Array.from({ length: count }, () => {
+    const gate = {};
+    gate.reached = new Promise((resolve) => {
+      gate.arrive = resolve;
+    });
+    gate.released = new Promise((resolve) => {
+      gate.open = resolve;
+    });
+    return gate;
+  });
+  let writes = 0,
+    next = 0;
+  await page.route(
+    (url) => url.pathname === pathname,
+    async (route) => {
+      const method = route.request().method();
+      if (method === 'PATCH') writes++;
+      const gate = gates[next];
+      if (method === 'GET' && writes > 0 && gate) {
+        next++;
+        gate.arrive();
+        await gate.released;
+      }
+      await route.continue();
+    },
+  );
+  return gates;
+}
+
+const copperPath = '/_apps/api/tables/x_item/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+
+// @test-kind contract: a route load decides from its own target whether the open runtime is kept, so a navigation during a save's reload gets a fresh runtime.
+test('a navigation to another record while a save reload is pending gets its own runtime and load state 1', async (t) => {
+  const { page, errors } = await stateFixture(t);
+  const [reload] = await holdRecordReadsAfterWrite(page, copperPath, 1);
+  await page.evaluate(() => {
+    window.Xrm.Page.getAttribute('x_quantity').setValue(5);
+    window.firstContext = window.Xrm.Page;
+    window.firstSave = window.Xrm.Page.data.save();
+  });
+  await reload.reached;
+  const opened = page.evaluate(() =>
+    window.Xrm.Navigation.openForm({ entityName: 'x_item', entityId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }),
+  );
+  await page.getByRole('heading', { name: 'Silver', exact: true }).waitFor();
+  reload.open();
+  await opened;
+  await page.evaluate(() => window.firstSave.catch(() => {}));
+  assert.equal(
+    await page.evaluate(() => window.Xrm.Page !== window.firstContext),
+    true,
+    'the other record runs under a new form context',
+  );
+  assert.equal(
+    await page.evaluate(() => window.Xrm.Page.data.entity.getId()),
+    '{bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb}',
+  );
+  assert.deepEqual(await page.evaluate(() => window.loadStates), [1, 1], 'its form OnLoad ran with data-load state 1');
+  assert.deepEqual(errors, []);
+});
+
+// @test-kind contract: two overlapping reloads each keep their own load state; the last operation's state reaches OnLoad and the runtime is kept once.
+test('a save followed by data.refresh while the save reload is pending ends on one runtime with the refresh load state', async (t) => {
+  const { page, errors } = await stateFixture(t);
+  const [saveReload, refreshReload] = await holdRecordReadsAfterWrite(page, copperPath, 2);
+  await page.evaluate(() => {
+    window.Xrm.Page.getAttribute('x_quantity').setValue(6);
+    window.firstContext = window.Xrm.Page;
+    window.reloadStates = [];
+    window.Xrm.Page.data.addOnLoad((loadContext) =>
+      window.reloadStates.push(loadContext.getEventArgs().getDataLoadState()),
+    );
+    window.firstSave = window.Xrm.Page.data.save();
+  });
+  await saveReload.reached;
+  await page.evaluate(() => {
+    window.refreshed = window.Xrm.Page.data.refresh(false);
+  });
+  await refreshReload.reached;
+  saveReload.open();
+  await page.evaluate(() => window.firstSave.catch(() => {}));
+  refreshReload.open();
+  await page.evaluate(() => window.refreshed);
+  await page.getByRole('heading', { name: 'Copper', exact: true }).waitFor();
+  assert.equal(
+    await page.evaluate(() => window.Xrm.Page === window.firstContext),
+    true,
+    'both reloads keep the open runtime',
+  );
+  assert.equal(
+    await page.evaluate(() => window.Xrm.Page.data.entity.getId()),
+    '{aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa}',
+  );
+  assert.deepEqual(await page.evaluate(() => window.reloadStates), [3], 'the refresh load state reaches OnLoad');
+  assert.equal(await page.evaluate(() => window.stateLoads), 1, 'the form OnLoad is not replayed by either reload');
   assert.deepEqual(errors, []);
 });

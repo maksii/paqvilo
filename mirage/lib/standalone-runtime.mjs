@@ -82,6 +82,14 @@ import {
 } from './sim-environment-routes.mjs';
 import { docsLinks } from './docs-links.mjs';
 import { writeJsonChunks } from './json-response.mjs';
+import {
+  STANDALONE_ROUTES,
+  adminServes,
+  answerVerdict,
+  listenerVerdict,
+  normalizeTokenHeaders,
+  portalVerdict,
+} from './admin-origin.mjs';
 
 const fail = (message, status = 400, code = 'RuntimeRequestInvalid') =>
   Object.assign(new Error(message), { status, code });
@@ -117,10 +125,14 @@ async function readBody(req) {
   return value;
 }
 
-function validateStandaloneRequest(req, res, closing, localOrigin) {
+function validateStandaloneRequest(req, res, closing, origin) {
   if (closing) throw fail('The runtime is stopping.', 503);
   res.setHeader('x-content-type-options', 'nosniff');
-  if (req.headers.host !== new URL(localOrigin).host) throw fail('Invalid Host header.', 403);
+  if (req.headers.host !== new URL(origin).host) throw fail('Invalid Host header.', 403);
+}
+
+// The main listener's own origin checks. The admin listener answers its refusals through admin-origin.mjs.
+function validateMainOrigin(req, localOrigin) {
   if (req.headers.origin && req.headers.origin !== localOrigin)
     throw fail('Cross-origin requests are not allowed.', 403);
   if (req.headers['sec-fetch-site'] === 'cross-site' && !['GET', 'HEAD', 'OPTIONS'].includes(req.method))
@@ -144,11 +156,25 @@ function standaloneEventRoute(req, res, url, store, traceChannel) {
   return true;
 }
 
-function standaloneRootRedirect(req, res, url, caps) {
+function standaloneRootRedirect(req, res, url, caps, adminOrigin) {
   if (url.pathname !== '/' || !['GET', 'HEAD'].includes(req.method)) return false;
-  res.writeHead(302, { location: caps.modelDriven ? '/main.aspx' : '/_sim/' });
+  res.writeHead(302, { location: caps.modelDriven ? '/main.aspx' : `${adminOrigin}/_sim/` });
   res.end();
   return true;
+}
+
+// The Canvas player polls its app revision every second: that probe is not a request of the host and opens no trace root.
+function canvasRevisionProbe(req, origin) {
+  const url = new URL(req.url ?? '/', origin);
+  return req.method === 'GET' && url.pathname.startsWith('/_apps/canvas/api/') && url.searchParams.has('revision');
+}
+
+// Stops a listener from accepting and closes its idle connections; resolves once it has closed.
+function stopListener(listener) {
+  if (!listener?.listening) return Promise.resolve();
+  const closed = new Promise((resolve) => listener.close(resolve));
+  listener.closeIdleConnections();
+  return closed;
 }
 
 function isStandaloneAdminAssetRequest(req, url) {
@@ -195,7 +221,9 @@ function standaloneAdminAssetHeaders(res, file, index) {
   const watchedRoots = [...new Set([...solutionRoots, ...(modelDriven.clientSources ?? [])])];
   const stateFile = options.stateFile,
     diagnostics = [],
-    csrf = randomBytes(32).toString('hex');
+    // The apps token: the apps pages, Canvas and Code Apps send it. The admin token is the administration's own.
+    csrf = randomBytes(32).toString('hex'),
+    adminToken = randomBytes(32).toString('hex');
   const presetMode = options.presetMode ?? 'always';
   if (!['always', 'bootstrap'].includes(presetMode)) throw new Error('presetMode must be bootstrap or always');
   const stateExisted = stateFile
@@ -274,7 +302,9 @@ function standaloneAdminAssetHeaders(res, file, index) {
     backend,
     sourceComponents,
     server,
+    adminServer,
     localOrigin,
+    adminOrigin,
     closing,
     watchedSourceSignature,
     codeAppRecords = [];
@@ -425,10 +455,11 @@ function standaloneAdminAssetHeaders(res, file, index) {
   });
   const recordCapabilities = createRecordCapabilitiesSummary(store);
   const status = ({ reuseCapabilities = false } = {}) => ({
-    csrf,
+    csrf: adminToken,
     runtime,
     ...organizationHost.capabilityStatus({ reuse: reuseCapabilities }),
     links: links(),
+    adminUrl: `${adminOrigin}/_sim/`,
     simulation: policy(),
     sourceDir: null,
     solutionRoots,
@@ -465,7 +496,7 @@ function standaloneAdminAssetHeaders(res, file, index) {
     eventChannels: ['trace'],
   });
   const exposed = () => ({
-    csrf,
+    csrf: adminToken,
     config: config(),
     status: {
       ...status(),
@@ -538,12 +569,9 @@ function standaloneAdminAssetHeaders(res, file, index) {
         }
       };
       await cleanup(() => watcher?.close());
-      const stopped = server?.listening
-        ? new Promise((resolve) => {
-            server.close(resolve);
-            server.closeIdleConnections();
-          })
-        : Promise.resolve();
+      // The admin listener stops first: its connections close before the main listener's.
+      const adminStopped = stopListener(adminServer);
+      const stopped = stopListener(server);
       await Promise.allSettled(requests);
       await cleanup(() => mutation);
       await cleanup(() => sourceComponents?.close());
@@ -551,6 +579,8 @@ function standaloneAdminAssetHeaders(res, file, index) {
       // One close order (organization-host.mjs): backend, organization, API, managed identity.
       await cleanup(() => organizationHost.close());
       await cleanup(() => store.closeRecordStorage());
+      adminServer?.closeAllConnections();
+      await adminStopped;
       server?.closeAllConnections();
       await stopped;
       if (errors.length) throw new AggregateError(errors, 'Standalone runtime cleanup failed.');
@@ -661,6 +691,7 @@ function standaloneAdminAssetHeaders(res, file, index) {
         return principal.kind === 'staff' ? principal : null;
       },
       csrf: () => csrf,
+      adminToken: () => adminToken,
       traces,
       traceActor: (principal) => staffActor(organization, principal),
     });
@@ -700,6 +731,8 @@ function standaloneAdminAssetHeaders(res, file, index) {
       catalogue,
       data,
       csrf: () => csrf,
+      // The shell has no portal: its portal meta stays empty.
+      portalUrl: () => null,
       json,
       readBody,
       change,
@@ -739,7 +772,7 @@ function standaloneAdminAssetHeaders(res, file, index) {
       json,
       jsonObjectBody: readBody,
       change,
-      csrf: () => csrf,
+      csrf: () => adminToken,
       status: () => status({ reuseCapabilities: true }),
       statusChunks: (value) => statusResponseChunks(value, recordCapabilities),
       state: exposed,
@@ -772,13 +805,13 @@ function standaloneAdminAssetHeaders(res, file, index) {
     });
     adminRoutes = admin.routes;
     // /_sim/api/messages and /_sim/api/outbox (sim-messaging-routes.mjs) answer before the generic admin router.
-    const messagingRoutes = createMessagingRoutes({ api: organization.api, csrf: () => csrf });
+    const messagingRoutes = createMessagingRoutes({ api: organization.api, csrf: () => adminToken });
     const flowRoutes = createFlowRoutes({
       api: organization.api,
-      csrf: () => csrf,
+      csrf: () => adminToken,
       origin: { host: 'standalone', portal: null, preset: null },
     });
-    const traceRoutes = createTraceRoutes({ traces, csrf: () => csrf, json });
+    const traceRoutes = createTraceRoutes({ traces, csrf: () => adminToken, json });
     const traceChannel = createTraceChannel(traces);
     // GET /_sim/api/dashboard (sim-dashboard-routes.mjs): the shared topology plus this host's listener and request count.
     const dashboardRoutes = createDashboardRoutes({
@@ -867,7 +900,7 @@ function standaloneAdminAssetHeaders(res, file, index) {
     // /_sim/api/environment (sim-environment-routes.mjs): Solution environment variables and local overrides; deployment
     // profile files are read by the Power Pages host only.
     const environmentRoutes = createEnvironmentRoutes({
-      csrf: () => csrf,
+      csrf: () => adminToken,
       change,
       json,
       jsonObjectBody: readBody,
@@ -898,10 +931,27 @@ function standaloneAdminAssetHeaders(res, file, index) {
       ...(options.setup ?? (options.project?.configFile ? { project: options.project.configFile } : {})),
       runtime: { product: 'Mirage', ...runtime, capabilities: caps },
     });
-    server = http.createServer((req, res) => {
+    const onAdmin = (req) => adminServer.listening && req.socket.localPort === adminServer.address().port;
+    const onRequest = (req, res) => {
       const handle = async () => {
-        validateStandaloneRequest(req, res, closing, localOrigin);
-        const url = new URL(req.url, localOrigin);
+        const onAdminListener = onAdmin(req),
+          origin = onAdminListener ? adminOrigin : localOrigin;
+        validateStandaloneRequest(req, res, closing, origin);
+        const url = new URL(req.url, origin);
+        if (onAdminListener) {
+          const verdict = listenerVerdict(req, url, {
+            origin: adminOrigin,
+            fallbackOrigin: localOrigin,
+            serves: (pathname) => adminServes(pathname),
+            kind: 'Admin',
+          });
+          if (verdict) return answerVerdict(res, verdict);
+        } else {
+          validateMainOrigin(req, localOrigin);
+          const verdict = portalVerdict(req, url, { adminOrigin, routes: STANDALONE_ROUTES });
+          if (verdict) return answerVerdict(res, verdict);
+        }
+        normalizeTokenHeaders(req, url.pathname, { adminToken, pageToken: csrf, appsToken: csrf });
         if (await setup(req, res)) return;
         // GET /_sim/events?channels=trace: the trace channel, with the frames the Power Pages host streams.
         if (standaloneEventRoute(req, res, url, store, traceChannel)) return;
@@ -930,7 +980,7 @@ function standaloneAdminAssetHeaders(res, file, index) {
           res.end(req.method === 'HEAD' ? undefined : await fs.readFile(source));
           return;
         }
-        if (standaloneRootRedirect(req, res, url, caps)) return;
+        if (standaloneRootRedirect(req, res, url, caps, adminOrigin)) return;
         throw fail('Resource not found.', 404);
       };
       // The http root span of this host (docs/design/tracing.md). App surfaces name their host and module (model-driven,
@@ -944,7 +994,7 @@ function standaloneAdminAssetHeaders(res, file, index) {
       const simAction = adminPath && !['GET', 'HEAD', 'OPTIONS'].includes(req.method) && SIM_ACTION.test(pathname);
       const surface = adminPath ? null : appTraceSurface(pathname);
       const span =
-        traces.enabled && (!adminPath || simAction)
+        traces.enabled && (!adminPath || simAction) && !canvasRevisionProbe(req, localOrigin)
           ? traces.start({
               kind: 'http',
               name: `${req.method} ${pathname}`,
@@ -991,7 +1041,9 @@ function standaloneAdminAssetHeaders(res, file, index) {
         });
       requests.add(task);
       task.finally(() => requests.delete(task)).catch(() => {});
-    });
+    };
+    server = http.createServer(onRequest);
+    adminServer = http.createServer(onRequest);
     storageAdapter?.activate(store.state);
     store.completeInitialization();
     startupPhase('listener');
@@ -1003,6 +1055,14 @@ function standaloneAdminAssetHeaders(res, file, index) {
       });
     });
     localOrigin = `http://${host === '::1' ? '[::1]' : host}:${server.address().port}`;
+    await new Promise((resolve, reject) => {
+      adminServer.once('error', reject);
+      adminServer.listen(0, host, () => {
+        adminServer.off('error', reject);
+        resolve();
+      });
+    });
+    adminOrigin = `http://${host === '::1' ? '[::1]' : host}:${adminServer.address().port}`;
     if (settings.enabled) {
       let certificate = null;
       if (settings.tls) {
@@ -1152,7 +1212,9 @@ function standaloneAdminAssetHeaders(res, file, index) {
     return {
       url: localOrigin,
       origin: localOrigin,
-      adminUrl: `${localOrigin}/_sim/`,
+      adminUrl: `${adminOrigin}/_sim/`,
+      setupUrl: `${adminOrigin}/_setup/`,
+      adminOrigin,
       port: server.address().port,
       store,
       runtime,
@@ -1161,7 +1223,8 @@ function standaloneAdminAssetHeaders(res, file, index) {
         return dataverse;
       },
       state: exposed,
-      csrf,
+      csrf: adminToken,
+      appsToken: csrf,
       status,
       reload,
       close,

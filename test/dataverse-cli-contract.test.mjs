@@ -9,9 +9,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { runProcess } from '../lense/dataverse/connection.mjs';
 
+const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
+
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const run = (...args) =>
-  spawnSync(process.execPath, [cli, 'dataverse', ...args], { encoding: 'utf8', timeout: 30000, windowsHide: true });
+  spawnSync(process.execPath, [cli, 'dataverse', ...args], {
+    encoding: 'utf8',
+    timeout: CLI_HANG_GUARD_MS,
+    windowsHide: true,
+  });
 const commands = {
   register: ['--connection', '--name'],
   connect: ['--registration', '--secret-file', '--connection'],
@@ -69,13 +75,13 @@ test('Dataverse help and invalid arguments preserve CLI contracts without invoki
     spawnSync(process.execPath, [cli, 'dataverse', ...args], {
       env: testEnvironment,
       encoding: 'utf8',
-      timeout: 30000,
+      timeout: CLI_HANG_GUARD_MS,
       windowsHide: true,
     });
   const positive = spawnSync(process.execPath, [harness], {
     env: testEnvironment,
     encoding: 'utf8',
-    timeout: 30000,
+    timeout: CLI_HANG_GUARD_MS,
     windowsHide: true,
   });
   assert.equal(positive.status, 0, positive.stderr);
@@ -275,7 +281,7 @@ test('register rejects an invalid environment before invoking PAC', async (t) =>
     {
       env: { ...process.env, PAQVILO_PAC_EXECUTABLE: path.join(root, 'missing-pac') },
       encoding: 'utf8',
-      timeout: 30000,
+      timeout: CLI_HANG_GUARD_MS,
       windowsHide: true,
     },
   );

@@ -147,7 +147,7 @@ export function renderControl(field, value, context = {}) {
   if (!controlDescriptor(field).supported || !renderer) {
     const element = document.createElement('p');
     element.className = 'unsupported';
-    element.textContent = 'This control is not supported locally yet.';
+    element.textContent = 'This control is not available in the local host.';
     return { element, read: () => value, supported: false };
   }
   if (context.pcf) return renderPcfControl(field, value, context);

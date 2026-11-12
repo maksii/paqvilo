@@ -145,17 +145,8 @@ export function loadClientLibrary(
         const script = document.createElement('script');
         script.src = url.href;
         script.async = false;
-        const timeout = setTimeout(() => {
-          script.remove();
-          loadedLibraries.delete(url.href);
-          reject(new Error(`Timed out loading exported script ${name}.`));
-        }, 15000);
-        script.onload = () => {
-          clearTimeout(timeout);
-          resolve();
-        };
+        script.onload = () => resolve();
         script.onerror = () => {
-          clearTimeout(timeout);
           loadedLibraries.delete(url.href);
           script.remove();
           reject(new Error(`Could not load exported script ${name}.`));
@@ -604,26 +595,48 @@ function validatePageViews(type, pageInput, tables) {
   return input;
 }
 
-export function createFormClientRuntime(host) {
-  let live = true,
+export function createFormClientRuntime(hostInput) {
+  let host = hostInput,
+    live = true,
     depth = 0,
     saving = false;
+  // Captured once: detach() replaces host, and the form notification is still shown and cleared after that.
+  const formNotification = hostInput.notification;
   const activeEvents = new Map();
   const assertLive = () => {
     if (!live) throw new Error('This form context has been disposed.');
   };
+  // Promise-returning members report a disposed context as a rejection; synchronous members throw it.
+  const ASYNC_MEMBERS = new Set([
+    'save',
+    'refresh',
+    'retrieveRecord',
+    'retrieveMultipleRecords',
+    'createRecord',
+    'updateRecord',
+    'deleteRecord',
+    'execute',
+    'executeMultiple',
+  ]);
+  const guarded = (key, entry) => {
+    if (!ASYNC_MEMBERS.has(key))
+      return (...args) => {
+        assertLive();
+        return entry(...args);
+      };
+    return (...args) => {
+      try {
+        assertLive();
+      } catch (error) {
+        return Promise.reject(error);
+      }
+      return entry(...args);
+    };
+  };
   const client = (value, path, absent) =>
     bounded(
       Object.fromEntries(
-        Object.entries(value).map(([key, entry]) => [
-          key,
-          typeof entry === 'function'
-            ? (...args) => {
-                assertLive();
-                return entry(...args);
-              }
-            : entry,
-        ]),
+        Object.entries(value).map(([key, entry]) => [key, typeof entry === 'function' ? guarded(key, entry) : entry]),
       ),
       path,
       absent,
@@ -633,7 +646,17 @@ export function createFormClientRuntime(host) {
     notifications = new Set(),
     submitModes = new Map(),
     invalidNumberReads = new Map(),
-    initial = structuredClone(host.initialRecord ?? host.record);
+    // The baseline dirty state compares with is the runtime's own copy of the persisted values. The copy is taken again
+    // when the host hands over another initial record object (a reload) and after a completed save; the caller's object
+    // is never read after that.
+    baselineState = { source: host.initialRecord, snapshot: structuredClone(host.initialRecord ?? host.record) },
+    baseline = () => {
+      if (host.initialRecord !== baselineState.source) {
+        baselineState.source = host.initialRecord;
+        baselineState.snapshot = structuredClone(host.initialRecord ?? host.record);
+      }
+      return baselineState.snapshot;
+    };
   const add = (key, callback) => {
     if (typeof callback !== 'function') throw new Error('Client event handler must be a function.');
     const handlers = events.get(key) ?? [];
@@ -647,13 +670,174 @@ export function createFormClientRuntime(host) {
       key,
       (events.get(key) ?? []).filter((handler) => handler.callback !== callback),
     );
-  const saveForm = (close) => {
+  // Refusals a script awaits: the observed native shapes, and Mirage-local errors for outcomes Microsoft documents no shape for.
+  const NATIVE_SAVE_REFUSALS = new Map([
+    [
+      'cancelled',
+      {
+        errorCode: 2200000005,
+        code: 2200000005,
+        message: 'This form can’t be saved due to a custom setting.',
+        title: 'Unable to save',
+      },
+    ],
+    [
+      'invalid',
+      {
+        errorCode: 2200000007,
+        code: 2200000007,
+        message: 'Please make sure all the field requirements are met.',
+        title: 'Unable to save changes',
+      },
+    ],
+    [
+      'busy',
+      {
+        errorCode: 2200000003,
+        code: 2200000003,
+        message: 'Please wait while saving is completed',
+        title: 'Saving in Progress',
+      },
+    ],
+  ]);
+  const LOCAL_SAVE_REFUSALS = new Map([
+    ['denied', ['SaveDenied', 'This record cannot be saved with the signed-in staff context.']],
+    ['unsupported', ['SaveUnsupported', 'The form has changes that cannot be saved locally.']],
+  ]);
+  const refusals = new WeakSet();
+  const saveRefusal = (outcome) => {
+    if (NATIVE_SAVE_REFUSALS.has(outcome)) return { ...NATIVE_SAVE_REFUSALS.get(outcome) };
+    if (!LOCAL_SAVE_REFUSALS.has(outcome)) return undefined;
+    const [code, message] = LOCAL_SAVE_REFUSALS.get(outcome);
+    return Object.assign(new Error(message), { code });
+  };
+  // The braced id data.entity.getId() returns; the saved reference uses the same format.
+  const recordId = () => (host.record[host.table.idColumn] ? `{${host.record[host.table.idColumn]}}` : '');
+  const savedReference = () => ({
+    savedEntityReference: {
+      entityType: host.table.entity,
+      id: recordId(),
+      name: host.record[host.table.nameColumn] ?? '',
+    },
+  });
+  const settleSave = (outcome) => {
+    const refusal = saveRefusal(outcome);
+    if (!refusal) return savedReference();
+    refusals.add(refusal);
+    throw refusal;
+  };
+  const saveForm = (close, mode) => {
     assertLive();
     if (activeEvents.size)
-      throw new Error(
-        `Saving from an active ${[...activeEvents.keys()].at(-1)} handler is not supported. Finish the event before saving.`,
+      return Promise.reject(
+        new Error(
+          `Saving from an active ${[...activeEvents.keys()].at(-1)} handler is not supported. Finish the event before saving.`,
+        ),
       );
-    return host.save(close);
+    return Promise.resolve(host.save(close, mode)).then((outcome) => {
+      const reference = settleSave(outcome);
+      rebaseline();
+      return reference;
+    });
+  };
+  // A completed save makes the saved values the baseline: a copy of them, so no later change to a host object matters.
+  const rebaseline = () => {
+    baselineState.source = host.initialRecord;
+    baselineState.snapshot = structuredClone(host.record);
+  };
+  // A context saved as saveandnew keeps answering with the record it saved. Every other host call it makes
+  // is refused here, in one place: reads and Web API passthroughs stay live, and a value-setting call is refused.
+  const DETACHED = 'This form context was replaced by a new record form.';
+  const DETACHED_READS = new Set([
+    'read',
+    'isDirty',
+    'isValid',
+    'getFormType',
+    'controlNames',
+    'controlField',
+    'isPcfControl',
+    'layoutVisible',
+    'layoutLabel',
+    'pageContext',
+    'metadata',
+    'request',
+    'webApi',
+    'alert',
+    'confirm',
+  ]);
+  // Host calls whose value argument, at this index, turns a read into a write.
+  const DETACHED_VALUE_INDEX = new Map([
+    ['controlState', 2],
+    ['required', 1],
+  ]);
+  const detachedMember =
+    (key, member) =>
+    (...args) => {
+      const valueIndex = DETACHED_VALUE_INDEX.get(key);
+      if (DETACHED_READS.has(key) || (valueIndex !== undefined && args[valueIndex] === undefined))
+        return member(...args);
+      throw new Error(DETACHED);
+    };
+  const detach = () => {
+    const saved = structuredClone(host.record),
+      formType = host.getFormType?.() ?? (saved[host.table.idColumn] ? 2 : 1),
+      guarded = Object.fromEntries(
+        Object.entries(host).map(([key, value]) => [
+          key,
+          typeof value === 'function' ? detachedMember(key, value) : value,
+        ]),
+      );
+    host = {
+      ...guarded,
+      record: saved,
+      initialRecord: saved,
+      read: (name) => saved[name],
+      isDirty: () => false,
+      isValid: () => true,
+      getFormType: () => formType,
+      save: () => Promise.reject(new Error(DETACHED)),
+      refresh: () => Promise.reject(new Error(DETACHED)),
+    };
+  };
+  // formContext.data.save(saveOptions): saveMode reaches OnSave as getSaveMode() and does not change the save action.
+  const saveOptionMode = (options) => {
+    const valid =
+      options === undefined ||
+      (typeof options === 'object' &&
+        options !== null &&
+        (options.saveMode === undefined || Number.isSafeInteger(options.saveMode)));
+    if (!valid) throw new Error('formContext.data.save expects saveOptions with an integer saveMode.');
+    return options?.saveMode;
+  };
+  // data.save reports invalid saveOptions as a rejection, as the other promise-returning members do.
+  const saveWithOptions = (options) => {
+    try {
+      return saveForm(false, saveOptionMode(options));
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  };
+  // Returns no promise, as the native call does. A host without openNewRecord refuses the mode.
+  const saveAndNew = () => {
+    if (typeof host.openNewRecord !== 'function') unsupported('formContext.data.entity.save saveandnew');
+    const openNewRecord = host.openNewRecord;
+    // formNotification stays callable after detach() replaces host with an object that refuses notification.
+    saveForm(false, 59)
+      .then(() => {
+        detach();
+        return openNewRecord();
+      })
+      .catch((error) => {
+        // A refused save leaves this form open with its refusal; any other failure is shown as an error form notification.
+        if (refusals.has(error)) return;
+        notifications.add('save');
+        formNotification(error.message, 'ERROR', 'save');
+      });
+    return undefined;
+  };
+  const entitySave = (mode) => {
+    if (mode === 'saveandnew') return saveAndNew();
+    return mode === 'saveandclose' ? saveForm(true, 2) : saveForm(false);
   };
   const formIsValid = (report) => {
     if (typeof host.isValid !== 'function') unsupported('form validity without a host validator');
@@ -686,11 +870,12 @@ export function createFormClientRuntime(host) {
     host.syncChoiceOptions?.(name, fieldName, options, blank);
   };
   const layoutLabels = new Map();
-  const layoutLabel = (item) => layoutLabels.get(item) ?? host.layoutLabel?.(item) ?? item.label;
-  const setLayoutLabel = (item, value) => {
+  // A section passes its parent tab, which names the section in the host (sections of different tabs may share a name).
+  const layoutLabel = (item, parent) => layoutLabels.get(item) ?? host.layoutLabel?.(item, parent) ?? item.label;
+  const setLayoutLabel = (item, value, parent) => {
     const label = String(value);
     layoutLabels.set(item, label);
-    host.setLayoutLabel?.(item, label);
+    host.setLayoutLabel?.(item, label, parent);
   };
   const clientValue = (name, value, source = host.record) => {
     if (value == null) return null;
@@ -719,7 +904,7 @@ export function createFormClientRuntime(host) {
   };
   const sameAttributeValue = (name, left, right) => {
     const a = clientValue(name, left),
-      b = clientValue(name, right, initial);
+      b = clientValue(name, right, baseline());
     if (host.table.fields[name].type === 'lookup') {
       const identity = (value) =>
         value?.map(({ id, entityType }) => [bareId(id), String(entityType ?? '').toLowerCase()]) ?? null;
@@ -799,9 +984,9 @@ export function createFormClientRuntime(host) {
           getName: () => name,
           getValue: () => clientValue(name, attributeValue(name)),
           getInitialValue: () =>
-            field.type === 'boolean' && initial[name] != null
-              ? Number(initial[name])
-              : clientValue(name, initial[name]),
+            field.type === 'boolean' && baseline()[name] != null
+              ? Number(baseline()[name])
+              : clientValue(name, baseline()[name]),
           setValue: (value) => {
             assertLive();
             const previous = fieldValue(name),
@@ -835,13 +1020,13 @@ export function createFormClientRuntime(host) {
             // column changes. A real edit to this Boolean settles that default;
             // restoring its value then clears only its attribute dirty flag.
             const pendingFalseDefault =
-              !initial[host.table.idColumn] &&
+              !baseline()[host.table.idColumn] &&
               field.type === 'boolean' &&
               field.defaultValue === false &&
-              initial[name] === false &&
+              baseline()[name] === false &&
               host.isDirty() &&
               !host.isDirty(name);
-            return pendingFalseDefault || !sameAttributeValue(name, fieldValue(name), initial[name]);
+            return pendingFalseDefault || !sameAttributeValue(name, fieldValue(name), baseline()[name]);
           },
           ...(field.type === 'number' && !Array.isArray(field.options)
             ? {
@@ -1011,7 +1196,7 @@ export function createFormClientRuntime(host) {
         {
           entity: client(
             {
-              getId: () => (host.record[host.table.idColumn] ? `{${host.record[host.table.idColumn]}}` : ''),
+              getId: recordId,
               getEntityName: () => host.table.entity,
               getPrimaryAttributeValue: () => host.read(host.table.nameColumn),
               getIsDirty: () => host.isDirty(),
@@ -1019,13 +1204,13 @@ export function createFormClientRuntime(host) {
               attributes: collection(attributes),
               addOnSave: (callback) => add('onsave', callback),
               removeOnSave: (callback) => remove('onsave', callback),
-              save: (mode) => saveForm(mode === 'saveandclose'),
+              save: entitySave,
             },
             'formContext.data.entity',
           ),
           getIsDirty: () => host.isDirty(),
           isValid: () => formIsValid(true),
-          save: () => saveForm(false),
+          save: saveWithOptions,
           refresh: (save) => (save ? saveForm(false) : host.refresh()),
           addOnLoad: (callback) => add('onload', callback),
           removeOnLoad: (callback) => remove('onload', callback),
@@ -1061,12 +1246,12 @@ export function createFormClientRuntime(host) {
                       client(
                         {
                           getName: () => section.name ?? null,
-                          getLabel: () => layoutLabel(section),
-                          setLabel: (value) => setLayoutLabel(section, value),
+                          getLabel: () => layoutLabel(section, tab),
+                          setLabel: (value) => setLayoutLabel(section, value, tab),
                           getParent: () => formContext.ui.tabs.get(tab.id),
-                          getVisible: () => host.layoutVisible?.(section) ?? section.visible !== false,
+                          getVisible: () => host.layoutVisible?.(section, tab) ?? section.visible !== false,
                           setVisible: (visible) => {
-                            host.setLayoutVisible(section, Boolean(visible));
+                            host.setLayoutVisible(section, Boolean(visible), tab);
                           },
                         },
                         'formContext.ui.tab.section',
@@ -1114,23 +1299,38 @@ export function createFormClientRuntime(host) {
       depth--;
     }
   };
-  async function dispatch(name, attribute, saveMode = 1) {
+  // getEventArgs per event: OnSave has the save mode and prevention, OnLoad the data load state, OnChange is undefined.
+  const eventArguments = (name, detail, state) => {
+    if (name === 'onload') return client({ getDataLoadState: () => detail }, 'eventArgs');
+    if (name === 'onchange') return undefined;
+    if (name !== 'onsave') return client({}, 'eventArgs');
+    return client(
+      {
+        getSaveMode: () => detail,
+        preventDefault: () => {
+          state.prevented = true;
+        },
+        isDefaultPrevented: () => state.prevented,
+        preventDefaultOnError: () => {
+          state.preventDefaultOnError = true;
+        },
+        shouldPreventDefaultOnError: () => state.preventDefaultOnError,
+        disableAsyncTimeout: () => {
+          state.disableAsyncTimeout = true;
+        },
+        shouldDisableAsyncTimeout: () => state.disableAsyncTimeout,
+      },
+      'eventArgs',
+    );
+  };
+  // formHandlers: false runs only the handlers added from script; a reload of an open form does not replay the form's OnLoad.
+  async function dispatch(name, attribute, detail = 1, { formHandlers = true } = {}) {
     assertLive();
     if (name === 'onsave' && saving) throw new Error('Recursive save from an OnSave handler is not supported.');
     if (name === 'onsave') saving = true;
     activeEvents.set(name, (activeEvents.get(name) ?? 0) + 1);
-    let prevented = false;
-    const eventArgs = client(
-      {
-        getSaveMode: () => saveMode,
-        preventDefault: () => {
-          if (name !== 'onsave') unsupported(`${name}.preventDefault`);
-          prevented = true;
-        },
-        isDefaultPrevented: () => prevented,
-      },
-      'eventArgs',
-    );
+    const state = { prevented: false, preventDefaultOnError: false, disableAsyncTimeout: false };
+    const eventArgs = eventArguments(name, detail, state);
     const context = (ordinal) =>
       client(
         {
@@ -1143,7 +1343,8 @@ export function createFormClientRuntime(host) {
       );
     try {
       let ordinal = 0;
-      for (const handler of matchingRegisteredHandlers(host, name, attribute)) {
+      const registered = formHandlers ? matchingRegisteredHandlers(host, name, attribute) : [];
+      for (const handler of registered) {
         await call(handler, [
           ...(handler.passExecutionContext ? [context(ordinal)] : []),
           ...parseHandlerParameters(handler.parameters),
@@ -1152,7 +1353,7 @@ export function createFormClientRuntime(host) {
       }
       /* NOSONAR */ for (const handler of [...(events.get(name === 'onchange' ? `onchange:${attribute}` : name) ?? [])])
         await call(handler.callback, [context(ordinal + handler.ordinal)]);
-      return { prevented };
+      return { prevented: state.prevented };
     } finally {
       const count = activeEvents.get(name) - 1;
       if (count) activeEvents.set(name, count);
@@ -1403,7 +1604,7 @@ export function createFormClientRuntime(host) {
       eventOrdinals.clear();
       invalidNumberReads.clear();
       layoutLabels.clear();
-      for (const id of notifications) host.notification(null, null, id);
+      for (const id of notifications) formNotification(null, null, id);
     },
   };
 }

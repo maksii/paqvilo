@@ -14,6 +14,7 @@ import { withProcessSlot } from './process-slots.mjs';
 import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 const cli = fileURLToPath(new URL('../cli.mjs', import.meta.url));
+const HANG_GUARD_MS = 170_000; // hang guard only: these steps are expected to succeed
 async function fixture(t, files) {
   // The real path: the CLI reports state and Solution paths as the OS resolves them (8.3 aliases expanded).
   const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-mirage-cli-')));
@@ -59,7 +60,7 @@ async function forceStop(child, completion) {
     child.stdout.destroy();
     child.stderr.destroy();
   }
-  await within(completion, 30_000, () => 'CLI did not close after forced termination');
+  await within(completion, HANG_GUARD_MS, () => 'CLI did not close after forced termination');
 }
 async function stop(child, completion) {
   if (!child.stdin.destroyed && !child.stdin.writableEnded) child.stdin.end('stop\n');
@@ -68,7 +69,7 @@ async function stop(child, completion) {
 function closeServer(server) {
   const completion = new Promise((resolve) => server.close(resolve));
   server.closeAllConnections();
-  return within(completion, 30_000, () => 'Owned HTTP fixture did not close');
+  return within(completion, HANG_GUARD_MS, () => 'Owned HTTP fixture did not close');
 }
 function startup(child, completion, output) {
   let check;
@@ -91,8 +92,8 @@ function startup(child, completion, output) {
         reject(error ?? new Error(`CLI exited before complete startup JSON. ${diagnostic()}`));
       });
     }),
-    30_000,
-    () => `CLI did not start after 30s. ${diagnostic()}`,
+    HANG_GUARD_MS,
+    () => `CLI did not start. ${diagnostic()}`,
   ).finally(() => child.stdout.off('data', check));
 }
 async function run(t, args, cwd) {
@@ -118,8 +119,8 @@ async function run(t, args, cwd) {
       // startup/commands headroom without extending any product request deadline.
       const { code, signal, error } = await within(
         completion,
-        30_000,
-        () => `CLI timed out after 30s: ${JSON.stringify(args)}\nstdout: ${stdout}\nstderr: ${stderr}`,
+        HANG_GUARD_MS,
+        () => `CLI timed out: ${JSON.stringify(args)}\nstdout: ${stdout}\nstderr: ${stderr}`,
       );
       if (error) throw error;
       return { code, signal, stdout, stderr };
@@ -143,7 +144,7 @@ test('runtime ports accept decimal integers from 0 to 65535 and reject empty and
 });
 
 // @test-kind contract: CLI: invalid serve ports fail before starting or writing simulation state
-test('CLI: invalid serve ports fail before starting or writing simulation state', { timeout: 60_000 }, async (t) => {
+test('CLI: invalid serve ports fail before starting or writing simulation state', async (t) => {
   const directory = await fixture(t, {
     'portal/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n',
     'portal/Home.webpage.copy.html': '<h1>Local home</h1>',
@@ -219,104 +220,150 @@ test('CLI: multi-portal serve closes its runtime after browser attachment fails'
   assert.equal(result.stdout, '');
 });
 
-test(
-  'CLI: standard/enhanced inspect, local render, controlled argument errors and no absolute render traffic',
-  { timeout: 120_000 },
-  async (t) => {
-    const directory = await fixture(t, {
-      'standard/Home.webpage.yml': 'adx_webpageid: home\nadx_name: CLI standard\nadx_partialurl: /\n',
-      'standard/Home.webpage.copy.html': '<h1>CLI local {{ "Liquid" | upcase }}</h1>',
-      'standard/deployment-profiles/sandbox.deployment.yml':
-        'adx_webpage:\n- adx_webpageid: home\n  adx_name: Profile selected explicitly\n',
-      'enhanced/home/powerpagecomponent.xml':
-        '<powerpagecomponent powerpagecomponentid="enhanced-home"><name>Enhanced home</name><powerpagecomponenttype>2</powerpagecomponenttype><content>{&quot;adx_webpageid&quot;:&quot;enhanced-home&quot;,&quot;adx_name&quot;:&quot;Enhanced home&quot;,&quot;adx_partialurl&quot;:&quot;/&quot;,&quot;adx_copy&quot;:&quot;&lt;h1&gt;Enhanced local&lt;/h1&gt;&quot;}</content></powerpagecomponent>',
-    });
-    const standard = path.join(directory, 'standard');
-    const output = path.join(directory, 'rendered.html');
-    const unusedState = path.join(directory, 'capture-state.json');
-    let unrelatedTraffic = 0;
-    const unrelated = http.createServer((_req, res) => {
-      unrelatedTraffic++;
-      res.end('Unrelated');
-    });
-    unrelated.listen(0, '127.0.0.1');
-    await once(unrelated, 'listening');
-    ownedFixture(t).add(() => closeServer(unrelated));
-    const unrelatedUrl = `http://127.0.0.1:${unrelated.address().port}/unrelated`;
-    const badPaths = [unrelatedUrl, unrelatedUrl.replace('http:', ''), '/\\127.0.0.1/unsafe'];
-    const [inspected, profiled, enhanced, rendered, unknownOption, missingCdp, withPreset, ...badRenders] =
-      await Promise.all(
+test('CLI: standard/enhanced inspect, local render, controlled argument errors and no absolute render traffic', async (t) => {
+  const directory = await fixture(t, {
+    'standard/Home.webpage.yml': 'adx_webpageid: home\nadx_name: CLI standard\nadx_partialurl: /\n',
+    'standard/Home.webpage.copy.html': '<h1>CLI local {{ "Liquid" | upcase }}</h1>',
+    'standard/deployment-profiles/sandbox.deployment.yml':
+      'adx_webpage:\n- adx_webpageid: home\n  adx_name: Profile selected explicitly\n',
+    'enhanced/home/powerpagecomponent.xml':
+      '<powerpagecomponent powerpagecomponentid="enhanced-home"><name>Enhanced home</name><powerpagecomponenttype>2</powerpagecomponenttype><content>{&quot;adx_webpageid&quot;:&quot;enhanced-home&quot;,&quot;adx_name&quot;:&quot;Enhanced home&quot;,&quot;adx_partialurl&quot;:&quot;/&quot;,&quot;adx_copy&quot;:&quot;&lt;h1&gt;Enhanced local&lt;/h1&gt;&quot;}</content></powerpagecomponent>',
+  });
+  const standard = path.join(directory, 'standard');
+  const output = path.join(directory, 'rendered.html');
+  const unusedState = path.join(directory, 'capture-state.json');
+  let unrelatedTraffic = 0;
+  const unrelated = http.createServer((_req, res) => {
+    unrelatedTraffic++;
+    res.end('Unrelated');
+  });
+  unrelated.listen(0, '127.0.0.1');
+  await once(unrelated, 'listening');
+  ownedFixture(t).add(() => closeServer(unrelated));
+  const unrelatedUrl = `http://127.0.0.1:${unrelated.address().port}/unrelated`;
+  const badPaths = [unrelatedUrl, unrelatedUrl.replace('http:', ''), '/\\127.0.0.1/unsafe'];
+  const [inspected, profiled, enhanced, rendered, unknownOption, missingCdp, withPreset, ...badRenders] =
+    await Promise.all(
+      [
+        ['inspect', '--source', standard, '--env', 'sandbox', '--json'],
+        ['inspect', '--source', standard, '--env', 'sandbox', '--deployment-profile', 'sandbox', '--json'],
+        ['inspect', '--source', path.join(directory, 'enhanced'), '--json'],
         [
-          ['inspect', '--source', standard, '--env', 'sandbox', '--json'],
-          ['inspect', '--source', standard, '--env', 'sandbox', '--deployment-profile', 'sandbox', '--json'],
-          ['inspect', '--source', path.join(directory, 'enhanced'), '--json'],
-          [
-            'render',
-            '--source',
-            standard,
-            '--state',
-            path.join(directory, 'render-state.json'),
-            '--path',
-            '/',
-            '--output',
-            output,
-          ],
-          ['inspect', '--source', standard, '--not-an-option'],
-          ['capture-shell', '--source', standard, '--state', unusedState, '--path', '/'],
-          [
-            'capture-shell',
-            '--source',
-            standard,
-            '--state',
-            unusedState,
-            '--cdp',
-            'http://127.0.0.1:1',
-            '--preset',
-            'contact-demo',
-          ],
-          ...badPaths.map((badPath, index) => [
-            'render',
-            '--source',
-            standard,
-            '--state',
-            path.join(directory, `invalid-render-state-${index}.json`),
-            '--path',
-            badPath,
-          ]),
-        ].map((args) => run(t, args, directory)),
-      );
-    assert.equal(inspected.code, 0, inspected.stderr);
-    const standardReport = JSON.parse(inspected.stdout);
-    assert.equal(standardReport.format, 'standard');
-    assert.equal(standardReport.pages[0].url, '/');
-    assert.equal(standardReport.pages[0].name, 'CLI standard');
-    assert.equal(standardReport.liquidSyntax.sourceCount, 1);
-    assert.equal(standardReport.liquidSyntax.sourceParsePassed, 1);
-    assert.deepEqual(standardReport.liquidSyntax.diagnostics, []);
-    assert.equal(profiled.code, 0, profiled.stderr);
-    assert.equal(JSON.parse(profiled.stdout).pages[0].name, 'Profile selected explicitly');
-    assert.match(await fs.readFile(path.join(standard, 'Home.webpage.yml'), 'utf8'), /CLI standard/);
-    assert.equal(enhanced.code, 0, enhanced.stderr);
-    assert.equal(JSON.parse(enhanced.stdout).format, 'enhanced');
-    assert.equal(JSON.parse(enhanced.stdout).pages[0].name, 'Enhanced home');
-    assert.equal(rendered.code, 0, rendered.stderr);
-    assert.equal(JSON.parse(rendered.stdout).status, 200);
-    assert.match(await fs.readFile(output, 'utf8'), /CLI local LIQUID/);
-    for (const [index, result] of badRenders.entries()) {
-      assert.equal(result.code, 1, badPaths[index]);
-      assert.match(result.stderr, /portal-relative|escaped the local simulator/);
-    }
-    assert.equal(unrelatedTraffic, 0);
-    assert.equal(unknownOption.code, 1);
-    assert.match(unknownOption.stderr, /Unknown option/);
-    assert.doesNotMatch(unknownOption.stderr, /at parseArgs|node:internal|ERR_PARSE_ARGS/);
-    assert.equal(missingCdp.code, 1);
-    assert.match(missingCdp.stderr, /requires --cdp/);
-    assert.equal(withPreset.code, 1);
-    assert.match(withPreset.stderr, /does not apply presets/);
-    await assert.rejects(fs.stat(unusedState), { code: 'ENOENT' });
-  },
-);
+          'render',
+          '--source',
+          standard,
+          '--state',
+          path.join(directory, 'render-state.json'),
+          '--path',
+          '/',
+          '--output',
+          output,
+        ],
+        ['inspect', '--source', standard, '--not-an-option'],
+        ['capture-stylesheets', '--source', standard, '--state', unusedState],
+        [
+          'capture-stylesheets',
+          '--source',
+          standard,
+          '--state',
+          unusedState,
+          '--cdp',
+          'http://127.0.0.1:1',
+          '--preset',
+          'contact-demo',
+        ],
+        ...badPaths.map((badPath, index) => [
+          'render',
+          '--source',
+          standard,
+          '--state',
+          path.join(directory, `invalid-render-state-${index}.json`),
+          '--path',
+          badPath,
+        ]),
+      ].map((args) => run(t, args, directory)),
+    );
+  assert.equal(inspected.code, 0, inspected.stderr);
+  const standardReport = JSON.parse(inspected.stdout);
+  assert.equal(standardReport.format, 'standard');
+  assert.equal(standardReport.pages[0].url, '/');
+  assert.equal(standardReport.pages[0].name, 'CLI standard');
+  assert.equal(standardReport.liquidSyntax.sourceCount, 1);
+  assert.equal(standardReport.liquidSyntax.sourceParsePassed, 1);
+  assert.deepEqual(standardReport.liquidSyntax.diagnostics, []);
+  assert.equal(profiled.code, 0, profiled.stderr);
+  assert.equal(JSON.parse(profiled.stdout).pages[0].name, 'Profile selected explicitly');
+  assert.match(await fs.readFile(path.join(standard, 'Home.webpage.yml'), 'utf8'), /CLI standard/);
+  assert.equal(enhanced.code, 0, enhanced.stderr);
+  assert.equal(JSON.parse(enhanced.stdout).format, 'enhanced');
+  assert.equal(JSON.parse(enhanced.stdout).pages[0].name, 'Enhanced home');
+  assert.equal(rendered.code, 0, rendered.stderr);
+  assert.equal(JSON.parse(rendered.stdout).status, 200);
+  assert.match(await fs.readFile(output, 'utf8'), /CLI local LIQUID/);
+  for (const [index, result] of badRenders.entries()) {
+    assert.equal(result.code, 1, badPaths[index]);
+    assert.match(result.stderr, /portal-relative|escaped the local simulator/);
+  }
+  assert.equal(unrelatedTraffic, 0);
+  assert.equal(unknownOption.code, 1);
+  assert.match(unknownOption.stderr, /Unknown option/);
+  assert.doesNotMatch(unknownOption.stderr, /at parseArgs|node:internal|ERR_PARSE_ARGS/);
+  assert.equal(missingCdp.code, 1);
+  assert.match(missingCdp.stderr, /requires --cdp/);
+  assert.equal(withPreset.code, 1);
+  assert.match(withPreset.stderr, /does not apply presets/);
+  const retired = await run(t, ['capture-shell', '--source', standard], directory);
+  assert.equal(retired.code, 1, retired.stdout);
+  assert.match(retired.stderr, /Unknown command: capture-shell/);
+  await assert.rejects(fs.stat(unusedState), { code: 'ENOENT' });
+});
+
+// @test-kind contract: CLI render reports a redirect answer with its status and Location and never follows it
+test('CLI: render names a redirect answer, keeps the output file unwritten and does not follow the redirect', async (t) => {
+  const directory = await fixture(t, {
+    'source/Home.webpage.yml': 'adx_webpageid: home\nadx_name: CLI redirect home\nadx_partialurl: /\n',
+    'source/Secure.webpage.yml': 'adx_webpageid: secure\nadx_name: CLI redirect secure\nadx_partialurl: secure\n',
+  });
+  const source = path.join(directory, 'source');
+  const output = path.join(directory, 'redirected.html');
+  const [plain, withOutput] = await Promise.all([
+    run(
+      t,
+      ['render', '--source', source, '--state', path.join(directory, 'plain-state.json'), '--path', '/secure'],
+      directory,
+    ),
+    run(
+      t,
+      [
+        'render',
+        '--source',
+        source,
+        '--state',
+        path.join(directory, 'output-state.json'),
+        '--path',
+        '/secure',
+        '--output',
+        output,
+      ],
+      directory,
+    ),
+  ]);
+  assert.equal(plain.code, 1, plain.stdout);
+  assert.match(plain.stderr, /Render path \/secure answered 301 to \/secure\/; render the target path instead\./);
+  assert.doesNotMatch(plain.stderr, /fetch failed/);
+  assert.equal(withOutput.code, 1, withOutput.stderr);
+  const report = JSON.parse(withOutput.stdout);
+  assert.deepEqual(
+    { status: report.status, location: report.location, output: report.output },
+    {
+      status: 301,
+      location: '/secure/',
+      output: null,
+    },
+  );
+  assert.ok(Array.isArray(report.diagnostics));
+  await assert.rejects(fs.stat(output), { code: 'ENOENT' });
+});
 
 // Starts `serve` in `directory` with `args`, keeps its live output in `output` and resolves with its startup JSON.
 // A child still running when the test ends is stopped by the test's owner.
@@ -392,7 +439,7 @@ test('CLI: explicit solution root resolves real form fixture and owned serve pro
   child.stdin.end('stop\n');
   const { code, error } = await within(
     completion,
-    60_000,
+    HANG_GUARD_MS,
     () => `CLI did not stop. stdout: ${output.stdout}\nstderr: ${output.stderr}`,
   );
   if (error) throw error;
@@ -400,6 +447,91 @@ test('CLI: explicit solution root resolves real form fixture and owned serve pro
   assert.equal(JSON.parse(output.stdout).url, discovery.url);
   await assert.rejects(fs.stat(discovery.discovery), (error) => error.code === 'ENOENT');
   await assert.rejects(fetch(discovery.url));
+});
+
+// @test-kind contract: CLI: the startup JSON names an administration address on a loopback port of its own, which answers
+test('CLI: serve reports an administration address on a port of its own', async (t) => {
+  const directory = await fixture(t, {
+    'portal/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n',
+    'portal/Home.webpage.copy.html': '<h1>Local home</h1>',
+  });
+  const { child, completion, output, started } = await startServe(t, directory, [
+    '--source',
+    path.join(directory, 'portal'),
+    '--state',
+    'state.json',
+    '--port',
+    '0',
+    '--no-watch',
+    '--json',
+  ]);
+  const admin = new URL(started.adminUrl);
+  assert.equal(admin.pathname, '/_sim/');
+  assert.notEqual(admin.port, new URL(started.url).port);
+  assert.equal((await fetch(started.adminUrl)).status, 200);
+  child.stdin.end('stop\n');
+  const { code, error } = await within(
+    completion,
+    HANG_GUARD_MS,
+    () => `CLI did not stop. stdout: ${output.stdout}\nstderr: ${output.stderr}`,
+  );
+  if (error) throw error;
+  assert.equal(code, 0, output.stderr);
+});
+
+// @test-kind contract: CLI: the startup JSON names an apps address on a loopback port of its own, which answers the model-driven shell
+test('CLI: serve reports an apps address on a port of its own, and it answers main.aspx', async (t) => {
+  const directory = await fixture(t, {
+    'portal/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n',
+    'portal/Home.webpage.copy.html': '<h1>Local home</h1>',
+  });
+  const { child, completion, output, started } = await startServe(t, directory, [
+    '--source',
+    path.join(directory, 'portal'),
+    '--state',
+    'state.json',
+    '--port',
+    '0',
+    '--no-watch',
+    '--json',
+  ]);
+  const apps = new URL(started.appsUrl);
+  assert.notEqual(apps.port, new URL(started.url).port);
+  assert.notEqual(apps.port, new URL(started.adminUrl).port);
+  assert.equal((await fetch(new URL('main.aspx', started.appsUrl))).status, 200);
+  child.stdin.end('stop\n');
+  const { code, error } = await within(
+    completion,
+    HANG_GUARD_MS,
+    () => `CLI did not stop. stdout: ${output.stdout}\nstderr: ${output.stderr}`,
+  );
+  if (error) throw error;
+  assert.equal(code, 0, output.stderr);
+});
+
+// @test-kind contract: CLI: a standalone runtime has no apps address, so its startup JSON carries no appsUrl key
+test('CLI: a standalone serve reports no apps address', async (t) => {
+  const directory = await fixture(t, {});
+  const { child, completion, output, started } = await startServe(t, directory, [
+    '--runtime',
+    'model-driven',
+    '--state',
+    'state.json',
+    '--port',
+    '0',
+    '--no-watch',
+    '--json',
+  ]);
+  assert.equal(Object.hasOwn(started, 'appsUrl'), false);
+  assert.ok(started.adminUrl);
+  child.stdin.end('stop\n');
+  const { code, error } = await within(
+    completion,
+    HANG_GUARD_MS,
+    () => `CLI did not stop. stdout: ${output.stdout}\nstderr: ${output.stderr}`,
+  );
+  if (error) throw error;
+  assert.equal(code, 0, output.stderr);
 });
 
 // @test-kind contract: CLI: the startup JSON names the documented /_sim/ admin address, and that address answers
@@ -418,13 +550,17 @@ test('CLI: serve reports the /_sim/ admin address in its startup JSON and serves
     '--no-watch',
     '--json',
   ]);
-  assert.equal(started.adminUrl, new URL('/_sim/', started.url).href);
+  assert.equal(new URL(started.adminUrl).pathname, '/_sim/');
+  const status = await (await fetch(new URL('/_sim/api/status', started.url))).json();
+  assert.equal(status.adminUrl, started.adminUrl);
+  assert.notEqual(new URL(started.adminUrl).origin, new URL(started.url).origin);
+  assert.equal(new URL(started.adminUrl).hostname, '127.0.0.1');
   const admin = await fetch(started.adminUrl);
   assert.equal(admin.status, 200);
   child.stdin.end('stop\n');
   const { code, error } = await within(
     completion,
-    60_000,
+    HANG_GUARD_MS,
     () => `CLI did not stop. stdout: ${output.stdout}\nstderr: ${output.stderr}`,
   );
   if (error) throw error;

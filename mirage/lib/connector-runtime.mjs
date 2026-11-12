@@ -21,7 +21,7 @@ import { localOrganizationService, validateServiceProfile } from './local-organi
 import { parseExpand, parseSelect } from './odata-query.mjs';
 import { registerSettingParser } from './config-keys.mjs';
 import { registerPackExport } from './pack-exports.mjs';
-import { createScheduler, storeScheduler } from './runtime-clock.mjs';
+import { createScheduler, MAX_TIMER_DELAY, storeScheduler } from './runtime-clock.mjs';
 import {
   applyResponsePolicies,
   assertContinuationOrigin,
@@ -36,6 +36,14 @@ import { flowVault } from './flow-vault.mjs';
 import { packFlowActions } from './flow-actions.mjs';
 import { effectiveEnvironmentVariables } from './secret-resolver.mjs';
 import { recordHttpError, statusFromHttp } from './trace-store.mjs';
+
+// Own properties only, for the maps keyed by flow-author, connector or request text: a name such as constructor, __proto__
+// or toString is then not found, and a write defines that name as data instead of replacing a prototype.
+const ownValue = (map, key) => (map && Object.hasOwn(map, key) ? map[key] : null);
+const setOwn = (map, key, value) => {
+  Object.defineProperty(map, key, { value, enumerable: true, writable: true, configurable: true });
+  return value;
+};
 
 export const DATAVERSE_CONNECTOR = 'shared_commondataserviceforapps';
 const CODES = {
@@ -273,10 +281,18 @@ function dataverseInput(p) {
   const item = {},
     rest = {};
   for (const [key, value] of Object.entries(p))
-    if (key === 'item' && isMap(value)) Object.assign(item, value);
-    else if (key.startsWith('item/')) item[key.slice(5)] = value;
-    else rest[key] = value;
+    if (key === 'item' && isMap(value)) {
+      for (const [column, cell] of Object.entries(value)) setOwn(item, column, cell);
+    } else if (key.startsWith('item/')) setOwn(item, key.slice(5), value);
+    else setOwn(rest, key, value);
   return Object.keys(item).length ? { ...rest, item } : rest;
+}
+// A column named __proto__ is refused as an invalid name, as constructor and prototype already are (data.mjs safeName): a
+// row write would otherwise set a prototype instead of a column.
+function refuseProtoColumn(values) {
+  if (Object.hasOwn(values, '__proto__'))
+    throw new DataError('Invalid entity or field name: __proto__', 400, 'InvalidRequest');
+  return values;
 }
 // What a Dataverse connector answer says: its status, the written or read row's id, and the row count of a list.
 function dataverseFacts(store, entity, answer) {
@@ -532,14 +548,14 @@ function dataverseProvider(store, diagnostic) {
     const entity = p.entityName;
     if (!['PerformUnboundAction', 'ExecuteChangeset'].includes(operationId) && typeof entity !== 'string')
       throw new DataError('Dataverse action entityName is missing.', 400, 'LocalFlowExpression');
-    const values = {
+    const values = refuseProtoColumn({
       ...(isMap(p.item) ? p.item : {}),
       ...Object.fromEntries(
         Object.entries(p)
           .filter(([k]) => k.startsWith('item/'))
           .map(([k, v]) => [k.slice(5), v]),
       ),
-    };
+    });
     switch (operationId) {
       // Row writes run on the asynchronous pipeline (a flow action is not nested inside a plug-in): a synchronous service
       // endpoint step's post is awaited in process, so Mirage keeps serving while it waits and an in-process receiver answers.
@@ -652,6 +668,24 @@ function appendHttpQueries(url, queries) {
 }
 const nextLinkOf = (body) => (isMap(body) ? (body['@odata.nextLink'] ?? body.nextLink ?? undefined) : undefined);
 
+// The budget of a loopback call and of an asynchronous operation when the caller supplies no timeoutMs (a flow passes its
+// action deadline; a Code App or Canvas call passes none).
+export const DEFAULT_CONNECTOR_TIMEOUT_MS = 120000;
+// A budget in milliseconds: a non-finite one takes the default. A budget above the timer limit is kept whole; armDeadline
+// arms it in steps.
+const timeBudgetMs = (value) => Math.max(1, Number.isFinite(value) ? value : DEFAULT_CONNECTOR_TIMEOUT_MS);
+// Calls fire after budget ms. setTimeout fires a longer delay at once, so each step is at most the timer limit and arms
+// the next one for what remains. The returned function clears the step that is pending.
+function armDeadline(fire, budget) {
+  let timer = null;
+  const arm = (remaining) => {
+    const step = Math.min(remaining, MAX_TIMER_DELAY);
+    timer = setTimeout(() => (step < remaining ? arm(remaining - step) : fire()), step);
+  };
+  arm(budget);
+  return () => clearTimeout(timer);
+}
+
 // Sends one built request to a loopback URL (the http provider and compiled custom connectors share it).
 async function sendLoopback({ method, url, headers, body }, context) {
   if (!isLoopbackUrl(url))
@@ -659,11 +693,11 @@ async function sendLoopback({ method, url, headers, body }, context) {
       'ProviderUnavailable',
       'The http provider reaches only loopback URLs; declare a connection rewrite to a local service.',
     );
-  const signal = AbortSignal.any([
-    AbortSignal.timeout(Math.max(1, context.timeoutMs ?? 2000)),
-    ...(context.signal ? [context.signal] : []),
-  ]);
-  let response;
+  // A timer rather than AbortSignal.timeout, so the budget is a setTimeout that is cleared once the call settles.
+  const deadline = new AbortController();
+  const disarm = armDeadline(() => deadline.abort(), timeBudgetMs(context.timeoutMs));
+  const signal = AbortSignal.any([deadline.signal, ...(context.signal ? [context.signal] : [])]);
+  let response, text;
   try {
     response = await loopbackFetch(url, {
       method,
@@ -671,14 +705,16 @@ async function sendLoopback({ method, url, headers, body }, context) {
       ...(body === undefined || ['GET', 'HEAD'].includes(method) ? {} : { body }),
       signal,
     });
+    text = await response.text();
   } catch (error) {
     if (['TimeoutError', 'AbortError'].includes(error.name))
       fail('ProviderTimeout', 'The local http service did not answer within the action time limit.');
     if (/redirect/i.test(String(error.cause?.message ?? error.message)))
       fail('ProviderFailed', 'The local http service answered with a redirect; redirects are refused.');
     fail('ProviderUnavailable', 'The local http service is unreachable.');
+  } finally {
+    disarm();
   }
-  const text = await response.text();
   let parsed = text;
   if (/json/i.test(response.headers.get('content-type') ?? '') && text) {
     try {
@@ -775,7 +811,7 @@ const SCRIPT_RESTORE =
   connector,
   fixtures,
   store,
-  { tokens, scripts, now, diagnostic = () => {} },
+  { tokens, scripts, now, diagnostic = () => {}, pendingSignIns },
 ) {
   const cached = new Map();
   const send = (req, context) =>
@@ -923,6 +959,7 @@ const SCRIPT_RESTORE =
                 tokenRequest,
                 form,
                 scope,
+                pendingSignIns,
               }),
           }
         : null,
@@ -967,7 +1004,7 @@ const SCRIPT_RESTORE =
               operationId,
               correlationId: context.correlationId ?? null,
               request: req,
-              timeoutMs: context.timeoutMs ?? 120000,
+              timeoutMs: context.timeoutMs ?? DEFAULT_CONNECTOR_TIMEOUT_MS,
               signal: context.signal ?? null,
               send: (outgoing) => exchange(outgoing, context),
             })
@@ -992,7 +1029,7 @@ async function beginAuthorization(
   connector,
   connectionId,
   settings,
-  { resolved, tokens, now, tokenRequest, form, scope, timeoutMs = 10 * 60000 },
+  { resolved, tokens, now, tokenRequest, form, scope, pendingSignIns, timeoutMs = 10 * 60000 },
 ) {
   const auth = connector.auth,
     credentials = resolved(settings.auth);
@@ -1011,6 +1048,8 @@ async function beginAuthorization(
     challenge = encode(createHash('sha256').update(verifier).digest()),
     state = encode(randomBytes(16));
   const server = http.createServer();
+  // A forgotten sign-in never keeps the process alive; the host's close() cancels it through pendingSignIns.
+  server.unref();
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', resolve);
@@ -1036,9 +1075,19 @@ async function beginAuthorization(
   const completion = new Promise((resolve, reject) => {
     const finish = (error, value) => {
       clearTimeout(timer);
+      pendingSignIns.delete(cancel);
       server.close();
       error ? reject(error) : resolve(value);
     };
+    const cancel = () =>
+      finish(
+        new DataError(
+          'The connection sign-in was cancelled because the runtime is closing.',
+          503,
+          'ConnectionAuthorizationCancelled',
+        ),
+      );
+    pendingSignIns.add(cancel);
     timer = setTimeout(
       () =>
         finish(
@@ -1129,18 +1178,95 @@ const param = (p, key, wrapper) => {
 // (approvalType + WebhookApprovalCreationInput), WaitForAnApproval (approvalName). Output field names follow the documented
 // TextSuggestionApprovalCreationOutput (name, title, details, outcome, requestDate, completionDate, responses[] with
 // responder, requestDate, responseDate, approverResponse, comments); "Approve"/"Reject" are case-sensitive.
-// Assumed: the outputs of the dynamic operations, their status codes, and the per-type completion rules (only the
-// Basic "first to respond" rule is applied: the first response completes the approval).
+// Assumed: the outputs of the dynamic operations and their status codes. The per-type completion rules follow the
+// product documentation (completionOf).
 // A waiting operation answers { suspended: { kind: 'approval', id, timeoutAt, assignedTo } }; only a caller that sets
 // context.canSuspend (the flow run store integration) receives it, any other caller gets 501 FlowSuspendNotWired.
 const APPROVAL_OPERATIONS = ['CreateAnApproval', 'StartAndWaitForAnApproval', 'WaitForAnApproval'];
 // Power Automate runs end after 30 days.
 const DEFAULT_WAIT_TIMEOUT_MS = 30 * 24 * 60 * 60 * 1000;
-const APPROVAL_STATUS = { Approve: 'Approved', Reject: 'Rejected' };
+// A Map, not an object: a Custom response option is flow-author text and may be named like an Object.prototype member.
+const APPROVAL_STATUS = new Map([
+  ['Approve', 'Approved'],
+  ['Reject', 'Rejected'],
+]);
 const approvalsOf = (store) => {
   store.state.simulator ??= {};
   store.state.simulator.approvals ??= {};
   return store.state.simulator.approvals;
+};
+// Own keys only: a name such as __proto__ or constructor is not an approval.
+const approvalNamed = (all, id) => (all && Object.hasOwn(all, id) ? all[id] : null);
+const APPROVAL_TYPES = new Set(['Basic', 'AwaitAll', 'Custom', 'CustomAwaitAll']);
+const isCustomType = (type) => type === 'Custom' || type === 'CustomAwaitAll';
+const answeredBy = (approval) => approval.answeredBy ?? [];
+const acceptedOutcomesOf = (approval) =>
+  isCustomType(approval.type) ? (approval.options ?? []) : [...APPROVAL_STATUS.keys()];
+// The response options of a Custom approval (a semicolon-separated text or a list).
+const responseOptionsOf = (p, wrapper) => {
+  const value = param(p, 'responseOptions', wrapper);
+  const list = Array.isArray(value) ? value : String(value ?? '').split(';');
+  return list.map((option) => String(option).trim()).filter(Boolean);
+};
+// The approval type and its response options. A type the provider does not model, or a Custom type without options, is
+// refused at creation.
+const approvalTypeOf = (p, wrapper) => {
+  const type = p.approvalType ?? 'Basic';
+  const options = responseOptionsOf(p, wrapper);
+  if (!APPROVAL_TYPES.has(type))
+    throw new DataError(`The approval type ${String(type)} is not supported.`, 400, 'ProviderFailed');
+  if (isCustomType(type) && options.length === 0)
+    throw new DataError('The Custom approval types need responseOptions.', 400, 'ProviderFailed');
+  return { type, options };
+};
+// The assignees of a semicolon-separated list: trimmed, empty entries dropped, and a name repeated in another letter case
+// kept once (its first spelling), so one responder never answers two assignees.
+const assigneesOf = (text) => {
+  const seen = new Set();
+  return text
+    .split(';')
+    .map((name) => name.trim())
+    .filter((name) => {
+      const key = name.toLowerCase();
+      if (!name || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+};
+// The identities a responder answers as: the email or the id (case-insensitive), or the plain value given.
+const identityKeysOf = (responder) =>
+  (isMap(responder) ? [responder.email, responder.id] : [responder])
+    .filter((key) => key != null && String(key).trim() !== '')
+    .map((key) => String(key).trim().toLowerCase());
+const hasIdentity = (responder) => identityKeysOf(responder).length > 0;
+// The assignee a response answers as: the named responder, or the only assignee when the response names none.
+const answeringAssignee = (approval, responder) => {
+  if (!hasIdentity(responder)) {
+    if (approval.assignedTo.length === 1) return approval.assignedTo[0];
+    throw new DataError(
+      `The responder is required: the approval is assigned to ${approval.assignedTo.join(', ')}.`,
+      400,
+      'InvalidRequest',
+    );
+  }
+  const keys = identityKeysOf(responder);
+  const assignee = approval.assignedTo.find((name) => keys.includes(name.toLowerCase()));
+  if (!assignee)
+    throw new DataError('The responder is not assigned to this approval.', 403, 'ApprovalResponderNotAssigned');
+  return assignee;
+};
+// The outcome that completes an approval after a response, or null while it stays Pending. Basic and Custom complete on
+// the first response; AwaitAll completes on a Reject or once every assignee approved; CustomAwaitAll completes once every
+// assignee answered, with the responses joined as its outcome.
+const completionOf = (approval, outcome) => {
+  const everyoneAnswered = approval.assignedTo.every((name) => answeredBy(approval).includes(name));
+  if (approval.type === 'AwaitAll')
+    return outcome === 'Reject' || everyoneAnswered ? { outcome, status: APPROVAL_STATUS.get(outcome) } : null;
+  if (approval.type === 'CustomAwaitAll') {
+    if (!everyoneAnswered) return null;
+    return { outcome: approval.responses.map((r) => r.approverResponse).join(', '), status: 'Completed' };
+  }
+  return { outcome, status: APPROVAL_STATUS.get(outcome) ?? 'Completed' };
 };
 const approvalOutputs = (a) => ({
   statusCode: 200,
@@ -1185,18 +1311,18 @@ function approvalsProvider(store, { now, uuid }) {
     const title = param(p, 'title', wrapper),
       assignedTo = param(p, 'assignedTo', wrapper);
     if (typeof title !== 'string' || !title.trim()) fail('ProviderFailed', 'The approval title is missing.');
-    if (typeof assignedTo !== 'string' || !assignedTo.trim())
+    if (typeof assignedTo !== 'string' || assigneesOf(assignedTo).length === 0)
       fail('ProviderFailed', 'The approval assignedTo is missing.');
+    const { type, options } = approvalTypeOf(p, wrapper);
     const at = now(),
       id = uuid();
     const approval = {
       id,
-      type: p.approvalType ?? 'Basic',
+      type,
+      options,
+      answeredBy: [],
       title,
-      assignedTo: assignedTo
-        .split(';')
-        .map((s) => s.trim())
-        .filter(Boolean),
+      assignedTo: assigneesOf(assignedTo),
       details: param(p, 'details', wrapper) ?? null,
       itemLink: param(p, 'itemLink', wrapper) ?? null,
       itemLinkDescription: param(p, 'itemLinkDescription', wrapper) ?? null,
@@ -1219,7 +1345,7 @@ function approvalsProvider(store, { now, uuid }) {
       return suspended(await create(p, 'WebhookApprovalCreationInput', context), context);
     },
     WaitForAnApproval: (p, context) => {
-      const approval = approvalsOf(requireStore())[p.approvalName];
+      const approval = approvalNamed(approvalsOf(requireStore()), p.approvalName);
       if (!approval) throw new DataError('The approval does not exist.', 404, 'ApprovalNotFound');
       return approval.status === 'Pending' ? suspended(approval, context) : approvalOutputs(approval);
     },
@@ -1234,40 +1360,52 @@ function approvalsProvider(store, { now, uuid }) {
       stateOwner: 'state:simulator.approvals',
     }),
     invoke: async ({ operationId, parameters }, context) => operations[operationId](parameters ?? {}, context),
-    get: (id) =>
-      store?.state?.simulator?.approvals?.[id] ? structuredClone(store.state.simulator.approvals[id]) : null,
+    get: (id) => {
+      const approval = approvalNamed(store?.state?.simulator?.approvals, id);
+      return approval ? structuredClone(approval) : null;
+    },
     list: ({ status } = {}) =>
       Object.values(store?.state?.simulator?.approvals ?? {})
         .filter((a) => !status || a.status === status)
         .map((a) => structuredClone(a)),
-    /** Records one response; the first response completes a Basic approval. Returns the action outputs { statusCode, body }. */
+    /**
+     * Records one assignee's response and completes the approval when its type says so. Returns the action outputs
+     * { statusCode, body } with completed: true, or completed: false (statusCode 202) while the approval stays Pending.
+     */
     async respond(id, { outcome, responder, comments = null } = {}) {
-      if (!Object.hasOwn(APPROVAL_STATUS, outcome))
-        throw new DataError("The approval outcome must be 'Approve' or 'Reject'.", 400, 'InvalidRequest');
       return write((all) => {
-        const approval = all[id];
+        const approval = approvalNamed(all, id);
         if (!approval) throw new DataError('The approval does not exist.', 404, 'ApprovalNotFound');
         if (approval.status !== 'Pending')
           throw new DataError('The approval is already completed.', 409, 'ApprovalCompleted');
+        const assignee = answeringAssignee(approval, responder);
+        if (answeredBy(approval).includes(assignee))
+          throw new DataError('The assignee has already responded to this approval.', 409, 'ApprovalAlreadyAnswered');
+        const accepted = acceptedOutcomesOf(approval);
+        if (!accepted.includes(outcome))
+          throw new DataError(`The approval outcome must be one of: ${accepted.join(', ')}.`, 400, 'InvalidRequest');
         const at = new Date(now()).toISOString();
+        approval.answeredBy = [...answeredBy(approval), assignee];
         approval.responses.push({
-          responder: responderOf(responder),
+          responder: responderOf(hasIdentity(responder) ? responder : assignee),
           requestDate: approval.requestDate,
           responseDate: at,
           approverResponse: outcome,
           comments: comments == null ? null : String(comments),
         });
-        Object.assign(approval, { status: APPROVAL_STATUS[outcome], outcome, completionDate: at });
-        return approvalOutputs(approval);
+        const completed = completionOf(approval, outcome);
+        if (completed) Object.assign(approval, { ...completed, completionDate: at });
+        return { ...approvalOutputs(approval), statusCode: completed ? 200 : 202, completed: completed !== null };
       });
     },
     /** Marks a pending approval TimedOut or Cancelled (called by the flow run store); a completed one is left as is. */
     close(id, status) {
-      if (!store?.state?.simulator?.approvals?.[id]) return Promise.resolve(false);
+      if (!approvalNamed(store?.state?.simulator?.approvals, id)) return Promise.resolve(false);
       return write((all) => {
-        if (all[id]?.status !== 'Pending') return false;
-        all[id].status = status;
-        all[id].completionDate = new Date(now()).toISOString();
+        const approval = approvalNamed(all, id);
+        if (approval?.status !== 'Pending') return false;
+        approval.status = status;
+        approval.completionDate = new Date(now()).toISOString();
         return true;
       });
     },
@@ -1450,12 +1588,12 @@ function packFlowTriggers(packs) {
   for (const pack of packs)
     for (const [connectorId, ops] of Object.entries(pack.flowTriggers ?? {}))
       for (const [operationId, entry] of Object.entries(ops)) {
-        if (flowTriggers[connectorId]?.[operationId])
+        if (ownValue(ownValue(flowTriggers, connectorId), operationId))
           throw new Error(
             `Data pack ${pack.id}: flowTriggers.${connectorId}.${operationId} is declared by more than one pack`,
           );
-        flowTriggers[connectorId] ??= {};
-        flowTriggers[connectorId][operationId] = { pack: pack.id, ...entry };
+        const byOperation = ownValue(flowTriggers, connectorId) ?? setOwn(flowTriggers, connectorId, {});
+        setOwn(byOperation, operationId, { pack: pack.id, ...entry });
       }
   return flowTriggers;
 }
@@ -1596,7 +1734,7 @@ export function createConnectorRuntime({
     memoryTokens = new Map();
   const tokens = {
     get(id) {
-      const sealed = store?.state ? store.state.simulator?.connectionTokens?.[id] : memoryTokens.get(id);
+      const sealed = store?.state ? ownValue(store.state.simulator?.connectionTokens, id) : memoryTokens.get(id);
       return sealed ? (vault.open(sealed) ?? null) : null;
     },
     set(id, value) {
@@ -1609,7 +1747,7 @@ export function createConnectorRuntime({
           store.state.simulator ??= {};
           store.state.simulator.connectionTokens ??= {};
           const all = store.state.simulator.connectionTokens;
-          if (value) all[id] = vault.seal(value);
+          if (value) setOwn(all, id, vault.seal(value));
           else delete all[id];
         },
         { nested: true },
@@ -1617,6 +1755,8 @@ export function createConnectorRuntime({
     },
   };
   const scripts = createScriptHost({ stateDirectory, command: dotnet, trusted: trustedScripts });
+  // The cancel function of every sign-in still waiting for its browser redirect (beginAuthorization).
+  const pendingSignIns = new Set();
   [
     dataverseProvider(store, diagnostic),
     httpProvider(),
@@ -1684,14 +1824,14 @@ export function createConnectorRuntime({
   }
   // The asynchronous operation pattern of HTTP-based providers (http, fixture, custom connectors): an answer of 202 with a
   // Location header is polled with GET after Retry-After (1 second by default) until a non-202 answer, which is the result.
-  // The run-level deadline (context.timeoutMs) bounds it and the run's cancellation ends it; context.asyncPattern false (the
-  // action's DisableAsyncPattern operation option) answers the 202 as is.
+  // The budget is context.timeoutMs when the caller supplies one, else DEFAULT_CONNECTOR_TIMEOUT_MS; the run's cancellation
+  // ends it; context.asyncPattern false (the action's DisableAsyncPattern operation option) answers the 202 as is.
   // Assumed: a 202 without a Location header is answered as is. A relative Location resolves against the URI of the
   // response that carried it (RFC 9110 section 10.2.2): the first against the request, a later one against the previous
   // status URL (a provider's poll answers it as statusUrl).
   async function followAsync(provider, request, ctx, answer) {
     const started = Date.now(),
-      budget = Math.max(1, ctx.timeoutMs ?? 2000);
+      budget = timeBudgetMs(ctx.timeoutMs);
     let base = null;
     /* NOSONAR */ for (let polls = 0; answer?.statusCode === 202 && header(answer.headers, 'location'); polls++) {
       if (polls >= MAX_POLLS)
@@ -1701,9 +1841,10 @@ export function createConnectorRuntime({
         fail('ProviderTimeout', 'The asynchronous operation did not finish within the action time limit.');
       await pause(wait, ctx.signal, 'connector-async-poll');
       const location = header(answer.headers, 'location');
+      // A poll takes at most the timer limit; the operation's budget is checked here, between polls, unclamped.
       const { statusUrl, ...polled } = await provider.poll(base ? new URL(location, base).href : location, request, {
         ...ctx,
-        timeoutMs: Math.max(1, budget - (Date.now() - started)),
+        timeoutMs: Math.min(MAX_TIMER_DELAY, Math.max(1, budget - (Date.now() - started))),
       });
       answer = polled;
       base = statusUrl ?? base;
@@ -1727,7 +1868,13 @@ export function createConnectorRuntime({
     customIds = [];
     customList = list;
     for (const connector of list) {
-      const provider = customConnectorProvider(connector, fixtures, store, { tokens, scripts, now, diagnostic });
+      const provider = customConnectorProvider(connector, fixtures, store, {
+        tokens,
+        scripts,
+        now,
+        diagnostic,
+        pendingSignIns,
+      });
       if (registry.has(provider.id)) {
         diagnostic({ code: 'CONNECTOR_CUSTOM_DUPLICATE', connector: connector.name });
         continue;
@@ -2048,7 +2195,7 @@ export function createConnectorRuntime({
     /** Pack flowActions handlers by action type (flow-actions.mjs). */
     flowActions: () => flowActions,
     /** The pack flowTriggers entry { pack, subscribe, unsubscribe, poll? } for a connector trigger operation, or null. */
-    flowTriggers: (connectorId, operationId) => flowTriggers[connectorId]?.[operationId] ?? null,
+    flowTriggers: (connectorId, operationId) => ownValue(ownValue(flowTriggers, connectorId), operationId),
     /** Replaces the compiled custom connectors (an array or a function answering the current array). */
     useCustomConnectors(value) {
       customSource = value;
@@ -2098,6 +2245,10 @@ export function createConnectorRuntime({
     },
     /** Approval records (state.simulator.approvals); respond() answers the outputs of the waiting action. */
     approvals: { get: approvals.get, list: approvals.list, respond: approvals.respond, close: approvals.close },
+    /** Cancels every pending sign-in: its loopback listener and expiry timer close, and its completion rejects. */
+    close() {
+      for (const cancel of [...pendingSignIns]) cancel();
+    },
     providers: () => {
       syncCustom();
       return [...registry.values()].map((p) => ({

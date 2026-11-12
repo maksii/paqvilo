@@ -342,25 +342,43 @@ function appendBusyParty(store, party, fromMs, toMs, exceptActivity, blocks) {
 
 // ---- availability and calendar rules ----
 
-// Spans [start, end) in ms, as pairs. A span is cut by each cut span; the pieces left are returned.
-function minus(spans, cuts) {
-  return cuts.reduce(
-    (pieces, [cutStart, cutEnd]) =>
-      pieces.flatMap(([s, e]) =>
-        cutEnd <= s || cutStart >= e
-          ? [[s, e]]
-          : [
-              [s, cutStart],
-              [cutEnd, e],
-            ].filter(([a, b]) => b > a),
-      ),
-    spans,
-  );
-}
 function intersect(left, right) {
   return left.flatMap(([s1, e1]) =>
     right.map(([s2, e2]) => [Math.max(s1, s2), Math.min(e1, e2)]).filter(([s, e]) => e > s),
   );
+}
+
+// The overlaps of two span lists, in the order of the left spans, as one sweep: both lists sorted by start and
+// disjoint (see disjointSpans), so a pointer into the right spans only moves forward and each span is met by a few
+// others. An optional work object counts the comparisons made.
+export function intersectSpans(left, right, work = null) {
+  const out = [];
+  let first = 0;
+  for (const [s1, e1] of left) {
+    const start = first;
+    while (first < right.length && right[first][1] <= s1) first += 1;
+    let last = first;
+    while (last < right.length && right[last][0] < e1) {
+      const s = Math.max(s1, right[last][0]);
+      const e = Math.min(e1, right[last][1]);
+      if (e > s) out.push([s, e]);
+      last += 1;
+    }
+    if (work) work.comparisons += 1 + (first - start) + (last - first);
+  }
+  return out;
+}
+
+// The positive spans sorted by start, with those that strictly overlap merged: disjoint and ascending, as
+// intersectSpans needs. Touching spans stay apart, so each keeps the split it has.
+export function disjointSpans(spans) {
+  const merged = [];
+  for (const [startMs, endMs] of spans.filter(([s, e]) => e > s).toSorted((a, b) => a[0] - b[0] || a[1] - b[1])) {
+    const last = merged.at(-1);
+    if (last && startMs < last[1]) last[1] = Math.max(last[1], endMs);
+    else merged.push([startMs, endMs]);
+  }
+  return merged;
 }
 
 const RRULE_DAY = { SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6 };
@@ -476,19 +494,133 @@ function appendPatternDay(
 
 // Blocks from a lower rank trim the higher-rank blocks they cover (the rank direction is a guess).
 function calendarBlocks(store, calendarId, fromMs, toMs) {
-  const blocks = expandRules(store, calendarId, fromMs, toMs);
+  return trimByRank(expandRules(store, calendarId, fromMs, toMs));
+}
+
+// The blocks of each rank minus the spans of the lower ranks. A block that ends before it starts covers no time, so it is
+// not a lower-rank span (piecesAgainst drops it). An optional work object counts the comparisons made.
+export function trimByRank(blocks, work = null) {
   const out = [];
   let covered = [];
   const ranks = [...new Set(blocks.map((block) => Number(block.rule.rank ?? 0)))].sort((a, b) => a - b);
   for (const rank of ranks) {
     const layer = blocks.filter((block) => Number(block.rule.rank ?? 0) === rank);
-    for (const block of layer) {
-      for (const [startMs, endMs] of minus([[block.startMs, block.endMs]], covered))
-        out.push({ ...block, startMs, endMs });
-    }
+    const pieces = piecesAgainst(
+      layer.map((block) => [block.startMs, block.endMs]),
+      covered,
+      work,
+    );
+    layer.forEach((block, index) => {
+      for (const [startMs, endMs] of pieces[index]) out.push({ ...block, startMs, endMs });
+    });
     covered = covered.concat(layer.map((block) => [block.startMs, block.endMs]));
   }
   return out.sort((left, right) => left.startMs - right.startMs);
+}
+
+// The spans [start, end) in ms minus the cut spans: the pieces left, in the order of the spans, as one sweep. Malformed
+// spans are normalised: a cut that ends before it starts is dropped and removes no time. A span that ends before it starts
+// is removed only by a cut that starts before its end and ends after its start (emptyPieces); otherwise it is kept as given.
+export function subtractSpans(spans, cuts, work = null) {
+  return piecesAgainst(spans, cuts, work).flat();
+}
+
+// The pieces each span keeps outside the cut spans, by the span's index. The spans are swept in start order against the cuts,
+// merged into disjoint ones, with pointers that only move forward. A cut that ends before it starts names no time to remove,
+// so it is dropped before the sweep.
+function piecesAgainst(spans, cuts, work) {
+  const live = cuts.filter(([startMs, endMs]) => endMs >= startMs);
+  const pieces = new Array(spans.length);
+  const positive = [...spans.keys()].filter((index) => spans[index][1] > spans[index][0]);
+  const empty = [...spans.keys()].filter((index) => spans[index][1] <= spans[index][0]);
+  emptyPieces(spans, empty, live, pieces, work);
+  const merged = mergeSpans(live.filter(([startMs, endMs]) => endMs > startMs).toSorted((a, b) => a[0] - b[0]));
+  const points = [
+    ...new Set(live.filter(([startMs, endMs]) => endMs === startMs).map(([startMs]) => startMs)),
+  ].toSorted((a, b) => a - b);
+  const order = positive.toSorted((a, b) => spans[a][0] - spans[b][0] || a - b);
+  const cursor = { span: 0, point: 0 };
+  for (const index of order) {
+    const [startMs, endMs] = spans[index];
+    pieces[index] = piecesOf({ startMs, endMs }, { spans: merged, points, cursor, work });
+  }
+  return pieces;
+}
+
+// A span that ends at or before it starts is removed by a cut only when one cut alone starts before its end and ends after its
+// start (the pairwise cut tests each cut on its own). Those spans are swept by end against the cuts by start, with the largest
+// end among the cuts that start before the span ends.
+function emptyPieces(spans, indexes, cuts, pieces, work) {
+  const byStart = cuts.toSorted((a, b) => a[0] - b[0]);
+  const reach = [];
+  for (const [, endMs] of byStart) reach.push(Math.max(endMs, reach.at(-1) ?? endMs));
+  let known = 0;
+  for (const index of indexes.toSorted((a, b) => spans[a][1] - spans[b][1] || a - b)) {
+    const [startMs, endMs] = spans[index];
+    const before = known;
+    while (known < byStart.length && byStart[known][0] < endMs) known += 1;
+    if (work) work.comparisons += 1 + (known - before);
+    pieces[index] = known > 0 && reach[known - 1] > startMs ? [] : [[startMs, endMs]];
+  }
+}
+
+// Positive spans sorted by start, merged where they overlap or touch: disjoint and ascending.
+function mergeSpans(sorted) {
+  const merged = [];
+  for (const [startMs, endMs] of sorted) {
+    const last = merged.at(-1);
+    if (last && startMs <= last[1]) last[1] = Math.max(last[1], endMs);
+    else merged.push([startMs, endMs]);
+  }
+  return merged;
+}
+
+// The pieces of one block that the merged spans and the points strictly inside it leave. The cursors move past the spans
+// and points that end or fall before the block, which holds for every later block since the blocks are swept in start order.
+function piecesOf(block, { spans, points, cursor, work }) {
+  const { startMs, endMs } = block;
+  const before = cursor.span + cursor.point;
+  while (cursor.span < spans.length && spans[cursor.span][1] <= startMs) cursor.span += 1;
+  while (cursor.point < points.length && points[cursor.point] <= startMs) cursor.point += 1;
+  let stop = cursor.span;
+  while (stop < spans.length && spans[stop][0] < endMs) stop += 1;
+  let stopPoint = cursor.point;
+  while (stopPoint < points.length && points[stopPoint] < endMs) stopPoint += 1;
+  if (work)
+    work.comparisons += 1 + cursor.span + cursor.point - before + (stop - cursor.span) + (stopPoint - cursor.point);
+  const overlapping = spans.slice(cursor.span, stop);
+  const inside = points.slice(cursor.point, stopPoint);
+  if (!overlapping.length && !inside.length) return [[startMs, endMs]];
+  return splitAt(gapsOf(startMs, endMs, overlapping), inside);
+}
+
+// The parts of [startMs, endMs) that the overlapping merged spans, in order, leave.
+function gapsOf(startMs, endMs, overlapping) {
+  const gaps = [];
+  let from = startMs;
+  for (const [spanStart, spanEnd] of overlapping) {
+    if (spanStart > from) gaps.push([from, spanStart]);
+    from = Math.max(from, spanEnd);
+  }
+  if (from < endMs) gaps.push([from, endMs]);
+  return gaps;
+}
+
+// Each gap cut at the points strictly inside it, in order.
+function splitAt(gaps, points) {
+  const pieces = [];
+  let next = 0;
+  for (const [startMs, endMs] of gaps) {
+    while (next < points.length && points[next] <= startMs) next += 1;
+    let from = startMs;
+    while (next < points.length && points[next] < endMs) {
+      pieces.push([from, points[next]]);
+      from = points[next];
+      next += 1;
+    }
+    pieces.push([from, endMs]);
+  }
+  return pieces;
 }
 
 // The resource's calendar (systemuser.calendarid), or null when it has none.
@@ -771,7 +903,7 @@ function operations(api) {
           }
         }
         if (available && codes.has(TIME_CODE.Available)) {
-          for (const [startMs, endMs] of minus(
+          for (const [startMs, endMs] of subtractSpans(
             available,
             busy.map((block) => [block.startMs, block.endMs]),
           )) {
@@ -779,7 +911,7 @@ function operations(api) {
           }
         }
         if (available && codes.has(TIME_CODE.Unavailable)) {
-          for (const [startMs, endMs] of minus([[fromMs, toMs]], available)) {
+          for (const [startMs, endMs] of subtractSpans([[fromMs, toMs]], available)) {
             TimeInfos.push(info(startMs, endMs, TIME_CODE.Unavailable, { CalendarId: calendarId }));
           }
         }
@@ -821,14 +953,17 @@ function operations(api) {
           const id = idOf(entry?.ResourceId);
           if (!id) throw invalid('ResourceId must be a GUID.');
           const row = rowOf(store, 'systemuser', 'systemuserid', id);
-          const free = minus(
-            intersect(availableSpans(store, id, fromMs, toMs), [[fromMs, toMs]]),
-            busyBlocks(store, id, fromMs, toMs).map((block) => [block.startMs, block.endMs]),
+          // The free spans are merged, sorted and without duplicates (disjointSpans), so each proposal start is made once.
+          const free = disjointSpans(
+            subtractSpans(
+              intersect(availableSpans(store, id, fromMs, toMs), [[fromMs, toMs]]),
+              busyBlocks(store, id, fromMs, toMs).map((block) => [block.startMs, block.endMs]),
+            ),
           );
           return { id, name: row?.fullname ?? id, free };
         });
         if (!resources.length) throw invalid('RequiredResources must name at least one resource.');
-        const common = resources.reduce((spans, resource) => intersect(spans, resource.free), [[fromMs, toMs]]);
+        const common = resources.reduce((spans, resource) => intersectSpans(spans, resource.free), [[fromMs, toMs]]);
         const starts = proposalStarts(common, direction, durationMs, limit);
         const Proposals = starts.map((startMs) => ({
           Start: iso(startMs),

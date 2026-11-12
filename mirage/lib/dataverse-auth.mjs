@@ -35,13 +35,23 @@ const DEVICE_LIFETIME_SECONDS = 900;
 const DEVICE_INTERVAL_SECONDS = 5;
 // Grants a public client may redeem without a secret. client_credentials and on_behalf_of are confidential-client flows (AADSTS7000218).
 const PUBLIC_GRANTS = new Set([AUTH_CODE, DEVICE_GRANT, GRANT_TYPES.refresh_token, GRANT_TYPES.password]);
+// Grants a browser origin (not the listener's own) may redeem only for a single-page application: its authorization
+// code and its refresh token. Device code, password and on-behalf-of are not listed, since each needs a human approval,
+// a password or a signed assertion, and no browser-origin rule applies to them.
+const CROSS_ORIGIN_REDEMPTION = new Set([AUTH_CODE, GRANT_TYPES.refresh_token]);
 const OIDC_SCOPES = new Set(['openid', 'profile', 'offline_access']);
 const TOKEN_HEADERS = {
   'content-type': 'application/json; charset=utf-8',
   'cache-control': 'no-store',
   pragma: 'no-cache',
 };
-const HTML_HEADERS = { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' };
+// The sign-in pages cannot be framed, so a page on another origin cannot put the account choice behind a click.
+const HTML_HEADERS = {
+  'content-type': 'text/html; charset=utf-8',
+  'cache-control': 'no-store',
+  'x-frame-options': 'DENY',
+  'content-security-policy': "frame-ancestors 'none'",
+};
 const AUTHORIZE_FIELDS = [
   'client_id',
   'redirect_uri',
@@ -90,6 +100,7 @@ const AAD_ERRORS = {
   900144: ['invalid_request', 400],
   9002313: ['invalid_grant', 400],
   9002325: ['invalid_request', 400],
+  9002326: ['invalid_request', 400],
 };
 const CLAIMS_SUPPORTED = [
   'sub',
@@ -114,7 +125,13 @@ const CLAIMS_SUPPORTED = [
 ];
 
 const b64json = (value) => Buffer.from(JSON.stringify(value)).toString('base64url');
-const fromB64json = (part) => JSON.parse(Buffer.from(part, 'base64url').toString('utf8'));
+// A JWT segment must decode to a JSON object; any other JSON value throws so callers reject it as malformed.
+const fromB64json = (part) => {
+  const value = JSON.parse(Buffer.from(part, 'base64url').toString('utf8'));
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new TypeError('A JWT segment must be a JSON object.');
+  return value;
+};
 const timestamp = (ms) => `${new Date(ms).toISOString().slice(0, 19).replace('T', ' ')}Z`;
 const safeDecode = (value) => {
   try {
@@ -185,6 +202,14 @@ const parseBasic = (authorization) => {
   const [id, ...secret] = Buffer.from(match[1], 'base64').toString('utf8').split(':');
   return { clientId: safeDecode(id), secret: safeDecode(secret.join(':')) };
 };
+// A client secret, a Basic secret or a client assertion presented on the token request.
+const carriesClientCredential = (form, basic) =>
+  Boolean(
+    form.client_assertion ||
+    form.client_assertion_type ||
+    form.client_secret !== undefined ||
+    basic?.secret !== undefined,
+  );
 // A registered application's own API resource (its app id or api://<appId>), for tokens it exposes to its clients.
 const apiResource = (value, apps) =>
   apps.some((app) => [app.appId, `api://${app.appId}`].some((id) => id.toLowerCase() === String(value).toLowerCase()));
@@ -256,8 +281,17 @@ const pkceMatches = (entry, verifier) => {
       : String(verifier);
   return expected === entry.challenge;
 };
+const spaRedirect = (app, uri) => (app.spaRedirectUris ?? []).includes(uri);
+// The tokens of a single-page redemption are for that origin alone, so its CORS header names the origin, not the wildcard.
+const singlePageReply = (result, origin) => ({
+  ...result,
+  headers: { ...result.headers, 'access-control-allow-origin': origin, vary: 'Origin' },
+});
+// The origin a single-page redirect URI is served from; null for any other redirect URI.
+const spaOriginOf = (app, uri) => (spaRedirect(app, uri) ? new URL(uri).origin : null);
 const redirectAllowed = (app, uri) =>
   (app.redirectUris ?? []).includes(uri) ||
+  spaRedirect(app, uri) ||
   (Boolean(app.publicClient) && (LOOPBACK_REDIRECT.test(String(uri)) || uri === NATIVE_CLIENT_REDIRECT));
 
 export function hashSecret(secret, salt = randomBytes(16)) {
@@ -436,14 +470,16 @@ export function createAuthority({
   };
 
   // userOid is null for application-only refresh tokens; those rebuild app tokens.
-  const issueRefreshToken = ({ appId, userOid = null, resource, scope, now = clock() }) => {
+  // spa binds the token to a single-page origin and sets its expiry; a rotation keeps the sign-in's expiry.
+  const issueRefreshToken = ({ appId, userOid = null, resource, scope, now = clock(), spa = null }) => {
     const token = randomBytes(36).toString('base64url');
     remember(refreshTokens, token, {
       appId: appId.toLowerCase(),
       userOid,
       resource,
       scope,
-      expiresAt: now + REFRESH_LIFETIME_MS,
+      spaOrigin: spa?.origin ?? null,
+      expiresAt: spa?.expiresAt ?? now + REFRESH_LIFETIME_MS,
     });
     return token;
   };
@@ -476,7 +512,20 @@ export function createAuthority({
   };
 
   // The one token response shared by every grant that acts for a user (app-only refresh reuses it without a user).
-  const delegatedReply = ({ origin, app, user, resource, scope, nonce, appidacr, version, now, reply, form = {} }) => {
+  const delegatedReply = ({
+    origin,
+    app,
+    user,
+    resource,
+    scope,
+    nonce,
+    appidacr,
+    version,
+    now,
+    reply,
+    form = {},
+    spa = null,
+  }) => {
     const access = issueAccessToken({ origin, appId: app.appId, audience: resource, user, appidacr, now });
     const refresh = issueRefreshToken({
       appId: app.appId,
@@ -484,6 +533,7 @@ export function createAuthority({
       resource,
       scope,
       now,
+      spa,
     });
     const body = tokenBody({ version, access, now, audience: resource, scope, refresh });
     if (user && hasToken(scope, 'openid')) body.id_token = issueIdToken({ origin, app, user, nonce, now });
@@ -685,6 +735,15 @@ export function createAuthority({
           'Proof Key for Code Exchange is required for cross-origin authorization code redemption.',
         ),
       };
+    if (spaRedirect(app, input.redirect_uri) && input.code_challenge_method !== 'S256')
+      return {
+        page: errorPage(
+          origin,
+          now,
+          9002325,
+          'Proof Key for Code Exchange with the S256 method is required for a single-page application redirect URI.',
+        ),
+      };
     return { app };
   };
 
@@ -727,6 +786,7 @@ export function createAuthority({
       nonce: input.nonce,
       challenge: input.code_challenge,
       challengeMethod: input.code_challenge_method ?? 'plain',
+      spaOrigin: spaOriginOf(checked.app, input.redirect_uri),
       expiresAt: now + CODE_LIFETIME_MS,
       used: false,
     });
@@ -828,6 +888,7 @@ export function createAuthority({
       now,
       reply,
       form,
+      spa: entry.spaOrigin ? { origin: entry.spaOrigin, expiresAt: entry.expiresAt } : null,
     });
   };
 
@@ -863,6 +924,7 @@ export function createAuthority({
       now,
       reply,
       form,
+      spa: entry.spaOrigin ? { origin: entry.spaOrigin } : null,
     });
   };
 
@@ -1058,7 +1120,31 @@ export function createAuthority({
     return { resource };
   };
 
-  const handleToken = ({ origin, tenantSegment, form = {}, headers = {}, version = 'v2.0' }) => {
+  // A code or refresh token redeemed from a browser origin is allowed only when this application's single-page redirect
+  // URI issued it and the request comes from that URI's origin. Entra permits this only for the Single-Page Application
+  // client type.
+  const spaRedemption = (browserOrigin, form, app) => {
+    const appId = app.appId.toLowerCase();
+    if (form.grant_type === AUTH_CODE) {
+      const entry = codes.get(form.code);
+      return entry?.spaOrigin === browserOrigin && entry.clientId === appId;
+    }
+    const entry = refreshTokens.get(form.refresh_token);
+    return entry?.spaOrigin === browserOrigin && entry.appId === appId;
+  };
+
+  // A browser origin (not the listener's own) may not redeem a code or refresh token unless spaRedemption allows it.
+  // The description is Learn's wording for AADSTS9002326.
+  const crossOriginRefusal = (browserOrigin, form, basic, app) => {
+    if (!browserOrigin) return null;
+    // Learn names no code for a client credential with an Origin header; 9002326 is this simulator's choice for it.
+    if (carriesClientCredential(form, basic)) return 'Client credentials are not accepted from a browser origin.';
+    if (CROSS_ORIGIN_REDEMPTION.has(form.grant_type) && !spaRedemption(browserOrigin, form, app))
+      return "Cross-origin token redemption is permitted only for the 'Single-Page Application' client-type.";
+    return null;
+  };
+
+  const handleToken = ({ origin, tenantSegment, form = {}, headers = {}, version = 'v2.0', browserOrigin = null }) => {
     const now = clock();
     const reply = (result) => ({ ...result, headers: { ...TOKEN_HEADERS } });
     const failure = (code, description) => reply(aadError(code, { description, origin, now }));
@@ -1067,6 +1153,8 @@ export function createAuthority({
     const client = resolveTokenClient(form, headers, failure);
     if (client.result) return client.result;
     const { basic, app } = client;
+    const crossOrigin = crossOriginRefusal(browserOrigin, form, basic, app);
+    if (crossOrigin) return failure(9002326, crossOrigin);
     const auth = authenticateClient(app, form, basic, { origin, tenantSegment, now });
     if (auth.code) return failure(auth.code, auth.description);
 
@@ -1077,7 +1165,13 @@ export function createAuthority({
       password: passwordGrant,
       [JWT_BEARER]: onBehalfOf,
     }[form.grant_type];
-    if (grant) return grant({ origin, app, auth, form, version, now, reply, failure });
+    if (grant) {
+      const result = grant({ origin, app, auth, form, version, now, reply, failure });
+      // A browser origin reaches these grants only as the single-page origin the code or token was issued to.
+      return browserOrigin && CROSS_ORIGIN_REDEMPTION.has(form.grant_type)
+        ? singlePageReply(result, browserOrigin)
+        : result;
+    }
 
     const resolvedResource = tokenResource(form, version, origin, failure);
     if (resolvedResource.result) return resolvedResource.result;

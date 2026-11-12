@@ -1,3 +1,4 @@
+// @test-kind contract: public init --ready composes sites and layouts, and readiness rejects empty exports and component folders.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -15,6 +16,8 @@ import { developmentScript, developmentWorkflows } from '../lense/project-workfl
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 import { tempDir } from './fixture.mjs';
 
+const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
+
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const env = Object.fromEntries(
   Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_') && !key.startsWith('GIT_')),
@@ -27,7 +30,7 @@ const run = (directory, ...args) =>
         execFile(
           process.execPath,
           [cli, 'init', directory, ...args],
-          { env, encoding: 'utf8', windowsHide: true, timeout: 30000 },
+          { env, encoding: 'utf8', windowsHide: true },
           (error, stdout, stderr) =>
             resolve({ status: error ? (typeof error.code === 'number' ? error.code : null) : 0, stdout, stderr }),
         ),
@@ -197,7 +200,7 @@ test('nonselected invalid profile gates project readiness while preserving the e
   const doctor = spawnSync(
     process.execPath,
     [cli, 'lense', 'doctor', '--config', path.join(directory, configFile), '--all', '--mirage', '--json'],
-    { env, encoding: 'utf8', windowsHide: true, timeout: 30000 },
+    { env, encoding: 'utf8', windowsHide: true, timeout: CLI_HANG_GUARD_MS },
   );
   assert.equal(doctor.status, 0, doctor.stderr);
   assert.equal(
@@ -249,6 +252,7 @@ test('custom development scripts remain advisory when required wiring is present
   );
 });
 
+// @test-kind security: adoption flags unignored private paths without reading private files
 test('adoption detects effective private-path unignore rules without creating or reading private files', async (t) => {
   const { directory } = await fixture(t);
   assert.equal(
@@ -312,6 +316,7 @@ test('targeted private exceptions require review even when representative Git pr
   assert.equal(inspectProjectAdoption(directory, { config: configFile, processEnv: {} }).ok, false);
 });
 
+// @test-kind security: adoption reports indexed private paths without altering them
 test('adoption reports indexed private paths even when ignore rules are correct without altering the index or private files', async (t) => {
   const { directory } = await fixture(t);
   const git = (args) => spawnSync('git', ['-C', directory, ...args], { env, encoding: 'utf8', windowsHide: true });

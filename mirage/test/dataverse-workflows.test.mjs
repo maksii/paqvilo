@@ -685,6 +685,33 @@ describe('dataverse workflows: classic triggers on Dataverse writes', () => {
     assert.equal(widgetRow(id).note, 'kept');
   });
 
+  // @test-kind contract: Paqvilo's real-time failure log writes the failure text to the processsession column the Web API has
+  it('a real-time run that fails and asks for its log keeps the text in processsession comments, readable over the Web API', async () => {
+    const id = await create({ name: 'iota', note: 'kept' });
+    const definition = store.tableRows('workflow').find((row) => row.workflowid === WF(45));
+    assert.ok(definition, 'the real-time refusal workflow is seeded');
+    store.transact(() => {
+      Object.assign(definition, { ondemand: true, syncworkflowlogonfailure: true });
+    });
+    try {
+      const response = await call(webApi(`workflows(${WF(45)})/${CRM}ExecuteWorkflow`), {
+        method: 'POST',
+        body: { EntityId: id },
+      });
+      assert.equal(response.ok, false, 'the failed run is an error response');
+      const sessions = store.tableRows('processsession').filter((row) => row.comments === REFUSAL);
+      assert.equal(sessions.length, 1, 'one processsession row carries the failure text');
+      assert.equal('errortext' in sessions[0], false, 'no column the processsession table does not have');
+      const listed = await call(webApi('processsessions?$select=comments'));
+      assert.equal(listed.status, 200, await listed.clone().text());
+      assert.ok((await listed.json()).value.some((row) => row.comments === REFUSAL));
+    } finally {
+      store.transact(() => {
+        Object.assign(definition, { ondemand: false, syncworkflowlogonfailure: false });
+      });
+    }
+  });
+
   it("a real-time trigger runs its mock inside the Web API write, and the write's log says so", async () => {
     const id = await create({ name: 'theta' });
     store.transact(() => {

@@ -15,6 +15,7 @@ import {
 } from './dataverse-document.mjs';
 import { analyzeDataverseSchema, collectDataverseSchema } from './dataverse-schema.mjs';
 import { dataverseQueryRules, analyzeDataverseQueries } from './dataverse-query.mjs';
+import { SDK_MESSAGES } from '../../mirage/lib/exported-plugins.mjs';
 
 const alm = 'https://learn.microsoft.com/power-platform/alm/solution-concepts-alm';
 const environment = 'https://learn.microsoft.com/power-apps/maker/data-platform/environmentvariables';
@@ -416,7 +417,7 @@ function inspectEnvironmentValue(definition, selected, emit, cache) {
     secret =
       ['secret', '100000005'].includes(type) ||
       /(?:secret|password|apikey|api_key|access_token|connectionstring)/i.test(name);
-  if (secret && !facts.secretReference) emit('DV-ENV-001', source, field);
+  if (secret && !facts.secretReference) emit('DV-ENV-001', selected[0]?.source ?? source, field);
   if (['json', '100000003'].includes(type) && !facts.jsonValid)
     emit('DV-ENV-003', selected[0]?.source ?? source, field);
 }
@@ -452,15 +453,21 @@ function inspectPluginImage(document, image, { message, stage }, emit) {
     emit('DV-PLUGIN-004', source, 'imagetype');
 }
 
+// Exported steps carry only the SdkMessageId GUID text; name fields keep precedence and unknown ids resolve to ''.
+function stepMessage(node, fields) {
+  const named = fields.sdkmessagename ?? fields.messagename ?? nodeValue(directNode(node, 'sdkmessageid'), 'name');
+  if (hasValue(named)) return lower(named);
+  const id = lower(fields.sdkmessageid).replace(/[{}]/g, '');
+  return Object.hasOwn(SDK_MESSAGES, id) ? lower(SDK_MESSAGES[id]) : '';
+}
+
 function inspectPlugin(document, node, emit) {
   const fields = fieldsForNode(node),
     source = sourceAt(document, node);
   if (fields.statecode !== undefined && !['0', 'active'].includes(lower(fields.statecode))) return;
   const stage = Number(fields.stage),
     mode = Number(fields.mode);
-  const message = lower(
-    fields.sdkmessagename ?? fields.messagename ?? nodeValue(directNode(node, 'sdkmessageid'), 'name'),
-  );
+  const message = stepMessage(node, fields);
   if (message === 'update' && !hasValue(fields.filteringattributes))
     emit('DV-PLUGIN-001', source, 'filteringattributes');
   if (mode === 1 && [10, 20].includes(stage)) emit('DV-PLUGIN-003', source, 'stage');

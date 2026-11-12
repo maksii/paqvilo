@@ -1,13 +1,17 @@
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
+// hang guard only: a blocked synchronous child cannot be ended by the test runner
+const CLI_HANG_GUARD_MS = 170_000;
+
 /** Resolve optional local TLS clients without changing the process-wide command search path. */
 export function tlsTools({
   platform = process.platform,
   required = process.env.PAQ_TEST_REQUIRE_TLS_TOOLS === '1',
   run = spawnSync,
 } = {}) {
-  const probe = (command, args) => run(command, args, { encoding: 'utf8', windowsHide: true, timeout: 60_000 });
+  const probe = (command, args) =>
+    run(command, args, { encoding: 'utf8', windowsHide: true, timeout: CLI_HANG_GUARD_MS });
   const python = ['python3', 'python', 'py'].find((name) => probe(name, ['--version']).status === 0) ?? null;
   let openssl = probe('openssl', ['version']).status === 0 ? 'openssl' : null;
   if (!openssl && platform === 'win32') {

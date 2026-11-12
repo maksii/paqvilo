@@ -2,6 +2,7 @@ import { canvasViewport } from './canvas-runtime.mjs';
 import { canvasRenderingGaps } from './canvas-rendering.mjs';
 import { canvasSourceCoverageGaps } from './canvas-source.mjs';
 import { CANVAS_ASSETS, canvasAssetUrls } from './canvas-assets.mjs';
+import { CANVAS_PCF, PORTAL_PCF, servePcfResource } from './canvas-pcf.mjs';
 // Canvas app host under the reserved `/_apps/canvas/` prefix: the inventory page of every app and, when the host wires
 // the headless runtime (canvas-runtime.mjs), the app view: screens and controls with their current property values,
 // variables, collections, data sources, forms, notifications and errors, with HTML forms that drive it. Nothing is
@@ -13,6 +14,7 @@ import { CANVAS_ASSETS, canvasAssetUrls } from './canvas-assets.mjs';
 import { stringifyExactJson } from './exact-numeric.mjs';
 import { canvasPlayerAsset, canvasPlayerPage } from './canvas-player.mjs';
 import { recordHttpError, statusFromHttp } from './trace-store.mjs';
+import { sameToken } from './admin-origin.mjs';
 
 const PREFIX = '/_apps/canvas/';
 const API_PREFIX = '/_apps/api/canvas/';
@@ -56,7 +58,7 @@ const bannerOf = (hosted, playerList) => {
   return playerList ? PLAYER_BANNER : BANNER;
 };
 const page = (title, body, hosted, playerList = false) =>
-  `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title></head>` +
+  `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><link rel="icon" href="data:,"></head>` +
   `<body><p role="status"><strong>${bannerOf(hosted, playerList)}</strong></p>${body}</body></html>`;
 const summary =
   (hosted) =>
@@ -296,7 +298,7 @@ function appView(app, snapshot, token) {
  * `apps()` returns `[{ uniqueName, source }]` where `source` is a `readCanvasSource` result. `enabled()` (project
  * `canvas.enabled`, default true) false answers every path under the prefix 404 CanvasAppsDisabled and reports the
  * CANVAS_DISABLED diagnostic once. `runtime` (createCanvasRuntime) hosts the apps; `principal(req)` → { kind, principalId }
- * or null, or a promise of it (the staff session, or a signed-in portal visitor's mapped Dataverse user; never SYSTEM); `csrf()` → the simulator CSRF token. Without
+ * or null, or a promise of it (the staff session, or a signed-in portal visitor's mapped Dataverse user; never SYSTEM); `csrf()` → the simulator CSRF token; `adminToken()` → the admin console token or null, also accepted as a driver action's token. Without
  * a runtime the pages show the inventory and the API answers 501 CanvasRuntimeUnavailable. Returns false synchronously for
  * paths it does not own and true for the rest (the answer may complete asynchronously). `traces` (the host trace store)
  * names the request root's actor with `traceActor(principal)` (default: a staff or local administrator principal is the
@@ -310,6 +312,8 @@ export function createCanvasHandler({
   runtime = null,
   principal = () => null,
   csrf = () => null,
+  adminToken = () => null,
+  pcfAssets = () => new Map(),
   traces = null,
   traceActor = (caller) =>
     ['staff', 'local-admin'].includes(caller?.kind) ? { kind: 'staff', id: caller.principalId, name: null } : null,
@@ -360,6 +364,8 @@ export function createCanvasHandler({
     }
     return finishTraceAction(span, outcome);
   };
+  // The page token, or the admin token when the host configured one (an empty or null admin token matches nothing).
+  const tokenAccepted = (token) => sameToken(token, csrf()) || sameToken(token, adminToken());
   const reported = new Set();
   const once = (key, entry) => {
     if (!reported.has(key)) {
@@ -402,7 +408,7 @@ export function createCanvasHandler({
       throw failure(405, 'MethodNotAllowed', 'The canvas driver API takes GET or POST.');
     }
     const { form, csrf: token, action } = await readForm(req);
-    if (!csrf() || token !== csrf()) throw failure(403, 'CsrfRequired', 'Missing simulator CSRF token.');
+    if (!csrf() || !tokenAccepted(token)) throw failure(403, 'CsrfRequired', 'Missing simulator CSRF token.');
     if (action.sourceRevision !== undefined && action.sourceRevision !== app.source.revision)
       throw failure(
         409,
@@ -529,6 +535,13 @@ export function createCanvasHandler({
       if (!app) throw failure(404, 'CanvasAppNotFound', 'Canvas app not found.');
       return api(req, res, app);
     }
+    // Declared PCF bundles of the apps' controls: same-origin with the page, served under the same listener's apps path.
+    if (pathname.startsWith(CANVAS_PCF))
+      return servePcfResource(req, res, {
+        assets: pcfAssets(),
+        key: PORTAL_PCF + pathname.slice(CANVAS_PCF.length),
+        fail: (status, message) => failure(status, 'CanvasPcfResource', message),
+      });
     if (req.method !== 'GET') {
       res.setHeader('allow', 'GET');
       return json(res, 405, {

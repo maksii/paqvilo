@@ -31,6 +31,9 @@ const rowKey = (value) => {
   return raw == null ? null : String(guidKey(raw) ?? raw).toLowerCase();
 };
 
+/** The wire text of a multi-select value stored as an array: the comma text the string-stored row keeps. */
+export const multiChoiceText = (value) => value.join(',');
+
 /**
  * Create a formatter bound to one request.
  * options: { store, identity, metadata(logical) -> fields, formatting }
@@ -109,6 +112,8 @@ export function createWebApiFormatter({ store, identity: _identity = {}, metadat
     if (isChoiceObject(value)) return value.value;
     if (isLookupObject(value)) return value.id;
     const kind = fieldKind(columnDefinition);
+    // A multi-select value stored as an array (a plug-in or SDK write) leaves as the stored comma string does.
+    if (kind === 'multichoice' && Array.isArray(value)) return multiChoiceText(value);
     if (
       typeof value === 'string' &&
       (kind === 'datetime' || (!kind && (SYSTEM_DATES.has(key) || /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(value))))

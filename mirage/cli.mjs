@@ -15,6 +15,8 @@ const createSimulator = async (options) => {
   return runtime.createSimulator(options);
 };
 const reportStartup = (event) => console.error(JSON.stringify({ type: 'runtime-startup', ...event }));
+// The administration entry /_sim/ on the runtime's admin origin: the Power Pages handle reports it as /__sim/.
+const adminEntryOf = (simulator) => new URL('/_sim/', simulator.adminUrl).href;
 import { builtinPresets, presetDescriptor } from './lib/presets.mjs';
 import { resolveSolutionRoots } from './lib/solution-roots.mjs';
 import { shareSolutionParses } from './lib/solution-cache.mjs';
@@ -56,7 +58,6 @@ const valueOptions = new Set([
   'preset',
   'preset-mode',
   'path',
-  'managed-control-path',
   'stylesheet',
   'parent-snippet',
   'child-snippet',
@@ -117,7 +118,6 @@ try {
       'preset-mode': { type: 'string' },
       'apply-configuration': { type: 'boolean' },
       path: { type: 'string', default: '/' },
-      'managed-control-path': { type: 'string' },
       stylesheet: { type: 'string', multiple: true },
       'parent-snippet': { type: 'string' },
       'child-snippet': { type: 'string' },
@@ -260,18 +260,6 @@ try {
       'path',
       'output',
     ],
-    'capture-shell': [
-      ...sourceOptions,
-      ...runtimeOptionNames,
-      'state',
-      'state-dir',
-      'origin',
-      'cdp',
-      'deployment-profile',
-      'pack-module',
-      'path',
-      'managed-control-path',
-    ],
     'capture-stylesheets': [
       ...sourceOptions,
       ...runtimeOptionNames,
@@ -296,7 +284,6 @@ try {
       'parent-snippet',
       'child-snippet',
     ],
-    verify: ['local', 'origin', 'cdp', 'path', 'output', 'state-dir', 'config', 'project', 'site'],
     data: [
       ...sourceOptions.filter((option) => option !== 'solution-order'),
       'pack',
@@ -311,7 +298,7 @@ try {
       'json',
     ],
   };
-  const isCapture = ['capture-shell', 'capture-stylesheets', 'capture-snippet-composition'].includes(command);
+  const isCapture = ['capture-stylesheets', 'capture-snippet-composition'].includes(command);
   const allowed = new Set([...matrix[command], 'help', ...(isCapture ? ['preset'] : [])]);
   for (const token of tokens) {
     if (token.kind === 'option' && !allowed.has(token.name))
@@ -320,10 +307,8 @@ try {
     if (token.kind === 'option' && token.value === '') throw new Error(`--${token.name} requires a nonempty value`);
   }
 
-  if (args.portal && !args.project && command !== 'verify')
-    throw new Error('--portal selects a portal from --project.');
-  if (args.project && args.source && command !== 'verify')
-    throw new Error('Use either --project or --source, not both.');
+  if (args.portal && !args.project) throw new Error('--portal selects a portal from --project.');
+  if (args.project && args.source) throw new Error('Use either --project or --source, not both.');
   if (isCapture && !args.cdp) throw new Error(`${command} requires --cdp for the intended connected browser.`);
   if (isCapture && args.preset)
     throw new Error(`${command} does not apply presets. Apply --preset when starting serve.`);
@@ -339,17 +324,6 @@ try {
         ? await resolveDataSource(args)
         : {};
     console.log(JSON.stringify(await runDataCommand(positionals.slice(1), { ...args, ...resolved }), null, 2));
-  } else if (command === 'verify') {
-    const { verifyParity } = await import('./verify.mjs');
-    const result = await verifyParity({
-      localUrl: args.local,
-      origin: args.origin,
-      cdpUrl: args.cdp,
-      path: args.path,
-      outputDir: args.output ?? path.join(stateDir, 'simulator', args.site ?? 'default', 'evidence/latest'),
-    });
-    console.log(JSON.stringify(result, null, 2));
-    process.exitCode = result.passed ? 0 : 1;
   } else {
     const project = args.project ? await loadProjectConfig(args.project) : null;
     let profileMirage;
@@ -557,7 +531,8 @@ try {
               sourceDir: null,
               stateFile,
               url: simulator.url,
-              adminUrl: new URL('/_sim/', simulator.url).href,
+              adminUrl: adminEntryOf(simulator),
+              appsUrl: simulator.appsUrl,
               discovery,
             },
             null,
@@ -571,7 +546,8 @@ try {
               runtime,
               simulation: simulator.status().simulation,
               url: simulator.url,
-              adminUrl: new URL('/_sim/', simulator.url).href,
+              adminUrl: adminEntryOf(simulator),
+              appsUrl: simulator.appsUrl,
               dataverse: simulator.status().dataverse,
               discovery,
             },
@@ -722,7 +698,8 @@ try {
               sourceDir: portal.sourceDir,
               stateFile,
               url: simulator.url,
-              adminUrl: new URL('/_sim/', simulator.url).href,
+              adminUrl: adminEntryOf(simulator),
+              appsUrl: simulator.appsUrl,
               identityProvider: { origin: simulator.identityProvider.origin, port: simulator.identityProvider.port },
             })),
             discovery,
@@ -742,7 +719,8 @@ try {
                 sourceDir: portal.sourceDir,
                 stateFile,
                 url: simulator.url,
-                adminUrl: new URL('/_sim/', simulator.url).href,
+                adminUrl: adminEntryOf(simulator),
+                appsUrl: simulator.appsUrl,
                 // Portal pages carry only site-setting headers unless confinement is opted in.
                 confinePortalPages: startedConfig.confinePortalPages,
                 signInPath: startedStatus.bootstrap.signInPath,
@@ -866,11 +844,10 @@ try {
       } else if (
         command === 'serve' ||
         command === 'render' ||
-        command === 'capture-shell' ||
         command === 'capture-stylesheets' ||
         command === 'capture-snippet-composition'
       ) {
-        const capturing = ['capture-shell', 'capture-stylesheets', 'capture-snippet-composition'].includes(command);
+        const capturing = ['capture-stylesheets', 'capture-snippet-composition'].includes(command);
         if (capturing && !args.cdp) throw new Error(`${command} requires --cdp for the intended connected browser.`);
         if (capturing && args.preset)
           throw new Error(`${command} does not apply presets. Apply --preset when starting serve.`);
@@ -878,11 +855,6 @@ try {
           throw new Error('capture-stylesheets requires --stylesheet PATH (repeatable).');
         if (command === 'capture-snippet-composition' && (!args['parent-snippet'] || !args['child-snippet']))
           throw new Error('capture-snippet-composition requires --parent-snippet NAME and --child-snippet NAME.');
-        if (
-          command === 'capture-shell' &&
-          (!args.path.startsWith('/') || args.path.startsWith('//') || args.path.includes('\\'))
-        )
-          throw new Error('Capture page path must be portal-relative.');
         const port = command === 'serve' ? runtimePort(args.port) : 0;
         const stateFile = path.resolve(
           args.state ??
@@ -962,19 +934,10 @@ try {
           if (args.cdp) await simulator.live.connect(args.cdp);
           if (capturing) {
             const state = simulator.state();
-            const capturePayload = () => {
-              if (command === 'capture-stylesheets') return { paths: args.stylesheet };
-              if (command === 'capture-snippet-composition')
-                return {
-                  path: args.path,
-                  parentName: args['parent-snippet'],
-                  childName: args['child-snippet'],
-                };
-              return {
-                path: args.path,
-                managedControlPath: args['managed-control-path'],
-              };
-            };
+            const capturePayload = () =>
+              command === 'capture-stylesheets'
+                ? { paths: args.stylesheet }
+                : { path: args.path, parentName: args['parent-snippet'], childName: args['child-snippet'] };
             const response = await fetch(`${simulator.url}/__sim/api/assets/${command}`, {
               method: 'POST',
               headers: {
@@ -1005,16 +968,28 @@ try {
               throw new Error('Render path must be portal-relative.');
             const target = new URL(args.path, simulator.url);
             if (target.origin !== simulator.url) throw new Error('Render path escaped the local simulator.');
-            const response = await fetch(target, { redirect: 'error' });
+            // A redirect is reported, never followed: the runtime's answer is the render result.
+            const response = await fetch(target, { redirect: 'manual' });
             const html = await response.text();
+            const location = response.headers.get('location');
+            const redirected = response.status >= 300 && response.status < 400;
+            if (redirected && !args.output) {
+              await simulator.close();
+              throw new Error(
+                `Render path ${args.path} answered ${response.status} to ${location}; render the target path instead.`,
+              );
+            }
             if (args.output) {
-              const output = path.resolve(args.output);
-              await fs.mkdir(path.dirname(output), { recursive: true });
-              await fs.writeFile(output, html);
+              const output = redirected ? null : path.resolve(args.output);
+              if (output) {
+                await fs.mkdir(path.dirname(output), { recursive: true });
+                await fs.writeFile(output, html);
+              }
               console.log(
                 JSON.stringify(
                   {
                     status: response.status,
+                    ...(redirected ? { location } : {}),
                     output,
                     diagnostics: simulator.state().diagnostics,
                   },
@@ -1034,7 +1009,8 @@ try {
                 {
                   pid: process.pid,
                   url: simulator.url,
-                  adminUrl: new URL('/_sim/', simulator.url).href,
+                  adminUrl: adminEntryOf(simulator),
+                  appsUrl: simulator.appsUrl,
                   identityProvider: {
                     origin: simulator.identityProvider.origin,
                     port: simulator.identityProvider.port,
@@ -1051,7 +1027,8 @@ try {
               JSON.stringify(
                 {
                   url: simulator.url,
-                  adminUrl: new URL('/_sim/', simulator.url).href,
+                  adminUrl: adminEntryOf(simulator),
+                  appsUrl: simulator.appsUrl,
                   sourceDir,
                   stateFile,
                   discovery,

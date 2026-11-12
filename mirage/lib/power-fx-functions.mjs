@@ -1,3 +1,4 @@
+import { createContext, Script } from 'node:vm';
 import { stripTrailingCharacter } from './text-scanning.mjs';
 // The Power Fx function table (power-fx.mjs evaluates; this file answers each function). One entry per function:
 // { min, max, fn(fx, ...values) } evaluates its arguments first and lets an error argument flow through (Learn, "Error
@@ -24,6 +25,7 @@ import {
   ErrorKind,
   FxDataSource,
   FxEnum,
+  FxChoice,
   FxDate,
   FxError,
   FxGuid,
@@ -163,6 +165,79 @@ function columnName(fx, node) {
   return value instanceof FxError ? value : toText(value, fx);
 }
 const singleColumn = (values) => values.map((value) => ({ Value: value }));
+
+// Distinct keeps a value unless equals finds a kept value equal to it. The equals scan runs only inside a bucket: two values
+// that equals treats as equal always share a key (the key is coarser than equals). A value with no key, and a kept value with
+// no key, are compared with every kept value, so a fallback value is never missed.
+function keepDistinct(fx, state, value) {
+  const keys = distinctKeys(value, fx);
+  const candidates = keys === null ? state.kept.map((_, index) => index) : candidatesFor(state, keys);
+  if (candidates.some((index) => equals(state.kept[index], value, fx))) return;
+  const index = state.kept.push(value) - 1;
+  if (keys === null) {
+    state.unkeyed.push(index);
+    return;
+  }
+  for (const key of keys) {
+    if (!state.buckets.has(key)) state.buckets.set(key, []);
+    state.buckets.get(key).push(index);
+  }
+}
+// The kept values that share a key with a value, plus the keyless ones.
+function candidatesFor(state, keys) {
+  const indexes = new Set(state.unkeyed);
+  for (const key of keys) for (const index of state.buckets.get(key) ?? []) indexes.add(index);
+  return [...indexes];
+}
+// A number keys as its JavaScript text, which equals compares through decimalParts. A value decimalParts refuses (NaN,
+// Infinity, or beyond its exponent bound, where equals throws) has no key.
+function numericKey(value) {
+  const source = value instanceof FxFloat ? value.value : value;
+  try {
+    if (!decimalParts(source)) return null;
+  } catch {
+    return null;
+  }
+  return String(isExactNumeric(source) ? Number(source.value) : source);
+}
+// Text keys as the number it reads as (equals compares that number, and "" reads as 0), otherwise as its lower-case form
+// (equals compares GUIDs case-insensitively against text).
+function textKey(text) {
+  const lower = text.toLowerCase();
+  let parsed;
+  try {
+    parsed = toNumber(lower);
+  } catch {
+    return null;
+  }
+  if (parsed === null) return numericKey(0);
+  return typeof parsed === 'number' ? numericKey(parsed) : lower;
+}
+// The key of a scalar, or null for the fallback: records, tables, untyped values, record references, and GUIDs that equals
+// compares with the text of a Boolean or an object.
+function distinctKey(value) {
+  if (isBlank(value)) return 'blank';
+  if (typeof value === 'string') return textKey(value);
+  if (typeof value === 'boolean') return value ? '1' : '0';
+  if (typeof value === 'number' || value instanceof FxFloat || isExactNumeric(value)) return numericKey(value);
+  if (value instanceof FxGuid)
+    return ['true', 'false', '[object object]'].includes(value.value) ? null : textKey(value.value);
+  return null;
+}
+// The keys under which a value can be equal to another, or null for the fallback. A choice equals its underlying value
+// (within its option set), so it takes that value's keys. A date or time equals a number by its instant and a date or
+// time by its wall-clock value; an offset datetime differs between the two, so it has both keys.
+function distinctKeys(value, fx) {
+  if (value instanceof FxChoice) return distinctKeys(value.value, fx);
+  if (value instanceof FxDate) return dateKeys(value, fx);
+  const key = distinctKey(value);
+  return key === null ? null : [key];
+}
+function dateKeys(date, fx) {
+  const wall = wallOf(date, fx?.timeZone);
+  const keys = wall === date.ms ? [numericKey(date.ms)] : [numericKey(date.ms), numericKey(wall)];
+  return keys.includes(null) ? null : keys;
+}
 const copyRecord = (record) => {
   const copy = { ...record };
   if (record[ALIASES]) copy[ALIASES] = record[ALIASES];
@@ -193,15 +268,19 @@ const textual = (fn) => ({
 
 // Learn "Round, RoundDown, RoundUp, Int and Trunc": Round half away from zero; RoundUp away from zero; RoundDown and Trunc
 // toward zero; Int down. Exponent arithmetic keeps 1.005 at 1.01.
+// The mantissa and exponent come from toExponential, so a number JavaScript prints as 1.234e-7 keeps its digits.
+function shiftByPowerOfTen(v, d) {
+  const [mantissa, exponent] = v.toExponential().split('e');
+  return Number(`${mantissa}e${Number(exponent) + d}`);
+}
 function scaled(x, digits, mode) {
   const sign = x < 0 ? -1 : 1;
-  const shift = (v, d) => Number(`${v}e${d}`);
-  const abs = shift(round15(Math.abs(x)), digits);
+  const abs = shiftByPowerOfTen(round15(Math.abs(x)), digits);
   let whole;
   if (mode === 'round') whole = Math.round(abs);
   else if (mode === 'up') whole = Math.ceil(round15(abs));
   else whole = Math.floor(round15(abs));
-  return sign * shift(whole, -digits) || 0;
+  return sign * shiftByPowerOfTen(whole, -digits) || 0;
 }
 const rounding = (mode) => ({
   min: 1,
@@ -255,11 +334,25 @@ function numberFormatPattern(format) {
   };
 }
 
+// decimalParts bounds an exponent at 128. A double beyond that keeps its shortest digits (toExponential) as an exact coefficient.
+const DECIMAL_EXPONENT_LIMIT = 128;
+function digitParts(input) {
+  if (typeof input !== 'number' || !Number.isFinite(input)) return decimalParts(input);
+  const [mantissa, exponent] = input.toExponential().split('e');
+  if (Math.abs(Number(exponent)) <= DECIMAL_EXPONENT_LIMIT) return decimalParts(input);
+  const digits = mantissa.replace(/^-/, '').replace('.', '');
+  const shift = Number(exponent) - (digits.length - 1);
+  const sign = input < 0 ? -1n : 1n;
+  return shift >= 0
+    ? { coefficient: sign * BigInt(digits) * 10n ** BigInt(shift), scale: 0 }
+    : { coefficient: sign * BigInt(digits), scale: -shift };
+}
+
 function formattedDigits(value, pattern) {
   // Power Fx formats decimal digits without converting an exact Decimal to a double.
   // Float formatting uses the platform's 15-significant-digit decimal presentation.
   const input = value instanceof FxFloat ? round15(value.value) : value;
-  const partsValue = decimalParts(input);
+  const partsValue = digitParts(input);
   let coefficient = partsValue.coefficient;
   let scale = partsValue.scale - 2 * pattern.percentCount + 3 * pattern.scalingCommas;
   if (scale < 0) {
@@ -320,6 +413,43 @@ function renderNumberPattern(pattern, digits, separators) {
   if (pattern.plain !== undefined) return pattern.plain;
   return renderNumberPattern(pattern, formattedDigits(value, pattern), separators);
 }
+function isDateLanguage(tag) {
+  try {
+    return Intl.DateTimeFormat.supportedLocalesOf([tag]).length > 0;
+  } catch {
+    return false;
+  }
+}
+// Learn "Text": an unsupported language tag is BadLanguageCode for dates too; the empty tag keeps the en-US default.
+function formatDateText(fx, date, pattern, language) {
+  const lang = typeof language === 'string' ? language : fx.language;
+  if (lang && !isDateLanguage(lang)) return fail('BadLanguageCode', `Language code '${lang}' not supported.`);
+  return formatDate(date, pattern, fx.timeZone, lang);
+}
+// Whether the day comes before the month in a language's numeric date (fr-FR is 13/01/2024; en-US is 01/13/2024).
+function dayFirstIn(tag) {
+  const order = new Intl.DateTimeFormat(tag, { year: 'numeric', month: 'numeric', day: 'numeric' })
+    .formatToParts(0)
+    .map((part) => part.type)
+    .filter((type) => type === 'day' || type === 'month');
+  return order[0] === 'day';
+}
+// Learn "DateValue", "DateTimeValue" and "TimeValue": a language argument sets the day and month order of slash-style text.
+// An invalid tag is BadLanguageCode; a missing or empty one keeps the default order.
+function textDate(kind) {
+  return {
+    min: 1,
+    max: 2,
+    fn(fx, value, language) {
+      if (isBlank(value) || value === '') return null;
+      if (language instanceof FxError) return language;
+      if (isBlank(language) || language === '') return toDate(value, kind, fx);
+      const tag = String(language);
+      if (!isDateLanguage(tag)) return fail('BadLanguageCode', `Language code '${tag}' not supported.`);
+      return toDate(value, kind, fx, dayFirstIn(tag));
+    },
+  };
+}
 
 // ---- Dates (Learn "DateAdd, DateDiff", "Day, Month, Year, Hour, Minute, Second, and Weekday", "WeekNum and ISOWeekNum") --
 
@@ -336,7 +466,7 @@ const datePart = (get) => ({
 const UNITS = { milliseconds: 1, seconds: 1000, minutes: 60_000, hours: 3_600_000, days: DAY };
 /* NOSONAR: mixed return values are part of the contract */ function unitOf(value) {
   const unit = String(value ?? 'Days').toLowerCase();
-  if (UNITS[unit] || ['months', 'quarters', 'years'].includes(unit)) return unit;
+  if (Object.hasOwn(UNITS, unit) || ['months', 'quarters', 'years'].includes(unit)) return unit;
   return fail('InvalidArgument', `'${value}' is not a TimeUnit.`);
 }
 function addMonths(wall, months) {
@@ -385,6 +515,35 @@ function regexOf(fx, pattern, options, fallback) {
     return { re: new RegExp(source, flags), numbered: opts.includes('N') };
   } catch (error) {
     return { error: fail('BadRegex', `Invalid regular expression: ${error.message}`) };
+  }
+}
+// Hang guard, not a performance budget: every pattern runs in a VM context under a wall-clock limit, and a run that
+// exceeds it ends as BadRegex. Backtracking can be polynomial without any quantified group, so no pattern is exempt.
+const regexGuardTally = { contexts: 0, runs: 0 };
+let regexGuard = null;
+// The VM context and compiled script are created on the first run and reused by every later run.
+function regexGuardParts() {
+  if (regexGuard === null) {
+    regexGuardTally.contexts += 1;
+    regexGuard = { context: createContext({}), script: new Script('run()') };
+  }
+  return regexGuard;
+}
+export function regexGuardCounts() {
+  return { ...regexGuardTally };
+}
+// Returns the match result, or a BadRegex error value when the pattern exceeds the guard.
+function runRegex(fx, fn) {
+  const { context, script } = regexGuardParts();
+  regexGuardTally.runs += 1;
+  context.run = fn;
+  try {
+    return script.runInContext(context, { timeout: fx.host.regexGuardMs ?? 10_000 });
+  } catch (error) {
+    if (error?.code !== 'ERR_SCRIPT_EXECUTION_TIMEOUT') throw error;
+    return fail('BadRegex', 'Regular expression stopped: its backtracking does not finish.');
+  } finally {
+    delete context.run;
   }
 }
 const isMatchDefault = (fx) => (fx.host.app === 'canvas' ? '^c$' : 'c');
@@ -1143,7 +1302,7 @@ export const FUNCTIONS = {
           return new Date(
             date.kind === 'datetime' ? date.ms : fromWall('datetime', date.ms, fx.timeZone).ms,
           ).toISOString();
-        return formatDate(date, pattern, fx.timeZone, typeof language === 'string' ? language : fx.language);
+        return formatDateText(fx, date, pattern, language);
       }
       if (typeof value === 'string') return value;
       const x = isExactNumeric(value) || value instanceof FxFloat ? value : toNumber(value);
@@ -1318,7 +1477,7 @@ export const FUNCTIONS = {
       const { re, error } = regexOf(fx, pattern, options, isMatchDefault(fx));
       if (error) return error;
       const t = text(fx, value);
-      return t instanceof FxError ? t : re.test(t);
+      return t instanceof FxError ? t : runRegex(fx, () => re.test(t));
     },
   },
   Match: {
@@ -1329,8 +1488,10 @@ export const FUNCTIONS = {
       if (error) return error;
       const t = text(fx, value);
       if (t instanceof FxError) return t;
-      const match = re.exec(t);
-      return match ? matchRecord(match, numbered) : null;
+      return runRegex(fx, () => {
+        const match = re.exec(t);
+        return match ? matchRecord(match, numbered) : null;
+      });
     },
   },
   MatchAll: {
@@ -1341,7 +1502,8 @@ export const FUNCTIONS = {
       if (error) return error;
       const t = text(fx, value);
       if (t instanceof FxError) return t;
-      return [...t.matchAll(new RegExp(re.source, `${re.flags}g`))].map((match) => matchRecord(match, numbered));
+      const all = new RegExp(re.source, `${re.flags}g`);
+      return runRegex(fx, () => [...t.matchAll(all)].map((match) => matchRecord(match, numbered)));
     },
   },
   GUID: {
@@ -1424,7 +1586,9 @@ export const FUNCTIONS = {
     max: 3,
     fn(fx, y, m, d) {
       const [year, month, day] = [y, m, d].map((value) => integer(toNumber(value)));
-      return firstError(year, month, day) ?? new FxDate('date', Date.UTC(year, month - 1, day));
+      // Learn "Date, DateTime, and Time functions": a year from 0 to 1899 is relative to 1900 (70 is 1970).
+      const absoluteYear = year >= 0 && year <= 1899 ? year + 1900 : year;
+      return firstError(year, month, day) ?? new FxDate('date', Date.UTC(absoluteYear, month - 1, day));
     },
   },
   Time: {
@@ -1437,13 +1601,9 @@ export const FUNCTIONS = {
       return new FxDate('time', ((((hour * 3600 + minute * 60 + second) * 1000 + milli) % DAY) + DAY) % DAY);
     },
   },
-  DateValue: { min: 1, max: 2, fn: (fx, value) => (isBlank(value) || value === '' ? null : toDate(value, 'date', fx)) },
-  TimeValue: { min: 1, max: 2, fn: (fx, value) => (isBlank(value) || value === '' ? null : toDate(value, 'time', fx)) },
-  DateTimeValue: {
-    min: 1,
-    max: 2,
-    fn: (fx, value) => (isBlank(value) || value === '' ? null : toDate(value, 'datetime', fx)),
-  },
+  DateValue: textDate('date'),
+  TimeValue: textDate('time'),
+  DateTimeValue: textDate('datetime'),
   Year: datePart((d) => d.getUTCFullYear()),
   Month: datePart((d) => d.getUTCMonth() + 1),
   Day: datePart((d) => d.getUTCDate()),
@@ -1493,6 +1653,8 @@ export const FUNCTIONS = {
         unit = unitOf(units);
       if (firstError(date, amount, unit)) return firstError(date, amount, unit);
       if (UNITS[unit] && unit !== 'days') {
+        // A time of day wraps within 24 hours, as Time() and time plus a number do.
+        if (date.kind === 'time') return fromWall('time', date.ms + amount * UNITS[unit]);
         // Sub-day units add to the instant; a date-only value becomes a date/time at local midnight.
         const base = date.kind === 'date' ? fromWall('datetime', date.ms, fx.timeZone) : date;
         return new FxDate(base.kind, base.ms + amount * UNITS[unit], base.tzi);
@@ -1909,13 +2071,13 @@ export const FUNCTIONS = {
       const table = tableArg(fx, args[0]);
       const rows = rowsOf(fx, table.value, 'Distinct');
       if (rows instanceof FxError) return rows;
-      const out = [];
+      const state = { kept: [], buckets: new Map(), unkeyed: [] };
       for (const row of rows) {
         const value = inRow(fx, row, table, () => fx.ev(args[1]));
         if (value instanceof FxError) return value;
-        if (!out.some((seen) => equals(seen, value, fx))) out.push(value);
+        keepDistinct(fx, state, value);
       }
-      return singleColumn(out); // Learn: the result column is named Value
+      return singleColumn(state.kept); // Learn: the result column is named Value
     },
   },
   AddColumns: {
@@ -2172,11 +2334,14 @@ export const FUNCTIONS = {
   Notify: {
     min: 1,
     max: 3,
-    /* NOSONAR: mixed return values are part of the contract */ fn(fx, message, type = 'Information', timeout = 0) {
+    /* NOSONAR: mixed return values are part of the contract */ fn(fx, message, type = 'Information', timeout) {
       if (typeof fx.host.notify !== 'function') return notHosted('Notify');
       const t = toText(message, fx);
       if (t instanceof FxError) return t;
-      fx.host.notify(t, toText(type, fx), toNumber(timeout));
+      // A missing or blank Timeout reaches the host as undefined, so the host applies its default.
+      const duration = timeout === undefined || timeout === null ? undefined : toNumber(timeout);
+      if (duration instanceof FxError) return duration;
+      fx.host.notify(t, toText(type, fx), duration);
       return true;
     },
   },

@@ -1,3 +1,4 @@
+// @test-kind contract: temporary cleanup refuses physical parents, prefix siblings and traversal before deleting, and removes linked fixtures through their physical path.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -22,41 +23,38 @@ async function workspace(t, prefix) {
   return root;
 }
 
-test(
-  'the real portal packaging test removes its physical fixture through a linked TEMP',
-  { timeout: 90_000 },
-  async (t) => {
-    const root = await workspace(t, 'paq-packaging-linked-temp-');
-    const physical = path.join(root, 'physical-temp');
-    const alias = path.join(root, 'linked-temp');
-    await fs.mkdir(physical);
-    await fs.symlink(physical, alias, process.platform === 'win32' ? 'junction' : 'dir');
-    // This is a separate real test runner, not another worker of the parent runner.
-    const env = { ...process.env, TEMP: alias, TMP: alias, TMPDIR: alias };
-    delete env.NODE_TEST_CONTEXT;
-    const { stdout } = await execFileAsync(
-      process.execPath,
-      [
-        '--test',
-        '--test-reporter=tap',
-        '--test-name-pattern=^portal packaging discovers component types and uses valid non-Entity flags$',
-        fileURLToPath(new URL('./portal-security.test.mjs', import.meta.url)),
-      ],
-      {
-        env,
-        windowsHide: true,
-        timeout: 60_000,
-        signal: t.signal,
-        maxBuffer: 8 * 1024 * 1024,
-      },
-    );
-    assert.match(stdout, /# tests 1\r?\n/);
-    assert.match(stdout, /# fail 0\r?\n/);
-    assert.match(stdout, /# skipped 0\r?\n/);
-    assert.deepEqual(await fs.readdir(physical), [], 'the complete packaging fixture was removed after its assertions');
-  },
-);
+test('the real portal packaging test removes its physical fixture through a linked TEMP', async (t) => {
+  const root = await workspace(t, 'paq-packaging-linked-temp-');
+  const physical = path.join(root, 'physical-temp');
+  const alias = path.join(root, 'linked-temp');
+  await fs.mkdir(physical);
+  await fs.symlink(physical, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  // This is a separate real test runner, not another worker of the parent runner.
+  const env = { ...process.env, TEMP: alias, TMP: alias, TMPDIR: alias };
+  delete env.NODE_TEST_CONTEXT;
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    [
+      '--test',
+      '--test-reporter=tap',
+      '--test-name-pattern=^portal packaging discovers component types and uses valid non-Entity flags$',
+      fileURLToPath(new URL('./portal-security.test.mjs', import.meta.url)),
+    ],
+    {
+      env,
+      windowsHide: true,
+      signal: t.signal,
+      maxBuffer: 8 * 1024 * 1024,
+    },
+  );
+  assert.match(stdout, /# tests 1\r?\n/);
+  assert.match(stdout, /# fail 0\r?\n/);
+  assert.match(stdout, /# skipped 0\r?\n/);
+  assert.deepEqual(await fs.readdir(physical), [], 'the complete packaging fixture was removed after its assertions');
+});
 
+// @test-kind security: temporary cleanup cannot delete the parent, a prefix sibling, a traversal target
+// or a link target outside the owned directory
 test('temporary cleanup rejects physical parent, prefix siblings and traversal before deletion', async (t) => {
   const root = await workspace(t, 'paq-temporary-boundary-');
   const parent = path.join(root, 'owned');

@@ -1488,7 +1488,7 @@ describe('plug-in registration: assembly content and plug-in types', () => {
     assert.equal(activity.isworkflowactivity, true);
   });
 
-  it('a Solution assembly without content is not inspected, so every type of it passes as before', async () => {
+  it('a Solution assembly without content is not inspected, so every type of it passes', async () => {
     const { store, run } = await registry();
     store.insertRow('pluginassembly', store.state.tables.pluginassembly, {
       pluginassemblyid: ASSEMBLY,
@@ -1852,4 +1852,127 @@ it('a rank -1 synchronous Update step runs before the rank 1, 2 and 10 steps of 
   store.setPluginPipeline((context) => runPluginPhase({ ...context, store, items, handlers }));
   await store.update('x_widget', row.x_widgetid, { x_name: 'Changed' }, { admin: true });
   assert.deepEqual(order, [-1, 1, 2, 10]);
+});
+
+// ---- Custom API messages: the sdkmessage rows that deleting or renaming an API leaves for the APIs and steps still using them.
+
+describe('custom API messages and the steps registered on them', () => {
+  const MESSAGE_APP = '88888888-8888-4888-8888-888888888888';
+  const MESSAGE_SECRET = 'PAQVILO_CUSTOM_API_MESSAGES_TEST_SECRET';
+  let api;
+  let store;
+  let origin;
+  let token;
+
+  before(async () => {
+    process.env[MESSAGE_SECRET] = 'custom-api-messages-secret';
+    store = await new DataStore({ state: emptyState() }).init();
+    const settings = dataverseSettings({
+      enabled: true,
+      applications: [
+        {
+          appId: MESSAGE_APP,
+          displayName: 'Invented message client',
+          secretEnvironmentVariable: MESSAGE_SECRET,
+          roles: ['System Administrator'],
+        },
+      ],
+    });
+    api = await startDataverseApi({ store, settings, log: () => {}, extensions: [...EXTENSIONS] });
+    origin = api.origin;
+    const response = await fetch(`${origin}/${api.tenantId}/oauth2/v2.0/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'client_credentials',
+        client_id: MESSAGE_APP,
+        client_secret: process.env[MESSAGE_SECRET],
+        scope: `${origin}/.default`,
+      }),
+    });
+    token = (await response.json()).access_token;
+  });
+
+  after(async () => {
+    delete process.env[MESSAGE_SECRET];
+    await api?.close();
+  });
+
+  const call = (method, route, body) =>
+    fetch(`${origin}/api/data/v9.2/${route}`, {
+      method,
+      headers: {
+        authorization: `Bearer ${token}`,
+        prefer: 'return=representation',
+        ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
+      },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+  const json = async (response, status = 200) => {
+    const text = await response.text();
+    assert.equal(response.status, status, text);
+    return text ? JSON.parse(text) : null;
+  };
+  const apiBody = (uniquename) => ({
+    uniquename,
+    name: uniquename,
+    description: 'Invented message API',
+    bindingtype: 0,
+    isfunction: false,
+  });
+  const messageNamed = (name) => store.tableRows('sdkmessage').find((row) => row.name === name) ?? null;
+  const filtersOf = (message) =>
+    store.tableRows('sdkmessagefilter').filter((row) => row.sdkmessageid === message.sdkmessageid);
+
+  // @test-kind contract: a deleted API keeps the message that a renamed API now carries, when a new API of the old name is deleted
+  it('after a rename, deleting a new API of the old name keeps the renamed API message and its filter', async () => {
+    const renamed = await json(await call('POST', 'customapis', apiBody('new_a')), 201);
+    await json(await call('PATCH', `customapis(${renamed.customapiid})`, { uniquename: 'new_b' }));
+    assert.equal(messageNamed('new_a'), null, 'the old name loses its message');
+    assert.ok(messageNamed('new_b'), 'the new name has its message');
+    const created = await json(await call('POST', 'customapis', apiBody('new_a')), 201);
+    assert.ok(messageNamed('new_a'), 'the new API of the old name has its message');
+    await json(await call('DELETE', `customapis(${created.customapiid})`), 204);
+    const message = messageNamed('new_b');
+    assert.ok(message, 'deleting the new API keeps the message of the renamed one');
+    assert.ok(filtersOf(message).length > 0, 'and its filter');
+    await json(await call('DELETE', `customapis(${renamed.customapiid})`), 204);
+  });
+
+  // @test-kind contract: Paqvilo design: a message kept for a step is removed with its filters by the next API sync once no step uses it
+  it('removes a kept message and its filters after the last step on it is deleted', async () => {
+    const created = await json(await call('POST', 'customapis', apiBody('new_e')), 201);
+    const messageIdOfApi = messageNamed('new_e').sdkmessageid;
+    store.transact(() => {
+      (store.state.tables.sdkmessageprocessingstep ??= []).push({
+        sdkmessageprocessingstepid: '99999999-0000-4000-8000-000000000002',
+        name: 'Invented step on the deleted API message',
+        sdkmessageid: messageIdOfApi,
+        stage: 30,
+        mode: 0,
+        rank: 1,
+        statecode: 0,
+        statuscode: 1,
+      });
+    });
+    await json(await call('PATCH', `customapis(${created.customapiid})`, { uniquename: 'new_f' }));
+    await json(await call('POST', 'customapis', apiBody('new_c')), 201);
+    assert.ok(messageNamed('new_e'), 'a sync while the step is registered keeps the message');
+    await json(await call('DELETE', 'sdkmessageprocessingsteps(99999999-0000-4000-8000-000000000002)'), 204);
+    await json(await call('POST', 'customapis', apiBody('new_d')), 201);
+    assert.equal(messageNamed('new_e'), null, 'the next sync removes the message once no step uses it');
+    assert.equal(
+      store.tableRows('sdkmessagefilter').filter((row) => row.sdkmessageid === messageIdOfApi).length,
+      0,
+      'and its filters',
+    );
+  });
+
+  // @test-kind contract: Paqvilo design: a custom API named like an Object.prototype key is a message of its own, created and removed like any other
+  it('creates and removes the message of an API named constructor', async () => {
+    const created = await json(await call('POST', 'customapis', apiBody('constructor')), 201);
+    assert.ok(messageNamed('constructor'), 'the API has its message');
+    await json(await call('DELETE', `customapis(${created.customapiid})`), 204);
+    assert.equal(messageNamed('constructor'), null, 'deleting the API removes its message');
+  });
 });

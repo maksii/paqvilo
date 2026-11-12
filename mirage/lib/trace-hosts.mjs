@@ -213,24 +213,8 @@ function bodyValue(body) {
   return '[stream]';
 }
 
-// The first `limit` bytes of a clone of the response body (the caller still reads the original): { body, truncated? };
-// a body that is not text-like is described by its content type and length only.
-async function responseBody(response, limit) {
-  const type = response.headers.get('content-type') ?? '';
-  if (!response.body || !TEXT_TYPE.test(type) || /event-stream/i.test(type)) return {};
-  const reader = response.clone().body.getReader();
-  const chunks = [];
-  let size = 0;
-  try {
-    while (size <= limit) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      chunks.push(value);
-      size += value.byteLength;
-    }
-  } finally {
-    reader.cancel().catch(() => {});
-  }
+// The first `limit` bytes of the captured body: { body, truncated? }; JSON is parsed, other text is kept as text.
+function capturedBody(chunks, size, limit, type) {
   const text = Buffer.concat(chunks).subarray(0, limit).toString('utf8');
   if (size > limit) return { body: text, truncated: true };
   if (JSON_TYPE.test(type))
@@ -240,6 +224,98 @@ async function responseBody(response, limit) {
       /* not JSON after all: the text */
     }
   return { body: text };
+}
+
+// The span's output (status, headers and the captured body) and error, then the end of the span: cancelled when the
+// caller cancelled the body (status given), else the span's own status from the answer.
+function finishBody(span, response, read, status = null) {
+  span.output(() => ({
+    status: response.status,
+    headers: headerObject(response.headers),
+    ...(read.body === undefined ? {} : { body: read.body }),
+    ...(read.truncated ? { truncated: true } : {}),
+  }));
+  if (status) span.end({ status });
+  else {
+    recordStatus(span, response, read.body);
+    span.end();
+  }
+}
+
+// The response's own body stream. A clone replaces it, so it is read through the prototype, past the patched property.
+const nativeBody = (response) => Reflect.get(Object.getPrototypeOf(response), 'body', response);
+
+// The caller's body: a stream that pulls one chunk at a time from the response's own body (highWaterMark 0: only when the
+// caller asks), so chunks and backpressure pass unchanged. Its source's cancel is the one place a caller's cancel ends
+// the span: however the cancel is reached (cancel, a reader, a for await break, a pipe, a Node adapter's destroy),
+// onCancel runs first and then the cancel reaches the response's body. The first read locks that body, so text() and
+// clone() work until the caller reads through this stream.
+function callerBody(response, onCancel) {
+  let upstream = null;
+  return new ReadableStream(
+    {
+      async pull(controller) {
+        upstream ??= nativeBody(response).getReader();
+        const { done, value } = await upstream.read();
+        if (done) controller.close();
+        else controller.enqueue(value);
+      },
+      async cancel(reason) {
+        onCancel();
+        await (upstream ?? nativeBody(response)).cancel(reason);
+      },
+    },
+    { highWaterMark: 0 },
+  );
+}
+
+// Level full: the body is read from a clone once the caller has the response, one read at a time, and the span is
+// finished on the read that ends the body or passes the cap (the caller still reads the original). Each read is a
+// callback, not an awaited loop, so the span is finished in the turn the caller's body ends and an open body never
+// holds the caller. A caller's cancel, or an abort of the request, finishes the span as cancelled. A body that is not
+// text-like is described by its content type and length only.
+function recordBody(span, response, limit) {
+  const type = response.headers.get('content-type') ?? '';
+  if (!response.body || !TEXT_TYPE.test(type) || /event-stream/i.test(type)) return finishBody(span, response, {});
+  const reader = response.clone().body.getReader();
+  const chunks = [];
+  let size = 0;
+  let settled = false;
+  function finish(read, status = null) {
+    if (settled) return;
+    settled = true;
+    reader.cancel().catch(() => {
+      /* a clone that is already closed or errored has nothing to release */
+    });
+    finishBody(span, response, read, status);
+  }
+  function cancelled() {
+    finish(capturedBody(chunks, size, limit, type), 'cancelled');
+  }
+  function onRead({ done, value }) {
+    if (settled) return;
+    if (!done) {
+      chunks.push(value);
+      size += value.byteLength;
+    }
+    if (done || size > limit) finish(capturedBody(chunks, size, limit, type));
+    else pump();
+  }
+  function onFailure(error) {
+    if (error?.name === 'AbortError') cancelled();
+    else finish({ body: `[unreadable body: ${auditText(error?.message ?? error, 200)}]` });
+  }
+  // A recording failure never reaches the caller, and never escapes as an unhandled rejection.
+  function pump() {
+    reader
+      .read()
+      .then(onRead, onFailure)
+      .catch(() => {
+        /* the span keeps the output recorded before the failure */
+      });
+  }
+  Object.defineProperty(response, 'body', { value: callerBody(response, cancelled), configurable: true });
+  pump();
 }
 
 // The provider's own { code, message } from an error body: an OData / Dataverse envelope { error: { code, message } },
@@ -309,27 +385,22 @@ export async function tracedFetch(
     throw error;
   }
   span.set({ status: response.status });
-  let read = {};
   if (span.enabled && payloads && traces.settings().level === 'full') {
-    try {
-      read = await responseBody(response, traces.settings().payloadBytes);
-    } catch (error) {
-      read = { body: `[unreadable body: ${auditText(error?.message ?? error, 200)}]` };
-    }
-    span.output(() => ({
-      status: response.status,
-      headers: headerObject(response.headers),
-      ...(read.body === undefined ? {} : { body: read.body }),
-      ...(read.truncated ? { truncated: true } : {}),
-    }));
+    recordBody(span, response, traces.settings().payloadBytes);
+    return response;
   }
-  if (response.status >= 400) {
-    const provider = providerError(read.body);
-    recordHttpError(span, response.status, {
-      code: provider.code,
-      message: provider.message ?? `${response.status} ${response.statusText}`.trim(),
-    });
-  }
+  recordStatus(span, response, undefined);
   span.end();
   return response;
+}
+
+// Records the answer's error on the span when its status is 400 or more: the provider's own code and message from its
+// body when it has them, else the status and its text.
+function recordStatus(span, response, body) {
+  if (response.status < 400) return;
+  const provider = providerError(body);
+  recordHttpError(span, response.status, {
+    code: provider.code,
+    message: provider.message ?? `${response.status} ${response.statusText}`.trim(),
+  });
 }

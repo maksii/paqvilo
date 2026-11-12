@@ -1,3 +1,4 @@
+// @test-kind contract: managed identity endpoint shapes, selectors and Arc challenges are Paqvilo's designed simulator behaviour
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -75,6 +76,7 @@ test('App Service: client_id, principal_id, object_id (alias) select; several se
   ); // settings carry no ARM resource ids
 });
 
+// @test-kind security: the identity endpoint issues no token without the correct identity header
 test('App Service: wrong or missing X-IDENTITY-HEADER is refused; a foreign resource is invalid_resource', () => {
   const endpoints = createManagedIdentityEndpoints({ authority: authority(), settings: SETTINGS, origin: ORIGIN });
   assert.equal(get(endpoints, '/msi/token', { resource: ORIGIN }, {}).status, 401);
@@ -128,6 +130,7 @@ test('IMDS: a missing resource is invalid_request', () => {
   assert.equal(imds(endpoints, {}).body.error, 'invalid_request');
 });
 
+// @test-kind security: the Arc endpoint issues a token only after a single-use secret challenge
 test('Arc: the first call is challenged with a single-use secret file; the re-call with its contents succeeds once', () => {
   const dir = makeTemporaryDirectorySync(join(tmpdir(), 'paqvilo-mi-'));
   try {
@@ -190,11 +193,7 @@ test('IMDS and App Service refuse a request without api-version before any side 
         .error,
       'invalid_request',
     );
-    assert.equal(
-      imds(endpoints, { resource: ORIGIN }).status,
-      401,
-      'with api-version the Arc challenge is issued as before',
-    );
+    assert.equal(imds(endpoints, { resource: ORIGIN }).status, 401, 'with api-version the Arc challenge is issued');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -350,4 +349,44 @@ test('an identity added through the runtime route gets a managedidentity row and
   assert.ok(row, 'the runtime identity has a managedidentity row');
   assert.equal(row.name, 'Runtime app');
   assert.equal(row.statecode, 0);
+});
+
+// @test-kind security: the configured mode is the only token endpoint that answers, so the App Service secret cannot be bypassed through IMDS
+test('a configured mode answers only its own endpoint path; without a mode both paths answer', () => {
+  const appService = createManagedIdentityEndpoints({
+    authority: authority(),
+    settings: SETTINGS,
+    origin: ORIGIN,
+    mode: 'appservice',
+  });
+  const secret = appService.env().IDENTITY_HEADER;
+  assert.equal(
+    get(appService, '/msi/token', { resource: ORIGIN, 'api-version': '2019-08-01' }, { 'x-identity-header': secret })
+      .status,
+    200,
+  );
+  assert.equal(get(appService, IMDS, { resource: ORIGIN, 'api-version': '2018-02-01' }, { metadata: 'true' }), null);
+
+  const imdsOnly = createManagedIdentityEndpoints({
+    authority: authority(),
+    settings: SETTINGS,
+    origin: ORIGIN,
+    mode: 'imds',
+  });
+  assert.equal(
+    get(imdsOnly, IMDS, { resource: ORIGIN, 'api-version': '2018-02-01' }, { metadata: 'true' }).status,
+    200,
+  );
+  assert.equal(
+    get(
+      imdsOnly,
+      '/msi/token',
+      { resource: ORIGIN, 'api-version': '2019-08-01' },
+      { 'x-identity-header': imdsOnly.env().IDENTITY_HEADER },
+    ),
+    null,
+  );
+
+  const unmoded = createManagedIdentityEndpoints({ authority: authority(), settings: SETTINGS, origin: ORIGIN });
+  assert.equal(get(unmoded, IMDS, { resource: ORIGIN, 'api-version': '2018-02-01' }, { metadata: 'true' }).status, 200);
 });

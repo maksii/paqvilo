@@ -13,6 +13,7 @@ import {
   registerAddon,
   registerInternalMessage,
   respond,
+  STAMPED_COLUMNS,
 } from './dataverse-addon-common.mjs';
 import { defaultSchedule, runJob, stageJob } from './dataverse-async.mjs';
 import { isLoopbackUrl, loopbackFetch } from './dataverse-webhooks.mjs';
@@ -357,33 +358,53 @@ function operations(api) {
   const rowOf = (logical, id) => tableOf(logical).find((row) => sameId(row[`${logical}id`], id)) ?? null;
   const write = (fn) => api.change(() => store.transact(fn, { isolated: true }));
   const stamp = () => new Date(api.clock()).toISOString();
-  // Removes by primary key: a row read before the transaction is a copy of the state row, not the state row itself.
-  const removeRow = (logical, row) => {
-    const list = tableOf(logical);
-    const index = list.findIndex((item) => sameId(item[`${logical}id`], row[`${logical}id`]));
-    if (index >= 0) list.splice(index, 1);
-  };
   // The bound row. The router has already answered 404 for an unknown id (dataverse-api.mjs); this finds the state row to write.
   const boundRow = (c, logical) => {
     const row = rowOf(logical, c.target?.id);
     if (!row) throw notFound(logical, c.target?.id);
     return row;
   };
+  // The privilege and row check the CRUD path makes for the same operation (dataverse-records.mjs authorize), before any write.
+  // The Web API always names a user, so a call with an origin and no user is unauthenticated: it has no grant and is refused
+  // with the 403 of a privilege refusal. A call with neither is the platform calling in process, which is not checked.
+  const authorize = (c, logical, operation, row) => {
+    if (!c.user) {
+      if (c.origin)
+        throw new DataError(`${operation} on ${logical} needs a signed-in caller.`, 403, 'PrivilegeDenied', {
+          innerCode: '0x80040220',
+        });
+      return;
+    }
+    api.principals.authorize({ user: c.user, entity: logical, operation, row, mapping: store.resolveMapping(logical) });
+  };
+  // The record layer's create and update, with the caller's stamps and version; the checks above already ran.
+  const createRow = (c, logical, data) => api.records.createInternal(c, logical, data, { authorized: true });
+  const updateRow = (c, logical, id, data) => api.records.updateInternal(c, logical, id, data, { authorized: true });
+  // The store's delete of the row (cascade and recycle bin as a Web API delete has); the checks above already ran.
+  const deleteRow = (c, logical, id) => api.records.removeInternal(c, logical, id, { authorized: true });
+  // The open runs of a workflow, read in full before the first update, so a fault reading any run changes nothing.
+  const openRunsOf = (workflowId) =>
+    tableOf('flowrun').filter((run) => sameId(run.workflowid, workflowId) && RUN_OPEN.has(run.status));
 
   // AddRequired*: the target is already a member of its solutions. The required components of a desktop flow are workflow and
   // module rows, which the registry's AddSolutionComponent cannot add (it covers metadata components only), so nothing is added.
   // ponytail: no solution component rows for the required flow components; add when AddSolutionComponent takes workflow rows.
+  // The caller needs read on the target row, the check the CRUD path makes for a retrieve of it.
   const addRequired = (logical) => async (c) => {
-    boundRow(c, logical);
+    authorize(c, logical, 'read', boundRow(c, logical));
     return undefined;
   };
 
-  // Clone of a row under a new id and name (SaveAs*). The cloned statecode and statuscode are guesses.
+  // Clone of a row under a new id and name (SaveAs*). The copy drops the stamped columns, so the caller owns and stamps it.
+  // The cloned statecode and statuscode are guesses.
   const saveAs = (logical, nameField, responseKey) => async (c) => {
     const source = boundRow(c, logical);
+    authorize(c, logical, 'read', source);
+    authorize(c, logical, 'create');
     const id = randomUUID();
     const name = argsOf(c)[nameField] ?? null;
-    await write(() => tableOf(logical).push({ ...source, [`${logical}id`]: id, name, statecode: 0, statuscode: 1 }));
+    const copy = Object.fromEntries(Object.entries(source).filter(([column]) => !STAMPED_COLUMNS.has(column)));
+    await write(() => createRow(c, logical, { ...copy, [`${logical}id`]: id, name, statecode: 0, statuscode: 1 }));
     return { [responseKey]: id };
   };
 
@@ -414,7 +435,7 @@ function operations(api) {
       failure = error;
     }
     await write(() =>
-      Object.assign(rowOf('flowsession', sessionId), {
+      updateRow(c, 'flowsession', sessionId, {
         statuscode,
         completedon: stamp(),
         outputs: outputs === null ? null : JSON.stringify(outputs),
@@ -452,11 +473,12 @@ function operations(api) {
     // also stops their wait timers and cancels pending approvals; other open flowrun rows are cancelled in place.
     CancelAllCloudFlowRuns: async (c) => {
       const workflow = boundRow(c, 'workflow');
-      // One write: the flow run store's writes join it (nested), so a failure in either step cancels nothing.
+      authorize(c, 'workflow', 'write', workflow);
+      // One write: the flow run store's writes join it (nested), and every open run is read before the first is updated.
       await write(async () => {
         if (api.flowRuns) await api.flowRuns.cancelAll(workflow.workflowid);
-        for (const run of tableOf('flowrun'))
-          if (sameId(run.workflowid, workflow.workflowid) && RUN_OPEN.has(run.status)) run.status = 'Cancelled';
+        for (const run of openRunsOf(workflow.workflowid))
+          await updateRow(c, 'flowrun', run.flowrunid, { status: 'Cancelled' });
       });
       return undefined;
     },
@@ -464,29 +486,37 @@ function operations(api) {
     // Only a session that is Paused, Running or Waiting (statuscode 1, 2, 3) can be cancelled. The rejection is a guess.
     CancelDesktopFlowRun: async (c) => {
       const session = boundRow(c, 'flowsession');
+      authorize(c, 'flowsession', 'write', session);
       if (![1, 2, 3].includes(session.statuscode))
         throw invalid('The desktop flow run is not active and cannot be cancelled.');
-      await write(() =>
-        Object.assign(rowOf('flowsession', session.flowsessionid), { statuscode: 7, completedon: stamp() }),
-      );
+      await write(() => updateRow(c, 'flowsession', session.flowsessionid, { statuscode: 7, completedon: stamp() }));
       return undefined;
     },
 
     DeleteFlowMachineGroup: async (c) => {
       const group = boundRow(c, 'flowmachinegroup');
+      authorize(c, 'flowmachinegroup', 'delete', group);
       if (tableOf('flowmachine').some((machine) => sameId(machine.flowmachinegroupid, group.flowmachinegroupid))) {
         throw invalid('The flow machine group still has machines.'); // native message and code not known
       }
-      await write(() => removeRow('flowmachinegroup', group));
+      await write(() => deleteRow(c, 'flowmachinegroup', group.flowmachinegroupid));
       return undefined;
     },
 
     LeaveGroup: async (c) => {
       const machine = boundRow(c, 'flowmachine');
+      authorize(c, 'flowmachine', 'write', machine);
+      authorize(c, 'flowmachinegroup', 'create');
       const groupId = randomUUID();
-      await write(() => {
-        tableOf('flowmachinegroup').push({ flowmachinegroupid: groupId, name: 'Default', statecode: 0, statuscode: 1 }); // the group name is a guess
-        rowOf('flowmachine', machine.flowmachineid).flowmachinegroupid = groupId;
+      await write(async () => {
+        // The group name is a guess.
+        await createRow(c, 'flowmachinegroup', {
+          flowmachinegroupid: groupId,
+          name: 'Default',
+          statecode: 0,
+          statuscode: 1,
+        });
+        await updateRow(c, 'flowmachine', machine.flowmachineid, { flowmachinegroupid: groupId });
       });
       return undefined;
     },
@@ -494,12 +524,12 @@ function operations(api) {
     SaveAsDesktopFlow: saveAs('workflow', 'desktopFlowName', 'workflowId'),
     SaveAsDesktopFlowModule: saveAs('desktopflowmodule', 'desktopFlowModuleName', 'desktopflowmoduleid'),
   };
-  return { handlers, boundRow, tableOf, write, stamp, runSession };
+  return { handlers, boundRow, authorize, tableOf, write, stamp, runSession, createRow };
 }
 
 // RunDesktopFlow: the pack path creates the session before answering. Without a pack handler the call answers 404 for an
 // unknown connection reference (connectionType 2), else the feature is not enabled (no machine).
-function registerRunDesktopFlow(api, spec, { boundRow, tableOf, write, stamp, runSession }) {
+function registerRunDesktopFlow(api, spec, { boundRow, authorize, tableOf, write, runSession, createRow }) {
   const name = spec.name;
   api.registry.register({
     ...spec,
@@ -518,16 +548,17 @@ function registerRunDesktopFlow(api, spec, { boundRow, tableOf, write, stamp, ru
         }
         throw featureNotEnabled();
       }
+      authorize(c, 'workflow', 'read', workflow);
+      authorize(c, 'flowsession', 'create');
       const sessionId = randomUUID();
       await write(() =>
-        tableOf('flowsession').push({
+        createRow(c, 'flowsession', {
           flowsessionid: sessionId,
           regardingobjectid: workflow.workflowid,
           regardingobjecttypecode: 'workflow',
           parentworkflowid: workflow.workflowid,
           triggertype: 3,
           statuscode: 2,
-          createdon: stamp(),
           outputs: null,
         }),
       );

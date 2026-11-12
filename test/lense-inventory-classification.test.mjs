@@ -1,3 +1,4 @@
+// @test-kind contract: lense list reuses the Solution cache and reports Solution inventory kinds with counts.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -10,13 +11,15 @@ import { writeSolutionAssetEntries } from '../mirage/lib/dataverse-solution-asse
 import { tempDirSync } from './fixture.mjs';
 import { settledClockEnv } from '../mirage/test/support/file-times.mjs';
 
+const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
+
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_')));
 const runIn = (env, ...args) =>
   spawnSync(process.execPath, [cli, ...args], {
     encoding: 'utf8',
     windowsHide: true,
-    timeout: 60000,
+    timeout: CLI_HANG_GUARD_MS,
     env,
   });
 const run = (...args) => runIn(environment, ...args);

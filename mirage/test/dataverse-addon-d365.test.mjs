@@ -1,8 +1,11 @@
+// @test-kind contract: Paqvilo's Dynamics 365 application messages (the Sales, Marketing and Service stubs) are designed runtime behaviour.
 // Dynamics 365 application messages (lib/dataverse-addon-d365.mjs) over HTTP: goal Recalculate, SyncBulkOperation, SendBulkMail,
 // ImmediateBook, CalculatePrice (with its pack hook) and ApplyRecordCreationAndUpdateRule.
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { DataStore, emptyState } from '../lib/data.mjs';
+import { DEPTH } from '../lib/dataverse-security.mjs';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
@@ -133,7 +136,12 @@ function fixtureState() {
   return state;
 }
 
-async function startServer({ applicationId = APP_ID, extensions = EXTENSIONS, state = fixtureState() } = {}) {
+async function startServer({
+  applicationId = APP_ID,
+  extensions = EXTENSIONS,
+  state = fixtureState(),
+  roles = ['System Administrator'],
+} = {}) {
   process.env[SECRET_VAR] = `d365-secret-${applicationId.slice(0, 4)}`;
   const store = await new DataStore({ state }).init();
   const settings = dataverseSettings({
@@ -143,7 +151,7 @@ async function startServer({ applicationId = APP_ID, extensions = EXTENSIONS, st
         appId: applicationId,
         displayName: 'D365 test app',
         secretEnvironmentVariable: SECRET_VAR,
-        roles: ['System Administrator'],
+        roles,
       },
     ],
   });
@@ -363,5 +371,70 @@ describe('calculate price pack hook', () => {
       delete process.env[SECRET_VAR];
       await p.close();
     }
+  });
+});
+
+const APP_ID_BASIC = '88888888-8888-8888-8888-888888888888';
+const goalRow = (store, goalid) => store.state.tables.goal.find((row) => row.goalid === goalid);
+// Makes a goal owned by one systemuser, as an owner column write would.
+async function ownGoal(store, goalid, systemuserid) {
+  const owner = { id: systemuserid, logical_name: 'systemuser', name: '' };
+  await store.transact(() => {
+    const row = goalRow(store, goalid);
+    row.ownerid = owner;
+    row.owninguser = owner;
+  });
+}
+
+// A grant of one privilege at one depth to the Basic User role, as the seeding writes it.
+async function grantBasicUser(store, privilegeName, privilegedepthmask) {
+  const role = store.state.tables.role.find((r) => r.name === 'Basic User');
+  const privilege = store.state.tables.privilege.find((p) => p.name === privilegeName);
+  await store.transact(() =>
+    store.state.tables.roleprivileges.push({
+      roleprivilegeid: randomUUID(),
+      roleid: { id: role.roleid, logical_name: 'role', name: '' },
+      privilegeid: { id: privilege.privilegeid, logical_name: 'privilege', name: '' },
+      privilegedepthmask,
+    }),
+  );
+}
+
+// The application user holds the Basic User role: it reads every goal and writes only the goals it owns (Basic depth).
+describe('Recalculate for an application user that writes only its own goals', () => {
+  let b, caller;
+
+  before(async () => {
+    b = await startServer({ applicationId: APP_ID_BASIC, roles: ['Basic User'] });
+    await grantBasicUser(b.store, 'prvReadGoal', DEPTH.Global);
+    await grantBasicUser(b.store, 'prvWriteGoal', DEPTH.Basic);
+    // The child goal is the caller's; its root (GOAL_ROOT) belongs to another owner.
+    caller = b.store.state.tables.systemuser.find((u) => u.applicationid === APP_ID_BASIC).systemuserid;
+    await ownGoal(b.store, GOAL_CHILD, caller);
+  });
+
+  after(async () => {
+    delete process.env[SECRET_VAR];
+    await b?.close();
+  });
+
+  // The CRUD write of the root is refused with the code the message must give, and Recalculate on the child changes no goal.
+  // @test-kind security: Recalculate rewrites every goal of the tree, so it must refuse a tree the caller cannot write and change none of it.
+  it('recalculate refuses a goal tree the caller cannot write and updates no goal', async () => {
+    const goals = JSON.stringify(b.store.state.tables.goal);
+    const crud = await b.call('PATCH', `/goals(${GOAL_ROOT})`, { targetdecimal: 61 });
+    assert.equal(crud.status, 403);
+    const result = await b.call('POST', `/goals(${GOAL_CHILD})/Microsoft.Dynamics.CRM.Recalculate`, {});
+    assert.equal(result.status, 403);
+    assert.equal(result.body.error.code, crud.body.error.code);
+    assert.equal(JSON.stringify(b.store.state.tables.goal), goals);
+  });
+
+  it('recalculate succeeds on a tree the caller can write entirely', async () => {
+    await ownGoal(b.store, GOAL_ROOT, caller);
+    const result = await b.call('POST', `/goals(${GOAL_CHILD})/Microsoft.Dynamics.CRM.Recalculate`, {});
+    assert.equal(result.status, 204);
+    assert.equal(goalRow(b.store, GOAL_CHILD).actualdecimal, 15);
+    assert.equal(goalRow(b.store, GOAL_ROOT).actualdecimal, 30);
   });
 });

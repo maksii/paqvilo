@@ -45,7 +45,7 @@ const QAF = String.raw`${QS}|(?:[^\s|'"]|${QS})+`;
 const VARIABLE_SIGNATURE = String.raw`\(?[${WC}\-.[\]]\)?`;
 const re = (source, flags = 'u') => new RegExp(source, flags);
 const TAG_ATTRIBUTES = re(String.raw`([${WC}]+)\s*:\s*(${QF})`, 'gu');
-const VARIABLE_PARSER = re(String.raw`\[[^\]]+\]|[${WC}\-]+\??`, 'gu');
+const VARIABLE_NAME = re(String.raw`[${WC}\-]+\??`, 'uy');
 const FULL_TOKEN = re(String.raw`^\{%\s*([${WC}]+)\s*(.*)?%\}$`);
 const CONTENT_OF_VARIABLE = /^\{\{(.*)\}\}$/u;
 const QUOTED_ASSIGN_FRAGMENT = re(String.raw`\s*(${QAF})(.*)`);
@@ -75,6 +75,38 @@ const scan = (text, regex) => {
   regex.lastIndex = 0;
   return [...String(text).matchAll(regex)].map((m) => (m.length === 2 ? m[1] : m[0]));
 };
+// The first ']' at or after a position, searched at most once per text: an unclosed '[' costs no rescan.
+function closingBracketFinder(text) {
+  let found = -2;
+  return (from) => {
+    if (found === -2 || (found !== -1 && found < from)) found = text.indexOf(']', from);
+    return found;
+  };
+}
+/** The segments of a variable path: `[...]` with at least one character inside, or a name run with an optional `?`. */
+export function variableSegments(markup) {
+  const text = String(markup),
+    closeAt = closingBracketFinder(text),
+    segments = [];
+  let cursor = 0;
+  while (cursor < text.length) {
+    if (text[cursor] === '[') {
+      const close = closeAt(cursor + 1);
+      if (close > cursor + 1) {
+        segments.push(text.slice(cursor, close + 1));
+        cursor = close + 1;
+      } else cursor++;
+      continue;
+    }
+    VARIABLE_NAME.lastIndex = cursor;
+    const name = VARIABLE_NAME.exec(text);
+    if (name) {
+      segments.push(name[0]);
+      cursor = VARIABLE_NAME.lastIndex;
+    } else cursor++;
+  }
+  return segments;
+}
 /** Tokenizer.GetAttributes: `name: value` pairs anywhere in a tag's markup. */
 export function tagAttributes(markup) {
   const attributes = new Map();
@@ -512,20 +544,21 @@ export class Variable {
 }
 
 // ---- Conditions (DotLiquid Condition.cs)
-function equalVariables(left, right) {
+function equalVariables(left, right, clock) {
   if (left instanceof LiquidSymbol) return left.test(right);
   if (right instanceof LiquidSymbol) return right.test(left);
-  return safeTypeInsensitiveEqual(left, right);
+  return safeTypeInsensitiveEqual(left, right, { clock });
 }
+// Each operator takes the engine clock third: time-only strings convert to a date on its day.
 export const OPERATORS = {
-  '==': (l, r) => equalVariables(l, r),
-  '!=': (l, r) => !equalVariables(l, r),
-  '<>': (l, r) => !equalVariables(l, r),
-  '<': (l, r) => l != null && r != null && netCompare(l, r) === -1,
-  '>': (l, r) => l != null && r != null && netCompare(l, r) === 1,
-  '<=': (l, r) => l != null && r != null && netCompare(l, r) <= 0,
-  '>=': (l, r) => l != null && r != null && netCompare(l, r) >= 0,
-  contains: (l, r) => {
+  '==': (l, r, clock) => equalVariables(l, r, clock),
+  '!=': (l, r, clock) => !equalVariables(l, r, clock),
+  '<>': (l, r, clock) => !equalVariables(l, r, clock),
+  '<': (l, r, clock) => l != null && r != null && netCompare(l, r, { clock }) === -1,
+  '>': (l, r, clock) => l != null && r != null && netCompare(l, r, { clock }) === 1,
+  '<=': (l, r, clock) => l != null && r != null && netCompare(l, r, { clock }) <= 0,
+  '>=': (l, r, clock) => l != null && r != null && netCompare(l, r, { clock }) >= 0,
+  contains: (l, r, clock) => {
     if (typeof l === 'string' && r != null) {
       if (typeof r !== 'string')
         throw new LiquidError(
@@ -534,15 +567,15 @@ export const OPERATORS = {
         );
       return l.includes(r);
     }
-    return isEnumerable(l) && toList(l).some((item) => backCompatEqual(item, r));
+    return isEnumerable(l) && toList(l).some((item) => backCompatEqual(item, r, { clock }));
   },
-  startswith: (l, r) =>
+  startswith: (l, r, clock) =>
     Array.isArray(l)
-      ? equalVariables(l[0] ?? null, r)
+      ? equalVariables(l[0] ?? null, r, clock)
       : typeof l === 'string' && typeof r === 'string' && l.startsWith(r),
-  endswith: (l, r) =>
+  endswith: (l, r, clock) =>
     Array.isArray(l)
-      ? equalVariables(l.at(-1) ?? null, r)
+      ? equalVariables(l.at(-1) ?? null, r, clock)
       : typeof l === 'string' && typeof r === 'string' && l.endsWith(r),
   haskey: (l, r) => r != null && l instanceof LiquidHash && l.has(r),
   hasvalue: (l, r) => l instanceof LiquidHash && [...l.entries()].some(([, v]) => v === r),
@@ -566,7 +599,7 @@ class Condition {
       const right = await context.resolve(this.right);
       const op = OPERATORS[this.operator] ?? OPERATORS[this.operator.toLowerCase()];
       if (!op) throw new LiquidError(`Unknown operator ${this.operator}`, 'DotLiquid.Exceptions.ArgumentException');
-      result = op(left, right);
+      result = op(left, right, context.engine.clock);
     }
     if (this.relation === 'or') return result || (await this.child.evaluate(context));
     if (this.relation === 'and') return result && (await this.child.evaluate(context));
@@ -781,7 +814,7 @@ export class LiquidContext {
     markup,
     notifyNotFound,
   ) {
-    const parts = scan(markup, VARIABLE_PARSER);
+    const parts = variableSegments(markup);
     if (parts.length === 0) return null;
     let first = parts[0];
     if (first.startsWith('[')) {
@@ -1113,13 +1146,49 @@ class LiteralTag extends Block {
     await renderAll(this.nodeList, context, out);
   }
 }
-const ASSIGN_SYNTAX = re(String.raw`((?:${VARIABLE_SIGNATURE})+)\s*=\s*(.*)\s*`);
+const NAME_CHARACTER = re(String.raw`^[${WC}\-.[\]]$`);
+const ASSIGN_VALUE = re(String.raw`\s*(.*)`, 'uy');
+// The code point that ends at `end`, and where it starts (a surrogate pair stays whole).
+function characterBefore(text, end) {
+  const paired = end >= 2 && /[\uD800-\uDBFF]/.test(text[end - 2]) && /[\uDC00-\uDFFF]/.test(text[end - 1]);
+  const start = paired ? end - 2 : end - 1;
+  return { character: text.slice(start, end), start };
+}
+const characterAt = (text, index) => (index < text.length ? String.fromCodePoint(text.codePointAt(index)) : '');
+// The name run that the unanchored assign pattern pairs with the '=' at `equals`, as { start, end }, or null.
+// Read back from the '=': a name character, a '(' that opens a name character, or a ')' closing one.
+function assignName(text, equals) {
+  let end = equals;
+  while (end > 0 && /\s/.test(text[end - 1])) end--;
+  let cursor = end,
+    first = -1;
+  while (cursor > 0) {
+    const { character, start } = characterBefore(text, cursor);
+    if (NAME_CHARACTER.test(character) || (character === '(' && NAME_CHARACTER.test(characterAt(text, cursor))))
+      first = start;
+    else if (character !== ')' || start === 0 || !NAME_CHARACTER.test(characterBefore(text, start).character)) break;
+    cursor = start;
+  }
+  return first < 0 ? null : { start: first, end };
+}
+/** The name and value that `((?:SIG)+)\s*=\s*(.*)` finds: the first '=' that has a name before it, or null. */
+export function assignParts(markup) {
+  const text = String(markup ?? '');
+  for (let equals = text.indexOf('='); equals >= 0; equals = text.indexOf('=', equals + 1)) {
+    const name = assignName(text, equals);
+    if (name) {
+      ASSIGN_VALUE.lastIndex = equals + 1;
+      return { name: text.slice(name.start, name.end), value: ASSIGN_VALUE.exec(text)[1] };
+    }
+  }
+  return null;
+}
 class AssignTag extends Tag {
   parse() {
-    const m = ASSIGN_SYNTAX.exec(this.markup);
-    if (!m) throw new LiquidSyntaxError("Syntax Error in 'assign' tag - Valid syntax: assign [var] = [source]");
-    this.to = m[1];
-    this.from = new Variable(m[2]);
+    const found = assignParts(this.markup);
+    if (!found) throw new LiquidSyntaxError("Syntax Error in 'assign' tag - Valid syntax: assign [var] = [source]");
+    this.to = found.name;
+    this.from = new Variable(found.value);
   }
   async render(context) {
     const encoded =

@@ -29,7 +29,8 @@ async function sourceNode(file, predicate) {
 }
 async function privateFunction(file, name, bindings) {
   const text = await sourceNode(file, (node) => ts.isFunctionDeclaration(node) && node.name?.text === name);
-  return vm.runInNewContext(`(${text})`, bindings, { timeout: 1000 });
+  // hang guard only: the evaluated handler is expected to return at once; this bound only stops a runaway evaluation.
+  return vm.runInNewContext(`(${text})`, bindings, { timeout: 120_000 });
 }
 
 test('Windows launch forwarding retains invalid caller input and the default backport', () => {

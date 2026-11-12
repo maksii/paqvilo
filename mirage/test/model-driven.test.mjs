@@ -12,7 +12,12 @@ import { solutionApps, appCatalogue } from '../lib/model-driven/catalogue.mjs';
 import { compileForm, parseAppDefinitions, parseSiteMap } from '../lib/model-driven/solution.mjs';
 import { parseSolutionXml } from '../lib/solution-xml.mjs';
 import { columnIcon } from '../lib/model-driven/icons.mjs';
+import { DataStore, emptyState } from '../lib/data.mjs';
+import { createModelDrivenData } from '../lib/model-driven/data.mjs';
+import { createModelDrivenHandler, modelDrivenAssetNames } from '../lib/model-driven/http.mjs';
+import { assertStaticImportsServed } from './support/asset-graph.mjs';
 
+// @test-kind contract: Paqvilo's own model-driven shell runtime (HTTP, grid, client) on invented fixtures.
 // Read-only HTTP tests share one runtime; tests that write or restart start their own.
 let shared;
 const cleanup = [];
@@ -366,6 +371,24 @@ test('form layout retains exported columns, hidden sections, row positions and s
   assert.equal(tab.sections[0].fields[0].rowspan, undefined);
 });
 
+test('tabs without a name or id are addressed by their position in the form', () => {
+  const form = compileForm(
+    {
+      id: 'positional-tabs',
+      xml: '<form><tabs><tab><labels><label description="First" languagecode="1033"/></labels></tab><tab><labels><label description="Second" languagecode="1033"/></labels></tab><tab name="named"><labels><label description="Named" languagecode="1033"/></labels></tab></tabs></form>',
+    },
+    {},
+  );
+  assert.deepEqual(
+    form.tabs.map((tab) => tab.id),
+    ['tab-0', 'tab-1', 'named'],
+  );
+  assert.deepEqual(
+    form.tabs.map((tab) => tab.label),
+    ['First', 'Second', 'Named'],
+  );
+});
+
 test('legacy text class IDs do not override state choice metadata or source permissions', () => {
   const form = compileForm(
     {
@@ -481,6 +504,57 @@ test('model-driven app catalogue imports solution navigation, forms and views al
   assert.match(shell.headers.get('content-security-policy'), /connect-src 'self'/);
 });
 
+// @test-kind compatibility: the platform grid search matches the beginning of the Quick Find find columns.
+test('grid keyword search matches the beginning of the Quick Find find columns, or of the text columns without one', async () => {
+  const entities = {
+    x_person: { fields: { x_name: { dataverseType: 'nvarchar' }, x_note: { dataverseType: 'nvarchar' } } },
+  };
+  const mappings = { x_person: { idColumn: 'x_personid', nameColumn: 'x_name' } };
+  const quickFind = (attribute) => ({
+    id: '{quick-find}',
+    entity: 'x_person',
+    name: 'Quick Find',
+    queryType: 4,
+    fetchXml: `<fetch><entity name="x_person"><attribute name="x_name"/><filter type="or" isquickfindfields="1"><condition attribute="${attribute}" operator="like" value="{0}"/></filter></entity></fetch>`,
+    file: 'quick-find.xml',
+  });
+  const storeFor = () => {
+    const state = emptyState();
+    state.mappings = {
+      x_person: {
+        entitySet: 'x_people',
+        idColumn: 'x_personid',
+        fields: { x_name: { dataverseType: 'nvarchar' }, x_note: { dataverseType: 'nvarchar' } },
+      },
+    };
+    state.tables = {
+      x_person: [
+        { x_personid: '11111111-1111-4111-8111-111111111111', x_name: 'Johnson', x_note: 'Plain' },
+        { x_personid: '22222222-2222-4222-8222-222222222222', x_name: 'Sonia', x_note: 'Remote' },
+        { x_personid: '33333333-3333-4333-8333-333333333333', x_name: 'Ivan', x_note: 'Sonia note' },
+      ],
+    };
+    return new DataStore({ state });
+  };
+  const searchNames = async (views, search) => {
+    const catalogue = appCatalogue({ metadata: { entities, views }, mappings, providers: [] });
+    const data = createModelDrivenData({ store: storeFor(), catalogue: () => catalogue, portal: () => ({}) });
+    const { rows } = await data.list('x_person', { search, columns: ['x_name'] });
+    return rows.map((row) => row.x_name).toSorted((a, b) => a.localeCompare(b));
+  };
+  assert.deepEqual(
+    await searchNames([quickFind('x_name')], 'son'),
+    ['Sonia'],
+    'Only the name column is a find column.',
+  );
+  assert.deepEqual(await searchNames([quickFind('x_name')], '*son'), ['Johnson', 'Sonia']);
+  assert.deepEqual(
+    await searchNames([], 'son'),
+    ['Ivan', 'Sonia'],
+    'Without a Quick Find view every text column is searched from its beginning.',
+  );
+});
+
 test('grid runs saved FetchXML with search, filters, columns, sorting and paging', async () => {
   const { origin } = shared;
   const list = async (query) => {
@@ -495,12 +569,20 @@ test('grid runs saved FetchXML with search, filters, columns, sorting and paging
   assert.equal(first.total, 2);
   assert.equal(first.more, true);
   const search = await list({
-    search: 'opp',
+    search: 'cop',
     columns: ['x_name'],
     filters: [{ field: 'x_quantity', operator: 'lt', value: 5 }],
   });
   assert.equal(search.rows.length, 1);
   assert.equal(search.rows[0].x_name, 'Copper');
+  const mid = await list({ search: 'opp', columns: ['x_name'] });
+  assert.equal(mid.rows.length, 0, 'Keyword search matches the beginning of the text, not its middle.');
+  const leading = await list({ search: '*opp', columns: ['x_name'] });
+  assert.deepEqual(
+    leading.rows.map((row) => row.x_name),
+    ['Copper'],
+    'A leading asterisk asks for a contains match.',
+  );
   const raw = await list({
     scope: 'table',
     columns: ['x_name'],
@@ -543,6 +625,31 @@ test('native text filter operations match literal substrings and retain explicit
   assert.deepEqual(await names('not-like', 'Literal %'), ['Copper', 'Other %_[box]', 'Silver']);
 });
 
+// @test-kind security: grid query entries and member names fail as the shell's own invalid requests.
+test('grid queries refuse non-object filters and inherited member names with the shell own errors', async (t) => {
+  const { origin } = await modelDrivenFixture(t);
+  const query = async (value) => {
+    const response = await fetch(
+      origin + '/_apps/api/tables/x_item?query=' + encodeURIComponent(JSON.stringify(value)),
+    );
+    return { status: response.status, body: await response.json() };
+  };
+  const nullFilter = await query({ filters: [null] });
+  assert.equal(nullFilter.status, 400);
+  assert.equal(nullFilter.body.error.code, 'ModelDrivenRequestInvalid');
+  assert.equal(nullFilter.body.error.message, 'Unsupported filter column or operator.');
+  const protoFilter = await query({ filters: [{ field: '__proto__', operator: 'eq', value: 1 }] });
+  assert.equal(protoFilter.status, 400);
+  assert.equal(protoFilter.body.error.message, 'Unsupported filter column or operator.');
+  const inheritedColumn = await query({ columns: ['constructor'] });
+  assert.equal(inheritedColumn.status, 400);
+  assert.equal(inheritedColumn.body.error.message, 'Select known columns.');
+  const inheritedSort = await query({ sort: 'toString' });
+  assert.equal(inheritedSort.status, 400);
+  assert.equal(inheritedSort.body.error.message, 'Unsupported sort.');
+});
+
+// @test-kind security: a write without the CSRF token is refused
 test('local CRUD requires CSRF, validates values and rejects stale writes', async (t) => {
   const { origin } = await modelDrivenFixture(t);
   const shell = await (await fetch(origin + '/main.aspx')).text(),
@@ -634,13 +741,14 @@ test('management creates related customization records and auxiliary websites wi
   assert.equal(rejected.status, 400);
 });
 
+// @test-kind security: app assets stay confined to their origin and cross-origin writes are refused
 test('app assets stay origin-confined and reject unknown resources, cross-origin writes and inherited table names', async () => {
   const { origin } = shared;
   assert.equal((await fetch(origin + '/_apps/assets/missing.mjs')).status, 404);
   assert.equal((await fetch(origin + '/_apps/api/tables/constructor')).status, 404);
   assert.equal(
     (
-      await fetch(origin + '/_apps/api/tables/x_item', {
+      await fetch(shared.sim.appsOrigin + '/_apps/api/tables/x_item', {
         method: 'POST',
         headers: { origin: 'https://example.invalid', 'content-type': 'application/json' },
         body: '{}',
@@ -738,4 +846,279 @@ test('table default desktop grid pagination flows from source facts into the app
     assert.equal(catalogue.tables.x_item.grid?.pagination, expected);
     assert.equal(metadata.entities.x_child.grid, undefined);
   }
+});
+
+test('the shell names the portal root in a meta tag, as the portal origin of the runtime', async (t) => {
+  const { origin, sim } = await modelDrivenFixture(t);
+  const shell = await (await fetch(sim.appsOrigin + '/main.aspx')).text();
+  assert.ok(shell.includes(`<meta name="mirage-portal" content="${origin}/" />`), 'the portal root is absolute');
+});
+
+test('every static import of a served model-driven module resolves to a served JavaScript module', async (t) => {
+  const { origin } = await modelDrivenFixture(t);
+  const entries = modelDrivenAssetNames
+    .filter((name) => name.endsWith('.mjs'))
+    .map((name) => `${origin}/_apps/assets/${name}`);
+  await assertStaticImportsServed(entries);
+});
+
+// Serves the model-driven shell for one portal URL and CSRF token, and returns its body.
+async function serveShell(portal, token = 'test') {
+  const response = { headers: {}, body: '' };
+  Object.assign(response, {
+    setHeader(name, value) {
+      this.headers[name] = value;
+    },
+    getHeader(name) {
+      return this.headers[name];
+    },
+    writeHead(status) {
+      this.status = status;
+    },
+    end(body) {
+      this.body = body;
+    },
+  });
+  const handler = createModelDrivenHandler({
+    catalogue: () => ({ apps: [], tables: {} }),
+    data: {},
+    csrf: () => token,
+    json: () => {},
+    portalUrl: () => portal,
+  });
+  await handler({ method: 'GET', headers: {} }, response, new URL('http://127.0.0.1/main.aspx'));
+  assert.equal(response.status, 200);
+  return response.body;
+}
+
+test('the shell leaves the portal meta tag empty when the host gives no portal', async () => {
+  const body = await serveShell(null);
+  assert.match(body, /<meta name="mirage-portal" content="" \/>/);
+});
+
+// @test-kind security: a portal URL with replacement patterns and markup is attribute-escaped into the shell meta tag, literally and once
+test('the shell serves a portal URL with replacement patterns literally, escaped once, and changes nothing else', async () => {
+  const portal = `http://127.0.0.1:1/p?a=$&&b=$'&c="d"&e=$1$\`&f=$$`;
+  const escaped = 'http://127.0.0.1:1/p?a=$&amp;&amp;b=$&#39;&amp;c=&quot;d&quot;&amp;e=$1$`&amp;f=$$';
+  const token = 'tok"en<x>';
+  const escapedToken = 'tok&quot;en&lt;x&gt;';
+  const plainBody = await serveShell('http://127.0.0.1:1/plain');
+  const body = await serveShell(portal, token);
+  const meta = (name, value) => `<meta name="${name}" content="${value}" />`;
+  assert.equal(body.split(meta('mirage-portal', escaped)).length - 1, 1, 'the escaped portal appears exactly once');
+  assert.equal(body.split(meta('mirage-csrf', escapedToken)).length - 1, 1, 'the escaped token appears exactly once');
+  assert.equal(
+    body,
+    plainBody
+      .replace(meta('mirage-portal', 'http://127.0.0.1:1/plain'), () => meta('mirage-portal', escaped))
+      .replace(meta('mirage-csrf', 'test'), () => meta('mirage-csrf', escapedToken)),
+  );
+});
+
+// The Quick Find schema: a person with a lookup to a company and a status choice, and the company.
+function quickFindSchema() {
+  const entities = {
+    x_person: {
+      fields: {
+        x_name: { dataverseType: 'nvarchar' },
+        x_company: { dataverseType: 'lookup', targets: ['x_company'] },
+        x_status: {
+          dataverseType: 'picklist',
+          options: [
+            { value: 1, label: 'Active' },
+            { value: 2, label: 'Inactive' },
+          ],
+        },
+      },
+    },
+    x_company: { fields: { x_name: { dataverseType: 'nvarchar' } } },
+  };
+  const mappings = {
+    x_person: { idColumn: 'x_personid', nameColumn: 'x_name' },
+    x_company: { idColumn: 'x_companyid', nameColumn: 'x_name' },
+  };
+  return { entities, mappings };
+}
+
+// @test-kind contract: a Quick Find search on a lookup matches the related record's name, and on a choice its label; never the stored id or the option number.
+test('grid keyword search matches a lookup by its name and a choice by its label, not by id or number', async () => {
+  const COMPANY_ACME = '44444444-4444-4444-8444-444444444444';
+  const COMPANY_GLOBEX = '55555555-5555-4555-8555-555555555555';
+  const { entities, mappings } = quickFindSchema();
+  const quickFind = {
+    id: '{quick-find}',
+    entity: 'x_person',
+    name: 'Quick Find',
+    queryType: 4,
+    fetchXml:
+      '<fetch><entity name="x_person"><attribute name="x_name"/><filter type="or" isquickfindfields="1"><condition attribute="x_name" operator="like" value="{0}"/><condition attribute="x_company" operator="like" value="{0}"/><condition attribute="x_status" operator="like" value="{0}"/></filter></entity></fetch>',
+    file: 'quick-find.xml',
+  };
+  const storeFor = () => {
+    const state = emptyState();
+    state.mappings = {
+      x_person: {
+        entitySet: 'x_people',
+        idColumn: 'x_personid',
+        fields: {
+          x_name: { dataverseType: 'nvarchar' },
+          x_company: { dataverseType: 'lookup' },
+          x_status: { dataverseType: 'picklist' },
+        },
+      },
+      x_company: {
+        entitySet: 'x_companies',
+        idColumn: 'x_companyid',
+        fields: { x_name: { dataverseType: 'nvarchar' } },
+      },
+    };
+    state.tables = {
+      x_company: [
+        { x_companyid: COMPANY_ACME, x_name: 'Acme Corp' },
+        { x_companyid: COMPANY_GLOBEX, x_name: 'Globex' },
+      ],
+      x_person: [
+        { x_personid: '11111111-1111-4111-8111-111111111111', x_name: 'Ada', x_company: COMPANY_ACME, x_status: 1 },
+        { x_personid: '22222222-2222-4222-8222-222222222222', x_name: 'Bob', x_company: COMPANY_GLOBEX, x_status: 2 },
+        { x_personid: '33333333-3333-4333-8333-333333333333', x_name: 'Cy', x_status: 2 },
+      ],
+    };
+    return new DataStore({ state });
+  };
+  const searchNames = async (search) => {
+    const catalogue = appCatalogue({ metadata: { entities, views: [quickFind] }, mappings, providers: [] });
+    const data = createModelDrivenData({ store: storeFor(), catalogue: () => catalogue, portal: () => ({}) });
+    const { rows } = await data.list('x_person', { search, columns: ['x_name'] });
+    return rows.map((row) => row.x_name).toSorted((a, b) => a.localeCompare(b));
+  };
+  assert.deepEqual(await searchNames('Acm'), ['Ada'], 'the beginning of the related record name finds the row');
+  assert.deepEqual(await searchNames('acme'), ['Ada'], 'the related name matches without regard to case');
+  assert.deepEqual(await searchNames('Inact'), ['Bob', 'Cy'], 'the beginning of the option label finds the rows');
+  assert.deepEqual(await searchNames('4444'), [], 'the stored id of the related record does not match');
+  assert.deepEqual(await searchNames('2'), [], 'the option number does not match');
+});
+
+const QUICK_FIND_COMPANY_ACME = '44444444-4444-4444-8444-444444444444';
+const QUICK_FIND_COMPANY_GLOBEX = '55555555-5555-4555-8555-555555555555';
+const QUICK_FIND_PEOPLE = [
+  {
+    x_personid: '11111111-1111-4111-8111-111111111111',
+    x_name: 'Ada',
+    x_company: QUICK_FIND_COMPANY_ACME,
+    x_status: 1,
+  },
+  {
+    x_personid: '22222222-2222-4222-8222-222222222222',
+    x_name: 'Bob',
+    x_company: QUICK_FIND_COMPANY_GLOBEX,
+    x_status: 2,
+  },
+  { x_personid: '33333333-3333-4333-8333-333333333333', x_name: 'Cy', x_status: 2 },
+  { x_personid: '66666666-6666-4666-8666-666666666666', x_name: 'Dee_Ann', x_status: 1 },
+  { x_personid: '77777777-7777-4777-8777-777777777777', x_name: 'Gus%Mo', x_status: 1 },
+  { x_personid: '88888888-8888-4888-8888-888888888888', x_name: 'Hal[Ops]', x_status: 2 },
+  { x_personid: '99999999-9999-4999-8999-999999999999', x_name: 'Ivy & <Co>', x_status: 1 },
+  { x_personid: '00000000-0000-4000-8000-000000000000', x_name: `Jo "Q" O'Neil`, x_status: 2 },
+];
+const QUICK_FIND_VIEW = {
+  id: '{quick-find}',
+  entity: 'x_person',
+  name: 'Quick Find',
+  queryType: 4,
+  fetchXml:
+    '<fetch><entity name="x_person"><attribute name="x_name"/><filter type="or" isquickfindfields="1"><condition attribute="x_name" operator="like" value="{0}"/><condition attribute="x_company" operator="like" value="{0}"/><condition attribute="x_status" operator="like" value="{0}"/></filter></entity></fetch>',
+  file: 'quick-find.xml',
+};
+const quickFindNames = async (search, { view = QUICK_FIND_VIEW, people = QUICK_FIND_PEOPLE } = {}) => {
+  const { entities, mappings } = quickFindSchema();
+  const state = emptyState();
+  state.mappings = {
+    x_person: {
+      entitySet: 'x_people',
+      idColumn: 'x_personid',
+      fields: {
+        x_name: { dataverseType: 'nvarchar' },
+        x_company: { dataverseType: 'lookup' },
+        x_status: { dataverseType: 'picklist' },
+      },
+    },
+    x_company: {
+      entitySet: 'x_companies',
+      idColumn: 'x_companyid',
+      fields: { x_name: { dataverseType: 'nvarchar' } },
+    },
+  };
+  state.tables = {
+    x_company: [
+      { x_companyid: QUICK_FIND_COMPANY_ACME, x_name: 'Acme Corp' },
+      { x_companyid: QUICK_FIND_COMPANY_GLOBEX, x_name: 'Globex' },
+    ],
+    x_person: people.map((row) => ({ ...row })),
+  };
+  const catalogue = appCatalogue({ metadata: { entities, views: [view] }, mappings, providers: [] });
+  const data = createModelDrivenData({
+    store: new DataStore({ state }),
+    catalogue: () => catalogue,
+    portal: () => ({}),
+  });
+  const { rows } = await data.list('x_person', { search, columns: ['x_name'] });
+  return rows.map((row) => row.x_name).toSorted((a, b) => a.localeCompare(b));
+};
+
+// @test-kind contract: a Quick Find choice matches only the option whose label starts with the search, and a lookup only its related name
+test('quick find matches a choice by its own option label and a lookup by the related name only', async () => {
+  assert.deepEqual(await quickFindNames('Active'), ['Ada', 'Dee_Ann', 'Gus%Mo', 'Ivy & <Co>']);
+  assert.deepEqual(await quickFindNames('Inactive'), ['Bob', 'Cy', 'Hal[Ops]', `Jo "Q" O'Neil`]);
+  assert.deepEqual(await quickFindNames('Globex'), ['Bob']);
+});
+
+// @test-kind contract: Quick Find treats %, _, [, <, &, ' and " in a search as literal text, so no error and no over-match
+test('quick find treats LIKE and markup metacharacters in the search literally', async () => {
+  assert.deepEqual(await quickFindNames('%'), []);
+  assert.deepEqual(await quickFindNames('_'), []);
+  assert.deepEqual(await quickFindNames('A_'), []);
+  assert.deepEqual(await quickFindNames('Dee_'), ['Dee_Ann']);
+  assert.deepEqual(await quickFindNames('Dee%'), []);
+  assert.deepEqual(await quickFindNames('Gus%'), ['Gus%Mo']);
+  assert.deepEqual(await quickFindNames('['), []);
+  assert.deepEqual(await quickFindNames('Hal['), ['Hal[Ops]']);
+  assert.deepEqual(await quickFindNames('<'), []);
+  assert.deepEqual(await quickFindNames('Ivy &'), ['Ivy & <Co>']);
+  assert.deepEqual(await quickFindNames("'"), []);
+  assert.deepEqual(await quickFindNames('Jo "'), [`Jo "Q" O'Neil`]);
+});
+
+// @test-kind contract: a Quick Find view with no lookup or choice column searches only its text columns, from their beginning
+test('quick find over text columns alone ignores lookup names and choice labels', async () => {
+  const textOnly = {
+    ...QUICK_FIND_VIEW,
+    fetchXml:
+      '<fetch><entity name="x_person"><attribute name="x_name"/><filter type="or" isquickfindfields="1"><condition attribute="x_name" operator="like" value="{0}"/></filter></entity></fetch>',
+  };
+  assert.deepEqual(await quickFindNames('Acme', { view: textOnly }), []);
+  assert.deepEqual(await quickFindNames('Inactive', { view: textOnly }), []);
+  assert.deepEqual(await quickFindNames('Ad', { view: textOnly }), ['Ada']);
+});
+
+// @test-kind contract+security: the model-driven write gate compares the simulator CSRF header exactly and refuses
+// each variant as a wrong token.
+test('the model-driven write CSRF header is compared exactly', async (t) => {
+  const { origin } = await modelDrivenFixture(t);
+  const shell = await (await fetch(origin + '/main.aspx')).text();
+  const csrf = /name="mirage-csrf" content="([^"]+)/.exec(shell)[1];
+  const create = async (token) => {
+    const response = await fetch(origin + '/_apps/api/tables/x_item', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-sim-csrf': token },
+      body: JSON.stringify({ x_name: 'Gold', x_quantity: 4 }),
+    });
+    return { status: response.status, body: await response.text() };
+  };
+  const wrong = await create('wrong-token');
+  assert.equal(wrong.status, 403);
+  const last = csrf.at(-1);
+  for (const token of [`${csrf}x`, csrf.slice(0, -1), `${csrf.slice(0, -1)}${last === 'a' ? 'b' : 'a'}`, '']) {
+    assert.deepEqual(await create(token), wrong, token);
+  }
+  assert.equal((await create(csrf)).status, 201);
 });

@@ -6,24 +6,11 @@ import { once } from 'node:events';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
-import { sharedBrowser } from './shared-browser.mjs';
+import { sharedBrowser, moduleGraph } from './shared-browser.mjs';
 import { drainFixture } from '../testing/owned-fixture.mjs';
 
 const chrome = sharedBrowser();
-const frameworkModules = new Map(
-  await Promise.all(
-    [
-      'pcf-runtime.mjs',
-      'controls.mjs',
-      'choice-control.mjs',
-      'lookup-control.mjs',
-      'date-control.mjs',
-      'duration-control.mjs',
-      'control-descriptors.mjs',
-      'icons.mjs',
-    ].map(async (name) => [name, await fs.readFile(new URL(`../lib/model-driven/${name}`, import.meta.url))]),
-  ),
-);
+const controlsModule = new URL('../lib/model-driven/controls.mjs', import.meta.url);
 
 // A compiled standard control: the same public lifecycle a PAC bundle exports.
 const bundle = `var InventedExports; InventedExports = { Input: class {
@@ -36,6 +23,8 @@ const bundle = `var InventedExports; InventedExports = { Input: class {
 } };`;
 
 async function fixture(t, { isolateFramework = true, moduleTransport = null } = {}) {
+  // Every module the framework imports, served at the path its importer resolves to.
+  const modules = await moduleGraph(controlsModule, '/assets/controls.mjs');
   let scripts = 0;
   const trail = [];
   const record = (event) => {
@@ -90,18 +79,17 @@ async function fixture(t, { isolateFramework = true, moduleTransport = null } = 
       }, 50);
       return;
     }
-    if (req.url.startsWith('/assets/')) {
-      const name = req.url.slice('/assets/'.length);
-      moduleTransport?.requests.push(name);
+    if (req.url.startsWith('/assets/') || modules.has(req.url)) {
+      moduleTransport?.requests.push(req.url.replace(/^\/assets\//, ''));
       if (moduleTransport?.reset) return req.socket.destroy();
-      const bytes = frameworkModules.get(name);
-      if (!bytes) {
+      const file = modules.get(req.url);
+      if (!file) {
         res.writeHead(404);
         res.end();
         return;
       }
       res.setHeader('content-type', 'text/javascript');
-      res.end(bytes);
+      res.end(await fs.readFile(file));
       return;
     }
     res.setHeader('content-type', 'text/html');
@@ -141,9 +129,9 @@ async function fixture(t, { isolateFramework = true, moduleTransport = null } = 
   // Framework initialization is fixture plumbing. Component bundles, styles and platform libraries still use HTTP.
   // Routing disables the browser HTTP cache, so scriptCount also proves the PCF runtime owns resource reuse.
   if (isolateFramework)
-    for (const [name, bytes] of frameworkModules)
-      await page.route(`${origin}/assets/${name}`, (route) =>
-        route.fulfill({ contentType: 'text/javascript', body: bytes }),
+    for (const [served, file] of modules)
+      await page.route(`${origin}${served}`, async (route) =>
+        route.fulfill({ contentType: 'text/javascript', body: await fs.readFile(file) }),
       );
   await page.goto(origin);
   try {

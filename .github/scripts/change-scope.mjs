@@ -237,7 +237,7 @@ export function preCommitScripts(files) {
 export function githubScope(event, eventName, env = process.env, root = toolkitRoot) {
   const full =
     env.VALIDATE_ALL === 'true' ||
-    (eventName === 'workflow_dispatch' && event.inputs?.full !== false && event.inputs?.full !== 'false') ||
+    eventName === 'workflow_dispatch' ||
     eventName === 'schedule' ||
     (eventName === 'push' && env.GITHUB_REF === 'refs/heads/main');
   if (full) return classifyChanges([], { root, full: true });

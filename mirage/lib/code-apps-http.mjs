@@ -3,6 +3,8 @@ import { readFile } from 'node:fs/promises';
 import { codeAppsWorkbenchHtml } from './code-apps-workbench.mjs';
 import { recordHttpError, statusFromHttp } from './trace-store.mjs';
 import { tracedFetch } from './trace-hosts.mjs';
+import { codeAppShownUrl, pinnedLocalFetch } from './code-apps-config.mjs';
+import { sameToken } from './admin-origin.mjs';
 
 /*
  * Local bridge for Power Apps code apps under /_apps/code/<name>/.
@@ -59,7 +61,7 @@ const publicApp = (app) => ({
   name: app.name,
   appId: app.appId ?? null,
   environmentId: app.environmentId ?? null,
-  localAppUrl: app.localAppUrl ?? null,
+  localAppUrl: codeAppShownUrl(app.localAppUrl),
   launchUrl: `/_apps/code/${encodeURIComponent(app.name)}/`,
   diagnostics: (app.diagnostics ?? []).map(({ code, message }) => ({ code, message })),
   connectionReferences: (app.connectionReferences ?? []).map(({ key, apiId, dataSources }) => ({
@@ -71,7 +73,8 @@ const publicApp = (app) => ({
   appSettingNames: Object.keys(app.appSettings ?? {}),
   features: FEATURES,
 });
-// The dev server probe is an http-out span of the request (tracedFetch; a plain fetch without a trace store).
+// The dev server probe is an http-out span of the request (tracedFetch) whose connection is pinned to the checked loopback
+// address (pinnedLocalFetch); redirects are reported with their status, never followed.
 async function serverStatus(app, traces) {
   if (!app.localAppUrl) return { state: 'unavailable' };
   try {
@@ -80,6 +83,7 @@ async function serverStatus(app, traces) {
       operation: 'probe',
       url: app.localAppUrl,
       init: { method: 'HEAD', redirect: 'manual', signal: AbortSignal.timeout(1500) },
+      fetch: pinnedLocalFetch,
     });
     await response.body?.cancel();
     return { state: 'reachable', status: response.status };
@@ -190,7 +194,7 @@ export function createCodeAppsHandler({
     return { ...principal, row };
   };
   const requireCsrf = (req) => {
-    if (req.headers['x-sim-csrf'] !== csrf()) throw fail(403, 'CsrfRequired', 'Missing simulator CSRF token.');
+    if (!sameToken(req.headers['x-sim-csrf'], csrf())) throw fail(403, 'CsrfRequired', 'Missing simulator CSRF token.');
   };
   const requireMethod = (req, ...methods) => {
     if (!methods.includes(req.method)) throw fail(405, 'MethodNotAllowed', 'Method not allowed.');
@@ -279,7 +283,7 @@ export function createCodeAppsHandler({
           mode: 'simulation',
           level: 'contract',
           nativeSdk: false,
-          localAppUrl: app.localAppUrl ?? null,
+          localAppUrl: codeAppShownUrl(app.localAppUrl),
           entitySets: app.entitySets ?? {},
           appSettingNames: Object.keys(app.appSettings ?? {}),
           features: FEATURES,
@@ -440,6 +444,11 @@ export function createCodeAppsHandler({
             `Connection reference '${key}' is not declared in ${app.name}'s power.config.json.`,
           );
         const body = await readJson(req);
+        // The call ends with the client: a close before the answer aborts it (after the answer the close changes nothing).
+        const clientGone = new AbortController();
+        res.once('close', () => {
+          if (!res.writableFinished) clientGone.abort();
+        });
         const result = connectors
           ? await connectors({
               app,
@@ -447,6 +456,7 @@ export function createCodeAppsHandler({
               operationId,
               body,
               principal: { principalId: principal.principalId, kind: principal.kind },
+              signal: clientGone.signal,
             })
           : undefined;
         if (result === undefined) {
@@ -477,7 +487,7 @@ export function createCodeAppsHandler({
 
 function loader(req, res, url, app, base) {
   if (!['GET', 'HEAD'].includes(req.method)) throw fail(405, 'MethodNotAllowed', 'This resource requires GET.');
-  const title = `<title>${escapeHtml(app.name)} (Mirage code app)</title>`;
+  const title = `<title>${escapeHtml(app.name)} (Mirage code app)</title><link rel="icon" href="data:,">`;
   let body,
     csp = BASE_CSP;
   if (app.localAppUrl) {

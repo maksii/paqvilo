@@ -1,4 +1,8 @@
 import fs from 'node:fs';
+import http from 'node:http';
+import https from 'node:https';
+import dns from 'node:dns';
+import net from 'node:net';
 import path from 'node:path';
 import { isLoopbackUrl } from './dataverse-webhooks.mjs';
 import { registerSettingParser } from './config-keys.mjs';
@@ -10,6 +14,95 @@ import { registerSettingParser } from './config-keys.mjs';
 
 const CODE_APP_KEYS = new Set(['name', 'dir', 'localAppUrl', 'config', 'devServer']);
 const NAME = /^[a-z0-9][a-z0-9-]{0,63}$/i;
+// The base directory each relative setting is resolved against, named in refusals.
+const PROJECT_ROOT = 'the project root';
+const APP_DIRECTORY = 'the app directory';
+
+/**
+ * The one local app URL rule, shared by the project entry, power.config.json and the dev-server supervisor: http or https to
+ * a loopback host (localhost, 127.0.0.0/8, ::1 or *.localhost), with no username, password or fragment. Returns the URL
+ * object, or null. A refusal never echoes the URL.
+ */
+export function codeAppLocalUrl(text) {
+  if (!isLoopbackUrl(text)) return null;
+  const url = new URL(text);
+  return url.username || url.password || url.hash ? null : url;
+}
+
+/** The local app URL as status pages print it: credentials are removed, and an unparseable value shows as null. */
+export function codeAppShownUrl(text) {
+  if (text == null) return null;
+  const url = URL.parse(String(text));
+  if (!url) return null;
+  if (!url.username && !url.password) return String(text);
+  url.username = '';
+  url.password = '';
+  return url.href;
+}
+
+const LOOPBACK_ADDRESS = (address) => address.startsWith('127.') || address === '::1';
+// A connect-level failure moves the probe to the next validated answer; any other error, and any HTTP response, ends it.
+const NEXT_ANSWER_CODES = new Set(['ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'EADDRNOTAVAIL']);
+
+// The host resolves once: every answer must be loopback before any connection is made. The answers keep their order.
+async function pinnedAddresses(url, lookup) {
+  const host = url.hostname.replace(/^\[(.*)\]$/, '$1');
+  const literal = net.isIP(host);
+  const answers = literal ? [{ address: host }] : await lookup(host, { all: true }).catch(() => []);
+  if (!answers.length || !answers.every(({ address }) => LOOPBACK_ADDRESS(address)))
+    throw new Error('Local app address does not resolve only to loopback.');
+  return { addresses: answers.map(({ address }) => address), servername: literal ? undefined : host };
+}
+
+const connectLocal = (options, onResponse) =>
+  (options.protocol === 'https:' ? https : http).request(options, onResponse);
+
+// One attempt at one validated address: it settles with the HTTP status or with the connect-level error.
+function requestAddress(connect, url, { address, servername, headers, init }) {
+  return new Promise((resolve, reject) => {
+    const request = connect(
+      {
+        protocol: url.protocol,
+        hostname: address,
+        port: url.port || (url.protocol === 'https:' ? 443 : 80),
+        path: `${url.pathname}${url.search}`,
+        method: init.method ?? 'GET',
+        headers,
+        servername,
+        signal: init.signal,
+      },
+      (incoming) => {
+        incoming.destroy();
+        resolve(new Response(null, { status: incoming.statusCode }));
+      },
+    );
+    request.once('error', reject);
+    request.end();
+  });
+}
+
+/**
+ * Fetch-shaped probe of a loopback app URL. The name is resolved once and every answer must be loopback. The validated
+ * answers are tried in order, moving on only after a connect-level refusal, with the original Host header (https keeps the
+ * name for SNI and certificate checks). Redirects are reported with their status and never followed. `lookup` and `connect`
+ * are injectable for tests.
+ */
+export async function pinnedLocalFetch(text, init = {}, { lookup = dns.promises.lookup, connect = connectLocal } = {}) {
+  if (!isLoopbackUrl(text)) throw new Error('Local app URL is not loopback.');
+  const url = new URL(text);
+  const { addresses, servername } = await pinnedAddresses(url, lookup);
+  const headers = { ...Object.fromEntries(new Headers(init.headers ?? {})), host: url.host };
+  let lastError;
+  for (const address of addresses) {
+    try {
+      return await requestAddress(connect, url, { address, servername, headers, init });
+    } catch (error) {
+      if (!NEXT_ANSWER_CODES.has(error.code)) throw error;
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
 
 /** Validate the project `codeApps` array: `[{ name, dir, localAppUrl?, config? = 'power.config.json' }]`. */
 export function codeAppSettings(value, label = 'codeApps') {
@@ -19,7 +112,7 @@ export function codeAppSettings(value, label = 'codeApps') {
   return value.map((entry, index) => validateCodeAppEntry(entry, index, label, names));
 }
 
-function relativeCodeAppPath(at, field, text) {
+function relativeCodeAppPath(at, field, text, base) {
   if (
     typeof text !== 'string' ||
     !text.trim() ||
@@ -27,7 +120,7 @@ function relativeCodeAppPath(at, field, text) {
     path.win32.isAbsolute(text) ||
     path.posix.normalize(text.replaceAll('\\', '/')).split('/')[0] === '..'
   )
-    throw new Error(`${at}.${field} must be a path relative to the project root`);
+    throw new Error(`${at}.${field} must be a path relative to ${base}`);
   return text;
 }
 function validateDevServerShape(dev, at) {
@@ -36,13 +129,16 @@ function validateDevServerShape(dev, at) {
     if (!['command', 'cwd', 'env', 'timeoutMs'].includes(key))
       throw new Error(`${at}.devServer.${key} is not a supported setting`);
 }
+// A NUL or a line break cannot survive the launcher's command line, so each one is refused in every element.
+const UNSAFE_COMMAND_CHARACTERS = ['\0', '\r', '\n'];
+const unsafeCommandElement = (value) => UNSAFE_COMMAND_CHARACTERS.some((character) => value.includes(character));
 function validateDevServerCommand(command, at) {
   if (
     !Array.isArray(command) ||
     !command.length ||
     typeof command[0] !== 'string' ||
     !command[0].trim() ||
-    command.some((value) => typeof value !== 'string' || value.includes('\0'))
+    command.some((value) => typeof value !== 'string' || unsafeCommandElement(value))
   )
     throw new Error(`${at}.devServer.command must be a nonempty array of nonempty strings`);
 }
@@ -66,7 +162,7 @@ function validateDevServer(dev, at, relative) {
   validateDevServerShape(dev, at);
   validateDevServerCommand(dev.command, at);
   const server = { command: [...dev.command] };
-  if (dev.cwd != null) server.cwd = relative('devServer.cwd', dev.cwd);
+  if (dev.cwd != null) server.cwd = relative('devServer.cwd', dev.cwd, APP_DIRECTORY);
   if (dev.env != null) server.env = validateDevServerEnv(dev.env, at);
   if (dev.timeoutMs != null) server.timeoutMs = validateDevServerTimeout(dev.timeoutMs, at);
   return server;
@@ -128,15 +224,16 @@ function validateCodeAppEntry(entry, index, label, names) {
   const key = entry.name.toLowerCase();
   if (names.has(key)) throw new Error(`${at}.name '${entry.name}' is not unique`);
   names.add(key);
-  const relative = (field, text) => relativeCodeAppPath(at, field, text);
+  const relative = (field, text, base) => relativeCodeAppPath(at, field, text, base);
   const app = {
     name: entry.name,
-    dir: relative('dir', entry.dir),
-    config: entry.config == null ? 'power.config.json' : relative('config', entry.config),
+    dir: relative('dir', entry.dir, PROJECT_ROOT),
+    config: entry.config == null ? 'power.config.json' : relative('config', entry.config, APP_DIRECTORY),
   };
   if (entry.devServer != null) app.devServer = validateDevServer(entry.devServer, at, relative);
   if (entry.localAppUrl != null) {
-    if (!isLoopbackUrl(entry.localAppUrl)) throw new Error(`${at}.localAppUrl must be a loopback http(s) URL`);
+    if (!codeAppLocalUrl(entry.localAppUrl))
+      throw new Error(`${at}.localAppUrl must be a loopback http(s) URL without credentials`);
     app.localAppUrl = entry.localAppUrl;
   }
   return app;
@@ -176,10 +273,10 @@ function applyConfigValues(raw, file, result, diagnostic) {
     if (typeof raw[field] === 'string') result[field] = raw[field];
     else diagnostic('CODEAPP_CONFIG_INVALID', `${file} ${field} must be a string.`);
   }
-  if (result.localAppUrl !== null && !isLoopbackUrl(result.localAppUrl)) {
+  if (result.localAppUrl !== null && !codeAppLocalUrl(result.localAppUrl)) {
     diagnostic(
       'CODEAPP_CONFIG_INVALID',
-      `${file} localAppUrl is not a loopback http(s) URL; Mirage will not frame it.`,
+      `${file} localAppUrl is not a loopback http(s) URL without credentials; Mirage will not frame it.`,
     );
     result.localAppUrl = null;
   }

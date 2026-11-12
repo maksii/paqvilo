@@ -17,6 +17,19 @@ export function cacheSpecs(lock, example) {
   ];
 }
 
+// PAQVILO_KEEP_WORK=1 keeps the directory for diagnosis; otherwise it is removed whether the primer passes or fails.
+function removePreparation(directory) {
+  if (process.env.PAQVILO_KEEP_WORK === '1') {
+    console.error(`Kept cache work directory: ${directory}`);
+    return;
+  }
+  try {
+    fs.rmSync(directory, { recursive: true, force: true });
+  } catch (error) {
+    console.error(`Could not remove cache work directory ${directory}: ${error.message}`);
+  }
+}
+
 function main() {
   const npmCli = process.env.npm_execpath;
   if (!npmCli) throw new Error('Run npm run setup:repo or npm run cache:package.');
@@ -40,6 +53,14 @@ function main() {
   const parent = path.resolve('.paqvilo', 'distribution');
   fs.mkdirSync(parent, { recursive: true });
   const preparation = fs.mkdtempSync(path.join(parent, 'cache-'));
+  try {
+    prepareConsumerCache(preparation, npmCli);
+  } finally {
+    removePreparation(preparation);
+  }
+}
+
+function prepareConsumerCache(preparation, npmCli) {
   const run = (args, cwd) => {
     const result = spawnSync(process.execPath, [npmCli, ...args], {
       cwd,

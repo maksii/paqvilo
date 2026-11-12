@@ -4,7 +4,7 @@ const copyValue = (value) => (value !== null && typeof value === 'object' ? clon
 // Local FetchXML evaluation with Dataverse semantics. The store supplies
 // permission-filtered rows and metadata; this module never bypasses them.
 import { DataError } from './data-error.mjs';
-import { isExactNumeric, sumNumeric, averageNumeric } from './exact-numeric.mjs';
+import { isExactNumeric, sumNumeric, averageNumeric, decimalParts, parseNumericLiteral } from './exact-numeric.mjs';
 import {
   fieldKind,
   compareSortKeys,
@@ -191,12 +191,24 @@ const integerAttribute = (fetch, name, { min = 1, max } = {}) => {
 };
 
 const XML_ENTITIES = { '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&apos;': "'" };
+// The XML Char production: tab, line feed, carriage return, and U+0020 to U+10FFFF without surrogates.
+const isXmlChar = (code) =>
+  code === 0x9 ||
+  code === 0xa ||
+  code === 0xd ||
+  (code >= 0x20 && code <= 0xd7ff) ||
+  (code >= 0xe000 && code <= 0xfffd) ||
+  (code >= 0x10000 && code <= 0x10ffff);
+const characterReference = (entity) => {
+  const code = Number.parseInt(entity.slice(2, -1).replace(/^x/i, ''), /^&#x/i.test(entity) ? 16 : 10);
+  if (!Number.isSafeInteger(code) || !isXmlChar(code))
+    fail('Malformed FetchXML character reference', 400, 'InvalidRequest');
+  return String.fromCodePoint(code);
+};
 export const xmlDecode = (value) =>
   String(value).replace(
     /&(?:amp|lt|gt|quot|apos);|&#(?:x[\da-f]+|\d+);/gi,
-    (entity) =>
-      XML_ENTITIES[entity.toLowerCase()] ??
-      String.fromCodePoint(Number.parseInt(entity.slice(2, -1).replace(/^x/i, ''), /^&#x/i.test(entity) ? 16 : 10)),
+    (entity) => XML_ENTITIES[entity.toLowerCase()] ?? characterReference(entity),
   );
 export const xmlEscapeAttribute = (value) =>
   String(value).replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
@@ -578,7 +590,7 @@ export function planFetch(
   indexParents(root, root);
   const aggregate = bool(fetch.attrs.aggregate);
   const top = integerAttribute(fetch, 'top', { min: 1, max: FETCH_LIMITS.top });
-  const count = integerAttribute(fetch, 'count', { min: 0 });
+  const count = integerAttribute(fetch, 'count', { min: 1 });
   const page = integerAttribute(fetch, 'page', { min: 1 });
   const returnTotal = bool(fetch.attrs.returntotalrecordcount);
   if (top != null && (count != null || page != null || returnTotal))
@@ -607,7 +619,7 @@ export function planFetch(
     diagnostics,
     distinct: bool(fetch.attrs.distinct),
     top,
-    pageSize: count ? Math.min(count, limits.pageSize) : limits.pageSize,
+    pageSize: count != null ? Math.min(count, limits.pageSize) : limits.pageSize,
     totalRecordCountLimit: limits.totalRecordCount,
     page: page ?? 1,
     pagingCookie: fetch.attrs['paging-cookie'] ?? null,
@@ -676,6 +688,21 @@ const cookieValue = (value) => {
   if (typeof raw === 'boolean') return raw ? '1' : '0';
   return String(raw);
 };
+// A cookie value is text: its sort key takes the column's type, so it orders against the rows' keys as the row values do.
+// A column without metadata takes a number when the page's rows hold numbers.
+function cursorSortKey(text, definition, sample, timeZoneOffsetMinutes) {
+  if (text === '') return null;
+  const kind = fieldKind(definition);
+  if (kind === 'boolean') return makeSortKey(text === '1' || text === 'true', { definition });
+  const inferredNumber = kind == null && sample?.t === 'n';
+  const value = inferredNumber && decimalParts(text) ? parseNumericLiteral(text) : text;
+  return makeSortKey(value, { definition, rawChoice: true, timeZoneOffsetMinutes });
+}
+// The first non-null sort key of a sort column among the page rows, or null when every row holds null.
+const columnSample = (keyed, index) => keyed.find((item) => item.keys[index] != null)?.keys[index] ?? null;
+// A cursor key of another type than a row's key cannot place the cursor, so the page is read by offset.
+const mixesKeyTypes = (keyed, index, key) =>
+  key != null && keyed.some((item) => item.keys[index] != null && item.keys[index].t !== key.t);
 
 /**
  * Structural many-to-many traversals of a planned query: link-entities to an
@@ -1192,12 +1219,14 @@ export function structuralIntersects(plan, mappingOf, relationshipsFor = (mappin
   }
 
   const lookupName = (ref) => ctx.lookupName?.(ref) ?? ref?.name;
+  // One offset for every sort key of the query: row keys (sortKeyOf) and paging-cookie cursor keys (seekIndex) use it.
+  const timeZoneOffsetMinutes = Number(settings.timeZoneOffsetMinutes ?? 0);
   const sortKeyOf = (value, columnDefinition) =>
     makeSortKey(value, {
       definition: columnDefinition,
       rawChoice: plan.rawChoiceOrder,
       lookupName,
-      timeZoneOffsetMinutes: Number(settings.timeZoneOffsetMinutes ?? 0),
+      timeZoneOffsetMinutes,
     });
   /**
    * Rows the evaluation must produce before the result is known, or null when every row
@@ -1723,7 +1752,7 @@ export function structuralIntersects(plan, mappingOf, relationshipsFor = (mappin
     const specs = keyed[0].specs;
     const pk = rootMapping.idColumn;
     const lastValues = [];
-    for (const spec of specs) {
+    for (const [index, spec] of specs.entries()) {
       const entry = cookie.values.get(spec.attribute);
       if (entry?.last == null) return null;
       const kind = String(spec.definition?.dataverseType ?? '').toLowerCase();
@@ -1734,9 +1763,9 @@ export function structuralIntersects(plan, mappingOf, relationshipsFor = (mappin
         return null;
       // An empty last is the null marker (cookieValue(null)), as the OData skip token reads it (data.mjs cursorValue):
       // makeSortKey(null) orders it first ascending, as compareSortKeys orders every null (keysetPage's compare).
-      lastValues.push(
-        makeSortKey(entry.last === '' ? null : entry.last, { definition: spec.definition, rawChoice: true }),
-      );
+      const key = cursorSortKey(entry.last, spec.definition, columnSample(keyed, index), timeZoneOffsetMinutes);
+      if (mixesKeyTypes(keyed, index, key)) return null;
+      lastValues.push(key);
     }
     const pkEntry = cookie.values.get(pk);
     if (!pkEntry?.last) return null;

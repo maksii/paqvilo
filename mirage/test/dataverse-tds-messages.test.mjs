@@ -1,3 +1,4 @@
+// @test-kind contract: the endpoint's own decoder for client RPC input and its error token encoding, designed here.
 // Dataverse TDS request messages: SQL_BATCH and RPC decoding, sp_executesql mapping, DONE/RETURNSTATUS/ERROR/ATTENTION
 // encodings. Buffers are built byte by byte from MS-TDS 2.2.6 and 2.2.7, not with the module under test.
 import test from 'node:test';
@@ -118,4 +119,36 @@ test('ERROR token length and read-only error', () => {
   assert.equal(sequence[0], 0xaa);
   assert.equal(sequence.readInt32LE(3), READ_ONLY_ERROR.number);
   assert.equal(sequence.subarray(sequence.length - 13).toString('hex'), 'fd0200' + '0000' + '0000000000000000');
+});
+
+// VARCHAR(10) TYPE_INFO (0xA7), not implemented by the endpoint.
+const VARCHAR_PARAM = Buffer.from([0xa7, 0x0a, 0x00, ...COLLATION, 0x03, 0x61, 0x62, 0x63]);
+
+test('an unsupported parameter type is a TdsProtocolError that names the type', () => {
+  assert.throws(() => decodeRpc(executeSqlRpc('SELECT @p1', param('@p1', VARCHAR_PARAM))), {
+    name: 'TdsProtocolError',
+    message: /varchar/,
+  });
+  const datetimeoffset = Buffer.from([0x2b, 0x07, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+  assert.throws(() => decodeRpc(executeSqlRpc('SELECT @p1', param('@p1', datetimeoffset))), {
+    name: 'TdsProtocolError',
+    message: /datetimeoffset/,
+  });
+});
+
+test('a truncated RPC value is a TdsProtocolError, not a RangeError', () => {
+  const full = executeSqlRpc('SELECT @p1', param('@p1', int4(7)));
+  assert.doesNotThrow(() => decodeRpc(full));
+  assert.throws(() => decodeRpc(full.subarray(0, full.length - 3)), TdsProtocolError);
+});
+
+test('an nvarchar whose declared length runs past the payload is rejected', () => {
+  const short = Buffer.from([0xe7, 0xa0, 0x0f, ...COLLATION, 0x40, 0x00, 0x61]);
+  assert.throws(() => decodeRpc(executeSqlRpc('SELECT @p1', param('@p1', short))), TdsProtocolError);
+});
+
+test('ERROR text is capped at 4000 characters', () => {
+  const error = errorToken({ number: 208, message: 'x'.repeat(70000) });
+  assert.equal(error.readUInt16LE(9), 4000);
+  assert.equal(error.readUInt16LE(1), error.length - 3);
 });

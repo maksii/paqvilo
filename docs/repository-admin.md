@@ -5,8 +5,9 @@ with [getting started](getting-started.md); contributors should use [CONTRIBUTIN
 
 ## Repository settings
 
-`scripts/github-admin.mjs` describes the repository settings. Preview its plan before
-applying it with an authenticated repository administrator account:
+`scripts/github-admin.mjs` describes the repository settings. Workflows may use GitHub-owned
+actions and `SonarSource/sonarqube-scan-action`; other third-party actions are blocked. Actions stay pinned by full
+commit SHA. Preview its plan before applying it with an authenticated repository administrator account:
 
 ```sh
 gh auth status

@@ -203,19 +203,16 @@ test('payload writes reject linked targets and hard-linked user files', (t) => {
   assert.deepEqual(fs.readFileSync(userFile), bytes);
 });
 
-test(
-  'concurrent identical publishers reuse the completed canonical payload after temporary hard links retire',
-  { timeout: 180_000 },
-  async (t) => {
-    const { directory } = fixture(t);
-    const bytes = payload('shared publication');
-    const start = new SharedArrayBuffer(4);
-    const retire = new SharedArrayBuffer(4);
-    const workers = Array.from(
-      { length: 6 },
-      () =>
-        new Worker(
-          `
+test('concurrent identical publishers reuse the completed canonical payload after temporary hard links retire', async (t) => {
+  const { directory } = fixture(t);
+  const bytes = payload('shared publication');
+  const start = new SharedArrayBuffer(4);
+  const retire = new SharedArrayBuffer(4);
+  const workers = Array.from(
+    { length: 6 },
+    () =>
+      new Worker(
+        `
     const { parentPort, workerData } = require('node:worker_threads');
     const fs = require('node:fs');
     (async () => {
@@ -243,71 +240,70 @@ test(
       catch (error) { parentPort.postMessage({ error: error.code }); }
     })();
   `,
-          {
-            eval: true,
-            workerData: {
-              module: new URL('../lense/command-payload.mjs', import.meta.url).href,
-              directory,
-              bytes,
-              start,
-              retire,
-            },
+        {
+          eval: true,
+          workerData: {
+            module: new URL('../lense/command-payload.mjs', import.meta.url).href,
+            directory,
+            bytes,
+            start,
+            retire,
           },
-        ),
-    );
-    ownedFixture(t).add(() => Promise.all(workers.map((worker) => worker.terminate())));
-    let releaseHeld, releaseObserved;
-    const held = new Promise((resolve) => {
-      releaseHeld = resolve;
-    });
-    const observed = new Promise((resolve) => {
-      releaseObserved = resolve;
-    });
-    const ready = [],
-      outcomes = [];
-    for (const worker of workers) {
-      ready.push(
-        new Promise((resolve, reject) => {
-          worker.once('error', reject);
-          worker.on('message', (message) => {
-            if (message.ready) resolve();
-            if (message.heldLink) releaseHeld();
-            if (message.observedLink) releaseObserved();
-          });
-        }),
-      );
-      outcomes.push(
-        new Promise((resolve, reject) => {
-          worker.once('error', reject);
-          worker.on('message', (message) => {
-            if (message.file || message.error) resolve(message);
-          });
-        }),
-      );
-    }
-    await Promise.all(ready);
-    Atomics.store(new Int32Array(start), 0, 1);
-    Atomics.notify(new Int32Array(start), 0);
-    await Promise.all([held, observed]);
-    const results = await Promise.all(outcomes);
-    assert.ok(
-      results.every((result) => result.file === filename(directory, bytes)),
-      JSON.stringify(results),
-    );
-    await Promise.all(
-      workers.map(
-        (worker) =>
-          new Promise((resolve) => {
-            if (worker.threadId === -1) resolve();
-            else worker.once('exit', resolve);
-          }),
+        },
       ),
+  );
+  ownedFixture(t).add(() => Promise.all(workers.map((worker) => worker.terminate())));
+  let releaseHeld, releaseObserved;
+  const held = new Promise((resolve) => {
+    releaseHeld = resolve;
+  });
+  const observed = new Promise((resolve) => {
+    releaseObserved = resolve;
+  });
+  const ready = [],
+    outcomes = [];
+  for (const worker of workers) {
+    ready.push(
+      new Promise((resolve, reject) => {
+        worker.once('error', reject);
+        worker.on('message', (message) => {
+          if (message.ready) resolve();
+          if (message.heldLink) releaseHeld();
+          if (message.observedLink) releaseObserved();
+        });
+      }),
     );
-    assert.deepEqual(fs.readdirSync(directory), [path.basename(filename(directory, bytes))]);
-    assert.deepEqual(fs.readFileSync(filename(directory, bytes)), bytes);
-    assert.equal(fs.statSync(filename(directory, bytes)).nlink, 1);
-  },
-);
+    outcomes.push(
+      new Promise((resolve, reject) => {
+        worker.once('error', reject);
+        worker.on('message', (message) => {
+          if (message.file || message.error) resolve(message);
+        });
+      }),
+    );
+  }
+  await Promise.all(ready);
+  Atomics.store(new Int32Array(start), 0, 1);
+  Atomics.notify(new Int32Array(start), 0);
+  await Promise.all([held, observed]);
+  const results = await Promise.all(outcomes);
+  assert.ok(
+    results.every((result) => result.file === filename(directory, bytes)),
+    JSON.stringify(results),
+  );
+  await Promise.all(
+    workers.map(
+      (worker) =>
+        new Promise((resolve) => {
+          if (worker.threadId === -1) resolve();
+          else worker.once('exit', resolve);
+        }),
+    ),
+  );
+  assert.deepEqual(fs.readdirSync(directory), [path.basename(filename(directory, bytes))]);
+  assert.deepEqual(fs.readFileSync(filename(directory, bytes)), bytes);
+  assert.equal(fs.statSync(filename(directory, bytes)).nlink, 1);
+});
 
 test('pruning only releases explicitly named intact payloads without remaining owners', (t) => {
   const { root, directory } = fixture(t);

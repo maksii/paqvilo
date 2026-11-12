@@ -1,12 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 
-const secret = /(?:password|passwd|secret|token|authorization|cookie|credential|api[_-]?key|signature)/i;
+const secret =
+  /(?:password|passwd|secret|token|authorization|cookie|credential|api[_-]?key|signature|pwd|accountkey|sharedaccesskey(?!name)|primarykey|secondarykey|subscription[_-]?key|functions?[_-]?key)/i;
 // URL query parameters that carry a credential on their own (Azure Functions keys, SAS signatures, OAuth codes,
 // invitation codes). One alternation feeds the key test and the free-text pattern, so the two cannot drift.
 const queryCredentialNames = 'code|sig|invitation(?:code)?';
 const queryCredential = new RegExp(`^(?:${queryCredentialNames})$`, 'i');
-const queryCredentialValue = new RegExp(String.raw`([?&](?:${queryCredentialNames})=)[^&#\s"'<>]*`, 'gi');
+// The separator before a query credential is ?, & or an encoded or HTML-escaped & (%26, &amp;, &#38;).
+const queryCredentialValue = new RegExp(
+  String.raw`((?:[?&]|%26|&amp;|&#38;)(?:${queryCredentialNames})=)[^&#\s"'<>]*`,
+  'gi',
+);
 const secretQueryKey = (key) => secret.test(key) || queryCredential.test(key);
 // One name=value pair of a query string, redacted by the same key test as the URLSearchParams form.
 const redactQueryPair = (pair) => {
@@ -17,9 +22,10 @@ const redactQueryPair = (pair) => {
 const limitText = (value, limit = 12000) => String(value ?? '').slice(0, limit);
 
 // The variable-length prefix of secret/token names is scanned backwards only after a
-// complete key/value match. This keeps malformed long identifiers linear.
+// complete key/value match. This keeps malformed long identifiers linear. A quoted value without its closing quote
+// runs to the end of the text. A key or value quoted as an HTML entity (&quot; or &#34;) is matched like a quoted one.
 const secretAssignment =
-  /((password|passwd|secret|token|authorization|cookie|credential|api[_-]?key|signature)["']?\s*(?:=|:|\beq\b)\s*)(?:"[^"]*"|'[^']*'|[^\s&<>;,]+)/gi; // NOSONAR: preserve the exact grammar and captured values
+  /((password|passwd|secret|token|authorization|cookie|credential|api[_-]?key|signature|pwd|accountkey|sharedaccesskey|primarykey|secondarykey|subscription[_-]?key|functions?[_-]?key)(?:["']|&quot;|&#34;)?\s*(?:=|:|\beq\b)\s*)(?:"[^"]*"|'[^']*'|"[^"]*|'[^']*|&quot;[\s\S]*?(?:&quot;|$)|&#34;[\s\S]*?(?:&#34;|$)|[^\s&<>;,]+)/gi; // NOSONAR: preserve the exact grammar and captured values
 
 function redactSecretAssignments(text) {
   let cursor = 0;
@@ -35,25 +41,127 @@ function redactSecretAssignments(text) {
   return result + text.slice(cursor);
 }
 
-/** Keep query structure useful while excluding credential values and headers. */
-export function auditText(value, limit = 12000) {
-  const prefix = String(value ?? '')
+const CONDITION_OPEN = /<condition(?!\w)/gi;
+const CONDITION_CLOSE = /<\/condition>/gi;
+const CONDITION_CLOSE_TEXT = '</condition>';
+const CONDITION_CLOSE_LENGTH = CONDITION_CLOSE_TEXT.length;
+const VALUE_CLOSE = /<\/value>/gi;
+
+// Index of the first match of a global pattern at or after from, or -1.
+const indexFrom = (pattern, text, from) => {
+  pattern.lastIndex = from;
+  const match = pattern.exec(text);
+  return match ? match.index : -1;
+};
+
+// Wraps a search whose start positions never decrease: a result ahead of the start is reused, and -1 is final.
+const cachedSearch = (search) => {
+  let found = null;
+  return (from) => {
+    if (found === -1) return -1;
+    if (found === null || found < from) found = search(from);
+    return found;
+  };
+};
+
+const conditionAttribute = (tag) => /\battribute\s*=\s*(["'])(.*?)\1/i.exec(tag)?.[2];
+const secretCondition = (tag) => secret.test(conditionAttribute(tag) ?? '');
+
+// A secret value of a condition's text: a <value> element, or a value="…" / value='…' attribute.
+const SECRET_VALUE = /<value>|\bvalue\s*=\s*(["'])/gi;
+const nextSecretValue = (body, from) => {
+  SECRET_VALUE.lastIndex = from;
+  return SECRET_VALUE.exec(body);
+};
+
+// One secret value found by match: its replacement and the index where the text resumes. A closed element keeps its
+// closing tag; an attribute is written whole; a value without its closing mark runs to the end of the body.
+function secretValueEnd(body, match) {
+  const start = match.index + match[0].length;
+  if (match[1] === undefined) {
+    const close = indexFrom(VALUE_CLOSE, body, start);
+    return { replacement: `${match[0]}[redacted]`, resume: close < 0 ? body.length : close };
+  }
+  const close = body.indexOf(match[1], start);
+  if (close < 0) return { replacement: 'value="[redacted]', resume: body.length };
+  return { replacement: 'value="[redacted]"', resume: close + 1 };
+}
+
+// Redacts every secret value in a condition's text, closed or not: one pass, the search resumes after each value.
+function redactSecretValues(body) {
+  let result = '';
+  let cursor = 0;
+  for (let match = nextSecretValue(body, 0); match; match = nextSecretValue(body, cursor)) {
+    const { replacement, resume } = secretValueEnd(body, match);
+    result += body.slice(cursor, match.index) + replacement;
+    cursor = resume;
+  }
+  return result + body.slice(cursor);
+}
+
+const redactCondition = (tag) => {
+  if (!secretCondition(tag)) return tag;
+  const tail = tag.endsWith(CONDITION_CLOSE_TEXT) ? CONDITION_CLOSE_TEXT : '';
+  return redactSecretValues(tag.slice(0, tag.length - tail.length)) + tail;
+};
+
+// The end of the tag whose ">" is at gt: the first "</condition>" after it, else the end of a self-closing "/>", else -1.
+const conditionEnd = (text, gt, nextClose) => {
+  const close = nextClose(gt + 1);
+  if (close >= 0) return close + CONDITION_CLOSE_LENGTH;
+  return text[gt - 1] === '/' ? gt + 1 : -1;
+};
+
+// An unclosed condition at open runs to the next condition tag, or to the end of the text: when its tag (up to gt, or
+// to the scope's end without a ">") names a secret attribute, all of its secret values are redacted. Else null.
+const redactUnclosedCondition = (text, open, gt, stop) => {
+  const head = text.slice(open, gt < 0 ? stop : Math.min(gt + 1, stop));
+  return secretCondition(head) ? redactSecretValues(text.slice(open, stop)) : null;
+};
+
+// One pass over the condition tags. Each search is cached and each unclosed scope ends at the next condition tag, so the
+// scopes never overlap and a run of unclosed tags costs one pass over the text.
+function redactConditions(text) {
+  const nextGt = cachedSearch((from) => text.indexOf('>', from));
+  const nextClose = cachedSearch((from) => indexFrom(CONDITION_CLOSE, text, from));
+  let result = '';
+  let cursor = 0;
+  let open = indexFrom(CONDITION_OPEN, text, 0);
+  while (open >= 0) {
+    const gt = nextGt(open);
+    const end = gt < 0 ? -1 : conditionEnd(text, gt, nextClose);
+    if (end >= 0) {
+      result += text.slice(cursor, open) + redactCondition(text.slice(open, end));
+      cursor = end;
+      open = indexFrom(CONDITION_OPEN, text, end);
+      continue;
+    }
+    const next = indexFrom(CONDITION_OPEN, text, open + 1);
+    const stop = next < 0 ? text.length : next;
+    const redacted = redactUnclosedCondition(text, open, gt, stop);
+    if (redacted !== null) {
+      result += text.slice(cursor, open) + redacted;
+      cursor = stop;
+    }
+    open = next;
+  }
+  return result + text.slice(cursor);
+}
+
+function redactText(text) {
+  const prefix = text
     .replace(/Bearer\s+[^\s"'<>]+/gi, 'Bearer [redacted]')
     .replace(/\bSharedAccessSignature\s+[^\s"'<>]+/gi, 'SharedAccessSignature [redacted]')
     // A Basic credential is base64: a token holding a digit, + or / or ending in = (so "Basic plan" stays readable).
     .replace(/\bBasic\s+(?=[a-z0-9+/]*[0-9+/=])[a-z0-9+/]{4,}={0,2}/gi, 'Basic [redacted]')
     .replace(/\bDigest\s+[\w-]+=[^\r\n<>]*/gi, 'Digest [redacted]')
     .replace(queryCredentialValue, '$1[redacted]');
-  return redactSecretAssignments(prefix)
-    .replace(/<condition\b[^>]*(?:\/>|>[\s\S]*?<\/condition>)/gi, (tag) => {
-      const attribute = /\battribute\s*=\s*(["'])(.*?)\1/i.exec(tag)?.[2];
-      return secret.test(attribute ?? '')
-        ? tag
-            .replace(/\bvalue\s*=\s*(["'])(.*?)\1/gi, 'value="[redacted]"')
-            .replace(/(<value>)[\s\S]*?(<\/value>)/gi, '$1[redacted]$2')
-        : tag;
-    })
-    .slice(0, limit);
+  return redactConditions(redactSecretAssignments(prefix));
+}
+
+/** Keep query structure useful while excluding credential values and headers. */
+export function auditText(value, limit = 12000) {
+  return redactText(String(value ?? '')).slice(0, limit);
 }
 
 /* NOSONAR: mixed return values are part of the contract */ export function auditQuery(value) {

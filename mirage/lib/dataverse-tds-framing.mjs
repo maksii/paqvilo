@@ -35,7 +35,9 @@ const EMPTY = Buffer.alloc(0);
 
 // ---- message framing
 
+// maxBytes is a number, or a function giving the limit for the message in progress (read as each packet arrives).
 export function createMessageReader(onMessage, { maxBytes = MAX_MESSAGE_BYTES } = {}) {
+  const limit = typeof maxBytes === 'function' ? maxBytes : () => maxBytes;
   let pending = EMPTY;
   let parts = [];
   let size = 0;
@@ -50,7 +52,8 @@ export function createMessageReader(onMessage, { maxBytes = MAX_MESSAGE_BYTES } 
       else if (pending[0] !== type) throw new Error('TDS message packets mix message types');
       parts.push(pending.subarray(HEADER_BYTES, length));
       size += length - HEADER_BYTES;
-      if (size > maxBytes) throw new Error(`TDS message exceeds ${maxBytes} bytes`);
+      const max = limit();
+      if (size > max) throw new Error(`TDS message exceeds ${max} bytes`);
       const endOfMessage = (pending[1] & EOM) !== 0;
       pending = pending.subarray(length);
       if (endOfMessage) {

@@ -5,7 +5,7 @@
 import path from 'node:path';
 import { immutableStatus } from './immutable-status.mjs';
 import { pluginHandlers, pluginCatalogue } from './exported-plugins.mjs';
-import { pluginRuntimeDescriptors, sharedClrRuntimePreparer, closeClrHostPool } from './plugin-clr.mjs';
+import { pluginRuntimeDescriptors, sharedClrRuntimePreparer, releaseClrRuntime } from './plugin-clr.mjs';
 import { releaseStaleUploadedRuntimes, releaseUploadedRuntime } from './plugin-uploaded.mjs';
 import { overlayRegisteredSteps } from './dataverse-plugin-registration.mjs';
 import { bulkMessageAvailabilityRecord } from './bulk-message-availability.mjs';
@@ -287,20 +287,22 @@ function buildProviders(
     },
   });
   const outbox = composeOutbox({ store, packs, config, now, ids, storage: annotations, diagnostic, created });
+  const connectors = createConnectorRuntime({
+    store,
+    connections: config.connections ?? {},
+    packs,
+    diagnostic,
+    clock: { now },
+    messaging: () => bus,
+    stateDirectory,
+    trustedScripts: config.connectorScripts ?? [],
+  });
+  created.push({ name: 'connectors', item: connectors });
   const providers = Object.freeze({
     storage,
     messaging,
     outbox,
-    connectors: createConnectorRuntime({
-      store,
-      connections: config.connections ?? {},
-      packs,
-      diagnostic,
-      clock: { now },
-      messaging: () => bus,
-      stateDirectory,
-      trustedScripts: config.connectorScripts ?? [],
-    }),
+    connectors,
     // The secret spans go to the host's trace store (store.traces is set once the host composes, so read per call).
     secrets: config.secrets
       ? createSecretResolver({ secrets: config.secrets, clock: now, diagnostic, traces: () => store.traces })
@@ -549,33 +551,56 @@ function composeOutbox({ store, packs, config, now, ids, storage, diagnostic, cr
 
 // An instantiated provider is satisfied only when its preflight() answers ready; without preflight() it is declared: status
 // placeholder (resolution by 'declared'), never satisfied.
-const instantiatedRow = (id, label, probe) =>
-  probe
-    ? { id, reachable: probe.ready, message: probe.ready ? null : `${label} is not ready: ${probe.reason}` }
-    : {
-        id,
-        reachable: false,
-        status: 'placeholder',
-        resolution: { by: 'declared' },
-        message: `${label} is instantiated but declares no preflight(); its reachability is not probed.`,
-      };
+const instantiatedRow = (id, label, probe) => {
+  if (!probe)
+    return {
+      id,
+      reachable: false,
+      status: 'placeholder',
+      resolution: { by: 'declared' },
+      message: `${label} is instantiated but declares no preflight(); its reachability is not probed.`,
+    };
+  if (probe.ready) return { id, reachable: true, message: null };
+  // A caller's timeout that expired is an unknown answer, not a refused connection.
+  if (probe.timedOut)
+    return {
+      id,
+      reachable: false,
+      status: 'unknown',
+      reason: 'PROVIDER_PREFLIGHT_TIMEOUT',
+      message: `${label} did not answer its readiness probe: ${probe.reason}`,
+    };
+  return { id, reachable: false, message: `${label} is not ready: ${probe.reason}` };
+};
+
+/** A readiness probe bounded by the caller's optional timeoutMs; timedOut tells an expired timeout from a refused connection. */
+async function probeWithin(probe, timeoutMs) {
+  let timedOut = false;
+  const answer = await probe({
+    timeoutMs,
+    onTimeout: () => {
+      timedOut = true;
+    },
+  });
+  return answer ? { ...answer, timedOut } : null;
+}
 
 /**
  * Preflight provider rows ({ id, reachable, message, status? }) of a providers object: an instantiated storage or messaging
- * provider is reachable when its optional preflight() answers { ready: true } within 2 s, and declared (status placeholder,
+ * provider is reachable when its optional preflight() answers { ready: true } (within the caller's timeoutMs, when it gives one;
+ * an expired timeout is status unknown, PROVIDER_PREFLIGHT_TIMEOUT), and declared (status placeholder,
  * never satisfied) when it has no preflight() (Azurite storage is always instantiated by core and probes with an authorized
  * List Containers; the Service Bus emulator bus is instantiated by core and probes with a SASL connection and a link per mapped
  * entity, reading its variable from `env`; variables are named, never their values); any other declared provider that is not
  * instantiated is missing. Both the running host's preflight and composeHostDescription use it.
  */
-export async function providerRequirements({ providers, env = process.env }) {
+export async function providerRequirements({ providers, env = process.env, timeoutMs }) {
   const rows = [];
   for (const entry of providers?.storage?.describe?.().providers ?? []) {
     const id = `provider:storage/${entry.id}`;
     if (entry.ready) {
-      rows.push(
-        instantiatedRow(id, `Storage provider '${entry.id}'`, (await providers.storage.preflight?.(entry.id)) ?? null),
-      );
+      const probe = await probeWithin((options) => providers.storage.preflight?.(entry.id, options), timeoutMs);
+      rows.push(instantiatedRow(id, `Storage provider '${entry.id}'`, probe));
       continue;
     }
     rows.push({ id, reachable: false, message: `Storage provider '${entry.id}' is declared but not available.` });
@@ -590,8 +615,15 @@ export async function providerRequirements({ providers, env = process.env }) {
         instantiatedRow(
           id,
           `Messaging provider '${providerId}'`,
-          await preflightProvider(
-            typeof bus.preflight === 'function' ? { preflight: () => bus.preflight({ env }) } : bus,
+          await probeWithin(
+            (options) =>
+              preflightProvider(
+                typeof bus.preflight === 'function'
+                  ? { preflight: (context) => bus.preflight({ env, ...context }) }
+                  : bus,
+                options,
+              ),
+            timeoutMs,
           ),
         ),
       );
@@ -656,6 +688,35 @@ export async function settleProviders(providers) {
 export async function closeProviders(providers) {
   const created = lifecycles.get(providers)?.created;
   if (created) await closeCreated(created);
+}
+
+// Every runtime the host's preparer returns is recorded: the host closes the ones it or its custom API prepared, and a
+// runtime the caller mapped itself is not among them.
+function recordedPreparer(prepareRuntime, prepared) {
+  return async (descriptor) => {
+    const runtime = await prepareRuntime(descriptor);
+    prepared.add(runtime);
+    return runtime;
+  };
+}
+
+/**
+ * Runs the pending close steps of a host context in order, every step even after one fails. A step that succeeded leaves
+ * c.closeSteps and is not run again; a failed one stays for the next close(). Failures aggregate into one AggregateError.
+ */
+async function runCloseSteps(c) {
+  const failures = [];
+  const pending = [];
+  for (const step of c.closeSteps) {
+    try {
+      await step();
+    } catch (error) {
+      failures.push(error);
+      pending.push(step);
+    }
+  }
+  c.closeSteps = pending;
+  if (failures.length) throw new AggregateError(failures, 'Organization host cleanup failed.');
 }
 
 /** Descriptors of a providers object for status payloads: what is configured and its level, never a value or secret. */
@@ -910,10 +971,11 @@ function codeAppFunctionCall({ organization, route, method, headers, body, url, 
 /**
  * The code-app connector call (code-apps-http.mjs `connectors`): the power.config.json reference key binds a project
  * connection of the same id, else the connector's built-in provider. undefined (answered 501) when nothing implements it.
- * `caller` names the calling surface in the connector context (canvas-runtime.mjs passes 'canvas').
+ * `caller` names the calling surface in the connector context (canvas-runtime.mjs passes 'canvas'). `signal` (optional)
+ * cancels the call; code-apps-http.mjs aborts it when the client connection closes before the answer.
  */
 export function codeAppConnectors(connectors, connections = {}) {
-  return async ({ reference, operationId, body, principal, caller = 'code-app' }) => {
+  return async ({ reference, operationId, body, principal, caller = 'code-app', signal }) => {
     const connectorId = connectorOf(reference.apiId ?? reference.key);
     const connectionId = Object.hasOwn(connections, reference.key) ? reference.key : null;
     connectors.validateOperation?.(connectorId, { operationId, parameters: body ?? {} });
@@ -935,6 +997,7 @@ export function codeAppConnectors(connectors, connections = {}) {
         caller,
         initiatingUserId: principal?.principalId ?? null,
         correlationId: currentRequest()?.correlationId ?? null,
+        signal,
       },
     });
   };
@@ -960,6 +1023,18 @@ export function codeAppConnectors(connectors, connections = {}) {
  */
 export async function composeOrganizationHost(options) {
   const c = await hostContext(options);
+  try {
+    return assembleOrganizationHost(c, options);
+  } catch (error) {
+    await closeProviders(c.providers).catch((error_) =>
+      c.diagnostic({ code: error_.code, severity: 'error', providers: error_.providers, message: error_.message }),
+    );
+    throw error;
+  }
+}
+
+/** The steps after the providers are composed; composeOrganizationHost closes those providers when one of them throws. */
+function assembleOrganizationHost(c, options) {
   // One trace store per organization host; deep layers reach it as store.traces. Persisted traces go under the state folder;
   // a memory-only runtime (dry-run, no state file) passes null and the store reports why it writes nothing.
   c.traces =
@@ -1044,6 +1119,7 @@ async function hostContext({
   env = process.env,
 }) {
   if (stateDirectory === undefined) stateDirectory = stateDirectoryOf({ stateFile, simulation });
+  const preparedRuntimes = new WeakSet();
   const c = {
     store,
     packs,
@@ -1060,7 +1136,8 @@ async function hostContext({
     clock,
     ids,
     scheduler,
-    prepareRuntime,
+    prepareRuntime: recordedPreparer(prepareRuntime, preparedRuntimes),
+    preparedRuntimes,
     runtime,
     surfaces,
     codeApps,
@@ -1186,6 +1263,7 @@ function hostCatalogues(c) {
       handlers: handlers.operations,
       overrides: overrides() ?? {},
       connectors: c.connectors,
+      diagnostic: c.diagnostic,
     }),
     ...c.pluginSteps(),
   ]);
@@ -1495,6 +1573,7 @@ function hostLifecycle(c) {
           },
         },
         origin: c.dataverse.origin,
+        mode: managedIdentityMode,
         secretFile: managedIdentityMode === 'arc' ? secretDirectory : undefined,
       });
       return c.dataverse;
@@ -1505,30 +1584,20 @@ function hostLifecycle(c) {
       await settleProviders(providers);
     },
     resume: () => c.backend?.resume(),
-    /** One close order: backend (drains committed work, closes CLR hosts), flow run wait timers, organization, API, managed identity. */
-    // A close that failed is not memoised: the next close() retries only the providers whose close failed.
+    /** One close order: backend (drains committed work, closes CLR hosts), the host's own CLR runtimes, flow run wait timers, organization, API, managed identity. */
+    // A close that failed is not memoised: the next close() runs only the steps that failed, never a step that succeeded.
     close: () =>
       (c.closing ??= (async () => {
-        const failures = [];
-        const attempt = async (fn) => {
-          try {
-            await fn();
-          } catch (error) {
-            failures.push(error);
-          }
-        };
-        const steps = c.closedOnce
-          ? []
-          : [
-              () => c.backend?.close(),
-              () => c.flowRuns.close(),
-              () => c.organization?.close(),
-              () => c.dataverse?.close(),
-              () => c.managedIdentity?.close(),
-            ];
-        c.closedOnce = true;
-        for (const step of [...steps, () => closeProviders(providers)]) await attempt(step);
-        if (failures.length) throw new AggregateError(failures, 'Organization host cleanup failed.');
+        c.closeSteps ??= [
+          () => c.backend?.close(),
+          () => releaseHostRuntimes(c),
+          () => c.flowRuns.close(),
+          () => c.organization?.close(),
+          () => c.dataverse?.close(),
+          () => c.managedIdentity?.close(),
+          () => closeProviders(providers),
+        ];
+        await runCloseSteps(c);
       })().catch((error) => {
         c.closing = null;
         throw error;
@@ -1575,10 +1644,24 @@ async function applyOperationOverrides(c, next, commit) {
   await c.backend?.triggerRunner?.syncTriggers?.();
 }
 
+/**
+ * Releases the CLR runtimes the host or its custom API prepared that are still mapped after the backend closed. A runtime the
+ * caller mapped and an uploaded runtime stay: their owners release them. An entry leaves the map only after its release, so
+ * a directory shared with another entry stays until that entry is released too, and a failed release is retried by the next close.
+ */
+function releaseHostRuntimes(c) {
+  for (const [id, runtime] of [...c.runtimes]) {
+    if (runtime.uploaded || !c.preparedRuntimes.has(runtime)) continue;
+    const others = [...c.runtimes].filter(([key]) => key !== id).map(([, other]) => other);
+    releaseClrRuntime(runtime, { liveRuntimes: others, diagnostic: c.diagnostic });
+    c.runtimes.delete(id);
+  }
+}
+
 function closePreparedOverrides(prepared, runtimes, diagnostic) {
   for (const [id, runtime] of prepared) {
     runtimes.delete(id);
-    closeClrHostPool({ runtime, diagnostic });
+    releaseClrRuntime(runtime, { liveRuntimes: [...runtimes.values()], diagnostic });
   }
 }
 
@@ -1589,11 +1672,10 @@ function closePreparedOverrides(prepared, runtimes, diagnostic) {
       if (runtime.uploaded) releaseUploadedRuntime(runtimes, item.id, diagnostic);
       else {
         runtimes.delete(item.id);
-        // Steps of one assembly share a runtime and its hosts: stop them only when no remaining step uses it. The mode
+        // Steps of one assembly share a runtime and its hosts: they stop only when no remaining step uses it. The mode
         // change is already committed; a host still running a queued job stops when the runtime closes.
-        if ([...runtimes.values()].some((other) => other.directory === runtime.directory)) continue;
         try {
-          closeClrHostPool({ runtime, diagnostic });
+          releaseClrRuntime(runtime, { liveRuntimes: [...runtimes.values()], diagnostic });
         } catch (error) {
           if (error.code !== 'LocalPluginHostBusy') throw error;
           diagnostic({

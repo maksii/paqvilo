@@ -138,7 +138,7 @@ Invalid references fail validation. Import replaces state metadata; Export write
 the effective catalogue. Reset removes only state metadata. Saves use a catalogue
 digest; concurrent edits require a reload before saving.
 
-`/_sim/sign-in?persona=reviewer-own&returnUrl=/reviews/` presents one persona and a
+On the administration address (`adminUrl`), `/_sim/sign-in?persona=reviewer-own&returnUrl=/reviews/` presents one persona and a
 CSRF-protected button. GET never establishes a session. Unknown keys return 404
 with nearby keys. This explicit simulator shortcut is available even when the
 source site disables native local login.
@@ -194,7 +194,7 @@ not put secrets in fixture catalogues.
 | `GET /__sim/api/persona-runtimes`         | Lists owned copies and the limit.                                                                                                                   |
 | `DELETE /__sim/api/persona-runtimes/<id>` | Stops/discards an owned copy.                                                                                                                       |
 
-Writes require `x-sim-csrf`; `connectRuntime` handles it:
+Writes require the administration token in `x-sim-csrf` (`csrf` of `/_sim/api/status`, or `simulator.csrf`); `connectRuntime` handles it:
 
 ```js
 import { connectRuntime, createPersonaSession, createPersonaBrowserContext } from 'paqvilo/mirage/testing';

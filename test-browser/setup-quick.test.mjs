@@ -1,3 +1,4 @@
+// @test-kind contract: Lense setup quick first run creates a project from a found export and starts, opens and stops its preview
 import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 // Quick setup first run, as a person without configuration knowledge does it: open setup in a folder that only holds a
 // portal export, create the project from what was found, start the local preview, open it, and stop it.
@@ -15,6 +16,8 @@ import YAML from 'yaml';
 import { startSetupServer } from '../lense/setup/server.mjs';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 
+const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
+const HANG_GUARD_MS = 120_000; // hang guard only
 const root = fileURLToPath(new URL('../', import.meta.url));
 // Keep the nominal portal origin occupied while each preview asks the runtime to
 // bind its own ephemeral port. This exercises allocation without a probe-close race.
@@ -63,7 +66,7 @@ async function setupFixture(t, prefix) {
     spawnSync(process.execPath, [path.join(root, 'bin/paqvilo.mjs'), 'mirage', 'stop', '--config', config, '--json'], {
       cwd: directory,
       windowsHide: true,
-      timeout: 60_000,
+      timeout: CLI_HANG_GUARD_MS,
     }),
   );
   const server = await startSetupServer({ directory, processEnv: {} });
@@ -77,105 +80,97 @@ async function setupFixture(t, prefix) {
   return { directory, config, page, errors };
 }
 
-test(
-  'quick setup creates a project from a found export, starts, opens and stops its preview',
-  { timeout: 240_000 },
-  async (t) => {
-    const { config, page, errors } = await setupFixture(t, 'paqvilo-quick-run-');
-    const create = page.locator('form[data-form=quick-create]');
-    assert.match(await create.innerText(), /we found 1 website export/);
-    assert.equal(await create.getByLabel(/Power Pages website/).isChecked(), true);
-    await create.getByRole('button', { name: 'Create project' }).click();
-    await page.locator('#quick-files.is-done').waitFor();
-    const written = YAML.parse(await fs.readFile(config, 'utf8')),
-      name = written.defaultSite;
-    assert.equal(written.sites[name].source, 'exports/site');
-    assert.equal(written.sites[name].mirage.simulation.level, 'dry-run');
-    assert.match(await page.locator('#quick-files .quick-summary').innerText(), /Website: exports\/site/);
-    assert.equal(written.sites[name].environments.local, `http://127.0.0.1:${written.sites[name].mirage.port}`);
-    const blocked = await ownPorts(config, t);
+test('quick setup creates a project from a found export, starts, opens and stops its preview', async (t) => {
+  const { config, page, errors } = await setupFixture(t, 'paqvilo-quick-run-');
+  const create = page.locator('form[data-form=quick-create]');
+  assert.match(await create.innerText(), /we found 1 website export/);
+  assert.equal(await create.getByLabel(/Power Pages website/).isChecked(), true);
+  await create.getByRole('button', { name: 'Create project' }).click();
+  await page.locator('#quick-files.is-done').waitFor();
+  const written = YAML.parse(await fs.readFile(config, 'utf8')),
+    name = written.defaultSite;
+  assert.equal(written.sites[name].source, 'exports/site');
+  assert.equal(written.sites[name].mirage.simulation.level, 'dry-run');
+  assert.match(await page.locator('#quick-files .quick-summary').innerText(), /Website: exports\/site/);
+  assert.equal(written.sites[name].environments.local, `http://127.0.0.1:${written.sites[name].mirage.port}`);
+  const blocked = await ownPorts(config, t);
 
-    await page.locator('#quick-run').getByRole('button', { name: 'Start preview' }).click();
-    await started(page.locator('#quick-run'));
-    const website = await page
-      .locator('#quick-run')
-      .getByRole('link', { name: /Open website/ })
-      .getAttribute('href');
-    assert.notEqual(Number(new URL(website).port), blocked.port);
-    assert.equal(blocked.occupied.listening, true);
-    assert.equal((await fetch(website)).status, 200, 'the opened website answers');
+  await page.locator('#quick-run').getByRole('button', { name: 'Start preview' }).click();
+  await started(page.locator('#quick-run'));
+  const website = await page
+    .locator('#quick-run')
+    .getByRole('link', { name: /Open website/ })
+    .getAttribute('href');
+  assert.notEqual(Number(new URL(website).port), blocked.port);
+  assert.equal(blocked.occupied.listening, true);
+  assert.equal((await fetch(website)).status, 200, 'the opened website answers');
 
-    await page.locator('#quick-run').getByRole('button', { name: 'Stop' }).click();
-    await page.locator('#quick-run').getByRole('button', { name: 'Start preview' }).waitFor({ timeout: 60_000 });
-    await assert.rejects(fetch(website), /fetch failed/, 'the stopped preview no longer answers');
-    assert.deepEqual(errors, []);
-  },
-);
+  await page.locator('#quick-run').getByRole('button', { name: 'Stop' }).click();
+  await page.locator('#quick-run').getByRole('button', { name: 'Start preview' }).waitFor({ timeout: HANG_GUARD_MS });
+  await assert.rejects(fetch(website), /fetch failed/, 'the stopped preview no longer answers');
+  assert.deepEqual(errors, []);
+});
 
-test(
-  'All settings creates a project from what to run and the found exports, and starts it from Start & check',
-  { timeout: 240_000 },
-  async (t) => {
-    const { directory, config, page, errors } = await setupFixture(t, 'paqvilo-all-run-');
-    await page.getByRole('button', { name: 'All settings' }).click();
-    const create = page.locator('form[data-form=create]');
-    assert.match(await create.innerText(), /found in this folder: 1 website export/);
-    await create.locator('input[name=part][value=api]').check();
-    await create.getByRole('button', { name: 'Create settings file' }).click();
-    await page
-      .locator('#notice')
-      .filter({ hasText: /^Saved\. Created/ })
-      .waitFor();
-    const written = YAML.parse(await fs.readFile(config, 'utf8')),
-      name = written.defaultSite,
-      site = written.sites[name];
-    assert.equal(site.source, 'exports/site');
-    assert.equal(site.mirage.runtime.kind, 'power-pages');
-    assert.equal(site.mirage.dataverse.enabled, true, 'the ticked Web API is switched on');
+test('All settings creates a project from what to run and the found exports, and starts it from Start & check', async (t) => {
+  const { directory, config, page, errors } = await setupFixture(t, 'paqvilo-all-run-');
+  await page.getByRole('button', { name: 'All settings' }).click();
+  const create = page.locator('form[data-form=create]');
+  assert.match(await create.innerText(), /found in this folder: 1 website export/);
+  await create.locator('input[name=part][value=api]').check();
+  await create.getByRole('button', { name: 'Create settings file' }).click();
+  await page
+    .locator('#notice')
+    .filter({ hasText: /^Saved\. Created/ })
+    .waitFor();
+  const written = YAML.parse(await fs.readFile(config, 'utf8')),
+    name = written.defaultSite,
+    site = written.sites[name];
+  assert.equal(site.source, 'exports/site');
+  assert.equal(site.mirage.runtime.kind, 'power-pages');
+  assert.equal(site.mirage.dataverse.enabled, true, 'the ticked Web API is switched on');
 
-    // A data module registered by its path stays a path when the Sample data form is saved, so it keeps the id it declares.
-    await fs.mkdir(path.join(directory, 'pack'));
-    await fs.writeFile(path.join(directory, 'pack', 'pack.mjs'), '// invented placeholder module\n');
-    const plain = { ...written };
-    plain.sites[name].mirage.dataPacks = ['./pack/pack.mjs'];
-    await fs.writeFile(config, YAML.stringify(plain));
-    await page.getByRole('button', { name: 'Refresh status' }).click();
-    await page
-      .getByRole('navigation', { name: 'Setup stages' })
-      .getByRole('link', { name: /Sample data/ })
-      .click();
-    const form = page.locator(`form[data-form=data][data-site="${name}"]`);
-    await page.waitForFunction(
-      () => document.querySelector('form[data-form=data] [name=packs]')?.value === './pack/pack.mjs',
-    );
-    await form.locator('[name=presetMode]').selectOption('bootstrap');
-    await form.getByRole('button', { name: 'Save', exact: true }).click();
-    await page
-      .locator('#notice')
-      .filter({ hasText: /^Saved\./ })
-      .waitFor();
-    const saved = YAML.parse(await fs.readFile(config, 'utf8')).sites[name];
-    assert.deepEqual(saved.mirage.dataPacks, ['./pack/pack.mjs']);
-    assert.equal(saved.mirage.presetMode, 'bootstrap');
-    delete saved.mirage.dataPacks;
-    await fs.writeFile(config, YAML.stringify({ ...plain, sites: { [name]: saved } }));
-    const blocked = await ownPorts(config, t);
-    await page.getByRole('button', { name: 'Refresh status' }).click();
+  // A data module registered by its path stays a path when the Sample data form is saved, so it keeps the id it declares.
+  await fs.mkdir(path.join(directory, 'pack'));
+  await fs.writeFile(path.join(directory, 'pack', 'pack.mjs'), '// invented placeholder module\n');
+  const plain = { ...written };
+  plain.sites[name].mirage.dataPacks = ['./pack/pack.mjs'];
+  await fs.writeFile(config, YAML.stringify(plain));
+  await page.getByRole('button', { name: 'Refresh status' }).click();
+  await page
+    .getByRole('navigation', { name: 'Setup stages' })
+    .getByRole('link', { name: /Sample data/ })
+    .click();
+  const form = page.locator(`form[data-form=data][data-site="${name}"]`);
+  await page.waitForFunction(
+    () => document.querySelector('form[data-form=data] [name=packs]')?.value === './pack/pack.mjs',
+  );
+  await form.locator('[name=presetMode]').selectOption('bootstrap');
+  await form.getByRole('button', { name: 'Save', exact: true }).click();
+  await page
+    .locator('#notice')
+    .filter({ hasText: /^Saved\./ })
+    .waitFor();
+  const saved = YAML.parse(await fs.readFile(config, 'utf8')).sites[name];
+  assert.deepEqual(saved.mirage.dataPacks, ['./pack/pack.mjs']);
+  assert.equal(saved.mirage.presetMode, 'bootstrap');
+  delete saved.mirage.dataPacks;
+  await fs.writeFile(config, YAML.stringify({ ...plain, sites: { [name]: saved } }));
+  const blocked = await ownPorts(config, t);
+  await page.getByRole('button', { name: 'Refresh status' }).click();
 
-    await page
-      .getByRole('navigation', { name: 'Setup stages' })
-      .getByRole('link', { name: /Start & check/ })
-      .click();
-    const run = page.locator('#guidance-run');
-    await run.getByRole('button', { name: 'Start preview' }).click();
-    await started(run);
-    const website = await run.getByRole('link', { name: /Open website/ }).getAttribute('href');
-    assert.notEqual(Number(new URL(website).port), blocked.port);
-    assert.equal(blocked.occupied.listening, true);
-    assert.equal((await fetch(website)).status, 200);
-    assert.match(await run.innerText(), /Dataverse Web API for your scripts and tests/);
-    await run.getByRole('button', { name: 'Stop' }).click();
-    await run.getByRole('button', { name: 'Start preview' }).waitFor({ timeout: 60_000 });
-    assert.deepEqual(errors, []);
-  },
-);
+  await page
+    .getByRole('navigation', { name: 'Setup stages' })
+    .getByRole('link', { name: /Start & check/ })
+    .click();
+  const run = page.locator('#guidance-run');
+  await run.getByRole('button', { name: 'Start preview' }).click();
+  await started(run);
+  const website = await run.getByRole('link', { name: /Open website/ }).getAttribute('href');
+  assert.notEqual(Number(new URL(website).port), blocked.port);
+  assert.equal(blocked.occupied.listening, true);
+  assert.equal((await fetch(website)).status, 200);
+  assert.match(await run.innerText(), /Dataverse Web API for your scripts and tests/);
+  await run.getByRole('button', { name: 'Stop' }).click();
+  await run.getByRole('button', { name: 'Start preview' }).waitFor({ timeout: HANG_GUARD_MS });
+  assert.deepEqual(errors, []);
+});

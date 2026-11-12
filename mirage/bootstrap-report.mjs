@@ -21,6 +21,7 @@ import { parseToolArgs } from './tool-options.mjs';
 import { importPortal, portalField as field } from './lib/importer.mjs';
 import { initialState } from './lib/bootstrap.mjs';
 import { scanSolutionSources, buildSolutionSchema, tableFields } from './lib/solution-schema.mjs';
+import { solutionSideFileHashes } from './lib/solution-content-fingerprint.mjs';
 import { SolutionFileCache } from './lib/solution-cache.mjs';
 import { importSolutionMetadata } from './lib/solution-metadata.mjs';
 import { importSolutionData, applySolutionData } from './lib/solution-data.mjs';
@@ -365,9 +366,16 @@ export async function bootstrapReport(inputs, { noCache = false, allFields = fal
   started = performance.now();
   const cache = await SolutionFileCache.open(noCache ? null : inputs.cacheFile);
   const scan = await scanSolutionSources(inputs.solutionRoots, { cache, order: inputs.order });
-  const schema = buildSolutionSchema(scan, { lcid: inputs.lcid });
-  const metadata = await importSolutionMetadata(inputs.solutionRoots, { portal, scan, schema, lcid: inputs.lcid });
-  const data = await importSolutionData(inputs.solutionRoots, { scan, schema, lcid: inputs.lcid });
+  const sideHashes = solutionSideFileHashes(scan.layers, scan.cache);
+  const schema = buildSolutionSchema(scan, { lcid: inputs.lcid, sideHashes });
+  const metadata = await importSolutionMetadata(inputs.solutionRoots, {
+    portal,
+    scan,
+    schema,
+    sideHashes,
+    lcid: inputs.lcid,
+  });
+  const data = await importSolutionData(inputs.solutionRoots, { scan, schema, sideHashes, lcid: inputs.lcid });
   await cache.save();
   timings.solutionsMs = Math.round(performance.now() - started);
   timings.cache = { ...cache.stats, file: noCache ? null : inputs.cacheFile };

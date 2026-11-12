@@ -23,7 +23,8 @@ test('Vite integration only activates for configured local development and valid
   assert.throws(() => plugin.configResolved({ root: '.', plugins: [{ name: 'powerApps' }] }), /do not enable both/);
 });
 
-test('Vite proxy guards Host, Origin and origin-form paths and rewrites approved Origin', () => {
+// @test-kind security: a cross-site fetch-metadata request is refused before the proxy strips its headers, so Mirage never sees it as a programmatic call.
+test('Vite proxy guards Host, Origin and origin-form paths and removes browser Origin and fetch-metadata headers', () => {
   const plugin = codeApps({ app: 'invented', mirageUrl: 'http://127.0.0.1:8787' });
   plugin.config();
   let middleware;
@@ -41,8 +42,8 @@ test('Vite proxy guards Host, Origin and origin-form paths and rewrites approved
     ws: Object.assign(new EventEmitter(), { send() {} }),
   };
   plugin.configureServer(server);
-  const request = (url, host, origin) => {
-    const req = { url, headers: { host, ...(origin ? { origin } : {}) } };
+  const request = (url, host, origin, extra = {}) => {
+    const req = { url, headers: { host, ...(origin ? { origin } : {}), ...extra } };
     const res = {
       code: null,
       writeHead(code) {
@@ -64,9 +65,27 @@ test('Vite proxy guards Host, Origin and origin-form paths and rewrites approved
     assert.equal(request(url, '127.0.0.1:5173').res.code, 400);
   assert.equal(request('/_apps/code/invented/context', 'outside.example:5173').res.code, 403);
   assert.equal(request('/_apps/code/invented/context', '127.0.0.1:5173', 'https://outside.example').res.code, 403);
-  const allowed = request('/_apps/code/invented/context', '127.0.0.1:5173', 'http://127.0.0.1:5173');
+  const crossSite = request('/_apps/code/invented/context', '127.0.0.1:5173', null, { 'sec-fetch-site': 'cross-site' });
+  assert.equal(
+    crossSite.res.code,
+    403,
+    'a cross-site request without Origin is refused before its headers are stripped',
+  );
+  assert.equal(crossSite.next, false);
+  for (const site of ['same-origin', 'same-site', 'none']) {
+    const served = request('/_apps/code/invented/context', '127.0.0.1:5173', null, { 'sec-fetch-site': site });
+    assert.equal(served.next, true, `${site} requests are served`);
+  }
+  const allowed = request('/_apps/code/invented/context', '127.0.0.1:5173', 'http://127.0.0.1:5173', {
+    'sec-fetch-site': 'same-origin',
+    'sec-fetch-mode': 'cors',
+    'sec-fetch-dest': 'empty',
+    'sec-fetch-user': '?1',
+  });
   assert.equal(allowed.next, true);
-  assert.equal(allowed.req.headers.origin, 'http://127.0.0.1:8787');
+  assert.equal(allowed.req.headers.origin, undefined);
+  for (const name of ['sec-fetch-site', 'sec-fetch-mode', 'sec-fetch-dest', 'sec-fetch-user'])
+    assert.equal(allowed.req.headers[name], undefined, `${name} is not forwarded`);
   assert.equal(request('/src/app.js', 'outside.example:5173').next, true);
   server.httpServer.emit('close');
   for (const event of ['change', 'add', 'unlink']) assert.equal(watcher.listenerCount(event), 0);

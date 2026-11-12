@@ -198,8 +198,10 @@ export function fixedScaleNumeric(value, scale, numericType = 'Money') {
   return { $type: marker, numericType, value: text, lexeme: scale ? whole + '.' + fraction.padEnd(scale, '0') : whole };
 }
 export function formatExactNumeric(value, digits) {
+  // roundNumeric returns a JS number when the rounded value is exact as one; either form is read back as decimal parts,
+  // so the text never uses an exponent.
   const rounded = roundNumeric(value, digits),
-    text = isExactNumeric(rounded) ? rounded.value : String(rounded), // NOSONAR: stringification is intentional here
+    text = decimalText(decimalParts(rounded)),
     [whole, fraction = ''] = text.split('.');
   return whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (digits ? '.' + fraction.padEnd(digits, '0') : ''); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
 }

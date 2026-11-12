@@ -244,6 +244,10 @@ function processCanvasScreens(value, context) {
 function processCanvasComponents(value, context) {
   for (const [component, body] of entriesOf(value)) {
     const normalized = component.toLowerCase();
+    if (context.componentNames.has(normalized)) {
+      context.invalid(body, 'Duplicate component definition');
+      continue;
+    }
     if (context.screenNames.has(normalized)) context.collision(body);
     context.componentNames.add(normalized);
     if (!isMap(body)) {
@@ -553,6 +557,12 @@ function processFxScreen(name, body, context) {
 }
 
 function processFxComponent(name, body, context) {
+  const normalized = name.toLowerCase();
+  if (context.componentNames.has(normalized)) {
+    context.invalid(body, 'Duplicate component definition');
+    return;
+  }
+  context.componentNames.add(normalized);
   const entry = { name, definitionType: 'CanvasComponent', controls: [] };
   walkFxNode(body, name, name, null, entry.controls, true, context);
   context.result.components.push(entry);
@@ -699,7 +709,8 @@ function processLegacyDataSource(entry, result, enums, ambiguousEnums, file, dia
   const enums = new Map(),
     ambiguousEnums = new Set();
   const screenNames = new Set(),
-    controlNames = new Set();
+    controlNames = new Set(),
+    componentNames = new Set();
   for (const file of files.filter((item) => SRC.test(item.name) && FX_YAML.test(item.name))) {
     const source = file.name,
       counter = new LineCounter();
@@ -720,7 +731,9 @@ function processLegacyDataSource(entry, result, enums, ambiguousEnums, file, dia
         `${source}: Control name collides in the local runtime at line ${line(node) ?? '?'}.`,
         source,
       );
-    const context = { source, line, collision, result, controlNames, screenNames, diagnostic };
+    const invalid = (node, description) =>
+      diagnostic('CANVAS_SOURCE_STRUCTURE_INVALID', `${source}: ${description} at line ${line(node) ?? '?'}.`, source);
+    const context = { source, line, collision, invalid, result, controlNames, screenNames, componentNames, diagnostic };
     for (const [key, body] of entriesOf(document.contents)) processFxTopLevel(key, body, context);
   }
   // The deprecated unpacker emits component instances using the definition's

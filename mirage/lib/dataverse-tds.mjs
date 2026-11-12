@@ -208,18 +208,26 @@ export async function startDataverseTds({
   };
   const secureContext = () => getContexts().wrapped;
   const strictSecureContext = () => getContexts().strict;
-  const stsUrl = `${tlsOrigin ?? origin}/${tenantId}`;
+  // The STS and the SPN are the listener's origin: the HTTPS origin when TLS is on, the HTTP origin otherwise.
+  const spn = tlsOrigin ?? origin;
+  const stsUrl = `${spn}/${tenantId}`;
   const apiVersion = `v${version.split('.').slice(0, 2).join('.')}`;
 
   // FEDAUTH library 0x02 (workflow) gets FEDAUTHINFO first; the token then arrives in a second login. SQL and Windows
   // logins (no FEDAUTH) are refused: the endpoint is Entra ID only.
   // enabled may be a function: the admin Environment settings switch the endpoint off while it runs.
   const isEnabled = () => (typeof enabled === 'function' ? enabled() : enabled);
+  // A token is accepted for the HTTP origin, and with TLS on also for the HTTPS origin the STS names.
+  function verifyToken(token) {
+    const verdict = authority.verifyBearer(`Bearer ${token}`, { origin, tenantId });
+    if (verdict.ok || tlsOrigin == null) return verdict;
+    return authority.verifyBearer(`Bearer ${token}`, { origin: tlsOrigin, tenantId });
+  }
   function login({ fedAuth }) {
     if (!isEnabled()) return { ok: false, error: sqlError(18456, DISABLED, 14) };
     if (!fedAuth) return { ok: false, error: sqlError(18456, SIGN_IN_FAILED, 14) };
-    if (!fedAuth.token) return { fedAuthInfo: { stsUrl, spn: origin } };
-    const verdict = authority.verifyBearer(`Bearer ${fedAuth.token}`, { origin, tenantId });
+    if (!fedAuth.token) return { fedAuthInfo: { stsUrl, spn } };
+    const verdict = verifyToken(fedAuth.token);
     if (!verdict.ok) return { ok: false, error: sqlError(18456, SIGN_IN_FAILED, 14) };
     const resolved = principals.resolve(verdict.claims);
     if (!resolved.user)

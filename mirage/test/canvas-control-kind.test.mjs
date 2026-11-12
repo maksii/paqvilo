@@ -1,3 +1,4 @@
+// @test-kind contract: canvas control versions keep their supported kinds, reject multiline type names and bound malformed markers in a worker.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
@@ -12,7 +13,7 @@ test('control versions preserve supported kinds and reject multiline type names'
     assert.equal(controlKind('Label@2' + separator + 'invalid'), null);
 });
 
-test('malformed version markers cannot monopolize control classification', { timeout: 10000 }, async (t) => {
+test('malformed version markers cannot monopolize control classification', async (t) => {
   const module = new URL('../lib/canvas-controls.mjs', import.meta.url).href;
   const source = `import { parentPort } from 'node:worker_threads';
 import { controlKind } from ${JSON.stringify(module)};

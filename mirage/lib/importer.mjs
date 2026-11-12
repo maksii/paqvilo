@@ -117,11 +117,19 @@ const componentIdField = (kind) => {
   return `${kind}id`;
 };
 const active = (r) => Number(field(r, 'statecode', 0)) !== 1;
+// A malformed escape keeps the raw path, so one bad partial URL neither stops an import nor a page request.
+const decodePortalPath = (pathname) => {
+  try {
+    return decodeURIComponent(pathname);
+  } catch {
+    return pathname;
+  }
+};
 export const normalizePortalPath = (value) => {
   // A portal path never names a host: a leading "//" is a doubled slash, not an authority.
   const url = new URL(String(value || '/').replace(/^\/{2,}/, '/'), 'http://localhost');
   return (
-    decodeURIComponent(url.pathname)
+    decodePortalPath(url.pathname)
       .replace(/\/{2,}/g, '/')
       .replace(/\/$/, '')
       .toLowerCase() || '/'

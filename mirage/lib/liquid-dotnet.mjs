@@ -6,6 +6,7 @@
 // numeric kinds and decimal arithmetic, culture formatting (en-US), DateTime parsing and
 // format strings, WebUtility/SecurityElement/AntiXSS encoders, Convert.ChangeType and the
 // .NET regular-expression dialect used by DotLiquid's legacy `replace`.
+import { clockFunction, systemClock } from './runtime-clock.mjs';
 
 export class LiquidError extends Error {
   constructor(message, netType = 'System.Exception') {
@@ -441,9 +442,10 @@ function twelveHour(hour, designator) {
 /**
  * DateTime.TryParse(value, en-US, DateTimeStyles.None) for the forms used by portal
  * code: ISO 8601 (offsets convert to the UTC server clock), US short dates with optional
- * time, month-name dates and RFC 1123. Returns null when .NET would fail.
+ * time, month-name dates and RFC 1123. Returns null when .NET would fail. A time-only value takes its date
+ * from options.clock (the runtime clock, wall time by default).
  */
-export function parseNetDate(value) {
+export function parseNetDate(value, { clock = systemClock } = {}) {
   const text = String(value ?? '').trim();
   if (!text) return null;
   let m =
@@ -468,20 +470,22 @@ export function parseNetDate(value) {
   m = /^(\d{4})\/(\d{1,2})\/(\d{1,2})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/.exec(text);
   if (m) return utcDate(+m[1], +m[2] - 1, +m[3], +(m[4] ?? 0), +(m[5] ?? 0), +(m[6] ?? 0));
   m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AaPp][Mm]?)?$/.exec(text);
-  if (m) return parseTimeOnlyNetDate(m);
+  if (m) return parseTimeOnlyNetDate(m, clock);
   return null;
 }
 function parseIsoNetDate(match) {
   const ms = match[7] ? Number(match[7].padEnd(7, '0').slice(0, 3)) : 0;
   const date = utcDate(+match[1], +match[2] - 1, +match[3], +(match[4] ?? 0), +(match[5] ?? 0), +(match[6] ?? 0), ms);
   if (!date) return null;
-  if (match[7]) date.__netTicks = Number(match[7].padEnd(7, '0').slice(3, 7));
-  if (match[8] && match[8].toUpperCase() !== 'Z') {
-    const offset = match[8].replace(':', '');
-    const minutes = (offset.startsWith('-') ? -1 : 1) * (Number(offset.slice(1, 3)) * 60 + Number(offset.slice(3, 5)));
-    return new Date(date.getTime() - minutes * 60000);
-  }
-  return date;
+  const instant = match[8] && match[8].toUpperCase() !== 'Z' ? utcOffsetDate(date, match[8]) : date;
+  if (match[7]) instant.__netTicks = Number(match[7].padEnd(7, '0').slice(3, 7));
+  return instant;
+}
+/** The instant of a wall-clock date written with a +hh:mm or -hh:mm offset. */
+function utcOffsetDate(date, text) {
+  const offset = text.replace(':', '');
+  const minutes = (offset.startsWith('-') ? -1 : 1) * (Number(offset.slice(1, 3)) * 60 + Number(offset.slice(3, 5)));
+  return new Date(date.getTime() - minutes * 60000);
 }
 function parseShortNetDate(match) {
   let year = Number(match[3]);
@@ -502,8 +506,8 @@ function parseMonthLastNetDate(match) {
     ? null
     : utcDate(+match[3], MONTH_LOOKUP.get(match[2].toLowerCase()), +match[1], hour, +(match[5] ?? 0), +(match[6] ?? 0));
 }
-function parseTimeOnlyNetDate(match) {
-  const now = new Date();
+function parseTimeOnlyNetDate(match, clock) {
+  const now = new Date(clockFunction(clock)());
   const hour = twelveHour(+match[1], match[4]);
   return Number.isNaN(hour)
     ? null
@@ -899,7 +903,7 @@ function kindOf(value) {
   return 'object';
 }
 /** Convert.ChangeType(value, typeof(target)) for the kinds Liquid values can have. */
-export function changeType(value, target) {
+export function changeType(value, target, { clock } = {}) {
   const kind = kindOf(value);
   switch (target) {
     case 'string':
@@ -913,7 +917,7 @@ export function changeType(value, target) {
     case 'bool':
       return changeToBoolean(value, kind);
     case 'date':
-      return changeToDate(value, kind);
+      return changeToDate(value, kind, clock);
     default:
       throw invalidCast(netTypeName(value), 'System.Object');
   }
@@ -955,10 +959,10 @@ function changeToBoolean(value, kind) {
   if (kind === 'int' || kind === 'long' || kind === 'decimal' || kind === 'double') return toNumber(value) !== 0;
   throw invalidCast(netTypeName(value), 'System.Boolean');
 }
-function changeToDate(value, kind) {
+function changeToDate(value, kind, clock) {
   if (kind === 'date') return value;
   if (kind === 'string') {
-    const parsed = parseNetDate(value);
+    const parsed = parseNetDate(value, { clock });
     if (!parsed) throw new LiquidError('String was not recognized as a valid DateTime.', 'System.FormatException');
     return parsed;
   }
@@ -985,26 +989,26 @@ function sameKindEquals(a, b) {
   return a === b;
 }
 /** DotLiquid ObjectExtensionMethods.SafeTypeInsensitiveEqual. */
-export function safeTypeInsensitiveEqual(a, b) {
+export function safeTypeInsensitiveEqual(a, b, { clock } = {}) {
   if (a == null) return b == null;
   if (b == null) return false;
   if (typeof a !== 'string' && typeof b !== 'string' && Array.isArray(a) && Array.isArray(b))
-    return a.length === b.length && a.every((item, index) => safeTypeInsensitiveEqual(item, b[index]));
+    return a.length === b.length && a.every((item, index) => safeTypeInsensitiveEqual(item, b[index], { clock }));
   const ka = kindOf(a),
     kb = kindOf(b);
   if (ka === kb) return ka === 'object' ? a === b : sameKindEquals(a, b);
   try {
-    return sameKindEquals(changeType(b, ka === 'long' ? 'long' : ka), a);
+    return sameKindEquals(changeType(b, ka === 'long' ? 'long' : ka, { clock }), a);
   } catch {
     try {
-      return sameKindEquals(changeType(a, kb === 'long' ? 'long' : kb), b);
+      return sameKindEquals(changeType(a, kb === 'long' ? 'long' : kb, { clock }), b);
     } catch {
       return false;
     }
   }
 }
 /** BackCompatSafeTypeInsensitiveEqual: numbers and strings never compare equal. */
-export function backCompatEqual(a, b) {
+export function backCompatEqual(a, b, options = {}) {
   if (a != null && b != null) {
     const ka = kindOf(a),
       kb = kindOf(b);
@@ -1012,15 +1016,15 @@ export function backCompatEqual(a, b) {
     const textual = (k) => k === 'string';
     if (ka !== kb && !(numeric(ka) && numeric(kb)) && !(textual(ka) && textual(kb))) return false;
   }
-  return safeTypeInsensitiveEqual(a, b);
+  return safeTypeInsensitiveEqual(a, b, options);
 }
 const collator = new Intl.Collator('en-US', { sensitivity: 'variant' });
 /** Comparer<object>.Default.Compare after Convert.ChangeType(right, left type). */
-export function netCompare(left, right) {
+export function netCompare(left, right, { clock } = {}) {
   const kind = kindOf(left);
   if (kind === 'object')
     throw new LiquidError('At least one object must implement IComparable.', 'System.ArgumentException');
-  const converted = changeType(right, kind === 'long' ? 'long' : kind);
+  const converted = changeType(right, kind === 'long' ? 'long' : kind, { clock });
   if (kind === 'string') return Math.sign(collator.compare(left, converted));
   if (kind === 'bool') {
     if (left === converted) return 0;

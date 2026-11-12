@@ -3,7 +3,7 @@
 [Persona catalogues](persona-catalog.md) add grouped, searchable pickers to sign-in
 and Identity, browser-local pins/recent choices, catalogue editors and isolated
 setups for deployment profiles, variables and snippet/settings overrides. Open
-`/_sim/#access` to select a browser persona or manage metadata. Role membership
+`/_sim/#access` on the `adminUrl` address to select a browser persona or manage metadata. Role membership
 editing remains separate and explicit. Testing helpers resolve the actual origin
 and browser options for a persona or catalogue scenario.
 
@@ -11,7 +11,7 @@ and browser options for a persona or catalogue scenario.
 
 Both share one wordmark, **Paqvilo**, with the area label under it (`PROJECT SETUP`, `SIMULATOR WORKSPACE`).
 
-`/_sim/` is the loopback administration workspace. It exposes local tables/records, identity, roles, permissions, presets/scenarios, settings/snippets, runtime environment, source inspection, providers, platform resources, and what the runtime did (activities, log lines, findings and evidence). Changes here affect local state and rendering. Provider controls distinguish local configuration, optional reference reads and cached platform assets.
+`/_sim/` is the loopback administration workspace. It is served on its own loopback port, printed as `adminUrl`; opening `/_sim/` on the portal address redirects there. It exposes local tables/records, identity, roles, permissions, presets/scenarios, settings/snippets, runtime environment, source inspection, providers, platform resources, and what the runtime did (activities, log lines, findings and evidence). Changes here affect local state and rendering. Provider controls distinguish local configuration, optional reference reads and cached platform assets.
 
 **Platform rules** (`#platform`) configures simulated organization/platform controls, including the support-managed link-entity budget and attachment restrictions. **Settings & snippet overrides** (`#overrides`) compares source/effective values without editing exports. Both support portable configuration presets and independent state for concurrent runtimes. Coverage and real administration classifications are explicit; see [configuration experiments](configuration-experiments.md).
 
@@ -84,6 +84,78 @@ plugin-definition hash alone does not observe their on-disk bytes.
 These witnesses establish local comparison boundaries, not native parity.
 
 Permission enforcement can be set to enforced or permissive for local experiments; this choice is visible in evidence. Live create/update/delete cannot leave the runtime without `--allow-live-writes`, and still require the separate administration switch. Task authorization is required independently of either switch.
+
+## Administration origin
+
+The Power Pages host has three loopback listeners on one host literal, each on its own port: the portal (`url`), the administration (`adminOrigin`, an ephemeral port) and the apps (`appsOrigin`, an ephemeral port, Power Pages host only). The standalone host has a main listener, which serves its apps and API and has no portal, and the administration listener. Every listener refuses a `Host` header that is not its own address.
+
+| Listener                                | Serves                                                                                                                                                                               | Token         |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------- |
+| Portal (`url`)                          | The portal. Browsers reach administration and apps paths only through the [allow-list](#portal-address-allow-list) or a redirect; programmatic clients reach all of `/_sim/api` here | `portalToken` |
+| Administration (`adminUrl`, `setupUrl`) | `/_sim/` (page, assets, `/_sim/api`, `/_sim/events`, evidence) and `/_setup/`                                                                                                        | `csrf`        |
+| Apps (`appsUrl`, Power Pages host only) | `/main.aspx`, `/_apps` and `/_apps/*` except `/_apps/portal-documents/*`, `/api/data/v9.*`, and `/__sim/api/dataverse/session`                                                       | `appsToken`   |
+
+On the standalone host the main listener carries `appsToken`, which is also its page token, and the administration listener carries `csrf`. The standalone host has no `portalToken`.
+
+### Browser and programmatic requests
+
+A browser request carries `Sec-Fetch-Site` or `Origin`. Scripts cannot remove either header, and a script cannot forge `Origin`. A request with neither header is programmatic: Node `fetch`, Playwright `context.request`, the CLI, curl and the Lense node process. Only browser requests are gated. Programmatic requests get the complete behaviour of the portal address: all of `/_sim/api`, `csrf` in status and state, writes with the administration token, and the apps paths.
+
+### Portal address
+
+- A top-level navigation (GET or HEAD with `Sec-Fetch-Mode: navigate`) to an administration path is answered with a 302 to the administration origin, with the same path and query; the browser keeps the fragment. A navigation to an apps path is answered with a 302 to the apps origin.
+- Any other browser request to an administration path is answered 403 `AdminOriginRequired`, and to an apps path 403 `AppsOriginRequired`, unless it is on the allow-list.
+- Paths outside both families are served to browsers on the portal address.
+
+### Administration and apps addresses
+
+- A `Host` header that is not the listener's address is answered 403 `Invalid Host header.`.
+- An `Origin` other than the listener's own is answered 403 `CrossOriginAdminRequest` (`CrossOriginAppsRequest` on the apps address).
+- A `Sec-Fetch-Site` other than `same-origin` or `none` is answered 403 `CrossSiteAdminRequest` (`CrossSiteAppsRequest`), unless the request is a navigation.
+- A write (any method other than GET, HEAD or OPTIONS) that carries `Sec-Fetch-Site` but no `Origin` is answered 403 `CrossOriginAdminRequest` (`CrossOriginAppsRequest`).
+- A navigation to a served document is served from any site. The administration page keeps `frame-ancestors 'none'`; Canvas and Code Apps pages send `x-frame-options: SAMEORIGIN`.
+- A GET or HEAD for a path the listener does not serve is redirected to the portal address with the same path and query. Any other method is answered 404 `PortalOriginRequired`.
+
+### Portal address allow-list
+
+Browser requests to these paths are served on the portal address, with any `Sec-Fetch-Site`. Every other administration and apps path is refused to browsers as described above.
+
+| Method          | Path                                                                                                                    | Purpose                                                                                                              |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| GET, HEAD       | `/__sim/events`, unless `channels` names `logs` or `trace`                                                              | The reload stream; it carries revision numbers only                                                                  |
+| POST            | `/__sim/forms/(entityform\|webform)/<id>/submit`                                                                        | Native form submission; needs the portal token and the visitor's identity                                            |
+| GET, HEAD, POST | `/__sim/sign-in`                                                                                                        | The persona sign-in page; POST needs the portal token and sets only this browser's session                           |
+| GET, HEAD, POST | `/__sim/frame-ready/<id>`                                                                                               | Frame ordering: the image is held until the page's POST reports that the DOM or jQuery is ready                      |
+| GET, HEAD       | `/__sim/persona-picker.css`, `/__sim/persona-picker.mjs`, `/__sim/persona-search.mjs`, `/__sim/persona-picker-view.mjs` | Static code of the sign-in page's picker                                                                             |
+| GET, HEAD       | `/__sim/api/personas` (exact path)                                                                                      | The persona catalogue the sign-in page shows; the writes of this catalogue are administration-only                   |
+| any             | `/__sim/api/flow-triggers/<id>/triggers/<name>/paths/invoke`                                                            | Authenticated by the signed callback URL, as on the platform                                                         |
+| any             | Registered pack endpoint paths                                                                                          | Trusted pack routes for visitors; the handler requires sign-in and the portal token for writes                       |
+| GET, HEAD       | `/__sim/session-token/<ticket>`                                                                                         | Ticket consumption; a request that is not a navigation is refused with `TicketInvalid` and does not spend the ticket |
+
+The table is the `PORTAL_ROUTES` list of `mirage/lib/admin-origin.mjs`, with the pack endpoints checked by the runtime. Two administration paths are not on the list: `/__sim/api/dataverse/session` is served on the apps and administration addresses, and `/__sim/api/session/portal-ticket` is answered on the administration address to browsers, while programmatic clients on the portal address reach it with the administration token.
+
+### Ticket sign-in
+
+The administration signs a browser in through the portal with a single-use ticket. The console calls `POST /_sim/api/session/portal-ticket` with `{ action: 'sign-in' | 'sign-out', contactId?, provider?, returnHash? }` and the administration token. The answer is `{ url, expiresAt }`, where `url` is `<portal>/__sim/session-token/<ticket>`, and it sets the binding cookie `paqvilo-mirage-ticket-<portal port>` (`HttpOnly`, `SameSite=Strict`, `Path=/__sim/session-token`, `Max-Age=60`). The console then navigates the tab to `url`.
+
+- The ticket is 256 random bits. The server keeps its SHA-256 digest and the binding's digest in memory only, at most 16 tickets, and drops the oldest when a seventeenth is minted.
+- A ticket is valid for 60 seconds on the store clock.
+- The first navigation that presents a ticket deletes it. Any further attempt, an expired ticket, or a ticket presented without the matching binding cookie is refused with the same 403 `TicketInvalid` answer, so no answer tells a guessed value from a spent one.
+- A navigation that spends a valid ticket is answered with a redirect into the administration. A local persona sets the portal session cookie and returns to `/_sim/<returnHash>`. A provider starts external sign-in with the contact as login hint. A sign-out ends a signed-in session through the portal's log-off, and otherwise returns to the administration.
+- Minting refuses an inactive contact (404), an unknown provider or a malformed `returnHash` (400 `InvalidTicketRequest`), and local sign-in while it is turned off and providers exist (409 `LocalSignInDisabled`). A mint with the portal token, or a browser-shaped mint from the portal address, is refused.
+- The ticket and its binding are not logged or traced.
+
+### Tokens
+
+Each token is 32 random bytes, fixed for the life of the runtime.
+
+- `csrf`, the administration token: on the handle, and in `csrf` of status and state. It is accepted in `x-sim-csrf` on the administration writes under `/_sim/api`, and in the body-token fields of the sign-in and persona forms. On any other path the gate replaces it with the page token or the apps token before a route sees it, so it is accepted wherever those tokens are, and no page carries it.
+- `portalToken`, the portal's anti-forgery token: the value the portal's markup and `/_layout/tokenhtml` carry as `__RequestVerificationToken`. The portal's form posts, pack endpoint writes and native view state check it.
+- `appsToken`, the apps token: on the handle (on the standalone host it is the page token). The app pages send it: the model-driven shell in `meta[name="mirage-csrf"]`, the Canvas player in `data-csrf` and the `_csrf` field of its form posts, and the Code Apps `GET context` response in `x-sim-csrf`. It is accepted in `x-sim-csrf` by the apps Web API, the Canvas actions, the Code Apps routes and `/__sim/api/dataverse/session`.
+
+### Residual
+
+Isolation relies on the Fetch Metadata request headers browsers send: Chromium 76+, Firefox 90+, Safari 16.4+. A request without `Sec-Fetch-Site` and `Origin` is served as a programmatic client, so page scripts in an older browser are not isolated.
 
 ## Views and host awareness
 
@@ -232,6 +304,9 @@ The request audit stays a ledger of its own: it records at level `off`, keeps it
 - `adminAdjacentRoutes`: the model-driven routes outside `/_sim/api` that act with administration rights, such as `POST /_apps/api/webapi` (see [model-driven apps](model-driven-apps.md#routes)).
 - `modelDrivenApps`: the imported model-driven apps of the Solution metadata as `{ id, uniqueName, name }` (an empty array without apps).
 - `docs`: the documentation links (see [Security headers](#security-headers)).
+- `csrf`: the administration token (see [tokens](#tokens)).
+- `adminUrl`: the administration page on the administration origin (`<adminOrigin>/_sim/`).
+- `appsUrl`: the apps address on the apps origin (`<appsOrigin>/`). Only the Power Pages host has it; the standalone status has no `appsUrl`.
 
 On the Power Pages host `GET /_sim/api/state` carries `docs` as status does. Dashboard request timestamps (`activity.requests.recent[].at`, `activity.dataverseRequests.recent[].at`) are ISO 8601 UTC. A standalone runtime has no portal request ring.
 
@@ -246,7 +321,7 @@ Canvas apps appear as `canvasapp:<name>` capability records with their level and
 ## Messages and outbox
 
 - `GET /_sim/api/messages` lists the local message bus entities with their counts and the `providers.messaging.endpoints` mappings; `?entity=<name>` peeks up to `max` (default 100, at most 1000) messages of one entity. Without a bus it answers `configured: false`.
-- `DELETE /_sim/api/messages/<entity>` purges one entity and needs the `x-sim-csrf` header.
+- `DELETE /_sim/api/messages/<entity>` purges one entity and needs the administration token in `x-sim-csrf` (`csrf` of `/_sim/api/status`, or `simulator.csrf`).
 - `GET /_sim/api/outbox` lists the captured outbox entries; `correlationId`, `channel` and `since` filter them. It is read-only.
 
 Credential-named values (`authvalue`, connection strings, keys, passwords, secrets, tokens) are redacted in every answer. Both hosts mount these routes before the generic administration router. See [Messaging and outbox](messaging-and-outbox.md).
@@ -257,7 +332,7 @@ Both hosts mount the flow run routes next to the messaging routes. They need the
 
 - `GET /_sim/api/flow-runs` lists run summaries, newest first; `processId` and `status` filter them. `GET /_sim/api/flow-runs/<runId>` returns one run with its action journal, never its trigger input or secure outputs.
 - `GET /_sim/api/flow-waits` lists the waiting runs and their waits; `?state=overdue` or `?state=pending` compares each `timeoutAt` with the runtime clock.
-- `POST /_sim/api/flow-waits/<waitId>` answers a wait and needs the `x-sim-csrf` header: `{ outcome: 'Approve' | 'Reject', responder, comments }` for an approval, `{ outputs }` for a delay or webhook wait. It records the response and schedules the resume of the run (202); the run then replays its journal and continues. A wait that was already answered is no longer listed (`FlowWaitNotFound`, 404); a second resume of the same wait that races the first fails with `FlowRunNotWaiting` (409), reported as a `FLOW_RUN_RESUME_FAILED` diagnostic.
+- `POST /_sim/api/flow-waits/<waitId>` answers a wait and needs the administration token in `x-sim-csrf` (`csrf` of `/_sim/api/status`, or `simulator.csrf`): `{ outcome, responder, comments }` for an approval, `{ outputs }` for a delay or webhook wait. For an approval, `outcome` is `Approve` or `Reject` on a Basic or AwaitAll approval, and one of the approval's response options on a Custom or CustomAwaitAll approval (set when the flow creates it with `responseOptions`); any other outcome answers `InvalidRequest` (400) and names the accepted outcomes. It records the response and schedules the resume of the run (202); the run then replays its journal and continues. A wait that was already answered is no longer listed (`FlowWaitNotFound`, 404); a second resume of the same wait that races the first fails with `FlowRunNotWaiting` (409), reported as a `FLOW_RUN_RESUME_FAILED` diagnostic.
 
 - `POST /_sim/api/flow-runs` starts a tracked run on demand, `POST /_sim/api/flow-triggers/<flowId>` runs an HTTP Request trigger flow and `GET /_sim/api/flow-triggers` lists the trigger hosts; see [operations](operations.md#administration-routes). These run-starting requests and an HTTP Request trigger's signed callback URL are `http` trace roots of module `flows` on the serving host that join the caller's trace headers; the run is their child (see [request tracing](tracing.md#flows-and-connectors)).
 
@@ -270,7 +345,7 @@ Both hosts mount the trace routes next to the flow run routes and answer them fr
 - `GET /_sim/api/trace` lists trace summaries (each with the `auditId` of its root, or `null`), newest first unless `sort` and `order` say otherwise, with the query filters of [request tracing](tracing.md#api), including `result` (the activity's own result, a comma list) and `auditId`; `GET /_sim/api/trace/spans` lists span records and `GET /_sim/api/trace/stats` answers counts, percentiles, the timeline and the slowest and error spans for the same filters. An invalid filter, or a kind, status, sort, order or format outside its list, answers `InvalidTraceFilter` (400) with `parameter` naming it.
 - `GET /_sim/api/trace/id/<traceId>` returns one trace as a tree (`TraceNotFound`, 404, when it is no longer retained); `GET /_sim/api/trace/<traceId>` answers the same for a UUID-shaped id. `GET /_sim/api/trace/span/<spanId>` returns one span (`SpanNotFound`, 404).
 - `GET /_sim/api/trace/export?format=json|ndjson|otlp&limit=N` streams the matching traces as an attachment, at most `limit` of them (default 200, at most 2000); the `X-Trace-Export-Matched` header gives how many matched. See [Export](tracing.md#export).
-- `GET /_sim/api/trace/settings` answers `{ settings, status }`; `PUT /_sim/api/trace/settings` changes the level, retention, payload cap or persistence at run time and needs the `x-sim-csrf` header (`InvalidTraceSettings`, 400, keeps the old value). `POST /_sim/api/trace/clear` drops every trace and `POST /_sim/api/trace/flush` waits until the queued persisted lines and live frames are written; both need the header too and answer the store status.
+- `GET /_sim/api/trace/settings` answers `{ settings, status }`; `PUT /_sim/api/trace/settings` changes the level, retention, payload cap or persistence at run time and needs the administration token in `x-sim-csrf` (`csrf` of `/_sim/api/status`, or `simulator.csrf`) (`InvalidTraceSettings`, 400, keeps the old value). `POST /_sim/api/trace/clear` drops every trace and `POST /_sim/api/trace/flush` waits until the queued persisted lines and live frames are written; both need the same token and answer the store status.
 
 Both hosts serve the server-sent channel `/_sim/events?channels=trace`, which publishes `event: trace` frames for span starts, span ends and trace ends while a subscriber is connected; `events=trace-end` (or `span-start`, `span-end`, as a comma list) and `traceId=<id>` narrow what one client receives. The frames carry no captured inputs or outputs; every frame is written, and a client that stops reading is disconnected. Captured payloads are redacted when they are recorded; secret values, tokens, cookies and sealed flow outputs never reach the store.
 
@@ -304,10 +379,10 @@ Both hosts answer `GET /_sim/api/packs` with every registered pack (project `dat
 
 ## Environment administration on both hosts
 
-`GET /_sim/api/environment`, `PUT /_sim/api/environment/variables/<schemaName>` (`{ "value": "text" }`, or `null` to remove the local value) and `DELETE /_sim/api/environment/variables/<schemaName>` are served by both hosts. Writes need the `x-sim-csrf` header. A local value is kept as an override, so a Solution reload keeps it. A Secret definition accepts a Key Vault secret reference only and never shows a value. `PUT /_sim/api/environment/profiles` selects a deployment profile on the Power Pages host. The standalone host loads `deploymentProfiles` too (see [standalone organization](standalone-organization.md#shared-composition)): its `profileSelection` summarises the active profile, or answers `{ "supported": false, "reason": "…" }` when none is configured; its `PUT /environment/profiles` answers 501 with the same summary, and its `live` field says the live bridge belongs to the Power Pages host. The standalone `GET /_sim/api/diagnostics` and `status.diagnostics` carry `byCode`.
+`GET /_sim/api/environment`, `PUT /_sim/api/environment/variables/<schemaName>` (`{ "value": "text" }`, or `null` to remove the local value) and `DELETE /_sim/api/environment/variables/<schemaName>` are served by both hosts. Writes need the administration token in `x-sim-csrf` (`csrf` of `/_sim/api/status`, or `simulator.csrf`). A local value is kept as an override, so a Solution reload keeps it. A Secret definition accepts a Key Vault secret reference only and never shows a value. `PUT /_sim/api/environment/profiles` selects a deployment profile on the Power Pages host. The standalone host loads `deploymentProfiles` too (see [standalone organization](standalone-organization.md#shared-composition)): its `profileSelection` summarises the active profile, or answers `{ "supported": false, "reason": "…" }` when none is configured; its `PUT /environment/profiles` answers 501 with the same summary, and its `live` field says the live bridge belongs to the Power Pages host. The standalone `GET /_sim/api/diagnostics` and `status.diagnostics` carry `byCode`.
 
 ## Security headers
 
-Both hosts serve `/_sim/` with `Content-Security-Policy: default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'` and `X-Content-Type-Options: nosniff`. Admin assets are served by pattern: `/_sim/<name>.mjs` or `/_sim/<name>.css` where `<name>` matches `^[a-z0-9-]+$` and the file exists in `mirage/admin/`, plus the shared modules `persona-search.mjs` and `persona-picker-view.mjs` from `mirage/lib/`. The page itself answers only at `/_sim` and `/_sim/`. Modules are `text/javascript`, every asset carries `nosniff`, and any other path answers 404 on both hosts, including `/_sim/index.html`, `..` and encoded separators, backslashes, upper-case names, nested paths, server-side library modules and Windows device names such as `con.mjs`. The page allows no inline script or inline style.
+Both hosts serve `/_sim/` with `Content-Security-Policy: default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'` and `X-Content-Type-Options: nosniff`. Admin assets are served by pattern: `/_sim/<name>.mjs` or `/_sim/<name>.css` where `<name>` matches `^[a-z0-9-]+$` and the file exists in `mirage/admin/`, plus the shared modules `persona-search.mjs` and `persona-picker-view.mjs` from `mirage/lib/`. The page itself answers only at `/_sim` and `/_sim/`. The administration page is served by the administration listener to browsers: a navigation to `/_sim/` on the portal address redirects there (see [Administration origin](#administration-origin)). A programmatic request without `Sec-Fetch-Site` or `Origin` is still answered on the portal address. Modules are `text/javascript`, every asset carries `nosniff`, and any other path answers 404 on both hosts, including `/_sim/index.html`, `..` and encoded separators, backslashes, upper-case names, nested paths, server-side library modules and Windows device names such as `con.mjs`. The page allows no inline script or inline style.
 
 `GET /_sim/api/status` carries `docs`: a map of documentation keys to `{ href, path, label }`, where `path` is the repository path and `href` points at the release tag of the installed version (`main` for a prerelease).

@@ -12,6 +12,8 @@ import { connectRuntime } from '../testing.mjs';
 import { captureShell } from '../capture-shell.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
+const HANG_GUARD_MS = 120_000; // hang guard only: Playwright's 30 s default fails a loaded machine
+
 test('running-runtime client signs a Playwright context in and out with the configured persona', async () => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-runtime-client-'));
   let simulator, browser;
@@ -84,6 +86,8 @@ test('shell capture owns an anonymous temporary CDP browser and closes it after 
       attached = await chromium.connectOverCDP(cdp);
       assert.equal(attached.contexts().length, 1);
       this.context = attached.contexts()[0];
+      this.context.setDefaultTimeout(HANG_GUARD_MS);
+      this.context.setDefaultNavigationTimeout(HANG_GUARD_MS);
       // Preserve the zero-cookie assertion without dumping credentials if Edge implicitly signs the profile in.
       assert.equal((await this.context.cookies()).length, 0, 'the owned capture browser must begin without cookies');
       assert.deepEqual(await (await this.context.request.get(echoUrl)).json(), { cookie: null, authorization: null });
@@ -134,7 +138,7 @@ test('shell capture owns an anonymous temporary CDP browser and closes it after 
     assert.equal(report.complete, true);
     assert.equal(bridge.context, null);
     // The owned browser's CDP endpoint is gone: its port refuses connections.
-    await assert.rejects(fetch(endpoint + '/json/version', { signal: AbortSignal.timeout(1000) }), /fetch failed/);
+    await assert.rejects(fetch(endpoint + '/json/version'), /fetch failed/);
   } finally {
     await bridge.close();
     await fs.rm(root, { recursive: true, force: true });

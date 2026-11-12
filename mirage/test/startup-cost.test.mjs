@@ -1,3 +1,4 @@
+// @test-kind contract: the start-up cost and bounded I/O of Mirage's own runtime, whose reads and reuse are designed behaviour.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -653,4 +654,44 @@ test('form/view-only source layers retain mapped OData columns through public li
   await read(null, '?$select=x_name', 400);
   await read('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', '?$select=x_name', 400);
   await read(null, '?$select=x_quantity');
+});
+
+test('a PCF control file is opened once during one start of the model-driven runtime', async (t) => {
+  const fixture = await performanceFixture({ tables: 1, columns: 2, records: 1 });
+  ownedFixture(t).remove(() => fixture.cleanup());
+  const control = path.join(fixture.solutionRoots[0], 'Controls/tst_Synthetic.Editor');
+  await fs.mkdir(control, { recursive: true });
+  await fs.writeFile(
+    path.join(control, 'ControlManifest.xml'),
+    '<manifest><control namespace="Synthetic" constructor="Editor" control-type="standard"><property name="value" of-type="SingleLine.Text" usage="bound"/><resources><code path="bundle.js" order="1"/></resources></control></manifest>',
+  );
+  await fs.writeFile(
+    path.join(control, 'ControlManifest.xml.data.xml'),
+    '<CustomControl><Name>tst_Synthetic.Editor</Name></CustomControl>',
+  );
+  await fs.writeFile(
+    path.join(control, 'bundle.js'),
+    'window.ComponentFramework.registerControl("Synthetic.Editor",class{});',
+  );
+  const opens = new Map();
+  const open = fs.open;
+  fs.open = (file, ...rest) => {
+    const name = String(file);
+    opens.set(name, (opens.get(name) ?? 0) + 1);
+    return open.call(fs, file, ...rest);
+  };
+  let sim;
+  try {
+    sim = await createSimulator({
+      runtime: { kind: 'model-driven' },
+      solutionRoots: fixture.solutionRoots,
+      watch: false,
+    });
+  } finally {
+    fs.open = open;
+  }
+  ownedFixture(t).add(() => sim.close());
+  const counts = [...opens].filter(([file]) => file.startsWith(control)).map(([, count]) => count);
+  assert.equal(counts.length, 3, 'the manifest, its data file and the bundle are read at start');
+  assert.deepEqual(counts, [1, 1, 1]);
 });

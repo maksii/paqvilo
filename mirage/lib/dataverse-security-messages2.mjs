@@ -9,6 +9,7 @@ import { DataError } from './data-error.mjs';
 import { registerInternalMessage } from './dataverse-addon-common.mjs';
 import { objectTypeCode } from './dataverse-metadata.mjs';
 import { contextUrl } from './dataverse-odata.mjs';
+import { parseXmlDocument, planFetch } from './fetchxml-engine.mjs';
 import {
   ACCESS_RIGHTS,
   DEPTH,
@@ -27,6 +28,7 @@ import {
 import { relationshipsOf } from './dataverse-standard.mjs';
 import {
   body,
+  callerWriteOptions,
   csdlOf,
   entriesOf,
   invalid,
@@ -45,6 +47,7 @@ import {
 const OWNER_TEAM = 0,
   ACCESS_TEAM = 1;
 const ADMIN_ROLE = 'System Administrator';
+const RESET_ROLES = new Set([ADMIN_ROLE, 'System Customizer']);
 // The owner rights of a shared authorization (owneraccess): every right but Create.
 const OWNER_RIGHTS = ['Read', 'Write', 'Append', 'AppendTo', 'Delete', 'Share', 'Assign'].reduce(
   (mask, right) => mask | ACCESS_RIGHTS[right],
@@ -70,10 +73,18 @@ const teamOf = (store, id) => {
   if (!found) throw notFound('team', id);
   return found;
 };
-// A shared link is a team row whose sharelinkqualifier holds the rights. Its id is a token derived from the record and the
-// rights, so the same call returns the same link. ponytail: the team table stands in for a link table, which is not in the standard set.
-const tokenOf = (recordId, mask) => uuidV5(recordId, `sharedlink:${mask}`);
+// A shared link is a team row whose sharelinkqualifier holds the rights. Its id is a random uuid, one per record and rights, so a
+// token cannot be computed from the record id. ponytail: the team table stands in for a link table, which is not in the standard set.
 const isLink = (team) => team.sharelinkqualifier != null;
+// The shared link that GenerateSharedLink stored for a record and rights, or undefined.
+const linkOf = (store, { logical, id, mask }) =>
+  tableOf(store, 'team').find(
+    (team) =>
+      isLink(team) &&
+      sameId(refId(team.regardingobjectid), id) &&
+      team.regardingobjecttypecode === logical &&
+      String(team.sharelinkqualifier) === String(mask),
+  );
 const ownsRows = (store, id) =>
   Object.entries(store.state.mappings).some(
     ([logical, mapping]) =>
@@ -116,7 +127,25 @@ function reassignRows(api, c, from, to, objectType) {
     for (const row of tableOf(store, logical)) {
       if (!sameId(refId(row.ownerid), from.id)) continue;
       api.principals.authorize({ user: c.user, entity: logical, operation: 'assign', row, mapping });
-      Object.assign(row, ownerColumns(store, to));
+      store.updateRecord(
+        logical,
+        row[mapping.idColumn],
+        ownerColumns(store, to),
+        c.identity,
+        callerWriteOptions(api, c),
+      );
+    }
+  }
+}
+
+// The rows a team owns move to the business unit, each written through the store's update so its version advances and the
+// caller (the options' systemColumns) is stamped.
+function moveTeamOwnedRecords(store, teamId, unitRef, identity, options) {
+  for (const [logical, mapping] of Object.entries(store.state.mappings)) {
+    if (ownershipOf(logical, null, mapping) !== 'user') continue;
+    for (const row of tableOf(store, logical)) {
+      if (sameId(refId(row.ownerid), teamId))
+        store.updateRecord(logical, row[mapping.idColumn], { owningbusinessunit: unitRef }, identity, options);
     }
   }
 }
@@ -136,6 +165,19 @@ function linkRow(store, { token, logical, id, mask, row }) {
     businessunitid: lookup('businessunit', businessUnitOf(store, row) || null),
     organizationid: lookup('organization', org?.organizationid ?? null),
   };
+}
+
+const SHARE_QUERY_REFUSAL = 'The FetchXml query must select principalobjectaccess.';
+// The FetchXml that selects the share rows to reset. A missing query or one on another table is the usual bad-parameter refusal;
+// malformed XML fails in the parser with its own 400.
+function shareFetchOf(c) {
+  const xml = String(c.params?.FetchXml ?? '');
+  if (!xml.trim()) throw invalid(SHARE_QUERY_REFUSAL);
+  const fetch = parseXmlDocument(xml, { root: 'fetch' });
+  planFetch(fetch, { profile: 'webapi' });
+  if (fetch.children?.find((node) => node.name === 'entity')?.attrs?.name !== 'principalobjectaccess')
+    throw invalid(SHARE_QUERY_REFUSAL);
+  return xml;
 }
 
 export function install(api) {
@@ -169,6 +211,16 @@ export function install(api) {
   const needSystemAdministrator = (c) => {
     if (!api.principals.roles(c.user).some((r) => r.name === ADMIN_ROLE))
       throw privilegeDeniedError(c.user, 'prvSystemAdministrator', 'organization');
+  };
+  // The System Administrator or System Customizer role gates ResetInheritedAccess. The refusal sentence is a guess.
+  const needAdministratorOrCustomizer = (c) => {
+    if (!api.principals.roles(c.user).some((r) => RESET_ROLES.has(r.name)))
+      throw new DataError(
+        `Principal user (Id=${c.user.systemuserid}) is missing the System Administrator or System Customizer role for ResetInheritedAccess.`,
+        403,
+        'PrivilegeDenied',
+        { innerCode: '0x80090432' },
+      );
   };
   // The table holding the referencing (many) side of the relationship with this schema name, or null. ponytail: a many-to-many
   // relationship answers the other table.
@@ -322,14 +374,18 @@ export function install(api) {
       kind: 'function',
       binding: 'unbound',
       handle: async (c) => {
-        const fetchXml = String(c.params?.FetchXml ?? '');
-        // The refusal for a query on another table is a guess.
-        if (!/<entity\s+name=['"]principalobjectaccess['"]/i.test(fetchXml))
-          throw invalid('The FetchXml query must select principalobjectaccess.');
-        // ponytail: every share row's inherited rights (cascaded shares and reparenting, dataverse-security.mjs) are reset and the
-        // FetchXml filter is not applied. The refusal sentence and the privilege gate are guesses.
+        needAdministratorOrCustomizer(c);
+        // The share rows the FetchXml selects, by principalobjectaccessid.
+        const selected = new Set(
+          store.fetchXml(shareFetchOf(c), c.identity).entities.map((share) => key(share.principalobjectaccessid)),
+        );
         await write(() => {
-          for (const share of tableOf(store, 'principalobjectaccess')) share.inheritedaccessrightsmask = 0;
+          const shares = tableOf(store, 'principalobjectaccess');
+          const indexes = shares.flatMap((share, index) =>
+            selected.has(key(share.principalobjectaccessid)) ? [index] : [],
+          );
+          for (const index of indexes)
+            store.mutateRow('principalobjectaccess', shares, index, { inheritedaccessrightsmask: 0 });
         });
         return respond(c, 'ResetInheritedAccess', {
           ResetInheritedAccessResponse:
@@ -348,12 +404,15 @@ export function install(api) {
       handle: async (c) => {
         const args = body(c);
         const { mapping, id, row } = sharedTarget(c, args.Target, 'share');
-        const mask = parseAccessMask(args.SharedRights),
-          token = tokenOf(id, mask);
+        const mask = parseAccessMask(args.SharedRights);
+        let token = null;
         await write(() => {
-          const teams = tableOf(store, 'team');
-          if (!teams.some((t) => sameId(t.teamid, token)))
-            teams.push(linkRow(store, { token, logical: mapping.logicalName, id, mask, row }));
+          let link = linkOf(store, { logical: mapping.logicalName, id, mask });
+          if (!link) {
+            link = linkRow(store, { token: store.ids.uuid(), logical: mapping.logicalName, id, mask, row });
+            tableOf(store, 'team').push(link);
+          }
+          token = link.teamid;
         });
         // The link's URL shape is a guess; the loopback form carries the record and the token.
         const url = `${c.origin}/main.aspx?etn=${mapping.logicalName}&id=${id}&sharedlink=${token}`;
@@ -425,10 +484,10 @@ export function install(api) {
       handle: async (c) => {
         const args = body(c);
         const { mapping, id } = sharedTarget(c, args.Target, 'share');
-        const token = tokenOf(id, parseAccessMask(args.SharedRights));
+        const mask = parseAccessMask(args.SharedRights);
         await write(() => {
           const teams = tableOf(store, 'team'),
-            link = teams.find((t) => sameId(t.teamid, token) && isLink(t));
+            link = linkOf(store, { logical: mapping.logicalName, id, mask });
           if (!link) return;
           // ponytail: a grantee loses the whole share on the record, not only the rights the link carried.
           for (const grantee of link.grantees ?? []) {
@@ -567,7 +626,13 @@ export function install(api) {
         need(c, 'prvWriteTeam', 'team');
         const args = body(c),
           teamId = c.target.id;
-        teamOf(store, teamId);
+        api.principals.authorize({
+          user: c.user,
+          entity: 'team',
+          operation: 'write',
+          row: teamOf(store, teamId),
+          mapping: store.resolveMapping('team'),
+        });
         const unitId = targetRef(api, args.BusinessUnit).id;
         const unit = tableOf(store, 'businessunit').find((b) => sameId(b.businessunitid, unitId));
         if (!unit) throw notFound('businessunit', unitId);
@@ -576,13 +641,8 @@ export function install(api) {
         const unitRef = lookup('businessunit', unit.businessunitid);
         await write(() => {
           teamOf(store, teamId).businessunitid = unitRef;
-          if (args.DoNotMoveAllRecords === true) return;
-          // The records the team owns move to the new business unit, as a user's do in SetBusinessSystemUser.
-          for (const [logical, mapping] of Object.entries(store.state.mappings)) {
-            if (ownershipOf(logical, null, mapping) !== 'user') continue;
-            for (const row of tableOf(store, logical))
-              if (sameId(refId(row.ownerid), teamId)) row.owningbusinessunit = unitRef;
-          }
+          if (args.DoNotMoveAllRecords !== true)
+            moveTeamOwnedRecords(store, teamId, unitRef, c.identity, callerWriteOptions(api, c));
         });
         // ponytail: a business unit's default team is not kept in place, and the moved team's members are not changed.
         return { status: 204 };

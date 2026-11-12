@@ -235,57 +235,53 @@ namespace Contoso.Plugins
 `;
 
 describe('CLR assembly reader against a compiled assembly (dotnet)', () => {
-  it(
-    'reads a real compiled plug-in assembly',
-    { skip: dotnet.status !== 0 && 'dotnet is not installed', timeout: 240000 },
-    async () => {
-      const tfm = `net${dotnet.stdout.trim().split('.')[0]}.0`; // the SDK's own target, so no package download is needed
-      const dir = await makeTemporaryDirectory(path.join(tmpdir(), 'paqvilo-clr-'));
-      try {
-        await writeFile(
-          path.join(dir, 'Contoso.Plugins.WidgetCheck.csproj'),
-          `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>${tfm}</TargetFramework><AssemblyName>Contoso.Plugins.WidgetCheck</AssemblyName><ImplicitUsings>disable</ImplicitUsings><Nullable>disable</Nullable><GenerateAssemblyInfo>false</GenerateAssemblyInfo></PropertyGroup></Project>`,
-        );
-        await writeFile(path.join(dir, 'Types.cs'), SOURCE);
-        // The temporary build directory is outside the checkout's global.json ancestry.
-        await writeFile(
-          path.join(dir, 'global.json'),
-          JSON.stringify({ sdk: { version: dotnet.stdout.trim(), rollForward: 'disable', allowPrerelease: false } }),
-        );
-        const build = spawnSync(
-          'dotnet',
-          [
-            'build',
-            '-o',
-            path.join(dir, 'out'),
-            '--nologo',
-            '-v',
-            'q',
-            '-nodeReuse:false',
-            '-p:UseSharedCompilation=false',
-          ],
-          {
-            cwd: dir,
-            encoding: 'utf8',
-            timeout: 220000,
-            env: { ...process.env, DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_NOLOGO: '1' },
-          },
-        );
-        assert.equal(build.status, 0, `${build.stdout}${build.stderr}`);
-        const facts = inspectAssembly(await readFile(path.join(dir, 'out', 'Contoso.Plugins.WidgetCheck.dll')));
-        assert.equal(facts.name, 'Contoso.Plugins.WidgetCheck');
-        assert.equal(facts.culture, 'neutral');
-        assert.equal(facts.strongNamed, false);
-        assert.equal(facts.publicKeyToken, null);
-        assert.equal(typeOf(facts, WIDGET).isPlugin, true, 'derives from a plug-in base in the same assembly');
-        assert.equal(typeOf(facts, 'Contoso.Plugins.Activity').isWorkflowActivity, true);
-        assert.equal(typeOf(facts, 'Contoso.Plugins.Outer+Inner').isPlugin, true);
-        assert.equal(typeOf(facts, 'Contoso.Plugins.Helper').isPlugin, false);
-      } finally {
-        await rm(dir, { recursive: true, force: true, maxRetries: 3 });
-      }
-    },
-  );
+  it('reads a real compiled plug-in assembly', { skip: dotnet.status !== 0 && 'dotnet is not installed' }, async () => {
+    const tfm = `net${dotnet.stdout.trim().split('.')[0]}.0`; // the SDK's own target, so no package download is needed
+    const dir = await makeTemporaryDirectory(path.join(tmpdir(), 'paqvilo-clr-'));
+    try {
+      await writeFile(
+        path.join(dir, 'Contoso.Plugins.WidgetCheck.csproj'),
+        `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>${tfm}</TargetFramework><AssemblyName>Contoso.Plugins.WidgetCheck</AssemblyName><ImplicitUsings>disable</ImplicitUsings><Nullable>disable</Nullable><GenerateAssemblyInfo>false</GenerateAssemblyInfo></PropertyGroup></Project>`,
+      );
+      await writeFile(path.join(dir, 'Types.cs'), SOURCE);
+      // The temporary build directory is outside the checkout's global.json ancestry.
+      await writeFile(
+        path.join(dir, 'global.json'),
+        JSON.stringify({ sdk: { version: dotnet.stdout.trim(), rollForward: 'disable', allowPrerelease: false } }),
+      );
+      const build = spawnSync(
+        'dotnet',
+        [
+          'build',
+          '-o',
+          path.join(dir, 'out'),
+          '--nologo',
+          '-v',
+          'q',
+          '-nodeReuse:false',
+          '-p:UseSharedCompilation=false',
+        ],
+        {
+          cwd: dir,
+          encoding: 'utf8',
+          timeout: 220000,
+          env: { ...process.env, DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_NOLOGO: '1' },
+        },
+      );
+      assert.equal(build.status, 0, `${build.stdout}${build.stderr}`);
+      const facts = inspectAssembly(await readFile(path.join(dir, 'out', 'Contoso.Plugins.WidgetCheck.dll')));
+      assert.equal(facts.name, 'Contoso.Plugins.WidgetCheck');
+      assert.equal(facts.culture, 'neutral');
+      assert.equal(facts.strongNamed, false);
+      assert.equal(facts.publicKeyToken, null);
+      assert.equal(typeOf(facts, WIDGET).isPlugin, true, 'derives from a plug-in base in the same assembly');
+      assert.equal(typeOf(facts, 'Contoso.Plugins.Activity').isWorkflowActivity, true);
+      assert.equal(typeOf(facts, 'Contoso.Plugins.Outer+Inner').isPlugin, true);
+      assert.equal(typeOf(facts, 'Contoso.Plugins.Helper').isPlugin, false);
+    } finally {
+      await rm(dir, { recursive: true, force: true, maxRetries: 3 });
+    }
+  });
 });
 
 const PACKAGE_NUSPEC = Buffer.from('<package><metadata><id>p</id><version>1.0.0</version></metadata></package>');

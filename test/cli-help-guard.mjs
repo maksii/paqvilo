@@ -8,7 +8,13 @@ import https from 'node:https';
 import { registerHooks, syncBuiltinESMExports } from 'node:module';
 
 const sources = new Map(
-  ['../bin/paqvilo.mjs', '../mirage/tool-registry.mjs', '../mirage/tool-options.mjs'].map((name) => {
+  [
+    '../bin/paqvilo.mjs',
+    '../lense/cli-options.mjs',
+    '../lense/signal-forwarding.mjs',
+    '../mirage/tool-registry.mjs',
+    '../mirage/tool-options.mjs',
+  ].map((name) => {
     const url = new URL(name, import.meta.url);
     return [url.href, fs.readFileSync(url, 'utf8')];
   }),

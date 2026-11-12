@@ -15,6 +15,8 @@ import { randomUUID } from 'node:crypto';
 const DLQ = '/$deadletterqueue';
 const SASL_HEADER = Buffer.from('AMQP\x03\x01\x00\x00', 'latin1');
 const AMQP_HEADER = Buffer.from('AMQP\x00\x01\x00\x00', 'latin1');
+// AMQP 1.0 2.4.1: the largest frame allowed before the open exchange sets the size.
+const MIN_FRAME_SIZE = 512;
 // Descriptor codes (transport 2.7, 2.8.14; messaging 3.2, 3.4, 3.5; security 5.3).
 const OPEN = 0x10,
   BEGIN = 0x11,
@@ -292,7 +294,7 @@ export async function startFakeBroker({
     sockets = new Set(),
     frames = [],
     payloads = [];
-  const stats = { connections: 0, heartbeats: 0, saslFailures: 0 };
+  const stats = { connections: 0, heartbeats: 0, saslFailures: 0, protocolErrors: 0 };
   let sequence = 0;
 
   const targetsOf = (address) =>
@@ -379,7 +381,9 @@ export async function startFakeBroker({
     stats.connections += 1;
     const links = new Map();
     let phase = 'sasl-header',
-      input = Buffer.alloc(0);
+      input = Buffer.alloc(0),
+      opened = false,
+      closing = false;
     const connection = {
       nextOutgoingId: 0,
       nextIncomingId: 0,
@@ -432,13 +436,37 @@ export async function startFakeBroker({
       return true;
     }
 
+    // Ends the connection with an AMQP close carrying the error condition; nothing further is processed on it.
+    function refuse(condition, description) {
+      closing = true;
+      stats.protocolErrors += 1;
+      connection.send(desc(CLOSE, list([desc(ERROR, list([sym(condition), node('str', description), NUL]))])));
+      socket.end();
+    }
+
+    function handleFrame(body) {
+      try {
+        const [performative, next] = dec(body, 0);
+        frames.push({ code: performative.d, fields: performative.v ?? [] });
+        onFrame(performative.d, performative.v ?? [], body.subarray(next));
+      } catch (error) {
+        refuse('amqp:decode-error', `The frame cannot be decoded: ${error.message}`);
+      }
+    }
+
     function processInput() {
       for (;;) {
+        if (closing) return;
         const headerResult = processProtocolHeader();
         if (headerResult === false) return;
         if (headerResult === true) continue;
         if (input.length < 8) return;
         const size = input.readUInt32BE(0);
+        const limit = opened ? maxFrameSize : MIN_FRAME_SIZE;
+        if (size < 8 || size > limit) {
+          refuse('amqp:connection:framing-error', `A frame of ${size} bytes is outside the limit of ${limit} bytes.`);
+          return;
+        }
         if (input.length < size) return;
         const body = input.subarray(input[4] * 4, size);
         input = input.subarray(size);
@@ -446,9 +474,7 @@ export async function startFakeBroker({
           stats.heartbeats += 1;
           continue;
         }
-        const [performative, next] = dec(body, 0);
-        frames.push({ code: performative.d, fields: performative.v ?? [] });
-        onFrame(performative.d, performative.v ?? [], body.subarray(next));
+        handleFrame(body);
       }
     }
     socket.on('data', (chunk) => {
@@ -605,6 +631,7 @@ export async function startFakeBroker({
       }
       switch (code) {
         case OPEN: // container-id, hostname, max-frame-size, channel-max, idle-time-out (2.7.1)
+          opened = true;
           connection.peerMaxFrame = f[2] ?? 4294967295;
           return connection.send(
             desc(

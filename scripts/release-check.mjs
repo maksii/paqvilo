@@ -133,6 +133,7 @@ const COMPANY_QUALIFICATION_SOURCES = new Set(
     'plugins/test/currency-observer-plan.test.mjs',
     'plugins/sdk-projection-probes.mjs',
     'plugins/test/sdk-projection-probes.test.mjs',
+    'plugins/test/sdk-probe-build.test.mjs',
     'plugins/SdkProjectionDriver.cs',
     'plugins/SdkProbes/SdkProbes.csproj',
     'plugins/SdkProbes/packages.lock.json',
@@ -283,6 +284,7 @@ export const REQUIRED_RELEASE_FILES = [
   'licenses/dompurify.txt',
   'licenses/sql4cds.txt',
   'licenses/xrm-portals-community-edition.txt',
+  'licenses/cc-by-4.0.txt',
   'mirage/cli.mjs',
   'mirage/server.mjs',
   'mirage/lib/importer.mjs',
@@ -475,7 +477,7 @@ export function validateReleaseFiles(files) {
     /^examples\/project\/solution\/PluginAssemblies\/[A-Za-z0-9_.{} /-]*PaqviloDemoPlugins\.dll$/;
   const allowed = [
     /^(?:package\.json|npm-shrinkwrap\.json|README\.md|CONTRIBUTING\.md|AGENTS\.md|LICENSE|NOTICE|\.env\.example|paqvilo\.config\.yml|bin\/paqvilo\.mjs|scripts\/ensure-dependencies\.mjs)$/,
-    /^licenses\/[a-z0-9-]+\.txt$/,
+    /^licenses\/[a-z0-9-]+(?:\.[0-9]+)?\.txt$/,
     /^lense\/[a-z0-9/-]+\.mjs$/,
     /^lense\/setup\/[a-z0-9-]+\.(?:html|css)$/,
     /^docs\/[a-z0-9-]+\.md$/,

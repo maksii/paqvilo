@@ -274,8 +274,11 @@ const STAGE_TEXT =
   'Invalid plug-in registration stage. Steps can only be modified in stages BeforeMainOperationOutsideTransaction, BeforeMainOperationInsideTransaction, AfterMainOperationInsideTransaction and AfterMainOperationOutsideTransaction.';
 const KNOWN_MESSAGE_IDS = new Map(Object.entries(SDK_MESSAGES).map(([id, name]) => [name, id]));
 
+// Own keys only: a name such as constructor or toString is a key of every object, so it is no entry of a table here.
+const own = (table, key) => (Object.hasOwn(table, key) ? table[key] : undefined);
+const platformMessage = (name) => own(PLATFORM_MESSAGES, name);
 const messageId = (name) =>
-  PLATFORM_MESSAGES[name]?.id ?? KNOWN_MESSAGE_IDS.get(name) ?? uuidV5(NAMESPACE, `sdkmessage:${name}`); // the id of a non-platform message is a guess
+  platformMessage(name)?.id ?? KNOWN_MESSAGE_IDS.get(name) ?? uuidV5(NAMESPACE, `sdkmessage:${name}`); // the id of a non-platform message is a guess
 const filterId = (org, message, table) => uuidV5(org, `sdkmessagefilter:${message}:${table}`);
 // A lookup is stored as its id (Solution rows) or as { id, logical_name, name } (rows the API wrote).
 const idOfValue = (value) => (value !== null && typeof value === 'object' ? value.id : value);
@@ -316,15 +319,17 @@ function handlerOf(data, existing) {
 
 // The attribute logical names a table's steps may filter or image on: the standard and mapped columns, the metadata
 // service's columns (platform columns such as modifiedon and statecode, and the primary key), lower-cased.
-const columnsOf = (store, table) =>
-  new Set(
+const columnsOf = (store, table) => {
+  const mapping = own(store.state.mappings ?? {}, table);
+  return new Set(
     [
       ...Object.keys(standardTableDef(table)?.attributes ?? {}),
-      ...Object.keys(store.state.mappings?.[table]?.fields ?? {}),
+      ...Object.keys(mapping?.fields ?? {}),
       ...Object.keys(store.platformFields?.(table) ?? {}),
-      ...(store.state.mappings?.[table]?.idColumn ? [store.state.mappings[table].idColumn] : []),
+      ...(mapping?.idColumn ? [mapping.idColumn] : []),
     ].map((name) => name.toLowerCase()),
   );
+};
 
 // Assembly facts without the content: the major and minor from version, the culture and public key token from FullName.
 const versionParts = (version) => {
@@ -357,11 +362,11 @@ function messageRows(store, org, names, availability) {
     ...apis.map((api) => api.uniquename).filter(Boolean),
   ]);
   return [...all].map((name) => {
-    const platform = PLATFORM_MESSAGES[name];
+    const platform = platformMessage(name);
     return {
       sdkmessageid: messageId(name),
       name,
-      availability: availability[name.toLowerCase()]?.message ?? platform?.availability ?? 0,
+      availability: own(availability, name.toLowerCase())?.message ?? platform?.availability ?? 0,
       isactive: true,
       isprivate: privateApis.has(name) || platform?.isprivate === true || PRIVATE_UNRECORDED.has(name),
       workflowsdkstepenabled: platform?.workflowsdkstepenabled === true,
@@ -399,11 +404,11 @@ function filterRows(store, org, availability) {
     secondaryobjecttypecode: 'none',
     iscustomprocessingstepallowed: allowed,
     isvisible: true,
-    availability: availability[message.toLowerCase()]?.filters?.[logical] ?? defaultAvailability,
+    availability: own(own(availability, message.toLowerCase())?.filters ?? {}, logical) ?? defaultAvailability,
     organizationid: org,
   });
   for (const [logical, mapping] of Object.entries(store.state.mappings ?? {})) {
-    const standard = STANDARD_TABLE_FILTERS[logical];
+    const standard = own(STANDARD_TABLE_FILTERS, logical);
     if (standard) {
       for (const [message, allowed, available] of standard) rows.push(filter(message, logical, allowed, available));
       continue;
@@ -460,7 +465,7 @@ function sourceAvailability(plugins) {
 
 function addFilterAvailability(filter, messages, add) {
   const name =
-    messages.get(String(filter.messageId).toLowerCase()) ?? SDK_MESSAGES[String(filter.messageId).toLowerCase()];
+    messages.get(String(filter.messageId).toLowerCase()) ?? own(SDK_MESSAGES, String(filter.messageId).toLowerCase());
   if (name && [0, 1, 2].includes(filter.availability)) add(name).filters[filter.entity] = filter.availability;
 }
 
@@ -818,7 +823,7 @@ function seed(api, plugins = null) {
   }
   upsert(store, 'sdkmessagefilter', 'sdkmessagefilterid', filterRows(store, org, availability), { fresh: true });
   store.state.dataverse ??= {};
-  store.state.dataverse.customApiMessages = store.tableRows('customapi').map((api) => api.uniquename);
+  store.state.dataverse.customApiMessages = rememberedApiNames(store);
   if (plugins)
     for (const [logical, rows] of Object.entries(solutionPluginRows(plugins, { organizationId: org })))
       upsert(store, logical, `${logical}id`, rows);
@@ -848,10 +853,32 @@ const dependentSteps = (logical, id, count) =>
     '0x8004f01f',
   );
 
+// A custom API's message and filters are the parents of the steps registered on them: while one of those steps is left, the
+// Web API refuses the delete (native, probe NP-9: 405, 0x80040227, the restricting SdkMessageProcessingStep named in the text).
+function refuseApiWithStep(store, existing) {
+  const message = messageId(existing.uniquename);
+  const filters = store.tableRows('sdkmessagefilter').filter((row) => same(row.sdkmessageid, message));
+  const step = store
+    .tableRows('sdkmessageprocessingstep')
+    .find(
+      (row) =>
+        same(row.sdkmessageid, message) ||
+        filters.some((filter) => same(filter.sdkmessagefilterid, row.sdkmessagefilterid)),
+    );
+  if (!step) return;
+  throw new DataError(
+    `The object you tried to delete is associated with another object and cannot be deleted. Restricting entity SdkMessageProcessingStep (ObjectTypeCode: 4608) has Id: ${String(step.sdkmessageprocessingstepid).toLowerCase()}.`,
+    405,
+    'MethodNotAllowed',
+    { innerCode: '0x80040227' },
+  );
+}
+
 // A plug-in type or assembly with steps is not deleted; a package-owned assembly is deleted only with its package
 // (0x80081117). The store's cascade then removes the types of a deleted assembly. A package removes its assemblies and
 // their types itself (they are platform rows of the package).
 function guardDelete(store, logical, existing) {
+  if (logical === 'customapi') return refuseApiWithStep(store, existing);
   if (logical === 'pluginassembly' && ref({}, existing, 'packageid') != null)
     throw fail('Unable to delete plug-in assembly as it is part of plugin package', '0x80081117');
   let types = [];
@@ -1241,7 +1268,7 @@ function validateImage({ store, data, existing }) {
   const step = rowById(store, 'sdkmessageprocessingstep', 'sdkmessageprocessingstepid', stepId);
   if (!step) throw notFound('sdkmessageprocessingstep', stepId);
   const name = rowById(store, 'sdkmessage', 'sdkmessageid', step.sdkmessageid)?.name ?? '';
-  const properties = IMAGE_PROPERTIES[name];
+  const properties = own(IMAGE_PROPERTIES, name);
   if (!properties) throw fail(`Message '${name}' does not support image registration.`, '0x80044189');
   const type = Number(val('imagetype')),
     property = String(val('messagepropertyname'));
@@ -1391,7 +1418,7 @@ function validateStepFilter(store, filterRefId, message, messageName, stepId, va
       `Custom SdkMessageProcessingStep is not allowed on the specified message and entity. SdkMessageProcessingStepId: '${stepId()}', SdkMessageFilterId: '${filterRefId}'.`,
       '0x80044187',
     );
-  if (!filter && NONE_FILTERS[messageName]?.[2] === false)
+  if (!filter && own(NONE_FILTERS, messageName)?.[2] === false)
     throw fail(
       `Custom SdkMessageProcessingStep with Id: '${stepId()}' is not allowed on the message with SdkMessageId: '${String(message.sdkmessageid).toLowerCase()}'.`,
       '0x80044187',
@@ -1466,14 +1493,34 @@ function registrationWrite(api) {
         '0x80040800',
       );
     if (operation === 'delete') return guardDelete(store, logical, existing);
-    VALIDATORS[logical]?.({ store, principals, c, data, existing, operation });
+    own(VALIDATORS, logical)?.({ store, principals, c, data, existing, operation });
   };
+}
+
+// A message a plug-in step is registered on stays, whatever the API it was named for: the step depends on it. A renamed API
+// leaves its old name's message this way; deleting an API with a step on its message is refused (refuseApiWithStep).
+function steppedMessageIds(store) {
+  return new Set(
+    store.tableRows('sdkmessageprocessingstep').map((step) => String(idOfValue(step.sdkmessageid)).toLowerCase()),
+  );
+}
+
+// The API names remembered for the next sync: the current APIs, and the old names of renamed APIs whose message a step still
+// uses. A kept name stays remembered until no step uses it; the sync that removes it runs on a custom API write or on the
+// deletion of a step.
+function rememberedApiNames(store) {
+  const stepped = steppedMessageIds(store);
+  const kept = (store.state.dataverse?.customApiMessages ?? []).filter(
+    (name) => name && stepped.has(String(messageId(name)).toLowerCase()),
+  );
+  return [...new Set([...store.tableRows('customapi').map((api) => api.uniquename), ...kept])];
 }
 
 // A custom API is a message: creating one (Web API, SOAP, the Plug-in Registration Tool) gives it its sdkmessage row and
 // its filter, so steps can be registered on it; renaming, rebinding or deleting it replaces or removes them. The rows of the
-// API's previous and current names are dropped, then the catalogue is reseeded (insert-or-replace by id).
-function syncCustomApiMessages(api) {
+// API's previous and current names are dropped, then the catalogue is reseeded (insert-or-replace by id). The names in
+// released are APIs whose rows were removed without the record pipeline; they count as previous names.
+function syncCustomApiMessages(api, released = []) {
   const { store } = api;
   const current = new Set(
     store
@@ -1481,12 +1528,18 @@ function syncCustomApiMessages(api) {
       .map((row) => row.uniquename)
       .filter(Boolean),
   );
-  const previous = (store.state.dataverse?.customApiMessages ?? []).filter(Boolean);
+  const previous = [...(store.state.dataverse?.customApiMessages ?? []), ...released].filter(Boolean);
   const registered = new Set(api.registry?.names?.() ?? []);
+  const stepped = steppedMessageIds(store);
   const gone = new Set(
-    previous.filter((name) => !current.has(name) && !PLATFORM_MESSAGES[name] && !registered.has(name)).map(messageId),
+    previous
+      .filter((name) => !current.has(name) && !platformMessage(name) && !registered.has(name))
+      .map(messageId)
+      .filter((id) => !stepped.has(String(id).toLowerCase())),
   );
-  const touched = new Set([...previous, ...current].map(messageId));
+  const touched = new Set(
+    [...previous, ...current].map(messageId).filter((id) => !stepped.has(String(id).toLowerCase())),
+  );
   for (const [logical, idColumn, drop] of [
     ['sdkmessagefilter', 'sdkmessageid', touched],
     ['sdkmessage', 'sdkmessageid', gone],
@@ -1498,11 +1551,38 @@ function syncCustomApiMessages(api) {
   seed(api);
 }
 
+// A kept name that no step uses any more: the deletion of its last step leaves one behind, and the sync removes its message.
+function hasUnsteppedKeptName(store) {
+  const kept = store.state.dataverse?.customApiMessages ?? [];
+  if (kept.length === 0) return false;
+  const current = new Set(store.tableRows('customapi').map((api) => api.uniquename));
+  const stepped = steppedMessageIds(store);
+  return kept.some((name) => name && !current.has(name) && !stepped.has(String(messageId(name)).toLowerCase()));
+}
+
+// A step's deletion can leave a kept name without a step. Inside a transaction the check and the sync wait for the commit, so
+// a rolled-back delete keeps its step and its message.
+function syncAfterStepDelete(api) {
+  const syncIfUnstepped = () => {
+    if (hasUnsteppedKeptName(api.store)) syncCustomApiMessages(api);
+  };
+  if (api.store.inTransaction()) api.store.onCommit(syncIfUnstepped);
+  else syncIfUnstepped();
+}
+
+// The messages and filters of custom APIs removed without the record pipeline (a solution uninstall). The same sync as a
+// record write runs, with the removed names as previous names; a message a step still uses stays.
+export function releaseCustomApiMessages(api, names) {
+  syncCustomApiMessages(api, names);
+}
+
 // Registered by dataverse-extensions.mjs. Seeds the messages and filters; the hooks validate the seven registration tables.
 export function install(api) {
   api.recordHooks.add('beforeWrite', registrationWrite(api));
-  api.recordHooks.add('afterWrite', (_c, mapping) => {
+  api.recordHooks.add('afterWrite', (_c, mapping, info) => {
     if (mapping.logicalName === 'customapi') syncCustomApiMessages(api);
+    else if (mapping.logicalName === 'sdkmessageprocessingstep' && info?.operation === 'delete')
+      syncAfterStepDelete(api);
   });
   api.registry?.register?.(triggerServiceEndpointCheck(api));
   api.registry?.register?.({

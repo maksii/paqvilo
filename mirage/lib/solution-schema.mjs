@@ -4,9 +4,12 @@ import { readFileSync } from 'node:fs';
 import { recordSourceOf, materializeRecordSource } from './record-sources.mjs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { solutionContentFingerprint } from './solution-content-fingerprint.mjs';
-import { inflateRawSync } from 'node:zlib';
-import { crc32 } from './dataverse-solution-assets.mjs';
+import { solutionContentFingerprint, solutionSideFileHashes } from './solution-content-fingerprint.mjs';
+import {
+  inflateSolutionZipMember,
+  SCAN_ARCHIVE_BYTES,
+  validateSolutionZipDirectory,
+} from './dataverse-solution-assets.mjs';
 import { metadataNumeric } from './exact-numeric.mjs';
 import { parseSolutionXml, descendants, child, childText, labelsOf, pickLabel, serializeXml } from './solution-xml.mjs';
 import { classifyYamlPath, yamlNode, yamlEntityNode, yamlComponentNode, YAML_ROOTS } from './solution-yaml.mjs';
@@ -961,101 +964,62 @@ function parseXmlDocumentCollections(root, info, facts) {
 
 // ---- ZIP (in memory; no archive path is written to disk)
 
+// The entries the scan keeps; the others are skipped unread, so only traversal and header checks apply to them.
+const isKeptZipEntry = (name) => {
+  const classified = classifySolutionPath(name);
+  return Boolean(classified && (SCHEMA_KINDS.has(classified.kind) || ['form', 'view'].includes(classified.kind)));
+};
+
+/**
+ * Walks the central directory through the shared asset-reader checks before any payload is inflated: entry count, declared
+ * sizes against the budget, offsets inside the archive and no shared local header. Refusals throw SolutionArchiveError.
+ * A local header whose content disagrees with its directory fails only the payload that needs it: an XML document throws,
+ * and a binary inventory payload reports its failure when it is read. The archive ceiling is SCAN_ARCHIVE_BYTES.
+ */
 export function readSolutionZip(buffer) {
-  if (buffer.length > 256 * 1024 * 1024) throw new Error('Solution archive exceeds the 256 MiB limit.');
-  let eocd = -1;
-  for (let i = buffer.length - 22; i >= Math.max(0, buffer.length - 65557); i--)
-    if (buffer.readUInt32LE(i) === 0x06054b50) {
-      eocd = i;
-      break;
-    }
-  if (eocd < 0) throw new Error('Solution ZIP end directory is missing.');
-  if (buffer.readUInt16LE(eocd + 4) || buffer.readUInt16LE(eocd + 6))
-    throw new Error('Multi-volume solution archives are not supported.');
-  const count = buffer.readUInt16LE(eocd + 10);
-  let offset = buffer.readUInt32LE(eocd + 16);
-  if (count === 0xffff || offset === 0xffffffff) throw new Error('ZIP64 solution archives are not supported.');
+  const { bytes, members } = validateSolutionZipDirectory(buffer, {
+    archiveBytes: SCAN_ARCHIVE_BYTES,
+    deferLocalHeaders: true,
+    strictNames: isKeptZipEntry,
+  });
   const documents = [];
-  for (let i = 0; i < count; i++) {
-    const { nextOffset, document } = readSolutionZipEntry(buffer, offset);
-    offset = nextOffset;
+  for (const member of members) {
+    const document = readSolutionZipEntry(bytes, member);
     if (document) documents.push(document);
   }
   return documents;
 }
 
-function readSolutionZipEntry(buffer, offset) {
-  if (offset + 46 > buffer.length || buffer.readUInt32LE(offset) !== 0x02014b50)
-    throw new Error('Invalid solution ZIP directory.');
-  const flags = buffer.readUInt16LE(offset + 8),
-    method = buffer.readUInt16LE(offset + 10),
-    crc = buffer.readUInt32LE(offset + 16),
-    size = buffer.readUInt32LE(offset + 20),
-    uncompressed = buffer.readUInt32LE(offset + 24),
-    nameLength = buffer.readUInt16LE(offset + 28),
-    extraLength = buffer.readUInt16LE(offset + 30),
-    commentLength = buffer.readUInt16LE(offset + 32),
-    localOffset = buffer.readUInt32LE(offset + 42);
-  const name = buffer
-    .subarray(offset + 46, offset + 46 + nameLength)
-    .toString('utf8')
-    .replaceAll('\\', '/');
-  const nextOffset = offset + 46 + nameLength + extraLength + commentLength;
-  if (name.startsWith('/') || name.split('/').includes('..') || /^[a-z]:/i.test(name))
-    throw new Error('Solution ZIP contains a traversal path.');
-  const classified = classifySolutionPath(name);
-  if (!classified || (!SCHEMA_KINDS.has(classified.kind) && !['form', 'view'].includes(classified.kind)))
-    return { nextOffset };
-  if (flags & 1) throw new Error('Encrypted solution XML entries are not supported.');
-  const entry = { name, classified, method, crc, size, uncompressed, localOffset };
-  const document =
-    classified.kind === 'inventory' && (!/\.(?:xml|json|ya?ml)$/i.test(name) || uncompressed > XML_LIMIT)
-      ? inventoryZipEntry(buffer, entry)
-      : xmlZipEntry(buffer, entry);
-  return { nextOffset, document };
+function readSolutionZipEntry(bytes, member) {
+  const classified = classifySolutionPath(member.name);
+  if (!classified || (!SCHEMA_KINDS.has(classified.kind) && !['form', 'view'].includes(classified.kind))) return null;
+  if (
+    classified.kind === 'inventory' &&
+    (!/\.(?:xml|json|ya?ml)$/i.test(member.name) || member.info.unpacked > XML_LIMIT)
+  )
+    return inventoryZipEntry(bytes, member, classified);
+  if (member.error) throw member.error;
+  return xmlZipEntry(bytes, member, classified);
 }
 
-function inventoryZipEntry(buffer, { name, classified, method, crc, size, uncompressed, localOffset }) {
+function inventoryZipEntry(bytes, member, classified) {
   // Binary inventory payloads (.msapp) and oversized component files keep name and size; `read()` inflates on demand.
-  const entryOffset = localOffset;
   return {
-    name,
-    size: uncompressed,
+    name: member.name,
+    size: member.info.unpacked,
     ...classified,
     read: (limit = CANVAS_MSAPP_LIMIT) => {
-      if (uncompressed > limit) throw new Error('Solution archive entry exceeds its read limit.');
-      if (entryOffset + 30 > buffer.length || buffer.readUInt32LE(entryOffset) !== 0x04034b50)
-        throw new Error('Invalid solution archive entry header.');
-      const dataOffset =
-        entryOffset + 30 + buffer.readUInt16LE(entryOffset + 26) + buffer.readUInt16LE(entryOffset + 28);
-      const compressed = buffer.subarray(dataOffset, dataOffset + size);
-      let bytes = null;
-      if (method === 0) bytes = compressed;
-      else if (method === 8) bytes = inflateRawSync(compressed, { maxOutputLength: limit });
-      if (!bytes || bytes.length !== uncompressed || crc32(bytes) !== crc)
-        throw new Error('Invalid solution archive entry.');
-      return bytes;
+      if (member.info.unpacked > limit) throw new Error('Solution archive entry exceeds its read limit.');
+      if (member.error) throw member.error;
+      return inflateSolutionZipMember(bytes, member, { maxBytes: limit });
     },
   };
 }
 
-function xmlZipEntry(buffer, { name, classified, method, size, uncompressed, localOffset }) {
-  if (
-    uncompressed > XML_LIMIT ||
-    size > XML_LIMIT ||
-    localOffset + 30 > buffer.length ||
-    buffer.readUInt32LE(localOffset) !== 0x04034b50
-  )
-    throw new Error('Invalid or oversized solution XML entry.');
-  const dataOffset = localOffset + 30 + buffer.readUInt16LE(localOffset + 26) + buffer.readUInt16LE(localOffset + 28);
-  if (dataOffset + size > buffer.length) throw new Error('Truncated solution XML archive entry.');
-  const compressed = buffer.subarray(dataOffset, dataOffset + size);
-  let bytes;
-  if (method === 0) bytes = compressed;
-  else if (method === 8) bytes = inflateRawSync(compressed, { maxOutputLength: XML_LIMIT });
-  else throw new Error(`Unsupported ZIP XML compression method ${method}.`);
-  if (bytes.length !== uncompressed) throw new Error('Solution ZIP XML size mismatch.');
-  return { name, xml: bytes.toString('utf8'), ...classified };
+function xmlZipEntry(bytes, member, classified) {
+  if (member.info.unpacked > XML_LIMIT) throw new Error('Invalid or oversized solution XML entry.');
+  const xml = inflateSolutionZipMember(bytes, member, { maxBytes: XML_LIMIT, verifyCrc: false }).toString('utf8');
+  return { name: member.name, xml, ...classified };
 }
 
 // ---- Scan: inputs -> layers -> parsed schema documents (cached)
@@ -1715,6 +1679,7 @@ const SIMPLE_TYPES = {
   memo: 'textarea',
   ntext: 'textarea',
   bit: 'boolean',
+  boolean: 'boolean',
   picklist: 'number',
   state: 'number',
   status: 'number',
@@ -1778,15 +1743,19 @@ const joinSchema = ([root, ...parts]) => {
 };
 
 /** The merged schema of a scan. With a persistent scan cache an unchanged scan reuses its stored schema across
- * restarts (keyed by schemaInputKey); contentFingerprint is always recomputed, as side files are outside the scan. */
-export function buildSolutionSchema(scan, { lcid = 1033 } = {}) {
-  if (!scan.cache?.file) return compileSolutionSchema(scan, { lcid });
-  const schema = scan.cache.deriveValue(
-    schemaInputKey(scan, lcid),
-    () => ({ ...compileSolutionSchema(scan, { lcid }), contentFingerprint: null }),
-    { split: splitSchema, join: joinSchema },
-  );
-  schema.contentFingerprint = solutionContentFingerprint(scan.layers, { lcid, cache: scan.cache });
+ * restarts (keyed by schemaInputKey); contentFingerprint is always recomputed, as side files are outside the scan.
+ * `sideHashes`: solutionSideFileHashes of the same layers, shared with the other importers of one load. */
+export function buildSolutionSchema(
+  scan,
+  { lcid = 1033, sideHashes = solutionSideFileHashes(scan.layers, scan.cache) } = {},
+) {
+  const schema = scan.cache?.file
+    ? scan.cache.deriveValue(schemaInputKey(scan, lcid), () => compileSolutionSchema(scan, { lcid }), {
+        split: splitSchema,
+        join: joinSchema,
+      })
+    : compileSolutionSchema(scan, { lcid });
+  schema.contentFingerprint = solutionContentFingerprint(scan.layers, { lcid, sideHashes });
   return schema;
 }
 
@@ -1905,7 +1874,8 @@ function compileSolutionSchema(scan, { lcid }) {
     documentLocationRelationships: documentLocationCount,
     annotationRelationships: annotationCount,
     fingerprint: fingerprint.digest('hex'),
-    contentFingerprint: solutionContentFingerprint(scan.layers, { lcid, cache: scan.cache }),
+    // Set by buildSolutionSchema, which is the only caller: a fingerprint computed here would be overwritten there.
+    contentFingerprint: null,
     ...securityDefinitions(scan.inventory ?? [], {
       managed: new Set(
         scan.layers.filter((l) => String(l.solution?.managed) === '1').map((l) => String(l.name).toLowerCase()),
@@ -2429,7 +2399,7 @@ function lookupTargetsFor(schema, tableName, attribute, type) {
 }
 
 /* NOSONAR: mixed return values are part of the contract */ function fieldDefault(type, appDefault) {
-  if (type === 'bit' && /^[01]$/.test(appDefault ?? '')) return appDefault === '1';
+  if (['bit', 'boolean'].includes(type) && /^[01]$/.test(appDefault ?? '')) return appDefault === '1';
   if (
     ['picklist', 'multiselectpicklist', 'state', 'status'].includes(type) &&
     /^-?\d+$/.test(appDefault ?? '') &&
@@ -2484,7 +2454,7 @@ export function tableColumnDefaults(attributes) {
   const defaults = {};
   for (const a of Object.values(attributes ?? {})) {
     const raw = a.appDefaultValue;
-    if (a.type === 'bit' && /^[01]$/.test(raw ?? '')) defaults[a.name] = raw === '1';
+    if (['bit', 'boolean'].includes(a.type) && /^[01]$/.test(raw ?? '')) defaults[a.name] = raw === '1';
     else if (a.type === 'picklist' && /^-?\d+$/.test(raw ?? '') && raw !== '-1') defaults[a.name] = Number(raw);
   }
   return defaults;

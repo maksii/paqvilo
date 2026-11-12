@@ -1,4 +1,5 @@
 import { parseSolutionXml } from '../../mirage/lib/solution-xml.mjs';
+import { standardFields, standardTableDef } from '../../mirage/lib/dataverse-standard.mjs';
 import { localName, nodeValue, sourceAt, rootKey, lower, xmlRows } from './dataverse-document.mjs';
 import { collectSpecSchema, analyzeDataverseSpec } from './dataverse-spec.mjs';
 
@@ -82,18 +83,26 @@ function inspectHandlers(document, node, emit) {
   }
 }
 
+// A column is undeclared when neither the analysed sources nor the standard table reference declare it on that table.
+// A table that the sources do not define and the reference does not know gives no evidence.
+function undeclaredColumn(document, facts, table, column) {
+  const name = lower(column);
+  const declared = facts.columns.get(scopedName(document.entry, table));
+  if (declared?.has(name)) return false;
+  if (standardTableDef(table)) return !Object.hasOwn(standardFields(table), name);
+  return declared !== undefined;
+}
+
 function inspectFormColumn(document, row, facts, emit) {
   const field = nodeValue(row.node, 'datafieldname');
-  if (!field || !row.table) return;
-  const columns = facts.columns.get(scopedName(document.entry, row.table));
-  if (columns && !columns.has(lower(field))) emit('DV-MODEL-003', sourceAt(document, row.node), 'datafieldname');
+  if (field && row.table && undeclaredColumn(document, facts, row.table, field))
+    emit('DV-MODEL-003', sourceAt(document, row.node), 'datafieldname');
 }
 
 function inspectQueryColumn(document, row, facts, emit) {
   const name = nodeValue(row.node, 'name');
-  if (!name || name === '*' || !row.table) return;
-  const columns = facts.columns.get(scopedName(document.entry, row.table));
-  if (columns && !columns.has(lower(name))) emit('DV-MODEL-004', sourceAt(document, row.node), 'name');
+  if (name && name !== '*' && row.table && undeclaredColumn(document, facts, row.table, name))
+    emit('DV-MODEL-004', sourceAt(document, row.node), 'name');
 }
 
 function inspectFetch(document, row, emit) {

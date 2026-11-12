@@ -12,10 +12,6 @@ function install({ origin, channel, stateName, names, maxBytes }) {
       if (!entry) return;
       pending.delete(packet.id);
       clearTimeout(entry.timer);
-      if (packet.expiresAt < Date.now()) {
-        entry.reject(new Error('The owned page reply expired.'));
-        return;
-      }
       packet.failed ? entry.reject(new Error('The owned page request failed.')) : entry.resolve(packet.value);
     },
     dispose() {
@@ -97,16 +93,16 @@ export async function createOwnedPageBindings(
     } catch {
       packet = { id: packet.id, failed: true };
     }
-    await bounded(
-      () =>
-        session.send('Runtime.callFunctionOn', {
-          executionContextId: context.id,
-          functionDeclaration: 'function(key,packet){globalThis[key]?.deliver(packet)}',
-          arguments: [{ value: stateName }, { value: { ...packet, expiresAt: Date.now() + 1500 } }],
-          returnByValue: true,
-        }),
-      1500,
-    ).catch(() => {});
+    try {
+      await session.send('Runtime.callFunctionOn', {
+        executionContextId: context.id,
+        functionDeclaration: 'function(key,packet){globalThis[key]?.deliver(packet)}',
+        arguments: [{ value: stateName }, { value: packet }],
+        returnByValue: true,
+      });
+    } catch {
+      // A failed delivery leaves the page's own call timer to settle the request.
+    }
   };
   const called = async (event) => {
     if (event.name !== channel || closed || Buffer.byteLength(event.payload) > maxBytes) return;
@@ -122,6 +118,7 @@ export async function createOwnedPageBindings(
       return;
     if (inFlight >= 32) return reply(context, { id: packet.id, failed: true });
     inFlight++;
+    let settled;
     try {
       let timer, cancel;
       const deadline = new Promise((_, reject) => {
@@ -141,25 +138,19 @@ export async function createOwnedPageBindings(
         clearTimeout(timer);
         pendingCalls.delete(cancel);
       }
-      await reply(context, { id: packet.id, value });
+      settled = { id: packet.id, value };
     } catch {
-      await reply(context, { id: packet.id, failed: true });
+      settled = { id: packet.id, failed: true };
     } finally {
       inFlight--;
     }
+    await reply(context, settled);
   };
   session.on('Runtime.executionContextCreated', contextsCreated);
   session.on('Runtime.executionContextDestroyed', contextsDestroyed);
   session.on('Runtime.executionContextsCleared', cleared);
   session.on('Page.frameNavigated', navigated);
   session.on('Runtime.bindingCalled', called);
-  const bounded = (operation, timeout) => {
-    let timer;
-    const deadline = new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error('Owned page cleanup timed out.')), timeout);
-    });
-    return Promise.race([Promise.resolve().then(operation), deadline]).finally(() => clearTimeout(timer));
-  };
   // Cleanup waits for each protocol command to settle; a slow browser is not a failed retirement.
   const close = async () => {
     if (closed) return;

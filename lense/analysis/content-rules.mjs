@@ -226,13 +226,106 @@ function scanCss(unit, emit, text) {
   for (const match of source.matchAll(/@import\b/gi)) emit('content.css-import', unit, undefined, match.index);
 }
 
+// Above this many unmatched open elements, parse5 tree building is too slow for the unit.
+const MAX_UNMATCHED_ELEMENTS = 1000;
+const voidElements = new Set([
+  'area',
+  'base',
+  'br',
+  'col',
+  'embed',
+  'hr',
+  'img',
+  'input',
+  'link',
+  'meta',
+  'param',
+  'source',
+  'track',
+  'wbr',
+]);
+const rawTextElements = new Set(['script', 'style']);
+
+function commentEnd(text, tags) {
+  const end = text.indexOf('-->', tags.lastIndex);
+  // An unclosed comment runs to the end of the document.
+  tags.lastIndex = end < 0 ? text.length : end + 3;
+}
+
+function rawTextEnd(text, tags, name) {
+  const close = new RegExp(`</${name}(?=[\\s/>])`, 'gi');
+  close.lastIndex = tags.lastIndex;
+  const match = close.exec(text);
+  // The closing tag is read again by the tag scan; an unclosed raw-text element runs to the end.
+  tags.lastIndex = match ? match.index : text.length;
+}
+
+function depthAfterTag(text, tags, match, depth) {
+  if (match[0] === '<!--') {
+    commentEnd(text, tags);
+    return depth;
+  }
+  const name = match[2].toLowerCase();
+  if (match[1]) return Math.max(0, depth - 1);
+  if (rawTextElements.has(name)) rawTextEnd(text, tags, name);
+  return voidElements.has(name) ? depth : depth + 1;
+}
+
+// One linear pass over the tags, so the budget check cannot itself become the slow step.
+function unmatchedDepth(text) {
+  const tags = /<!--|<(\/?)([a-z][a-z0-9-]*)(?=[\s/>])[^<>]*>/gi;
+  let depth = 0;
+  for (let match = tags.exec(text); match && depth <= MAX_UNMATCHED_ELEMENTS; match = tags.exec(text)) {
+    depth = depthAfterTag(text, tags, match, depth);
+  }
+  return depth;
+}
+
+// Liquid runs on the server, so FetchXML bodies stay visible even where HTML masking hides their markup.
+function liquidFetchXmlRanges(text) {
+  const ranges = [];
+  let start;
+  for (const match of text.matchAll(/{%-?\s*(end)?fetchxml\b/gi)) {
+    if (!match[1]) start ??= match.index;
+    else if (start !== undefined) {
+      ranges.push([start, match.index + match[0].length]);
+      start = undefined;
+    }
+  }
+  return ranges;
+}
+
+function restoreLiquidFetchXml(masked, text) {
+  const parts = [];
+  let from = 0;
+  for (const [start, end] of liquidFetchXmlRanges(text)) {
+    parts.push(masked.slice(from, start), text.slice(start, end));
+    from = end;
+  }
+  parts.push(masked.slice(from));
+  return parts.join('');
+}
+
+function scanHtml(unit, emit, text) {
+  if (unmatchedDepth(text) > MAX_UNMATCHED_ELEMENTS) {
+    // Without a parse tree, script and comment text cannot be separated from markup, so the raw source is scanned.
+    scanFetchXml(unit, emit, text);
+    return false;
+  }
+  scanFetchXml(unit, emit, restoreLiquidFetchXml(scanMarkup(unit, emit, text), text));
+  return true;
+}
+
+/** Returns the units whose markup was skipped, so the caller can record why the web-content domain is incomplete. */
 export function analyzeContent(units, emit) {
+  const skipped = [];
   for (const unit of units) {
     const text = stripLiquidLiteralBlocks(unit.text);
     if (unit.kind === 'html') {
-      scanFetchXml(unit, emit, scanMarkup(unit, emit, text));
+      if (!scanHtml(unit, emit, text)) skipped.push({ file: unit.file, reason: 'html-structure-budget' });
     } else if (unit.kind === 'css') {
       scanCss(unit, emit, text);
     }
   }
+  return skipped;
 }

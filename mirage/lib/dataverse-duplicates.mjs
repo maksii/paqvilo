@@ -296,20 +296,39 @@ function offsetOf(info, count) {
   throw new DataError('PagingCookie is not valid.', 400, 'InvalidRequest');
 }
 
+// The table a BusinessEntity names: the @odata.type of the documented request (Microsoft.Dynamics.CRM. prefixed), else LogicalName.
+function baseEntityOf(business) {
+  if (business['@odata.type']) return String(business['@odata.type']).replace(/^#?Microsoft\.Dynamics\.CRM\./, '');
+  return business.LogicalName ?? business.logicalName; // crmbaseentity wire shape assumed
+}
+
+// The values a duplicate check compares. When the entity carries the primary id of a row the caller can read, that stored row
+// supplies the values the request does not name (supplied values win). The row's id is returned as selfId, to be left out.
+function comparedOf(api, c, baseEntity, supplied) {
+  const { store } = api;
+  const mapping = store.state.mappings[baseEntity];
+  const selfId = supplied[mapping?.idColumn];
+  const stored =
+    selfId == null ? undefined : store.tableRows(baseEntity).find((row) => same(row[mapping.idColumn], selfId));
+  if (!stored) return { attributes: supplied, selfId };
+  api.principals.authorize({ user: c.user, entity: baseEntity, operation: 'read', row: stored, mapping });
+  return { attributes: { ...stored, ...supplied }, selfId };
+}
+
 // Needs read on the matching table (and the record access it grants). Rows the caller cannot read are left out
 // before paging, and each row is formatted as a normal read.
 const retrieveDuplicates = (api) => async (c) => {
   const { store } = api;
   const business = c.params.BusinessEntity ?? {};
-  const baseEntity = business.LogicalName ?? business.logicalName; // crmbaseentity wire shape assumed
+  const baseEntity = baseEntityOf(business);
   const matching = c.params.MatchingEntityName;
   if (!baseEntity) throw new DataError('BusinessEntity must name its logical name.', 400, 'InvalidRequest');
   const target = store.state.mappings[matching];
   if (!target) throw new DataError(`${matching} does not exist.`, 404, 'UnknownEntity');
   api.principals.authorize({ user: c.user, entity: matching, operation: 'read', mapping: target });
   const readable = api.principals.readFilter({ user: c.user, entity: matching, mapping: target });
-  const attributes = business.Attributes ?? business.attributes ?? business; // attribute container shape assumed
-  const selfId = attributes[store.state.mappings[baseEntity]?.idColumn];
+  const supplied = business.Attributes ?? business.attributes ?? business; // attribute container shape assumed
+  const { attributes, selfId } = comparedOf(api, c, baseEntity, supplied);
   const found = new Map();
   for (const rule of publishedRules(
     store,
@@ -403,6 +422,18 @@ const bulkDetectDuplicates = (api) => async (c) => {
   };
 };
 
+// A condition is written only as a condition of the rule being updated: it must belong to that rule now, and the write may not
+// move it to another rule.
+function assertRuleCondition(rule, condition, values) {
+  const movedTo = 'regardingobjectid' in values ? values.regardingobjectid : condition.regardingobjectid;
+  if (same(condition.regardingobjectid, rule.duplicateruleid) && same(movedTo, rule.duplicateruleid)) return;
+  throw new DataError(
+    `duplicaterulecondition With Id = ${condition.duplicateruleconditionid} Does Not Belong To duplicaterule ${rule.duplicateruleid}`,
+    400,
+    'InvalidRequest',
+  );
+}
+
 // CompoundUpdateDuplicateDetectionRule: one call updates a duplicaterule and its conditions. Only the known columns are
 // written, and each condition named in ChildEntities must already exist. Assumptions: the 404 text for a missing condition,
 // and the 204 answer (no return is documented).
@@ -432,6 +463,7 @@ const compoundUpdateRule = (api) => async (c) => {
             throw new DataError(`duplicaterulecondition With Id = ${child.id} Does Not Exist`, 404, 'NotFound');
           const values = { ...child.values };
           delete values.duplicateruleconditionid;
+          assertRuleCondition(rule, condition, values);
           await store.updateRecordAsync(
             'duplicaterulecondition',
             condition.duplicateruleconditionid,

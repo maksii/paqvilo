@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
-import { sharedBrowser } from './shared-browser.mjs';
+import { sharedBrowser, appOrigins, appsOrigin } from './shared-browser.mjs';
 
 const browser = sharedBrowser();
 
@@ -78,8 +78,11 @@ test('standard choice option changes reach a rendered PCF sibling without changi
   );
   const sim = await source.start({ modelDriven: { trustedExtensions: true } });
   const page = await browser.page(t);
-  await page.route('**/*', (route) => (route.request().url().startsWith(sim.url) ? route.continue() : route.abort()));
-  await page.goto(`${sim.origin ?? sim.url}/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item`);
+  const own = appOrigins(sim, sim.url);
+  await page.route('**/*', (route) =>
+    own.some((origin) => route.request().url().startsWith(origin)) ? route.continue() : route.abort(),
+  );
+  await page.goto(`${appsOrigin(sim, sim.url)}/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item`);
   await page.getByRole('combobox', { name: 'Standard choice', exact: true }).waitFor({ state: 'visible' });
   await page.getByTestId('invented-choice-pcf').waitFor({ state: 'visible' });
   await page.waitForFunction(

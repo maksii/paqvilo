@@ -1,3 +1,4 @@
+// @test-kind security: baseline output refuses hard-linked evidence files, and the CLI admits no output before the bridge starts.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -98,6 +99,7 @@ async function cliFixture({ base, outDir, outside }, kind) {
       outDir,
       '--side',
       'live',
+      '--all-scenarios',
       '--label',
       'native',
     ],

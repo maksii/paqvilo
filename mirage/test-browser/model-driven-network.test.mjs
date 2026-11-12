@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
-import { sharedBrowser, fileScope } from './shared-browser.mjs';
+import { sharedBrowser, fileScope, appOrigins } from './shared-browser.mjs';
 
 const chrome = sharedBrowser();
 // Tests that only render controls or read records share one simulator; tests that write own theirs.
@@ -119,13 +119,14 @@ test('form-only overlays retain the trusted Xrm CRUD/query round trip with bound
 
 test('model-driven Xrm lookup writes use the local staff transport, CSRF and current ETags', async (t) => {
   const { sim, origin } = await modelDrivenFixture(t);
+  const own = appOrigins(sim, origin);
   const page = await chrome.page(t),
     requests = [],
     external = [],
     errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('request', (request) => {
-    if (new URL(request.url()).origin !== origin) external.push(request.url());
+    if (!own.includes(new URL(request.url()).origin)) external.push(request.url());
     if (new URL(request.url()).pathname.startsWith('/_apps/api/tables/'))
       requests.push({
         method: request.method(),
@@ -171,7 +172,7 @@ test('model-driven Xrm lookup writes use the local staff transport, CSRF and cur
     ['POST', 'GET', 'PATCH', 'GET', 'GET', 'DELETE'],
   );
   const writes = requests.filter((request) => ['POST', 'PATCH', 'DELETE'].includes(request.method));
-  assert.ok(writes.every((request) => request.headers['x-sim-csrf'] === sim.state().csrf));
+  assert.ok(writes.every((request) => request.headers['x-sim-csrf'] === sim.appsToken));
   assert.equal(
     writes.some((request) => 'authorization' in request.headers),
     false,
@@ -204,11 +205,12 @@ for (const kind of ['portal', 'model-driven'])
       ? modelDrivenFixture(t, { runtime: { kind }, sourceDir: undefined })
       : readOnlyApp());
     assert.equal(sim.dataverse ?? null, null);
+    const own = appOrigins(sim, origin);
     const page = await chrome.page(t),
       external = [],
       errors = [];
     page.on('request', (request) => {
-      if (new URL(request.url()).origin !== origin) external.push(request.url());
+      if (!own.includes(new URL(request.url()).origin)) external.push(request.url());
     });
     page.on('pageerror', (error) => errors.push(error.message));
     await page.goto(
@@ -289,7 +291,7 @@ for (const kind of ['portal', 'model-driven'])
       'scripts read the table, including records outside the selected saved view',
     );
     assert.equal(result.links.length, 2);
-    assert.ok(result.links.every((link) => new URL(link).origin === origin));
+    assert.ok(result.links.every((link) => own.includes(new URL(link).origin)));
     assert.deepEqual(
       result.fetched.entities.map((row) => row.x_name),
       ['Empty'],
@@ -300,14 +302,15 @@ for (const kind of ['portal', 'model-driven'])
   });
 
 test('saved form and Xrm edits share concurrency without overwriting either a newer row or the rejected draft', async (t) => {
-  const { origin } = await modelDrivenFixture(t);
+  const { sim, origin } = await modelDrivenFixture(t);
+  const own = appOrigins(sim, origin);
   const page = await chrome.page(t),
     errors = [],
     external = [],
     writes = [];
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('request', (request) => {
-    if (new URL(request.url()).origin !== origin) external.push(request.url());
+    if (!own.includes(new URL(request.url()).origin)) external.push(request.url());
   });
   page.on('response', (response) => {
     if (response.request().method() === 'PATCH') writes.push(response.status());

@@ -1,15 +1,18 @@
+// @test-kind contract: Paqvilo's designed model-driven dev startup and overlay behaviour.
 import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
 import { createModelDrivenOverlay, modelDrivenOrigin } from '../lense/model-driven.mjs';
 import {
   modelDrivenReloadQueue,
   refreshModelDrivenPage,
   publishModelDrivenReload,
+  waitForWatcherReady,
 } from '../lense/commands/model-driven.mjs';
 import { importModelDrivenResources } from '../mirage/lib/model-driven-resources.mjs';
 
@@ -227,6 +230,7 @@ test('overlay import publication is atomic and HEAD has no body', async () => {
   assert.equal(overlay.report().revision, 2);
 });
 
+// @test-kind security: an overlay origin or resource path cannot traverse or leave its allowed origin
 test('invalid origins, traversal and ambiguous resource maps fail before a browser opens', () => {
   for (const origin of [
     'https://user:password@invented.invalid',
@@ -490,4 +494,25 @@ test('local-source refresh issues GET navigation and preserves app fragments wit
   assert.equal(await refreshModelDrivenPage(page, 'https://other.invalid'), false);
   assert.equal(await refreshModelDrivenPage({ ...page, isClosed: () => true }, 'https://invented.invalid'), false);
   assert.equal(visits.length, 1);
+});
+
+test('a slow Solution watcher scan is not a failure while the startup wait allows it', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const watcher = new EventEmitter();
+  const ready = waitForWatcherReady(watcher);
+  t.mock.timers.tick(15_000);
+  watcher.emit('ready');
+  await ready;
+  assert.equal(watcher.listenerCount('ready'), 0);
+  assert.equal(watcher.listenerCount('error'), 0);
+});
+
+test('a Solution watcher error rejects the readiness wait and removes its listeners', async () => {
+  const watcher = new EventEmitter();
+  const failure = new Error('invented watcher failure');
+  const ready = waitForWatcherReady(watcher);
+  watcher.emit('error', failure);
+  await assert.rejects(ready, failure);
+  assert.equal(watcher.listenerCount('ready'), 0);
+  assert.equal(watcher.listenerCount('error'), 0);
 });

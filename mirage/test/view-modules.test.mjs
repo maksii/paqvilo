@@ -382,6 +382,41 @@ test('flows view renders runs, waits, background work and webhooks; the run deep
   assert.match(html, /not contacted/);
 });
 
+test('flow run details show the stored error code and message of a failed run, and neither row for a succeeded run', async () => {
+  const failed = {
+    id: 'run-3',
+    processId: 'p1',
+    status: 'Failed',
+    starttime: '2026-10-22T07:00:00Z',
+    errorCode: 'LocalFlowFailed',
+    errorMessage: 'Invented <b>failure</b> & text.',
+  };
+  const detail = async (run) => {
+    globalThis.location = { hash: `#flows?run=${run.id}` };
+    const ctx = context({
+      responses: {
+        '/flow-runs': [...runs, failed],
+        '/flow-waits': [],
+        '/dashboard': dashboard,
+        [`/flow-runs/${run.id}`]: run,
+      },
+    });
+    try {
+      await flows.load(ctx);
+    } finally {
+      delete globalThis.location;
+    }
+    return flows.render(ctx);
+  };
+  const html = await detail(failed);
+  safeMarkup(html);
+  assert.match(html, /<dt>Error code<\/dt><dd><code>LocalFlowFailed<\/code><\/dd>/);
+  assert.match(html, /<dt>Error message<\/dt><dd>Invented &lt;b&gt;failure&lt;\/b&gt; &amp; text\.<\/dd>/);
+  assert.doesNotMatch(html, /<b>failure<\/b>/);
+  const succeeded = await detail(runs[1]);
+  assert.doesNotMatch(succeeded, /Error code|Error message/);
+});
+
 test('flows view says when the host has no flow run store', async () => {
   const missing = Object.assign(new Error('This runtime has no flow run store.'), { status: 404 });
   const ctx = context({
@@ -1881,6 +1916,104 @@ test('a hostile finding is shown escaped; stale evidence says so in Pages & rend
   assert.match(list, /<td class="ui-actions"><a class="ui-button ui-small" href="\/order\/" target="_blank"/);
 });
 
+function auditFirstPage() {
+  const entry = (id) => activitySample.audit.items.find((item) => item.id === id);
+  return {
+    ...activitySample.audit,
+    items: ['fx-audit-create', 'fx-audit-denied', 'fx-audit-throw'].map(entry),
+    pageCount: 2,
+    total: 4,
+  };
+}
+
+test('Activities reads every audit page of its traces, so a busy page keeps each row facts (ADM-4)', async () => {
+  const auditPath = `/audit?traceId=${encodeURIComponent(activityQuery.items.map((item) => item.traceId).join(','))}&pageSize=100`;
+  const entry = (id) => activitySample.audit.items.find((item) => item.id === id);
+  const responses = activityResponses({
+    [auditPath]: auditFirstPage(),
+    [`${auditPath}&page=2`]: {
+      ...activitySample.audit,
+      items: [entry('fx-audit-read')],
+      page: 2,
+      pageCount: 2,
+      total: 4,
+    },
+  });
+  const ctx = activityContext({ responses });
+  await activity.load(ctx);
+  assert.ok(ctx.requested.includes(`${auditPath}&page=2`), ctx.requested.join('\n'));
+  const html = activity.render(ctx);
+  const list = html.slice(html.indexOf('data-table="activity-list"'));
+  assert.match(list, /<td class="ui-trace-extra">local · 1 row · 1 read<\/td>/);
+});
+
+test('the Request tab reads every audit page of its trace, so a read past the first page is listed (ADM-4)', async () => {
+  const auditPath = `/audit?traceId=${traceId}&pageSize=100`;
+  const entry = (id) => activitySample.audit.items.find((item) => item.id === id);
+  const responses = activityResponses({
+    [auditPath]: { ...activitySample.audit, items: [entry('fx-audit-create')], pageCount: 2, total: 2 },
+    [`${auditPath}&page=2`]: {
+      ...activitySample.audit,
+      items: [entry('fx-audit-read')],
+      page: 2,
+      pageCount: 2,
+      total: 2,
+    },
+  });
+  const ctx = activityContext({ responses });
+  activity.route(ctx, new URLSearchParams({ detail: 'request' }), [traceId]);
+  await activity.load(ctx);
+  assert.ok(ctx.requested.includes(`${auditPath}&page=2`), ctx.requested.join('\n'));
+  const html = activity.render(ctx);
+  assert.match(html, /entity-query/, 'the read on the second page is in the reads');
+  assert.doesNotMatch(html, /Some audit facts are missing/);
+});
+
+test('when a later audit page cannot be read, the list keeps the facts it has and says they are incomplete (ADM-4)', async () => {
+  const auditPath = `/audit?traceId=${encodeURIComponent(activityQuery.items.map((item) => item.traceId).join(','))}&pageSize=100`;
+  const responses = activityResponses({
+    [auditPath]: auditFirstPage(),
+    [`${auditPath}&page=2`]: new Error('The audit page could not be read.'),
+  });
+  const ctx = activityContext({ responses });
+  await activity.load(ctx);
+  const html = activity.render(ctx);
+  safeMarkup(html);
+  assert.match(
+    html,
+    /<p class="ui-notice ui-tone-warn">Some audit facts are missing: a later page of the request audit/,
+  );
+  const list = html.slice(html.indexOf('data-table="activity-list"'));
+  assert.match(list, /<td class="ui-trace-extra">local · 1 row<\/td>/, 'the first page facts stay');
+  assert.doesNotMatch(list, /1 read</, 'the read on the missing page is not shown');
+});
+
+test('when the first audit page cannot be read, the list shows no audit facts and no incomplete notice (ADM-4)', async () => {
+  const auditPath = `/audit?traceId=${encodeURIComponent(activityQuery.items.map((item) => item.traceId).join(','))}&pageSize=100`;
+  const ctx = activityContext({
+    responses: activityResponses({ [auditPath]: new Error('The audit is unavailable.') }),
+  });
+  await activity.load(ctx);
+  const html = activity.render(ctx);
+  assert.doesNotMatch(html, /Some audit facts are missing/);
+  assert.doesNotMatch(html, /local · 1 row/);
+});
+
+test('the Request tab says when a later audit page cannot be read (ADM-4)', async () => {
+  const auditPath = `/audit?traceId=${traceId}&pageSize=100`;
+  const entry = (id) => activitySample.audit.items.find((item) => item.id === id);
+  const responses = activityResponses({
+    [auditPath]: { ...activitySample.audit, items: [entry('fx-audit-create')], pageCount: 2, total: 2 },
+    [`${auditPath}&page=2`]: new Error('The audit page could not be read.'),
+  });
+  const ctx = activityContext({ responses });
+  activity.route(ctx, new URLSearchParams({ detail: 'request' }), [traceId]);
+  await activity.load(ctx);
+  const html = activity.render(ctx);
+  assert.match(html, /Some audit facts are missing/);
+  assert.match(html, /Audit id/, 'the audit entry of the first page stays');
+});
+
 test('the Request tab shows the audit entry and its reads; Log & findings reads the lines of the activity', async () => {
   const ctx = activityContext();
   activity.route(ctx, new URLSearchParams({ detail: 'request' }), [traceId]);
@@ -2879,4 +3012,230 @@ test('the /_sim/ admin follows the system dark theme through tokens only; the li
 test('the trace store sits in the Monitor group of the system map (DV-C-19)', () => {
   const product = PRODUCT_OF('org:trace', 'org', 'Tracing');
   assert.deepEqual([product.band, product.group, product.name], ['organization', 'monitor', 'Activity']);
+});
+
+const APPROVAL_ASSIGNEES = ['a@example.test', 'b@example.test'];
+// An approval wait as GET /flow-waits lists it, with the approval block of its type.
+const approvalWait = (approval) => ({
+  id: 'fx-approval',
+  kind: 'approval',
+  runId: 'run-1',
+  assignedTo: approval.assignees,
+  overdue: false,
+  approval: { title: 'Invented approval', responses: [], ...approval },
+});
+// The flows view with the wait's answer form open, as the console renders it after its Answer button.
+async function answerFormOf(wait) {
+  const ctx = context({
+    data: { flows: { answer: wait.id } },
+    responses: { '/flow-runs': runs, '/flow-waits': [wait], '/dashboard': dashboard },
+  });
+  await flows.load(ctx);
+  return flows.render(ctx);
+}
+const optionsOf = (html) => [...html.matchAll(/name="outcome" value="([^"]*)"/g)].map(([, value]) => value);
+
+test('an approval wait offers a button per response option of its type, and its assignees to answer as', async () => {
+  const cases = [
+    { type: 'Basic', options: ['Approve', 'Reject'], requireAll: false },
+    { type: 'AwaitAll', options: ['Approve', 'Reject'], requireAll: true },
+    { type: 'Custom', options: ['Accept', 'Decline'], requireAll: false },
+    { type: 'CustomAwaitAll', options: ['Accept', 'Decline'], requireAll: true },
+  ];
+  for (const item of cases) {
+    const html = await answerFormOf(
+      approvalWait({
+        type: item.type,
+        options: item.options,
+        assignees: APPROVAL_ASSIGNEES,
+        awaiting: APPROVAL_ASSIGNEES,
+        requireAll: item.requireAll,
+      }),
+    );
+    safeMarkup(html);
+    assert.deepEqual(optionsOf(html), item.options, item.type);
+    assert.deepEqual(selectOptions(html, 'flow-responder'), APPROVAL_ASSIGNEES, item.type);
+    assert.match(html, /<textarea id="flow-comments"/, item.type);
+  }
+});
+
+test('the response options and the assignees of an approval are escaped in the answer form', async () => {
+  const html = await answerFormOf(
+    approvalWait({
+      type: 'Custom',
+      options: ['<b>Hold</b>', 'Accept'],
+      assignees: ['<i>a@example.test</i>'],
+      awaiting: ['<i>a@example.test</i>'],
+      requireAll: false,
+    }),
+  );
+  assert.deepEqual(optionsOf(html), ['&lt;b&gt;Hold&lt;/b&gt;', 'Accept']);
+  assert.doesNotMatch(html, /<b>Hold<\/b>/);
+  assert.match(html, /&lt;i&gt;a@example\.test&lt;\/i&gt;/);
+});
+
+test('the assignee select preselects a single awaited assignee and is hidden when nobody is awaited', async () => {
+  const single = await answerFormOf(
+    approvalWait({
+      type: 'AwaitAll',
+      options: ['Approve', 'Reject'],
+      assignees: APPROVAL_ASSIGNEES,
+      awaiting: ['b@example.test'],
+      requireAll: true,
+    }),
+  );
+  assert.match(single, /<option value="b@example\.test" selected>b@example\.test<\/option>/);
+  const several = await answerFormOf(
+    approvalWait({
+      type: 'Basic',
+      options: ['Approve', 'Reject'],
+      assignees: APPROVAL_ASSIGNEES,
+      awaiting: APPROVAL_ASSIGNEES,
+      requireAll: false,
+    }),
+  );
+  assert.match(several, /<option value="" selected>Choose who responds<\/option>/);
+  const none = await answerFormOf(
+    approvalWait({ type: 'Basic', options: ['Approve', 'Reject'], assignees: [], awaiting: [], requireAll: false }),
+  );
+  assert.doesNotMatch(none, /<select id="flow-responder"/);
+  assert.deepEqual(optionsOf(none), ['Approve', 'Reject']);
+});
+
+test('the answer form lists the responses and, for a wait-for-all approval, who is still awaited', async () => {
+  const responses = [
+    {
+      responder: 'a@example.test',
+      response: 'Approve',
+      comments: 'Looks <i>right</i>',
+      at: '2026-11-01T10:00:00.000Z',
+    },
+  ];
+  const html = await answerFormOf(
+    approvalWait({
+      type: 'AwaitAll',
+      options: ['Approve', 'Reject'],
+      assignees: APPROVAL_ASSIGNEES,
+      awaiting: ['b@example.test'],
+      requireAll: true,
+      responses,
+    }),
+  );
+  assert.match(html, /a@example\.test answers Approve, comment: Looks &lt;i&gt;right&lt;\/i&gt;\./);
+  assert.match(html, /Still awaited: b@example\.test\./);
+  const first = await answerFormOf(
+    approvalWait({
+      type: 'Custom',
+      options: ['Accept', 'Decline'],
+      assignees: APPROVAL_ASSIGNEES,
+      awaiting: APPROVAL_ASSIGNEES,
+      requireAll: false,
+      responses: [],
+    }),
+  );
+  assert.doesNotMatch(first, /Still awaited/);
+});
+
+test('answering an approval posts the chosen option, the responder and the comments', async () => {
+  const wait = approvalWait({
+    type: 'CustomAwaitAll',
+    options: ['Accept', 'Decline'],
+    assignees: APPROVAL_ASSIGNEES,
+    awaiting: APPROVAL_ASSIGNEES,
+    requireAll: true,
+  });
+  const ctx = context({ data: { flows: { answer: wait.id, waits: [wait] } } });
+  const posted = [];
+  ctx.request = async (path, options) => {
+    posted.push([path, options.method, JSON.parse(options.body)]);
+    return { runId: 'run-1', scheduled: false, outcome: null };
+  };
+  let settled;
+  const done = new Promise((resolve) => {
+    settled = resolve;
+  });
+  ctx.setButtonPending = (_button, pending, failed) => {
+    if (!pending) settled(failed);
+    return true;
+  };
+  const form = {
+    dataset: { flowWaitForm: wait.id },
+    querySelector: () => null,
+    values: { responder: 'b@example.test', comments: 'Invented note' },
+  };
+  const event = uiEvent('submit', { '[data-flow-wait-form]': form }, { submitter: { value: 'Decline' } });
+  const previous = globalThis.FormData;
+  globalThis.FormData = FakeFormData;
+  try {
+    assert.equal(flows.handle(ctx, event), true);
+    assert.equal(await done, undefined);
+  } finally {
+    globalThis.FormData = previous;
+  }
+  assert.deepEqual(posted, [
+    ['/flow-waits/fx-approval', 'POST', { outcome: 'Decline', responder: 'b@example.test', comments: 'Invented note' }],
+  ]);
+});
+
+const AUDIT_PATH = `/audit?traceId=${encodeURIComponent(activityQuery.items.map((item) => item.traceId).join(','))}&pageSize=100`;
+const auditPageAnswer = (page, pageCount) => ({ ...activitySample.audit, items: [], page, pageCount, total: 3 });
+const isAuditRequest = (path) => path.startsWith(AUDIT_PATH);
+
+// @test-kind contract: a busy audit reads at most the page cap of one trace list and says that facts are missing.
+test('an audit with more pages than the cap reads the cap and shows the incomplete audit notice (R11-9)', async () => {
+  const ctx = activityContext({
+    responses: activityResponses({ [AUDIT_PATH]: auditPageAnswer(1, 500) }),
+  });
+  await activity.load(ctx);
+  assert.equal(ctx.requested.filter(isAuditRequest).length, 20, 'one request per page up to AUDIT_PAGE_LIMIT');
+  assert.match(activity.render(ctx), /Some audit facts are missing/);
+});
+
+// @test-kind contract: a reload of the list stops the audit read that it supersedes at that read's next page.
+test('a list reload stops the audit read it supersedes before its next page (R11-9)', async () => {
+  const ctx = activityContext();
+  const requestOther = ctx.request;
+  let reloaded = false;
+  let gated = false;
+  let openGate;
+  let reachGate;
+  const gate = new Promise((resolve) => {
+    openGate = resolve;
+  });
+  const atGate = new Promise((resolve) => {
+    reachGate = resolve;
+  });
+  ctx.request = async (path) => {
+    if (!isAuditRequest(path)) return requestOther(path);
+    ctx.requested.push(path);
+    const page = Number(new URLSearchParams(path.split('?')[1]).get('page') ?? 1);
+    if (page === 2 && !gated) {
+      gated = true;
+      reachGate();
+      await gate;
+    }
+    return auditPageAnswer(page, reloaded ? 3 : 500);
+  };
+  const superseded = activity.load(ctx);
+  await atGate;
+  reloaded = true;
+  const mark = ctx.requested.length;
+  await activity.load(ctx, ['list']);
+  openGate();
+  await superseded;
+  assert.equal(ctx.requested.slice(mark).filter(isAuditRequest).length, 3, ctx.requested.join('\n'));
+});
+
+// @test-kind contract: an audit of three pages is read in full and no incomplete notice is shown.
+test('an audit of three pages is read in full without the incomplete notice (R11-9)', async () => {
+  const ctx = activityContext({
+    responses: activityResponses({
+      [AUDIT_PATH]: auditPageAnswer(1, 3),
+      [`${AUDIT_PATH}&page=2`]: auditPageAnswer(2, 3),
+      [`${AUDIT_PATH}&page=3`]: auditPageAnswer(3, 3),
+    }),
+  });
+  await activity.load(ctx);
+  assert.ok(ctx.requested.includes(`${AUDIT_PATH}&page=3`), ctx.requested.join('\n'));
+  assert.doesNotMatch(activity.render(ctx), /Some audit facts are missing/);
 });

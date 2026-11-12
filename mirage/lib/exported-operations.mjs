@@ -522,6 +522,22 @@ export function organizationCustomApi(organization, { principal, origin = 'http:
     });
 }
 
+// A comma separates parameters only outside quoted literals. A doubled quote toggles twice, so it stays inside.
+function splitFunctionParameters(text) {
+  const parts = [];
+  let start = 0,
+    quoted = false;
+  for (let index = 0; index < text.length; index++) {
+    if (text[index] === "'") quoted = !quoted;
+    else if (text[index] === ',' && !quoted) {
+      parts.push(text.slice(start, index));
+      start = index + 1;
+    }
+  }
+  parts.push(text.slice(start));
+  return parts;
+}
+
 /* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ async function invokeOrganizationOperation(
   organization,
   { method, url, payload, identity, principal, origin },
@@ -537,8 +553,7 @@ export function organizationCustomApi(organization, { principal, origin = 'http:
     return error(404, `No HTTP resource was found that matches the request URI '${url}'.`);
   const [, set, key, name, inline] = match;
   const params = {};
-  for (const part of String(inline ?? '')
-    .split(',')
+  for (const part of splitFunctionParameters(String(inline ?? ''))
     .map((item) => item.trim())
     .filter(Boolean)) {
     const pair = /^([A-Za-z_]\w*)=(?:'((?:[^']|'')*)'|(-?\d+(?:\.\d+)?)|(true|false|null))$/.exec(part); // NOSONAR: preserve the exact grammar and captured values

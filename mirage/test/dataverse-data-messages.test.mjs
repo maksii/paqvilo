@@ -8,6 +8,7 @@ import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
 import { parseCsv } from '../lib/dataverse-data-messages.mjs';
 import { workflowExtension, workflowHandlers } from '../lib/dataverse-workflows.mjs';
+// @test-kind contract: the file exercises the designed Dataverse data-message behaviour over HTTP; security cases are tagged per test.
 
 const APP_ID = '55555555-5555-5555-5555-555555555555';
 const SECRET_VAR = 'PAQVILO_DATA_MESSAGES_TEST_SECRET';
@@ -205,6 +206,7 @@ test('imported rows use typed record writes, caller stamps and atomic real-time 
   assert.match(h.store.state.tables.importlog[0].errordescription, /real-time validation/);
 });
 
+// @test-kind security: an import cannot write a secured column the caller lacks create permission on
 test('CSV imports enforce secured-column create permissions for a customizer', async (t) => {
   const h = await startServer({
     roles: ['System Customizer'],
@@ -534,6 +536,220 @@ test('Restore distinguishes alternate-key, removed-choice and missing-lookup con
   assert.equal(await restore(), undefined);
   assert.equal(h.store.state.tables.contoso_widget[0].parentid, IMPORT);
   assert.equal(h.store.state.tables.deleteditemreference.length, 0);
+});
+
+// A recycle bin snapshot written the way a delete writes it: the store's delete collector takes the cascade entries, root last.
+const OTHER_OWNER = 'ffffffff-0000-0000-0000-000000000002';
+const BOUND = 'aaaaaaaa-0000-0000-0000-0000000000b4';
+const PARENT = 'cccccccc-0000-0000-0000-0000000000d1';
+function seedSnapshot(h, row) {
+  h.store.state.tables.recyclebinconfig = [{ name: 'contoso_widget', statecode: 0, isreadyforrecyclebin: true }];
+  h.store.recycleDeleted([{ logicalName: 'contoso_widget', row }], {});
+}
+const restoreGone = (h, extra = {}) =>
+  h.send('POST', '/Restore', { Target: { ...target('contoso_widget', 'contoso_widgetid', GONE), ...extra } });
+
+// @test-kind security: a Basic User cannot restore a record it could not read, and the bin entry stays restorable.
+test('Restore refuses a Basic User a snapshot row it cannot read and keeps the bin entry', async (t) => {
+  const h = await startServer({
+    roles: ['Basic User'],
+    extendState: (state) => {
+      state.mappings.contoso_widget.ownership = 'UserOwned';
+    },
+  });
+  t.after(() => h.close());
+  seedSnapshot(h, { contoso_widgetid: GONE, name: 'Archived', ownerid: OTHER_OWNER });
+  const denied = await restoreGone(h);
+  assert.equal(denied.status, 403, JSON.stringify(await denied.clone().json()));
+  assert.equal(
+    h.store.state.tables.contoso_widget.some((row) => row.contoso_widgetid === GONE),
+    false,
+  );
+  assert.equal(h.store.state.tables.deleteditemreference.length, 1);
+});
+
+// @test-kind security: the owner of a snapshot row restores it, so the refusal above is the row check and not a blanket one.
+test('Restore lets a Basic User restore a snapshot row it owns', async (t) => {
+  const h = await startServer({
+    roles: ['Basic User'],
+    extendState: (state) => {
+      state.mappings.contoso_widget.ownership = 'UserOwned';
+    },
+  });
+  t.after(() => h.close());
+  const user = (await (await h.get('/WhoAmI')).json()).UserId;
+  seedSnapshot(h, { contoso_widgetid: GONE, name: 'Own archived', ownerid: user });
+  const restored = await restoreGone(h);
+  assert.equal(restored.status, 200, JSON.stringify(await restored.clone().json()));
+  const row = h.store.state.tables.contoso_widget.find((item) => item.contoso_widgetid === GONE);
+  assert.equal(row.name, 'Own archived');
+  assert.equal(h.store.state.tables.deleteditemreference.length, 0);
+});
+
+// @test-kind security: Target overrides pass the create reader: unknown columns, mistyped values and undeclared binds are
+// refused with the entry kept; valid overrides are stored, and a valid bind is stored as the resolved lookup.
+test('Restore validates Target overrides through the create reader and keeps the bin entry on refusal', async (t) => {
+  const h = await startServer({
+    extendState: (state) => {
+      state.mappings.contoso_widget.fields.parentid = { dataverseType: 'lookup', targets: ['contoso_parent'] };
+      state.mappings.contoso_parent = {
+        logicalName: 'contoso_parent',
+        entitySet: 'contoso_parents',
+        idColumn: 'contoso_parentid',
+        fields: { name: { dataverseType: 'nvarchar' } },
+      };
+      state.tables.contoso_parent = [{ contoso_parentid: PARENT, name: 'Parent' }];
+    },
+  });
+  t.after(() => h.close());
+  seedSnapshot(h, { contoso_widgetid: GONE, name: 'Archived', status: 1 });
+  for (const extra of [
+    { bogus_column: 'x' },
+    { status: 'not-a-number' },
+    { 'nothing@odata.bind': `/contoso_parents(${PARENT})` },
+  ]) {
+    const refused = await restoreGone(h, extra);
+    assert.equal(refused.status, 400, JSON.stringify(extra));
+    assert.equal(h.store.state.tables.deleteditemreference.length, 1);
+    assert.equal(
+      h.store.state.tables.contoso_widget.some((row) => row.contoso_widgetid === GONE),
+      false,
+    );
+  }
+  const named = await restoreGone(h, { name: 'Restored' });
+  assert.equal(named.status, 200, JSON.stringify(await named.clone().json()));
+  assert.equal(h.store.state.tables.contoso_widget.find((row) => row.contoso_widgetid === GONE).name, 'Restored');
+
+  seedSnapshot(h, { contoso_widgetid: BOUND, name: 'Bound' });
+  const bound = await h.send('POST', '/Restore', {
+    Target: {
+      ...target('contoso_widget', 'contoso_widgetid', BOUND),
+      'parentid@odata.bind': `/contoso_parents(${PARENT})`,
+    },
+  });
+  assert.equal(bound.status, 200, JSON.stringify(await bound.clone().json()));
+  const row = h.store.state.tables.contoso_widget.find((item) => item.contoso_widgetid === BOUND);
+  assert.equal(row['parentid@odata.bind'], undefined);
+  assert.equal(String(row.parentid?.id ?? row.parentid).toLowerCase(), PARENT);
+});
+
+// The Target of a Restore is written as a create: a secured column needs the create permission on that column, and a bind
+// needs append on the table and appendto on the bound row, as a create checks them.
+const accountBindFixture = (state) => {
+  state.mappings.contoso_widget.fields.secret = { dataverseType: 'nvarchar', columnMetadata: { isSecured: true } };
+  state.mappings.contoso_widget.fields.accountref = { dataverseType: 'lookup', targets: ['account'] };
+  state.mappings.contoso_widget.relationships.accountref = {
+    entity: 'account',
+    from: 'accountref',
+    to: 'accountid',
+    many: false,
+  };
+  state.tables.account = [{ accountid: PARENT, name: "Other owner's account", ownerid: IMPORT }];
+};
+
+// @test-kind security: a Target override of a secured column needs that column's create permission; a refusal keeps the bin.
+test('Restore refuses a System Customizer a Target override of a secured column and keeps the bin entry', async (t) => {
+  const h = await startServer({
+    roles: ['System Customizer'],
+    extendState: (state) => {
+      state.mappings.contoso_widget.fields.secret = { dataverseType: 'nvarchar', columnMetadata: { isSecured: true } };
+    },
+  });
+  t.after(() => h.close());
+  seedSnapshot(h, { contoso_widgetid: GONE, name: 'Archived' });
+  const denied = await restoreGone(h, { secret: 'injected' });
+  assert.equal(denied.status, 403, JSON.stringify(await denied.clone().json()));
+  assert.equal(
+    h.store.state.tables.contoso_widget.some((row) => row.contoso_widgetid === GONE),
+    false,
+  );
+  assert.equal(h.store.state.tables.deleteditemreference.length, 1);
+});
+
+// @test-kind security: a Target bind to a record the caller cannot append to is refused as a create refuses it.
+test('Restore refuses a System Customizer a Target bind to a record it cannot append to', async (t) => {
+  const h = await startServer({ roles: ['System Customizer'], extendState: accountBindFixture });
+  t.after(() => h.close());
+  seedSnapshot(h, { contoso_widgetid: GONE, name: 'Archived' });
+  const denied = await restoreGone(h, { 'accountref@odata.bind': `/accounts(${PARENT})` });
+  assert.equal(denied.status, 403, JSON.stringify(await denied.clone().json()));
+  assert.match((await denied.json()).error.message, /AppendToAccess/);
+  assert.equal(
+    h.store.state.tables.contoso_widget.some((row) => row.contoso_widgetid === GONE),
+    false,
+  );
+  assert.equal(h.store.state.tables.deleteditemreference.length, 1);
+});
+
+// @test-kind security: a System Administrator passes both the secured-column and the bind checks.
+test('Restore lets a System Administrator set a secured column and bind a record it does not own', async (t) => {
+  const h = await startServer({ extendState: accountBindFixture });
+  t.after(() => h.close());
+  seedSnapshot(h, { contoso_widgetid: GONE, name: 'Archived' });
+  const restored = await restoreGone(h, { secret: 'injected', 'accountref@odata.bind': `/accounts(${PARENT})` });
+  assert.equal(restored.status, 200, JSON.stringify(await restored.clone().json()));
+  const row = h.store.state.tables.contoso_widget.find((item) => item.contoso_widgetid === GONE);
+  assert.equal(row.secret, 'injected');
+  assert.equal(String(row.accountref?.id ?? row.accountref).toLowerCase(), PARENT);
+  assert.equal(h.store.state.tables.deleteditemreference.length, 0);
+});
+
+// The role holds no assign privilege on contoso_widget: the grant rows of that privilege are removed from the role.
+async function withoutAssignOnWidget(h, roleName) {
+  await h.store.transact(() => {
+    const role = h.store.tableRows('role').find((r) => r.name === roleName);
+    const assign = new Set(
+      h.store
+        .tableRows('privilege')
+        .filter((p) => /^prvassign.*contoso_widget$/i.test(p.name))
+        .map((p) => String(p.privilegeid).toLowerCase()),
+    );
+    assert.ok(assign.size > 0, 'the fixture has an assign privilege on contoso_widget');
+    const grants = h.store.tableRows('roleprivileges');
+    for (const grant of grants.filter(
+      (g) =>
+        String(g.roleid?.id ?? g.roleid).toLowerCase() === String(role.roleid).toLowerCase() &&
+        assign.has(String(g.privilegeid?.id ?? g.privilegeid).toLowerCase()),
+    ))
+      h.store.removeRow('roleprivileges', grants, grants.indexOf(grant));
+  });
+}
+const otherOwnerState = (state) => {
+  state.mappings.contoso_widget.ownership = 'UserOwned';
+  state.tables.systemuser = [
+    ...(state.tables.systemuser ?? []),
+    { systemuserid: OTHER_OWNER, fullname: 'Other owner' },
+  ];
+};
+
+// @test-kind security: an override that assigns the restored row to another user needs the assign right, as an ordinary create with that owner does.
+test('Restore refuses a Target override that assigns the row to another user as a create does', async (t) => {
+  const h = await startServer({ roles: ['System Customizer'], extendState: otherOwnerState });
+  t.after(() => h.close());
+  await withoutAssignOnWidget(h, 'System Customizer');
+  const user = (await (await h.get('/WhoAmI')).json()).UserId;
+  seedSnapshot(h, { contoso_widgetid: GONE, name: 'Archived', ownerid: user });
+  const bind = { 'ownerid@odata.bind': `/systemusers(${OTHER_OWNER})` };
+  const created = await h.send('POST', '/contoso_widgets', { name: 'Created', ...bind });
+  const createdError = (await created.clone().json()).error;
+  const denied = await restoreGone(h, bind);
+  const deniedError = (await denied.clone().json()).error;
+  assert.equal(created.status, 403, JSON.stringify(createdError));
+  assert.equal(denied.status, created.status, JSON.stringify(deniedError));
+  assert.equal(deniedError.code, createdError.code);
+  assert.equal(h.store.state.tables.deleteditemreference.length, 1);
+});
+
+// @test-kind security: the assign right lets a Restore override assign the restored row to another user.
+test('Restore lets a caller with the assign right assign the restored row to another user', async (t) => {
+  const h = await startServer({ roles: ['System Customizer'], extendState: otherOwnerState });
+  t.after(() => h.close());
+  const user = (await (await h.get('/WhoAmI')).json()).UserId;
+  seedSnapshot(h, { contoso_widgetid: GONE, name: 'Archived', ownerid: user });
+  const restored = await restoreGone(h, { 'ownerid@odata.bind': `/systemusers(${OTHER_OWNER})` });
+  assert.equal(restored.status, 200, JSON.stringify(await restored.clone().json()));
+  const row = h.store.state.tables.contoso_widget.find((item) => item.contoso_widgetid === GONE);
+  assert.equal(String(row.ownerid?.id ?? row.ownerid).toLowerCase(), OTHER_OWNER);
 });
 
 test("retained FetchXML applies the caller's record ownership filter", async (t) => {
@@ -912,7 +1128,7 @@ describe('cascade delete: recycle hand-off is Dataverse-only', () => {
     assert.equal(handed[0].identity, DATAVERSE);
   });
 
-  it('a portal cascade delete returns and cascades as before, and never reaches recycleDeleted', async () => {
+  it('a portal cascade delete returns and cascades, and never reaches recycleDeleted', async () => {
     const s = await cascadeStore();
     const handed = [];
     s.recycleDeleted = (entries) => handed.push(entries);

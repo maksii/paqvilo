@@ -15,7 +15,9 @@ import {
 import { FLOW_ACTIONS, CONTROL_ACTIONS, flowValueText } from './flow-actions.mjs';
 import { FLOW_EXPRESSION_ARITY } from './flow-expression-functions.mjs';
 import { flowTicks } from './flow-ticks.mjs';
-import { validateFlowInput } from './flow-input-schema.mjs';
+import { LiquidError, formatNetDate, parseNetDate } from './liquid-dotnet.mjs';
+import { MAX_TIMER_DELAY, systemClock, systemIds } from './runtime-clock.mjs';
+import { inspectSchema, validateFlowInput } from './flow-input-schema.mjs';
 export { validateFlowInput } from './flow-input-schema.mjs';
 import { WINDOWS_TIME_ZONES } from './windows-time-zones.mjs';
 import { effectiveEnvironmentVariables } from './secret-resolver.mjs';
@@ -148,6 +150,19 @@ const unsupportedTriggerSettings = [
   'recurrence',
   'operationOptions',
 ];
+// Schema Validation on an Http Request trigger is the operationOptions value EnableSchemaValidation, the only option it accepts.
+const schemaValidationOption = (trigger) =>
+  trigger.kind === 'Http' &&
+  typeof trigger.operationOptions === 'string' &&
+  trigger.operationOptions.split(',').every((option) => option.trim() === 'EnableSchemaValidation');
+// The schema's keywords are inspected for every Request trigger, so an unsupported schema fails whatever the body is. The body
+// of an Http trigger is checked against the schema only when Schema Validation is on.
+export function validateTriggerInput(trigger, input) {
+  const schema = trigger.inputs?.schema ?? {};
+  inspectSchema(schema, 0, { schemas: 0, checks: 0 });
+  if (trigger.kind === 'Http' && !schemaValidationOption(trigger)) return;
+  validateFlowInput(input, schema);
+}
 const responseStatus = (code) => Number.isInteger(code) && code >= 200 && code <= 599 && (code < 300 || code >= 400);
 // Recurrence (https://learn.microsoft.com/azure/connectors/connectors-native-recurrence#add-the-recurrence-trigger): frequency
 // Second..Month, interval, optional startTime and timeZone, and a schedule of hours and minutes (Day, Week, Month), weekDays
@@ -466,7 +481,12 @@ export function inspectFlowTrigger(definition, { connectors } = {}) {
     trigger.type === 'Recurrence' ||
     (['OpenApiConnectionWebhook', 'OpenApiConnection'].includes(trigger.type) && !dataverse && !performed);
   const settingErrors = unsupportedTriggerSettings
-    .filter((key) => own(trigger, key) && !(key === 'recurrence' && ownRecurrence))
+    .filter(
+      (key) =>
+        own(trigger, key) &&
+        !(key === 'recurrence' && ownRecurrence) &&
+        !(key === 'operationOptions' && schemaValidationOption(trigger)),
+    )
     .map((key) => 'Unsupported source trigger setting: ' + key);
   settingErrors.push(...inspectTriggerConditions(trigger));
   if (trigger.type === 'Request') return inspectRequestTrigger(trigger, settingErrors);
@@ -488,26 +508,67 @@ function equivalent(a, b) {
     bk = Object.keys(b);
   return ak.length === bk.length && ak.every((k) => own(b, k) && equivalent(a[k], b[k]));
 }
-function numericCallKind(node, state) {
-  const name = node.name.toLowerCase();
-  if (name === 'float') return 'float';
-  if (name === 'int' || name === 'ticks') return 'integer';
-  if (name === 'variables') return state.variables[evaluate(node.args[0], state)]?.type ?? 'unknown';
-  if (['add', 'sub', 'mul', 'div', 'mod'].includes(name))
-    return node.args.every((n) => numericKind(n, state) === 'integer') ? 'integer' : 'float';
-  return null;
+const ARITHMETIC_FUNCTIONS = new Set(['add', 'sub', 'mul', 'div', 'mod']);
+const UNSUPPORTED_FUNCTION = 'Unsupported local flow function: ';
+// An evaluated number is an Integer when it is an exact numeric with scale 0 or a JavaScript integer, otherwise a Float.
+// The equals function converts a null or undefined operand to "" when the other operand is a string or null.
+// Switch and contains use equivalent directly, so they keep the exact match.
+function blankForComparison(value, other) {
+  return value == null && (typeof other === 'string' || other === null) ? '' : value;
 }
-function numericPropertyKind(node, state) {
+function equalsFlowValues(a, b) {
+  return equivalent(blankForComparison(a, b), blankForComparison(b, a));
+}
+function numericValueKind(value) {
+  if (isExactNumeric(value)) return decimalParts(value).scale === 0 ? 'integer' : 'float';
+  return Number.isInteger(value) ? 'integer' : 'float';
+}
+// A literal keeps the type its token declares: 5 is an Integer and 5.0 is a Float.
+function literalNumericKind(node) {
+  return node.numericType ?? (Number.isInteger(node.value) ? 'integer' : 'float');
+}
+function checkFlowCall(node) {
+  const n = node.name.toLowerCase(),
+    signature = Object.hasOwn(FLOW_EXPRESSION_ARITY, n) && FLOW_EXPRESSION_ARITY[n];
+  if (!signature) fail(UNSUPPORTED_FUNCTION + node.name);
+  if (node.args.length < signature[0] || node.args.length > signature[1])
+    fail('Invalid argument count for ' + node.name);
+  return n;
+}
+function flowVariable(name, state) {
+  if (!own(state.variables, name)) fail('Unknown flow variable.', 400, 'LocalFlowExpression');
+  return state.variables[name];
+}
+// variables() reports the type it was declared with; the name is evaluated once for both the value and the type.
+function evaluateVariableOperand(node, state) {
+  const variable = flowVariable(evaluate(node.args[0], state), state);
+  return { value: variable.value, kind: variable.type === 'integer' ? 'integer' : 'float' };
+}
+function evaluateArithmeticOperand(node, n, state) {
+  const operands = node.args.map((arg) => evaluateOperand(arg, state)),
+    integer = operands.every((operand) => operand.kind === 'integer');
+  return {
+    value: evaluateArithmetic(
+      n,
+      operands.map((operand) => operand.value),
+      node.name,
+      integer,
+    ),
+    kind: integer ? 'integer' : 'float',
+  };
+}
+// Evaluates a numeric operand once and returns its value with the Integer or Float kind taken from that evaluation.
+function evaluateOperand(node, state) {
+  if (node.kind === 'literal') return { value: node.value, kind: literalNumericKind(node) };
+  if (node.kind !== 'call') {
+    const value = evaluate(node, state);
+    return { value, kind: numericValueKind(value) };
+  }
+  const n = checkFlowCall(node);
+  if (ARITHMETIC_FUNCTIONS.has(n)) return evaluateArithmeticOperand(node, n, state);
+  if (n === 'variables') return evaluateVariableOperand(node, state);
   const value = evaluate(node, state);
-  if (isExactNumeric(value)) return decimalParts(value).scale === 0 ? 'integer' : 'decimal';
-  return null;
-}
-function numericKind(node, state) {
-  if (node.kind === 'literal') return node.numericType ?? (Number.isInteger(node.value) ? 'integer' : 'float');
-  if (node.kind === 'call') return numericCallKind(node, state) ?? 'unknown';
-  if (node.kind === 'property') return numericPropertyKind(node, state) ?? 'unknown';
-  // JSON does not retain whether a numeric source token was 5 or 5.0.
-  return 'unknown';
+  return { value, kind: n === 'float' ? 'float' : numericValueKind(value) };
 }
 // Inspect only expression syntax, never evaluate values or access a runtime identity.
 // A dynamic variable name or malformed expression makes its read set unknown.
@@ -933,6 +994,7 @@ export function inspectFlowDefinition(
     if (action.type === 'Until') inspectUntilAction(action, key);
     inspectDataverseParameters(action, key, connector, dataverse);
     if (action.type === 'ChangeSet') inspectChangeSet(action, key);
+    errors.push(...unsupportedActionExpressions(action, key));
   };
   const visitBranches = (action, key, depth, skipped, loop) => {
     if (action.actions) visit(action.actions, key + '/', depth + 1, skipped, loop);
@@ -1119,7 +1181,7 @@ export function inspectFlowExpression(source) {
         const signature =
           Object.hasOwn(FLOW_EXPRESSION_ARITY, node.name.toLowerCase()) &&
           FLOW_EXPRESSION_ARITY[node.name.toLowerCase()];
-        if (!signature) fail('Unsupported local flow function: ' + node.name);
+        if (!signature) fail(UNSUPPORTED_FUNCTION + node.name);
         if (node.args.length < signature[0] || node.args.length > signature[1])
           fail('Invalid argument count for ' + node.name);
         pending.push(...node.args);
@@ -1157,12 +1219,69 @@ function inspectTriggerConditions(trigger) {
   return errors;
 }
 
-export function evaluateFlowTriggerConditions(definition, { input, parameters = {} } = {}) {
+// Every string an action evaluates: its inputs (Select, Query and Table sources included), the If, Until or Switch
+// expression (a string or a condition object) and the foreach source.
+function actionExpressionStrings(action) {
+  const strings = [];
+  const walk = (value) => {
+    if (typeof value === 'string') strings.push(value);
+    else if (value && typeof value === 'object') Object.values(value).forEach(walk);
+  };
+  walk(action.inputs);
+  walk(action.expression);
+  walk(action.foreach);
+  return strings;
+}
+// Each @{...} segment of an interpolated string, except a segment escaped as @@{...}. Every source starts with @,
+// so inspectFlowExpression parses exactly the text the runtime parses.
+function interpolationSources(value) {
+  const sources = [];
+  let start = value.indexOf('@{');
+  while (start >= 0) {
+    const end = flowInterpolationEnd(value, start);
+    if (end < value.length && !(start > 0 && value[start - 1] === '@')) sources.push('@' + value.slice(start + 2, end));
+    start = value.indexOf('@{', end + 1);
+  }
+  return sources;
+}
+// The expression sources a string holds, following resolveFlowValue: "@@" is literal text, a string that starts with
+// "@" but not "@{" is one expression, and anything else is read for interpolated segments.
+function expressionSources(value) {
+  if (value.startsWith('@@')) return [];
+  if (value.startsWith('@') && !value.startsWith('@{')) return [value];
+  return interpolationSources(value);
+}
+// Only an unsupported function refuses the flow here. A malformed expression keeps its runtime failure, which an action
+// can route with runAfter, so its syntax diagnostics are not reported by the contract.
+function unsupportedActionExpressions(action, key) {
+  return actionExpressionStrings(action)
+    .flatMap(expressionSources)
+    .flatMap((source) => inspectFlowExpression(source).diagnostics)
+    .filter((diagnostic) => diagnostic.message.startsWith(UNSUPPORTED_FUNCTION))
+    .map(
+      (diagnostic) =>
+        'Unsupported expression in ' +
+        key +
+        ': ' +
+        diagnostic.message +
+        '; configure an explicit action mock or disable it.',
+    );
+}
+
+export function evaluateFlowTriggerConditions(definition, { input, parameters = {}, store = null } = {}) {
   const trigger = Object.values(definition?.triggers ?? {})[0],
     errors = inspectTriggerConditions(trigger);
   if (errors.length) fail(errors.join(' '));
   if (!trigger?.conditions) return true;
-  const state = { input, parameters, variables: {}, results: Object.create(null), items: [] };
+  const state = {
+    input,
+    parameters,
+    variables: {},
+    results: Object.create(null),
+    items: [],
+    clock: store?.clock ?? systemClock,
+    ids: store?.ids ?? systemIds,
+  };
   const results = (trigger.conditions ?? []).map((condition) => {
     const result = evaluate(parseFlowExpression(condition.expression.slice(1)), state);
     if (typeof result !== 'boolean') fail('Trigger conditions require boolean results.', 400, 'LocalFlowExpression');
@@ -1217,28 +1336,27 @@ function requireNumericArguments(a, name) {
   if (a.some((v) => !isExactNumeric(v) && (typeof v !== 'number' || !Number.isFinite(v))))
     fail('Numeric arguments required for ' + name, 400, 'LocalFlowExpression');
 }
-function evaluateExactArithmetic(n, a, node, state) {
-  const integer = node.args.every((arg) => numericKind(arg, state) === 'integer'),
-    type = integer ? 'Int64' : 'Decimal';
+function evaluateExactArithmetic(n, a, integer) {
+  const type = integer ? 'Int64' : 'Decimal';
   if (n === 'add') return sumNumeric(a, type);
   if (n === 'sub') return sumNumeric([a[0], multiplyNumeric([a[1], -1])], type);
   if (n === 'mul') return multiplyNumeric(a, type);
   return divideNumeric(a[0], a[1], { integer, modulo: n === 'mod' });
 }
-function evaluatePlainArithmetic(n, a, node, state) {
+function evaluatePlainArithmetic(n, a, integer) {
   if (n === 'add') return a[0] + a[1];
   if (n === 'sub') return a[0] - a[1];
   if (n === 'mul') return a[0] * a[1];
-  if (n === 'div' && node.args.every((arg) => numericKind(arg, state) === 'integer')) return Math.trunc(a[0] / a[1]);
+  if (n === 'div' && integer) return Math.trunc(a[0] / a[1]);
   if (n === 'div') return a[0] / a[1];
   return a[0] % a[1];
 }
-function evaluateArithmetic(n, a, node, state) {
-  requireNumericArguments(a, node.name);
+function evaluateArithmetic(n, a, name, integer) {
+  requireNumericArguments(a, name);
   if (['div', 'mod'].includes(n) && compareNumeric(a[1], 0) === 0)
     fail('Division by zero.', 400, 'LocalFlowExpression');
-  if (a.some(isExactNumeric)) return evaluateExactArithmetic(n, a, node, state);
-  return evaluatePlainArithmetic(n, a, node, state);
+  if (a.some(isExactNumeric)) return evaluateExactArithmetic(n, a, integer);
+  return evaluatePlainArithmetic(n, a, integer);
 }
 /* NOSONAR: mixed return values are part of the contract */ function evaluateNumericConversion(n, a) {
   const raw = isExactNumeric(a[0]) ? a[0].value : a[0];
@@ -1263,20 +1381,26 @@ function evaluateArithmetic(n, a, node, state) {
 }
 function evaluateBooleanFunction(n, a) {
   if (n === 'and' || n === 'or') {
-    if (a.some((value) => typeof value !== 'boolean')) fail('Boolean arguments required.');
+    if (a.some((value) => typeof value !== 'boolean')) fail('Boolean arguments required.', 400, 'LocalFlowExpression');
     return n === 'and' ? a.every(Boolean) : a.some(Boolean);
   }
   if (n === 'not') {
-    if (typeof a[0] !== 'boolean') fail('not() requires a boolean.');
+    if (typeof a[0] !== 'boolean') fail('not() requires a boolean.', 400, 'LocalFlowExpression');
     return !a[0];
   }
   if (n === 'coalesce') return a.find((value) => value !== null && value !== undefined) ?? null;
-  if (typeof a[0] !== 'boolean') fail('if() requires a boolean.');
+  if (typeof a[0] !== 'boolean') fail('if() requires a boolean.', 400, 'LocalFlowExpression');
   return a[0] ? a[1] : a[2];
 }
-function evaluateNumericComparison(n, a, name) {
+// Two strings compare ordinally, by UTF-16 code unit as JavaScript's < and > do. Numbers compare numerically,
+// and any other operand mix is a 400.
+function compareComparisonOperands(a, name) {
+  if (typeof a[0] === 'string' && typeof a[1] === 'string') return Number(a[0] > a[1]) - Number(a[0] < a[1]);
   requireNumericArguments(a, name);
-  const compared = compareNumeric(a[0], a[1]);
+  return compareNumeric(a[0], a[1]);
+}
+function evaluateComparison(n, a, name) {
+  const compared = compareComparisonOperands(a, name);
   if (n === 'greater') return compared > 0;
   if (n === 'greaterorequals') return compared >= 0;
   if (n === 'less') return compared < 0;
@@ -1293,7 +1417,8 @@ function concatFlowValues(values) {
 }
 function evaluateFlowCollection(n, a) {
   if (n === 'length') {
-    if (typeof a[0] !== 'string' && !Array.isArray(a[0])) fail('length() requires a string or array.');
+    if (typeof a[0] !== 'string' && !Array.isArray(a[0]))
+      fail('length() requires a string or array.', 400, 'LocalFlowExpression');
     return a[0].length;
   }
   if (n === 'empty')
@@ -1306,7 +1431,7 @@ function evaluateFlowCollection(n, a) {
   if (typeof a[0] === 'string') return a[0].includes(a[1]);
   if (Array.isArray(a[0])) return a[0].some((value) => equivalent(value, a[1]));
   if (a[0] && typeof a[0] === 'object' && !isExactNumeric(a[0])) return own(a[0], a[1]);
-  return fail('contains() requires a collection.');
+  return fail('contains() requires a collection.', 400, 'LocalFlowExpression');
 }
 function evaluateStringMatch(n, a, name) {
   if (a.some((value) => typeof value !== 'string')) fail(name + '() requires strings.', 400, 'LocalFlowExpression');
@@ -1349,13 +1474,14 @@ function evaluateTextFunction(n, a) {
     return a[0].split(a[1]);
   }
   if (n === 'tolower' || n === 'toupper' || n === 'trim') {
-    if (typeof a[0] !== 'string') fail('String argument required.');
+    if (typeof a[0] !== 'string') fail('String argument required.', 400, 'LocalFlowExpression');
     if (n === 'tolower') return a[0].toLowerCase();
     if (n === 'toupper') return a[0].toUpperCase();
     return a[0].trim();
   }
-  if (a.some((value) => typeof value !== 'string')) fail('replace() requires strings.');
-  return a[0].replaceAll(a[1], a[2]);
+  if (a.some((value) => typeof value !== 'string')) fail('replace() requires strings.', 400, 'LocalFlowExpression');
+  if (!a[1]) fail('replace() with an empty search text requires native evidence.');
+  return a[0].split(a[1]).join(a[2]);
 }
 function evaluateCollectionFunction(n, a, node) {
   switch (n) {
@@ -1386,15 +1512,193 @@ function evaluateCollectionFunction(n, a, node) {
       return undefined;
   }
 }
+// Workflow date and time functions. The clock and id source are the run's (store.clock and store.ids), so a fixed store gives
+// the same timestamps and GUIDs on every run. A timestamp is a date with its sub-millisecond ticks (__netTicks, set by parseNetDate).
+const TICKS_PER_MS = 10000n;
+const TICK_SPANS = new Map([
+  ['adddays', 864000000000n],
+  ['addhours', 36000000000n],
+  ['addminutes', 600000000n],
+  ['addseconds', 10000000n],
+]);
+const TIME_UNIT_TICKS = new Map([
+  ['second', 10000000n],
+  ['minute', 600000000n],
+  ['hour', 36000000000n],
+  ['day', 864000000000n],
+  ['week', 6048000000000n],
+]);
+const START_RESETS = { hour: { minute: 0 }, day: { hour: 0, minute: 0 }, month: { day: 1, hour: 0, minute: 0 } };
+const GUID_FORMATS = new Set(['N', 'D', 'B', 'P', 'X']);
+const DATE_FUNCTIONS = new Set([
+  ...TICK_SPANS.keys(),
+  'utcnow',
+  'formatdatetime',
+  'addtotime',
+  'subtractfromtime',
+  'startofday',
+  'startofhour',
+  'startofmonth',
+  'dayofweek',
+  'dayofmonth',
+  'dayofyear',
+  'guid',
+]);
+// A time without a date would read the wall clock, so it is refused as a timestamp.
+const TIME_ONLY = /^\d{1,2}:\d{2}(?::\d{2})?\s*(?:[AaPp][Mm]?)?$/;
+function utcParts(date) {
+  return {
+    year: date.getUTCFullYear(),
+    month: date.getUTCMonth(),
+    day: date.getUTCDate(),
+    hour: date.getUTCHours(),
+    minute: date.getUTCMinutes(),
+    second: date.getUTCSeconds(),
+    ms: date.getUTCMilliseconds(),
+    ticks: date.__netTicks ?? 0,
+  };
+}
+// A result date lies in years 0001 to 9999, as .NET's DateTime does. An invalid date has a NaN year and fails here too.
+function resultDate(date) {
+  const year = date.getUTCFullYear(),
+    inRange = Number.isInteger(year) && year >= 1 && year <= 9999;
+  if (!inRange) fail('The result is outside the supported date range.', 400, 'LocalFlowExpression');
+  return date;
+}
+function dateFromParts(parts) {
+  const date = new Date(0);
+  date.setUTCFullYear(parts.year, parts.month, parts.day);
+  date.setUTCHours(parts.hour, parts.minute, parts.second, parts.ms);
+  date.__netTicks = parts.ticks;
+  return resultDate(date);
+}
+function dateFromTicks(total) {
+  const ticks = ((total % TICKS_PER_MS) + TICKS_PER_MS) % TICKS_PER_MS,
+    date = resultDate(new Date(Number((total - ticks) / TICKS_PER_MS)));
+  date.__netTicks = Number(ticks);
+  return date;
+}
+function dateTicks(date) {
+  return BigInt(date.getTime()) * TICKS_PER_MS + BigInt(date.__netTicks ?? 0);
+}
+function flowTimestamp(value) {
+  const date = typeof value === 'string' && !TIME_ONLY.test(value.trim()) ? parseNetDate(value) : null;
+  if (!date) fail('The timestamp is not a valid date and time.', 400, 'LocalFlowExpression');
+  return date;
+}
+function wholeInterval(value) {
+  if (!Number.isSafeInteger(value)) fail('The interval must be a whole number.', 400, 'LocalFlowExpression');
+  return value;
+}
+function daysInMonth(year, month) {
+  const last = new Date(0);
+  last.setUTCFullYear(year, month + 1, 0);
+  return last.getUTCDate();
+}
+// The month moves by whole months and the day is clamped to the last day of the target month, as DateTime.AddMonths does.
+function addCalendarMonths(date, months) {
+  const parts = utcParts(date),
+    index = parts.year * 12 + parts.month + months,
+    year = Math.floor(index / 12),
+    month = index - year * 12;
+  return dateFromParts({ ...parts, year, month, day: Math.min(parts.day, daysInMonth(year, month)) });
+}
+function addTimeUnit(date, interval, unit) {
+  const name = String(unit).toLowerCase();
+  if (TIME_UNIT_TICKS.has(name)) return dateFromTicks(dateTicks(date) + BigInt(interval) * TIME_UNIT_TICKS.get(name));
+  if (name === 'month') return addCalendarMonths(date, interval);
+  if (name === 'year') return addCalendarMonths(date, interval * 12);
+  return fail('Unsupported time unit: ' + String(unit) + '.', 400, 'LocalFlowExpression');
+}
+function startOf(date, unit) {
+  return dateFromParts({ ...utcParts(date), second: 0, ms: 0, ticks: 0, ...START_RESETS[unit] });
+}
+function dayOfYear(date) {
+  const january = new Date(0);
+  january.setUTCFullYear(date.getUTCFullYear(), 0, 1);
+  return Math.round((startOf(date, 'day').getTime() - january.getTime()) / 86400000) + 1;
+}
+// Formats with the "o" default. Only the en-us locale is supported, since the formatter uses its English names.
+function formatTimestamp(date, format, locale) {
+  if (locale !== undefined && String(locale).toLowerCase() !== 'en-us')
+    fail('Only the en-us locale is supported.', 501, 'LocalFlowUnsupported');
+  try {
+    return formatNetDate(date, format ?? 'o');
+  } catch (error) {
+    if (error instanceof LiquidError)
+      fail('The format is not a valid date and time format.', 400, 'LocalFlowExpression');
+    throw error;
+  }
+}
+function guidText(id, format = 'D') {
+  const spec = String(format).toUpperCase();
+  if (!GUID_FORMATS.has(spec)) fail('The GUID format must be N, D, B, P or X.', 400, 'LocalFlowExpression');
+  const hex = String(id).replaceAll('-', '').toLowerCase(),
+    dashed = [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join('-');
+  if (spec === 'N') return hex;
+  if (spec === 'B') return '{' + dashed + '}';
+  if (spec === 'P') return '(' + dashed + ')';
+  if (spec === 'X') {
+    const bytes = Array.from({ length: 8 }, (_, i) => '0x' + hex.slice(16 + 2 * i, 18 + 2 * i)).join(',');
+    return `{0x${hex.slice(0, 8)},0x${hex.slice(8, 12)},0x${hex.slice(12, 16)},{${bytes}}}`;
+  }
+  return dashed;
+}
+// A volatile draw (utcNow, guid) of a tracked run takes the next value of the run's tape when an earlier attempt recorded one, and
+// otherwise draws and records it. The key is the action's path (its loop iteration included), the draw kind and the draw's index
+// within that action, so an action that a resume replays from its journal evaluates nothing and cannot shift another action's draws.
+function volatileDraw(state, kind, fresh) {
+  const draws = state.draws;
+  if (!draws?.tape) return fresh();
+  const key = `${draws.at}|${kind}|${draws.next++}`;
+  if (!Object.hasOwn(draws.tape, key)) draws.tape[key] = fresh();
+  return draws.tape[key];
+}
+function evaluateDateFunction(n, a, state) {
+  if (TICK_SPANS.has(n))
+    return formatTimestamp(
+      dateFromTicks(dateTicks(flowTimestamp(a[0])) + BigInt(wholeInterval(a[1])) * TICK_SPANS.get(n)),
+      a[2],
+    );
+  switch (n) {
+    case 'utcnow':
+      return formatTimestamp(
+        dateFromTicks(
+          BigInt(volatileDraw(state, 'utcnow', () => Math.trunc(Number((state.clock ?? systemClock).now())))) *
+            TICKS_PER_MS,
+        ),
+        a[0],
+      );
+    case 'formatdatetime':
+      return formatTimestamp(flowTimestamp(a[0]), a[1], a[2]);
+    case 'addtotime':
+      return formatTimestamp(addTimeUnit(flowTimestamp(a[0]), wholeInterval(a[1]), a[2]), a[3]);
+    case 'subtractfromtime':
+      return formatTimestamp(addTimeUnit(flowTimestamp(a[0]), -wholeInterval(a[1]), a[2]), a[3]);
+    case 'startofday':
+    case 'startofhour':
+    case 'startofmonth':
+      return formatTimestamp(startOf(flowTimestamp(a[0]), n.slice(7)), a[1]);
+    case 'dayofweek':
+      return flowTimestamp(a[0]).getUTCDay();
+    case 'dayofmonth':
+      return flowTimestamp(a[0]).getUTCDate();
+    case 'dayofyear':
+      return dayOfYear(flowTimestamp(a[0]));
+    default:
+      return guidText(
+        volatileDraw(state, 'guid', () => (state.ids ?? systemIds).uuid()),
+        a[0],
+      );
+  }
+}
 function evaluate(node, state) {
   if (node.kind === 'literal') return node.value;
   if (node.kind === 'property') return evaluateProperty(node, state);
-  const n = node.name.toLowerCase(),
-    signature = Object.hasOwn(FLOW_EXPRESSION_ARITY, n) && FLOW_EXPRESSION_ARITY[n];
-  if (!signature) fail('Unsupported local flow function: ' + node.name);
-  if (node.args.length < signature[0] || node.args.length > signature[1])
-    fail('Invalid argument count for ' + node.name);
+  const n = checkFlowCall(node);
+  if (ARITHMETIC_FUNCTIONS.has(n)) return evaluateArithmeticOperand(node, n, state).value;
   const a = node.args.map((arg) => evaluate(arg, state));
+  if (DATE_FUNCTIONS.has(n)) return evaluateDateFunction(n, a, state);
   switch (n) {
     case 'ticks':
       return flowTicks(a[0]);
@@ -1403,8 +1707,7 @@ function evaluate(node, state) {
     case 'triggeroutputs':
       return { body: state.input };
     case 'variables':
-      if (!own(state.variables, a[0])) fail('Unknown flow variable.', 400, 'LocalFlowExpression');
-      return state.variables[a[0]].value;
+      return flowVariable(a[0], state).value;
     case 'parameters':
       if (!own(state.parameters, a[0])) fail('Unknown flow parameter.', 400, 'LocalFlowExpression');
       return state.parameters[a[0]];
@@ -1420,24 +1723,18 @@ function evaluate(node, state) {
     case 'concat':
       return concatFlowValues(a);
     case 'equals':
-      return equivalent(a[0], a[1]);
+      return equalsFlowValues(a[0], a[1]);
     case 'and':
     case 'or':
     case 'not':
     case 'coalesce':
     case 'if':
       return evaluateBooleanFunction(n, a);
-    case 'add':
-    case 'sub':
-    case 'mul':
-    case 'div':
-    case 'mod':
-      return evaluateArithmetic(n, a, node, state);
     case 'greater':
     case 'greaterorequals':
     case 'less':
     case 'lessorequals':
-      return evaluateNumericComparison(n, a, node.name);
+      return evaluateComparison(n, a, node.name);
     case 'string':
       return flowValueText(a[0]);
     case 'int':
@@ -1469,7 +1766,7 @@ function evaluate(node, state) {
     case 'createarray':
       return a;
     default:
-      fail('Unsupported local flow function: ' + node.name);
+      fail(UNSUPPORTED_FUNCTION + node.name);
   }
 }
 function flowInterpolationEnd(value, start) {
@@ -1713,11 +2010,11 @@ function* executeForeachAction({
     span?.set({ iterations: started });
   }
 }
-function* executeUntilAction({ action, span, key, iteration, run, stopped, condition, scope, status }) {
+function* executeUntilAction({ action, span, key, iteration, run, stopped, condition, scope, status, now }) {
   const limit = action.limit ?? {},
     count = limit.count ?? 60,
     timeout = durationMs(limit.timeout ?? 'PT1H'),
-    started = Date.now();
+    started = now();
   let met = false;
   for (let i = 0; i < count && !stopped(); i++) {
     span?.set({ iterations: i + 1 });
@@ -1730,7 +2027,7 @@ function* executeUntilAction({ action, span, key, iteration, run, stopped, condi
       met = true;
       break;
     }
-    if (Date.now() - started >= timeout) {
+    if (now() - started >= timeout) {
       status = 'TimedOut';
       break;
     }
@@ -1781,7 +2078,7 @@ export function executeFlowDefinition({
   const triggers = Object.values(definition?.triggers ?? {});
   if (!input || typeof input !== 'object' || Array.isArray(input) || isExactNumeric(input))
     fail('The cloud-flow input must be an object.', 400, 'InvalidRequest');
-  validateFlowInput(input, triggers[0].inputs?.schema);
+  validateTriggerInput(triggers[0], input);
   // A tracked run passes the non-secret parameter values frozen at its start (runTrackedFlow), so a resume replays them.
   const parameters = flowParameters(definition, store),
     state = {
@@ -1790,8 +2087,10 @@ export function executeFlowDefinition({
       parameters: frozen ? clone(frozen) : parameters.values,
       results: Object.create(null),
       items: [],
+      clock: store?.clock ?? systemClock,
+      ids: store?.ids ?? systemIds,
     };
-  if (!evaluateFlowTriggerConditions(definition, { input, parameters: state.parameters }))
+  if (!evaluateFlowTriggerConditions(definition, { input, parameters: state.parameters, store }))
     return { status: 'Skipped', reason: 'TriggerConditionFalse' };
   if (serviceProfile) validateServiceProfile(serviceProfile);
   const runtime = connectors ?? createConnectorRuntime({ store }),
@@ -1809,7 +2108,9 @@ export function executeFlowDefinition({
   // context.journal: the journalled outcomes a resume replays, keyed by action path plus the loop iteration ('path', 'path#2' for a
   // loop body's second iteration, 'path#1.3' inside nested loops), so an action inside a loop replays each iteration's answer.
   const unconsumed = new Set(context.replay ?? []),
-    replayed = context.journal ?? {};
+    replayed = context.journal ?? {},
+    // The volatile tape of a tracked run (volatileDraw); null outside one, where every draw is taken as it comes.
+    volatileTape = context.volatile ?? null;
   let suspension = null,
     sealedMemo;
   // Tracing (docs/design/tracing.md): one flow-action span per executed action, parented explicitly by its enclosing action
@@ -1823,9 +2124,16 @@ export function executeFlowDefinition({
     capture = () => traces?.settings().level === 'full' && !sealedRun();
   // A no-op span (level off, or the trace at spansPerTrace) is no parent: its children keep the ambient one.
   const childOf = (span) => (span?.spanId ? { parentSpanId: span.spanId, traceId: span.traceId } : {});
+  // The run's clock (store.clock, the system clock by default). Only a finite limits.timeoutMs sets a deadline.
+  const runClock = () => Number(store?.clock?.now?.() ?? Date.now());
   const maxActions = Math.min(limits.maxActions ?? 2000, 10000),
     maxIterations = Math.min(limits.maxIterations ?? 100, 1000),
-    deadline = Date.now() + Math.min(limits.timeoutMs ?? 2000, 5000);
+    timeoutMs = Number(limits.timeoutMs ?? NaN),
+    deadline = Number.isFinite(timeoutMs) ? runClock() + timeoutMs : Infinity;
+  // A provider call receives the time left on an explicit deadline, capped at the longest timer delay, so a pending call is
+  // bounded by the run's limit and no timer fires early.
+  const providerTimeout = () =>
+    deadline === Infinity ? {} : { timeoutMs: Math.min(MAX_TIMER_DELAY, Math.max(0, deadline - runClock())) };
   const signal = context.signal ?? null;
   const stopped = () => {
     if (terminated || cancelled) return true;
@@ -1852,7 +2160,7 @@ export function executeFlowDefinition({
   const mayWait = (action) =>
     Boolean(connectorCall(action)) || ['Wait', 'ChangeSet'].includes(action.type) || own(packActions, action.type);
   const delay = (inputs) => {
-    const at = Number(store?.clock?.now?.() ?? Date.now()),
+    const at = runClock(),
       until = inputs?.until?.timestamp,
       count = inputs?.interval?.count,
       unit = UNIT_MS[inputs?.interval?.unit];
@@ -1869,8 +2177,9 @@ export function executeFlowDefinition({
     return { kind: 'delay', id: store?.ids?.uuid?.() ?? randomUUID(), until: new Date(due).toISOString() };
   };
   const packActions = runtime.flowActions?.() ?? {};
-  const dataContext = (name, frame) => {
-    const sc = scope(frame);
+  // The data operations of an action (Select, Query, Join, Table, ParseJson) draw through the action's draw context (volatileDraw).
+  const dataContext = (name, frame, draws) => {
+    const sc = { ...scope(frame), draws };
     return {
       resolve: (v) => resolveFlowValue(v, sc),
       maxIterations,
@@ -2049,9 +2358,10 @@ export function executeFlowDefinition({
   /* NOSONAR */ const step = function* (name, map, prefix, frame, ctl) {
     const action = map[name],
       key = prefix + name,
-      sc = scope(frame),
+      // The step's scope carries its draw context, so the volatile draws of its inputs are keyed by its path (volatileDraw).
+      sc = { ...scope(frame), draws: { at: atOf(key, frame), next: 0, tape: volatileTape } },
       resolve = (v) => resolveFlowValue(v, sc);
-    if (++budget > maxActions || Date.now() > deadline)
+    if (++budget > maxActions || runClock() > deadline)
       fail('Local flow execution limit exceeded.', 504, 'LocalFlowTimeout');
     const statuses = action.runAfter ?? {};
     if (Object.entries(statuses).some(([dep, allowed]) => !allowed.includes(ctl.local[dep]?.status))) {
@@ -2298,8 +2608,9 @@ export function executeFlowDefinition({
               run,
               stopped,
               condition,
-              scope,
               status,
+              scope: (frame) => ({ ...scope(frame), draws: sc.draws }),
+              now: runClock,
             }));
             break;
           case 'Wait': {
@@ -2314,7 +2625,7 @@ export function executeFlowDefinition({
           }
           default:
             if (own(FLOW_ACTIONS, action.type)) {
-              outputs = FLOW_ACTIONS[action.type](action, dataContext(name, frame));
+              outputs = FLOW_ACTIONS[action.type](action, dataContext(name, frame, sc.draws));
               break;
             }
             if (own(packActions, action.type)) {
@@ -2432,8 +2743,8 @@ export function executeFlowDefinition({
         correlationId,
         runId: context.runId ?? null,
         actionPath: at,
-        timeoutMs: Math.max(1, deadline - Date.now()),
         ...(signal ? { signal } : {}),
+        ...providerTimeout(),
         ...(String(action.operationOptions ?? '').includes('DisableAsyncPattern') ? { asyncPattern: false } : {}),
         canSuspend: canSuspend(),
         // secure: the connector span (and a child flow's run span) captures no payload of this sealed run.
@@ -2474,8 +2785,8 @@ export function executeFlowDefinition({
         runId: context.runId ?? null,
         actionPath: request.key,
         principal: serviceProfile ?? null,
-        timeoutMs: Math.max(1, deadline - Date.now()),
         ...(signal ? { signal } : {}),
+        ...providerTimeout(),
       });
     return invokeConnector(request);
   };
@@ -2804,6 +3115,7 @@ function restoreTrackedFlowRun(resumed, { resume, sealed, args, processId, name,
     parameters,
     replay = [],
     journal: replayJournal = {},
+    volatile = {},
     background = false,
     sealed: origin = false,
   } = resumed;
@@ -2829,7 +3141,7 @@ function restoreTrackedFlowRun(resumed, { resume, sealed, args, processId, name,
   if (!first?.traceId && trace.span?.traceId)
     traces.remember?.('flow-run:' + runId, { traceId: trace.span.traceId, spanId: trace.span.spanId ?? null });
   trace.sealed = sealed;
-  return { steps, input, correlationId, parameters, replay, replayJournal, background, sealed, runId };
+  return { steps, input, correlationId, parameters, replay, replayJournal, volatile, background, sealed, runId };
 }
 /* NOSONAR: single-pass routine, splitting it would change shared state */ async function trackedFlow(
   {
@@ -2866,7 +3178,9 @@ function restoreTrackedFlowRun(resumed, { resume, sealed, args, processId, name,
   // variable values (assumed: a native run binds its parameter values once per run).
   // An on-demand run (context.background: no Response needed) keeps that context across a resume.
   let replayJournal = {},
-    background = Boolean(args.context?.background);
+    background = Boolean(args.context?.background),
+    // The volatile draws of the run's earlier attempts (volatileDraw), kept with its suspension in the run store.
+    volatileTape = {};
   // A resume replays the journal by iteration key (context.journal); the steps are the ones configured at start, so a first-iteration mock never stands in for a later iteration.
   if (resume) {
     const restored = restoreTrackedFlowRun(await runs.resume(resume.runId, resume.outcome, { definitionHash }), {
@@ -2886,6 +3200,7 @@ function restoreTrackedFlowRun(resumed, { resume, sealed, args, processId, name,
     parameters = restored.parameters;
     replay = restored.replay;
     replayJournal = restored.replayJournal;
+    volatileTape = restored.volatile;
     background = restored.background;
     runId = restored.runId;
     sealed = restored.sealed;
@@ -2894,7 +3209,7 @@ function restoreTrackedFlowRun(resumed, { resume, sealed, args, processId, name,
     parameters = declared.values;
     // The seal is computed at every level (it is kept in the run entry, which must not depend on the trace level).
     sealed ||= flowSealed(args.definition, declared);
-    if (!evaluateFlowTriggerConditions(args.definition, { input, parameters })) {
+    if (!evaluateFlowTriggerConditions(args.definition, { input, parameters, store: args.store })) {
       args.diagnostic?.({
         code: 'FLOW_TRIGGER_SKIPPED',
         processId: canonicalId(processId),
@@ -2959,6 +3274,7 @@ function restoreTrackedFlowRun(resumed, { resume, sealed, args, processId, name,
             runChildFlow,
             replay,
             journal: replayJournal,
+            volatile: volatileTape,
             ...(signal ? { signal } : {}),
           },
         }),
@@ -2983,7 +3299,11 @@ function restoreTrackedFlowRun(resumed, { resume, sealed, args, processId, name,
     throw failure;
   }
   if (result?.status === 'Waiting') {
-    await runs.suspend(runId, { actionPath: result.suspended.actionPath, wait: result.suspended.wait });
+    await runs.suspend(runId, {
+      actionPath: result.suspended.actionPath,
+      wait: result.suspended.wait,
+      volatile: volatileTape,
+    });
     return { ...result, runId };
   }
   // A Response answer is kept as the run's outputs, so a parent waiting on this run as its child resumes with it.

@@ -65,6 +65,7 @@ const TOOL_SCHEMAS = {
     side: { type: 'string' },
     label: { type: 'string' },
     'allow-writes': { type: 'boolean' },
+    'all-scenarios': { type: 'boolean' },
     ids: { type: 'string' },
     only: { type: 'string' },
     config: { type: 'string' },

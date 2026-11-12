@@ -1,6 +1,8 @@
+// @test-kind contract: the native portal services (notes, grids, lists, downloads) as the designed local runtime answers them.
 import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
@@ -10,10 +12,18 @@ import {
   portalNotes,
   reportCapturedBundleRequirements,
   gridRecord,
+  handleNativeService,
+  attributeEntry,
 } from '../lib/native-services.mjs';
 import { notesFilter } from '../lib/form-service.mjs';
 import { signInHeaders } from '../testing/session.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import {
+  ATTRIBUTE_TYPE_NAMES,
+  attributeTypeCode,
+  attributeTypeDisplayName,
+  attributeTypeNumber,
+} from '../lib/attribute-metadata.mjs';
 
 test('native grids preserve zone-less DateOnly and independent dates across host time zones', () => {
   const previous = process.env.TZ;
@@ -130,7 +140,7 @@ const ACCOUNTS = {
 const NOTE = 'e0000000-0000-4000-8000-000000000001';
 const INTERNAL_NOTE = 'e0000000-0000-4000-8000-000000000002';
 
-async function fixture(t, { roles = ['Editor'] } = {}) {
+async function fixture(t, { roles = ['Editor'], siteSettings = '', accountList = '' } = {}) {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'native-services-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
@@ -141,9 +151,11 @@ async function fixture(t, { roles = ['Editor'] } = {}) {
     'Main.webtemplate.yml': 'adx_webtemplateid: main\nadx_name: Main',
     'Main.webtemplate.source.html': `{% include 'entity_list' key: 'Accounts' %}{% entityform name: "Edit contact" %}`,
     'Accounts.list.yml':
-      'adx_entitylistid: 1b000000-0000-4000-8000-000000000001\nadx_name: Accounts\nadx_entityname: account\nadx_pagesize: 2\nadx_searchenabled: true',
+      'adx_entitylistid: 1b000000-0000-4000-8000-000000000001\nadx_name: Accounts\nadx_entityname: account\nadx_pagesize: 2\nadx_searchenabled: true' +
+      accountList,
     'Edit.basicform.yml':
       'adx_entityformid: 2b000000-0000-4000-8000-000000000001\nadx_name: Edit contact\nadx_entityname: contact\nadx_mode: 100000001',
+    ...(siteSettings ? { 'sitesetting.yml': siteSettings } : {}),
   };
   for (const [name, body] of Object.entries(files)) await fs.writeFile(path.join(dir, name), body);
   const grant = (entity, operations) => ({
@@ -275,6 +287,7 @@ const gridRequest = (secure, extra = {}) => ({
 const names = (data) =>
   data.Records.map((record) => record.Attributes.find((attribute) => attribute.Name === 'name').Value);
 
+// @test-kind security: a tampered protected grid configuration is refused
 test('protected grid configuration round-trips and rejects tampering', () => {
   const token = protectConfiguration({ t: 'list', w: SITE, list: 'x' });
   assert.deepEqual(unprotectConfiguration(token), { t: 'list', w: SITE, list: 'x' });
@@ -363,6 +376,7 @@ test("lookup grid service serves the editable lookup's target view on demand", a
   assert.equal((await post('entity-grid-data.json', gridRequest(layout.Base64SecureConfiguration))).status, 403);
 });
 
+// @test-kind security: a grid read is denied where table permissions deny it
 test('grid reads follow table permissions and report native access denial', async (t) => {
   const { app, post, get } = await fixture(t);
   const page = await (await get(`/?id=${CONTACT}`)).text();
@@ -418,12 +432,10 @@ test('notes service lists portal notes and annotation downloads stream the docum
 test('anti-forgery token endpoint returns the native hidden input', async () => {
   const { app, get } = shared;
   const html = await (await get(`/_portal/${SITE}/Layout/GetAntiForgeryToken`)).text();
-  assert.equal(html, `<input name="__RequestVerificationToken" type="hidden" value="${app.csrf}" />`);
+  assert.equal(html, `<input name="__RequestVerificationToken" type="hidden" value="${app.portalToken}" />`);
 });
 
-test("notes service adds, edits and deletes the signed-in contact's own portal notes", async (t) => {
-  const { app, post, get } = await fixture(t);
-  const state = app.store.snapshot();
+function notesEditorPermissions() {
   const grant = (entity, operations) => ({
     id: `editor-${entity}`,
     entity,
@@ -431,11 +443,17 @@ test("notes service adds, edits and deletes the signed-in contact's own portal n
     roles: ['Editor'],
     operations,
   });
-  state.permissions = [
+  return [
     grant('contact', ['read', 'update', 'append', 'appendTo']),
     grant('account', ['read']),
     grant('annotation', ['read', 'create', 'update', 'delete', 'append', 'appendTo']),
   ];
+}
+
+test("notes service adds, edits and deletes the signed-in contact's own portal notes", async (t) => {
+  const { app, post, get } = await fixture(t);
+  const state = app.store.snapshot();
+  state.permissions = notesEditorPermissions();
   await app.store.replaceState(state);
   const list = async () =>
     (
@@ -653,4 +671,248 @@ test('view cells without a width serialise Width 0 and a NaN share; disableSorti
     secure: { t: 'subgrid' },
   });
   assert.deepEqual([sized.ColumnsTotalWidth, sized.Columns.map((c) => c.Width)], [400, [300, 100]]);
+});
+
+// @test-kind contract: an edited note keeps the site's NotesFilter prefix, so it stays on the portal timeline.
+test('an edited note keeps the NotesFilter prefix of its site and stays listed', async (t) => {
+  const siteSettings =
+    '- adx_sitesettingid: s-notes\n  adx_name: KnowledgeManagement/NotesFilter\n  adx_value: "*PORTAL*"';
+  const { app, post } = await fixture(t, { siteSettings });
+  const state = app.store.snapshot();
+  state.permissions = notesEditorPermissions();
+  await app.store.replaceState(state);
+  const listed = async () =>
+    (
+      await (
+        await post('entity-notes', { regarding: { LogicalName: 'contact', Id: CONTACT }, page: 1, pageSize: 10 })
+      ).json()
+    ).Records.map((record) => record.UnformattedText);
+
+  const added = await post('entity-form-addnote', {
+    regardingEntityLogicalName: 'contact',
+    regardingEntityId: CONTACT,
+    text: 'hello',
+  });
+  assert.equal(added.status, 201);
+  const { Id: id } = await added.json();
+  assert.ok((await listed()).includes('hello'));
+  assert.equal((await post('entity-form-updatenote', { id, text: 'edited' })).status, 200);
+  assert.ok((await listed()).includes('edited'));
+  const stored = app.store.snapshot().tables.annotation.find((row) => row.annotationid === id);
+  assert.ok(stored.notetext.startsWith('*PORTAL*'), stored.notetext);
+});
+
+// @test-kind contract: a list that configures only a portal-user filter attribute filters by it, whatever filter the request names.
+test('a list with only a portal-user filter attribute applies it for every request filter', async (t) => {
+  const { app, post, get } = await fixture(t, { accountList: '\nadx_filterportaluser: portalowner' });
+  const state = app.store.snapshot();
+  const [alpha, beta, gamma] = state.tables.account;
+  alpha.portalowner = CONTACT;
+  beta.portalowner = 'c0000000-0000-4000-8000-0000000000ee';
+  gamma.portalowner = 'c0000000-0000-4000-8000-0000000000ee';
+  await app.store.replaceState(state);
+  const [layout] = layoutsAfter(await (await get('/')).text(), 'class="entity-grid entitylist');
+  for (const filter of [undefined, 'user', 'account']) {
+    const data = await (
+      await post('entity-grid-data.json', gridRequest(layout.Base64SecureConfiguration, { filter, pageSize: 10 }))
+    ).json();
+    assert.deepEqual(names(data), ['Alpha'], `filter ${filter}`);
+  }
+});
+
+// @test-kind security: a note attachment whose media type is not a valid one is served as application/octet-stream, stored or not.
+test('a note attachment with a control character in its media type downloads as application/octet-stream', async (t) => {
+  const { app, post, get } = await fixture(t);
+  const state = app.store.snapshot();
+  state.permissions = notesEditorPermissions();
+  const seeded = 'a0000000-0000-4000-8000-0000000000b1';
+  state.tables.annotation.push({
+    annotationid: seeded,
+    notetext: '*WEB*Seeded',
+    subject: `Seeded [contact:${CONTACT}]`,
+    objecttypecode: 'contact',
+    objectid: { id: CONTACT, logical_name: 'contact' },
+    filename: 'seeded.txt',
+    mimetype: 'text/plain\r\nSet-Cookie: x=1',
+    documentbody: Buffer.from('seeded').toString('base64'),
+    createdon: '2026-01-02T03:04:05Z',
+  });
+  await app.store.replaceState(state);
+
+  const added = await post('entity-form-addnote', {
+    regardingEntityLogicalName: 'contact',
+    regardingEntityId: CONTACT,
+    text: 'Typed note',
+    file: {
+      name: 'typed.txt',
+      type: 'text/plain\r\nSet-Cookie: x=1',
+      content: Buffer.from('typed').toString('base64'),
+    },
+  });
+  assert.equal(added.status, 201);
+  const { Id: id } = await added.json();
+  for (const [noteId, body] of [
+    [id, 'typed'],
+    [seeded, 'seeded'],
+  ]) {
+    const download = await get(`/_entity/annotation/${noteId}/${SITE}`);
+    assert.equal(download.status, 200);
+    assert.equal(download.headers.get('content-type'), 'application/octet-stream');
+    assert.equal(await download.text(), body);
+  }
+});
+
+// The anti-forgery check runs before the contact check, so an accepted token reaches SignInRequired for a request without a contact.
+async function postNoteForm(t, context, token) {
+  const server = http.createServer(async (req, res) => {
+    if (!(await handleNativeService(req, res, new URL(req.url, 'http://127.0.0.1'), context))) res.writeHead(404).end();
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => {
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/_services/entity-form-addnote/${SITE}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      regardingEntityLogicalName: 'contact',
+      regardingEntityId: CONTACT,
+      text: 'Admin note',
+      __RequestVerificationToken: token,
+    }),
+  });
+  return { status: response.status, body: await response.text() };
+}
+
+// @test-kind contract+security: the admin token is accepted as a native note form's anti-forgery field
+// only when the context names it.
+test('a native note form carrying the admin token passes the anti-forgery check only when the context names it', async (t) => {
+  const context = { portal: { website: { id: SITE } }, csrf: 'page-token' };
+  const configured = await postNoteForm(t, { ...context, adminToken: 'admin-token' }, 'admin-token');
+  assert.equal(configured.status, 401);
+  assert.match(configured.body, /SignInRequired/);
+  const unconfigured = await postNoteForm(t, context, 'admin-token');
+  assert.equal(unconfigured.status, 403);
+  assert.match(unconfigured.body, /MissingPortalRequestVerificationToken/);
+});
+
+// @test-kind security: a near-miss anti-forgery token is refused
+test('a note form token of the page or admin token length must match exactly, and each exact token passes', async (t) => {
+  const context = { portal: { website: { id: SITE } }, csrf: 'page-token', adminToken: 'admin-token' };
+  for (const token of ['page-tokeN', 'page', 'admin-tokeN', 'admin']) {
+    const refused = await postNoteForm(t, context, token);
+    assert.equal(refused.status, 403, token);
+    assert.match(refused.body, /MissingPortalRequestVerificationToken/, token);
+  }
+  assert.equal((await postNoteForm(t, context, 'page-token')).status, 401);
+  assert.equal((await postNoteForm(t, context, 'admin-token')).status, 401);
+});
+
+// @test-kind security: a near-miss anti-forgery header is refused
+test('a JSON service post whose anti-forgery header is a near miss is refused, and the exact header is accepted', async () => {
+  const { app, post } = shared;
+  const nearMiss = app.csrf.slice(0, -1) + (app.csrf.endsWith('0') ? '1' : '0');
+  const body = { regarding: { LogicalName: 'contact', Id: CONTACT }, page: 1, pageSize: 10 };
+  for (const token of [nearMiss, 'short']) {
+    const refused = await post('entity-notes', body, { __RequestVerificationToken: token });
+    assert.equal(refused.status, 403, token.length);
+    assert.match(await refused.text(), /MissingPortalRequestVerificationToken/);
+  }
+  assert.equal((await post('entity-notes', body)).status, 200);
+});
+
+// @test-kind compatibility: names from the Microsoft Learn AttributeTypeDisplayName class (https://learn.microsoft.com/dotnet/api/microsoft.xrm.sdk.metadata.attributetypedisplayname?view=dataverse-sdk-latest), documentation-derived and not a capture
+test('a column without solution metadata reports the documented AttributeTypeDisplayName of its type', () => {
+  const documented = {
+    nvarchar: 'StringType',
+    string: 'StringType',
+    memo: 'MemoType',
+    ntext: 'MemoType',
+    int: 'IntegerType',
+    integer: 'IntegerType',
+    bigint: 'BigIntType',
+    decimal: 'DecimalType',
+    float: 'DoubleType',
+    double: 'DoubleType',
+    money: 'MoneyType',
+    bit: 'BooleanType',
+    boolean: 'BooleanType',
+    datetime: 'DateTimeType',
+    lookup: 'LookupType',
+    customer: 'CustomerType',
+    owner: 'OwnerType',
+    picklist: 'PicklistType',
+    state: 'StateType',
+    status: 'StatusType',
+    uniqueidentifier: 'UniqueidentifierType',
+    primarykey: 'UniqueidentifierType',
+    multiselectpicklist: 'MultiSelectPicklistType',
+  };
+  const actual = Object.fromEntries(
+    Object.keys(documented).map((dataverseType) => [
+      dataverseType,
+      attributeEntry('col', '1', {
+        field: { dataverseType },
+        settings: {},
+        entity: 'item',
+        primaryName: 'name',
+      }).AttributeMetadata.AttributeTypeName.Value,
+    ]),
+  );
+  assert.deepEqual(actual, documented);
+});
+
+// @test-kind contract: the compact column metadata takes its numeric AttributeType and its AttributeTypeName from the one attribute type table, so the grid and the Liquid attribute_type name each internal type the same way.
+test('a column without solution metadata reports the table numeric AttributeType and display name of every internal type', () => {
+  for (const dataverseType of Object.keys(ATTRIBUTE_TYPE_NAMES)) {
+    const metadata = attributeEntry('col', '1', {
+      field: { dataverseType },
+      settings: {},
+      entity: 'item',
+      primaryName: 'name',
+    }).AttributeMetadata;
+    assert.equal(metadata.AttributeType, attributeTypeNumber(dataverseType), dataverseType);
+    assert.equal(metadata.AttributeTypeName.Value, attributeTypeDisplayName(dataverseType), dataverseType);
+    assert.equal(attributeTypeCode(dataverseType), ATTRIBUTE_TYPE_NAMES[dataverseType][0], dataverseType);
+  }
+});
+
+// @test-kind compatibility: the numeric value of every AttributeTypeCode name the attribute type table uses, as the AttributeTypeCode enum page of Microsoft Learn lists them (https://learn.microsoft.com/dotnet/api/microsoft.xrm.sdk.metadata.attributetypecode?view=dataverse-sdk-latest)
+test('the attribute type table uses the AttributeTypeCode values that Microsoft Learn publishes', () => {
+  const published = {
+    Boolean: 0,
+    Customer: 1,
+    DateTime: 2,
+    Decimal: 3,
+    Double: 4,
+    Integer: 5,
+    Lookup: 6,
+    Memo: 7,
+    Money: 8,
+    Owner: 9,
+    PartyList: 10,
+    Picklist: 11,
+    State: 12,
+    Status: 13,
+    String: 14,
+    Uniqueidentifier: 15,
+    CalendarRules: 16,
+    Virtual: 17,
+    BigInt: 18,
+    ManagedProperty: 19,
+    EntityName: 20,
+  };
+  const used = new Set();
+  for (const dataverseType of Object.keys(ATTRIBUTE_TYPE_NAMES)) {
+    const code = attributeTypeCode(dataverseType);
+    used.add(code);
+    assert.equal(attributeTypeNumber(dataverseType), published[code], `${dataverseType} as ${code}`);
+  }
+  assert.deepEqual(
+    [...used].toSorted((a, b) => a.localeCompare(b)),
+    Object.keys(published)
+      .filter((name) => name !== 'CalendarRules')
+      .toSorted((a, b) => a.localeCompare(b)),
+  );
 });

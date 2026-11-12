@@ -585,9 +585,9 @@ function diagnosticEntitySet(pathname) {
     seen.add(key);
   }
   if (WRITE_METHODS.has(method)) {
-    // Token failures: no token is Learn's
-    // 401 MissingPortalRequestVerificationToken; a token that doesn't match this session's is
-    // 90040107 with 403, the status Microsoft's Power Pages clients refresh the token on.
+    // Token failures: no token is Learn's 401 MissingPortalRequestVerificationToken. The runtime holds one anti-forgery token for
+    // its whole process, whatever the session; a token that differs from it is 90040107 with 403, the status Microsoft's Power
+    // Pages clients refresh the token on.
     const supplied = req.headers.__requestverificationtoken;
     if (supplied == null || supplied === '')
       throw new DataError(
@@ -1358,6 +1358,8 @@ function getNavigation(t) {
 function getNavigationCount(t) {
   if (!t.mapping.relationships?.[t.target.segment]) throw notFound(t.target.segment);
   const { rel, related } = navigationTarget(t);
+  // The count reads the related table: refused where the navigation read is refused, before the cardinality answers.
+  assertExpandReadable(t, t.mapping, null, [{ navigation: t.target.segment, expand: [] }]);
   if (rel.many === false) throw notFound('$count');
   return sendText(t, Math.min(related.length, WEBAPI_COUNT_LIMIT));
 }
@@ -1648,6 +1650,7 @@ async function patchEntity(t) {
     const prepared = policy.prepareWrite(body, 'update');
     write = existingPatchWrite(t, mapping, located.id, prepared, store, deps, options);
   } else {
+    assertUpsertKeyIsGuid(located, target.key);
     // Upsert creates the record with the addressed primary or alternate key.
     const keyed = { ...body, ...located.alternate };
     const prepared = policy.prepareWrite(keyed, 'create');
@@ -1661,6 +1664,12 @@ async function patchEntity(t) {
   };
   if (params) return send(t, outcome.created ? 201 : 200, represented, headers);
   return sendNoContent(t, headers);
+}
+
+// An upsert by primary key creates the row under that key, which must be a GUID (Edm.Guid). Alternate keys are not checked.
+function assertUpsertKeyIsGuid(located, key) {
+  if (located.alternate || GUID_PATTERN.test(String(located.id))) return;
+  throw new DataError(`The key ${key} is not a valid GUID.`, 400, 'InvalidQuery', { segment: key, phase: 'query' });
 }
 
 function existingPatchWrite(t, mapping, id, prepared, store, deps, options) {

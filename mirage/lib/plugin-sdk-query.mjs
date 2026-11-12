@@ -247,7 +247,7 @@ export function queryExpressionToFetch(query, store) {
     query.topCount != null &&
     (page.count || page.pageNumber || page.pagingCookie || page.returnTotalRecordCount === true)
   )
-    fail('SDK TopCount cannot be combined with paging or total count.');
+    throw new DataError('SDK TopCount cannot be combined with paging or total count.', 400, 'InvalidFetchXml');
   return (
     '<fetch' +
     attrs({

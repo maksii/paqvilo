@@ -1900,10 +1900,11 @@ async function /* NOSONAR */ serveStage(resolved, context) {
 
 // ---- orchestration
 function selectMatrixStages(options) {
+  for (const stage of [...(options.only ?? []), ...(options.skip ?? [])])
+    if (!STAGES.includes(stage)) throw new Error(`Unknown stage '${stage}'; use ${STAGES.join(', ')}`);
   const stages = new Set(options.only?.length ? options.only : STAGES);
   for (const stage of options.skip ?? []) stages.delete(stage);
-  for (const stage of stages)
-    if (!STAGES.includes(stage)) throw new Error(`Unknown stage '${stage}'; use ${STAGES.join(', ')}`);
+  if (!stages.size) throw new Error('No stage selected: --only and --skip leave nothing to run.');
   const personas = options.personas?.length ? options.personas : DEFAULT_PERSONAS;
   for (const persona of personas)
     if (!PERSONAS.includes(persona)) throw new Error(`Unknown persona '${persona}'; use ${PERSONAS.join(', ')}`);

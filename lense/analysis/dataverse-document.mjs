@@ -141,10 +141,17 @@ function yamlMetadataRoot(entry, value) {
   return null;
 }
 
+// pac solution unpack writes forms as Entities/<table>/FormXml/<type>/<id>.xml; the folder names the table of a form file.
+function unpackedFormTable(entry) {
+  const parts = (entry.relativeFile ?? entry.file).replaceAll('\\', '/').split('/');
+  const index = parts.findIndex((part) => lower(part) === 'entities');
+  return index >= 0 && lower(parts[index + 2]) === 'formxml' ? parts[index + 1] : null;
+}
+
 export function readDataverseDocument(entry) {
   if (/\.xml$/i.test(entry.file)) {
     const root = parseSolutionXml(entry.text, { locations: true });
-    return { entry, root, rows: xmlRows(root), format: 'xml' };
+    return { entry, root, rows: xmlRows(root, unpackedFormTable(entry)), format: 'xml' };
   }
   let value;
   if (/\.json$/i.test(entry.file)) value = JSON.parse(entry.text);

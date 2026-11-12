@@ -1,10 +1,11 @@
+// @test-kind contract: Paqvilo's organization composition designed to close every provider it created when composition fails
 // Pack factory ownership (organization-host.mjs composeProviders adopt/own): what a factory creates is owned by the
 // composition before validation, so a rejected instance, a resource opened by a factory that then throws and a promise a
 // factory returned are all closed when composition fails, and none of them escapes.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
-import { composeProviders } from '../lib/organization-host.mjs';
+import { composeOrganizationHost, composeProviders } from '../lib/organization-host.mjs';
 import '../lib/provider-modules.mjs';
 
 const compose = async (factory) => {
@@ -52,4 +53,36 @@ test('a provider a factory returned as a promise is closed once it resolves', as
     { code: 'PROVIDER_FACTORY_FAILED' },
   );
   assert.deepEqual(calls, ['close']);
+});
+
+test('a host whose trace settings are refused closes the providers its composition already created', async () => {
+  const calls = [];
+  const store = await new DataStore({ state: emptyState() }).init();
+  const pack = {
+    id: 'fx-pack',
+    name: 'Invented',
+    description: 'Invented',
+    matches: () => true,
+    presets: () => ({}),
+    outboxHandlers: {
+      observer: ({ own }) => {
+        own({ close: () => calls.push('owned') });
+        return { observe() {}, close: () => calls.push('observer') };
+      },
+    },
+  };
+  await assert.rejects(
+    composeOrganizationHost({
+      store,
+      packs: [pack],
+      config: { providers: { outbox: { kind: 'pack:fx-pack' } } },
+      trace: { level: 'bogus' },
+      sources: { plugins: () => undefined, workflows: () => new Map(), layers: () => [] },
+    }),
+    { message: 'mirage.trace.level must be off, summary or full' },
+  );
+  assert.deepEqual(
+    calls.toSorted((a, b) => a.localeCompare(b)),
+    ['observer', 'owned'],
+  );
 });

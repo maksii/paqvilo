@@ -1,3 +1,4 @@
+// @test-kind contract: the Canvas player orders resolution, start and input races against the invented source's snapshots.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
@@ -6,7 +7,7 @@ import { signInContext } from '../mirage/testing.mjs';
 import { canvasPlayerFixture } from '../mirage/test/canvas-player-fixture.mjs';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 
-test('resolution changed while Start is pending is applied after startup', { timeout: 60000 }, async (t) => {
+test('resolution changed while Start is pending is applied after startup', async (t) => {
   let release;
   ownedFixture(t).add(() => release?.());
   const sim = await canvasPlayerFixture(t, 'directory');
@@ -49,7 +50,7 @@ test('resolution changed while Start is pending is applied after startup', { tim
   );
 });
 
-test('reopening a running app reflects its current resolution without changing it', { timeout: 60000 }, async (t) => {
+test('reopening a running app reflects its current resolution without changing it', async (t) => {
   const sim = await canvasPlayerFixture(t, 'directory');
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
   ownedFixture(t).add(() => browser.close());
@@ -90,7 +91,7 @@ test('reopening a running app reflects its current resolution without changing i
   });
 });
 
-test('failed input without a snapshot restores the last observed control value', { timeout: 60000 }, async (t) => {
+test('failed input without a snapshot restores the last observed control value', async (t) => {
   const sim = await canvasPlayerFixture(t, 'directory');
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
   ownedFixture(t).add(() => browser.close());

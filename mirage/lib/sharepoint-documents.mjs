@@ -27,6 +27,7 @@
 // ponytail: one head() per listed file to recover the original name and content type; store the name in the key when
 //   folders hold thousands of files.
 import { randomUUID } from 'node:crypto';
+import { sameToken } from './admin-origin.mjs';
 import { DataError } from './data-error.mjs';
 import { assertAttachmentSize } from './platform-settings.mjs';
 import { guardProvider } from './storage-provider.mjs';
@@ -610,7 +611,7 @@ const failureBody = (error) => ({ error: { code: error.code ?? 'PortalDocumentsF
       if (path.length > MAX_FOLDER_DEPTH)
         throw new DataError('The folder path is not valid.', 400, 'SharePointInvalidName');
       for (const segment of path) assertName(segment);
-      if (req.method !== 'GET' && (!csrf || req.headers.__requestverificationtoken !== csrf))
+      if (req.method !== 'GET' && !sameToken(req.headers.__requestverificationtoken, csrf))
         return answer(res, 403, failureBody({ code: 'Forbidden', message: 'Missing portal verification token.' }));
       // Without storage every operation answers 501, never an empty list.
       if (sharepoint.describe().level !== 'behaviour')

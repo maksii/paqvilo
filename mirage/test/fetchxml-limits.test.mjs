@@ -7,6 +7,7 @@ import { DataStore } from '../lib/data.mjs';
 import { FETCH_UNSUPPORTED_ATTRIBUTES, parseXmlDocument, planFetch } from '../lib/fetchxml-engine.mjs';
 import { likeMatcher } from '../lib/dataverse-values.mjs';
 import { supportOf } from '../webapi-inventory.mjs';
+import { readFixture } from './read-projection-fixture.mjs';
 
 const G = (n) => `00000000-0000-0000-0000-${String(n).padStart(12, '0')}`;
 function store({ complete = true, accounts = 2, contactsPerAccount = 2, settings = {} } = {}) {
@@ -321,6 +322,69 @@ test('LIKE matcher keeps the translation semantics for wildcards, sets, folding 
       LIKE_VALUES.map((value) => (match(value) ? '1' : '0')).join(''),
       expected,
       `LIKE ${JSON.stringify(pattern)}`,
+    );
+  }
+});
+
+const charReferenceFilter = (reference) =>
+  `<fetch><entity name="account"><attribute name="name"/><filter><condition attribute="name" operator="eq"><value>${reference}</value></condition></filter></entity></fetch>`;
+
+test('FetchXML character references outside the XML character range are a 400 InvalidRequest', () => {
+  for (const reference of ['&#x110000;', '&#99999999999;', '&#0;', '&#xD800;']) {
+    assert.throws(
+      () => parseXmlDocument(`<fetch a="${reference}"/>`, { root: 'fetch' }),
+      (error) => error.status === 400 && error.code === 'InvalidRequest',
+      `attribute ${reference}`,
+    );
+    assert.throws(
+      () => parseXmlDocument(charReferenceFilter(reference), { root: 'fetch' }),
+      (error) => error.status === 400 && error.code === 'InvalidRequest',
+      `text ${reference}`,
+    );
+  }
+});
+
+test('valid XML character references and named entities decode to their characters', () => {
+  const element = parseXmlDocument('<fetch a="&#65;&#x1F600;&amp;&#x9;&#xD7FF;"/>', { root: 'fetch' });
+  assert.equal(element.attrs.a, 'A\u{1F600}&\t\u{D7FF}');
+  const filter = parseXmlDocument(charReferenceFilter('&#66;&#x10FFFF;&lt;')).children[0].children[1];
+  assert.equal(filter.children[0].children[0].text, 'B\u{10FFFF}<');
+});
+
+const charReferenceMappings = {
+  x_item: {
+    logicalName: 'x_item',
+    entitySet: 'x_items',
+    idColumn: 'x_itemid',
+    nameColumn: 'x_name',
+    fields: { x_name: { dataverseType: 'nvarchar' } },
+  },
+};
+
+test('a Web API GET with an out-of-range character reference in FetchXML answers 400', async (t) => {
+  const f = await readFixture(t, {
+    mappings: charReferenceMappings,
+    tables: { x_item: [{ x_itemid: G(1), x_name: 'a', statecode: 0, statuscode: 1 }] },
+  });
+  const attribute = `<fetch><entity name="x_item"><attribute name="x_name"/><filter><condition attribute="x_name" operator="eq" value="&#x110000;"/></filter></entity></fetch>`;
+  const text = `<fetch><entity name="x_item"><attribute name="x_name"/><filter><condition attribute="x_name" operator="in"><value>&#99999999999;</value></condition></filter></entity></fetch>`;
+  for (const xml of [attribute, text]) {
+    const response = await f.request('GET', `/x_items?fetchXml=${encodeURIComponent(xml)}`);
+    assert.equal(response.status, 400);
+  }
+});
+
+test('FetchXML count="0" is refused with the same 400 as page="0"', () => {
+  for (const attribute of ['count="0"', 'page="0"']) {
+    assert.throws(
+      () =>
+        planFetch(
+          parseXmlDocument(`<fetch ${attribute}><entity name="account"><attribute name="name"/></entity></fetch>`, {
+            root: 'fetch',
+          }),
+        ),
+      (error) => error.status === 400 && error.code === 'InvalidFetchXml',
+      attribute,
     );
   }
 });

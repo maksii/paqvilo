@@ -14,11 +14,6 @@ on:
       - edited
       - ready_for_review
   workflow_dispatch:
-    inputs:
-      full:
-        description: Run every suite and package smoke test
-        type: boolean
-        default: true
   workflow_call:
     inputs:
       ref:

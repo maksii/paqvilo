@@ -1,7 +1,9 @@
+// @test-kind contract: component functions of a canvas app run with the parameters, defaults and callbacks its pa.yaml source declares
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createCanvasApp } from '../lib/canvas-runtime.mjs';
 import { createPowerFxEvaluator } from '../lib/canvas-power-fx.mjs';
+import { powerFxEngine } from '../lib/power-fx.mjs';
 import { stringify } from 'yaml';
 import { fixtureApp } from './canvas-runtime-fixture.mjs';
 
@@ -417,4 +419,56 @@ test('RaiseOnReset feedback is bounded and reports a diagnostic', async () => {
   const snapshot = (await runtime.act({ action: 'run', formula: 'Set(trigger,1)' })).snapshot;
   assert.ok(snapshot.diagnostics.some((entry) => entry.code === 'CANVAS_COMPONENT_RESET_LIMIT'));
   assert.equal(snapshot.screens[0].controls[0].properties.Output, 32);
+});
+
+// @test-kind security: nested component calls share one row-scope budget, so they cannot multiply it per call
+test('nested component function calls share one row-scope budget per top-level evaluation', async () => {
+  const loweredBudget = createPowerFxEvaluator({
+    adapter: {
+      evaluateSync: (expression, options) =>
+        powerFxEngine.evaluateSync(expression, { ...options, host: { ...options.host, scopeBudget: 2000 } }),
+    },
+  });
+  const runtime = createCanvasApp({
+    app: {
+      uniqueName: 'scope-budget',
+      source: {
+        tree: {
+          format: 'pa.yaml',
+          components: [
+            {
+              name: 'Calc',
+              definitionType: 'CanvasComponent',
+              customProperties: {
+                Work: { kind: 'OutputFunction', returnType: 'Number', parameters: [parameter('n', 'Number')] },
+              },
+              controls: [],
+            },
+          ],
+          screens: [
+            {
+              name: 'Home',
+              controls: [
+                { name: 'One', control: 'CanvasComponent@1', componentName: 'Calc' },
+                { name: 'Label', control: 'Label@1' },
+              ],
+            },
+          ],
+        },
+        formulas: [
+          { owner: 'Calc', property: 'Work', text: '=CountRows(ForAll(Sequence(n), Value))' },
+          { owner: 'Label', property: 'Text', text: '=1' },
+        ],
+      },
+    },
+    evaluator: loweredBudget,
+  });
+  await runtime.start();
+  const under = await runtime.act({ action: 'evaluate', formula: 'Sum(ForAll(Sequence(40), One.Work(40)), Value)' });
+  assert.equal(under.result, 1600);
+  assert.deepEqual(under.errors, []);
+  await assert.rejects(
+    runtime.act({ action: 'evaluate', formula: 'Sum(ForAll(Sequence(50), One.Work(50)), Value)' }),
+    (error) => error.code === 'PowerFxLimitExceeded',
+  );
 });

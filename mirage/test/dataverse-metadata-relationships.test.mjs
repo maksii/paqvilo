@@ -1,6 +1,7 @@
 // Metadata writes for relationships and choices. The store is seeded with ensureSecurityModel;
 // the sample tables are created through the table writer, so their mappings are the runtime shapes. The association
 // checks run through the record handlers. Handlers are called directly, not through the router.
+// @test-kind contract: Paqvilo's own relationship writes and their naming rules; the schema name rule is the table writer's
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -357,6 +358,64 @@ test('a lookup from a solution table cannot be created: the referencing table mu
     failing(400),
   );
   assert.equal(t.store.state.mappings.contact.fields.contact_bankref, undefined);
+});
+
+// @test-kind security: relationship and lookup names must be plain identifiers, never object prototype keys; a refused name changes no map
+test('relationship, navigation and lookup names are validated: a refused name leaves every relationship map and its prototype unchanged', async () => {
+  const t = await setup();
+  const accountMap = t.store.state.mappings.account.relationships;
+  const before = Object.keys(accountMap);
+  const refused = [
+    oneToMany({ ReferencedEntityNavigationPropertyName: '__proto__' }),
+    oneToMany({ ReferencedEntityNavigationPropertyName: 'constructor' }),
+    oneToMany({ ReferencingEntityNavigationPropertyName: 'bad nav"' }),
+    oneToMany({ Lookup: { SchemaName: 'sample_HasSpace', LogicalName: 'has space(x)', DisplayName: label('x') } }),
+    oneToMany({ SchemaName: 'no prefix x' }),
+    manyToMany({ Entity1NavigationPropertyName: '__proto__' }),
+    manyToMany({ IntersectEntityName: 'bad name' }),
+  ];
+  for (const body of refused) await assert.rejects(metadata(t, 'POST', relationshipPath(), body), failing(400));
+  assert.equal(Object.getPrototypeOf(accountMap), Object.prototype);
+  assert.deepEqual(Object.keys(accountMap), before);
+  assert.equal(t.store.state.mappings.sample_bank.fields['has space(x)'], undefined);
+  assert.equal((await metadata(t, 'POST', relationshipPath(), oneToMany())).status, 204);
+});
+
+// @test-kind security: every Object.prototype member is refused as a navigation name, so none of them can become an own key of a relationship map
+test('navigation names that Object.prototype already defines are refused, and an ordinary name still works', async () => {
+  const t = await setup();
+  const accountMap = t.store.state.mappings.account.relationships;
+  const inherited = [
+    'valueOf',
+    'hasOwnProperty',
+    'isPrototypeOf',
+    'toLocaleString',
+    'propertyIsEnumerable',
+    '__defineGetter__',
+    '__lookupGetter__',
+    'prototype',
+    'constructor',
+    '__proto__',
+  ];
+  for (const name of inherited)
+    await assert.rejects(
+      metadata(t, 'POST', relationshipPath(), oneToMany({ ReferencedEntityNavigationPropertyName: name })),
+      failing(400),
+      name,
+    );
+  assert.equal(Object.getPrototypeOf(accountMap), Object.prototype);
+  assert.equal(Object.hasOwn(accountMap, 'valueOf'), false);
+  assert.equal(
+    (
+      await metadata(
+        t,
+        'POST',
+        relationshipPath(),
+        oneToMany({ ReferencedEntityNavigationPropertyName: 'ordinary_nav' }),
+      )
+    ).status,
+    204,
+  );
 });
 
 test('N:N create adds an intersect mapping and a navigation entry on each side', async () => {
@@ -883,6 +942,7 @@ test("InsertStatusValue needs a StateCode; UpdateStateValue changes a state opti
   assert.equal(t.store.state.mappings.sample_bank.fields.statecode.states[1].defaultStatusCode, 2);
 });
 
+// @test-kind security: a basic user cannot change relationships or choices
 test('relationship and choice writes need the customizer privileges: a basic user is refused and nothing changes', async () => {
   const t = await setup();
   const before = JSON.stringify(t.store.state.mappings);

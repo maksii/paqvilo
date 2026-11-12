@@ -175,11 +175,19 @@ function readElement(token) {
   return { name, attrs, selfClosing: false };
 }
 
+// Pushes items so that the first of them is popped first: the stack walks siblings in document order.
+const pushInOrder = (stack, items) => {
+  for (let index = items.length - 1; index >= 0; index--) stack.push(items[index]);
+};
+// Pre-order over an explicit stack, so neither the node count nor the depth can exhaust the call stack.
 export const descendants = (node, name) => {
-  const result = [];
-  for (const item of node?.children ?? []) {
+  const result = [],
+    stack = [];
+  pushInOrder(stack, node?.children ?? []);
+  while (stack.length) {
+    const item = stack.pop();
     if (item.name === name) result.push(item);
-    result.push(...descendants(item, name));
+    pushInOrder(stack, item.children ?? []);
   }
   return result;
 };
@@ -213,12 +221,29 @@ export function label(node, lcid = 1033) {
 
 export const pickLabel = (labels, lcid = 1033) => labels?.[String(lcid)] ?? Object.values(labels ?? {})[0];
 
-export const serializeXml = (node) =>
-  `<${node.name}${Object.entries(node.attrs)
+const attributeText = (attrs) =>
+  Object.entries(attrs)
     .map(
       ([k, v]) =>
         ` ${k}="${String(v).replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')}"`,
     )
-    .join(
-      '',
-    )}>${node.text.replaceAll('&', '&amp;').replaceAll('<', '&lt;')}${node.children.map(serializeXml).join('')}</${node.name}>`;
+    .join('');
+// Output strings and nodes share one stack: a node opens its tag, then its children, then a queued closing tag.
+export const serializeXml = (root) => {
+  const output = [],
+    stack = [root];
+  while (stack.length) {
+    const item = stack.pop();
+    if (typeof item === 'string') {
+      output.push(item);
+      continue;
+    }
+    output.push(
+      `<${item.name}${attributeText(item.attrs)}>`,
+      item.text.replaceAll('&', '&amp;').replaceAll('<', '&lt;'),
+    );
+    stack.push(`</${item.name}>`);
+    pushInOrder(stack, item.children);
+  }
+  return output.join('');
+};

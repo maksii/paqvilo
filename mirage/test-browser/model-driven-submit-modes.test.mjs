@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
-import { sharedBrowser } from './shared-browser.mjs';
+import { sharedBrowser, appsOrigin } from './shared-browser.mjs';
 const browser = sharedBrowser();
 
 test('submit modes govern saved columns, refresh suppressed edits and survive the form save', async (t) => {
@@ -54,7 +54,7 @@ test('submit modes govern saved columns, refresh suppressed edits and survive th
         },
       },
     }),
-    origin = sim.url;
+    origin = appsOrigin(sim, sim.url);
   const page = await browser.page(t);
   const writes = [];
   page.on('request', (request) => {
@@ -140,10 +140,15 @@ test('restoring a dirty-mode value omits that column while a real edit and uncha
   const page = await browser.page(t),
     writes = [];
   page.on('request', (request) => {
-    if (request.url().startsWith(simulator.url + '/_apps/api/tables/x_item/') && request.method() === 'PATCH')
+    if (
+      request.url().startsWith(appsOrigin(simulator, simulator.url) + '/_apps/api/tables/x_item/') &&
+      request.method() === 'PATCH'
+    )
       writes.push(request.postDataJSON());
   });
-  await page.goto(simulator.url + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=' + id);
+  await page.goto(
+    appsOrigin(simulator, simulator.url) + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=' + id,
+  );
   await page.getByLabel('Quantity', { exact: true }).waitFor();
   const before = await page.evaluate(async () => {
     const form = window.Xrm.Page,
@@ -161,7 +166,7 @@ test('restoring a dirty-mode value omits that column while a real edit and uncha
   assert.deepEqual(before, { attribute: false, entity: true });
   await page.getByText('Record saved locally.', { exact: true }).waitFor();
   assert.deepEqual(writes, [{ x_name: 'Submitted', x_summary: 'Unchanged value' }]);
-  const row = (await (await fetch(simulator.url + '/_apps/api/tables/x_item/' + id)).json()).row;
+  const row = (await (await fetch(appsOrigin(simulator, simulator.url) + '/_apps/api/tables/x_item/' + id)).json()).row;
   assert.equal(row.x_email, 'before@example.invalid');
   assert.equal(row.x_never, 'Never baseline');
   assert.deepEqual(

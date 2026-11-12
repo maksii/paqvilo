@@ -1,10 +1,12 @@
 // Note documentbody and attachment body through the storage routing extension, with a local-disk storage router and without
-// one: the row keeps no base64, reads answer the column exactly as before, and deletes and replacements free the blobs.
+// one: the row keeps no base64, reads answer the column with the same value, and deletes and replacements free the blobs.
+// @test-kind contract: Paqvilo's own storage routing design; a failed provider put fails the note write.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { MODES, b64, routingApi, tempRoot, widgetRef } from './storage-routing-fixture.mjs';
+import { localOrganizationService } from '../lib/local-organization-service.mjs';
 
 const NOTE = '77777777-7777-4777-8777-7777777777c1';
 const BODY = b64('invented note body '.repeat(40));
@@ -182,6 +184,114 @@ test('a note re-created under the same id while the release flush is between its
   assert.ok(deletes[0][1], 'the delete is conditional on the ETag read in the liveness check');
   const read = await h.call('GET', `annotations(${NOTE})?$select=documentbody`);
   assert.equal(read.json.documentbody, NEW_BODY);
+});
+
+const providerFailure = () =>
+  Object.assign(new Error('connection refused: Endpoint=invented.invalid;SharedAccessKey=INVENTED-KEY'), {
+    code: 'ProviderUnavailable',
+  });
+// A storage failure answers 5xx and names the storage provider, and the answer carries no provider or path detail.
+const assertStorageFailure = (h, res) => {
+  assert.ok(res.status >= 500 && res.status < 600, `status ${res.status}`);
+  const text = res.buffer.toString('utf8');
+  assert.match(text, /storage provider/);
+  for (const leak of ['INVENTED-KEY', 'Endpoint=', h.root]) assert.equal(text.includes(leak), false);
+};
+const assertNoNote = async (h) => {
+  assert.equal(row(h, 'annotation', NOTE), undefined);
+  assert.equal((await h.call('GET', `annotations(${NOTE})`)).status, 404);
+  assert.deepEqual(await annotationKeys(h), []);
+};
+
+test('a note whose provider put fails at once answers a storage failure and leaves no row or key', async (t) => {
+  const h = await routingApi(t);
+  h.provider.put = async () => {
+    throw providerFailure();
+  };
+  assertStorageFailure(h, await h.call('POST', 'annotations', note()));
+  await assertNoNote(h);
+});
+
+test('a note whose provider put fails in flight answers a storage failure and leaves no row or key', async (t) => {
+  const h = await routingApi(t);
+  let reached, gate;
+  const atPut = new Promise((resolve) => {
+    reached = resolve;
+  });
+  const opened = new Promise((resolve) => {
+    gate = resolve;
+  });
+  h.provider.put = async () => {
+    reached();
+    await opened;
+    throw providerFailure();
+  };
+  const write = h.call('POST', 'annotations', note());
+  await atPut;
+  gate();
+  assertStorageFailure(h, await write);
+  await assertNoNote(h);
+});
+
+// The synchronous SDK drive (IOrganizationService Create) cannot wait for a provider put, so its body stays inline in the row
+// until the put has succeeded; the move to the key is a deferred effect that settle waits for.
+const sdkCreateNote = (h) => {
+  const user = h.store.tableRows('systemuser')[0];
+  const sdk = localOrganizationService(h.store, {
+    userId: user.systemuserid,
+    evidence: 'invented test grants',
+    grants: [{ entity: 'annotation', operations: ['create', 'read'] }],
+  });
+  return h.store.transact(() => sdk.create('annotation', note()));
+};
+
+test('a note created through the synchronous SDK service keeps its inline body when its provider put rejects', async (t) => {
+  const h = await routingApi(t);
+  h.provider.put = async () => {
+    throw providerFailure();
+  };
+  await sdkCreateNote(h);
+  await h.settle();
+  const stored = row(h, 'annotation', NOTE);
+  assert.ok(stored, 'the row is committed with the call');
+  assert.equal(stored.documentbody, BODY);
+  assert.ok(!stored.__blobkey, 'no blob key is stored for bytes that were never written');
+  assert.deepEqual(await annotationKeys(h), []);
+  assert.equal((await h.call('GET', `annotations(${NOTE})?$select=documentbody`)).json.documentbody, BODY);
+  assert.ok(h.diagnostics.some((d) => d.code === 'STORAGE_WRITE_FAILED'));
+});
+
+test('a note created through the synchronous SDK service moves its body to the provider once the put succeeded', async (t) => {
+  const h = await routingApi(t);
+  await sdkCreateNote(h);
+  await h.settle();
+  const stored = row(h, 'annotation', NOTE);
+  assert.equal(stored.documentbody, null);
+  assert.equal(stored.__blobkey, `annotations/${NOTE}/1`);
+  assert.deepEqual(await annotationKeys(h), [`annotations/${NOTE}/1`]);
+  assert.equal((await h.call('GET', `annotations(${NOTE})?$select=documentbody`)).json.documentbody, BODY);
+});
+
+// A synchronous write that fails after its beforeWrite (a second create of the same id, refused by the store) keeps no move.
+test('a synchronous SDK write that fails after its beforeWrite leaves no pending move', async (t) => {
+  const h = await routingApi(t);
+  await sdkCreateNote(h);
+  await h.settle();
+  assert.equal(h.api.storageRouting.pendingSyncWrites(), 0);
+  await assert.rejects(sdkCreateNote(h));
+  await h.settle();
+  // The hold of the refused write settles after its rolled-back transaction; a no-op transaction queued behind it ends after that.
+  await h.store.transact(() => {}, { skipSaveIfUnchanged: true, lazyReadSnapshot: true });
+  assert.equal(h.api.storageRouting.pendingSyncWrites(), 0);
+  assert.equal(row(h, 'annotation', NOTE).__blobkey, `annotations/${NOTE}/1`);
+});
+
+test('a note whose provider put succeeds stores its key and reads the body back', async (t) => {
+  const h = await routingApi(t);
+  assert.equal((await h.call('POST', 'annotations', note())).status, 204);
+  assert.equal(row(h, 'annotation', NOTE).__blobkey, `annotations/${NOTE}/1`);
+  assert.deepEqual(await annotationKeys(h), [`annotations/${NOTE}/1`]);
+  assert.equal((await h.call('GET', `annotations(${NOTE})?$select=documentbody`)).json.documentbody, BODY);
 });
 
 // The project hook builds the note id map once per request, not once per listed row.

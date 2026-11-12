@@ -149,7 +149,7 @@ export function analyzeProject(sourceDir, { failOn = 'error', limits = ANALYSIS_
   for (const source of input.syntax) emit(sourceRule.id, source);
   for (const source of input.incomplete) emit(payloadRule.id, source);
   analyzeRecords(input.records, emit);
-  analyzeContent(input.units, emit);
+  input.skipped.push(...analyzeContent(input.units, emit));
   const adapters = [
     analyzeDataverse(input.inputs, emit),
     analyzeApps(input.inputs, emit),
@@ -256,7 +256,7 @@ function analysisDomains(input, adapters) {
       domain: 'web-content',
       files: input.units.length,
       recognized: input.units.length,
-      complete: input.complete,
+      complete: input.complete && !input.skipped.some(({ reason }) => reason === 'html-structure-budget'),
       limitations: ['HTML/CSS checks do not identify the hosting platform or implement JavaScript dataflow analysis.'],
     },
   ];

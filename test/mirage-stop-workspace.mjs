@@ -15,9 +15,6 @@ import { createFixture } from './fixture.mjs';
 import { startReaper, stopRecordedRuntimes } from './mirage-reaper.mjs';
 
 export const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
-// Longer than the product's 120 s startup deadline (lense/commands/mirage.mjs), so a slow start ends
-// through the CLI's own abandon path, which stops its runtime, before this bound kills the CLI.
-const CLI_TIMEOUT_MS = 150_000;
 // The grace the product's own stop gives a runtime before SIGKILL (STOP_DEADLINE).
 const TERMINATE_GRACE_MS = 5_000;
 
@@ -141,7 +138,6 @@ export async function workspace(t) {
         args,
         {
           windowsHide: true,
-          timeout: CLI_TIMEOUT_MS,
           detached: process.platform !== 'win32',
           ...options,
         },

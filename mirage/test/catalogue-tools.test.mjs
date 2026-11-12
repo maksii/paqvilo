@@ -150,3 +150,25 @@ test('parity and conformance help name their real required plan options', async 
     assert.doesNotMatch(message, /Unknown (?:argument|option)|ERR_PARSE_ARGS/);
   }
 });
+
+test('render-sweep --strict with a path that matches no page exits 2 and shows zero pages', async (t) => {
+  const { config } = await fixture(t);
+  const result = await runMirage(
+    [
+      'render-sweep',
+      '--config',
+      config,
+      '--site',
+      'synthetic',
+      '--persona',
+      'anonymous',
+      '--path',
+      '/nothing',
+      '--strict',
+    ],
+    60000,
+  );
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stdout, /Pages: 0,/);
+  assert.match(result.stderr, /no page/);
+});

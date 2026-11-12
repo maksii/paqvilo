@@ -360,6 +360,57 @@ test('only published rules apply, and publishing is limited to five per table', 
   assert.equal(statusOf(ids[5]), 2);
 });
 
+// The documented request names the table in @odata.type and passes only the record's id: the stored record is compared, and left out.
+// @test-kind compatibility: Microsoft Learn's RetrieveDuplicates request passes BusinessEntity with @odata.type and the record's primary id, and the stored values are compared.
+test('RetrieveDuplicates accepts the documented @odata.type shape with only the record id and excludes the record', async () => {
+  const t = await setup();
+  addRule(t, { conditions: [{ base: 'code' }] });
+  t.rows().push(
+    { widgetid: ID(20), code: 'X', statecode: 0 },
+    { widgetid: ID(10), code: 'X', statecode: 0 },
+    { widgetid: ID(30), code: 'Y', statecode: 0 },
+  );
+  const response = await t.op('RetrieveDuplicates').handle({
+    origin: ORIGIN,
+    version: VERSION,
+    params: {
+      BusinessEntity: { '@odata.type': '#Microsoft.Dynamics.CRM.widget', widgetid: ID(20) },
+      MatchingEntityName: 'widget',
+    },
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(
+    response.body.value.map((r) => r.widgetid),
+    [ID(10)],
+  );
+});
+
+// The stored record the request names is read with the caller's privileges: a refused read answers 403 and no duplicate is returned.
+// @test-kind security: comparing a stored record the caller cannot read would reveal its values through the duplicates, so the read is refused.
+test('RetrieveDuplicates refuses a stored record the caller cannot read, with 403', async () => {
+  const refuseRecord = {
+    ...ALLOW_ALL,
+    authorize: (options) => {
+      if (options.row) throw new DataError('Privilege denied', 403, 'PrivilegeDenied');
+      return 1;
+    },
+  };
+  const t = await setup({ principals: refuseRecord });
+  addRule(t, { conditions: [{ base: 'code' }] });
+  t.rows().push({ widgetid: ID(20), code: 'X', statecode: 0 }, { widgetid: ID(10), code: 'X', statecode: 0 });
+  await assert.rejects(
+    t.op('RetrieveDuplicates').handle({
+      origin: ORIGIN,
+      version: VERSION,
+      params: {
+        BusinessEntity: { '@odata.type': 'Microsoft.Dynamics.CRM.widget', widgetid: ID(20) },
+        MatchingEntityName: 'widget',
+      },
+    }),
+    (e) => e.status === 403,
+  );
+});
+
 test('RetrieveDuplicates returns matching rows except the record itself, paged by Count', async () => {
   const t = await setup();
   addRule(t, { conditions: [{ base: 'code' }] });
@@ -753,4 +804,36 @@ test('CompoundUpdateDuplicateDetectionRule is refused without write on the rule,
     (e) => e.status === 403,
   );
   assert.equal(t.rules().find((r) => r.duplicateruleid === ruleId).name, 'rule');
+});
+
+// @test-kind security: a condition of another rule must not change through this rule's update, and moving a condition to another rule is refused too.
+test('CompoundUpdateDuplicateDetectionRule refuses a condition of another rule with 400 and keeps every rule and condition', async () => {
+  const t = await setup();
+  const ruleId = addRule(t, { conditions: [{ base: 'code' }] });
+  const otherId = addRule(t, { conditions: [{ base: 'name' }] });
+  const own = t.store.state.tables.duplicaterulecondition.find((r) => r.regardingobjectid === ruleId);
+  const foreign = t.store.state.tables.duplicaterulecondition.find((r) => r.regardingobjectid === otherId);
+  const op = t.op('CompoundUpdateDuplicateDetectionRule');
+  const update = (child) =>
+    op.handle({
+      origin: ORIGIN,
+      version: VERSION,
+      user: ADMIN,
+      identity: ADMIN,
+      body: { Entity: { duplicateruleid: ruleId, name: 'Moved' }, ChildEntities: [child] },
+    });
+  const before = JSON.stringify(t.store.state.tables.duplicaterulecondition);
+  await assert.rejects(
+    update({ duplicateruleconditionid: foreign.duplicateruleconditionid, operatorcode: 1 }),
+    (e) => e.status === 400,
+  );
+  await assert.rejects(
+    update({ duplicateruleconditionid: own.duplicateruleconditionid, regardingobjectid: otherId }),
+    (e) => e.status === 400,
+  );
+  assert.equal(JSON.stringify(t.store.state.tables.duplicaterulecondition), before);
+  assert.equal(t.rules().find((r) => r.duplicateruleid === ruleId).name, 'rule');
+  const response = await update({ duplicateruleconditionid: own.duplicateruleconditionid, operatorcode: 1 });
+  assert.equal(response.status, 204);
+  assert.equal(t.rules().find((r) => r.duplicateruleid === ruleId).name, 'Moved');
 });

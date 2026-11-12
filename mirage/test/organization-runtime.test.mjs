@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's organization runtime and staff-session behaviour (signed sessions per browser, refusals under their codes)
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
@@ -107,6 +108,7 @@ test('headless organization installs the full platform without opening a network
   assert.deepEqual(order, ['install', 'reset', 'close']);
 });
 
+// @test-kind security: staff queries and writes are limited by row privileges and field-level security
 test('staff MDA queries, record reads and writes use row privileges, FLS and canonical versions', async (t) => {
   const { core, store, service, users, actor } = await fixture(t);
   await assert.rejects(service.get('new_staffitem', ids[0], { principalId: '' }), (error) => error.status === 401);
@@ -504,6 +506,7 @@ test('portal listener admission failure closes the API and every earlier listene
   );
 });
 
+// @test-kind security: the staff-session route refuses a write without the simulator CSRF token, with the INVALID_REQUEST code
 test('staff sessions are signed, per browser and independent of portal contact cookies', async (t) => {
   const { core, service, users, actor } = await fixture(t);
   const sessions = createStaffSessions({ organization: core, port: () => 4001 });
@@ -573,12 +576,20 @@ test('staff sessions are signed, per browser and independent of portal contact c
     },
     readBody: async () => ({ userId: users[1].systemuserid }),
   });
+  await assert.rejects(
+    handler(
+      { method: 'POST', headers: {} },
+      { setHeader() {} },
+      new URL('http://localhost/_sim/api/dataverse/session'),
+    ),
+    (error) => error.status === 403 && error.code === 'INVALID_REQUEST',
+  );
   await handler(
-    { method: 'POST', headers: {} },
+    { method: 'GET', headers: {} },
     { setHeader() {} },
     new URL('http://localhost/_sim/api/dataverse/session'),
   );
-  assert.equal(result.status, 403);
+  assert.equal(result.status, 200);
   let cookie;
   await handler(
     { method: 'POST', headers: { 'x-sim-csrf': 'expected' } },
@@ -592,4 +603,26 @@ test('staff sessions are signed, per browser and independent of portal contact c
   assert.equal(result.status, 200);
   assert.equal(result.body.current.id, users[1].systemuserid);
   assert.match(cookie, /HttpOnly; SameSite=Lax/);
+});
+
+// @test-kind security: a staff-session write needs a non-empty simulator token that matches the header exactly
+test('a staff-session write is refused unless a non-empty token matches the header exactly', async () => {
+  const sessions = { select: () => 'sid=invented; Path=/', describe: () => ({}), cookie: () => '' };
+  const handlerFor = (csrf) =>
+    createStaffSessionHandler({ sessions, csrf, json: () => {}, readBody: async () => ({}) });
+  const url = new URL('http://localhost/_sim/api/dataverse/session');
+  const write = (handler, headers) => handler({ method: 'POST', headers }, { setHeader() {} }, url);
+  const refused = (handler, headers) =>
+    assert.rejects(write(handler, headers), (error) => error.status === 403 && error.code === 'INVALID_REQUEST');
+  for (const csrf of [() => '', () => undefined]) {
+    const handler = handlerFor(csrf);
+    await refused(handler, {});
+    await refused(handler, { 'x-sim-csrf': '' });
+    await refused(handler, { 'x-sim-csrf': 'undefined' });
+  }
+  const real = handlerFor(() => 'expected-token-value');
+  assert.equal(await write(real, { 'x-sim-csrf': 'expected-token-value' }), true);
+  await refused(real, { 'x-sim-csrf': 'expected-token-valuf' });
+  await refused(real, { 'x-sim-csrf': 'expected-token' });
+  await refused(real, {});
 });

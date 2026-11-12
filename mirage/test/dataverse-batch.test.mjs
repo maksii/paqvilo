@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's batch runtime behaviour, checked against the OData $batch rules it implements; the per-test kinds below override it.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -269,6 +270,7 @@ test('a $batch URL inside a batch is parsed and left to the router, which answer
   );
 });
 
+// @test-kind security: a batch part delimited by a foreign boundary is never executed
 test('parts for a foreign boundary between declared parts are not executed and do not alter the part before them', async () => {
   const { dispatch, calls } = fakeDispatch();
   const foreign = [
@@ -295,6 +297,7 @@ test('parts for a foreign boundary between declared parts are not executed and d
   );
 });
 
+// @test-kind security: a foreign-boundary part inside a change set is never executed
 test('a foreign-boundary part inside a change set is not executed and the change set ends at its own close', async () => {
   const { dispatch, calls } = fakeDispatch();
   const foreign = [
@@ -541,6 +544,27 @@ test('with continue-on-error every part runs and the batch answers 200', async (
   assert.equal(res.status, 200);
   assert.equal(count(res.body, /HTTP\/1\.1 /g), 3);
   assert.equal(calls.length, 3);
+});
+
+// @test-kind compatibility: OData 4.0 section 11.7.4 answers one response for a failed change set, so rolled-back operations are not echoed.
+test('under continue-on-error a failed change set answers only its failing response and the next part still runs', async () => {
+  const { dispatch } = fakeDispatch();
+  const parsed = parseBatch(
+    ct,
+    batchOf([
+      changeset('cs_rolled_back', [
+        { cid: '1', request: httpReq('POST', '/api/data/v9.2/widgets', '{"name":"A"}') },
+        { cid: '2', request: httpReq('POST', '/api/data/v9.2/fail', '{"name":"B"}') },
+      ]),
+      part(B, undefined, httpReq('GET', '/api/data/v9.2/widgets')),
+    ]),
+  );
+  const res = await run(parsed, dispatch, { continueOnError: true });
+  assert.equal(res.status, 200);
+  assert.equal(count(res.body, /HTTP\/1\.1 204/g), 0);
+  assert.equal(count(res.body, /OData-EntityId/g), 0);
+  assert.equal(count(res.body, /HTTP\/1\.1 400/g), 1);
+  assert.equal(count(res.body, /HTTP\/1\.1 200/g), 1);
 });
 
 test('a failing change set runs through the transaction hook and rolls back', async () => {

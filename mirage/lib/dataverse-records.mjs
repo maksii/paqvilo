@@ -46,7 +46,13 @@ import { orderODataProperties } from './odata-property-order.mjs';
 import { baseCurrencyRow, ownershipOf, privilegeDeniedError, privilegeName, uuidV5 } from './dataverse-security.mjs';
 import { dateTimeBehavior, fieldKind, formattedValue, guidKey, isDateOnlyField, isoUtc } from './dataverse-values.mjs';
 import { fixedScaleNumeric } from './exact-numeric.mjs';
-import { isSecuredField, maskedOperand } from './dataverse-fls.mjs';
+import {
+  ADMIN_READ_COLUMNS,
+  isSecuredField,
+  isSystemAdministrator,
+  maskedOperand,
+  unknownPropertyError,
+} from './dataverse-fls.mjs';
 import { createChangeLog, encodeDeltaToken, nextRowVersion } from './dataverse-changes.mjs';
 import { standardNavigation, standardTableDef } from './dataverse-standard.mjs';
 import {
@@ -104,6 +110,8 @@ const ALLOWED_QUERY = new Set([
 ]);
 const TRACKING_REJECTS = ['$filter', '$orderby', '$expand', '$top'];
 const MONEY_SCALE = 4;
+// The exchange rate is a decimal at 12 places (its FormattedValue shows all 12).
+const RATE_SCALE = 12;
 // The JSON type of a record read whose Accept asked for XML or text.
 const JSON_STREAMING_CONTENT_TYPE = 'application/json; odata.metadata=minimal; odata.streaming=true';
 const CURRENCY = '_transactioncurrencyid_value';
@@ -130,6 +138,13 @@ const SYSTEM_IGNORED = new Set([
 const ignoredSystem = (key) => SYSTEM_IGNORED.has(key.endsWith(BIND) ? key.slice(0, -BIND.length) : key);
 // System lookups a plain (non-bind) property may not set: Dataverse answers 0x0. Their bind forms are accepted and ignored.
 const LOOKUP_SYSTEM = new Set([...Object.keys(SYSTEM_AUDIT), ...Object.keys(SYSTEM_OWNER)]);
+// A lookup value a row carries as { id, logical_name } (not a bind string, not a scalar).
+const isLookupValue = (value) =>
+  value !== null &&
+  typeof value === 'object' &&
+  !Array.isArray(value) &&
+  value.id != null &&
+  value.logical_name != null;
 
 // Records hooks (api.recordHooks.add(name, fn)). Several functions may share a name and run in the order added.
 // query and stream answer with the first result that is not undefined; project, source, beforeWrite and afterWrite run them all.
@@ -200,6 +215,21 @@ const methodNotAllowed = (method) =>
     innerCode: '',
   });
 const sameId = (a, b) => String(a ?? '').toLowerCase() === String(b ?? '').toLowerCase();
+// The key sameId compares by: ids are equal when their lower-case text is.
+const idKey = (id) => String(id ?? '').toLowerCase();
+// Rows of a table grouped by their id key, in table order.
+function rowsById(rows, idColumn) {
+  const byId = new Map();
+  for (const row of rows) {
+    const key = idKey(row[idColumn]);
+    if (byId.has(key)) byId.get(key).push(row);
+    else byId.set(key, [row]);
+  }
+  return byId;
+}
+// The system columns a $select list can name that selectedSystemValues answers from the stored row.
+const namesSystemValue = (name) =>
+  name === 'timezoneruleversionnumber' || name === 'exchangerate' || name.endsWith('_base');
 const withoutNulls = (row) => Object.fromEntries(Object.entries(row).filter(([, value]) => value !== null));
 const etagOf = (body) => (body['@odata.etag'] ? { ETag: body['@odata.etag'] } : {});
 // Preference-Applied for the Prefer options a request carried; preferenceApplied owns the wording.
@@ -906,7 +936,8 @@ export function createRecordHandlers({
 
   // Money columns serialize with four-decimal lexemes, and a row that carries one reports the base currency lookup,
   // but only when the caller's $select asks for it (or selects everything): Dataverse omits the lookup otherwise.
-  function shapeMoney(mapping, out, { currencyWanted = true, named = false } = {}) {
+  // own: the row's transaction currency (rowCurrencyOf), which the lookup names; the base currency answers when the row holds none.
+  function shapeMoney(mapping, out, { currencyWanted = true, named = false, own = null } = {}) {
     // named: the money column was selected on a single row, so it counts even when its value is null (as a native key GET with a money $select does).
     let money = named;
     for (const key of Object.keys(out)) {
@@ -919,7 +950,7 @@ export function createRecordHandlers({
       if (typeof text === 'string' && out[key]?.value?.startsWith?.('-'))
         out[`${key}${FORMATTED}`] = text.replace(/^([^\d-]*)-(.*)$/, '($1$2)');
     }
-    const currency = money && currencyWanted ? baseCurrency() : null;
+    const currency = money && currencyWanted ? (own ?? baseCurrency()) : null;
     if (!currency) return out;
     // A stored currency lookup (currencyOnWrite) can already be in out, from the formatter, without its annotations: they still come.
     out[CURRENCY] ??= currency.transactioncurrencyid;
@@ -927,6 +958,29 @@ export function createRecordHandlers({
     out[`${CURRENCY}@Microsoft.Dynamics.CRM.associatednavigationproperty`] ??= 'transactioncurrencyid';
     out[`${CURRENCY}@Microsoft.Dynamics.CRM.lookuplogicalname`] ??= 'transactioncurrency';
     return out;
+  }
+
+  // A money value is stated in its row's transaction currency: that currency's symbol and precision (the column keeps its own with PrecisionSource 0).
+  // The base currency's text is the formatter's, and so are the _base amounts (always in the base currency).
+  function restateMoney(mapping, out, own) {
+    if (!own || sameId(own.transactioncurrencyid, baseCurrency()?.transactioncurrencyid)) return;
+    for (const key of Object.keys(out)) {
+      if (key.includes('@') || key.endsWith('_base') || !isMoney(mapping, key) || out[key] == null) continue;
+      out[`${key}${FORMATTED}`] = statedMoneyText(mapping, key, out[key], own);
+    }
+  }
+  function statedMoneyText(mapping, key, value, currency) {
+    const definition = readDefinition(mapping, key);
+    const precision =
+      definition?.precisionSource === 0
+        ? definition
+        : { ...definition, precision: currency.currencyprecision ?? definition?.precision };
+    const settings = {
+      ...store.state.settings,
+      currencySymbol: currency.currencysymbol ?? store.state.settings.currencySymbol,
+    };
+    const text = formattedValue(value, precision, settings);
+    return value.value?.startsWith?.('-') ? text.replace(/^([^\d-]*)-(.*)$/, '($1$2)') : text;
   }
 
   // Entity set names are case-sensitive; logical names do not route (Dataverse 404 0x8006088a).
@@ -1066,15 +1120,19 @@ export function createRecordHandlers({
     for (const [head] of expressionPaths(expression)) {
       if (!head || head.startsWith('@')) continue;
       if (navigationOf(mapping, head)) readableTarget(c, mapping, head);
-      else assertProperty(mapping, head);
+      else assertFilterableColumn(c, mapping, head);
     }
   }
   function assertOrderMembers(c, mapping, orderby) {
     for (const spec of parseOrderBy(orderby, { nativeSyntax: Boolean(c.dataverseHttpReader) })) {
       const head = spec.path[0];
       if (navigationOf(mapping, head)) readableTarget(c, mapping, head);
-      else assertProperty(mapping, head);
+      else assertFilterableColumn(c, mapping, head);
     }
+  }
+  function assertFilterableColumn(c, mapping, head) {
+    assertProperty(mapping, head);
+    assertNotAdminOnly(c, mapping, head);
   }
   // $filter, $orderby and $expand roots must name a property (or a navigation); unknown ones are 0x0. $expand is then
   // validated by assertExpand and its tables authorized. Navigation $filter and $orderby tables are authorized too.
@@ -1124,7 +1182,9 @@ export function createRecordHandlers({
   function formatRow(c, mapping, row, options) {
     const formatted = c.formatter.formatEntity(row, mapping, options);
     // The stored base currency (currencyOnWrite) answers as the _transactioncurrencyid_value lookup, never as a raw column (the currency table's own key excepted).
-    if (mapping.idColumn !== 'transactioncurrencyid') delete formatted.transactioncurrencyid;
+    // An expanded transactioncurrencyid is the related currency row, not that column, so it stays.
+    const expandsCurrency = options?.expand?.some((spec) => spec.navigation === 'transactioncurrencyid');
+    if (mapping.idColumn !== 'transactioncurrencyid' && !expandsCurrency) delete formatted.transactioncurrencyid;
     // A selected currency lookup the row does not carry projects as null; shapeMoney supplies the base currency instead.
     if (
       formatted[CURRENCY] === null &&
@@ -1140,12 +1200,16 @@ export function createRecordHandlers({
     const named = options?.single === true && moneyNamed(c, mapping);
     // The base currency lookup is answered only for a row that holds one (currencyOnWrite). A selected lookup the row does not hold is null.
     const held = currencyHeld(c, mapping, row[mapping.idColumn]);
-    shapeMoney(mapping, formatted, { currencyWanted: held && (currencySelected(c) || named), named });
+    const own = held ? rowCurrencyOf(c, mapping, row) : null;
+    shapeMoney(mapping, formatted, { currencyWanted: held && (currencySelected(c) || named), named, own });
     selectedSystemValues(c, mapping, row, formatted);
     shapeMissingCurrency(c, mapping, formatted, held);
     if (options?.allColumns) fillColumns(c, mapping, formatted);
+    // After fillColumns: the _base amounts copy the base currency's text, and stay in the base currency.
+    restateMoney(mapping, formatted, own);
     if (options?.expand?.length)
       pageExpansions(c, mapping, row, formatted, options.expand, { collection: options.single !== true });
+    shapeValueFlags(c, mapping, storedRowOf(c, mapping, formatted) ?? row, formatted);
     projectRow(c, mapping, formatted, options?.expand, options?.single === true);
     return orderHttpRow(c, mapping, formatted, options?.expand);
   }
@@ -1167,18 +1231,30 @@ export function createRecordHandlers({
     return result;
   }
 
+  // The stored row behind a projected row. Each table is read once per request into an id map (c.storedRows), so a page
+  // makes one pass over its table however many rows it returns.
+  function storedRowOf(c, mapping, projected) {
+    const tables = (c.storedRows ??= new Map());
+    if (!tables.has(mapping.logicalName))
+      tables.set(mapping.logicalName, rowsById(store.tableRows(mapping.logicalName), mapping.idColumn));
+    const candidates = tables.get(mapping.logicalName).get(idKey(projected[mapping.idColumn])) ?? [];
+    return candidates.find((row) => !isElastic(mapping) || samePartition(row.partitionid, c.partitionId));
+  }
+
+  // The transaction currency row a stored row holds, read through the same per-request stored-row map; null when it holds none.
+  function rowCurrencyOf(c, mapping, projected) {
+    const id = storedRowOf(c, mapping, projected)?.transactioncurrencyid;
+    return id == null
+      ? null
+      : storedRowOf(c, store.resolveMapping('transactioncurrency'), { transactioncurrencyid: id });
+  }
+
   function selectedSystemValues(c, mapping, projected, formatted) {
     if (!metadata?.recordFields) return;
     const selected = parseSelect(c.url.searchParams.get('$select'));
-    if (!selected) return;
+    if (!selected?.some(namesSystemValue)) return;
     const definitions = readFieldsOf(mapping.logicalName);
-    const source = store
-      .tableRows(mapping.logicalName)
-      .find(
-        (row) =>
-          sameId(row[mapping.idColumn], projected[mapping.idColumn]) &&
-          (!isElastic(mapping) || samePartition(row.partitionid, c.partitionId)),
-      );
+    const source = storedRowOf(c, mapping, projected);
     if (!source) return;
     const readable = (name) => security()?.canRead(c.user, mapping.logicalName, name) !== false;
     // The same observed stamp that an unselected full row receives must survive selecting the stamp alone.
@@ -1216,20 +1292,50 @@ export function createRecordHandlers({
   function fillColumns(c, mapping, formatted) {
     if (parseSelect(c.url.searchParams.get('$select')) != null) return;
     const { names, moneys, dateColumns } = columnNamesOf(mapping);
-    // A row that carries the base currency (shapeMoney) has exchange rate 1: the base currency's own rate is 1, so a money value is its base amount.
-    if (formatted[CURRENCY] != null) {
-      formatted.exchangerate = 1;
-      // The rate's FormattedValue is 1 at its 12-place scale; a base companion formats like its money column.
-      formatted[`exchangerate${FORMATTED}`] = '1.000000000000';
-      for (const name of moneys) {
-        if (formatted[name] == null) continue;
-        formatted[`${name}_base`] = formatted[name];
-        if (formatted[`${name}${FORMATTED}`] !== undefined)
-          formatted[`${name}_base${FORMATTED}`] = formatted[`${name}${FORMATTED}`];
-      }
-    }
+    if (formatted[CURRENCY] != null) fillRateColumns(c, mapping, formatted, moneys);
     stampSystemValues(mapping, formatted, dateColumns);
     for (const name of names) if (!(name in formatted)) formatted[name] = null;
+  }
+
+  // The exchange rate and base amounts are stamped when the row is written (dataverse-currency.mjs), so a stored row
+  // answers them as stored. A row stored without a rate (older state) reads as the base currency: rate 1, each base
+  // amount its money value.
+  function fillRateColumns(c, mapping, formatted, moneys) {
+    const source = storedRowOf(c, mapping, formatted);
+    if (source?.exchangerate != null) {
+      storedRateColumns(mapping, formatted, source, moneys);
+      return;
+    }
+    formatted.exchangerate = 1;
+    // The rate's FormattedValue is 1 at its 12-place scale; a base companion formats like its money column.
+    formatted[`exchangerate${FORMATTED}`] = '1.000000000000';
+    for (const name of moneys) {
+      if (formatted[name] == null) continue;
+      formatted[`${name}_base`] = formatted[name];
+      if (formatted[`${name}${FORMATTED}`] !== undefined)
+        formatted[`${name}_base${FORMATTED}`] = formatted[`${name}${FORMATTED}`];
+    }
+  }
+
+  // A base amount is stated in the base currency whatever the row's currency: its digits are the stored ones and its
+  // text carries the base symbol.
+  function storedRateColumns(mapping, formatted, source, moneys) {
+    const settings = {
+      ...store.state.settings,
+      currencySymbol: baseCurrency()?.currencysymbol ?? store.state.settings.currencySymbol ?? '$',
+    };
+    formatted.exchangerate = source.exchangerate;
+    formatted[`exchangerate${FORMATTED}`] = formattedValue(
+      fixedScaleNumeric(source.exchangerate, RATE_SCALE),
+      { dataverseType: 'decimal', precision: RATE_SCALE },
+      settings,
+    );
+    for (const name of moneys) {
+      const base = `${name}_base`;
+      formatted[base] = source[base] == null ? null : fixedScaleNumeric(source[base], MONEY_SCALE);
+      if (source[base] != null)
+        formatted[`${base}${FORMATTED}`] = formattedValue(source[base], readDefinition(mapping, name), settings);
+    }
   }
 
   function columnNamesOf(mapping) {
@@ -1367,8 +1473,56 @@ export function createRecordHandlers({
   }
   function projectRow(c, mapping, formatted, expand = [], single = false) {
     removeInvalidODataFields(mapping, formatted);
+    removeUnreadableFields(mapping, formatted);
+    nullAdminOnlyFields(c, mapping, formatted);
     runHooks('project', c, mapping, formatted, { single });
     projectExpandedRows(c, mapping, formatted, expand);
+  }
+  // The administrator-only columns of a table (ADMIN_READ_COLUMNS), for this caller: none for a System Administrator.
+  function adminOnlyColumns(c, logical) {
+    const names = ADMIN_READ_COLUMNS[logical] ?? [];
+    return names.length && !isSystemAdministrator(principals, c.user) ? names : [];
+  }
+  // A caller who is not an administrator reads each named administrator-only column as null, where the read names it.
+  function nullAdminOnlyFields(c, mapping, formatted) {
+    const selected = parseSelect(c.url.searchParams.get('$select'));
+    for (const name of adminOnlyColumns(c, mapping.logicalName)) {
+      if (selected != null && !selected.includes(name)) continue;
+      for (const key of Object.keys(formatted)) if (key.split('@')[0] === name) delete formatted[key];
+      formatted[name] = null;
+    }
+  }
+  // A column read as null for this caller is no filter or order operand: the masked-operand refusal.
+  function assertNotAdminOnly(c, mapping, head) {
+    if (adminOnlyColumns(c, mapping.logicalName).includes(head)) throw maskedOperand();
+  }
+  // validForRead false (Learn: IsValidForRead False) keeps a column out of every read: the row projection, $select, $filter
+  // and $orderby. A lookup is named by its _x_value form, so both keys of the column are removed.
+  function unreadableColumn(logical, name) {
+    const column = /^_(.+)_value$/.exec(name)?.[1] ?? name;
+    return declaredFields(logical, true)?.[column]?.validForRead === false;
+  }
+  function removeUnreadableFields(mapping, formatted) {
+    const all = declaredFields(mapping.logicalName, true);
+    if (!all) return;
+    for (const [name, field] of Object.entries(all)) {
+      if (field?.validForRead !== false) continue;
+      for (const key of Object.keys(formatted)) {
+        const base = key.split('@')[0];
+        if (base === name || base === `_${name}_value`) delete formatted[key];
+      }
+    }
+  }
+  // An is<column>set flag answers whether the stored value of a hidden column holds one (Learn: IsAuthValueSet, IsSASKeySet and
+  // IsSASTokenSet). It is answered when the read returns it: a read with no $select, or one that names the flag.
+  function shapeValueFlags(c, mapping, row, formatted) {
+    const selected = parseSelect(c.url.searchParams.get('$select'));
+    const all = declaredFields(mapping.logicalName, true) ?? {};
+    for (const [name, field] of Object.entries(all)) {
+      const flag = `is${name}set`;
+      if (field?.validForRead !== false || !all[flag] || (selected != null && !selected.includes(flag))) continue;
+      formatted[flag] = row[name] != null && row[name] !== '';
+    }
   }
 
   function rowOf(c, mapping, id, partitionId = null) {
@@ -1558,7 +1712,8 @@ export function createRecordHandlers({
   // wrong guess answer alike. How native evaluates such a filter is undocumented; this is a guess.
   // A readable secured column with a masking rule the read does not unmask (a collection read: UnMaskedData with
   // CanReadUnmasked All Records unmasks) is never a filter, order or aggregate operand at any path depth:
-  // 0x80041155 CannotFilterOnMaskedAttribute. One rule: api.fieldSecurity.maskedFor.
+  // 0x80041155 CannotFilterOnMaskedAttribute. A hidden column (validForRead false, or an administrator-only column for another
+  // caller) answers its own refusal. One rule: api.fieldSecurity.maskedFor, with the unknown-property refusal for validForRead false.
   const security = () => fieldSecurity?.();
   // The table and column a property path ends on, through its navigation segments (lambda paths come qualified from the root).
   const columnOf = (logical, segments) => {
@@ -1570,32 +1725,33 @@ export function createRecordHandlers({
     }
     return { logical: mapping.logicalName, column: String(segments.at(-1) ?? '').replace(/^_(.+)_value$/, '$1') };
   };
-  const maskedPath = (c, logical, segments) => {
+  // The refusal a path's column answers for this caller, or null when it may be used: a validForRead false column answers the
+  // unknown-property refusal (as $filter always has), any other hidden or masked column answers 0x80041155 (api.fieldSecurity.maskedFor).
+  const operandRefusalOf = (c, logical, segments) => {
     const target = columnOf(logical, segments);
-    return Boolean(
-      target &&
-      security()?.maskedFor?.(c.user, target.logical, target.column, { unmask: c.unmasked === true, single: false }),
-    );
+    if (!target) return null;
+    if (unreadableColumn(target.logical, target.column)) return unknownPropertyError(target.logical, target.column);
+    const view = { unmask: c.unmasked === true, single: false };
+    return security()?.maskedFor?.(c.user, target.logical, target.column, view) ? maskedOperand() : null;
   };
-  const maskedIn = (c, logical, ast) => expressionPaths(ast).some((path) => maskedPath(c, logical, path));
   // Only filtering is documented; an order on a masked column is refused the same way (it is the same oracle).
   const assertUnmasked = (c, logical, paths) => {
-    if (paths.some((path) => maskedPath(c, logical, path))) throw maskedOperand();
+    const refusal = paths.map((path) => operandRefusalOf(c, logical, path)).find(Boolean);
+    if (refusal) throw refusal;
   };
   const orderPaths = (orderby) =>
     orderby ? splitTopLevel(orderby).map((item) => item.trim().split(/\s+/)[0].split('/')) : [];
   const aliasesOf = (params) => Object.fromEntries([...params].filter(([name]) => name.startsWith('@')));
   // A query's $filter and $orderby on mapping, then each $expand option on its target table, at every depth.
   function assertUnmaskedQuery(c, mapping, { filter, orderby, expand = [] }, aliases) {
-    if (
-      filter &&
-      maskedIn(
+    if (filter)
+      assertUnmasked(
         c,
         mapping.logicalName,
-        parseODataExpression(filter, { dialect: 'dataverse', aliases, rejectNotOnQueryFunctions: true }),
-      )
-    )
-      throw maskedOperand();
+        expressionPaths(
+          parseODataExpression(filter, { dialect: 'dataverse', aliases, rejectNotOnQueryFunctions: true }),
+        ),
+      );
     assertUnmasked(c, mapping.logicalName, orderPaths(orderby));
     for (const item of expand) {
       const rel = navigationOf(mapping, item.navigation);
@@ -1620,7 +1776,7 @@ export function createRecordHandlers({
         return target ? [{ ...target, method }] : [];
       }),
     );
-    for (const step of steps) if (step.kind === 'filter' && maskedIn(c, logical, step.ast)) throw maskedOperand();
+    for (const step of steps) if (step.kind === 'filter') assertUnmasked(c, logical, expressionPaths(step.ast));
   }
   // The entity and link-entity elements of a FetchXML document, each with the attributes it reads ({ column, method }: the
   // aggregate, "groupby" or none) and the attribute names its conditions (attribute and valueof) and orders compare
@@ -2104,7 +2260,7 @@ export function createRecordHandlers({
         authorize(c, target.logicalName, 'create', target);
         authorize(c, target.logicalName, 'append', target);
         authorize(c, mapping.logicalName, 'appendto', mapping);
-        const childData = await deepPayload(c, target, createPayload(target, child));
+        const childData = await deepPayload(c, target, bindsOf(c, target, createPayload(target, child), null));
         await beforeWrite(c, target, { operation: 'create', data: childData, existing: null, deep: true });
         children.push(childData);
       }
@@ -2400,9 +2556,11 @@ export function createRecordHandlers({
           throw invalid('The partitionid value of an elastic table row cannot be changed.');
         Object.assign(data, key.alternate);
       } else data[mapping.idColumn] = key.id;
-      authorize(c, logical, key.row ? 'update' : 'create', mapping, key.row ?? undefined);
+      // The hooks see the create or the update this upsert is, so each column rule that governs those writes applies to it.
+      const operation = key.row ? 'update' : 'create';
+      authorize(c, logical, operation, mapping, key.row ?? undefined);
       if (Object.keys(data).some((name) => name.endsWith(BIND))) authorize(c, logical, 'append', mapping);
-      await beforeWrite(c, mapping, { operation: 'upsert', data, existing: key.row });
+      await beforeWrite(c, mapping, { operation, data, existing: key.row });
       const result = await store.elasticUpsertRecordAsync(
         logical,
         key.id ?? data[mapping.idColumn],
@@ -2410,7 +2568,7 @@ export function createRecordHandlers({
         c.identity,
         (key.row ? updateOptions : createOptions)(c, { ifMatch, ifNoneMatch, partitionId: c.partitionId }),
       );
-      await afterWrite(c, mapping, { operation: 'upsert', id: result.row[mapping.idColumn] });
+      await afterWrite(c, mapping, { operation, id: result.row[mapping.idColumn] });
       return { created: result.created, id: result.row[mapping.idColumn] };
     }
     // An Update the caller has no privilege for is refused before any step, also the existence read (recorded native
@@ -2612,16 +2770,13 @@ export function createRecordHandlers({
 
   // The store does not reject unknown $select columns on the by-id path, so the property name is checked here.
   // The currency lookup is a property of any table with a money column (its value comes from shapeMoney).
+  // A column that validForRead excludes (Learn: IsValidForRead False) is not a property of any read.
   const hasProperty = (mapping, segment) =>
     segment === mapping.idColumn ||
-    Boolean(readDefinition(mapping, segment)) ||
+    (Boolean(readDefinition(mapping, segment)) && !unreadableColumn(mapping.logicalName, segment)) ||
     (segment === CURRENCY && Object.keys(mapping.fields ?? {}).some((key) => isMoney(mapping, key)));
   function assertProperty(mapping, segment) {
-    if (hasProperty(mapping, segment)) return;
-    throw invalid(
-      `Could not find a property named '${segment}' on type 'Microsoft.Dynamics.CRM.${mapping.logicalName}'.`,
-      '0x80060888',
-    );
+    if (!hasProperty(mapping, segment)) throw unknownPropertyError(mapping.logicalName, segment);
   }
 
   function readProperty(c, mapping, id, segment) {
@@ -3364,32 +3519,40 @@ export function createRecordHandlers({
   }
   // Hooks see the caller's context; the audit columns name its user, or SYSTEM when it has none.
   const actorOf = (c) => (c.user ? c : { ...c, user: systemUser() });
-  // append on the table and appendTo on each looked-up row of { id, logical_name } lookups.
+  // appendTo on the row a { id, logical_name } lookup names; a lookup to an unknown table is skipped.
+  function authorizeBoundRow(c, value) {
+    let target;
+    try {
+      target = store.resolveMapping(value.logical_name);
+    } catch {
+      return;
+    }
+    // The primary key index answers the target row; a table without one is scanned.
+    const keyed = typeof value.id === 'string' ? store.primaryKeySubset(target, [value.id]) : null;
+    const row = keyed
+      ? keyed[0]
+      : store.tableRows(target.logicalName).find((r) => guidKey(r[target.idColumn]) === guidKey(value.id));
+    authorize(c, target.logicalName, 'appendto', target, row);
+  }
+  // append on the table and appendTo on each looked-up row of { id, logical_name } lookups (system lookups excluded).
   function authorizeLookups(c, mapping, data) {
     const lookups = Object.entries(data).filter(
-      ([column, value]) =>
-        !LOOKUP_SYSTEM.has(column) &&
-        value !== null &&
-        typeof value === 'object' &&
-        !Array.isArray(value) &&
-        value.id != null &&
-        value.logical_name != null,
+      ([column, value]) => !LOOKUP_SYSTEM.has(column) && isLookupValue(value),
     );
     if (lookups.length) authorize(c, mapping.logicalName, 'append', mapping);
-    for (const [, value] of lookups) {
-      let target;
-      try {
-        target = store.resolveMapping(value.logical_name);
-      } catch {
-        continue;
-      }
-      // The primary key index answers the target row; a table without one is scanned.
-      const keyed = typeof value.id === 'string' ? store.primaryKeySubset(target, [value.id]) : null;
-      const row = keyed
-        ? keyed[0]
-        : store.tableRows(target.logicalName).find((r) => guidKey(r[target.idColumn]) === guidKey(value.id));
-      authorize(c, target.logicalName, 'appendto', target, row);
+    for (const [, value] of lookups) authorizeBoundRow(c, value);
+  }
+  /**
+   * The lookup authorisation of a row written with lookup values rather than binds (a Restore Target override): the owner is
+   * bound as a create binds it (assign on the table, then appendTo on the owner row, as bindOne asks), the other lookups as
+   * authorizeLookups asks. Exposed on the records API for the messages that write such rows.
+   */
+  function authorizeLookupValues(c, mapping, data) {
+    if (isLookupValue(data.ownerid)) {
+      authorize(c, mapping.logicalName, 'assign', mapping);
+      authorizeBoundRow(c, data.ownerid);
     }
+    authorizeLookups(c, mapping, data);
   }
   // The stored row a write addresses, as the hooks' `existing`; the store write itself checks the caller's identity.
   const existingRow = (mapping, id, partitionId) => {
@@ -3445,7 +3608,7 @@ export function createRecordHandlers({
       if (status !== undefined) data.statuscode = derived.statuscode = status;
     }
     derivedCreateColumns.set(data, derived);
-    yield* writeHooks('beforeWrite', c, mapping, { operation: 'create', data, existing: null });
+    yield* writeHooks('beforeWrite', c, mapping, { operation: 'create', data, existing: null, sync });
     const write = sync ? store.createRecord : store.createRecordAsync;
     const row = yield {
       name: 'store',
@@ -3493,7 +3656,7 @@ export function createRecordHandlers({
       authorizeLookups(c, mapping, data);
     }
     delete data[mapping.idColumn];
-    yield* writeHooks('beforeWrite', c, mapping, { operation: 'update', data, existing });
+    yield* writeHooks('beforeWrite', c, mapping, { operation: 'update', data, existing, sync });
     const write = sync ? store.updateRecord : store.updateRecordAsync;
     const row = yield {
       name: 'store',
@@ -3981,6 +4144,9 @@ export function createRecordHandlers({
   const handlers = {
     projectRow: readProjection,
     createInternal,
+    authorizeLookupValues,
+    // The operand refusal of a column of the table, as a filter, order or aggregate operand of this caller (c.user, c.unmasked).
+    operandRefusal: (c, logical, column) => operandRefusalOf(c, logical, [column]),
     bulkStampsInternal,
     updateInternal,
     removeInternal,

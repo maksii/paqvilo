@@ -13,7 +13,8 @@ import { validateDerivedColumns, derivedColumnsOf } from './derived-columns.mjs'
 //      a pack powerFx adapter) answers through its evaluateSync(formula, ctx) and returns { value }; ctx.principal is null:
 //      the platform computes the column, so the caller's identity is not passed. ctx.host.scope is the row typed by its
 //      column metadata (ThisRecord and the bare column names; lookups navigate to the related row; other formula columns
-//      are computed when read, at most 10 deep);
+//      are computed when read, once per computation, at most 10 deep; a circular reference reads null with
+//      FORMULA_CIRCULAR_REFERENCE);
 //   3. else the value is null and FORMULA_NOT_EVALUATED is reported once per column. A value is never guessed.
 // A formula that answers a Power Fx error value reads null with FORMULA_ERROR (its ErrorKind) once per column. A decimal
 // result keeps the column's precision (default 2). An async-only engine is refused by evaluateSync (PowerFxAsyncAdapter),
@@ -82,10 +83,32 @@ function unevaluated(state, table, column, reason) {
   return null;
 }
 
+// One top-level computation of a row's formula columns (the store's computed-column seam starts one per column read):
+// the values computed so far, the columns in progress (insertion order is the path of the computation) and the columns
+// on a circular reference, which read null.
+const newThread = () => ({ memo: new Map(), active: new Set(), cycle: new Set() });
+
+// A read of an in-progress column closes a circular reference: every column from it to the innermost one is on the
+// cycle.
+function closeCycle(state, thread, table, column) {
+  const path = [...thread.active];
+  for (const member of path.slice(path.indexOf(column))) {
+    thread.cycle.add(member);
+    report(state, {
+      code: 'FORMULA_CIRCULAR_REFERENCE',
+      severity: 'warning',
+      table,
+      column: member,
+      message: `Formula column ${table}.${member} is on a circular reference; it reads null.`,
+    });
+  }
+  return null;
+}
+
 // The implicit ThisRecord of a formula: the row typed by its column metadata (power-fx-dataverse.mjs), each other formula
 // column of the table computed when the formula reads it, the column itself blank (a formula column cannot reference
 // itself).
-function scopeOf(state, host, mapping, row, column) {
+function scopeOf(state, host, mapping, row, column, thread) {
   const record = host.record(mapping.logicalName, row);
   const formulas = formulaColumnsOf(state.api, mapping.logicalName);
   for (const [other, text] of Object.entries(formulas)) {
@@ -97,11 +120,19 @@ function scopeOf(state, host, mapping, row, column) {
       enumerable: true,
       configurable: true,
       get: () =>
-        host.record(mapping.logicalName, { [other]: computeColumn(state, {}, mapping, row, other, text) })[other] ??
-        null,
+        host.record(mapping.logicalName, { [other]: readFormula(state, thread, mapping, row, column, other, text) })[
+          other
+        ] ?? null,
     });
   }
   return record;
+}
+
+// A read of another formula column: the reading column joins a circular reference when the value it reads is on one.
+function readFormula(state, thread, mapping, row, reader, other, text) {
+  const value = computeColumn(state, {}, mapping, row, other, text, thread);
+  if (thread.cycle.has(other)) thread.cycle.add(reader);
+  return value;
 }
 
 // A decimal formula column keeps its precision (0 to 10 places, default 2).
@@ -114,7 +145,7 @@ function columnValue(state, mapping, column, value) {
   return roundNumeric(value, Math.min(10, Math.max(0, places)), 'Decimal');
 }
 
-function evaluateFormula(state, c, mapping, row, column, formula) {
+function evaluateFormula(state, c, mapping, row, column, formula, thread) {
   const table = mapping.logicalName;
   const engine = state.evaluator;
   if (typeof engine.evaluateSync !== 'function')
@@ -140,7 +171,7 @@ function evaluateFormula(state, c, mapping, row, column, formula) {
       symbols: { table, columns: Object.keys(mapping.fields ?? {}) },
       values: cloneStateData(row),
       principal: null, // computed as the system user, not as the caller
-      host: { ...host, scope: scopeOf(state, host, mapping, row, column) },
+      host: { ...host, scope: scopeOf(state, host, mapping, row, column, thread) },
     });
     if (isThenable(result)) {
       Promise.resolve(result).catch(() => {}); // the rejection is answered by this diagnostic, not an unhandled rejection
@@ -172,7 +203,7 @@ function evaluateFormula(state, c, mapping, row, column, formula) {
   }
 }
 
-function computeColumn(state, c, mapping, row, column, formula) {
+function computeValue(state, c, mapping, row, column, formula, thread) {
   const table = mapping.logicalName;
   const override = state.overrides[`${table}.${column}`];
   if (override) {
@@ -185,7 +216,24 @@ function computeColumn(state, c, mapping, row, column, formula) {
       'The pack formulaColumns function returned a promise; formula columns are computed synchronously.',
     );
   }
-  return evaluateFormula(state, c, mapping, row, column, formula);
+  return evaluateFormula(state, c, mapping, row, column, formula, thread);
+}
+
+// Each column of a thread is computed at most once: its value is memoized when it completes, and a column on a circular
+// reference completes as null.
+function computeColumn(state, c, mapping, row, column, formula, thread = newThread()) {
+  if (thread.memo.has(column)) return thread.memo.get(column);
+  if (thread.active.has(column)) return closeCycle(state, thread, mapping.logicalName, column);
+  thread.active.add(column);
+  let value;
+  try {
+    value = computeValue(state, c, mapping, row, column, formula, thread);
+  } finally {
+    thread.active.delete(column);
+  }
+  if (thread.cycle.has(column)) value = null;
+  thread.memo.set(column, value);
+  return value;
 }
 
 /**

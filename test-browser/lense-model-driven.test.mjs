@@ -272,189 +272,185 @@ test('model-driven local scripts publish file debugger maps and hit an executabl
   await cdp.detach();
 });
 
-test(
-  'public model-driven Lense overlays native scripts and reloads on source save without native writes',
-  { timeout: 90_000 },
-  async (t) => {
-    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'lense-app-'));
-    ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
-    const solution = path.join(root, 'solution'),
-      resourceDir = path.join(solution, 'WebResources');
-    await fs.mkdir(path.join(solution, 'Other'), { recursive: true });
-    await fs.mkdir(resourceDir);
-    await fs.writeFile(
-      path.join(solution, 'Other/Solution.xml'),
-      '<ImportExportXml><SolutionManifest><UniqueName>Invented</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
+test('public model-driven Lense overlays native scripts and reloads on source save without native writes', async (t) => {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'lense-app-'));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  const solution = path.join(root, 'solution'),
+    resourceDir = path.join(solution, 'WebResources');
+  await fs.mkdir(path.join(solution, 'Other'), { recursive: true });
+  await fs.mkdir(resourceDir);
+  await fs.writeFile(
+    path.join(solution, 'Other/Solution.xml'),
+    '<ImportExportXml><SolutionManifest><UniqueName>Invented</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
+  );
+  await fs.writeFile(
+    path.join(resourceDir, 'x_script.js.data.xml'),
+    '<WebResource><Name>x_script.js</Name><WebResourceType>3</WebResourceType><FileName>WebResources/x_script.js</FileName></WebResource>',
+  );
+  // Each execution reports its value and the native path it was requested from.
+  const script = (value) =>
+    `document.querySelector('h1').textContent=${JSON.stringify(value)};fetch('/observed?value='+encodeURIComponent(document.querySelector('h1').textContent)+'&src='+encodeURIComponent(new URL(document.currentScript.src).pathname));`;
+  await fs.writeFile(path.join(resourceDir, 'x_script.js'), script('local first'));
+  const project = path.join(root, 'project.yml');
+  await fs.writeFile(
+    project,
+    'version: 2\nruntime:\n  kind: model-driven\nmodelDriven:\n  trustedExtensions: true\nsolutions:\n  - id: invented\n    path: ./solution\n',
+  );
+  // Explicit maps remain watched even inside a directory otherwise ignored by
+  // Solution discovery (the normal home of project observation files).
+  await fs.mkdir(path.join(solution, '.paqvilo'));
+  const resourceMap = path.join(solution, '.paqvilo/resources.json');
+  await fs.writeFile(
+    resourceMap,
+    JSON.stringify({
+      version: 1,
+      resources: [{ path: '/%7B123%7D/webresources/x_script.js', resource: 'x_script.js' }],
+    }),
+  );
+  let nativeResourcePath = '/%7B123%7D/webresources/x_script.js';
+  const seen = [];
+  const observations = new EventEmitter();
+  let mutations = 0;
+  // The initial document is held while a source edit is saved, so that edit lands
+  // deterministically during startup (document navigation), after the watcher is ready.
+  let documentRequested, releaseDocument;
+  const firstDocument = new Promise((resolve) => {
+    documentRequested = resolve;
+  });
+  const documentGate = new Promise((resolve) => {
+    releaseDocument = resolve;
+  });
+  let documents = 0;
+  const server = http.createServer(async (req, res) => {
+    if (!['GET', 'HEAD'].includes(req.method)) mutations++;
+    if (req.url === '/long-poll') return;
+    if (req.url === '/worker.js') {
+      res.writeHead(200, { 'content-type': 'text/javascript' }).end('postMessage("ready");');
+      return;
+    }
+    if (req.url.startsWith('/observed?')) {
+      const query = new URL(req.url, 'http://loopback').searchParams;
+      seen.push({ value: query.get('value'), src: query.get('src') });
+      observations.emit('seen');
+      res.end('ok');
+      return;
+    }
+    if (req.url.startsWith(nativeResourcePath)) {
+      res.setHeader('content-type', 'text/javascript');
+      res.end(script('native'));
+      return;
+    }
+    if (++documents === 1) {
+      documentRequested();
+      await documentGate;
+    }
+    res.setHeader('content-type', 'text/html');
+    res.end(
+      `<!doctype html><h1>Loading</h1><script src="${nativeResourcePath}?token=never-log-this"></script><script>new Worker('/worker.js');fetch('/long-poll');</script>`,
     );
-    await fs.writeFile(
-      path.join(resourceDir, 'x_script.js.data.xml'),
-      '<WebResource><Name>x_script.js</Name><WebResourceType>3</WebResourceType><FileName>WebResources/x_script.js</FileName></WebResource>',
-    );
-    // Each execution reports its value and the native path it was requested from.
-    const script = (value) =>
-      `document.querySelector('h1').textContent=${JSON.stringify(value)};fetch('/observed?value='+encodeURIComponent(document.querySelector('h1').textContent)+'&src='+encodeURIComponent(new URL(document.currentScript.src).pathname));`;
-    await fs.writeFile(path.join(resourceDir, 'x_script.js'), script('local first'));
-    const project = path.join(root, 'project.yml');
-    await fs.writeFile(
-      project,
-      'version: 2\nruntime:\n  kind: model-driven\nmodelDriven:\n  trustedExtensions: true\nsolutions:\n  - id: invented\n    path: ./solution\n',
-    );
-    // Explicit maps remain watched even inside a directory otherwise ignored by
-    // Solution discovery (the normal home of project observation files).
-    await fs.mkdir(path.join(solution, '.paqvilo'));
-    const resourceMap = path.join(solution, '.paqvilo/resources.json');
-    await fs.writeFile(
-      resourceMap,
-      JSON.stringify({
-        version: 1,
-        resources: [{ path: '/%7B123%7D/webresources/x_script.js', resource: 'x_script.js' }],
-      }),
-    );
-    let nativeResourcePath = '/%7B123%7D/webresources/x_script.js';
-    const seen = [];
-    const observations = new EventEmitter();
-    let mutations = 0;
-    // The initial document is held while a source edit is saved, so that edit lands
-    // deterministically during startup (document navigation), after the watcher is ready.
-    let documentRequested, releaseDocument;
-    const firstDocument = new Promise((resolve) => {
-      documentRequested = resolve;
-    });
-    const documentGate = new Promise((resolve) => {
-      releaseDocument = resolve;
-    });
-    let documents = 0;
-    const server = http.createServer(async (req, res) => {
-      if (!['GET', 'HEAD'].includes(req.method)) mutations++;
-      if (req.url === '/long-poll') return;
-      if (req.url === '/worker.js') {
-        res.writeHead(200, { 'content-type': 'text/javascript' }).end('postMessage("ready");');
-        return;
-      }
-      if (req.url.startsWith('/observed?')) {
-        const query = new URL(req.url, 'http://loopback').searchParams;
-        seen.push({ value: query.get('value'), src: query.get('src') });
-        observations.emit('seen');
-        res.end('ok');
-        return;
-      }
-      if (req.url.startsWith(nativeResourcePath)) {
-        res.setHeader('content-type', 'text/javascript');
-        res.end(script('native'));
-        return;
-      }
-      if (++documents === 1) {
-        documentRequested();
-        await documentGate;
-      }
-      res.setHeader('content-type', 'text/html');
-      res.end(
-        `<!doctype html><h1>Loading</h1><script src="${nativeResourcePath}?token=never-log-this"></script><script>new Worker('/worker.js');fetch('/long-poll');</script>`,
-      );
-    });
-    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-    ownedFixture(t).add(() => {
-      releaseDocument();
-      server.closeAllConnections();
-      return new Promise((resolve) => server.close(resolve));
-    });
-    const origin = `http://127.0.0.1:${server.address().port}`,
-      reportFile = path.join(root, 'report.json');
-    const child = spawn(
-      process.execPath,
-      [
-        cli,
-        'lense',
-        'model-driven',
-        'dev',
-        '--project',
-        project,
-        '--url',
-        origin,
-        '--resource-map',
-        resourceMap,
-        '--browser',
-        'chromium',
-        '--headless',
-        '--output',
-        reportFile,
-      ],
-      { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] },
-    );
-    let output = '';
-    const printed = new EventEmitter();
-    for (const stream of [child.stdout, child.stderr])
-      stream.on('data', (data) => {
-        output += data;
-        printed.emit('data');
-      });
-    const exited = new Promise((resolve) => child.once('exit', (code) => resolve(code)));
-    const closed = new Promise((resolve) => child.once('close', resolve));
-    ownedFixture(t).add(async () => {
-      if (!child.killed && child.exitCode === null && child.signalCode === null)
-        assert.ok(child.kill(), 'Owned Lense process termination must be accepted');
-      await closed;
-    });
-    // Wait for a real signal (an observation request or CLI output); an exit fails at once.
-    const until = async (ready, emitter, event, label) => {
-      while (!ready()) {
-        const next = await Promise.race([once(emitter, event).then(() => 'next'), exited.then(() => 'exited')]);
-        if (next !== 'next' && !ready()) assert.fail(`${label} (${next}): ${output}`);
-      }
-    };
-    const observed = (value, src) =>
-      until(() => seen.some((entry) => entry.value === value && entry.src === src), observations, 'seen', value);
-    const initialPath = nativeResourcePath;
-    await firstDocument;
-    // Startup edit: saved while the initial document is still outstanding.
-    await fs.writeFile(path.join(resourceDir, 'x_script.js'), script('local during startup'));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  ownedFixture(t).add(() => {
     releaseDocument();
-    await observed('local during startup', initialPath);
-    await until(() => /Model-driven overlay installed; document loaded/.test(output), printed, 'data', 'startup end');
-    // Post-startup edits run only after startup ended and local application was observed.
-    await fs.writeFile(path.join(resourceDir, 'x_script.js'), script('local changed'));
-    await observed('local changed', initialPath);
-    nativeResourcePath = '/native-client/x_script.js';
-    await fs.writeFile(
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
+  const origin = `http://127.0.0.1:${server.address().port}`,
+    reportFile = path.join(root, 'report.json');
+  const child = spawn(
+    process.execPath,
+    [
+      cli,
+      'lense',
+      'model-driven',
+      'dev',
+      '--project',
+      project,
+      '--url',
+      origin,
+      '--resource-map',
       resourceMap,
-      JSON.stringify({ version: 1, resources: [{ path: nativeResourcePath, resource: 'x_script.js' }] }),
-    );
-    // Only a reloaded explicit map overlays the new native path; otherwise it serves 'native'.
-    await observed('local changed', nativeResourcePath);
-    const discoveryFile = /Model-driven agent API: (.+\.json)/.exec(output)?.[1].trim();
-    assert.ok(discoveryFile, 'the dev session advertises its agent API');
-    const discovery = await readDiscovery(discoveryFile);
-    const stopping = await fetch(discovery.endpoint + '/v1/stop', {
-      method: 'POST',
-      redirect: 'error',
-      headers: { authorization: `Bearer ${discovery.token}`, 'content-type': 'application/json' },
-      body: '{}',
+      '--browser',
+      'chromium',
+      '--headless',
+      '--output',
+      reportFile,
+    ],
+    { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+  let output = '';
+  const printed = new EventEmitter();
+  for (const stream of [child.stdout, child.stderr])
+    stream.on('data', (data) => {
+      output += data;
+      printed.emit('data');
     });
-    assert.equal(stopping.status, 200);
-    // 'exit' can precede the last stdout chunks; 'close' fires once both pipes are drained.
-    const code = await exited;
+  const exited = new Promise((resolve) => child.once('exit', (code) => resolve(code)));
+  const closed = new Promise((resolve) => child.once('close', resolve));
+  ownedFixture(t).add(async () => {
+    if (!child.killed && child.exitCode === null && child.signalCode === null)
+      assert.ok(child.kill(), 'Owned Lense process termination must be accepted');
     await closed;
-    assert.equal(code, 0, output);
-    assert.match(output, /startup\s+configuration/);
-    assert.match(output, /startup\s+source discovery and Solution resources/);
-    assert.match(output, /startup\s+document navigation/);
-    assert.match(output, /startup\s+page resources/);
-    // A watched reload may keep initial resource settling pending until this
-    // bounded session ends. Both progress and settled states must avoid claiming
-    // sign-in or application readiness from an installed resource overlay.
-    assert.match(output, /(?:Sign-in and native application readiness remain|application readiness is) unverified/);
-    assert.doesNotMatch(output, /Model-driven overlay ready\.|application and initial view usable/);
-    const report = JSON.parse(await fs.readFile(reportFile, 'utf8'));
-    assert.ok(report.applied >= 3);
-    assert.equal(report.revision >= 3, true);
-    assert.equal(report.resources[0].name, 'x_script.js');
-    assert.ok(report.resources[0].paths.includes(nativeResourcePath));
-    assert.equal(JSON.stringify(report).includes('never-log-this'), false);
-    assert.equal(output.includes('never-log-this'), false);
-    assert.equal(mutations, 0);
-    assert.equal(
-      seen.some((entry) => entry.value === 'native'),
-      false,
-    );
-  },
-);
+  });
+  // Wait for a real signal (an observation request or CLI output); an exit fails at once.
+  const until = async (ready, emitter, event, label) => {
+    while (!ready()) {
+      const next = await Promise.race([once(emitter, event).then(() => 'next'), exited.then(() => 'exited')]);
+      if (next !== 'next' && !ready()) assert.fail(`${label} (${next}): ${output}`);
+    }
+  };
+  const observed = (value, src) =>
+    until(() => seen.some((entry) => entry.value === value && entry.src === src), observations, 'seen', value);
+  const initialPath = nativeResourcePath;
+  await firstDocument;
+  // Startup edit: saved while the initial document is still outstanding.
+  await fs.writeFile(path.join(resourceDir, 'x_script.js'), script('local during startup'));
+  releaseDocument();
+  await observed('local during startup', initialPath);
+  await until(() => /Model-driven overlay installed; document loaded/.test(output), printed, 'data', 'startup end');
+  // Post-startup edits run only after startup ended and local application was observed.
+  await fs.writeFile(path.join(resourceDir, 'x_script.js'), script('local changed'));
+  await observed('local changed', initialPath);
+  nativeResourcePath = '/native-client/x_script.js';
+  await fs.writeFile(
+    resourceMap,
+    JSON.stringify({ version: 1, resources: [{ path: nativeResourcePath, resource: 'x_script.js' }] }),
+  );
+  // Only a reloaded explicit map overlays the new native path; otherwise it serves 'native'.
+  await observed('local changed', nativeResourcePath);
+  const discoveryFile = /Model-driven agent API: (.+\.json)/.exec(output)?.[1].trim();
+  assert.ok(discoveryFile, 'the dev session advertises its agent API');
+  const discovery = await readDiscovery(discoveryFile);
+  const stopping = await fetch(discovery.endpoint + '/v1/stop', {
+    method: 'POST',
+    redirect: 'error',
+    headers: { authorization: `Bearer ${discovery.token}`, 'content-type': 'application/json' },
+    body: '{}',
+  });
+  assert.equal(stopping.status, 200);
+  // 'exit' can precede the last stdout chunks; 'close' fires once both pipes are drained.
+  const code = await exited;
+  await closed;
+  assert.equal(code, 0, output);
+  assert.match(output, /startup\s+configuration/);
+  assert.match(output, /startup\s+source discovery and Solution resources/);
+  assert.match(output, /startup\s+document navigation/);
+  assert.match(output, /startup\s+page resources/);
+  // A watched reload may keep initial resource settling pending until this
+  // bounded session ends. Both progress and settled states must avoid claiming
+  // sign-in or application readiness from an installed resource overlay.
+  assert.match(output, /(?:Sign-in and native application readiness remain|application readiness is) unverified/);
+  assert.doesNotMatch(output, /Model-driven overlay ready\.|application and initial view usable/);
+  const report = JSON.parse(await fs.readFile(reportFile, 'utf8'));
+  assert.ok(report.applied >= 3);
+  assert.equal(report.revision >= 3, true);
+  assert.equal(report.resources[0].name, 'x_script.js');
+  assert.ok(report.resources[0].paths.includes(nativeResourcePath));
+  assert.equal(JSON.stringify(report).includes('never-log-this'), false);
+  assert.equal(output.includes('never-log-this'), false);
+  assert.equal(mutations, 0);
+  assert.equal(
+    seen.some((entry) => entry.value === 'native'),
+    false,
+  );
+});

@@ -111,6 +111,15 @@ const hash = (value) => {
 };
 const bytesHash = (value) => createHash('sha256').update(value).digest('hex');
 const plain = (value) => value && typeof value === 'object' && !Array.isArray(value);
+const UNSAFE_TABLE_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
+const SIMPLE_TABLE_NAME = /^[a-z][a-z0-9_]*$/i;
+// Every table key of a pack schema object is checked before any entry is copied into runtime state.
+const tableEntries = (object, label) => {
+  for (const name of Object.keys(object))
+    if (UNSAFE_TABLE_NAMES.has(name) || !SIMPLE_TABLE_NAME.test(name))
+      throw fail(`Pack ${label} use an unsafe table name: ${name}`);
+  return Object.entries(object);
+};
 const at = (root, keys) =>
   keys.reduce((value, key) => (value && Object.hasOwn(value, key) ? value[key] : undefined), root);
 function put(root, keys, value) {
@@ -152,7 +161,8 @@ function loadSchemaEntry(state, entry, metadataKeys, schemaTables, authoritative
   if (schema.mappings !== undefined) {
     if (!plain(schema.mappings)) throw fail('Pack schema mappings must be an object.');
     state.mappings ??= {};
-    Object.assign(state.mappings, structuredClone(schema.mappings));
+    for (const [table, mapping] of tableEntries(schema.mappings, 'mappings'))
+      state.mappings[table] = structuredClone(mapping);
   }
   for (const key of metadataKeys)
     if (schema[key] != null) {
@@ -165,6 +175,7 @@ function loadSchemaEntry(state, entry, metadataKeys, schemaTables, authoritative
 function loadSchemaRecords(state, schemaRecords, schemaTables, authoritativeSchemaRecords) {
   if (schemaRecords === undefined) return;
   if (!plain(schemaRecords)) throw fail('Pack schemaRecords must be an object.');
+  tableEntries(schemaRecords, 'schemaRecords');
   for (const table of schemaTables)
     if (schemaRecords[table] !== undefined) {
       if (!Array.isArray(schemaRecords[table]) || schemaRecords[table].some((row) => !plain(row)))

@@ -11,6 +11,7 @@ import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { queryExpressionToFetch, fetchResultToSdkCollection } from '../lib/plugin-sdk-query.mjs';
+import { sdkFault } from '../lib/plugin-sdk-messages.mjs';
 const user = '10000000-0000-0000-0000-000000000001',
   rootId = '20000000-0000-0000-0000-000000000001',
   childId = '30000000-0000-0000-0000-000000000001',
@@ -965,4 +966,13 @@ test('SDK condition on a link alias filters the root rows', () => {
     ],
   }).entities.map((entity) => entity.attributes.title);
   assert.deepEqual(titles, ['Parent']);
+});
+
+// @test-kind compatibility: the platform answers TopCount with PageInfo or ReturnTotalRecordCount as a query error (the FetchXML top attribute gets the same answer), so a plug-in catches an OrganizationServiceFault for it
+test('SDK TopCount combined with paging or total count faults as a platform query error', () => {
+  for (const pageInfo of [{ returnTotalRecordCount: true }, { count: 1, pageNumber: 1 }])
+    assert.throws(
+      () => run(data(), { $type: 'QueryExpression', entityName: 'root', topCount: 1, pageInfo }),
+      (error) => error.status === 400 && sdkFault(error) !== null,
+    );
 });

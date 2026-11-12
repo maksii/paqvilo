@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { decode } from '../test-support/model-driven-native-decode.mjs';
 import { createFormClientRuntime } from '../lib/model-driven/client-runtime.mjs';
+import { createDatasetHost } from '../lib/model-driven/pcf-runtime.mjs';
 
 const bytes = readFileSync(new URL('./fixtures/model-driven-pcf-caller-native-facts.json', import.meta.url));
 
@@ -81,4 +82,47 @@ describe('native PCF caller contract', () => {
         runtime.destroy();
       });
     }
+});
+
+// @test-kind compatibility: the documented PCF paging API reports the current page as pageNumber and firstPageNumber, and a dataset control reads them to show or request the next page.
+test('PCF dataset paging reports the current page number', async () => {
+  const rows = Array.from({ length: 60 }, (_, index) => ({
+    x_childid: `88888888-8888-4888-8888-${String(index).padStart(12, '0')}`,
+    x_name: `Child ${index}`,
+  }));
+  const table = {
+    entity: 'x_child',
+    idColumn: 'x_childid',
+    nameColumn: 'x_name',
+    label: 'Children',
+    fields: {
+      x_childid: { name: 'x_childid', type: 'text' },
+      x_name: { name: 'x_name', type: 'text', label: 'Name' },
+    },
+  };
+  const query = async ({ page, pageSize }) => ({
+    rows: rows.slice((page - 1) * pageSize, page * pageSize),
+    total: rows.length,
+  });
+  const { dataset, load } = createDatasetHost({
+    table,
+    tables: { x_child: table },
+    columns: [{ name: 'x_name' }],
+    query,
+    openRecord: () => {},
+  });
+  await load();
+  assert.equal(dataset.paging.pageNumber, 1);
+  assert.equal(dataset.paging.firstPageNumber, 1);
+  assert.equal(dataset.paging.lastPageNumber, 3);
+  await dataset.paging.loadNextPage();
+  assert.equal(dataset.paging.pageNumber, 2);
+  assert.equal(dataset.paging.firstPageNumber, 2);
+  assert.equal(dataset.paging.lastPageNumber, 3);
+  assert.equal(dataset.paging.hasNextPage, true);
+  assert.equal(dataset.paging.hasPreviousPage, true);
+  await dataset.paging.loadExactPage(3);
+  assert.equal(dataset.paging.pageNumber, 3);
+  assert.equal(dataset.paging.firstPageNumber, 3);
+  assert.equal(dataset.paging.hasNextPage, false);
 });

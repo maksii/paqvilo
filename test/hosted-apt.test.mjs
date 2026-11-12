@@ -101,7 +101,6 @@ test(
   'an unresponsive loopback apt mirror times out and fails instead of accepting an incomplete index',
   {
     skip: process.platform !== 'linux' && 'apt transport is exercised on Linux',
-    timeout: 15000,
   },
   async (t) => {
     const directory = tempDirSync('paq-apt-timeout-');

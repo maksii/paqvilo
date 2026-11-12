@@ -175,7 +175,8 @@ function signInPersonaRows(ordered, defaultContactId) {
 }
 
 function signInPersonaList(personaCatalog, ordered, rows) {
-  if (personaCatalog?.enabled) return renderPersonaPicker(personaCatalog, { mode: 'signin' });
+  if (personaCatalog?.enabled)
+    return renderPersonaPicker(personaCatalog, { mode: 'signin', adminUrl: personaCatalog.administrationUrl });
   if (ordered.length) return `<ul class="list-group">${rows}</ul>`;
   return '<p>No local contacts are available. Create personas under <a href="/_sim/">Identity &amp; permissions</a>.</p>';
 }

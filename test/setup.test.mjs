@@ -1,3 +1,4 @@
+// @test-kind tooling: the setup script resolves Mirage dependencies through the root and matches bootstrap dependencies regardless of key order.
 import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -7,6 +8,8 @@ import path from 'node:path';
 import { dependencyReadiness, browserExecutable, prerequisiteReadiness } from '../scripts/ensure-dependencies.mjs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+
+const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
 
 function project(t) {
   const root = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-setup-'));
@@ -196,7 +199,7 @@ test('bootstrap enforces the supported Node LTS line and security patch floor', 
 test('setup JSON is offline only and reports readiness without installing', () => {
   const script = fileURLToPath(new URL('../scripts/ensure-dependencies.mjs', import.meta.url));
   const run = (...args) =>
-    spawnSync(process.execPath, [script, ...args], { encoding: 'utf8', windowsHide: true, timeout: 150_000 });
+    spawnSync(process.execPath, [script, ...args], { encoding: 'utf8', windowsHide: true, timeout: CLI_HANG_GUARD_MS });
   const report = run('--check', '--json');
   assert.equal(report.status, 0, report.stderr);
   const value = JSON.parse(report.stdout);

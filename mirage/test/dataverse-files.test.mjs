@@ -1,5 +1,6 @@
 // Simulated Dataverse file and image columns through the stream hook, the block actions
 // and the record hooks.
+// @test-kind contract: simulated file and image column runtime behaviour, exercised through the stream hook and block actions.
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -15,7 +16,8 @@ const USER = { systemuserid: 'aaaaaaaa-0000-4000-8000-000000000001' };
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
 const b64 = (text) => Buffer.from(text).toString('base64');
 
-function harness({ denyUpdate = false, denyRead = false } = {}) {
+function harness({ denyUpdate = false, denyRead = false, secured = [], permitted = [] } = {}) {
+  const permittedIds = new Set(permitted);
   const state = emptyState();
   state.mappings.document = {
     logicalName: 'document',
@@ -60,19 +62,32 @@ function harness({ denyUpdate = false, denyRead = false } = {}) {
     records: { handle: async (c) => ({ status: 200, body: { fellThrough: c.route.kind } }) },
   };
   install(api);
+  // The FLS extension installs after the files module and sets api.fieldSecurity, so files reads it at call time.
+  if (secured.length) api.fieldSecurity = fieldSecurityOf({ secured, permitted: permittedIds });
   const handle = (name) => ops.find((op) => op.name === name).handle;
   const mapping = store.state.mappings.document;
-  return { store, hooks, handle, operations, ops, mapping, api, routes, row: () => store.state.tables.document[0] };
+  return {
+    store,
+    hooks,
+    handle,
+    operations,
+    ops,
+    mapping,
+    api,
+    routes,
+    permittedIds,
+    row: () => store.state.tables.document[0],
+  };
 }
 
 function request(
   method,
-  { set = 'documents', segment = 'attachment', value = false, search = '', headers = {}, bodyBuffer } = {},
+  { set = 'documents', segment = 'attachment', value = false, search = '', headers = {}, bodyBuffer, user = USER } = {},
 ) {
   const tail = value ? `/${segment}/$value` : `/${segment}`;
   return {
     method,
-    user: USER,
+    user,
     origin: ORIGIN,
     version: VERSION,
     headers,
@@ -82,10 +97,10 @@ function request(
   };
 }
 
-function action(body) {
+function action(body, user = USER) {
   return {
     method: 'POST',
-    user: USER,
+    user,
     origin: ORIGIN,
     version: VERSION,
     headers: {},
@@ -96,6 +111,7 @@ function action(body) {
 
 const target = { '@odata.type': 'Microsoft.Dynamics.CRM.document', documentid: DOC };
 
+// @test-kind security: a signed file URL is refused when altered, used with the wrong verb or expired
 test('signed file URLs permit anonymous download for one hour and reject tampering, wrong verbs and expiry', async () => {
   const h = harness();
   let now = Date.parse('2026-10-20T08:00:00Z');
@@ -900,4 +916,180 @@ test("a duplicate alternate key through the pipeline answers the Web API create'
     (error) =>
       error.status === 412 && error.details.innerCode === '0x80060892' && error.message === web.json.error.message,
   );
+});
+
+// ---- Column security: a secured file column needs the field permission at every file route and block message.
+const ADMIN = { systemuserid: 'aaaaaaaa-0000-4000-8000-000000000002' };
+const WITH_FIELD = { systemuserid: 'aaaaaaaa-0000-4000-8000-000000000003' };
+const SECRET = 'TOP SECRET TERMS';
+
+// api.fieldSecurity as the FLS extension exposes it: canRead and canWrite take the caller, the table, the column and the record.
+// Only the users in permitted hold the field permission on the secured columns.
+function fieldSecurityOf({ secured, permitted }) {
+  const allowed = (user, column) => !secured.includes(column) || permitted.has(user.systemuserid);
+  return {
+    canRead: (user, logical, column) => allowed(user, column),
+    canWrite: (user, logical, column) => allowed(user, column),
+  };
+}
+
+// The admin stores the secret on the row USER owns; the owner holds no field permission on the attachment column.
+async function securedHarness() {
+  const h = harness({ secured: ['attachment'], permitted: [ADMIN.systemuserid, WITH_FIELD.systemuserid] });
+  const stored = await h.hooks.stream(
+    request('PATCH', { user: ADMIN, headers: { 'x-ms-file-name': 'secret.txt' }, bodyBuffer: Buffer.from(SECRET) }),
+  );
+  assert.equal(stored.status, 204);
+  return h;
+}
+
+const storedBytes = (h) => Buffer.from(h.store.state.dataverse.files[h.row().attachment].data, 'base64').toString();
+// A refusal counts only as a DataError; a plain object thrown in its place reads as text and fails the comparison.
+const statusOf = async (run) => {
+  try {
+    return (await run()).status;
+  } catch (error) {
+    return error instanceof DataError ? error.status : `not a DataError: ${error?.message ?? error}`;
+  }
+};
+
+// @test-kind security: a caller without the field permission on a secured file column is refused at every file route and block message.
+test('a caller without the field permission on a secured file column is refused at every file entry point', async () => {
+  const h = await securedHarness();
+  const fileId = h.row().attachment;
+  // The refusal is the column security DataError itself: AccessDenied with the read inner code, as a column read answers.
+  const refused = await h.hooks.stream(request('GET', { value: true, user: USER })).catch((error) => error);
+  assert.ok(refused instanceof DataError, `not a DataError: ${refused?.message ?? refused}`);
+  assert.equal(refused.status, 403);
+  assert.equal(refused.code, 'AccessDenied');
+  assert.equal(refused.details.innerCode, '0x8004f508');
+  const admin = (name, body) => h.handle(name)(action(body, ADMIN));
+  const owner = (name, body) => h.handle(name)(action(body, USER));
+  // Tokens the permitted admin minted: the owner must be refused when it uses them.
+  const staged = await admin('InitializeFileBlocksUpload', {
+    Target: target,
+    FileAttributeName: 'attachment',
+    FileName: 'staged.txt',
+  });
+  const stagedToken = staged.body.FileContinuationToken;
+  await admin('UploadBlock', { FileContinuationToken: stagedToken, BlockId: b64('block-1'), BlockData: b64('staged') });
+  const downloadToken = (
+    await admin('InitializeFileBlocksDownload', { Target: target, FileAttributeName: 'attachment' })
+  ).body.FileContinuationToken;
+  const chunkStart = await h.hooks.stream(
+    request('PATCH', { user: ADMIN, headers: { 'x-ms-transfer-mode': 'chunked', 'x-ms-file-name': 'staged.txt' } }),
+  );
+  const chunkToken = new URL(chunkStart.headers.Location).searchParams.get('sessiontoken');
+  // Reads and session starts first; the writes that change the stored bytes or the column come last, so each case sees the secret.
+  const cases = {
+    download: () => h.hooks.stream(request('GET', { value: true, user: USER })),
+    'ranged download': () =>
+      h.hooks.stream(request('GET', { value: true, user: USER, headers: { range: 'bytes=0-3' } })),
+    GetFileSasUrl: () =>
+      h.handle('GetFileSasUrl')({ ...action({}, USER), params: { Target: target, FileAttributeName: 'attachment' } }),
+    GetFileSasUrlForUpload: () =>
+      h.handle('GetFileSasUrlForUpload')({
+        ...action({}, USER),
+        params: { Target: target, FileAttributeName: 'attachment', FileName: 'mine.txt' },
+      }),
+    InitializeFileBlocksDownload: () =>
+      owner('InitializeFileBlocksDownload', { Target: target, FileAttributeName: 'attachment' }),
+    DownloadBlock: () => owner('DownloadBlock', { FileContinuationToken: downloadToken, Offset: 0, BlockLength: 4 }),
+    DeleteFile: () => owner('DeleteFile', { FileId: fileId }),
+    InitializeFileBlocksUpload: () =>
+      owner('InitializeFileBlocksUpload', { Target: target, FileAttributeName: 'attachment', FileName: 'mine.txt' }),
+    UploadBlock: () =>
+      owner('UploadBlock', { FileContinuationToken: stagedToken, BlockId: b64('block-2'), BlockData: b64('owner') }),
+    'chunked upload start': () =>
+      h.hooks.stream(
+        request('PATCH', { user: USER, headers: { 'x-ms-transfer-mode': 'chunked', 'x-ms-file-name': 'mine.txt' } }),
+      ),
+    CommitFileBlocksUpload: () =>
+      owner('CommitFileBlocksUpload', { FileContinuationToken: stagedToken, BlockList: [b64('block-1')] }),
+    'chunk continuation': () =>
+      h.hooks.stream(
+        request('PATCH', {
+          user: USER,
+          search: `?sessiontoken=${chunkToken}`,
+          headers: { 'content-range': 'bytes 0-3/4' },
+          bodyBuffer: Buffer.from('owne'),
+        }),
+      ),
+    'single-request overwrite': () =>
+      h.hooks.stream(
+        request('PATCH', { user: USER, headers: { 'x-ms-file-name': 'mine.txt' }, bodyBuffer: Buffer.from('owner') }),
+      ),
+    'column delete': () => h.hooks.stream(request('DELETE', { user: USER })),
+  };
+  const failures = [];
+  for (const [name, run] of Object.entries(cases)) {
+    const status = await statusOf(run);
+    if (status !== 403) failures.push(`${name}: ${status}`);
+  }
+  assert.deepEqual(failures, [], 'every entry point answers 403 to a caller without the field permission');
+  assert.equal(storedBytes(h), SECRET, 'the stored bytes are unchanged');
+  assert.equal(h.row().attachment, fileId, 'the column still names the stored file');
+});
+
+// @test-kind security: a signed upload URL minted by a caller that later loses the field permission stops accepting bytes.
+test('a signed upload URL stops accepting bytes once its minting caller loses the field permission', async () => {
+  const h = await securedHarness();
+  const minted = await h.handle('GetFileSasUrlForUpload')({
+    ...action({}, ADMIN),
+    params: { Target: target, FileAttributeName: 'attachment', FileName: 'staged.txt' },
+  });
+  const signed = new URL(minted.body.Result.SasUrl);
+  const route = h.routes.find((entry) => entry.anonymous);
+  h.permittedIds.delete(ADMIN.systemuserid);
+  const status = await statusOf(() =>
+    route.handler({ url: signed, method: 'PUT', bodyBuffer: Buffer.from('late bytes') }),
+  );
+  assert.equal(status, 403, 'the upload URL is refused after the permission is removed');
+  assert.equal(storedBytes(h), SECRET, 'the stored bytes are unchanged');
+});
+
+// @test-kind security: a continuation token minted before the field permission was removed is refused when it is used.
+test('a continuation token minted before the field permission was removed is refused at use', async () => {
+  const h = await securedHarness();
+  const admin = (name, body) => h.handle(name)(action(body, ADMIN));
+  const upload = (
+    await admin('InitializeFileBlocksUpload', { Target: target, FileAttributeName: 'attachment', FileName: 'a.txt' })
+  ).body.FileContinuationToken;
+  const download = (await admin('InitializeFileBlocksDownload', { Target: target, FileAttributeName: 'attachment' }))
+    .body.FileContinuationToken;
+  h.permittedIds.delete(ADMIN.systemuserid);
+  const cases = {
+    UploadBlock: () =>
+      admin('UploadBlock', { FileContinuationToken: upload, BlockId: b64('block-1'), BlockData: b64('x') }),
+    DownloadBlock: () => admin('DownloadBlock', { FileContinuationToken: download, Offset: 0, BlockLength: 4 }),
+  };
+  for (const [name, run] of Object.entries(cases)) {
+    assert.equal(await statusOf(run), 403, `${name} with a token minted before the permission was removed`);
+  }
+  assert.equal(storedBytes(h), SECRET, 'the stored bytes are unchanged');
+});
+
+// @test-kind security: a caller with the field permission on a secured file column still downloads, overwrites and deletes it.
+test('a caller with the field permission on a secured file column still downloads, overwrites and deletes it', async () => {
+  const h = await securedHarness();
+  const read = await h.hooks.stream(request('GET', { value: true, user: ADMIN }));
+  assert.equal(read.status, 200);
+  assert.equal(read.body.toString(), SECRET);
+  const ranged = await h.hooks.stream(
+    request('GET', { value: true, user: WITH_FIELD, headers: { range: 'bytes=0-5' } }),
+  );
+  assert.equal(ranged.status, 206);
+  assert.equal(ranged.body.toString(), 'TOP SE');
+  const overwrite = await h.hooks.stream(
+    request('PATCH', {
+      user: WITH_FIELD,
+      headers: { 'x-ms-file-name': 'replaced.txt' },
+      bodyBuffer: Buffer.from('replaced'),
+    }),
+  );
+  assert.equal(overwrite.status, 204);
+  assert.equal(storedBytes(h), 'replaced');
+  const removed = await h.hooks.stream(request('DELETE', { user: WITH_FIELD }));
+  assert.equal(removed.status, 204);
+  assert.equal(h.row().attachment, null);
 });

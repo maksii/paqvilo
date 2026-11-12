@@ -103,6 +103,7 @@ export function modelDrivenTargetSessions({
   imported,
   mappings,
   createInspector,
+  openAgent,
   ownsRequest,
   onApplied,
   liveReload = true,
@@ -120,12 +121,28 @@ export function modelDrivenTargetSessions({
     pending = next.catch(() => {});
     return next;
   };
+  // The held agent is bound to one target origin: returning to that target reuses it, while a different
+  // target retires it (its API closes and its discovery file is removed) before a new agent is opened.
+  let held = null;
+  const retireAgent = async () => {
+    const previous = held;
+    held = null;
+    await previous?.agent?.close();
+  };
+  const agentFor = async (target) => {
+    if (held?.target.id === target.id) return held.agent;
+    await retireAgent();
+    const agent = (await openAgent?.(target)) ?? null;
+    held = { target, agent };
+    return agent;
+  };
   const retire = async () => {
     if (!active?.inspector) return;
     const inspector = active.inspector;
     active.saved = inspector.persistentState();
     active.saved.panelSources?.clearNative();
     active.inspector = null;
+    held?.agent?.setInspector(null);
     try {
       await inspector.close();
     } catch (error) {
@@ -163,12 +180,15 @@ export function modelDrivenTargetSessions({
         await retire();
         selected = target;
         active = ensure(target);
+        let agent;
         try {
+          agent = await agentFor(target);
           active.inspector = await createInspector(active, imported);
         } catch (error) {
           activationFailure = error;
           throw error;
         }
+        agent?.setInspector(active.inspector.agentState);
         return active;
       });
     },
@@ -210,7 +230,13 @@ export function modelDrivenTargetSessions({
     },
     async close() {
       stopped = true;
-      await enqueue(retire);
+      await enqueue(async () => {
+        try {
+          await retire();
+        } finally {
+          await retireAgent();
+        }
+      });
     },
   };
 }

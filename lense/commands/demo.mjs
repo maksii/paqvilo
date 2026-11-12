@@ -2,10 +2,11 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseArgs } from 'node:util';
 import { spawn } from 'node:child_process';
 import { constants, cpSync } from 'node:fs';
 import { assertScaffoldPath, prepareScaffoldDirectory } from '../scaffold.mjs';
+import { forwardTerminationSignals } from '../signal-forwarding.mjs';
+import { parseOptions } from '../cli-options.mjs';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const STARTER = path.join(ROOT, 'examples/project');
@@ -52,7 +53,30 @@ async function prepareEditorFiles(target) {
   }
 }
 
-export async function prepareDemo(directory) {
+// A virus scanner or indexer can hold a handle in the staging folder for a moment; Windows reports that as a failed rename.
+const RENAME_ATTEMPTS = 5;
+const RENAME_BACKOFF_MS = 200;
+const TRANSIENT_RENAME_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function renameIntoPlace(staging, target, { rename, wait }) {
+  for (let attempt = 1; attempt <= RENAME_ATTEMPTS; attempt++) {
+    try {
+      await rename(staging, target);
+      return;
+    } catch (error) {
+      if (!TRANSIENT_RENAME_CODES.has(error.code)) throw error;
+      if (attempt === RENAME_ATTEMPTS)
+        throw new Error(
+          `Cannot move the demo from ${staging} to ${target} after ${RENAME_ATTEMPTS} attempts (${error.code}). Close programs that may use the staging folder and run the demo again.`,
+          { cause: error },
+        );
+      await wait(RENAME_BACKOFF_MS * attempt);
+    }
+  }
+}
+
+export async function prepareDemo(directory, { copy = cpSync, rename = fs.rename, wait = sleep } = {}) {
   const target = await assertScaffoldPath(directory, { directory: true });
   let existing = null;
   try {
@@ -64,8 +88,21 @@ export async function prepareDemo(directory) {
     const reused = await reuseExistingDemo(target, existing);
     if (reused) return reused;
   }
-  await prepareScaffoldDirectory(target);
+  // The copy goes into a sibling staging folder, so an interrupted copy never leaves a partial target behind.
+  const staging = await prepareScaffoldDirectory(`${target}.partial-${process.pid}`);
+  try {
+    await copyStarter(staging, copy);
+    // An empty target from the user is replaced; reuseExistingDemo returned null, so it holds nothing.
+    if (existing) await fs.rmdir(target);
+    await renameIntoPlace(staging, target, { rename, wait });
+  } catch (error) {
+    await fs.rm(staging, { recursive: true, force: true });
+    throw error;
+  }
+  return { directory: target, created: true };
+}
 
+async function copyStarter(target, copy) {
   for (const name of [
     'portal',
     'solution',
@@ -84,7 +121,7 @@ export async function prepareDemo(directory) {
     'AGENTS.md',
   ]) {
     // Synchronous on purpose: on Windows async fs.cp took 20-30 s for the ~2,000-file sample, cpSync under 2 s.
-    cpSync(path.join(STARTER, name), path.join(target, name), {
+    copy(path.join(STARTER, name), path.join(target, name), {
       recursive: true,
       errorOnExist: true,
       force: false,
@@ -135,7 +172,16 @@ export async function prepareDemo(directory) {
   await fs.writeFile(path.join(target, MARKER), JSON.stringify({ kind: 'paqvilo-example', version: 2 }) + '\n', {
     flag: 'wx',
   });
-  return { directory: target, created: true };
+}
+
+async function interruptedCopies(target) {
+  const parent = path.dirname(target);
+  const prefix = `${path.basename(target)}.partial-`;
+  return (await fs.readdir(parent)).filter((name) => name.startsWith(prefix)).map((name) => path.join(parent, name));
+}
+
+function interruptedCopyNote(leftovers) {
+  return leftovers.length ? ` An interrupted copy left ${leftovers.join(', ')}. It can be deleted.` : '';
 }
 
 async function reuseExistingDemo(target, existing) {
@@ -155,10 +201,12 @@ async function reuseExistingDemo(target, existing) {
     return { directory: target, created: false };
   }
   // Never replace the user's project, including an incomplete earlier copy.
-  if ((await fs.readdir(target)).length)
+  if ((await fs.readdir(target)).length) {
+    const leftovers = await interruptedCopies(target);
     throw new Error(
-      `Folder is not a Paqvilo demo: ${target}. Choose a new folder with --dir <path>. No files were changed.`,
+      `Folder is not a Paqvilo demo: ${target}. Choose a new folder with --dir <path>. No files were changed.${interruptedCopyNote(leftovers)}`,
     );
+  }
   return null;
 }
 
@@ -179,17 +227,27 @@ function validateDemoOptions(values) {
     throw new Error('--scaffold cannot be combined with browser, headless or debug-port options');
 }
 
-async function runDemo() {
-  const { values, positionals } = parseArgs({
+// Repeated string options keep their last value. parseOptions refuses repeats unless an option is `multiple`.
+const lastValue = (value) => (Array.isArray(value) ? value.at(-1) : value);
+
+export function parseDemoOptions(args) {
+  const { values, positionals } = parseOptions({
+    args,
     options: {
-      dir: { type: 'string', default: './paqvilo-example' },
-      browser: { type: 'string' },
+      dir: { type: 'string', multiple: true },
+      browser: { type: 'string', multiple: true },
       headless: { type: 'boolean' },
-      'debug-port': { type: 'string' },
+      'debug-port': { type: 'string', multiple: true },
       scaffold: { type: 'boolean' },
       help: { type: 'boolean', short: 'h' },
     },
   });
+  const chosen = Object.fromEntries(Object.entries(values).map(([key, value]) => [key, lastValue(value)]));
+  return { values: { dir: './paqvilo-example', ...chosen }, positionals };
+}
+
+async function runDemo() {
+  const { values, positionals } = parseDemoOptions(process.argv.slice(2));
   if (positionals.length) throw new Error('demo accepts options only; use --dir <path> to choose its folder');
   if (values.help) {
     console.log(`Usage: paqvilo mirage demo [--dir ./paqvilo-example] [--browser msedge|chrome|chromium]
@@ -243,18 +301,14 @@ Close the browser or press Ctrl+C to stop.\n`);
   if (values.headless) args.push('--headless');
   if (values['debug-port']) args.push('--debug-port', values['debug-port']);
   const child = spawn(process.execPath, args, { cwd: demo.directory, stdio: 'inherit', windowsHide: true });
-  const interrupt = () => child.kill('SIGINT');
-  const terminate = () => child.kill('SIGTERM');
-  process.on('SIGINT', interrupt);
-  process.on('SIGTERM', terminate);
+  const stopForwarding = forwardTerminationSignals(child);
   try {
     process.exitCode = await new Promise((resolve, reject) => {
       child.once('error', reject);
       child.once('exit', (code) => resolve(code ?? 1));
     });
   } finally {
-    process.off('SIGINT', interrupt);
-    process.off('SIGTERM', terminate);
+    stopForwarding();
   }
 }
 

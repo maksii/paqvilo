@@ -47,6 +47,8 @@ import { portalField } from './lib/importer.mjs';
 import { isHtmlDocument } from './lib/source-dependencies.mjs';
 import { retainedResponseBody } from './lib/render-sweep-body.mjs';
 import { inventoryPortal } from './liquid-inventory.mjs';
+import { assertReportOutput } from './lib/report-output.mjs';
+import { assertProjectOutput } from './lib/project-output.mjs';
 
 /** Diagnostics that mean Power Pages would also print an error into the page. */
 const LIQUID_ERROR_CODES = new Set(['liquid-syntax-error', 'liquid-error', 'liquid-runtime-error']);
@@ -497,8 +499,24 @@ const personasToRun = (options) => {
   return [options.persona ?? 'anonymous'];
 };
 
+const SWEEP_REPORT_FILES = ['render-sweep.json', 'render-sweep.txt', 'summary.json'];
+
+/** Keep every sweep report outside the swept sources and the installed package, as the other report tools do. */
+async function assertSweepOutput(options, target) {
+  await Promise.all(
+    SWEEP_REPORT_FILES.map((file) =>
+      assertReportOutput(path.join(options.out, file), {
+        sourceRoots: [target.sourceDir, ...target.solutionRoots],
+        inputFiles: [options.config, options.project],
+      }),
+    ),
+  );
+  assertProjectOutput(path.resolve(options.out));
+}
+
 export async function renderSweep(options) {
   const target = await resolveTarget(options);
+  if (options.out) await assertSweepOutput(options, target);
   const personas = personasToRun(options);
   const runs = [];
   for (const persona of personas) runs.push(await sweepPersona(target, persona, options));
@@ -612,6 +630,10 @@ async function main(argv = process.argv.slice(2)) {
   if (options.json) console.log(JSON.stringify(report, null, 2));
   else if (options.ci) for (const line of report.summary) console.log(JSON.stringify(line));
   else console.log(summary);
+  if (options.strict && report.runs.reduce((sum, run) => sum + run.pages, 0) === 0) {
+    console.error('render-sweep --strict selected no page: check --path, --limit and the site or source.');
+    return 2;
+  }
   const failed =
     report.runs.some((run) => run.liquidErrorPages.length || run.injectedNonDocuments.length || run.failures.length) ||
     report.inventory?.unsupported.length;

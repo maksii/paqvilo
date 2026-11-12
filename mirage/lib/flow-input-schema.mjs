@@ -51,7 +51,8 @@ const bounded = (depth, state, kind, count = 1) => {
   if (state[kind] > 10000) unsupported('The cloud-flow input schema exceeds the local validation work limit.');
 };
 
-function inspectSchema(schema, depth, state) {
+/** Keyword and limit checks of a schema; they fail for an unsupported schema whatever the body is. */
+export function inspectSchema(schema, depth, state) {
   bounded(depth, state, 'schemas');
   if (typeof schema === 'boolean') return;
   if (!map(schema)) unsupported('A cloud-flow schema must be an object or boolean.');

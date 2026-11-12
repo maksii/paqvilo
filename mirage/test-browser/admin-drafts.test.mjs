@@ -52,87 +52,79 @@ async function fixture(t) {
   return { app, ...(await adminPage(t, browser, app, directory)) };
 }
 
-test(
-  'manual identity input survives the lazy contact re-render that previously discarded it',
-  { timeout: 60_000 },
-  async (t) => {
-    const { app, page, errors } = await fixture(t);
-    let release;
-    const gate = new Promise((resolve) => {
-      release = resolve;
-    });
-    let held = 0;
-    // Hold the first contact page until the user has typed, reproducing a slow response.
-    await page.route('**/__sim/api/records/contact?**', async (route) => {
-      const response = await route.fetch();
-      if (held++ === 0) await gate;
-      await route.fulfill({ response });
-    });
-    await page.goto(app.adminUrl + '#access');
-    await page.getByRole('heading', { name: 'Identity & permissions' }).waitFor();
-    await page.getByText('Advanced: configured identity (sign-in default and scripts)', { exact: true }).click();
-    await page.getByLabel('Display name', { exact: true }).fill('Draft survivor');
-    await page.getByLabel('Web roles', { exact: true }).fill('Reviewer');
-    release();
-    // The delayed contacts arrive and the whole view renders again.
-    await page.locator('#persona-contact').waitFor();
-    assert.equal(await page.getByLabel('Display name', { exact: true }).inputValue(), 'Draft survivor');
-    assert.equal(await page.getByLabel('Web roles', { exact: true }).inputValue(), 'Reviewer');
-    assert.equal(await page.locator('[data-role-choice="Reviewer"]').isChecked(), true);
-    await page.getByRole('button', { name: 'Save identity' }).click();
-    await page.getByText('Configuration saved.', { exact: true }).waitFor();
-    assert.equal(app.state().config.identity.name, 'Draft survivor');
-    assert.deepEqual(app.state().config.identity.roles, ['Reviewer']);
-    // After a successful save the form shows the saved values, not a stale draft.
-    await page.locator('#refresh').click();
-    await page.locator('#persona-contact').waitFor();
-    assert.equal(await page.getByLabel('Display name', { exact: true }).inputValue(), 'Draft survivor');
-    assert.deepEqual(errors, []);
-  },
-);
+test('manual identity input survives the lazy contact re-render that previously discarded it', async (t) => {
+  const { app, page, errors } = await fixture(t);
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  let held = 0;
+  // Hold the first contact page until the user has typed, reproducing a slow response.
+  await page.route('**/__sim/api/records/contact?**', async (route) => {
+    const response = await route.fetch();
+    if (held++ === 0) await gate;
+    await route.fulfill({ response });
+  });
+  await page.goto(app.adminUrl + '#access');
+  await page.getByRole('heading', { name: 'Identity & permissions' }).waitFor();
+  await page.getByText('Advanced: configured identity (sign-in default and scripts)', { exact: true }).click();
+  await page.getByLabel('Display name', { exact: true }).fill('Draft survivor');
+  await page.getByLabel('Web roles', { exact: true }).fill('Reviewer');
+  release();
+  // The delayed contacts arrive and the whole view renders again.
+  await page.locator('#persona-contact').waitFor();
+  assert.equal(await page.getByLabel('Display name', { exact: true }).inputValue(), 'Draft survivor');
+  assert.equal(await page.getByLabel('Web roles', { exact: true }).inputValue(), 'Reviewer');
+  assert.equal(await page.locator('[data-role-choice="Reviewer"]').isChecked(), true);
+  await page.getByRole('button', { name: 'Save identity' }).click();
+  await page.getByText('Configuration saved.', { exact: true }).waitFor();
+  assert.equal(app.state().config.identity.name, 'Draft survivor');
+  assert.deepEqual(app.state().config.identity.roles, ['Reviewer']);
+  // After a successful save the form shows the saved values, not a stale draft.
+  await page.locator('#refresh').click();
+  await page.locator('#persona-contact').waitFor();
+  assert.equal(await page.getByLabel('Display name', { exact: true }).inputValue(), 'Draft survivor');
+  assert.deepEqual(errors, []);
+});
 
-test(
-  'contact membership checkboxes survive a workspace refresh until saved, and reset when another contact is chosen',
-  { timeout: 60_000 },
-  async (t) => {
-    const { app, page, errors } = await fixture(t);
-    await page.goto(app.adminUrl + '#access');
-    const memberships = page.getByRole('group', { name: 'Contact web-role memberships', exact: true });
-    await memberships.getByLabel('Editor', { exact: true }).check();
-    await page.locator('#refresh').click();
-    await page.getByText('Workspace refreshed.', { exact: true }).waitFor();
-    await page.locator('#persona-contact').waitFor();
-    assert.equal(
-      await memberships.getByLabel('Editor', { exact: true }).isChecked(),
-      true,
-      'unsaved membership choice is kept',
-    );
-    await page.getByRole('button', { name: 'Save contact roles', exact: true }).click();
-    await page.getByText('Configuration saved.', { exact: true }).waitFor();
-    assert.deepEqual(app.state().config.contactRoles, [{ contactId: 'alex', roleId: 'editor' }]);
-    assert.equal(await memberships.getByLabel('Editor', { exact: true }).isChecked(), true);
-    assert.equal(await memberships.getByLabel('Reviewer', { exact: true }).isChecked(), false);
-    await memberships.getByLabel('Reviewer', { exact: true }).check();
-    await page.getByLabel('Local contact', { exact: true }).selectOption('blair');
-    assert.equal(await memberships.getByLabel('Editor', { exact: true }).isChecked(), false);
-    assert.equal(await memberships.getByLabel('Reviewer', { exact: true }).isChecked(), false);
-    await page.getByLabel('Local contact', { exact: true }).selectOption('alex');
-    assert.equal(await memberships.getByLabel('Editor', { exact: true }).isChecked(), true);
-    assert.equal(
-      await memberships.getByLabel('Reviewer', { exact: true }).isChecked(),
-      false,
-      'unsaved choice was discarded',
-    );
-    await memberships.getByLabel('Reviewer', { exact: true }).check();
-    await page.getByRole('button', { name: 'Save contact roles', exact: true }).click();
-    await page.getByText('Configuration saved.', { exact: true }).waitFor();
-    assert.deepEqual(
-      app
-        .state()
-        .config.contactRoles.map((row) => row.roleId)
-        .sort(),
-      ['editor', 'reviewer'],
-    );
-    assert.deepEqual(errors, []);
-  },
-);
+test('contact membership checkboxes survive a workspace refresh until saved, and reset when another contact is chosen', async (t) => {
+  const { app, page, errors } = await fixture(t);
+  await page.goto(app.adminUrl + '#access');
+  const memberships = page.getByRole('group', { name: 'Contact web-role memberships', exact: true });
+  await memberships.getByLabel('Editor', { exact: true }).check();
+  await page.locator('#refresh').click();
+  await page.getByText('Workspace refreshed.', { exact: true }).waitFor();
+  await page.locator('#persona-contact').waitFor();
+  assert.equal(
+    await memberships.getByLabel('Editor', { exact: true }).isChecked(),
+    true,
+    'unsaved membership choice is kept',
+  );
+  await page.getByRole('button', { name: 'Save contact roles', exact: true }).click();
+  await page.getByText('Configuration saved.', { exact: true }).waitFor();
+  assert.deepEqual(app.state().config.contactRoles, [{ contactId: 'alex', roleId: 'editor' }]);
+  assert.equal(await memberships.getByLabel('Editor', { exact: true }).isChecked(), true);
+  assert.equal(await memberships.getByLabel('Reviewer', { exact: true }).isChecked(), false);
+  await memberships.getByLabel('Reviewer', { exact: true }).check();
+  await page.getByLabel('Local contact', { exact: true }).selectOption('blair');
+  assert.equal(await memberships.getByLabel('Editor', { exact: true }).isChecked(), false);
+  assert.equal(await memberships.getByLabel('Reviewer', { exact: true }).isChecked(), false);
+  await page.getByLabel('Local contact', { exact: true }).selectOption('alex');
+  assert.equal(await memberships.getByLabel('Editor', { exact: true }).isChecked(), true);
+  assert.equal(
+    await memberships.getByLabel('Reviewer', { exact: true }).isChecked(),
+    false,
+    'unsaved choice was discarded',
+  );
+  await memberships.getByLabel('Reviewer', { exact: true }).check();
+  await page.getByRole('button', { name: 'Save contact roles', exact: true }).click();
+  await page.getByText('Configuration saved.', { exact: true }).waitFor();
+  assert.deepEqual(
+    app
+      .state()
+      .config.contactRoles.map((row) => row.roleId)
+      .sort(),
+    ['editor', 'reviewer'],
+  );
+  assert.deepEqual(errors, []);
+});

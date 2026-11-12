@@ -89,12 +89,12 @@ export function solutionLayerFiles(layer, folders = SOLUTION_SIDE_FOLDERS) {
 }
 
 // ponytail: one entry per physical side file or archive this process has hashed; prune by root if a host watches unbounded source sets.
-const sideHashes = new Map();
+const hashByStamp = new Map();
 const cachedHash = (key, stamp, compute) => {
-  const hit = sideHashes.get(key);
+  const hit = hashByStamp.get(key);
   if (hit?.stamp === stamp) return hit.value;
   const value = compute();
-  sideHashes.set(key, { stamp, value });
+  hashByStamp.set(key, { stamp, value });
   return value;
 };
 // The side-file listing of one Solution ZIP, stored with the archive's solution cache entry.
@@ -125,6 +125,14 @@ function sideFileHashes(layer, cache) {
   }
 }
 
+/**
+ * Side-file hashes of every layer, keyed by layer.dir: one walk of each side folder per load. Pass the result as
+ * `sideHashes` to solutionContentFingerprint and to the importers of the same load. Computed fresh on every call.
+ */
+export function solutionSideFileHashes(layers, cache = null) {
+  return new Map(layers.map((layer) => [layer.dir, sideFileHashes(layer, cache)]));
+}
+
 /** A logical source name; absolute checkout/archive locations never enter this identity. */
 export function solutionContentPath(layer, file) {
   const normalized = String(file).replaceAll('\\', '/');
@@ -138,8 +146,9 @@ export function solutionContentPath(layer, file) {
  * Ordered layer identities, relative file names and byte hashes of the scanned documents and of the side files the
  * runtime imports (SOLUTION_SIDE_FOLDERS). Retain physical cache keys separately. `cache`: the scan's
  * SolutionFileCache, which keeps side-file hashes across restarts so unchanged side files are only stat'ed.
+ * `sideHashes`: the result of solutionSideFileHashes for the same layers, which replaces the walk per layer.
  */
-export function solutionContentFingerprint(layers, { lcid = 1033, files = [], cache = null } = {}) {
+export function solutionContentFingerprint(layers, { lcid = 1033, files = [], cache = null, sideHashes = null } = {}) {
   const digest = createHash('sha256');
   digest.update(JSON.stringify(['solution-content-v2', lcid]));
   for (const [index, layer] of layers.entries()) {
@@ -150,7 +159,8 @@ export function solutionContentFingerprint(layers, { lcid = 1033, files = [], ca
       if (members.has(file.path)) documents.set(file.path, file.hash ?? documents.get(file.path) ?? '');
     }
     const entries = new Map([...documents].map(([file, hash]) => [solutionContentPath(layer, file), hash]));
-    for (const [name, hash] of sideFileHashes(layer, cache)) if (!entries.has(name)) entries.set(name, hash);
+    const side = sideHashes ? (sideHashes.get(layer.dir) ?? []) : sideFileHashes(layer, cache);
+    for (const [name, hash] of side) if (!entries.has(name)) entries.set(name, hash);
     const sorted = [...entries].sort(([left], [right]) => {
       if (left < right) return -1;
       if (left > right) return 1;

@@ -519,7 +519,7 @@ async function main() {
       'Usage: data.mjs reset --connection FILE [--apply] --tester <contactid> | data.mjs catalogue [--out FILE]',
     );
   if (!values.connection) throw new Error('--connection is required');
-  const { loadConnection, connectedClient } = await import('../../../lense/dataverse/index.mjs');
+  const { loadConnection, connectedClient } = await import('paqvilo/lense/dataverse/index.mjs');
   const info = await loadConnection(values.connection);
   const client = connectedClient(info);
   await client.verify(info.organisationId);

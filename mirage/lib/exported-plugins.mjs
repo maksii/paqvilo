@@ -22,6 +22,7 @@ import { conditionsOf, publishedRules } from './dataverse-duplicate-rules.mjs';
 import { parseSolutionXml } from './solution-xml.mjs';
 import {
   clrContext,
+  deleteExecutionUser,
   enterPluginExecution,
   executeClrPlugin,
   leavePluginExecution,
@@ -941,7 +942,11 @@ function typedContext({
     Mode: item.contract?.mode ?? 0,
     Depth: depth,
     InitiatingUserId: initiating,
-    UserId: item.impersonatingUserId ?? store?.pluginPlatformUserId ?? executing,
+    UserId:
+      item.impersonatingUserId ??
+      deleteExecutionUser(store, operation, stage) ??
+      store?.pluginPlatformUserId ??
+      executing,
     ParentContext: pluginContextValues(parent, store),
     ...(frame?.requestId === undefined ? {} : { RequestId: frame.requestId }),
     ...(frame?.operationId === undefined ? {} : { OperationId: frame.operationId }),

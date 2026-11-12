@@ -83,8 +83,14 @@ The rendered-control producer was reproduced twice on 2026-11-09 after a synchro
 Both native 202-result arrays match the unchanged public fixture exactly. The
 [rendered-control producer refresh record](power-pages-controls-producer-refresh-2026-11-09.json) holds
 the new function and ordered input to the current source, rendered component, authored feedback and
-restoration checks. The historical manifest and the separate 189-case client and 26-property evidence
+restoration checks. The historical manifest, the 26-property evidence and the 189-case client fixture
 remain unchanged. Visitor identity, submission and arbitrary handler absence remain outside this scope.
+
+The client-context probe lost its default readiness deadline on 2026-11-12; an explicit positive-integer
+`readyTimeoutMs` is still accepted. One native run of the new function returned 189 results byte-identical
+to the unchanged client fixture. The [client-context refresh record](power-pages-client-native-refresh-2026-11-12.json)
+holds the new function hash, the unchanged fixture hash and the single recording. This refresh adds no
+assertions or case credit.
 
 Client control names positively match their rendered source labels; comparing only against a logical name
 would not establish this guarantee. Memo names use their source aria-label. Native type strings are

@@ -28,20 +28,54 @@ import path from 'node:path';
 import { DataError } from './data-error.mjs';
 import { readLocalFileSync } from '../../lense/local-file.mjs';
 
-const sdkCache = new Map();
-/** The .NET SDK version of a dotnet command (`dotnet --version`), or null when it is not on PATH. Cached per command. */
-export function dotnetSdk(command = 'dotnet') {
-  if (!sdkCache.has(command)) {
-    let version = null;
-    try {
-      const answer = spawnSync(command, ['--version'], { encoding: 'utf8', timeout: 20000, windowsHide: true }); // NOSONAR: fixed tool name resolved through PATH by developer tooling
-      if (answer.status === 0 && /^\d+\.\d+/.test(answer.stdout.trim())) version = answer.stdout.trim();
-    } catch {
-      version = null;
-    }
-    sdkCache.set(command, version);
+const sdkCache = new Map(),
+  sdkFailures = new Map();
+// A failed probe is not run again for this long; a missing command is not run again at all. The injected clock is the
+// caller's.
+const PROBE_RETRY_MS = 30000;
+// The longest a `dotnet --version` probe may take: a hang guard for a cold start on a loaded machine, not a deadline.
+export const DOTNET_PROBE_GUARD_MS = 120_000;
+// The reason a probe the guard ended is reported with: the probe did not answer, so the SDK may be present.
+const guardReason = (error, probeGuardMs) =>
+  error.code === 'ETIMEDOUT'
+    ? `the probe did not answer within the ${probeGuardMs} ms guard (probeGuardMs option)`
+    : error.message;
+// `dotnet --version` of a command: { version } when it reports an SDK version, else { version: null, code, reason }.
+function probeVersion(command, spawnSyncImpl = spawnSync, probeGuardMs = DOTNET_PROBE_GUARD_MS) {
+  let answer;
+  try {
+    answer = spawnSyncImpl(command, ['--version'], { encoding: 'utf8', timeout: probeGuardMs, windowsHide: true }); // NOSONAR: fixed tool name resolved through PATH by developer tooling
+  } catch (error) {
+    return { version: null, code: error.code, reason: error.message };
   }
-  return sdkCache.get(command);
+  if (answer.error) return { version: null, code: answer.error.code, reason: guardReason(answer.error, probeGuardMs) };
+  if (answer.status !== 0) return { version: null, code: null, reason: `exit status ${answer.status}` };
+  const version = answer.stdout.trim();
+  return /^\d+\.\d+/.test(version)
+    ? { version, code: null, reason: null }
+    : { version: null, code: null, reason: 'no SDK version in its output' };
+}
+/**
+ * The .NET SDK version of a dotnet command (`dotnet --version`), or null when it does not answer with one. A version is
+ * cached per command; a failure is recorded for missing() and probed again after PROBE_RETRY_MS.
+ */
+export function dotnetSdk(
+  command = 'dotnet',
+  { now = Date.now, spawnSyncImpl = spawnSync, probeGuardMs = DOTNET_PROBE_GUARD_MS } = {},
+) {
+  if (sdkCache.has(command)) return sdkCache.get(command);
+  const failure = sdkFailures.get(command);
+  if (failure && (failure.probe.code === 'ENOENT' || now() - failure.at < PROBE_RETRY_MS)) return null;
+  const probe = probeVersion(command, spawnSyncImpl, probeGuardMs);
+  if (probe.version !== null) {
+    sdkFailures.delete(command);
+    sdkCache.set(command, probe.version);
+    return probe.version;
+  }
+  // Every failed probe is held, a timed-out one included, so a hung command is not run on every check. Its reason still
+  // names the failure in missing().
+  sdkFailures.set(command, { probe, at: now() });
+  return null;
 }
 export const SDK_MISSING = 'CONNECTOR_SCRIPT_SDK_MISSING';
 export const UNTRUSTED = 'CONNECTOR_SCRIPT_UNTRUSTED';
@@ -65,12 +99,19 @@ const hostEnvironment = (source = process.env, { build = false } = {}) => ({
   DOTNET_CLI_TELEMETRY_OPTOUT: '1',
   DOTNET_NOLOGO: '1',
 });
-const missing = (command) =>
-  new DataError(
-    `${SDK_MISSING}: the custom connector runs C# custom code (script.csx), which needs the .NET SDK; '${command}' is not on PATH.`,
+// Names the last probe failure of the command: "not on PATH" only when the command does not exist (ENOENT).
+const missing = (command) => {
+  const failure = sdkFailures.get(command)?.probe ?? {};
+  const cause =
+    failure.code === 'ENOENT'
+      ? `'${command}' is not on PATH`
+      : `'${command} --version' failed: ${failure.reason ?? 'no SDK version was reported'}`;
+  return new DataError(
+    `${SDK_MISSING}: the custom connector runs C# custom code (script.csx), which needs the .NET SDK; ${cause}.`,
     501,
     'OperationUnsupported',
   );
+};
 
 // The namespaces the platform supports, as global usings of the generated host (System.Drawing excepted, see above).
 const USINGS = [
@@ -197,7 +238,9 @@ const project = (sdk) => `<Project Sdk="Microsoft.NET.Sdk">
 </Project>
 `;
 
+// The shared builds by host assembly path: { controller, promise, waiters }, the waiters being the callers still waiting.
 const builds = new Map();
+const sendSignal = (pid, signal) => process.kill(pid, signal);
 let temporaryRoot;
 // ponytail: one host process per call (about 100 ms start); a resident host per script is the upgrade if calls get frequent.
 /**
@@ -206,18 +249,30 @@ let temporaryRoot;
  * send(request) answers { statusCode, headers, body } for a Context.SendAsync request (its body a Buffer or undefined).
  * run answers { statusCode, headers, body } with a parsed JSON body when the response is JSON.
  */
-export function createScriptHost({ stateDirectory = null, command = 'dotnet', trusted = [] } = {}) {
+export function createScriptHost({
+  stateDirectory = null,
+  command = 'dotnet',
+  trusted = [],
+  now = Date.now,
+  spawnImpl = spawn,
+  spawnSyncImpl = spawnSync,
+  probeGuardMs = DOTNET_PROBE_GUARD_MS,
+  platform = process.platform,
+  killImpl = sendSignal,
+} = {}) {
   // Memory-only runtimes never share a predictable, pre-creatable OS temp path.
   // Allocate only after trust and SDK checks, as for state-backed runtimes.
   let root = stateDirectory ? path.join(stateDirectory, 'connector-scripts') : null;
-  const available = () => dotnetSdk(command) !== null;
+  const probing = { now, spawnSyncImpl, probeGuardMs };
+  const tree = { platform, spawnSyncImpl, killImpl };
+  const available = () => dotnetSdk(command, probing) !== null;
   /** Whether connectorScripts registers this connector's script text. */
   const trusts = (connector, script) =>
     Boolean(script) &&
     trusted.some((entry) => entry.connector === connector && entry.sha256 === scriptHash(script.text));
-  function prepare(script, connector) {
+  function prepare(script, connector, signal = null) {
     if (!trusts(connector, script)) return Promise.reject(untrusted(connector, script));
-    const sdk = dotnetSdk(command);
+    const sdk = dotnetSdk(command, probing);
     if (!sdk) return Promise.reject(missing(command));
     try {
       root ??= temporaryRoot ??= fs.mkdtempSync(path.join(os.tmpdir(), 'mirage-connector-scripts-'));
@@ -230,8 +285,10 @@ export function createScriptHost({ stateDirectory = null, command = 'dotnet', tr
         .slice(0, 32),
       dir = path.join(root, hash),
       dll = path.join(dir, 'out', 'ConnectorScriptHost.dll');
-    if (builds.has(dll)) return builds.get(dll);
-    const built = (async () => {
+    if (signal?.aborted) return Promise.reject(signal.reason);
+    if (builds.has(dll)) return joinBuild(dll, builds.get(dll), signal);
+    const shared = { controller: new AbortController(), promise: null, waiters: 0 };
+    shared.promise = (async () => {
       if (fs.existsSync(dll)) return dll;
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
       for (const [name, content] of Object.entries({
@@ -252,9 +309,9 @@ export function createScriptHost({ stateDirectory = null, command = 'dotnet', tr
       }
       const output = await execute(
         command,
-        ['build', '-c', 'Release', '-o', 'out', '--nologo', '-v', 'q'],
+        ['build', '-c', 'Release', '-o', 'out', '--nologo', '-v', 'q', '-nodeReuse:false'],
         dir,
-        5 * 60000,
+        { signal: shared.controller.signal, spawnImpl, tree },
       );
       if (output.code !== 0 || !fs.existsSync(dll)) {
         const errors = [
@@ -277,9 +334,11 @@ export function createScriptHost({ stateDirectory = null, command = 'dotnet', tr
       }
       return dll;
     })();
-    builds.set(dll, built);
-    built.catch(() => builds.delete(dll));
-    return built;
+    builds.set(dll, shared);
+    shared.promise.catch(() => {
+      if (builds.get(dll) === shared) builds.delete(dll);
+    });
+    return joinBuild(dll, shared, signal);
   }
   async function run({
     connector,
@@ -293,11 +352,11 @@ export function createScriptHost({ stateDirectory = null, command = 'dotnet', tr
   }) {
     if (!trusts(connector, script)) throw untrusted(connector, script);
     if (!available()) throw missing(command);
-    const dll = await prepare(script, connector);
+    const dll = await prepare(script, connector, signal);
     const limit = Math.max(1, Math.min(timeoutMs, 120000));
     const body =
       request.body === undefined || request.body === null ? null : Buffer.from(request.body).toString('base64');
-    const child = spawn(command, [dll], {
+    const child = spawnImpl(command, [dll], {
       cwd: path.dirname(path.dirname(dll)),
       env: hostEnvironment(),
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -406,9 +465,82 @@ export function createScriptHost({ stateDirectory = null, command = 'dotnet', tr
   };
 }
 
-function execute(command, args, cwd, timeout) {
-  return new Promise((resolve) => {
-    const child = spawn(command, args, { cwd, windowsHide: true, env: hostEnvironment(process.env, { build: true }) });
+// A caller waiting on a shared build. Its own abort rejects only that caller, with its own reason. The build is killed only
+// when every caller still waiting on it has aborted; the entry is then dropped, so a later caller starts a fresh build.
+function joinBuild(dll, shared, signal) {
+  shared.waiters += 1;
+  if (!signal) return shared.promise;
+  return new Promise((resolve, reject) => {
+    const abort = () => {
+      reject(signal.reason);
+      shared.waiters -= 1;
+      if (shared.waiters === 0) cancelBuild(dll, shared, signal.reason);
+    };
+    signal.addEventListener('abort', abort, { once: true });
+    shared.promise.then(
+      (value) => {
+        signal.removeEventListener('abort', abort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener('abort', abort);
+        reject(error);
+      },
+    );
+  });
+}
+function cancelBuild(dll, shared, reason) {
+  if (builds.get(dll) === shared) builds.delete(dll);
+  shared.controller.abort(reason);
+}
+
+// Ends a build's process tree. The MSBuild worker nodes are children of the dotnet driver, so the driver alone is not
+// enough: on Windows taskkill /T ends the children with it; elsewhere the build runs as a process group (spawned detached)
+// and the group gets SIGTERM. A build that already exited is not an error (taskkill's 128, ESRCH); any other failure throws.
+export function killProcessTree(
+  child,
+  { platform = process.platform, spawnSyncImpl = spawnSync, killImpl = sendSignal } = {},
+) {
+  // A pid of 0, 1 or a negative number names a process group or every process of a user; it is never a build.
+  if (!Number.isInteger(child.pid) || child.pid <= 1)
+    throw new TypeError(`refusing to end the process tree of pid ${child.pid}: the pid must be an integer above 1`);
+  if (platform === 'win32') {
+    const answer = spawnSyncImpl('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true }); // NOSONAR: fixed tool name resolved through PATH
+    if (answer.error) throw answer.error;
+    if (answer.status !== 0 && answer.status !== 128)
+      throw new Error(`taskkill of the build (pid ${child.pid}) failed with exit status ${answer.status}`);
+    return;
+  }
+  try {
+    killImpl(-child.pid, 'SIGTERM');
+  } catch (error) {
+    if (error.code !== 'ESRCH') throw error;
+  }
+}
+
+// Runs a build in dir with no deadline of its own: the caller's signal is the bound. An abort ends the build's process tree
+// and rejects with the abort reason.
+function execute(command, args, cwd, { signal = null, spawnImpl = spawn, tree } = {}) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason);
+    const child = spawnImpl(command, args, {
+      cwd,
+      windowsHide: true,
+      detached: tree.platform !== 'win32',
+      env: { ...hostEnvironment(process.env, { build: true }), MSBUILDDISABLENODEREUSE: '1' },
+    });
+    const stop = () => {
+      let failure = signal.reason;
+      try {
+        killProcessTree(child, tree);
+      } catch (error) {
+        failure = error;
+      } finally {
+        child.kill();
+      }
+      reject(failure);
+    };
+    signal?.addEventListener('abort', stop, { once: true });
     let text = '';
     child.stdout.on('data', (c) => {
       text = (text + c).slice(-20000);
@@ -416,13 +548,12 @@ function execute(command, args, cwd, timeout) {
     child.stderr.on('data', (c) => {
       text = (text + c).slice(-20000);
     });
-    const timer = setTimeout(() => child.kill(), timeout);
     child.on('close', (code) => {
-      clearTimeout(timer);
+      signal?.removeEventListener('abort', stop);
       resolve({ code, text });
     });
     child.on('error', (error) => {
-      clearTimeout(timer);
+      signal?.removeEventListener('abort', stop);
       resolve({ code: -1, text: error.message });
     });
   });

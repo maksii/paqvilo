@@ -1,4 +1,4 @@
-import { loadCatalogue, loadConfig, mirageOnlySite } from '../config.mjs';
+import { CONFIGURATION_ERROR_CODES, loadCatalogue, loadConfig, mirageOnlySite } from '../config.mjs';
 import { analyzeProject, validateAnalysisPolicy } from '../analysis/index.mjs';
 import { configuredAnalysisRoots } from '../analysis/project.mjs';
 import { standaloneCatalogueConfiguration } from '../standalone-mirage.mjs';
@@ -72,18 +72,10 @@ async function analyzeSiteReport(catalogue, site, args, failOn) {
       ready: analysis.ready,
       errors: analysis.ready ? [] : [analysisFailure(analysis)],
     };
-  } catch {
-    return {
-      site: name,
-      ready: false,
-      errors: [
-        {
-          code: 'analysis_unavailable',
-          message:
-            'Static Power Platform analysis could not read the selected sources or configuration. Check source paths, access and supported formats with doctor.',
-        },
-      ],
-    };
+  } catch (error) {
+    // Configuration and source-layout errors name their own problem; anything else is a failure of the command.
+    if (!CONFIGURATION_ERROR_CODES.has(error?.code)) throw error;
+    return { site: name, ready: false, errors: [{ code: error.code, message: displayPath(error.message) }] };
   }
 }
 
@@ -114,17 +106,65 @@ function localAnalysisReport(args, failOn) {
   };
 }
 
+// Checked before any source is read, with the same message lense doctor gives for an unknown environment.
+function checkEnvironmentOption(catalogue, args) {
+  if (args.all || !args.env) return;
+  const name =
+    args.site ??
+    catalogue.settings.values.PAQVILO_SITE ??
+    catalogue.root.defaultSite ??
+    Object.keys(catalogue.sites)[0];
+  const site = catalogue.sites[name];
+  if (!site || mirageOnlySite(site) || Object.hasOwn(site.environments, args.env)) return;
+  throw Object.assign(
+    new Error(
+      `Unknown environment "${args.env}" for site "${name}". Known: ${Object.keys(site.environments).join(', ') || '(none)'}. Run "npm run list" to see them.`,
+    ),
+    { code: 'invalid_argument' },
+  );
+}
+
 async function catalogueAnalysisReports(args, failOn) {
   const reports = [];
   const catalogue = loadCatalogue(args);
   if (args.site && !Object.hasOwn(catalogue.sites, args.site))
     throw Object.assign(new Error('Unknown site selected for static analysis.'), { code: 'invalid_argument' });
+  checkEnvironmentOption(catalogue, args);
   for (const site of args.all ? Object.keys(catalogue.sites) : [args.site])
     reports.push(await analyzeSiteReport(catalogue, site, args, failOn));
   return reports;
 }
 
+// The standalone path (--source or --project without a catalogue selector) never reads --env or --repo, so each would
+// be silently ignored: the combination is refused before any work, naming the standalone selector in use.
+const STANDALONE_SELECTOR_REFUSALS = [
+  ['env', (mode) => `--env selects a catalogue environment and cannot be combined with ${mode}.`],
+  ['repo', (mode) => `--repo selects catalogue sources and cannot be combined with ${mode}.`],
+];
+
+function refusal(message) {
+  return Object.assign(new Error(message), { code: 'invalid_argument' });
+}
+
+const catalogueSelected = (args) => Boolean(args.config || args.site || args.all);
+
+// --source wins when both are given; a catalogue selector makes the run a catalogue run, where --source overrides the
+// selected site's portal source.
+function standaloneSelector(args) {
+  if (catalogueSelected(args)) return null;
+  if (args.source) return '--source';
+  return args.project ? '--project' : null;
+}
+
+function refuseStandaloneCombinations(args) {
+  const mode = standaloneSelector(args);
+  if (!mode) return;
+  const selector = STANDALONE_SELECTOR_REFUSALS.find(([name]) => args[name] !== undefined);
+  if (selector) throw refusal(selector[1](mode));
+}
+
 export default async function analyze(_cfg, args) {
+  refuseStandaloneCombinations(args);
   const failOn = validateAnalysisPolicy(args['fail-on'] ?? 'error');
   const local = (args.source || args.project) && !args.config && !args.site && !args.all;
   const reports = local ? [localAnalysisReport(args, failOn)] : await catalogueAnalysisReports(args, failOn);

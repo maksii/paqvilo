@@ -1,8 +1,12 @@
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { solutionContentFingerprint, solutionLayerFiles } from './solution-content-fingerprint.mjs';
+import {
+  solutionContentFingerprint,
+  solutionLayerFiles,
+  solutionSideFileHashes,
+} from './solution-content-fingerprint.mjs';
 import { InvalidAssembly, inspectAssembly } from './clr-assembly-reader.mjs';
-import { decodeXml, portalField as field } from './importer.mjs';
+import { portalField as field } from './importer.mjs';
 import {
   parseSolutionXml,
   descendants,
@@ -91,7 +95,8 @@ function parseViewDocument(xml, entity, file, lcid) {
       name: label(child(view, 'LocalizedNames'), lcid) ?? '',
       queryType: Number(text(view, 'querytype')) || 0,
       isDefault: text(view, 'isdefault') === '1',
-      fetchXml: fetch ? serialize(fetch) : decodeXml(child(view, 'fetchxml')?.text.trim() ?? ''),
+      // The reader already returned this text literal (CDATA kept, character data decoded once).
+      fetchXml: fetch ? serialize(fetch) : (child(view, 'fetchxml')?.text.trim() ?? ''),
       // Layout cells marked ishidden="1" are not grid columns (e.g. the Contacts Lookup View hides fax, address1_name, address1_fax).
       fields: descendants(layout, 'cell')
         .filter((c) => c.attrs.ishidden !== '1')
@@ -440,12 +445,13 @@ function selectFormTabs(tree, definition, lcid) {
  */
 /* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ export async function importSolutionMetadata(
   roots,
-  { entities, portal, lcid = 1033, scan, schema, cache, cacheFile, order = 'explicit', observed } = {},
+  { entities, portal, lcid = 1033, scan, schema, sideHashes, cache, cacheFile, order = 'explicit', observed } = {},
 ) {
   if (portal && !entities) entities = portalMetadataEntities(portal);
   roots = Array.isArray(roots) ? roots : [roots];
   scan ??= await scanSolutionSources(roots, { cache, cacheFile, order });
-  schema ??= buildSolutionSchema(scan, { lcid });
+  sideHashes ??= solutionSideFileHashes(scan.layers, scan.cache);
+  schema ??= buildSolutionSchema(scan, { lcid, sideHashes });
   const names = entities?.length ? new Set(entities.map(norm)) : null;
   const diagnostics = [];
   const fingerprint = createHash('sha256');
@@ -635,7 +641,7 @@ function selectFormTabs(tree, definition, lcid) {
     diagnostics,
     filesRead: candidates.length,
     fingerprint: fingerprint.digest('hex'),
-    contentFingerprint: solutionContentFingerprint(scan.layers, { lcid, files: candidates, cache: scan.cache }),
+    contentFingerprint: solutionContentFingerprint(scan.layers, { lcid, files: candidates, sideHashes }),
   };
   if (portal) {
     const applied = applySolutionMetadata(portal, metadata);

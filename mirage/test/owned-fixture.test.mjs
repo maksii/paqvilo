@@ -1,3 +1,4 @@
+// @test-kind contract: owned fixtures remove their directories and restore state in order, and report every drain failure they retain.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -8,6 +9,9 @@ import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import readline from 'node:readline';
 import { ownedFixture, removeFixtureDirectory, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+
+// hang guard only: a blocked synchronous child cannot be ended by the test runner
+const CLI_HANG_GUARD_MS = 170_000;
 
 test('drained fixture removal retains errors after its bounded asynchronous retry policy', async (t) => {
   const failure = Object.assign(new Error('Invented persistent cleanup failure'), { code: 'EACCES' });
@@ -247,7 +251,7 @@ test('the original test failure remains visible while later cleanup still runs',
   `;
   const result = spawnSync(process.execPath, [...process.execArgv, '--input-type=module', '-e', source], {
     encoding: 'utf8',
-    timeout: 150_000,
+    timeout: CLI_HANG_GUARD_MS,
     windowsHide: true,
   });
   assert.equal(result.error, undefined);

@@ -4,33 +4,74 @@
 // (MetadataId, ColumnNumber, CreatedOn/ModifiedOn of the definition) are not in an export and
 // are emitted as null.
 
+// dataverseType -> [AttributeType value, AttributeTypeName display name, @odata.type stem]. The AttributeTypeCode name
+// (ATTRIBUTE_TYPE_NAMES) and the Web API metadata names derive from this one table.
 const TYPES = {
-  bit: [0, 'BooleanType'],
-  boolean: [0, 'BooleanType'],
-  customer: [1, 'CustomerType'],
-  datetime: [2, 'DateTimeType'],
-  decimal: [3, 'DecimalType'],
-  float: [4, 'DoubleType'],
-  double: [4, 'DoubleType'],
-  int: [5, 'IntegerType'],
-  integer: [5, 'IntegerType'],
-  lookup: [6, 'LookupType'],
-  memo: [7, 'MemoType'],
-  ntext: [7, 'MemoType'],
-  money: [8, 'MoneyType'],
-  owner: [9, 'OwnerType'],
-  partylist: [10, 'PartyListType'],
-  picklist: [11, 'PicklistType'],
-  state: [12, 'StateType'],
-  status: [13, 'StatusType'],
-  nvarchar: [14, 'StringType'],
-  string: [14, 'StringType'],
-  primarykey: [15, 'UniqueidentifierType'],
-  uniqueidentifier: [15, 'UniqueidentifierType'],
-  multiselectpicklist: [17, 'MultiSelectPicklistType'],
-  bigint: [18, 'BigIntType'],
-  entityname: [20, 'EntityNameType'],
+  bit: [0, 'BooleanType', 'Boolean'],
+  boolean: [0, 'BooleanType', 'Boolean'],
+  customer: [1, 'CustomerType', 'Lookup'],
+  datetime: [2, 'DateTimeType', 'DateTime'],
+  decimal: [3, 'DecimalType', 'Decimal'],
+  float: [4, 'DoubleType', 'Double'],
+  double: [4, 'DoubleType', 'Double'],
+  int: [5, 'IntegerType', 'Integer'],
+  integer: [5, 'IntegerType', 'Integer'],
+  lookup: [6, 'LookupType', 'Lookup'],
+  memo: [7, 'MemoType', 'Memo'],
+  ntext: [7, 'MemoType', 'Memo'],
+  money: [8, 'MoneyType', 'Money'],
+  owner: [9, 'OwnerType', 'Lookup'],
+  partylist: [10, 'PartyListType', 'Lookup'],
+  picklist: [11, 'PicklistType', 'Picklist'],
+  state: [12, 'StateType', 'State'],
+  status: [13, 'StatusType', 'Status'],
+  nvarchar: [14, 'StringType', 'String'],
+  string: [14, 'StringType', 'String'],
+  primarykey: [15, 'UniqueidentifierType', 'UniqueIdentifier'],
+  uniqueidentifier: [15, 'UniqueidentifierType', 'UniqueIdentifier'],
+  // File, image and virtual columns report the Virtual code; they have no column facts of their own.
+  file: [17, 'FileType', 'File'],
+  image: [17, 'ImageType', 'Image'],
+  virtual: [17, 'VirtualType', ''],
+  multiselectpicklist: [17, 'MultiSelectPicklistType', 'MultiSelectPicklist'],
+  bigint: [18, 'BigIntType', 'BigInt'],
+  managedproperty: [19, 'ManagedPropertyType', 'ManagedProperty'],
+  entityname: [20, 'EntityNameType', 'EntityName'],
 };
+// Display names whose AttributeTypeCode is Virtual: AttributeTypeCode has no member for them.
+const VIRTUAL_DISPLAY_NAMES = new Set(['MultiSelectPicklistType', 'FileType', 'ImageType', 'VirtualType']);
+/** The internal type's row in TYPES; unknown types are strings. */
+function typeRow(dataverseType) {
+  return TYPES[String(dataverseType ?? 'nvarchar').toLowerCase()] ?? TYPES.nvarchar;
+}
+/** The AttributeType value (the AttributeTypeCode number) of an internal type; unknown types are strings (14). */
+export function attributeTypeNumber(dataverseType) {
+  return typeRow(dataverseType)[0];
+}
+/** AttributeTypeDisplayName of an internal type (the metadata property AttributeTypeName); unknown types are strings. */
+export function attributeTypeDisplayName(dataverseType) {
+  return typeRow(dataverseType)[1];
+}
+/**
+ * The AttributeTypeCode name of a display name: the name without its Type suffix, or Virtual for the display names
+ * in VIRTUAL_DISPLAY_NAMES.
+ */
+export function attributeTypeCodeName(displayName) {
+  if (displayName == null) return null;
+  if (VIRTUAL_DISPLAY_NAMES.has(displayName)) return 'Virtual';
+  return displayName.replace(/Type$/, '');
+}
+/** The names of every internal type, by dataverseType: [AttributeTypeCode name, @odata.type stem, AttributeTypeName]. */
+export const ATTRIBUTE_TYPE_NAMES = Object.fromEntries(
+  Object.entries(TYPES).map(([type, [, displayName, stem]]) => [
+    type,
+    [attributeTypeCodeName(displayName), stem, displayName],
+  ]),
+);
+/** The Liquid attribute_type of an internal type: the AttributeTypeCode name of its display name. */
+export function attributeTypeCode(dataverseType) {
+  return dataverseType == null ? null : attributeTypeCodeName(attributeTypeDisplayName(dataverseType));
+}
 const REQUIRED = { none: 0, systemrequired: 1, applicationrequired: 2, required: 2, recommended: 3 };
 const IME = { auto: 0, inactive: 1, active: 2, disabled: 3 };
 // StringFormat values; json/richtext follow the enum order (a guess).
@@ -376,6 +417,9 @@ export function attributeMetadata(entity, attribute, field, { primaryName, lcid 
   const ime = IME[facts.imeMode] ?? 0;
   const format = String(facts.format ?? '').toLowerCase();
   const range = { MaxValue: facts.maxValue ?? null, MinValue: facts.minValue ?? null };
+  // Virtual (17) also names file and image columns, which have no option set: only a multi-select column takes the
+  // picklist shape.
+  if (type === 'multiselectpicklist') return picklistAttributeMetadata(metadata, facts, formula, custom, lcid, system);
   switch (attributeType) {
     case 14:
       return stringAttributeMetadata(metadata, facts, formula, ime, format);
@@ -399,8 +443,7 @@ export function attributeMetadata(entity, attribute, field, { primaryName, lcid 
     case 0: {
       return booleanAttributeMetadata(metadata, facts, formula, custom, lcid, system);
     }
-    case 11:
-    case 17: {
+    case 11: {
       return picklistAttributeMetadata(metadata, facts, formula, custom, lcid, system);
     }
     case 12:

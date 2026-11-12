@@ -1,3 +1,4 @@
+// @test-kind tooling: the site build script replaces stale output and retains only deliberate public files.
 import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -6,6 +7,8 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+
+const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -22,7 +25,7 @@ function fixture(t) {
       cwd: directory,
       encoding: 'utf8',
       windowsHide: true,
-      timeout: 150_000,
+      timeout: CLI_HANG_GUARD_MS,
     });
   return { directory, checkout, run };
 }

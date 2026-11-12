@@ -91,4 +91,4 @@ This project and scaffolded projects enforce LF line endings with `.gitattribute
 
 ## Code Apps adapter example
 
-The separate [Code Apps example](code-app/) runs an invented `x_item` app in Mirage with a local staff persona and a loopback app server. It exercises context, CRUD and an unsupported connector; follow the [setup and debugging guide](../../mirage/docs/code-apps.md#run-the-invented-example). It does not run Microsoft's Power Apps host or generated SDK services.
+The separate [Code Apps example](code-app/) runs an invented `x_item` app in Mirage with a local staff persona and a loopback app server. It exercises context, CRUD and an unsupported connector; follow the [setup and debugging guide](https://github.com/maksii/paqvilo/blob/main/mirage/docs/code-apps.md#run-the-invented-example). It does not run Microsoft's Power Apps host or generated SDK services.

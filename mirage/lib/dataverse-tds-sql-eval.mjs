@@ -12,6 +12,7 @@
 //   params     sp_executesql parameters such as { "@p1": 5 }. Visible in every batch.
 //   principal  accepted, not read here.
 //   signal     AbortSignal, checked between rows (error 3617).
+//   tupleBudget  intermediate rows one statement may build in joins (default 1,000,000); error 40000 past it.
 //   now        Date or () => Date, used by GETDATE and friends.
 // Returns { resultSets: [{ columns: [{ name, type, length, precision, scale, nullable }], rows: [[...values]] }], rowCount }.
 // rowCount is @@ROWCOUNT after the last statement. Values follow the model in dataverse-tds-sql-functions.mjs.
@@ -62,6 +63,11 @@ const AGGREGATES = new Set([
 ]);
 const INT_MAX = 2147483647;
 const NVARCHAR_MAX_CHARS = 4000;
+const MONEY_SCALE = 4;
+// Row loops yield to the event loop every YIELD_STEPS steps, so timers and client cancels run during a long evaluation.
+const YIELD_STEPS = 4096;
+// Intermediate rows one statement may build in joins (cross and join candidates).
+const TUPLE_BUDGET = 1000000;
 
 const lower = (value) => String(value).toLowerCase();
 const isNull = (value) => value === null || value === undefined;
@@ -72,8 +78,17 @@ function fail(number, message) {
   throw { number, message, class: 16, state: 1 }; // NOSONAR: thrown value is part of the error contract
 }
 
-function tick(st) {
+// Yields every YIELD_STEPS steps, then checks the abort signal (error 3617).
+async function tick(st) {
+  if (++st.steps % YIELD_STEPS === 0) await new Promise((resolve) => setImmediate(resolve));
   if (st.signal?.aborted) fail(3617, 'Query was cancelled by the user.');
+}
+
+// Counts one intermediate row of the running statement; past the budget the statement is refused (error 40000).
+function spend(st) {
+  st.tuples += 1;
+  if (st.tuples > st.tupleBudget)
+    fail(40000, `The statement exceeded its budget of ${st.tupleBudget} intermediate rows.`);
 }
 
 export async function executeBatch(
@@ -87,6 +102,7 @@ export async function executeBatch(
     now,
     collation = 'CI_AI',
     statement: around = null,
+    tupleBudget = TUPLE_BUDGET,
   } = {},
 ) {
   const { statements } = parseBatch(sql);
@@ -98,6 +114,9 @@ export async function executeBatch(
     signal,
     now,
     collation,
+    steps: 0,
+    tuples: 0,
+    tupleBudget,
     scanCache: new Map(),
     referenced: null,
     session: { rowCount: 0 },
@@ -116,7 +135,7 @@ export async function executeBatch(
 
 // One run of a batch: fresh variables seeded with the parameters, then its statements in order.
 async function runBatchRepeat(st, params, statements, resultSets, around) {
-  tick(st);
+  await tick(st);
   st.vars = new Map();
   for (const [name, value] of Object.entries(params)) {
     const key = name.startsWith('@') ? name : `@${name}`;
@@ -147,7 +166,8 @@ function runStatementOperation(statement, st, resultSets, around) {
 }
 
 async function runStatement(statement, st, resultSets) {
-  tick(st);
+  await tick(st);
+  st.tuples = 0;
   // One ctx per statement: functions read @@ROWCOUNT and seeded state from it.
   st.ctx = { now: st.now, rowCount: st.session.rowCount, collation: st.collation };
   st.referenced = referencedColumns(statement);
@@ -271,7 +291,7 @@ async function scanTable(table, st, pushdown = null) {
       : names.filter((name) => st.referenced.has(name) || lower(name) === lower(table.idColumn));
   const key = JSON.stringify([table.logicalName, columns, pushdown], (_, v) => (typeof v === 'bigint' ? `${v}n` : v));
   if (!st.scanCache.has(key)) {
-    tick(st);
+    await tick(st);
     const rows = await st.scan(table.logicalName, { columns, pushdown });
     st.scanCache.set(
       key,
@@ -825,7 +845,7 @@ async function stringAgg(node, group, st) {
   const order = (node.withinGroup ?? []).map((term) => ({ desc: term.direction === 'DESC' }));
   const items = [];
   for (const tuple of group.tuples) {
-    tick(st);
+    await tick(st);
     const env = envOf(group.templates, tuple, group.outer);
     const v = await evalExpr(node.args[0], env, st);
     if (isNull(v)) continue;
@@ -851,7 +871,7 @@ async function stringAgg(node, group, st) {
   const arg = node.args[0];
   let vals = [];
   for (const tuple of group.tuples) {
-    tick(st);
+    await tick(st);
     const v = await evalExpr(arg, envOf(group.templates, tuple, group.outer), st);
     if (!isNull(v)) vals.push(v);
   }
@@ -1105,7 +1125,7 @@ async function groupUnits(select, rel, tuples, outer, st) {
 
   const kept = [];
   for (const tuple of rel.tuples) {
-    tick(st);
+    await tick(st);
     if (select.where && truth(await evalExpr(select.where, envOf(rel.templates, tuple, outer), st)) !== true) continue;
     kept.push(tuple);
   }
@@ -1116,7 +1136,7 @@ async function groupUnits(select, rel, tuples, outer, st) {
   const produced = [];
   let assigned = 0;
   for (const { env, tuple } of units) {
-    tick(st);
+    await tick(st);
     if (select.having && truth(await evalExpr(select.having, env, st)) !== true) continue;
     if (isAssign) {
       assigned += 1;
@@ -1209,7 +1229,7 @@ function finishColumns(names, raw, rows) {
     else if (raw[i].type === 'null') meta = { type: 'int' };
     else meta = { ...raw[i] };
     if (meta.type === 'decimal' || meta.type === 'money') rescaleColumn(rows, i, meta);
-    if (STRING_TYPES.has(meta.type) && isNull(meta.length)) meta.length = inferLength(values);
+    if (STRING_TYPES.has(meta.type)) meta.length = stringLength(meta.length, values);
     const column = { name, type: meta.type, nullable: meta.nullable ?? true };
     for (const key of ['length', 'precision', 'scale']) {
       if (isNull(meta[key])) continue;
@@ -1224,6 +1244,12 @@ function finishColumns(names, raw, rows) {
     }
     return column;
   });
+}
+
+// A declared length grows to the longest value it holds; the max form (-1 or 'max') stays as it is.
+function stringLength(declared, values) {
+  if (declared === -1 || declared === 'max') return declared;
+  return Math.max(declared ?? 0, inferLength(values));
 }
 
 function inferLength(values) {
@@ -1243,16 +1269,24 @@ function inferMeta(values) {
   return { type: 'nvarchar', length: inferLength(present) };
 }
 
-// Pads every decimal value in the column to one scale, the largest any value needs.
+// Pads every decimal value in the column to one scale, the largest any value needs. Money is fixed at four places and
+// its values round to them, so SUM and AVG of money stay money(19,4).
 function rescaleColumn(rows, i, meta) {
-  const scale = rows.reduce(
-    (max, row) => (isDec(row[i]) ? Math.max(max, decParts(row[i]).frac.length) : max),
-    meta.scale ?? 0,
-  );
+  const money = meta.type === 'money';
+  const scale = money
+    ? MONEY_SCALE
+    : rows.reduce((max, row) => (isDec(row[i]) ? Math.max(max, decParts(row[i]).frac.length) : max), meta.scale ?? 0);
   meta.scale = scale;
   for (const row of rows) {
-    if (isDec(row[i])) row[i] = { decimal: formatDec(decParts(row[i]), scale) };
+    if (!isDec(row[i])) continue;
+    row[i] = money ? roundedDecimal(row[i].decimal, scale) : { decimal: formatDec(decParts(row[i]), scale) };
   }
+}
+
+// A decimal text rounded half away from zero to `scale` places.
+function roundedDecimal(text, scale) {
+  const parts = parseDecimal(text);
+  return { decimal: formatDecimal({ coef: scaleDown(parts.coef, parts.scale, scale), scale }) };
 }
 
 async function buildFrom(from, outer, st, pushdown = null) {
@@ -1265,7 +1299,7 @@ async function buildFrom(from, outer, st, pushdown = null) {
       from.length === 1 && entry.joins.length === 0 ? pushdown : null,
     );
     for (const join of entry.joins) part = await joinRel(part, join, outer, st);
-    rel = crossRel(rel, part, st);
+    rel = await crossRel(rel, part, st);
   }
   return rel;
 }
@@ -1306,7 +1340,8 @@ async function sourceRel(source, outer, st, pushdown = null) {
       const result = await evalQuery(join.source.query, envOf(left.templates, lt, outer), st);
       if (result.rows.length === 0 && join.kind === 'OUTER') out.push([...lt, null]);
       for (const row of result.rows) {
-        tick(st);
+        await tick(st);
+        spend(st);
         out.push([...lt, row]);
       }
     }
@@ -1320,7 +1355,8 @@ async function sourceRel(source, outer, st, pushdown = null) {
   for (const lt of left.tuples) {
     let hit = false;
     for (let j = 0; j < right.tuples.length; j += 1) {
-      tick(st);
+      await tick(st);
+      spend(st);
       const candidate = [...lt, ...right.tuples[j]];
       const matched =
         join.kind === 'CROSS' || truth(await evalExpr(join.on, envOf(templates, candidate, outer), st)) === true;
@@ -1340,11 +1376,12 @@ async function sourceRel(source, outer, st, pushdown = null) {
   return { templates, tuples: out };
 }
 
-function crossRel(a, b, st) {
+async function crossRel(a, b, st) {
   const tuples = [];
   for (const x of a.tuples) {
     for (const y of b.tuples) {
-      tick(st);
+      await tick(st);
+      spend(st);
       tuples.push([...x, ...y]);
     }
   }

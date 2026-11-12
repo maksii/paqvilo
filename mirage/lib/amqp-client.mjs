@@ -123,6 +123,41 @@ const integer = (big) =>
   big >= BigInt(Number.MIN_SAFE_INTEGER) && big <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(big) : big;
 const uuidText = (b) => b.toString('hex').replace(/^(.{8})(.{4})(.{4})(.{4})/, '$1-$2-$3-$4-');
 
+// Bytes one array element occupies, for the constructors with a fixed width. Other non-zero-width constructors take at least one.
+const ARRAY_ELEMENT_WIDTH = new Map([
+  [0x50, 1],
+  [0x51, 1],
+  [0x52, 1],
+  [0x53, 1],
+  [0x54, 1],
+  [0x55, 1],
+  [0x56, 1],
+  [0x60, 2],
+  [0x61, 2],
+  [0x70, 4],
+  [0x71, 4],
+  [0x72, 4],
+  [0x73, 4],
+  [0x80, 8],
+  [0x81, 8],
+  [0x82, 8],
+  [0x83, 8],
+  [0x98, 16],
+]);
+const ZERO_WIDTH_ELEMENTS = new Set([0x40, 0x41, 0x42, 0x43, 0x44, 0x45]);
+
+/** Rejects an array count that its element bytes cannot cover, before any element is decoded. Zero-width elements carry
+ * no bytes, so their count is bounded by the largest frame instead. */
+function checkArrayCount(element, count, available) {
+  if (ZERO_WIDTH_ELEMENTS.has(element)) {
+    if (count > MAX_FRAME) throw new RangeError(`AMQP array count ${count} is beyond the frame limit`);
+    return;
+  }
+  if (count * (ARRAY_ELEMENT_WIDTH.get(element) ?? 1) > available) {
+    throw new RangeError('AMQP array elements exceed the declared size');
+  }
+}
+
 function decodeCompound(code, b, at, need) {
   const wide = code === 0xd0 || code === 0xd1 || code === 0xf0,
     width = wide ? 4 : 1;
@@ -137,6 +172,7 @@ function decodeCompound(code, b, at, need) {
     if (!count) return [[], end];
     const element = b[cursor++];
     if (element === 0x00) throw new TypeError('Described AMQP array elements are not supported');
+    checkArrayCount(element, count, end - cursor);
     for (let index = 0; index < count; index += 1) {
       const [item, next] = decodeAs(element, b, cursor);
       items.push(item);
@@ -144,6 +180,7 @@ function decodeCompound(code, b, at, need) {
     }
     return [items, end];
   }
+  if (count > end - cursor) throw truncated();
   for (let index = 0; index < count; index += 1) {
     const [item, next] = decode(b.subarray(0, end), cursor);
     items.push(item);
@@ -385,9 +422,14 @@ const MAX_FRAME = 1 << 20; // our max-frame-size: 1 MiB covers the emulator's 25
 // ponytail: the peer's incoming window is not enforced and ours is re-announced only with each flow; enforce both for a broker that throttles.
 const WINDOW = 5000;
 
+// How an answer that never came is named in its error: the caller's bound, or the probe that ended the wait.
+const boundText = (timeoutMs) => (timeoutMs == null ? 'before the probe ended' : `within the ${timeoutMs} ms bound`);
+
 /**
  * Opens a connection: TCP → SASL header → sasl-mechanisms → sasl-init PLAIN → sasl-outcome → AMQP header → open → begin.
- * credentials() → { user, password } is called once during SASL. signal (optional) aborts every wait. Resolves to
+ * credentials() → { user, password } is called once during SASL. signal (optional) aborts every wait. timeoutMs bounds each
+ * wait; null leaves the waits to signal alone (a probe's idle guard). onProgress(step) is called as each step completes (connect,
+ * sasl-header, sasl-outcome, amqp-header, open, begin, and later attach, detach, close). Resolves to
  * { attach, transfer, take, settle, detach, close, failed }; any failure rejects with a ProviderError and destroys the socket.
  */
 export async function connectAmqp({
@@ -398,6 +440,7 @@ export async function connectAmqp({
   timeoutMs = 5000,
   signal = null,
   provider = null,
+  onProgress = () => {},
 }) {
   const waits = new Map(),
     links = new Map(),
@@ -423,10 +466,15 @@ export async function connectAmqp({
   function expect(key, label = key, ms = timeoutMs) {
     if (failure) return Promise.reject(failure);
     const promise = new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        waits.delete(key);
-        reject(unavailable(`No ${label} from the Service Bus emulator within ${ms} ms.`, 'AMQP_TIMEOUT', provider));
-      }, ms);
+      const timer =
+        ms == null
+          ? null
+          : setTimeout(() => {
+              waits.delete(key);
+              reject(
+                unavailable(`No ${label} from the Service Bus emulator within ${ms} ms.`, 'AMQP_TIMEOUT', provider),
+              );
+            }, ms);
       waits.set(key, {
         resolve: (value) => {
           clearTimeout(timer);
@@ -457,18 +505,11 @@ export async function connectAmqp({
     for (const link of links.values()) link.failure ??= error;
     socket.destroy();
   }
-  signal?.addEventListener(
-    'abort',
-    () =>
-      fail(
-        unavailable(
-          `The Service Bus emulator did not answer within the ${timeoutMs} ms bound.`,
-          'AMQP_TIMEOUT',
-          provider,
-        ),
-      ),
-    { once: true },
-  );
+  const abort = () =>
+    fail(unavailable(`The Service Bus emulator did not answer ${boundText(timeoutMs)}.`, 'AMQP_TIMEOUT', provider));
+  // A signal aborted before the connection starts (during a lookup) must end it too: a null bound would leave the waits unbounded.
+  if (signal?.aborted) abort();
+  else signal?.addEventListener('abort', abort, { once: true });
   socket.on('connect', () => answer('connect'));
   // Before the TCP connection exists the emulator is not reachable; afterwards a socket error is the connection closing under
   // whatever was in flight (a transfer, a disposition wait), named by its condition.
@@ -672,11 +713,13 @@ export async function connectAmqp({
 
   try {
     await expect('connect', 'TCP connection');
+    onProgress('connect');
     phase = 'sasl-header';
     let header = expect('header', 'SASL protocol header');
     const mechanisms = expect('sasl-mechanisms', 'SASL mechanisms');
     write(SASL_HEADER);
     await header;
+    onProgress('sasl-header');
     if (!(await mechanisms).includes('PLAIN'))
       throw new ProviderError('Unauthorized', 'The emulator does not offer SASL PLAIN.', {
         provider,
@@ -709,15 +752,19 @@ export async function connectAmqp({
         { provider, diagnostic: 'SASL_AUTH_FAILED' },
       );
     }
+    onProgress('sasl-outcome');
     header = expect('header', 'AMQP protocol header');
     write(AMQP_HEADER);
     await header;
+    onProgress('amqp-header');
     const opened = expect('open', 'open');
     send(described(CODE.open, [`paqvilo-${randomUUID()}`, hostname, uint(MAX_FRAME), ushort(0), null]));
     await opened;
+    onProgress('open');
     const begun = expect('begin', 'begin');
     send(described(CODE.begin, [null, uint(0), uint(WINDOW), uint(WINDOW)]));
     await begun;
+    onProgress('begin');
   } catch (error) {
     fail(error);
     throw error;
@@ -798,6 +845,7 @@ export async function connectAmqp({
         links.delete(name);
         throw error;
       }
+      onProgress('attach');
       return link;
     },
     /** Send message bytes unsettled and await the broker's disposition: accepted resolves, rejected throws its error. */
@@ -884,6 +932,7 @@ export async function connectAmqp({
       send(described(CODE.detach, [uint(link.handle), true]));
       await soft(done);
       links.delete(link.name);
+      onProgress('detach');
     },
     async close() {
       if (failure) return;
@@ -891,6 +940,7 @@ export async function connectAmqp({
       const done = expect('close', 'close answer');
       send(described(CODE.close, []));
       await soft(done).catch(() => {});
+      onProgress('close');
       fail(unavailable('The connection was closed.', 'AMQP_CONNECTION_CLOSED', provider));
     },
   };

@@ -1,7 +1,9 @@
 // @test-kind tooling: scripts/check-test-tags.mjs enforces docs/test-kinds.md on changed test files
 import fs from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
 import { parseTestKinds, check, kindsAt, diffFacts } from '../scripts/check-test-tags.mjs';
 
 const parityFile = [
@@ -573,4 +575,91 @@ test('the committed legacy ledger passes and never exceeds the 176 parity tag li
   // The ledger only shrinks, so the counts are upper bounds: a legitimate removal must not break this test.
   assert.ok(Object.keys(tags).length <= 79, `${Object.keys(tags).length} test files listed, at most 79`);
   assert.ok(Object.values(tags).flat().length <= 176, `${Object.values(tags).flat().length} tag lines, at most 176`);
+});
+
+test('lines inserted inside a protected parity body fail, while contract bodies and appended tests pass', () => {
+  const protectedFile = [
+    '// @test-kind contract: invented module contract for the insertion checks',
+    "import test from 'node:test';",
+    "import assert from 'node:assert/strict';",
+    '// @test-kind parity: native capture 2026-01-01 of the invented portal, two recorded runs',
+    "test('legacy parity assertion', () => {",
+    '  assert.equal(1 + 1, 2);',
+    '});',
+    '',
+  ].join('\n');
+  const run = (newText, oldText, diff) =>
+    check({
+      files: ['mirage/test/invented-legacy.test.mjs'],
+      newText: () => newText,
+      oldText: () => oldText,
+      diffOf: () => diff,
+    });
+  const early = protectedFile.replace(
+    "test('legacy parity assertion', () => {\n",
+    "test('legacy parity assertion', () => {\n  return;\n",
+  );
+  const earlyDiff = '@@ -5,0 +6 @@\n+  return;\n';
+  const failures = run(early, protectedFile, earlyDiff);
+  assert.equal(failures.length, 1, JSON.stringify(failures));
+  assert.match(failures[0], /parity test/);
+
+  const contract = protectedFile.replace('@test-kind parity:', '@test-kind contract:');
+  const contractEarly = contract.replace(
+    "test('legacy parity assertion', () => {\n",
+    "test('legacy parity assertion', () => {\n  return;\n",
+  );
+  assert.deepEqual(run(contractEarly, contract, earlyDiff), []);
+
+  const runner = [
+    '// @test-kind parity: native capture 2026-01-01 of the invented portal, two recorded runs',
+    "import { replayParityDirectory } from '../../mirage/testing/parity-cases.mjs';",
+    "await replayParityDirectory({ surface: 'power-fx', dir: './cases/power-fx' });",
+    '',
+  ].join('\n');
+  const runnerEarly = runner.replace(
+    'await replayParityDirectory',
+    'if (process.env.SKIP_PARITY) process.exit(0);\nawait replayParityDirectory',
+  );
+  const runnerFailures = run(runnerEarly, runner, '@@ -2,0 +3 @@\n+if (process.env.SKIP_PARITY) process.exit(0);\n');
+  assert.equal(runnerFailures.length, 1, JSON.stringify(runnerFailures));
+  assert.match(runnerFailures[0], /parity test/);
+
+  const appended = [
+    '// @test-kind unproven: local model appended after the protected test',
+    "test('appended local model', () => {});",
+  ];
+  const appendedDiff = `@@ -7,0 +8,2 @@\n+${appended[0]}\n+${appended[1]}\n`;
+  assert.deepEqual(run(`${protectedFile}${appended.join('\n')}\n`, protectedFile, appendedDiff), []);
+});
+
+test('every file a package test script selects is checked as a test file', () => {
+  const repoFile = (file) => new URL(`../${file}`, import.meta.url);
+  const packages = [
+    'package.json',
+    'mirage/package.json',
+    'examples/project/package.json',
+    'examples/company-operations/package.json',
+  ];
+  const selected = packages.flatMap((manifest) => {
+    const script = JSON.parse(fs.readFileSync(repoFile(manifest), 'utf8')).scripts.test;
+    const patterns = script.split(/\s+/).filter((token) => /\.[cm]?js$/.test(token));
+    const directory = path.posix.dirname(manifest);
+    return patterns.flatMap((pattern) =>
+      fs
+        .globSync(path.posix.join(directory, pattern), { cwd: fileURLToPath(new URL('..', import.meta.url)) })
+        .map((file) => file.split(path.sep).join('/')),
+    );
+  });
+  assert.ok(selected.includes('examples/company-operations/portal-harness/test.mjs'), JSON.stringify(selected));
+  // A planted invalid tag makes the checker report every selected file, so an unchecked file is named by its absence.
+  const planted = (file) =>
+    `${fs.readFileSync(repoFile(file), 'utf8')}\n// @test-kind bogus: planted so the checker must read this file\n`;
+  const reported = check({ files: selected, newText: planted }).map((failure) =>
+    failure.slice(0, failure.indexOf(':')),
+  );
+  assert.deepEqual(
+    selected.filter((file) => !reported.includes(file)),
+    [],
+  );
 });

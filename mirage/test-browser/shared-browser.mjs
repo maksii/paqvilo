@@ -1,9 +1,12 @@
 // Test-file fixtures: one browser per file, an isolated context per test.
 import fs from 'node:fs/promises';
 import http from 'node:http';
+import path from 'node:path';
 import { before, after } from 'node:test';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
+import { createSimulator } from '../server.mjs';
+import { signInContext } from '../testing/session.mjs';
 import { ownedFixture, drainFixture } from '../testing/owned-fixture.mjs';
 
 /**
@@ -26,6 +29,41 @@ export function sharedBrowser(launchOptions) {
       return context.newPage();
     },
   };
+}
+
+/**
+ * The origin of a simulator's app paths (main.aspx, /_apps/*, /api/data/*, the staff session): the apps listener when
+ * the host has one, otherwise the portal origin (the standalone model-driven host serves its apps on its own origin).
+ */
+export function appsOrigin(sim, origin) {
+  return sim.appsUrl ? new URL(sim.appsUrl).origin : origin;
+}
+
+/** The origins an app's own requests may use: the portal origin, where a navigation starts, and the apps origin. */
+export function appOrigins(sim, origin) {
+  return sim.appsUrl ? [origin, new URL(sim.appsUrl).origin] : [origin];
+}
+
+const RELATIVE_IMPORT = /\bfrom\s+'(\.\.?\/[^']+)'/g;
+const MODULE_BASE = 'http://served.invalid';
+
+/**
+ * The modules an entry module imports, transitively, keyed by the path each is served at: the entry at `servedPath`,
+ * each relative static import at the path it resolves to from its importer's served path. Serving every key from its
+ * file lets a fixture server answer a module import with the real module instead of a fallback page.
+ */
+export async function moduleGraph(entry, servedPath) {
+  const modules = new Map();
+  const pending = [[new URL(entry), servedPath]];
+  while (pending.length) {
+    const [file, served] = pending.pop();
+    if (modules.has(served)) continue;
+    modules.set(served, file);
+    const source = await fs.readFile(file, 'utf8');
+    for (const [, specifier] of source.matchAll(RELATIVE_IMPORT))
+      pending.push([new URL(specifier, file), new URL(specifier, new URL(served, MODULE_BASE)).pathname]);
+  }
+  return modules;
 }
 
 /** Closes a fixture server without waiting on browser keep-alive sockets, which can hold `close()` open. */
@@ -134,4 +172,41 @@ export async function observedPage(origin, own) {
   });
   await page.goto(origin);
   return { page, errors, external };
+}
+
+/**
+ * The permissions, settings and simulator of an invented account-list site: the Member contact reads accounts, which the
+ * list shows by name. A caller spreads it into its initial state beside its own mappings and tables.
+ */
+export function accountListAccess(contact) {
+  return {
+    permissions: [{ id: 'account', entity: 'account', scope: 'global', roles: ['Member'], operations: ['read'] }],
+    settings: { permissionMode: 'enforce' },
+    simulator: {
+      mode: 'local',
+      pageMode: 'local',
+      identity: { id: contact, contactId: contact, roles: ['Member'] },
+      live: { origin: null },
+      endpoints: [],
+      componentSchemas: {
+        Accounts: { entity: 'account', fields: [{ name: 'name', label: 'Name' }] },
+      },
+    },
+  };
+}
+
+/**
+ * A simulator over `initial`, whose state file lives in `dir`, and a page in a fresh context signed in as the Member
+ * `contact`. The simulator and the context close with the test; `errors` collects the page's errors.
+ */
+export async function signedInSimulatorPage(t, browser, { dir, initial, contact }) {
+  const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, 'state.json'), initial, watch: false });
+  ownedFixture(t).add(() => app.close());
+  const context = await browser.newContext();
+  ownedFixture(t).add(() => context.close());
+  await signInContext(context, app, contact, { roles: ['Member'] });
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  return { app, page, errors };
 }

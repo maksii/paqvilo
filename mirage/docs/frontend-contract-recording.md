@@ -29,7 +29,9 @@ close only browser tabs and runtimes started by the recorder.
 
 For rendered forms, `capturePowerPagesControlContract(input)` inspects explicitly selected DOM controls
 and authored draft feedback. `capturePowerPagesClientContract(input)` waits for the native client API and
-checks the same source-selected form metadata. Capture the current native FormXml and form script readbacks;
+checks the same source-selected form metadata. It sets no readiness deadline of its own; pass `readyTimeoutMs`
+(a positive integer) to bound the wait, and a missed bound rejects with "Power Pages API readiness deadline
+exceeded." Without it the caller's test timeout is the hang guard. Capture the current native FormXml and form script readbacks;
 a stale export must fail qualification. Neither probe submits a form or records visitor identity.
 
 `captureCanvasDraftInputContract(adapter, fixture)` drives an authored open/edit/cancel/discard flow through
@@ -43,6 +45,11 @@ response prove SDK behavior only; native host context requires a separate publis
 request adapter. Keep portal and Dataverse routes, identity/permissions and native pipeline hooks explicit.
 Inspect response bodies and independent persistence readbacks, and isolate recording-hook failures before
 treating them as platform behavior. Preserve raw anomalies and exact restoration journals in private evidence.
+
+`webApiInputContractCases()` returns the six invented typed-input cases (`{ id, field, value }`) that
+`captureWebApiInputContract` sends as PATCH bodies. `webApiScalarReaderCases()` returns invented
+`[field, literal, expected error text]` tuples for the OData scalar reader's conversion errors; the Dataverse
+scalar-reader HTTP test uses them to check each message.
 
 Keep capture reports and fixture manifests with repository tests or in the external project, outside
 the shipped documentation. A parity tag requires reproduced native evidence for those assertions; see [test kinds](../../docs/test-kinds.md).

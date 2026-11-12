@@ -11,7 +11,7 @@ import { ownedFixture, removeFixtureDirectory } from '../testing/owned-fixture.m
 import { canvasLocalIdentity } from '../test/canvas-player-fixture.mjs';
 import { canvasDraftInputFiles, canvasDraftInputFixture } from '../test/fixtures/canvas-draft-input.mjs';
 import { captureCanvasDraftInputContract } from '../testing/canvas-contract.mjs';
-import { sharedBrowser } from './shared-browser.mjs';
+import { sharedBrowser, appsOrigin } from './shared-browser.mjs';
 
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const bytes = await fs.readFile(new URL('../test/fixtures/canvas-draft-input-native.json', import.meta.url));
@@ -65,8 +65,8 @@ test('draft text, cancel confirmation, retained edits and reopen reset match the
   cleanup.add(() => sim.close());
   const page = await browser.page(t);
   await signInContext(page.context(), sim, 'alex');
-  await page.goto(sim.url + '/_apps/canvas/invented');
-  const target = sim.url + '/_apps/api/canvas/invented';
+  await page.goto(appsOrigin(sim, sim.url) + '/_apps/canvas/invented');
+  const target = appsOrigin(sim, sim.url) + '/_apps/api/canvas/invented';
   const action = async (run) => {
     const rendered = page.getByTestId('canvas-stage').locator(':scope > *').first();
     const before = (await rendered.count()) ? await rendered.elementHandle() : null;

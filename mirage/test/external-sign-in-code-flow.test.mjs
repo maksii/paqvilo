@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { createHash, generateKeyPairSync, randomUUID, sign } from 'node:crypto';
 import { createSimulator } from '../server.mjs';
+import { adminServes } from '../lib/admin-origin.mjs';
 import { contactFieldsFromClaims, externalProviders, oidcOptions } from '../lib/external-login.mjs';
 import { startIdentityProvider } from '../lib/identity-provider.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
@@ -497,12 +498,16 @@ async function portal(t, settings) {
   });
   ownedFixture(t).add(() => app.close());
   const jar = new Map();
+  // The administration answers on its own origin, and a same-origin browser write to it carries that Origin.
   const request = async (target, { headers = {}, ...init } = {}) => {
-    const response = await fetch(new URL(target, app.url), {
+    const base = adminServes(new URL(target, app.url).pathname) ? app.adminOrigin : app.url;
+    const write = !['GET', 'HEAD'].includes(init.method ?? 'GET');
+    const response = await fetch(new URL(target, base), {
       redirect: 'manual',
       ...init,
       headers: {
         'sec-fetch-site': 'same-origin',
+        ...(write && base === app.adminOrigin ? { origin: base } : {}),
         ...(jar.size ? { cookie: [...jar].map(([name, value]) => `${name}=${value}`).join('; ') } : {}),
         ...headers,
       },

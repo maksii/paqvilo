@@ -1,3 +1,4 @@
+// @test-kind tooling: the SDK gate harness requires or skips the client tooling explicitly, and its child gate runs are bounded by the hang guard only.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -7,6 +8,8 @@ import path from 'node:path';
 import os from 'node:os';
 import { makeTemporaryDirectorySync } from '../testing/owned-fixture.mjs';
 
+// hang guard only: a blocked synchronous child cannot be ended by the test runner
+const CLI_HANG_GUARD_MS = 170_000;
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const preload = new URL('./support/sdk-tooling-unavailable.mjs', import.meta.url).href;
 
@@ -42,7 +45,7 @@ for (const [name, path, pattern, missing] of [
           env,
           encoding: 'utf8',
           windowsHide: true,
-          timeout: 30000,
+          timeout: CLI_HANG_GUARD_MS,
         },
       );
       assert.equal(result.error, undefined, 'the controlled SDK gate process must finish');
@@ -103,7 +106,7 @@ test('Python gate aborts its owned SDK child when the test signal is cancelled',
         env,
         encoding: 'utf8',
         windowsHide: true,
-        timeout: 150_000,
+        timeout: CLI_HANG_GUARD_MS,
       },
     );
     assert.equal(result.error, undefined, 'cancellation must not leave the gate process hanging');

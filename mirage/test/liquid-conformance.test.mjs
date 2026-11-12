@@ -1,3 +1,4 @@
+// @test-kind contract: the golden-liquid conformance tool follows its documented exit-code contract
 // golden-liquid conformance tool: case rendering, rule classification, stale rules and the
 // generated tables (synthetic suite; the pinned suite itself is not vendored).
 import test from 'node:test';
@@ -48,6 +49,17 @@ test('cases render with hash data and an expected error passes when one is raise
   assert.equal((await runCase(SUITE.tests[2])).output, '2|v|2');
   assert.equal(classify(SUITE.tests[3], RULES.rules).category, 'platform-unsupported');
   assert.equal(classify(SUITE.tests[5], RULES.rules), null);
+});
+
+test('a suite without a tests array is refused instead of reported as zero cases', async (t) => {
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'liquid-conformance-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  await fs.writeFile(path.join(dir, 'rules.json'), JSON.stringify(RULES));
+  const suite = path.join(dir, 'wrong.json');
+  await fs.writeFile(suite, JSON.stringify({}));
+  await assert.rejects(conformance({ suite, rules: path.join(dir, 'rules.json') }), {
+    message: `Suite ${suite} has no tests array`,
+  });
 });
 
 test('conformance classifies differing cases, reports unexplained ones as engine gaps and lists stale rules', async (t) => {

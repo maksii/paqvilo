@@ -158,7 +158,7 @@ function parseAgentResponse(response, bytes, image) {
   return result;
 }
 
-export async function listAgentSessions(stateDir) {
+export async function listAgentSessions(stateDir, timeout = 35_000) {
   const dir = path.join(stateDir, 'agents');
   let entries;
   try {
@@ -193,7 +193,7 @@ export async function listAgentSessions(stateDir) {
           discoveryFile: file,
         };
         try {
-          const status = await agentRequest(entry, '/v1/session', { timeout: 2000 });
+          const status = await agentRequest(entry, '/v1/session', { timeout });
           item.reachable = status.id === entry.id;
           if (!item.reachable) item.error = 'Session identity mismatch';
         } catch (err) {
@@ -219,7 +219,7 @@ export default async function agent(_cfg, args, positionals = []) {
   const timeout = integer(args.timeout, '--timeout', 35_000, 2000, 120_000);
   if (action === 'sessions') {
     const stateDir = path.join(args.config ? path.dirname(path.resolve(args.config)) : process.cwd(), '.paqvilo');
-    console.log(JSON.stringify(await listAgentSessions(stateDir), null, 2));
+    console.log(JSON.stringify(await listAgentSessions(stateDir, timeout), null, 2));
     return 0;
   }
   assertAgentArguments(action, args, pageActions);
@@ -280,7 +280,7 @@ function assertAgentArguments(action, args, pageActions) {
 function validateAgentAction(action, args) {
   if (!AGENT_ACTIONS.includes(action))
     throw argument(`Unknown agent action "${action}". Expected ${AGENT_ACTIONS.join(', ')}`);
-  const allowed = new Set(['config', 'json', 'help', ...(action === 'sessions' ? [] : ['session', 'timeout'])]);
+  const allowed = new Set(['config', 'json', 'help', 'timeout', ...(action === 'sessions' ? [] : ['session'])]);
   const pageActions = new Set(['state', 'snapshot', 'screenshot', 'viewport', 'navigate', 'reload']);
   if (pageActions.has(action)) allowed.add('page-id');
   for (const option of {
@@ -322,17 +322,23 @@ function agentActionRequest(action, args, timeout) {
           ?.split(',')
           .map((s) => s.trim())
           .filter(Boolean),
+        timeoutMs: timeout - 1000,
       };
       break;
     case 'screenshot':
       route = `${page}/screenshot`;
-      body = { fullPage: Boolean(args['full-page']), includePanel: Boolean(args['include-panel']) };
+      body = {
+        fullPage: Boolean(args['full-page']),
+        includePanel: Boolean(args['include-panel']),
+        timeoutMs: timeout - 1000,
+      };
       break;
     case 'viewport':
       route = `${page}/viewport`;
       body = {
         width: integer(args.width, '--width', 1440, 320, 4096),
         height: integer(args.height, '--height', 900, 240, 4096),
+        timeoutMs: timeout - 1000,
       };
       break;
     case 'navigate':

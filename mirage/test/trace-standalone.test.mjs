@@ -85,6 +85,12 @@ test('a refused administration write names its code, message and status on the s
   assert.deepEqual([finding?.traceId, finding?.spanId], [root.traceId, root.spanId]);
 });
 
+// @test-kind security: a staff-session write without the simulator CSRF token is refused on the wire with its own code
+test('a token-less staff-session write answers 403 INVALID_REQUEST on the wire', async () => {
+  const { response, answer } = await simApi('POST', '/dataverse/session', { body: { userId: CLIENT }, csrf: false });
+  assert.deepEqual([response.status, answer.error.code], [403, 'INVALID_REQUEST']);
+});
+
 test('administration reads, the trace routes and the event channel open no root', async () => {
   const before = (await runtime()).trace.status().latestSequence;
   for (const [method, suffix, body] of [

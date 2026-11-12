@@ -4,6 +4,7 @@
 // The tedious checks run only when TDS_TEDIOUS_PATH names the tedious entry file.
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import https from 'node:https';
 import { createSelfSignedCertificate } from '../lib/dataverse-tls.mjs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { existsSync } from 'node:fs';
@@ -46,6 +47,34 @@ const widgetMapping = () => ({
 // PRELOGIN, then LOGIN7 with the token, trusting only this suite's loopback certificate: the client and the login reply.
 const login = (port, token) => tdsLogin(port, token, testCertificate.cert);
 const query = tdsQuery;
+const FEDAUTHINFO = 0xee;
+const FEDAUTHINFO_NAMES = { 0x01: 'stsUrl', 0x02: 'spn' };
+
+// POST of a form to the HTTPS origin, trusting only this suite's loopback certificate.
+function httpsPost(url, form) {
+  return new Promise((resolve, reject) => {
+    const headers = { 'content-type': 'application/x-www-form-urlencoded' };
+    const request = https.request(url, { method: 'POST', ca: testCertificate.cert, headers }, (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))));
+    });
+    request.on('error', reject);
+    request.end(new URLSearchParams(form).toString());
+  });
+}
+
+// FEDAUTHINFO (MS-TDS 2.2.7.10): a token, then a count and (id, length, offset) items; offsets count from the count.
+function fedAuthInfoItems(reply) {
+  const body = reply.subarray(5);
+  const items = {};
+  for (let i = 0; i < body.readUInt32LE(0); i += 1) {
+    const at = 4 + i * 9;
+    const offset = body.readUInt32LE(at + 5);
+    items[FEDAUTHINFO_NAMES[body[at]]] = body.subarray(offset, offset + body.readUInt32LE(at + 1)).toString('utf16le');
+  }
+  return items;
+}
 
 describe('TDS endpoint wired into the Dataverse API', () => {
   let api;
@@ -149,6 +178,60 @@ describe('TDS endpoint wired into the Dataverse API', () => {
   // @test-kind unproven+security: local model of refusing an invalid token at login
   it('an invalid token is refused at login', async () => {
     const { client, reply } = await login(api.tdsPort, 'not-a-token');
+    try {
+      assert.equal(reply[0], ERROR);
+      assert.equal(reply.readUInt32LE(3), 18456, 'login failure number');
+    } finally {
+      client.close();
+    }
+  });
+
+  // The HTTPS origin's token endpoint: the audience MSAL asks for when the endpoint is reached over TLS.
+  async function tlsToken(form) {
+    const body = await httpsPost(`${api.tlsOrigin}/${tenantId}/oauth2/v2.0/token`, {
+      scope: `${api.tlsOrigin}/.default`,
+      ...form,
+    });
+    assert.ok(body.access_token, `HTTPS token request failed: ${JSON.stringify(body)}`);
+    return body.access_token;
+  }
+
+  // @test-kind security: with TLS on, the SQL login accepts a token for the HTTPS origin, which the documented MSAL setup asks for
+  it('with TLS on, a token for the HTTPS origin logs in', async () => {
+    const httpsAppToken = await tlsToken({
+      grant_type: 'client_credentials',
+      client_id: APP_ID,
+      client_secret: process.env[SECRET_VAR],
+    });
+    const { client, reply } = await login(api.tdsPort, httpsAppToken);
+    try {
+      assert.equal(reply[0], 0xe3, 'login starts with ENVCHANGE');
+    } finally {
+      client.close();
+    }
+  });
+
+  // @test-kind security: with TLS on, FEDAUTHINFO names the HTTPS origin, so the STS and the SPN are the same origin
+  it('with TLS on, FEDAUTHINFO names the HTTPS origin as the STS and the SPN', async () => {
+    const { client, reply } = await login(api.tdsPort, '');
+    try {
+      assert.equal(reply[0], FEDAUTHINFO, 'the login asks for a token');
+      const items = fedAuthInfoItems(reply);
+      assert.equal(items.stsUrl, `${api.tlsOrigin}/${tenantId}`, 'the STS is the HTTPS origin');
+      assert.equal(items.spn, api.tlsOrigin, 'the SPN is the HTTPS origin');
+    } finally {
+      client.close();
+    }
+  });
+
+  // @test-kind security: with TLS on, a token whose audience is another origin is refused, even with this issuer
+  it('with TLS on, a token for a foreign audience is refused at login', async () => {
+    const foreign = api.issueAccessToken({
+      origin: api.tlsOrigin,
+      appId: APP_ID,
+      audience: 'https://foreign.invalid',
+    });
+    const { client, reply } = await login(api.tdsPort, foreign);
     try {
       assert.equal(reply[0], ERROR);
       assert.equal(reply.readUInt32LE(3), 18456, 'login failure number');

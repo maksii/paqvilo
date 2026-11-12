@@ -191,7 +191,8 @@ function pendingExternalHtml(provider, external) {
 /**
  * Create the external sign-in flow of one runtime.
  * - portal(), origin(): the current portal model and the runtime's origin.
- * - csrf: the anti-forgery token /_layout/tokenhtml hands out.
+ * - csrf: the anti-forgery token /_layout/tokenhtml hands out; adminToken(): the admin console token or null, also
+ *   accepted as a form's anti-forgery field.
  * - sessions: lib/auth-session.mjs createAuthSessions().
  * - store: the DataStore; personas(): active local personas; webRoles(): exported web roles.
  * - identity(): the request's effective identity; audit/trace: the runtime's audit log.
@@ -204,6 +205,7 @@ export function createExternalSignIn({
   portal,
   origin,
   csrf,
+  adminToken = () => null,
   sessions,
   store,
   personas,
@@ -282,6 +284,8 @@ export function createExternalSignIn({
     if (!providerCache.has(current)) providerCache.set(current, externalProviders(current));
     return providerCache.get(current);
   };
+  // The page's anti-forgery token, or the admin token when the host configured one (an empty or null admin token matches nothing).
+  const antiForgeryAccepted = (token) => token === csrf || (Boolean(adminToken()) && token === adminToken());
   const redirectUri = (provider) => new URL(provider.callbackPath, origin()).href;
   const settings = () => authenticationSettings(portal());
 
@@ -650,7 +654,15 @@ export function createExternalSignIn({
   async function challenge(
     res,
     provider,
-    { returnUrl, invitationCode = null, loginHint = null, language = null, prompt = null, parameters = {} },
+    {
+      returnUrl,
+      invitationCode = null,
+      loginHint = null,
+      language = null,
+      prompt = null,
+      parameters = {},
+      cookies = [],
+    },
   ) {
     const meta = await metadata(provider);
     const nonce = `${now()}.${randomBytes(32).toString('base64url')}`;
@@ -691,7 +703,19 @@ export function createExternalSignIn({
     const maxAge = Math.max(60, Math.round(provider.nonceLifetimeMs / 1000));
     return redirect(res, `${meta.config.authorization_endpoint}?${params}`, 'external-login', [
       `${nonceCookieName(nonce)}=N; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`,
+      ...cookies,
     ]);
+  }
+  // The challenge of a provider the administration console names with a sign-in ticket: ExternalLogin's redirect, with the
+  // caller's cookies (the session sign-out and the ticket's binding clear) on the same answer.
+  async function begin(res, { provider, loginHint, returnUrl, cookies = [] }) {
+    const resolved = resolveProvider(providerList(), provider);
+    if (!resolved)
+      throw new SignInProblem(
+        `The provider "${String(provider)}" is not an identity provider of this site.`,
+        'EXTERNAL_LOGIN_PROVIDER_UNKNOWN',
+      );
+    return challenge(res, resolved, { returnUrl, loginHint, language: languageCode(null), cookies });
   }
   async function externalLogin(req, res, url, { language }) {
     const bytes = await readBody(req);
@@ -703,7 +727,7 @@ export function createExternalSignIn({
         url.searchParams.get('InvitationCode') ??
         url.searchParams.get('invitationCode'),
     );
-    if (form.__RequestVerificationToken !== csrf)
+    if (!antiForgeryAccepted(form.__RequestVerificationToken))
       return fail(
         req,
         res,
@@ -1423,7 +1447,7 @@ export function createExternalSignIn({
       });
     const form = formOf(await readBody(req));
     const code = text(form.InvitationCode) ?? '';
-    if (form.__RequestVerificationToken !== csrf)
+    if (!antiForgeryAccepted(form.__RequestVerificationToken))
       return redeemPage(req, res, url, {
         status: 400,
         code,
@@ -1714,6 +1738,7 @@ export function createExternalSignIn({
     start,
     close,
     route,
+    begin,
     acceptsOrigin,
     status,
     identities,

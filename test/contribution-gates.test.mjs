@@ -17,6 +17,8 @@ import {
 } from '../.github/scripts/change-scope.mjs';
 import { tempDirSync } from './fixture.mjs';
 
+const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
+
 const classifyChanges = (files) => {
   const { runtime, package: packaged, dependencies } = completeScope(files);
   return { runtime, package: packaged, dependencies };
@@ -43,7 +45,7 @@ test('secondary edits skip runtime jobs but packaged documentation retains relea
   });
   for (const file of [
     'mirage/README.md',
-    'mirage/docs/operations.md',
+    'mirage/docs/object-parity.md',
     'examples/company-operations/plugins/README.md',
     'AGENTS.md',
     'LICENSE',
@@ -76,6 +78,10 @@ test('secondary edits skip runtime jobs but packaged documentation retains relea
     assert.equal(classifyChanges([file]).runtime, true, file);
     assert.deepEqual(suitesForScope(completeScope([file])), suites, file);
   }
+  // A document that tests read selects their suite, and it stays packaged documentation.
+  const operations = classifyChanges(['mirage/docs/operations.md']);
+  assert.equal(operations.runtime, true);
+  assert.equal(operations.package, true);
 });
 
 test('description, title, base and source events validate the same complete PR diff with a stable required gate', (t) => {
@@ -529,6 +535,27 @@ test('staged test-kind checks run without installed dependencies', (t) => {
   assertCleaned();
 });
 
+test('staged test-kind checks ignore unstaged legacy entries and checker edits', (t) => {
+  const { root, git, write, run, assertCleaned } = hookFixture(t, {
+    classifier: 'export const preCommitScripts = () => [];',
+  });
+  const file = 'test/invented.test.mjs';
+  write(file, "import test from 'node:test';\ntest('invented', () => {});\n");
+  git('add', file);
+  write('scripts/test-kinds-legacy.json', JSON.stringify([file]));
+  const legacyEdit = run();
+  assert.equal(legacyEdit.status, 1, legacyEdit.stdout + legacyEdit.stderr);
+  assert.match(legacyEdit.stderr, /test has no @test-kind/);
+  assertCleaned();
+
+  fs.rmSync(path.join(root, 'scripts', 'test-kinds-legacy.json'));
+  write('scripts/check-test-tags.mjs', 'process.exit(0);\n');
+  const checkerEdit = run();
+  assert.equal(checkerEdit.status, 1, checkerEdit.stdout + checkerEdit.stderr);
+  assert.match(checkerEdit.stderr, /test has no @test-kind/);
+  assertCleaned();
+});
+
 test('no-check hook rejects an index changed during staged gate selection', (t) => {
   const classifier = `import { spawnSync } from 'node:child_process';
     export function preCommitScripts() {
@@ -658,7 +685,21 @@ test('workflow matrices use selected suites on the pinned runtime and shared loc
   assert.equal(completeScope([], { full: true }).site, true);
   assert.equal(completeScope(['lense/panel-ui.mjs']).site, false);
   assert.equal(ci.on.workflow_call.inputs.full.default, true);
-  assert.equal(ci.on.workflow_dispatch.inputs.full.default, true);
+  assert.equal(ci.on.workflow_dispatch?.inputs?.full, undefined);
+  assert.equal(githubScope({ inputs: { full: 'false' } }, 'workflow_dispatch', { GITHUB_SHA: 'abc' }).full, true);
+});
+
+test('CI dispatch inputs are exactly the inputs the change scope reads', () => {
+  const ci = YAML.parse(
+    fs.readFileSync(fileURLToPath(new URL('../.github/workflows/ci.yml', import.meta.url)), 'utf8'),
+  );
+  const scope = fs.readFileSync(fileURLToPath(new URL('../.github/scripts/change-scope.mjs', import.meta.url)), 'utf8');
+  const declared = Object.keys(ci.on.workflow_dispatch?.inputs ?? {});
+  const read = [...new Set([...scope.matchAll(/\bevent\.inputs\??\.(\w+)/g)].map((match) => match[1]))];
+  assert.deepEqual(
+    declared.toSorted((a, b) => a.localeCompare(b)),
+    read.toSorted((a, b) => a.localeCompare(b)),
+  );
 });
 
 test('verification receipts require an identical tree, toolchain, browser, fixtures and selected scope', async () => {
@@ -785,6 +826,38 @@ test('the pre-push hook refuses a different pushed commit and allows branch dele
   assert.deepEqual(JSON.parse(fs.readFileSync(resultFile, 'utf8')), ['run', 'ci:verify', '--']);
 });
 
+test('the pre-push hook qualifies an annotated tag by the commit it peels to', (t) => {
+  const { root, env, git, write } = hookFixture(t, { readyDependencies: true });
+  const resultFile = path.join(root, 'push.json');
+  write(
+    'fake-npm.mjs',
+    "import fs from 'node:fs'; fs.writeFileSync(process.env.HOOK_RESULT, JSON.stringify(process.argv.slice(2)));",
+  );
+  git('add', 'fake-npm.mjs');
+  git('commit', '-qm', 'test: prepare fake push command');
+  git('tag', '-a', 'v-current', '-m', 'current release');
+  git('tag', '-a', 'v-previous', '-m', 'previous release', 'HEAD~1');
+  const push = (ref, oid) =>
+    spawnSync(process.execPath, [path.join(root, 'scripts/git-hooks.mjs'), 'pre-push'], {
+      cwd: root,
+      input: `${ref} ${oid} ${ref} ${'0'.repeat(40)}\n`,
+      env: { ...env, npm_execpath: path.join(root, 'fake-npm.mjs'), HOOK_RESULT: resultFile },
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+  const current = push('refs/tags/v-current', git('rev-parse', 'refs/tags/v-current'));
+  assert.equal(current.status, 0, current.stderr);
+  assert.deepEqual(JSON.parse(fs.readFileSync(resultFile, 'utf8')), ['run', 'ci:verify', '--']);
+  fs.rmSync(resultFile);
+  const previous = push('refs/tags/v-previous', git('rev-parse', 'refs/tags/v-previous'));
+  assert.equal(previous.status, 1);
+  assert.match(previous.stderr, /checked-out commit/);
+  assert.equal(fs.existsSync(resultFile), false);
+  const missing = push('refs/tags/v-missing', 'c'.repeat(40));
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /does not peel to a commit/);
+});
+
 test('CI command rejects conflicting, incomplete and unknown options before running validation', () => {
   const script = fileURLToPath(new URL('../scripts/ci.mjs', import.meta.url));
   for (const args of [
@@ -797,7 +870,7 @@ test('CI command rejects conflicting, incomplete and unknown options before runn
     const result = spawnSync(process.execPath, [script, ...args], {
       encoding: 'utf8',
       windowsHide: true,
-      timeout: 30_000,
+      timeout: CLI_HANG_GUARD_MS,
     });
     assert.equal(result.status, 1, args.join(' '));
     assert.doesNotMatch(result.stdout, /CI selection|completed without errors/);
@@ -1063,4 +1136,187 @@ test('package export targets replace every wildcard using the literal imported s
   write('lense/generated/$&/copy/$&.mjs', 'export const value = 1;');
   write('examples/project/test/generated.test.mjs', "import { value } from 'paqvilo/generated/$&';");
   assert.deepEqual(suitesForScope(completeScope(['lense/generated/$&/copy/$&.mjs'], { root })), ['lense', 'examples']);
+});
+
+test('workflow tools pin every supported platform and an unsupported platform names that set', async () => {
+  const { assets, workflowTools } = await import('../scripts/check-workflows.mjs');
+  const expectedNames = {
+    actionlint: {
+      'win32-x64': 'actionlint_1.7.12_windows_amd64.zip',
+      'linux-x64': 'actionlint_1.7.12_linux_amd64.tar.gz',
+      'linux-arm64': 'actionlint_1.7.12_linux_arm64.tar.gz',
+      'darwin-x64': 'actionlint_1.7.12_darwin_amd64.tar.gz',
+      'darwin-arm64': 'actionlint_1.7.12_darwin_arm64.tar.gz',
+    },
+    shellcheck: {
+      'win32-x64': 'shellcheck-v0.11.0.zip',
+      'linux-x64': 'shellcheck-v0.11.0.linux.x86_64.tar.gz',
+      'linux-arm64': 'shellcheck-v0.11.0.linux.aarch64.tar.gz',
+      'darwin-x64': 'shellcheck-v0.11.0.darwin.x86_64.tar.gz',
+      'darwin-arm64': 'shellcheck-v0.11.0.darwin.aarch64.tar.gz',
+    },
+  };
+  const platforms = Object.keys(expectedNames.actionlint);
+  assert.deepEqual(Object.keys(assets).sort(), [...platforms].sort());
+  const versions = { actionlint: '1.7.12', shellcheck: '0.11.0' };
+  for (const platform of platforms) {
+    const [os, arch] = platform.split('-');
+    assert.equal(workflowTools(os, arch), assets[platform], platform);
+    for (const tool of ['actionlint', 'shellcheck']) {
+      const [version, , digest, , archiveName] = assets[platform][tool];
+      assert.equal(version, versions[tool], `${tool} ${platform} version`);
+      assert.match(digest, /^[a-f0-9]{64}$/, `${tool} ${platform} digest`);
+      assert.equal(archiveName, expectedNames[tool][platform], `${tool} ${platform} asset`);
+    }
+  }
+  assert.throws(
+    () => workflowTools('freebsd', 'x64'),
+    (error) => platforms.every((platform) => error.message.includes(platform)) && !/container/.test(error.message),
+  );
+});
+
+test('every third-party workflow action is allowed by the repository admin policy', async () => {
+  const { selectedActionsPolicy } = await import('../scripts/github-admin.mjs');
+  const allowed = selectedActionsPolicy?.patterns_allowed;
+  assert.ok(Array.isArray(allowed), 'github-admin exports the selected-actions policy');
+  const matches = (pattern, reference) =>
+    pattern.endsWith('*') ? reference.startsWith(pattern.slice(0, -1)) : reference === pattern;
+  const uses = [];
+  const collectUses = (node) => {
+    if (Array.isArray(node)) node.forEach(collectUses);
+    else if (node && typeof node === 'object')
+      for (const [key, value] of Object.entries(node)) {
+        if (key === 'uses' && typeof value === 'string') uses.push(value);
+        else collectUses(value);
+      }
+  };
+  const githubRoot = fileURLToPath(new URL('../.github', import.meta.url));
+  const definitions = [
+    ...fs.readdirSync(path.join(githubRoot, 'workflows')).map((name) => path.join(githubRoot, 'workflows', name)),
+    ...(fs.existsSync(path.join(githubRoot, 'actions'))
+      ? fs
+          .readdirSync(path.join(githubRoot, 'actions'), { recursive: true })
+          .map((name) => path.join(githubRoot, 'actions', name))
+      : []),
+  ].filter((file) => /\.ya?ml$/.test(file));
+  for (const file of definitions) collectUses(YAML.parse(fs.readFileSync(file, 'utf8')));
+  const thirdParty = uses.filter((reference) => !/^(\.\/|actions\/|github\/)/.test(reference));
+  assert.ok(thirdParty.includes('SonarSource/sonarqube-scan-action@4d1dc0c91ee400dcf8a6dddf2f705ac36542e304'));
+  assert.deepEqual(
+    thirdParty.filter((reference) => !allowed.some((pattern) => matches(pattern, reference))),
+    [],
+  );
+});
+
+test('npm CLI resolution finds the bundled npm in Windows and POSIX Node layouts', async (t) => {
+  const ci = await import('../scripts/ci.mjs');
+  const audit = await import('../scripts/audit-dependencies.mjs');
+  const root = tempDirSync('paqvilo-npm-cli-');
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const windowsNode = path.join(root, 'windows', 'node.exe');
+  const windowsCli = path.join(root, 'windows', 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  const posixNode = path.join(root, 'posix', 'bin', 'node');
+  const posixCli = path.join(root, 'posix', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  for (const cli of [windowsCli, posixCli]) {
+    fs.mkdirSync(path.dirname(cli), { recursive: true });
+    fs.writeFileSync(cli, '');
+  }
+  for (const npmCliPath of [ci.npmCliPath, audit.npmCliPath]) {
+    assert.equal(npmCliPath(windowsNode, {}), windowsCli);
+    assert.equal(npmCliPath(posixNode, {}), posixCli);
+    assert.equal(npmCliPath(posixNode, { npm_execpath: '/custom/npm-cli.js' }), '/custom/npm-cli.js');
+  }
+});
+
+test('package smoke work directory is removed after success and failure without masking the outcome', async (t) => {
+  const { withWorkDirectory } = await import('../scripts/package-smoke.mjs');
+  const parent = tempDirSync('paqvilo-smoke-parent-');
+  t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+  const removed = [];
+  const reports = [];
+  const remove = (directory) => removed.push(directory);
+  const report = (message) => reports.push(message);
+  const fail = async () => {
+    throw new Error('smoke failed');
+  };
+  assert.equal(await withWorkDirectory(parent, async () => 'ok', { remove, report }), 'ok');
+  assert.equal(removed.length, 1, 'success removes the work directory');
+  await assert.rejects(withWorkDirectory(parent, fail, { remove, report }), /smoke failed/);
+  assert.equal(removed.length, 2, 'failure removes the work directory');
+  for (const directory of removed) assert.equal(path.dirname(directory), parent);
+  const failingRemove = () => {
+    throw new Error('directory is locked');
+  };
+  await assert.rejects(withWorkDirectory(parent, fail, { remove: failingRemove, report }), /smoke failed/);
+  assert.match(reports.at(-1), /directory is locked/);
+  await withWorkDirectory(parent, async () => 'kept', { keep: true, remove, report });
+  assert.equal(removed.length, 2, 'keep leaves the work directory in place');
+  assert.match(reports.at(-1), /Kept smoke work directory/);
+});
+
+test('the storage volume lane verifies every functional assertion without wall-clock limits', () => {
+  const lane = fileURLToPath(new URL('../mirage/test-volume/state-storage.mjs', import.meta.url));
+  const ci = fs.readFileSync(fileURLToPath(new URL('../scripts/ci.mjs', import.meta.url)), 'utf8');
+  assert.ok(ci.includes("'mirage/test-volume/state-storage.mjs'"), 'the CI storage lane runs this file');
+  const calls = [];
+  const visit = (node) => {
+    if (
+      node.type === 'CallExpression' &&
+      node.callee.type === 'Identifier' &&
+      node.callee.name === 'verifyStateStorage'
+    )
+      calls.push(node);
+    for (const value of Object.values(node)) {
+      if (Array.isArray(value)) value.filter((item) => typeof item?.type === 'string').forEach(visit);
+      else if (typeof value?.type === 'string') visit(value);
+    }
+  };
+  visit(parse(fs.readFileSync(lane, 'utf8'), { ecmaVersion: 'latest', sourceType: 'module' }));
+  assert.equal(calls.length, 1);
+  const [options] = calls[0].arguments;
+  assert.equal(options?.type, 'ObjectExpression', 'the lane passes an options object');
+  const timeLimits = options.properties.find((property) => property.key?.name === 'timeLimits');
+  assert.equal(timeLimits?.value.value, false);
+});
+
+test('package cache primer removes its preparation directory after success, failure and with keep', (t) => {
+  const script = fileURLToPath(new URL('../scripts/prime-package-cache.mjs', import.meta.url));
+  const dir = tempDirSync('paqvilo-prime-cache-');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, 'npm-shrinkwrap.json'), JSON.stringify({ packages: {} }));
+  fs.mkdirSync(path.join(dir, 'examples', 'project'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'examples', 'project', 'package.json'), '{}');
+  fs.writeFileSync(
+    path.join(dir, 'fake-npm.mjs'),
+    [
+      "import fs from 'node:fs';",
+      'const [command] = process.argv.slice(2);',
+      "if (command === 'pack') {",
+      '  if (process.env.FAKE_NPM_FAIL_PACK) process.exit(1);',
+      "  console.log(JSON.stringify([{ filename: 'paqvilo-0.0.0.tgz' }]));",
+      "} else if (command === 'install') fs.writeFileSync('package-lock.json', JSON.stringify({ packages: {} }));",
+      'process.exit(0);',
+      '',
+    ].join('\n'),
+  );
+  const primer = (env) =>
+    spawnSync(process.execPath, [script], {
+      cwd: dir,
+      env: { ...process.env, PAQVILO_KEEP_WORK: '', npm_execpath: path.join(dir, 'fake-npm.mjs'), ...env },
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+  const leftovers = () =>
+    fs.readdirSync(path.join(dir, '.paqvilo', 'distribution')).filter((name) => name.startsWith('cache-'));
+  const success = primer({});
+  assert.equal(success.status, 0, success.stderr);
+  assert.deepEqual(leftovers(), []);
+  const failure = primer({ FAKE_NPM_FAIL_PACK: '1' });
+  assert.equal(failure.status, 1);
+  assert.match(failure.stderr, /Cannot prepare consumer cache/);
+  assert.deepEqual(leftovers(), []);
+  const kept = primer({ FAKE_NPM_FAIL_PACK: '1', PAQVILO_KEEP_WORK: '1' });
+  assert.equal(kept.status, 1);
+  assert.equal(leftovers().length, 1);
+  assert.ok(kept.stderr.includes(path.join(dir, '.paqvilo', 'distribution', leftovers()[0])));
 });

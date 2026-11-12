@@ -4,6 +4,13 @@ import { permissionOrderGraphFingerprint } from './permission-query.mjs';
 import { parseODataExpression } from './odata-query.mjs';
 import { isExactNumeric } from './exact-numeric.mjs';
 
+// The column a grant compares when it names none. The row evaluator (data.mjs) and the native OData lane share it.
+export function permissionGrantColumn(grant, idColumn) {
+  if (grant.field != null) return grant.field;
+  if (grant.scope === 'self') return idColumn;
+  return grant.scope === 'account' ? 'parentcustomerid' : 'contactid';
+}
+
 const key = (value) =>
   String(value?.id ?? value ?? '')
     .replace(/[{}]/g, '')
@@ -455,7 +462,7 @@ export function authoredScalarODataFetch(table, params, { resolveAttribute } = {
       fail('This terminal OData scope/direction requires a separately qualified conversion.');
     const value = grant.scope === 'account' ? identity.accountId : (identity.contactId ?? identity.id);
     if (!value) fail('OData permission terminal has no applicable identity GUID.');
-    const field = grant.field ?? primary(grant.entity);
+    const field = permissionGrantColumn(grant, primary(grant.entity));
     const terminals = [
       ...(anyallalias ? [condition(primary(grant.entity), 'not-null')] : []),
       condition(field, 'eq', braced(value)),

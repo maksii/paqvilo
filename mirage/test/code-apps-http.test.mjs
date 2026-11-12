@@ -602,3 +602,22 @@ test('connector exact keys take precedence and ambiguous aliases never call a pr
   assert.equal((await ambiguous.json()).error.code, 'ConnectionReferenceAmbiguous');
   assert.deepEqual(seen, ['second']);
 });
+
+// @test-kind contract: the code app token route compares the simulator CSRF header exactly and refuses each variant as a wrong token.
+test('the code app CSRF header is compared exactly on the token route', async (t) => {
+  const { request } = await fixture(t);
+  const send = async (headers) => {
+    const response = await request('/_apps/code/invented/token', {
+      method: 'POST',
+      headers,
+      body: { resource: DATAVERSE },
+    });
+    return { status: response.status, body: await response.text() };
+  };
+  assert.equal((await send({ 'x-sim-csrf': CSRF })).status, 200);
+  const wrong = await send({ 'x-sim-csrf': 'wrong-csrf' });
+  assert.equal(wrong.status, 403);
+  for (const token of [`${CSRF}x`, CSRF.slice(0, -1), `${CSRF.slice(0, -1)}g`, '']) {
+    assert.deepEqual(await send({ 'x-sim-csrf': token }), wrong, token);
+  }
+});

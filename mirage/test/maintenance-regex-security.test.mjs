@@ -135,9 +135,10 @@ test('query token redaction skips long malformed candidates without changing pro
   const prefix = '?'.repeat(50000);
   const text = prefix + '&base64SecureConfiguration=invented&ordinary=keep';
   assert.equal(redactSecureConfigurationTokens(text), prefix + '&base64SecureConfiguration={token}&ordinary=keep');
+  // A secure-configuration value in the first query parameter is redacted too.
   assert.equal(
     redactSecureConfigurationTokens('?base64SecureConfiguration=invented'),
-    '?base64SecureConfiguration=invented',
+    '?base64SecureConfiguration={token}',
   );
 });
 

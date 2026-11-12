@@ -40,6 +40,23 @@ test('parsed execution modes, registration changes and image changes compare wit
   assert.equal(JSON.stringify(report).includes('private'), false);
   assert.deepEqual([original, next], untouched);
 });
+test('an image message property name change is a changed image of its step', () => {
+  const before = { steps: [step()] };
+  before.steps[0].images[0].messagePropertyName = 'Target';
+  const after = structuredClone(before);
+  after.steps[0].images[0].messagePropertyName = 'SubordinateId';
+  const report = comparePluginRegistrations(before, after);
+  assert.equal(report.complete, true);
+  assert.deepEqual(
+    report.changed.map((change) => change.kind),
+    ['steps'],
+  );
+  assert.deepEqual(
+    report.changed[0].fields.map((change) => change.field),
+    ['images'],
+  );
+  assert.deepEqual(report.unchanged, { assemblies: 0, types: 0, steps: 0 });
+});
 test('GUID case/braces and set order are neutral while assembly/type differences and added/removed IDs are explicit', () => {
   const before = {
     steps: [step()],

@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { createSimulator } from '../server.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
+// @test-kind security: every test in this file asserts staff, record and source safety boundaries of the model-driven shell
 const guid = (number) => `${String(number).padStart(8, '0')}-1111-4111-8111-111111111111`;
 const A = guid(1),
   B = guid(2),
@@ -429,4 +430,15 @@ test('API, model app and contact portal share records while preserving each secu
       source,
       'Exported source bytes remain immutable.',
     );
+});
+
+test('a malformed percent-escape in a record id answers the invalid record id error on every method', async (t) => {
+  const { request, json, select } = await fixture(t);
+  const staff = (await json(await request('/_sim/api/dataverse/session'))).users;
+  const one = await select(staff.find((user) => user.name === 'Staff A').id);
+  for (const method of ['GET', 'PATCH', 'DELETE']) {
+    const body = await json(await request('/_apps/api/tables/new_business/%E0%A4%A', { method, cookie: one }), 400);
+    assert.equal(body.error.code, 'ModelDrivenRequestInvalid', method);
+    assert.equal(body.error.message, 'Invalid record ID.', method);
+  }
 });

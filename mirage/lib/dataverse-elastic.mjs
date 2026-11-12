@@ -235,41 +235,39 @@ function installCosmosQuery(api) {
       // Column security as on every read: a masked column is never a WHERE or ORDER BY operand (0x80041155), and the documents
       // carry what the caller receives (hidden columns null, masked columns masked), so a projection or DISTINCT sees no clear value.
       const view = { unmask: false, single: false };
-      if (
-        execute.operands.some(
-          (path) =>
-            path[1] === 'props' &&
-            api.fieldSecurity?.maskedFor?.(ctx.user, mapping.logicalName, String(path[2] ?? ''), view),
-        )
-      )
-        throw api.fieldSecurity.maskedOperand();
+      const refusal = execute.operands
+        .filter((path) => path[1] === 'props')
+        .map((path) => api.records.operandRefusal(ctx, mapping.logicalName, String(path[2] ?? '')))
+        .find(Boolean);
+      if (refusal) throw refusal;
       const readFilter = api.principals.readFilter({ user: ctx.user, entity: mapping.logicalName, mapping });
-      const rows = api.store
+      const visible = api.store
         .tableRows(mapping.logicalName)
         .filter(
           (row) =>
             (args.PartitionId == null || samePartition(row.partitionid, args.PartitionId)) &&
             (!readFilter || readFilter(row)),
-        )
-        .map((row) => {
-          const props = { ...(api.fieldSecurity?.mask?.(ctx.user, mapping.logicalName, row, { view }) ?? row) };
-          for (const [name, value] of Object.entries(props)) {
-            if (typeof value !== 'string' || !/^\s*[[{]/.test(value)) continue;
-            const definition = api.store.fieldDefinition(mapping.logicalName, name, api.metadataFields);
-            const format =
-              definition?.columnMetadata?.formatName ??
-              definition?.columnMetadata?.format ??
-              definition?.formatName ??
-              definition?.format;
-            if (String(format?.Value ?? format).toLowerCase() !== 'json') continue;
-            try {
-              props[name] = JSON.parse(value);
-            } catch {
-              /* An invalid legacy JSON value stays a string. */
-            }
+        );
+      const masked = api.fieldSecurity?.maskAll?.(ctx.user, mapping.logicalName, visible, { view }) ?? visible;
+      const rows = visible.map((row, index) => {
+        const props = { ...masked[index] };
+        for (const [name, value] of Object.entries(props)) {
+          if (typeof value !== 'string' || !/^\s*[[{]/.test(value)) continue;
+          const definition = api.store.fieldDefinition(mapping.logicalName, name, api.metadataFields);
+          const format =
+            definition?.columnMetadata?.formatName ??
+            definition?.columnMetadata?.format ??
+            definition?.formatName ??
+            definition?.format;
+          if (String(format?.Value ?? format).toLowerCase() !== 'json') continue;
+          try {
+            props[name] = JSON.parse(value);
+          } catch {
+            /* An invalid legacy JSON value stays a string. */
           }
-          return { id: row[mapping.idColumn], ttl: row.ttlinseconds, props };
-        });
+        }
+        return { id: row[mapping.idColumn], ttl: row.ttlinseconds, props };
+      });
       const results = execute(rows);
       const size = args.PageSize == null ? 500 : Number(args.PageSize);
       if (!Number.isSafeInteger(size) || size < 1 || size > 5000)
@@ -294,7 +292,13 @@ function installCosmosQuery(api) {
         } catch {
           throw refuse('Invalid Cosmos SQL paging cookie.');
         }
-        if (cookie.scope !== scope || !Number.isSafeInteger(cookie.offset) || cookie.offset < 0)
+        if (
+          !cookie ||
+          typeof cookie !== 'object' ||
+          cookie.scope !== scope ||
+          !Number.isSafeInteger(cookie.offset) ||
+          cookie.offset < 0
+        )
           throw refuse('Invalid Cosmos SQL paging cookie.');
         offset = cookie.offset;
       }

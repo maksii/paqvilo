@@ -1,3 +1,4 @@
+// @test-kind contract: transactional file publication and recovery keep their on-disk states and report failures from the Windows short-path probe.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -8,6 +9,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { publishTransactionalFiles, recoverTransactionalFiles } from '../lib/transactional-files.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+
+// hang guard only: a blocked synchronous child cannot be ended by the test runner
+const CLI_HANG_GUARD_MS = 170_000;
 
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 async function fixture(t) {
@@ -106,6 +110,7 @@ test('a live journal owner is never reclaimed, then recovery succeeds after that
   assert.deepEqual(await Promise.all(f.files.map((file) => fs.readFile(file, 'utf8'))), f.before);
 });
 
+// @test-kind security: recovery never reclaims a lock it does not own
 test('foreign lock tokens and legacy journals remain refused without deleting either lock', async (t) => {
   const f = await fixture(t);
   await interruptedWriter(t, f);
@@ -129,6 +134,7 @@ test('foreign lock tokens and legacy journals remain refused without deleting ei
   assert.equal(await fs.readFile(`${f.files[0]}.lock`, 'utf8'), original);
 });
 
+// @test-kind security: a lock without an ownership journal is never reclaimed
 test('locks with no ownership journal are never reclaimed', async (t) => {
   const f = await fixture(t),
     token = `2147483646:${randomUUID()}`;
@@ -138,6 +144,7 @@ test('locks with no ownership journal are never reclaimed', async (t) => {
   assert.deepEqual(await Promise.all(f.files.map((file) => fs.readFile(file, 'utf8'))), f.before);
 });
 
+// @test-kind security: recovery never follows a destination symlink
 test('recovery refuses a destination symlink before following it or reclaiming locks', async (t) => {
   const f = await fixture(t);
   await interruptedWriter(t, f);
@@ -162,6 +169,7 @@ test('recovery refuses a destination symlink before following it or reclaiming l
   assert.ok(await fs.stat(`${f.files[0]}.lock`));
 });
 
+// @test-kind security: recovery never reads backup content through a symlink
 test('recovery validates companion symlinks before reading backup content', async (t) => {
   const f = await fixture(t);
   await interruptedWriter(t, f);
@@ -183,6 +191,7 @@ test('recovery validates companion symlinks before reading backup content', asyn
   assert.equal(followed, false);
 });
 
+// @test-kind security: recovery refuses a destination whose physical parent changed
 test('recovery refuses a changed physical parent path before restoring or reclaiming locks', async (t) => {
   const f = await fixture(t);
   await interruptedWriter(t, f);
@@ -198,6 +207,7 @@ test('recovery refuses a changed physical parent path before restoring or reclai
   assert.ok(await fs.stat(`${f.files[0]}.lock`));
 });
 
+// @test-kind security: publication refuses a path replaced after validation
 test('publication refuses a replaced path and closes its validated read descriptor', async (t) => {
   const f = await fixture(t);
   let swapped = false,
@@ -247,7 +257,7 @@ test(
     const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
       encoding: 'utf8',
       windowsHide: true,
-      timeout: 150_000,
+      timeout: CLI_HANG_GUARD_MS,
       env: { ...process.env, PAQVILO_TEST_SHORT_PATH: f.directory },
     });
     assert.ifError(result.error);
@@ -274,6 +284,7 @@ test(
 );
 
 // Windows junctions need no symlink privilege; POSIX exercises the same ancestor-link refusal with a directory symlink.
+// @test-kind security: publication refuses an ancestor junction or directory link
 test('transaction publication refuses an ancestor junction or directory link instead of treating it as a path alias', async (t) => {
   const f = await fixture(t),
     alias = path.join(f.directory, 'junction');

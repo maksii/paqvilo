@@ -110,6 +110,30 @@ export function resolveRenderSources(index, refs, sourceDir = null) {
 
 const instant = (value) => (/^\d+(?:\.\d+)?$/.test(value) ? Number(value) : Date.parse(value));
 
+// The otlp document as JSON text, split at its empty spans array: the spans are written batch by batch (ADM-6).
+function otlpFrame() {
+  const text = JSON.stringify({
+    kind: 'otlp',
+    resourceSpans: [
+      {
+        resource: { attributes: [{ key: 'service.name', value: { stringValue: 'paqvilo-mirage' } }] },
+        scopeSpans: [{ scope: { name: 'paqvilo.mirage.trace' }, spans: [] }],
+      },
+    ],
+  });
+  const open = text.lastIndexOf('[]');
+  return { head: text.slice(0, open + 1), tail: `${text.slice(open + 1)}\n` };
+}
+
+// Writes the spans of one trace as the next batch of the spans array, after a comma unless it opens the array.
+// Returns whether the array is still empty.
+async function writeOtlpSpans(res, spans, noSpans) {
+  if (!spans.length) return noSpans;
+  const batch = spans.map((span) => JSON.stringify(otlpSpan(span))).join(',');
+  await writeChunk(res, noSpans ? batch : `,${batch}`);
+  return false;
+}
+
 /**
  * Streams one activity bundle (NDJSON, one document per line, each with `kind`) for query (URLSearchParams: any trace
  * filter, format=bundle, traces=ndjson|otlp, limit): bundle header, activities (`activity` per trace, or one `otlp`
@@ -163,25 +187,18 @@ const instant = (value) => (/^\d+(?:\.\d+)?$/.test(value) ? Number(value) : Date
     traces,
     runtime: deps.runtime(),
   });
-  const otlp = [];
+  const frame = traces === 'otlp' ? otlpFrame() : null;
+  if (frame) await writeChunk(res, frame.head);
+  let noSpans = true;
   for (const traceId of ids) {
     if (res.destroyed) return;
     const tree = deps.traces.tree(traceId);
     if (!tree) continue; // dropped since the query
     counts.activities++;
-    if (traces === 'otlp') otlp.push(...tree.spans.map(otlpSpan));
+    if (frame) noSpans = await writeOtlpSpans(res, tree.spans, noSpans);
     else await line({ kind: 'activity', trace: tree.trace, spans: tree.spans });
   }
-  if (traces === 'otlp')
-    await line({
-      kind: 'otlp',
-      resourceSpans: [
-        {
-          resource: { attributes: [{ key: 'service.name', value: { stringValue: 'paqvilo-mirage' } }] },
-          scopeSpans: [{ scope: { name: 'paqvilo.mirage.trace' }, spans: otlp }],
-        },
-      ],
-    });
+  if (frame) await writeChunk(res, frame.tail);
   for (const entry of deps.audit.entries.filter((item) => item.traceId && matched.has(item.traceId))) {
     if (res.destroyed) return;
     counts.audit++;

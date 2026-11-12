@@ -6,18 +6,36 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { MIRAGE_TOOLS } from '../tool-registry.mjs';
+import { MIRAGE_CORE_COMMANDS, MIRAGE_TOOLS } from '../tool-registry.mjs';
 import { assertReportOutput } from '../lib/report-output.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
+// hang guard only: a blocked synchronous child cannot be ended by the test runner
+const CLI_HANG_GUARD_MS = 170_000;
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const run = (program, ...args) =>
   spawnSync(process.execPath, [path.join(root, program), ...args], {
     cwd: root,
     encoding: 'utf8',
-    timeout: 30000,
+    timeout: CLI_HANG_GUARD_MS,
   });
 const fixture = path.join(root, 'mirage/test/fixtures/wet-boew-bilingual');
+
+// @test-kind tooling: a command name must not be both a core command and a public tool with two different usages
+test('core command names and public tool names are disjoint and mirage help prints each usage once', () => {
+  const tools = Object.keys(MIRAGE_TOOLS);
+  assert.deepEqual(
+    MIRAGE_CORE_COMMANDS.filter((name) => tools.includes(name)),
+    [],
+  );
+  const help = run('bin/paqvilo.mjs', 'mirage', '--help');
+  assert.equal(help.status, 0, help.stderr);
+  const usages = [...help.stdout.matchAll(/^Usage: paqvilo mirage (\S+)/gm)].map((match) => match[1]);
+  assert.deepEqual(
+    usages.filter((name, index) => usages.indexOf(name) !== index),
+    [],
+  );
+});
 
 test('core commands reject extra positionals and retain preflight invocation exit code', () => {
   for (const [command, code] of [
@@ -177,7 +195,7 @@ test('JSON tools report missing inputs without reading a configured site', async
         cwd: dir,
         env,
         encoding: 'utf8',
-        timeout: 30000,
+        timeout: CLI_HANG_GUARD_MS,
         windowsHide: true,
       });
       assert.ok(result.status > 0, `${name}: ${result.stderr}`);
@@ -390,3 +408,102 @@ test('report output rejects dangling symbolic links instead of writing through t
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
+
+// Each start below holds every required option of its usage line; a test removes or corrupts one at a time.
+const requiredStarts = [
+  ['mirage/acceptance.mjs', { local: 'http://127.0.0.1:9', plan: 'absent-plan.json' }],
+  [
+    'mirage/reference-parity.mjs',
+    {
+      local: 'http://127.0.0.1:9',
+      origin: 'https://live.invalid',
+      cdp: 'http://127.0.0.1:9222',
+      plan: 'absent-plan.json',
+      output: 'absent-output',
+    },
+  ],
+  [
+    'mirage/enrich-reference.mjs',
+    {
+      state: 'absent-state.json',
+      origin: 'https://live.invalid',
+      cdp: 'http://127.0.0.1:9222',
+      plan: 'absent-plan.json',
+    },
+  ],
+];
+const flagsOf = (values) => Object.entries(values).flatMap(([key, value]) => [`--${key}`, value]);
+
+test('file-reading tools name a missing required option or a malformed URL before reading any input', () => {
+  for (const [program, values] of requiredStarts) {
+    for (const option of Object.keys(values)) {
+      const missing = Object.fromEntries(Object.entries(values).filter(([key]) => key !== option));
+      const result = run(program, ...flagsOf(missing));
+      assert.equal(result.status, 1, program);
+      assert.match(result.stderr, new RegExp(`--${option} is required`), program);
+      assert.equal(result.stdout, '', program);
+    }
+    for (const option of Object.keys(values).filter((key) => ['local', 'origin', 'cdp'].includes(key))) {
+      const result = run(program, ...flagsOf({ ...values, [option]: 'not a url' }));
+      assert.equal(result.status, 1, program);
+      assert.match(result.stderr, new RegExp(`--${option} must be a valid URL`), program);
+    }
+  }
+});
+
+test('baseline suite names a missing side and prints the registry usage before reading the matrix', () => {
+  const result = run('mirage/baseline-suite.mjs', 'capture', '--matrix', 'absent-matrix.json', '--out', 'absent-out');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /--side must be live or mirage/);
+  assert.match(result.stderr, /Usage: paqvilo mirage baseline-suite capture\|compare/);
+  assert.doesNotMatch(result.stderr, /ENOENT/);
+});
+
+// @test-kind tooling: render-sweep applies the report output confinement before any sweep or write
+test('render-sweep refuses an output folder inside the swept portal before writing anything', async () => {
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-sweep-output-'));
+  try {
+    const source = path.join(dir, 'portal');
+    await fs.cp(fixture, source, { recursive: true });
+    const out = path.join(source, 'report');
+    const result = run('mirage/render-sweep.mjs', '--source', source, '--out', out);
+    assert.equal(result.status, 2, result.stderr || result.stdout);
+    assert.match(result.stderr, /outside portal and solution sources/);
+    await assert.rejects(fs.stat(out), { code: 'ENOENT' });
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+async function assertSweepRefusesSourceLink(t, name) {
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-sweep-link-'));
+  try {
+    const source = path.join(dir, 'portal');
+    await fs.cp(fixture, source, { recursive: true });
+    const sourceFile = path.join(source, 'linked-source.txt');
+    await fs.writeFile(sourceFile, 'source bytes\n');
+    const out = path.join(dir, 'report');
+    await fs.mkdir(out);
+    try {
+      await fs.symlink(sourceFile, path.join(out, name), 'file');
+    } catch (error) {
+      if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) return t.skip('symbolic links unavailable');
+      throw error;
+    }
+    const result = run('mirage/render-sweep.mjs', '--source', source, '--out', out);
+    assert.equal(result.status, 2, result.stderr || result.stdout);
+    assert.match(result.stderr, /outside portal and solution sources/);
+    assert.equal(await fs.readFile(sourceFile, 'utf8'), 'source bytes\n');
+    assert.deepEqual(await fs.readdir(out), [name]);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+}
+
+// @test-kind security: a symbolic link at summary.json into the sources is refused before any sweep report is written
+test('render-sweep refuses a symbolic link at summary.json into the sources before writing any report', (t) =>
+  assertSweepRefusesSourceLink(t, 'summary.json'));
+
+// @test-kind security: a symbolic link at render-sweep.txt into the sources is refused before any sweep report is written
+test('render-sweep refuses a symbolic link at render-sweep.txt into the sources before writing any report', (t) =>
+  assertSweepRefusesSourceLink(t, 'render-sweep.txt'));

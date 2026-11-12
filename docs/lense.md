@@ -27,12 +27,14 @@ npx --no-install paqvilo lense dev --config ./paqvilo.config.yml --site portal -
 
 Close the dedicated browser or use Ctrl+C to end the dev session. Browser interactions use the online backend and can affect live data; use authorized environments and actions.
 
+The dedicated profile keeps the portal's session cookies in `<profile>.session.<hash>.json`, next to the profile folder, with one file for each set of portal hosts; only cookies whose domain belongs to those hosts are kept, so identity providers on other hosts are not stored. The tool never deletes a session file of another portal scope, so removing a profile means deleting its folder and its `.session.*.json` files.
+
 A newly opened tab can load before interception finishes attaching. Lense repairs a clean initial document with
 one GET so local sources apply, without replaying a form submission. Edited controls or observed rich-text edits
 keep that document open and produce a reload-needed warning; reload manually when the draft is safe to discard.
 An older repair cannot replace a newer navigation, including navigation to the same address.
 
-Startup reports configuration, source discovery, process ownership/import, browser/interception setup, document navigation and initial resource/data requests, with a five-second heartbeat and separate command-total and phase elapsed times. Mirage model-driven development also waits for catalogue, staff identity and the initial view before reporting the application usable. Native model-driven overlays finish startup at document load; their workers and background requests can continue, and native app readiness remains unverified. A listening runtime or loaded live-overlay document alone does not establish application readiness; page scripts, sign-in and later application requests can still be pending. Startup failures identify their phase. `mirage start --json` prints its final result on stdout and structured startup events on stderr; `--startup-timeout` bounds discovery, ownership and import (checked between those steps, not as a strict wall-clock deadline). Ctrl+C interrupts pending startup work and stops the owned runtime.
+Startup reports configuration, source discovery, process ownership/import, browser/interception setup, document navigation and initial resource/data requests, with a five-second heartbeat and separate command-total and phase elapsed times. Mirage model-driven development also waits for catalogue, staff identity and the initial view before reporting the application usable. Native model-driven overlays finish startup at document load; their workers and background requests can continue, and native app readiness remains unverified. A listening runtime or loaded live-overlay document alone does not establish application readiness; page scripts, sign-in and later application requests can still be pending. Startup failures identify their phase. `mirage start --json` prints its final result on stdout and structured startup events on stderr; `--startup-timeout` is the longest silence, in milliseconds, without start-up progress: each runtime progress record and the runtime's discovery file restart the timer, and an absolute cap of 600000 ms ends start-up regardless. Source discovery and ownership checks run before the runtime process starts and report no progress, so the same value bounds them as a total. Ctrl+C interrupts pending startup work and stops the owned runtime.
 
 Model-driven Lense has its own [startup deadline and paired local panel workflow](../mirage/docs/model-driven-customizations.md#pair-the-panel-with-a-standalone-local-app). In a multi-tab Power Pages session, failure to install interception on a newly opened target closes only that failed owned tab. An attached-browser target shows an explicit local failure page. Healthy tabs, drafts, source watchers and agent endpoints remain active; open a fresh tab to retry. A lost shared browser connection still ends the session. A failed target is never reported as a working local preview.
 
@@ -73,6 +75,12 @@ Add `--lint-profiles` to scan every exported `deployment-profiles` directory for
 | `status`               | Compare local resources with authenticated online responses                       |
 | `verify`               | Edit a disposable copy and check the browser applies supported changes            |
 | `agent`                | Inspect and control a running owned browser through the bounded authenticated API |
+
+Three options that the table does not show:
+
+- `--no-overrides` (dev): shows the environment as it is served, with no local sources laid over it; use it for reference captures.
+- `--runtime <kind>` (mirage): runs `power-pages`, `model-driven` or `dataverse-api`, overriding the project's or catalogue's runtime.
+- `--simulation <level>` (mirage): `dry-run` keeps records in memory, `simulation` saves them as pack data, and `deep` also allows schema changes.
 
 ## Source mapping and comparison scope
 
@@ -180,17 +188,19 @@ Agent discovery files contain bearer tokens and stay under ignored `.paqvilo/age
 
 Inspect applied resources, unmatched markup patches, deployment requirements, errors and failed requests after refresh. Audit coverage reports source classification, not successful navigation or browser application. A sign-in page is not successful target coverage. `verify --signed-in` requires closing the matching dev identity first; headed sign-in can be bounded with `--sign-in-timeout`.
 
+An interrupt (Ctrl+C, SIGINT or SIGTERM) aborts the wait a `verify` run is in and ends the run. The run writes its report with `errorCode` `VERIFY_INTERRUPTED`, closes the dev panel, interception, watcher and browser, and removes the temporary copy unless `PAQVILO_KEEP_TEMP` is set. The command exits with status 1. A second signal is absorbed while cleanup runs. A third signal during cleanup writes `Forced exit: cleanup did not finish.` to stderr and ends the process with status 130 for SIGINT or 143 for SIGTERM.
+
 Continue with [configuration](configuration.md), [project extensions](project-extensions.md) or the [documentation index](index.md).
 
 ## Agent API reference
 
 Use `paqvilo lense agent <action> --json`. Every page action requires `--session <ignored discovery file> --page-id <numeric ID>`; never print or share discovery contents. The API is confined to its configured portal origin. Attached browsers remain user-owned; stopping an owned target stops its shared owned browser. There is no evaluation, form-action or arbitrary proxy endpoint.
 
-Responses use schemaVersion, command, ok, offline, writesFiles and errors (objects with code/message). Browser inspection has offline=false. Read failures distinguish missing discovery files from invalid JSON. HTTP failures carry stable codes: invalid_argument, invalid_selector, unauthorized, page_not_found, page_busy, session_busy, foreign_origin, origin_changed, unsafe_reload, image_too_large, response_too_large and action_timeout. Messages omit browser stacks, ANSI controls and call logs. The browser navigation deadline is shorter than the CLI HTTP deadline; timed-out navigation is stopped.
+Responses use schemaVersion, command, ok, offline, writesFiles and errors (objects with code/message). Browser inspection has offline=false. Read failures distinguish missing discovery files from invalid JSON. HTTP failures carry stable codes: invalid_argument, invalid_selector, unauthorized, page_not_found, page_busy, session_busy, foreign_origin, origin_changed, unsafe_reload, image_too_large, response_too_large and action_timeout. Messages omit browser stacks, ANSI controls and call logs. The browser navigation deadline is shorter than the CLI HTTP deadline; timed-out navigation is stopped. Snapshot, screenshot and viewport accept `timeoutMs` (default 60000 ms, at most 120000 ms, a hang guard only); the CLI sends its `--timeout` minus 1000 ms.
 
 ### agent sessions
 
-No session is required. Optional --config selects its state folder. Returns sessions with id, site, environment, discoveryFile, reachable, plus invalidFiles and truncated. Does not return bearer tokens. At most 64 files are probed.
+No session is required. Optional --config selects its state folder. Optional --timeout (2000–120000 ms, default 35000) is the probe budget for each session file. Returns sessions with id, site, environment, discoveryFile, reachable, plus invalidFiles and truncated. Does not return bearer tokens. At most 64 files are probed.
 
 ### agent status
 
@@ -262,7 +272,7 @@ Interactive dev leaves portal `alert`, `confirm`, `prompt` and before-unload dia
 
 Lense JSON commands return a common envelope with schemaVersion, command, ok, offline, writesFiles (an array) and errors (objects with code/message). `status --json` returns comparisons in results, sets offline=false and fails when a comparison is incomplete. `verify --json` reports its final pass/fail after cleanup and names the evidence files it actually wrote. Resource presence and rendering flags describe indexed export relationships; they do not establish browser coverage.
 
-Lense Mirage management uses the same envelope: init names its generated project file; start names state, discovery, ownership and startup log files; stop names its updated ownership file and reports removed discoveries separately. Started runtimes can continue writing state and derived caches. Status/start/stop use offline=false; `lense mirage inspect` is offline and writes no report. Interactive `mirage dev` rejects --json; use start plus the agent API for structured automation.
+Lense Mirage management uses the same envelope: init names its generated project file; start names state, discovery, ownership and startup log files; stop names its updated ownership file and reports removed discoveries separately. Started runtimes can continue writing state and derived caches. Status/start/stop use offline=false; `lense mirage inspect` is offline and writes no report. Interactive `mirage dev` rejects --json; use start plus the agent API for structured automation. A start whose settings differ from a live runtime that already owns the same state file is refused, naming that runtime's pid and state file; stop that runtime first, or pass `--state <other file>`.
 
 X-ray matches classes by rarity across the imported export, so common framework classes stay possible matches rather than proof. Static references are labelled separately from rendered provenance. Refresh rescans source stamps and reimports a changed export, so refresh time grows with export size even when one file changed.
 

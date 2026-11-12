@@ -1,5 +1,5 @@
 // The shared storage contract against the core Azurite transport, served by the loopback fake with real Shared Key checks.
-// @test-kind contract: the shared suite executes all eleven storage provider cases against the authenticated loopback Azurite transport.
+// @test-kind contract: the shared suite executes every storage provider case against the authenticated loopback Azurite transport.
 import test from 'node:test';
 import { runStorageContract } from '../testing/storage-contract.mjs';
 import { startAzuriteFake } from '../testing/azurite-fake.mjs';

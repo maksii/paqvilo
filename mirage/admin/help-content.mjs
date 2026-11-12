@@ -501,12 +501,14 @@ const HELP = {
   },
   'flows.waits': {
     intro:
-      'Runs paused on an approval, a delay or a webhook. Answer an approval with Approve or Reject, or a delay or webhook wait with outputs JSON; the run is then scheduled to resume (202). Overdue compares each timeout with the runtime clock.',
+      'Runs paused on an approval, a delay or a webhook. An approval offers its response options (Approve or Reject, or its custom responses), its assignees and who has responded; answering it with one option resumes the run (202). A delay or webhook wait takes outputs JSON. Overdue compares each timeout with the runtime clock.',
     example: '{ "outcome": "Approve", "responder": "reviewer@example.test", "comments": "Looks right" }',
     doc: `${SIM}#flow-runs-and-waits`,
     fields: {
       state:
         'Pending lists waits whose timeout has not passed; Overdue lists waits past their timeout on the runtime clock.',
+      responder:
+        'The assignee who answers. Only the assignees still awaited are listed; when one is awaited it is selected.',
       comments: 'Optional text returned with the approval outcome as the responder comments.',
     },
   },
@@ -1014,7 +1016,7 @@ const HELP = {
     intro:
       'For programs that call the Web API: a secure (https) address, the tenant, app registrations and users. An app registration names the environment variable that holds its secret, never the secret itself.',
     example:
-      'dataverse:\n  enabled: true\n  port: 0\n  applications:\n    - appId: 22222222-2222-2222-2222-222222222222\n      displayName: Integration client\n      secretEnvironmentVariable: PAQVILO_SIM_CLIENT_SECRET',
+      'dataverse:\n  enabled: true\n  port: 0\n  applications:\n    - appId: 22222222-2222-2222-2222-222222222222\n      displayName: Integration client\n      secretEnvironmentVariable: SIM_CLIENT_SECRET',
     doc: `${DATAVERSE}#enable-it`,
   },
   'setup.start': {

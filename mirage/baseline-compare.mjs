@@ -168,11 +168,19 @@ function canonicalBody(body, contentType = '') {
 }
 
 function diffValue(scope, location, field, a, b, out, depth = 0) {
-  if (depth > 12) return;
+  if (depth > 12) return diffTruncatedSubtree(scope, location, field, a, b, out);
   if (isRecordPair(a, b)) return diffObjectValue(scope, location, field, a, b, out, depth);
   if (Array.isArray(a) && Array.isArray(b)) return diffArrayValue(scope, location, field, a, b, out, depth);
   if (JSON.stringify(a) !== JSON.stringify(b))
     out.push(delta(scope, location, field, a === undefined ? '(absent)' : a, b === undefined ? '(absent)' : b));
+}
+
+// Beyond the nesting limit the remaining subtree is compared as its JSON text: one delta names its field path.
+function diffTruncatedSubtree(scope, location, field, a, b, out) {
+  const live = JSON.stringify(a);
+  const mirage = JSON.stringify(b);
+  if (live !== mirage)
+    out.push(delta(scope, location, field, live ?? '(absent)', mirage ?? '(absent)', { truncated: true }));
 }
 
 const isRecordPair = (a, b) =>
@@ -420,10 +428,22 @@ function diffFrames(live = {}, mirage = {}, out = []) {
   return out;
 }
 
+// Elements sharing a selector (for example a duplicated id) are keyed by their document order: the first keeps the
+// selector, the next ones add " #<occurrence>", so each live element is compared with the mirage element in its place.
+function byElementKey(items) {
+  const seen = new Map();
+  return new Map(
+    items.map((item) => {
+      const occurrence = (seen.get(item.selector) ?? 0) + 1;
+      seen.set(item.selector, occurrence);
+      return [occurrence === 1 ? item.selector : `${item.selector} #${occurrence}`, item];
+    }),
+  );
+}
+
 export function compareElements(live = [], mirage = [], out = []) {
-  const byKey = (items) => new Map(items.map((item) => [item.selector, item]));
-  const A = byKey(live);
-  const B = byKey(mirage);
+  const A = byElementKey(live);
+  const B = byElementKey(mirage);
   for (const [selector, a] of A) {
     const b = B.get(selector);
     if (!b) {

@@ -1,8 +1,8 @@
+// @test-kind contract: the HTTP Request trigger's signed callback URL and trigger matching are Paqvilo's own runtime behaviour.
 // The HTTP Request trigger's signed callback URL (per-flow HMAC key sealed in state, method restriction, body schema,
 // 401 on a bad signature) and "When an action is performed" matching by catalog and category assignment.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
 import { Readable } from 'node:stream';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { createScheduler, fixedClock, sequentialIds, storeScheduler } from '../lib/runtime-clock.mjs';
@@ -11,6 +11,7 @@ import { createHostFlowRuns } from '../lib/flow-runs.mjs';
 import { createFlowTriggerRunner } from '../lib/flow-triggers.mjs';
 import { operationCatalogue } from '../lib/operation-catalogue.mjs';
 import { createFlowRoutes } from '../lib/sim-flow-routes.mjs';
+import { serveFlowRoutes } from './support/flow-fixtures.mjs';
 
 const HTTP_FLOW = '77777777-7777-4777-8777-0000000000b4',
   PERFORMED = '77777777-7777-4777-8777-0000000000b5',
@@ -98,15 +99,7 @@ async function host(t, { httpDefinition = HTTP_DEFINITION } = {}) {
   });
   t.after(() => runner.close());
   const routes = createFlowRoutes({ api, csrf: () => CSRF });
-  const server = http.createServer(async (req, res) => {
-    if (!(await routes(req, res, new URL(req.url, 'http://' + req.headers.host)))) {
-      res.writeHead(404);
-      res.end();
-    }
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-  const origin = `http://127.0.0.1:${server.address().port}`;
+  const origin = await serveFlowRoutes(t, routes);
   const call = async (method, url, body, headers = {}) => {
     const response = await fetch(new URL(url, origin), {
       method,
@@ -226,7 +219,11 @@ test('flow request chunks preserve split UTF-8 characters and enforce the limit 
 });
 
 test('the signed callback URL runs the flow; a bad signature, another method or a body outside the schema is refused', async (t) => {
-  const { store, runs, call } = await host(t);
+  const validated = {
+    ...HTTP_DEFINITION,
+    triggers: { request: { ...HTTP_DEFINITION.triggers.request, operationOptions: 'EnableSchemaValidation' } },
+  };
+  const { store, runs, call } = await host(t, { httpDefinition: validated });
   assert.equal(
     (await call('POST', `/_sim/api/flow-triggers/${HTTP_FLOW}/callback-url`)).status,
     403,
@@ -271,6 +268,16 @@ test('the signed callback URL runs the flow; a bad signature, another method or 
   const invalid = await call('POST', url.href, { x_other: 1 });
   assert.deepEqual([invalid.status, invalid.body.error.code], [400, 'InvalidRequest']);
   assert.equal(runs.list({ processId: HTTP_FLOW }).length, before, 'a body outside the schema starts no run');
+  // Without EnableSchemaValidation the schema is not checked: the same body starts a run on that trigger.
+  const open = await host(t);
+  const openIssued = await open.call('POST', `/_sim/api/flow-triggers/${HTTP_FLOW}/callback-url`, undefined, {
+    'x-sim-csrf': CSRF,
+  });
+  assert.deepEqual(await open.call('POST', openIssued.body.url, { x_other: 1 }), {
+    status: 200,
+    body: { hello: null },
+  });
+  assert.equal(open.runs.list({ processId: HTTP_FLOW }).length, 1, 'a body outside the schema starts a run');
   // The same URL keeps working (the key is created once).
   assert.equal(
     (await call('POST', `/_sim/api/flow-triggers/${HTTP_FLOW}/callback-url`, undefined, { 'x-sim-csrf': CSRF })).body

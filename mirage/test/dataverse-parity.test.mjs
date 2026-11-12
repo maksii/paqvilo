@@ -1,10 +1,14 @@
+// @test-kind contract: Paqvilo's own parity CLI, transport and run-writer behaviour, exercised with synthetic plans and loopback fixtures
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
 import { once } from 'node:events';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import {
   runSuite,
   validatePlan,
@@ -239,6 +243,7 @@ test('inconsistent or withheld evidence and changed HTTP methods cannot establis
   assert.equal(coverageReport(input, { ...run, results: [...run.results, run.results[0]] }).complete, false);
 });
 
+// @test-kind security: credentials never enter plans, captures or response headers
 test('credentials cannot enter plans, requests, captures or response headers', async () => {
   assert.throws(
     () => validatePlan(plan([{ ...readCase(), request: { path: 'widgets', headers: { Authorization: 'anything' } } }])),
@@ -270,6 +275,7 @@ test('credentials cannot enter plans, requests, captures or response headers', a
   );
 });
 
+// @test-kind security: encoded credentials in a request are refused before anything is journaled
 test('encoded request credentials are rejected before any plan or variables reach the journal', async () => {
   const encoded = Buffer.from('{"access_token":"invented-private-value"}').toString('base64');
   const bodies = [
@@ -310,6 +316,7 @@ test('encoded request credentials are rejected before any plan or variables reac
   assert.doesNotMatch(JSON.stringify(unknown), /invented-private/);
 });
 
+// @test-kind security: a token is never sent to another origin through a redirect or continuation URL
 test('origin confinement prevents token leakage through redirects or continuation URLs', async () => {
   let calls = 0;
   const transport = createFetchTransport({
@@ -336,6 +343,75 @@ test('origin confinement prevents token leakage through redirects or continuatio
   );
   await transport({ path: 'widgets', method: 'GET', headers: {} });
   assert.equal(calls, 1);
+});
+
+const execFileAsync = promisify(execFile);
+const cliPath = fileURLToPath(new URL('../dataverse-parity.mjs', import.meta.url));
+const runCli = (args) =>
+  execFileAsync(process.execPath, [cliPath, ...args]).then(
+    () => ({ code: 0, stderr: '' }),
+    (error) => ({ code: error.code, stderr: String(error.stderr) }),
+  );
+
+// The option names the parser declares, and the ones diff reads from them (main() and diffCommand() in dataverse-parity.mjs).
+const PARSER_OPTIONS = [
+  'plan',
+  'base',
+  'out',
+  'reference',
+  'actual',
+  'metadata',
+  'rules',
+  'checks',
+  'token-env',
+  'allow-remote',
+  'allow-writes',
+];
+const DIFF_READS = ['reference', 'actual', 'out', 'rules', 'plan'];
+
+test('the usage line for diff names exactly the options diff reads, each one a declared parser option', async () => {
+  const { stderr } = await runCli([]).catch((error) => ({ stderr: String(error.stderr) }));
+  const diffClause = /; diff ([^;]*)/.exec(stderr)?.[1] ?? '';
+  const documented = [...diffClause.matchAll(/--([a-z-]+)/g)].map((match) => match[1]);
+  assert.deepEqual(
+    documented.toSorted((a, b) => a.localeCompare(b)),
+    DIFF_READS.toSorted((a, b) => a.localeCompare(b)),
+  );
+  for (const option of documented) assert.ok(PARSER_OPTIONS.includes(option), option);
+});
+
+test('parity CLI prints its usage without a command and names a rejected write plan without creating evidence', async (t) => {
+  const temp = await makeTemporaryDirectory(path.join(os.tmpdir(), 'dataverse-parity-cli-'));
+  t.after(() => fs.rm(temp, { recursive: true, force: true }));
+  const none = await runCli([]);
+  assert.equal(none.code, 1);
+  assert.match(none.stderr, /Use catalogue --metadata FILE .* assert --actual FILE --checks FILE --out FILE/);
+  const planFile = path.join(temp, 'write-plan.json');
+  const writePlan = plan([{ id: 'write-widget', family: 'write', request: { method: 'POST', path: 'test_widgets' } }]);
+  await fs.writeFile(planFile, JSON.stringify(writePlan));
+  const out = path.join(temp, 'run');
+  const rejected = await runCli([
+    'record',
+    '--plan',
+    planFile,
+    '--base',
+    'http://127.0.0.1:9/api/data/v9.2/',
+    '--out',
+    out,
+  ]);
+  assert.equal(rejected.code, 1);
+  assert.match(rejected.stderr, /Plan contains writes; explicit allowWrites required/);
+  await assert.rejects(fs.access(out), { code: 'ENOENT' });
+});
+
+test('--help and -h print the usage to stdout with every sub-command and exit 0', async () => {
+  for (const flag of ['--help', '-h']) {
+    const { stdout, stderr } = await execFileAsync(process.execPath, [cliPath, flag]);
+    assert.equal(stderr, '');
+    assert.match(stdout, /^Use catalogue --metadata FILE .* assert --actual FILE --checks FILE --out FILE$/m);
+    for (const command of ['catalogue', 'record', 'replay', 'assert', 'diff'])
+      assert.match(stdout, new RegExp(`\\b${command}\\b`));
+  }
 });
 
 test('immutable writer retains durable start/intent/results and rejects reused directories', async (t) => {
@@ -385,6 +461,7 @@ test('self-closing operations never consume adjacent operation parameters', () =
   );
 });
 
+// @test-kind security: a malformed message that carries credentials is withheld from evidence
 test('malformed multipart retains raw bytes while credential-bearing malformed MIME is withheld', async () => {
   const text =
     '--broken\r\nContent-Type: application/http\r\n\r\nHTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n\r\n{"error":{"code":"TEST"}}';

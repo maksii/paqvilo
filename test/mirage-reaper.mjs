@@ -123,9 +123,9 @@ export async function processesNaming(text) {
             '-Command',
             'Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($env:PAQ_REAP_TEXT) } | ForEach-Object { $_.ProcessId }',
           ],
-          { env: { ...process.env, PAQ_REAP_TEXT: text }, windowsHide: true, timeout: 60_000 },
+          { env: { ...process.env, PAQ_REAP_TEXT: text }, windowsHide: true },
         )
-      : await execute('ps', ['-axww', '-o', 'pid=,args='], { timeout: 60_000 });
+      : await execute('ps', ['-axww', '-o', 'pid=,args=']);
   return listing.stdout
     .split(/\r?\n/)
     .filter((line) => process.platform === 'win32' || line.includes(text))

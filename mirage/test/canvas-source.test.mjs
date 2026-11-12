@@ -1,3 +1,4 @@
+// @test-kind contract: the canvas source reader reads Power Apps Studio source trees and reports what it cannot inventory as diagnostics
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -5,7 +6,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
-import { canvasInventoryRecord, readCanvasSource, readCanvasSources } from '../lib/canvas-source.mjs';
+import {
+  canvasInventoryRecord,
+  canvasSourceCoverageGaps,
+  readCanvasSource,
+  readCanvasSources,
+} from '../lib/canvas-source.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const APP = [
@@ -438,6 +444,34 @@ test('malformed canvas structures and duplicate screen definitions cannot claim 
     assert.equal(rows.find((row) => row.id === 'canvas:app/partial').status, 'unsupported');
     assert.equal(rows.find((row) => row.id === 'canvas:rendering').status, 'unsupported');
   }
+});
+
+test('a duplicate pa.yaml component definition is reported, skipped and leaves a coverage gap', async () => {
+  const definition = (control) =>
+    `ComponentDefinitions:\n  Widget:\n    DefinitionType: CanvasComponent\n    Children:\n      - ${control}: { Control: Label }\n`;
+  const source = await readCanvasSource({
+    msapp: msappOf({
+      'Src/HomeScreen.pa.yaml': HOME,
+      'Src/Component/One.pa.yaml': definition('WidgetTitle'),
+      'Src/Component/Two.pa.yaml': definition('WidgetSubtitle'),
+    }),
+  });
+  assert.ok(source.diagnostics.some((item) => item.code === 'CANVAS_SOURCE_STRUCTURE_INVALID'));
+  assert.equal(source.components.length, 1);
+  assert.ok(canvasSourceCoverageGaps(source).some((item) => item.code === 'CANVAS_SOURCE_STRUCTURE_INVALID'));
+});
+
+test('a duplicate retired fx.yaml component definition is reported, skipped and leaves a coverage gap', async () => {
+  const definition = (control) => `Widget As component:\n    ${control} As label:\n        Text: =Blank()\n`;
+  const source = await readCanvasSource({
+    msapp: msappOf({
+      'Src/Components/One.fx.yaml': definition('WidgetTitle'),
+      'Src/Components/Two.fx.yaml': definition('WidgetSubtitle'),
+    }),
+  });
+  assert.ok(source.diagnostics.some((item) => item.code === 'CANVAS_SOURCE_STRUCTURE_INVALID'));
+  assert.equal(source.components.length, 1);
+  assert.ok(canvasSourceCoverageGaps(source).some((item) => item.code === 'CANVAS_SOURCE_STRUCTURE_INVALID'));
 });
 
 test('component-local controls may reuse app and other component names', async () => {

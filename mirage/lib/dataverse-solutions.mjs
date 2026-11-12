@@ -21,6 +21,7 @@ import { randomUUID } from 'node:crypto';
 import { deflateRawSync } from 'node:zlib';
 import { DataError } from './data-error.mjs';
 import { contextUrl } from './dataverse-odata.mjs';
+import { whenJobSettled } from './dataverse-async.mjs';
 import { readSolutionZip, parseSchemaDocument } from './solution-schema.mjs';
 import { parseSolutionXml, child, childText, labelsOf, pickLabel } from './solution-xml.mjs';
 import { createTable, createColumn, createKey, updateTable, activateKey } from './dataverse-metadata-tables.mjs';
@@ -41,13 +42,20 @@ import {
   entriesOfSolution,
   holdingArchive,
   assertStageable,
+  baseMissingError,
+  dropHoldingMarkers,
+  reserveImportJobId,
+  releaseImportJobId,
   metadataIdOf,
   componentsOf,
   addMemberRows,
 } from './dataverse-solution-messages.mjs';
+import { markStagedUpgrades } from './state-migration.mjs';
 import { registerInternalMessage } from './dataverse-addon-common.mjs';
 import { securityDefinitions, mergeInventory } from './solution-inventory.mjs';
-import { importSolutionSecurity } from './dataverse-security.mjs';
+import { importSolutionSecurity, ownerColumns } from './dataverse-security.mjs';
+import { nextRowVersion } from './dataverse-changes.mjs';
+import { isoUtc } from './dataverse-values.mjs';
 import {
   createOneToMany,
   createManyToMany,
@@ -62,6 +70,7 @@ import {
   layerStack,
   activeOnTop,
   projectManagedFlags,
+  DEFAULT_SOLUTION,
 } from './dataverse-metadata-relationships.mjs';
 
 const DEFAULT_LCID = 1033;
@@ -874,6 +883,7 @@ function applyEntityProperties(mapping, entity) {
     }
 }
 
+const IDENTIFIER = /^[a-z][a-z0-9_]*$/;
 function assignNewEntityIdentifiers(state, mapping, entity, logical) {
   if (entity.entitySetName) {
     if (
@@ -884,6 +894,11 @@ function assignNewEntityIdentifiers(state, mapping, entity, logical) {
       throw invalid(`The entity set ${entity.entitySetName} already exists.`);
     mapping.entitySet = entity.entitySetName;
   }
+  // The archive's primary attributes are refused here, inside the import transaction, so a rejected
+  // one leaves no table behind.
+  for (const attribute of [entity.primaryIdAttribute, entity.primaryNameAttribute])
+    if (attribute && !IDENTIFIER.test(attribute))
+      throw invalid(`The table ${logical} has an invalid primary attribute.`);
   if (entity.primaryIdAttribute) mapping.idColumn = entity.primaryIdAttribute;
 }
 
@@ -1151,6 +1166,12 @@ function recordSolution(api, archive, members) {
   const origin = (dv.componentOrigin ??= {});
   for (const member of members)
     if (member.created) origin[lower(componentObjectId(member, api.settings.organizationId))] = row.solutionid;
+  // A holding solution of a staged upgrade is recorded against its base (the marker holdingOf reads).
+  if (archive.holdingFor) {
+    const base = solutions.find((s) => lower(s.uniquename) === lower(archive.holdingFor) && s.parentsolutionid == null);
+    if (!base) throw baseMissingError(archive.holdingFor);
+    (dv.holdingSolutions ??= {})[row.solutionid] = base.solutionid;
+  }
   for (const layer of Object.values(dv.managedLayers ?? {}))
     for (const entry of layerStack(layer)) if (entry.solutionid == null) entry.solutionid = row.solutionid;
   return row;
@@ -1182,6 +1203,26 @@ function writeJob(api, { jobId, archive, log, error, progress }) {
     solutionid: solution?.solutionid ?? null,
     completedon: error || progress === 100 ? stamp(api) : null,
   });
+  return row;
+}
+
+// An imported row is stamped the way a platform import stamps it. A new row keeps the createdon and modifiedon the payload
+// supplies (each takes the import time only when the payload leaves it out), and a user-owned row is owned by the importing
+// user. An existing row takes the import time as its modifiedon, whatever the payload says. Every row takes the store's next
+// row version, so a versionnumber in the payload is never kept.
+export function stampImportedRow(store, caller, row, mapping, { existing }) {
+  const now = isoUtc(store.clock.now());
+  if (!existing) {
+    row.createdon ??= now;
+    row.modifiedon ??= now;
+    if (mapping.ownership === 'UserOwned' && caller?.systemuserid) {
+      const owner = ownerColumns(store, { id: caller.systemuserid, logical_name: 'systemuser' });
+      for (const [name, value] of Object.entries(owner)) row[name] ??= value;
+    }
+  } else {
+    row.modifiedon = now;
+  }
+  row.versionnumber = nextRowVersion(store);
   return row;
 }
 
@@ -1218,6 +1259,7 @@ async function importArchive(api, archive, { overwrite, jobId, origin, version, 
             overwrite,
             definitionOf: standardTableDef,
             entityId: (logical) => metadataIdOf(api, 'entity', logical),
+            stamp: (row, mapping, options) => stampImportedRow(api.store, caller, row, mapping, options),
           });
           writeJob(api, { jobId, archive, log, progress: 100 });
         },
@@ -1239,27 +1281,51 @@ async function importArchive(api, archive, { overwrite, jobId, origin, version, 
 
 // ---- The module
 
-// Resolves with the asyncoperation row once it is Completed (statecode 3), for tests and tools that wait on an ImportSolutionAsync run.
-export async function solutionImportJob(api, asyncId, { timeoutMs = 10000 } = {}) {
-  const until = Date.now() + timeoutMs;
-  for (;;) {
-    const row = rowsOf(api.store, 'asyncoperation').find((r) => sameGuid(r.asyncoperationid, asyncId));
-    if (row?.statecode === 3) return row;
-    if (Date.now() > until) throw new Error(`Import ${asyncId} did not complete within ${timeoutMs} ms.`);
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
+// Resolves with the asyncoperation row once the job is Completed (statecode 3) with any status, for tests and tools that wait
+// on an ImportSolutionAsync run. There is no deadline: the completion signal comes from the job's own writes.
+export function solutionImportJob(api, asyncId) {
+  return whenJobSettled(api.store, asyncId);
 }
 
-// The archive an import writes: a HoldingSolution import stages the upgrade (holdingArchive) after its checks pass (assertStageable).
+// An import updates an installed solution of the same unique name only when both are managed or both are
+// unmanaged. The Default solution is exempt. The 0x80048041 code and message are documented; the 400 status is a guess.
+function assertModesMatch(store, archive) {
+  const name = archive.solution.uniqueName;
+  if (lower(name) === lower(DEFAULT_SOLUTION)) return;
+  const installed = rowsOf(store, 'solution').find(
+    (s) => lower(s.uniquename) === lower(name) && s.parentsolutionid == null,
+  );
+  if (installed && (installed.ismanaged === true) !== archive.solution.managed)
+    throw new DataError(
+      'Import can only update solutions when the modes match. Uninstall the current solution and try again.',
+      400,
+      'InvalidRequest',
+      { innerCode: '0x80048041' },
+    );
+}
+// The archive an import writes. A HoldingSolution import stages the upgrade (holdingArchive) after its checks pass
+// (assertStageable). Any other import first checks its mode against the installed solution (assertModesMatch).
 function stagedArchive(api, archive, body) {
-  if (body.HoldingSolution !== true) return archive;
+  if (body.HoldingSolution !== true) {
+    assertModesMatch(api.store, archive);
+    return archive;
+  }
   assertStageable(api.store, archive);
   return holdingArchive(archive);
 }
 
 export function install(api) {
   seedMappings(api.store);
+  markStagedUpgrades(api.store.state);
   const { store } = api;
+  // A solution row deleted through the record pipeline (a Web API delete or a bulk delete) takes the holding markers that name
+  // it. Inside a transaction the drop waits for the commit, so a rolled-back delete keeps its markers.
+  api.recordHooks.add('afterWrite', (_c, mapping, { operation, id }) => {
+    if (mapping.logicalName !== 'solution' || operation !== 'delete') return;
+    const removed = new Set([lower(id)]);
+    if (store.inTransaction()) store.onCommit(() => dropHoldingMarkers(store, removed));
+    else dropHoldingMarkers(store, removed);
+  });
   installSolutionMessages(api, {
     readArchive,
     importArchive: (archive, options) => importArchive(api, archive, options),
@@ -1320,14 +1386,18 @@ export function install(api) {
       const body = ctx.body ?? {};
       const archive = readArchive(body.CustomizationFile);
       const target = stagedArchive(api, archive, body);
-      const jobId = typeof body.ImportJobId === 'string' && body.ImportJobId ? body.ImportJobId : randomUUID();
-      await importArchive(api, target, {
-        overwrite: body.OverwriteUnmanagedCustomizations === true,
-        jobId,
-        origin: ctx.origin,
-        version: ctx.version,
-        caller: ctx.caller,
-      });
+      const jobId = reserveImportJobId(store, body.ImportJobId);
+      try {
+        await importArchive(api, target, {
+          overwrite: body.OverwriteUnmanagedCustomizations === true,
+          jobId,
+          origin: ctx.origin,
+          version: ctx.version,
+          caller: ctx.caller,
+        });
+      } finally {
+        releaseImportJobId(store, jobId);
+      }
       return undefined; // 204 No Content
     },
   };
@@ -1353,28 +1423,33 @@ export function install(api) {
       const body = ctx.body ?? {};
       const archive = readArchive(body.CustomizationFile);
       const target = stagedArchive(api, archive, body);
-      const jobId = typeof body.ImportJobId === 'string' && body.ImportJobId ? body.ImportJobId : randomUUID();
+      const jobId = reserveImportJobId(store, body.ImportJobId);
       const overwrite = body.OverwriteUnmanagedCustomizations === true;
-      await api.change(() =>
-        api.store.transact(() => writeJob(api, { jobId, archive: target, log: [], progress: 0 }), { isolated: true }),
-      );
-      // The import runs as an asyncoperation job on the shared queue (dataverse-async systemJob): Ready, then Locked, then
-      // Completed with Succeeded (30) or Failed (31). The job's own error, when it fails, is the operation's message.
-      const asyncId = await api.systemJob(
-        {
-          name: `Import ${target.solution.uniqueName}`,
-          operationtype: IMPORT_SOLUTION_TYPE,
-          callerId: ctx.caller.systemuserid,
-        },
-        () =>
-          importArchive(api, target, {
-            overwrite,
-            jobId,
-            origin: ctx.origin,
-            version: ctx.version,
-            caller: ctx.caller,
-          }),
-      );
+      let asyncId;
+      try {
+        await api.change(() =>
+          api.store.transact(() => writeJob(api, { jobId, archive: target, log: [], progress: 0 }), { isolated: true }),
+        );
+        // The import runs as an asyncoperation job on the shared queue (dataverse-async systemJob): Ready, then Locked, then
+        // Completed with Succeeded (30) or Failed (31). The job's own error, when it fails, is the operation's message.
+        asyncId = await api.systemJob(
+          {
+            name: `Import ${target.solution.uniqueName}`,
+            operationtype: IMPORT_SOLUTION_TYPE,
+            callerId: ctx.caller.systemuserid,
+          },
+          () =>
+            importArchive(api, target, {
+              overwrite,
+              jobId,
+              origin: ctx.origin,
+              version: ctx.version,
+              caller: ctx.caller,
+            }),
+        );
+      } finally {
+        releaseImportJobId(store, jobId);
+      }
       return {
         status: 200,
         body: {
@@ -1432,5 +1507,8 @@ export function install(api) {
 }
 
 export function reset(api) {
-  api.store.transact(() => seedMappings(api.store));
+  api.store.transact(() => {
+    seedMappings(api.store);
+    markStagedUpgrades(api.store.state);
+  });
 }

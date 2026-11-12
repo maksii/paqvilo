@@ -30,6 +30,24 @@ export async function stopOwnedChild(child, closed, { graceful = false } = {}) {
   return closed;
 }
 
+/** Returns the arguments with the browser choice and headless flag replaced; other arguments keep their order. */
+export function laneArguments(args, browser) {
+  const kept = [];
+  let skipBrowserValue = false;
+  for (const arg of args) {
+    if (skipBrowserValue) {
+      skipBrowserValue = false;
+      continue;
+    }
+    if (arg === '--browser') {
+      skipBrowserValue = true;
+      continue;
+    }
+    if (arg !== '--headless' && !arg.startsWith('--browser=')) kept.push(arg);
+  }
+  return [...kept, '--headless', '--browser', browser];
+}
+
 /**
  * Runs a generated VS Code background task (its CLI arguments, headless on the lane's browser)
  * and owns its teardown: the attached browser, the task process, the project's Mirage and `work`.
@@ -37,17 +55,13 @@ export async function stopOwnedChild(child, closed, { graceful = false } = {}) {
  * connects to the development browser the task opened.
  */
 export function runWorkspaceTask(t, { cli, args, cwd, env, task, port, stop, work, cleanup = () => {}, label }) {
-  const child = spawn(
-    process.execPath,
-    [
-      cli,
-      ...args,
-      '--headless',
-      '--browser',
-      process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium'),
-    ],
-    { cwd, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] },
-  );
+  const laneBrowser = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
+  const child = spawn(process.execPath, [cli, ...laneArguments(args, laneBrowser)], {
+    cwd,
+    env,
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
   const output = childOutput(child);
   const closed = once(child, 'close');
   let browser;

@@ -92,7 +92,7 @@ export const canvasRules = [
   ),
 ];
 
-const topLevel = new Set(['App', 'Screens', 'ComponentDefinitions', 'DataSources', 'EditorState']);
+export const canvasTopLevelKeys = new Set(['App', 'Screens', 'ComponentDefinitions', 'DataSources', 'EditorState']);
 const interactive = new Set([
   'Button',
   'ModernButton',
@@ -234,7 +234,7 @@ function inspectDocument(root, entry, emit) {
     emit('APP-CANVAS-001', entry);
     return;
   }
-  if (root.items.length !== 1 || !topLevel.has(keyOf(root.items[0].key))) {
+  if (!root.items.length || root.items.some((pair) => !canvasTopLevelKeys.has(keyOf(pair.key)))) {
     emit('APP-CANVAS-008', entry);
     return;
   }

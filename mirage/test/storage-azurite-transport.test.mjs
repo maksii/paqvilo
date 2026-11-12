@@ -1,17 +1,27 @@
 // Core Azurite transport (storage-azurite.mjs): Shared Key signing, connection strings, loopback-only endpoints,
 // error mapping with the Azure code, authenticated preflight, SAS URLs the endpoint accepts, and the key kept out of output.
+// @test-kind contract: the Azurite fake is a shipped test double whose request handling this file pins, including aborted uploads
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter, once } from 'node:events';
 import http from 'node:http';
+import net from 'node:net';
 import { startAzuriteFake, FAKE_ACCOUNT_KEY } from '../testing/azurite-fake.mjs';
 import {
   BLOB_API_VERSION,
   azuriteDescriptor,
   createAzuriteStorage,
   parseConnectionString,
+  preflight,
   sharedKeyStringToSign,
 } from '../lib/storage-azurite.mjs';
-import { ProviderError, guardProvider } from '../lib/storage-provider.mjs';
+import {
+  PREFLIGHT_IDLE_TIMEOUT_MS,
+  ProviderError,
+  guardProvider,
+  preflightProvider,
+} from '../lib/storage-provider.mjs';
+import { silentEndpointPort } from './support/emulator-transport.mjs';
 
 const fake = await startAzuriteFake();
 test.after(() => fake.close());
@@ -32,6 +42,7 @@ const code = (expected, diagnostic) => (error) => {
   return true;
 };
 
+// @test-kind security: a request with an invalid signature is refused with 403 and cannot crash the fake
 test('prototype-shaped query names are signed as data and an invalid signature cannot crash the loopback fake', async () => {
   const response = await fetch(fake.blobEndpoint + '/invented?__proto__=x&constructor=y&toString=z', {
     headers: {
@@ -66,6 +77,7 @@ test('the Shared Key string-to-sign matches the Get Container Metadata example o
   assert.ok(zero.startsWith('PUT\n\n\n\n\n'));
 });
 
+// @test-kind security: the storage endpoint must be loopback and key values are never echoed
 test('connection strings: development shortcut, explicit form, loopback only, values never echoed', () => {
   const dev = parseConnectionString('UseDevelopmentStorage=true');
   assert.equal(dev.accountName, 'devstoreaccount1');
@@ -121,6 +133,7 @@ test('a missing blob is NotFound with the Azure code; an ETag mismatch is Precon
   assert.equal(Buffer.concat(chunks).toString(), '34');
 });
 
+// @test-kind security: a wrong account key is refused and never echoed
 test('a wrong account key is refused with 403 by the endpoint and maps to Unauthorized without the key', async () => {
   const wrong = Buffer.from('fx-a-different-invented-key').toString('base64');
   const s = azurite(fake.connectionString(wrong));
@@ -148,6 +161,7 @@ test('preflight runs an authorized List Containers: ready against the endpoint, 
   await assert.rejects(down.head('fx/x'), code('Unavailable', 'PROVIDER_UNREACHABLE'));
 });
 
+// @test-kind security: a non-loopback connection string never produces a live endpoint
 test('an unset, invalid or non-loopback connection string leaves a contract-level instance that answers Unavailable', async () => {
   const unset = guardProvider(
     createAzuriteStorage({ id: 'fxblob', settings: { connectionString: 'env:FX_UNSET_AZURITE' }, env: {} }),
@@ -261,4 +275,145 @@ test('health() reports the last observed endpoint state without the key', async 
     createAzuriteStorage({ id: 'fxblob', settings: { connectionString: 'env:FX_UNSET' }, env: {} }).health().ready,
     false,
   );
+});
+
+const watchUnhandledRejections = () => {
+  const reasons = [];
+  let notify;
+  const first = new Promise((resolve) => {
+    notify = resolve;
+  });
+  const listener = (reason) => {
+    reasons.push(reason);
+    notify(reasons);
+  };
+  process.on('unhandledRejection', listener);
+  return { reasons, first, stop: () => process.off('unhandledRejection', listener) };
+};
+
+const readUntil = (socket, text) =>
+  new Promise((resolve) => {
+    let seen = '';
+    const onData = (chunk) => {
+      seen += chunk;
+      if (seen.includes(text)) {
+        socket.off('data', onData);
+        resolve();
+      }
+    };
+    socket.setEncoding('latin1');
+    socket.on('data', onData);
+  });
+
+test('a client that aborts an upload mid-body leaves no unhandled rejection and the fake keeps answering', async () => {
+  const unhandled = watchUnhandledRejections();
+  let markAborted;
+  const aborted = new Promise((resolve) => {
+    markAborted = resolve;
+  });
+  const server = await startAzuriteFake({ onBodyAbort: () => markAborted('body aborted') });
+  try {
+    const socket = net.connect(Number(new URL(server.blobEndpoint).port), '127.0.0.1');
+    socket.on('error', () => socket.destroy());
+    socket.write(
+      'PUT /devstoreaccount1/c/b HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 100\r\nExpect: 100-continue\r\n\r\n',
+    );
+    await readUntil(socket, 'HTTP/1.1 100 Continue');
+    socket.write('0123456789');
+    socket.destroy();
+    const outcome = await Promise.race([aborted, unhandled.first]);
+    assert.equal(outcome, 'body aborted', `unhandled rejection: ${unhandled.reasons[0]?.message}`);
+    const reply = await fetch(`${server.blobEndpoint}/after-abort`);
+    assert.equal(reply.status, 403);
+    assert.deepEqual(unhandled.reasons, []);
+  } finally {
+    unhandled.stop();
+    await server.close();
+  }
+});
+
+test('a request path that is not valid percent-encoding is answered 400 InvalidUri', async () => {
+  const unhandled = watchUnhandledRejections();
+  try {
+    const reply = await Promise.race([
+      fetch(`${fake.blobEndpoint}/%zz`),
+      unhandled.first.then((reasons) => assert.fail(`unhandled rejection: ${reasons[0]?.message}`)),
+    ]);
+    assert.equal(reply.status, 400);
+    assert.equal(reply.headers.get('x-ms-error-code'), 'InvalidUri');
+    assert.match(await reply.text(), /<Code>InvalidUri<\/Code>/);
+    assert.deepEqual(unhandled.reasons, []);
+  } finally {
+    unhandled.stop();
+  }
+});
+
+test('the List Containers preflight of an endpoint that never answers is ended by the idle guard, not a fixed 2 s bound', async (t) => {
+  const port = await silentEndpointPort(t);
+  const s = azurite(`AccountName=fx;AccountKey=${FAKE_ACCOUNT_KEY};BlobEndpoint=http://127.0.0.1:${port}/fx`);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const probe = preflightProvider(s);
+  // The probe starts on the next microtask turn; its idle guard exists from the call, and the clock advances only here.
+  await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(PREFLIGHT_IDLE_TIMEOUT_MS - 1);
+  await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(1);
+  assert.deepEqual(await probe, { ready: false, reason: 'The provider gave no answer for 30000 ms.' });
+});
+
+// Resolves to a loopback URL of a relay in front of the fake. The relay holds each answer of the fake for 10 mocked seconds;
+// 'held' is emitted when an answer is held, so the test ticks the clock only after the answer exists.
+async function slowFakeEndpoint(t, fakeEndpoint) {
+  const events = new EventEmitter();
+  const fakePort = new URL(fakeEndpoint).port;
+  const relay = http.createServer((request, response) => {
+    const upstream = http.request(
+      { host: '127.0.0.1', port: fakePort, path: request.url, method: request.method, headers: request.headers },
+      (answer) => {
+        events.emit('held');
+        setTimeout(() => {
+          response.writeHead(answer.statusCode, answer.headers);
+          answer.pipe(response);
+        }, 10_000);
+      },
+    );
+    upstream.end();
+  });
+  await new Promise((resolve) => relay.listen(0, '127.0.0.1', resolve));
+  t.after(async () => {
+    relay.closeAllConnections();
+    await new Promise((resolve) => relay.close(resolve));
+  });
+  return { url: `http://127.0.0.1:${relay.address().port}/devstoreaccount1`, events };
+}
+
+test('the exported preflight answers within the idle window: an endpoint that answers after 10 mocked seconds is ready by default', async (t) => {
+  const { url, events } = await slowFakeEndpoint(t, fake.blobEndpoint);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const held = once(events, 'held');
+  const probe = preflight({ blobEndpoint: url });
+  await held;
+  t.mock.timers.tick(10_000);
+  const result = await probe;
+  assert.equal(result.reachable, true, result.message);
+});
+
+test('the exported preflight with the default is ended by the idle window at 30 s, not by a 2 s bound', async (t) => {
+  const port = await silentEndpointPort(t);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let settled = false;
+  const probe = preflight({ blobEndpoint: `http://127.0.0.1:${port}/devstoreaccount1` }).then((result) => {
+    settled = true;
+    return result;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(PREFLIGHT_IDLE_TIMEOUT_MS - 1);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false, 'the idle window has not ended one millisecond early');
+  t.mock.timers.tick(1);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, true, 'the idle window ended the probe at 30 s');
+  const result = await probe;
+  assert.equal(result.reachable, false);
+  assert.match(result.message, /no answer within 30000 ms/);
 });

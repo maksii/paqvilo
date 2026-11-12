@@ -1,14 +1,25 @@
+// @test-kind contract: $expand rules and expanded-collection links are the Paqvilo design of the simulated Dataverse Web API
 // $expand rules and expanded-collection links for the simulated Dataverse Web API.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataError } from '../lib/data-error.mjs';
 import { parseExpand } from '../lib/odata-query.mjs';
-import { decodeSkipToken } from '../lib/dataverse-odata.mjs';
+import { decodeSkipToken, parseDataverseRoute, parsePrefer } from '../lib/dataverse-odata.mjs';
 import { assertExpand, assertExpandText, childLinks } from '../lib/dataverse-expand.mjs';
+import { DataStore, emptyState } from '../lib/data.mjs';
+import { baseCurrencyId, createPrincipals, ensureSecurityModel } from '../lib/dataverse-security.mjs';
+import { createChangeLog } from '../lib/dataverse-changes.mjs';
+import { createRecordHandlers } from '../lib/dataverse-records.mjs';
 
 const ORIGIN = 'http://127.0.0.1:5555';
 const VERSION = 'v9.2';
 const ID = '6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f';
+const ORG = '6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f';
+const ADMIN_OID = 'aaaaaaaa-0000-4000-8000-000000000001';
+const EURO = '66666666-6666-4666-8666-666666666611';
+const BASE_ROW = '77777777-7777-4777-8777-777777777701';
+const EURO_ROW = '77777777-7777-4777-8777-777777777702';
+const NONE_ROW = '77777777-7777-4777-8777-777777777703';
 const PAGING =
   'Only $select and $filter clause can be provided while doing $expand on many-to-one relationship or nested one-to-many relationship.';
 
@@ -183,4 +194,97 @@ test('nested link without a token has no $skiptoken', () => {
   const [item] = parseExpand('widget_gadgets($expand=owninguser)');
   const link = childLinks(ORIGIN, VERSION, 'widgets', ID, 'widget_gadgets', item, { nested: true });
   assert.equal(link.url, `${ORIGIN}/api/data/v9.2/widgets(${ID})/widget_gadgets?$expand=owninguser`);
+});
+
+// A ledger row of an invented table whose transaction currency lookup is declared as a single-valued relationship.
+async function currencyHarness() {
+  const text = { dataverseType: 'nvarchar' };
+  const state = emptyState();
+  state.mappings.ledger = {
+    logicalName: 'ledger',
+    entitySet: 'ledgers',
+    idColumn: 'ledgerid',
+    nameColumn: 'name',
+    relationships: {
+      transactioncurrencyid: {
+        entity: 'transactioncurrency',
+        from: 'transactioncurrencyid',
+        to: 'transactioncurrencyid',
+        many: false,
+      },
+    },
+    fields: { name: text, creditlimit: { dataverseType: 'money' }, transactioncurrencyid: { dataverseType: 'lookup' } },
+  };
+  state.tables.ledger = [];
+  const settings = {
+    organizationId: ORG,
+    tenantId: 'tenant-test',
+    uniqueName: 'testorg',
+    friendlyName: 'Test Org',
+    version: '9.2.25041.00000',
+    users: [{ objectId: ADMIN_OID, upn: 'admin@example.test', displayName: 'Admin', roles: ['System Administrator'] }],
+  };
+  const store = await new DataStore({ state }).init();
+  await ensureSecurityModel(store, settings);
+  store.state.tables.transactioncurrency.push({
+    transactioncurrencyid: EURO,
+    currencyname: 'Invented euro',
+    isocurrencycode: 'XEU',
+    currencysymbol: 'E',
+    currencyprecision: 3,
+    exchangerate: 1.3,
+  });
+  store.state.tables.ledger.push(
+    { ledgerid: BASE_ROW, name: 'Base row', creditlimit: 10, transactioncurrencyid: baseCurrencyId(ORG), statecode: 0 },
+    { ledgerid: EURO_ROW, name: 'Euro row', creditlimit: 20, transactioncurrencyid: EURO, statecode: 0 },
+    { ledgerid: NONE_ROW, name: 'No currency row', creditlimit: 30, statecode: 0 },
+  );
+  const principals = createPrincipals(store, settings);
+  const handlers = createRecordHandlers({
+    store,
+    change: (fn) => fn(),
+    principals,
+    metadataFields: () => undefined,
+    changes: createChangeLog(store),
+  });
+  const admin = principals.byObjectId(ADMIN_OID);
+  const get = (path) => {
+    const url = new URL(`/api/data/${VERSION}/${path}`, ORIGIN);
+    return handlers.handle({
+      method: 'GET',
+      route: parseDataverseRoute(url.pathname),
+      url,
+      origin: ORIGIN,
+      version: VERSION,
+      prefer: parsePrefer(undefined),
+      headers: {},
+      user: admin,
+      caller: admin,
+      identity: { admin: true, id: admin.systemuserid, systemUserId: admin.systemuserid },
+      requestId: 'test',
+    });
+  };
+  return { store, get };
+}
+
+// @test-kind compatibility: Web API $expand of a single-valued navigation property returns the related row (Microsoft Learn, Web API query data, $expand)
+test('a single-row read expands the transaction currency into the related row', async () => {
+  const { get } = await currencyHarness();
+  const res = await get(`ledgers(${EURO_ROW})?$select=name&$expand=transactioncurrencyid($select=currencyname)`);
+  assert.equal(res.status, 200);
+  assert.equal(typeof res.body.transactioncurrencyid, 'object', 'the expanded currency is returned, not dropped');
+  assert.equal(res.body.transactioncurrencyid.currencyname, 'Invented euro');
+});
+
+// @test-kind compatibility: Web API $expand of a single-valued navigation property returns the related row on each row of a collection (Microsoft Learn, Web API query data, $expand)
+test('a collection read expands the transaction currency on each row that holds one', async () => {
+  const { store, get } = await currencyHarness();
+  const res = await get('ledgers?$select=name&$expand=transactioncurrencyid($select=currencyname)');
+  assert.equal(res.status, 200);
+  const byName = Object.fromEntries(res.body.value.map((row) => [row.name, row]));
+  assert.equal(byName['Euro row'].transactioncurrencyid.currencyname, 'Invented euro');
+  assert.equal(
+    byName['Base row'].transactioncurrencyid.currencyname,
+    store.state.tables.transactioncurrency[0].currencyname,
+  );
 });

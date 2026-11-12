@@ -4,14 +4,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { isAlive } from '../lense/commands/mirage.mjs';
+import {
+  isAlive,
+  miragePaths,
+  processIdentityAsync,
+  start,
+  stopOwnedSessions,
+  stopStarted,
+  updateOwnedSessions,
+} from '../lense/commands/mirage.mjs';
+import { guardShutdownSignals } from '../lense/signal-forwarding.mjs';
 import { workspace, cli, stopped } from './mirage-stop-workspace.mjs';
 import { processesNaming, trackedCliEnded } from './mirage-reaper.mjs';
+import { captureConsoleOutput } from './helpers/mirage-session-doubles.mjs';
 
 const standalone = (directory) => [
   'mirage',
@@ -146,4 +158,239 @@ test('a live unrelated process does not count as a workspace CLI when a PID is r
     false,
     'an actual live workspace CLI must still be reported as running',
   );
+});
+
+// @test-kind contract: a start prunes start-up logs beyond the newest 20 that no owned record names, and keeps the one a live record names
+test('a start prunes start-up logs beyond the newest 20 that no owned record names, and keeps the one a live record names', async (t) => {
+  const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-log-prune-')));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const cfg = { stateDir: directory, runtime: { kind: 'model-driven' }, siteName: 'invented' };
+  const paths = miragePaths(cfg);
+  await fsp.mkdir(paths.logRoot, { recursive: true });
+  // Ascending start times: the last twenty are the newest.
+  const seeded = Array.from(
+    { length: 30 },
+    (_, index) => `startup-${1000 + index}-a${String(index).padStart(3, '0')}.log`,
+  );
+  const referenced = 'startup-500-ffff.log';
+  for (const name of [...seeded, referenced]) await fsp.writeFile(path.join(paths.logRoot, name), '');
+  // The live record belongs to another state file, so the start under test is not refused for sharing one.
+  const stateFile = path.join(directory, 'other.json');
+  await updateOwnedSessions(paths, () => [
+    {
+      pid: process.pid,
+      stateFile,
+      log: path.join(paths.logRoot, referenced),
+      identity: { stateFile, runtime: { kind: 'model-driven' } },
+    },
+  ]);
+  let created;
+  await assert.rejects(
+    start(
+      cfg,
+      { port: '0', state: path.join(directory, 'state.json') },
+      {
+        paths,
+        spawnRuntime() {
+          throw new Error('invented spawn failure');
+        },
+      },
+    ),
+    (error) => {
+      created = path.basename(/Startup log: (.+)$/.exec(error.message)[1]);
+      return /invented spawn failure/.test(error.message);
+    },
+  );
+  const remaining = (await fsp.readdir(paths.logRoot))
+    .filter((name) => name !== created)
+    .toSorted((a, b) => a.localeCompare(b));
+  assert.deepEqual(
+    remaining,
+    [referenced, ...seeded.slice(10)].toSorted((a, b) => a.localeCompare(b)),
+  );
+});
+
+// @test-kind contract: a stop removes the start-up log of a ready runtime that acknowledged its shutdown
+test('a stop removes the start-up log of a ready runtime that acknowledged its shutdown', async (t) => {
+  const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-log-stop-')));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const cfg = { stateDir: directory, runtime: { kind: 'model-driven' }, siteName: 'invented' };
+  const paths = miragePaths(cfg);
+  await fsp.mkdir(paths.logRoot, { recursive: true });
+  const log = path.join(paths.logRoot, 'startup-1000-abc.log');
+  await fsp.writeFile(log, '');
+  // A stand-in runtime: it acknowledges the shutdown request and ends.
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true });
+  const spawned = once(child, 'spawn');
+  const exited = once(child, 'exit');
+  const server = http.createServer((request, response) => {
+    if (request.method === 'POST') {
+      response.writeHead(202).end();
+      child.kill();
+      return;
+    }
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ csrf: 'invented-csrf' }));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => {
+    child.kill();
+    server.closeAllConnections();
+    server.close();
+  });
+  const url = `http://127.0.0.1:${server.address().port}`;
+  const stateFile = path.join(directory, 'state.json');
+  await spawned;
+  const processIdentity = await processIdentityAsync(child.pid);
+  await updateOwnedSessions(paths, () => [
+    {
+      pid: child.pid,
+      processIdentity,
+      url,
+      stateFile,
+      log,
+      ready: true,
+      identity: { stateFile, runtime: { kind: 'model-driven' } },
+    },
+  ]);
+  const report = await stopOwnedSessions({ paths, pids: [child.pid] });
+  await exited;
+  assert.deepEqual(report.remaining, []);
+  assert.equal(report.stopped[0].graceful, true);
+  await assert.rejects(fsp.access(log), { code: 'ENOENT' });
+});
+
+// @test-kind contract: a repeated Ctrl+C while the owned sessions are stopped must not end the process before the stop settles
+test('a repeated stop signal during shutdown is absorbed until the owned sessions are stopped', async () => {
+  const before = process.listenerCount('SIGINT');
+  const notices = [];
+  let finishStop,
+    stops = 0;
+  const stopping = new Promise((resolve) => {
+    finishStop = resolve;
+  });
+  const shutdown = guardShutdownSignals(
+    () => {
+      stops++;
+      return stopping;
+    },
+    (line) => notices.push(line),
+  );
+  process.emit('SIGINT');
+  process.emit('SIGTERM');
+  assert.ok(process.listenerCount('SIGINT') > before, 'the stop must keep a SIGINT listener while it is pending');
+  assert.equal(stops, 1);
+  finishStop();
+  await shutdown;
+  assert.deepEqual(notices, ['stopping…']);
+  assert.equal(process.listenerCount('SIGINT'), before);
+});
+
+// Guards a cleanup that stays pending until finishCleanup is called, and records the notices and exit codes it produces.
+function guardedCleanup() {
+  const before = process.listenerCount('SIGINT');
+  const beforeTerm = process.listenerCount('SIGTERM');
+  const notices = [];
+  const exits = [];
+  let finishCleanup;
+  const cleanup = new Promise((resolve) => {
+    finishCleanup = resolve;
+  });
+  const shutdown = guardShutdownSignals(
+    () => cleanup,
+    (line) => notices.push(line),
+    {
+      exit: (code) => exits.push(code),
+    },
+  );
+  return { before, beforeTerm, notices, exits, finishCleanup, shutdown };
+}
+
+// @test-kind contract: one and two stop signals during cleanup neither exit the process nor cut the cleanup short
+test('one and two stop signals during cleanup neither exit nor end the cleanup early', async () => {
+  const { before, beforeTerm, notices, exits, finishCleanup, shutdown } = guardedCleanup();
+  process.emit('SIGINT');
+  process.emit('SIGTERM');
+  assert.deepEqual(exits, []);
+  finishCleanup('cleaned');
+  assert.equal(await shutdown, 'cleaned');
+  assert.deepEqual(notices, ['stopping…']);
+  assert.deepEqual(exits, []);
+  assert.equal(process.listenerCount('SIGINT'), before);
+  assert.equal(process.listenerCount('SIGTERM'), beforeTerm);
+});
+
+// @test-kind contract: a third Ctrl+C during cleanup forces exit 130 exactly once and removes the listeners
+test('a third Ctrl+C during cleanup forces exit 130 once and removes the listeners', async () => {
+  const { before, beforeTerm, notices, exits, finishCleanup, shutdown } = guardedCleanup();
+  process.emit('SIGINT');
+  process.emit('SIGINT');
+  process.emit('SIGINT');
+  assert.deepEqual(exits, [130]);
+  process.emit('SIGINT');
+  assert.deepEqual(exits, [130]);
+  assert.deepEqual(notices, ['stopping…', 'Forced exit: cleanup did not finish.']);
+  finishCleanup();
+  await shutdown;
+  assert.equal(process.listenerCount('SIGINT'), before);
+  assert.equal(process.listenerCount('SIGTERM'), beforeTerm);
+});
+
+// @test-kind contract: a third stop signal that is SIGTERM forces exit 143, the code of the signal that arrived third
+test('a third SIGTERM during cleanup forces exit 143', async () => {
+  const exits = [];
+  let finishCleanup;
+  const cleanup = new Promise((resolve) => {
+    finishCleanup = resolve;
+  });
+  const shutdown = guardShutdownSignals(
+    () => cleanup,
+    () => {},
+    { exit: (code) => exits.push(code) },
+  );
+  process.emit('SIGINT');
+  process.emit('SIGTERM');
+  assert.deepEqual(exits, []);
+  process.emit('SIGTERM');
+  assert.deepEqual(exits, [143]);
+  finishCleanup();
+  await shutdown;
+});
+
+// @test-kind contract: a repeated Ctrl+C while a started Mirage is being stopped must not end the process before the stop settles
+test('a repeated stop signal while a started Mirage stops is absorbed until the stop settles', async () => {
+  const noop = () => {};
+  process.on('SIGINT', noop);
+  process.on('SIGTERM', noop);
+  const { output, restore } = captureConsoleOutput();
+  let finishStop;
+  try {
+    const before = process.listenerCount('SIGINT');
+    const beforeTerm = process.listenerCount('SIGTERM');
+    const stopping = new Promise((resolve) => {
+      finishStop = resolve;
+    });
+    let stops = 0;
+    const stop = () => {
+      stops++;
+      return stopping.then(() => ({ stopped: [{ pid: 4321 }], remaining: [] }));
+    };
+    const portals = [{ site: 'alpha', session: { started: true, pid: 4321, url: 'http://127.0.0.1:4100/' } }];
+    const run = stopStarted(portals, {}, stop);
+    process.emit('SIGINT');
+    process.emit('SIGTERM');
+    assert.ok(process.listenerCount('SIGINT') > before, 'the stop must keep a SIGINT listener while it is pending');
+    assert.equal(stops, 1);
+    finishStop();
+    await run;
+    assert.equal(stops, 1);
+    assert.deepEqual(output.errors, ['stopping…']);
+    assert.equal(process.listenerCount('SIGINT'), before);
+    assert.equal(process.listenerCount('SIGTERM'), beforeTerm);
+  } finally {
+    finishStop?.();
+    restore();
+    process.off('SIGINT', noop);
+    process.off('SIGTERM', noop);
+  }
 });

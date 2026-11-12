@@ -1,3 +1,4 @@
+// @test-kind contract: the resource audit inventories file and field kinds independently of the mapper and reports blocked resources explicitly.
 import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -10,6 +11,8 @@ import YAML from 'yaml';
 import { PortalModel } from '../lense/portal-model.mjs';
 import { auditResources } from '../lense/resource-audit.mjs';
 import { createFixture, SITE, HOME_ID } from './fixture.mjs';
+
+const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
 
 // No Git baseline: the audit is offline, never reads Git and skips .git.
 function fixture(t) {
@@ -198,7 +201,7 @@ test('audit CLI is offline, reports all sites and strict mode fails on blocked c
       env,
       encoding: 'utf8',
       windowsHide: true,
-      timeout: 30_000,
+      timeout: CLI_HANG_GUARD_MS,
     });
   const normal = run('--all');
   assert.equal(normal.status, 0, normal.stderr);
@@ -256,7 +259,7 @@ test('duplicate active page URLs warn once and inactive single-extension web fil
       {
         encoding: 'utf8',
         windowsHide: true,
-        timeout: 30000,
+        timeout: CLI_HANG_GUARD_MS,
         env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_'))),
       },
     ),

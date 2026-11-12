@@ -50,3 +50,5 @@
 **/*.xml
 **/*.resx
 **/*.svg
+/examples/company-operations/data/catalogue.json
+/examples/company-operations/data/stress-catalogue.json

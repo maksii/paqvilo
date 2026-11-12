@@ -5,6 +5,8 @@ import path from 'node:path';
 import http from 'node:http';
 import { execFileSync } from 'node:child_process';
 
+const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
+
 // Git exports GIT_DIR, GIT_INDEX_FILE and similar variables to hooks, and the pre-push hook runs these suites. Git
 // commands that tests or the toolkit run in fixture repositories would otherwise read and write the toolkit repository.
 for (const key of Object.keys(process.env)) if (/^GIT_/i.test(key)) delete process.env[key];
@@ -102,7 +104,7 @@ function git(cwd, ...args) {
       'core.longpaths=true',
       ...args,
     ],
-    { cwd, env, stdio: 'ignore', windowsHide: true, timeout: 30_000 },
+    { cwd, env, stdio: 'ignore', windowsHide: true, timeout: CLI_HANG_GUARD_MS },
   );
 }
 

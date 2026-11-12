@@ -111,38 +111,35 @@ test('cached fingerprints tolerate files and directories removed at their read g
   await assert.rejects(cachedSourceFingerprint(root), { code: 'EACCES' });
 });
 
-test(
-  'fresh startup seeds the complete implementation fingerprint cache and state reads still detect source edits',
-  { timeout: 60000 },
-  async (t) => {
-    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'sim-fingerprint-startup-'));
-    t.after(() => fs.rm(directory, { recursive: true, force: true }));
-    const toolkit = fileURLToPath(new URL('../../', import.meta.url));
-    const runtime = path.join(directory, 'mirage');
-    await fs.mkdir(runtime);
-    const target = path.join(runtime, 'server.mjs');
-    await fs.copyFile(path.join(toolkit, 'mirage/server.mjs'), target);
-    await fs.copyFile(path.join(toolkit, 'package.json'), path.join(directory, 'package.json'));
-    for (const entry of await fs.readdir(path.join(toolkit, 'mirage'), { withFileTypes: true })) {
-      if (entry.name === 'server.mjs' || entry.name === '.paqvilo') continue;
-      if (entry.isDirectory())
-        await fs.symlink(
-          path.join(toolkit, 'mirage', entry.name),
-          path.join(runtime, entry.name),
-          process.platform === 'win32' ? 'junction' : 'dir',
-        );
-      else if (entry.isFile())
-        await fs.copyFile(path.join(toolkit, 'mirage', entry.name), path.join(runtime, entry.name));
-    }
-    for (const [link, actual] of [
-      [path.join(directory, 'lense'), path.join(toolkit, 'lense')],
-      [path.join(directory, 'node_modules'), path.join(toolkit, 'node_modules')],
-    ])
-      await fs.symlink(actual, link, process.platform === 'win32' ? 'junction' : 'dir');
-    const source = path.join(directory, 'portal');
-    await fs.mkdir(source);
-    await fs.writeFile(path.join(source, 'website.yml'), 'adx_websiteid: fixture\nadx_name: Fingerprint fixture');
-    const program = `
+test('fresh startup seeds the complete implementation fingerprint cache and state reads still detect source edits', async (t) => {
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'sim-fingerprint-startup-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const toolkit = fileURLToPath(new URL('../../', import.meta.url));
+  const runtime = path.join(directory, 'mirage');
+  await fs.mkdir(runtime);
+  const target = path.join(runtime, 'server.mjs');
+  await fs.copyFile(path.join(toolkit, 'mirage/server.mjs'), target);
+  await fs.copyFile(path.join(toolkit, 'package.json'), path.join(directory, 'package.json'));
+  for (const entry of await fs.readdir(path.join(toolkit, 'mirage'), { withFileTypes: true })) {
+    if (entry.name === 'server.mjs' || entry.name === '.paqvilo') continue;
+    if (entry.isDirectory())
+      await fs.symlink(
+        path.join(toolkit, 'mirage', entry.name),
+        path.join(runtime, entry.name),
+        process.platform === 'win32' ? 'junction' : 'dir',
+      );
+    else if (entry.isFile())
+      await fs.copyFile(path.join(toolkit, 'mirage', entry.name), path.join(runtime, entry.name));
+  }
+  for (const [link, actual] of [
+    [path.join(directory, 'lense'), path.join(toolkit, 'lense')],
+    [path.join(directory, 'node_modules'), path.join(toolkit, 'node_modules')],
+  ])
+    await fs.symlink(actual, link, process.platform === 'win32' ? 'junction' : 'dir');
+  const source = path.join(directory, 'portal');
+  await fs.mkdir(source);
+  await fs.writeFile(path.join(source, 'website.yml'), 'adx_websiteid: fixture\nadx_name: Fingerprint fixture');
+  const program = `
     import fs from 'node:fs/promises';
     import path from 'node:path';
     import {pathToFileURL} from 'node:url';
@@ -161,55 +158,54 @@ test(
       console.log(JSON.stringify({atStart,afterFirst,afterSecond,afterChange:reads,first:first.status,second:second.status,changed:changed.status}));
     } finally {await simulator.close();}
   `;
-    // The runtime was copied moments ago: a shifted clock lets its fingerprint be cached, as for settled files.
-    const child = spawn(process.execPath, ['--input-type=module', '-e', program], {
-      cwd: directory,
-      env: settledClockEnv({
-        ...process.env,
-        PAQ_TEST_SERVER_FILE: target,
-        PAQ_TEST_PORTAL: source,
-        PAQ_TEST_STATE: path.join(directory, 'state.json'),
-      }),
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let output = '',
-      errors = '';
-    child.stdout.on('data', (chunk) => {
-      output += chunk;
-    });
-    child.stderr.on('data', (chunk) => {
-      errors += chunk;
-    });
-    t.after(async () => {
-      if (child.exitCode === null && child.signalCode === null) {
-        const closed = once(child, 'close');
-        child.kill();
-        await closed;
-      }
-    });
-    const [code] = await once(child, 'close');
-    assert.equal(code, 0, errors);
-    const result = JSON.parse(output.trim().split('\n').at(-1));
-    // Startup, not import, waits for the loaded implementation's fingerprint.
-    assert.ok(result.atStart >= 1, 'startup hashes the loaded implementation');
-    assert.equal(
-      result.afterFirst,
-      result.atStart,
-      'the first state read must not hash unchanged implementation bytes again',
-    );
-    assert.equal(result.afterSecond, result.atStart, 'warm state reads retain the same complete fingerprint');
-    assert.equal(result.afterChange, result.atStart + 1, 'an authored source edit invalidates the cached bytes');
-    assert.equal(result.first.implementationChanged, false);
-    assert.equal(result.second.implementationChanged, false);
-    assert.equal(result.changed.implementationChanged, true);
-    assert.equal(result.changed.loadedImplementationFingerprint, result.first.loadedImplementationFingerprint);
-    assert.notEqual(result.changed.implementationFingerprint, result.first.implementationFingerprint);
-  },
-);
+  // The runtime was copied moments ago: a shifted clock lets its fingerprint be cached, as for settled files.
+  const child = spawn(process.execPath, ['--input-type=module', '-e', program], {
+    cwd: directory,
+    env: settledClockEnv({
+      ...process.env,
+      PAQ_TEST_SERVER_FILE: target,
+      PAQ_TEST_PORTAL: source,
+      PAQ_TEST_STATE: path.join(directory, 'state.json'),
+    }),
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let output = '',
+    errors = '';
+  child.stdout.on('data', (chunk) => {
+    output += chunk;
+  });
+  child.stderr.on('data', (chunk) => {
+    errors += chunk;
+  });
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) {
+      const closed = once(child, 'close');
+      child.kill();
+      await closed;
+    }
+  });
+  const [code] = await once(child, 'close');
+  assert.equal(code, 0, errors);
+  const result = JSON.parse(output.trim().split('\n').at(-1));
+  // Startup, not import, waits for the loaded implementation's fingerprint.
+  assert.ok(result.atStart >= 1, 'startup hashes the loaded implementation');
+  assert.equal(
+    result.afterFirst,
+    result.atStart,
+    'the first state read must not hash unchanged implementation bytes again',
+  );
+  assert.equal(result.afterSecond, result.atStart, 'warm state reads retain the same complete fingerprint');
+  assert.equal(result.afterChange, result.atStart + 1, 'an authored source edit invalidates the cached bytes');
+  assert.equal(result.first.implementationChanged, false);
+  assert.equal(result.second.implementationChanged, false);
+  assert.equal(result.changed.implementationChanged, true);
+  assert.equal(result.changed.loadedImplementationFingerprint, result.first.loadedImplementationFingerprint);
+  assert.notEqual(result.changed.implementationFingerprint, result.first.implementationFingerprint);
+});
 
 // @test-kind contract+tooling: generated SDK lock fixtures must preserve the implementation hash used by concurrent acceptance runs.
-test('fresh Mirage startup tolerates an exclusively locked SDK build product', { timeout: 60000 }, async (t) => {
+test('fresh Mirage startup tolerates an exclusively locked SDK build product', async (t) => {
   const implementationRoot = fileURLToPath(new URL('../', import.meta.url));
   const before = await implementationSourceFingerprint(implementationRoot);
   const sdkRoot = fileURLToPath(new URL('../test-sdk/', import.meta.url));

@@ -352,9 +352,13 @@ test('Mirage serves setup independently from simulation identity/state and repor
   const status = await fetch(simulator.url + '/_setup/api/status').then((res) => res.json());
   assert.equal(status.runtime.restartRequired, false);
   assert.equal(status.runtime.product, 'Mirage');
-  const saved = await fetch(simulator.url + '/_setup/api/config', {
+  const saved = await fetch(simulator.setupUrl + 'api/config', {
     method: 'POST',
-    headers: { Origin: simulator.url, 'Content-Type': 'application/json', 'X-Paqvilo-Setup-CSRF': status.csrf },
+    headers: {
+      Origin: new URL(simulator.setupUrl).origin,
+      'Content-Type': 'application/json',
+      'X-Paqvilo-Setup-CSRF': status.csrf,
+    },
     body: JSON.stringify({
       layer: 'shared',
       revision: status.revision,

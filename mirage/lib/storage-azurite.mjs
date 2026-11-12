@@ -4,7 +4,7 @@
 // Blob REST reference: https://learn.microsoft.com/rest/api/storageservices/blob-service-rest-api; Azurite differences:
 // https://learn.microsoft.com/azure/storage/common/storage-use-azurite#differences-between-azurite-and-azure-storage
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
-import { ProviderError, STORAGE_OPERATIONS, validateKey } from './storage-provider.mjs';
+import { ProviderError, STORAGE_OPERATIONS, requestBound, validateKey } from './storage-provider.mjs';
 import { isLoopbackUrl, loopbackFetch } from './dataverse-webhooks.mjs';
 import { clockFunction, systemClock } from './runtime-clock.mjs';
 import { tracedFetch } from './trace-hosts.mjs';
@@ -205,19 +205,19 @@ export function createAzuriteStorage({
   };
 
   // One authorized request. x-ms-date is wall time (the service rejects a request older than 15 minutes), not the runtime clock.
-  async function send(method, url, { headers = {}, body, signal, timeoutMs } = {}) {
+  async function send(method, url, { headers = {}, body, signal, timeoutMs, progress } = {}) {
     if (closed) throw fail('Unavailable', `Storage provider '${id}' is closed.`);
     endpoint();
     const all = { 'x-ms-date': new Date().toUTCString(), 'x-ms-version': BLOB_API_VERSION, ...headers };
     const signed = { ...all, 'content-length': body?.length ? String(body.length) : '' };
     all.authorization = `SharedKey ${accountName}:${hmac(accountKey, sharedKeyStringToSign({ method, url, headers: signed, accountName }))}`;
-    // The timer bounds the wait for response headers only, so a long streamed download is not cut off.
+    // The timer bounds the wait for response headers only, so a long streamed download is not cut off. A probe passes
+    // progress instead: its caller's idle guard (preflightProvider) bounds the wait, so send sets no deadline of its own.
     const limit = timeoutMs ?? requestTimeoutMs,
       timer = new AbortController();
-    const timeout = setTimeout(
-      () => timer.abort(new DOMException(`no answer within ${limit} ms`, 'TimeoutError')),
-      limit,
-    );
+    const timeout = progress
+      ? null
+      : setTimeout(() => timer.abort(new DOMException(`no answer within ${limit} ms`, 'TimeoutError')), limit);
     try {
       // Each Blob request is an http-out span of the current trace (D-R3-5): blob bytes are never captured, the span names
       // the provider, container and size. The forwarded trace headers are not x-ms-* headers, so the signature is unchanged.
@@ -230,6 +230,7 @@ export function createAzuriteStorage({
         attributes: { provider: id, container, ...(body?.length ? { bytes: body.length } : {}) },
         fetch: loopbackFetch,
       });
+      progress?.();
       health =
         response.status === 401 || response.status === 403
           ? {
@@ -593,14 +594,18 @@ export function createAzuriteStorage({
       return { key, permission: q('sp'), expiresOn: q('se') };
     },
 
-    // Readiness: an authorized List Containers (2 s) answers 200 with its EnumerationResults body (any other loopback process
-    // that answers 200 is not a Blob endpoint), else the reason (never the key).
-    async preflight() {
+    // Readiness: an authorized List Containers answers 200 with its EnumerationResults body (any other loopback process
+    // that answers 200 is not a Blob endpoint), else the reason (never the key). The probe's context (preflightProvider)
+    // carries the signal that ends the request and the progress hook that restarts its idle window.
+    async preflight(context) {
       if (closed) return { ready: false, reason: 'The provider is closed.' };
       if (config.error) return { ready: false, reason: config.error.message };
       const result = await (async () => {
         try {
-          const response = await send('GET', `${endpoint()}?comp=list&maxresults=1`, { timeoutMs: 2000 });
+          const response = await send('GET', `${endpoint()}?comp=list&maxresults=1`, {
+            signal: context?.signal,
+            progress: context?.progress,
+          });
           if (response.status === 200) {
             if ((await response.text()).includes('<EnumerationResults')) return { ready: true };
             return {
@@ -648,8 +653,11 @@ function serviceSasStringToSign({ sp, st = '', se, accountName, container, key, 
   );
 }
 
-/** Loopback-only reachability probe of a Blob endpoint (no authorization). Any HTTP answer means the process is running. Never throws. */
-export async function preflight({ blobEndpoint, timeoutMs = 2000, source = 'the connection string' } = {}) {
+/**
+ * Loopback-only reachability probe of a Blob endpoint (no authorization). Any HTTP answer means the process is running. Never throws.
+ * timeoutMs, when given, is the caller's bound; by default the probe is ended by the idle window (requestBound).
+ */
+export async function preflight({ blobEndpoint, timeoutMs, source = 'the connection string' } = {}) {
   let url;
   try {
     url = new URL(blobEndpoint);
@@ -673,14 +681,15 @@ export async function preflight({ blobEndpoint, timeoutMs = 2000, source = 'the 
   url.search = '';
   url.searchParams.set('restype', 'service');
   url.searchParams.set('comp', 'properties');
+  const bound = requestBound(timeoutMs);
   try {
-    const response = await loopbackFetch(url.href, { method: 'GET', signal: AbortSignal.timeout(timeoutMs) });
+    const response = await loopbackFetch(url.href, { method: 'GET', signal: bound.signal });
     await response.body?.cancel();
     return { reachable: true, status: response.status, message: `Azurite answered ${response.status} at ${shown}.` };
   } catch (error) {
     const reason =
       error?.name === 'TimeoutError'
-        ? `no answer within ${timeoutMs} ms`
+        ? `no answer within ${bound.limitMs} ms`
         : (error?.cause?.code ?? error?.code ?? 'connection failed');
     return {
       reachable: false,
@@ -688,5 +697,7 @@ export async function preflight({ blobEndpoint, timeoutMs = 2000, source = 'the 
       message: `Azurite is not reachable at ${shown} (${reason}). ${START_HINT}`,
       diagnostic: 'PROVIDER_UNREACHABLE',
     };
+  } finally {
+    bound.done();
   }
 }

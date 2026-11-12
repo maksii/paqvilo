@@ -758,6 +758,64 @@ test('abort during a scan stops the row loop', async () => {
   );
 });
 
+const partRows = (count) => Array.from({ length: count }, (_, i) => ({ contoso_partid: `P${i}` }));
+
+// @test-kind contract: an abort raised by a timer must reach a cross join, so the join yields to the event loop.
+test('a timer abort cancels a large cross join', async () => {
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), 0);
+  const { scan } = makeScan({ contoso_part: partRows(600) });
+  await assert.rejects(
+    executeBatch('SELECT a.contoso_partid AS x FROM contoso_part a CROSS JOIN contoso_part b', {
+      catalog,
+      scan,
+      now: NOW,
+      signal: controller.signal,
+    }),
+    { number: 3617 },
+  );
+});
+
+// @test-kind contract: a cross join whose intermediate rows exceed the statement's tuple budget is refused.
+test('a cross join over the tuple budget raises a resource error', async () => {
+  const { scan } = makeScan({ contoso_part: partRows(200) });
+  await assert.rejects(
+    executeBatch('SELECT a.contoso_partid AS x FROM contoso_part a CROSS JOIN contoso_part b', {
+      catalog,
+      scan,
+      now: NOW,
+      tupleBudget: 10000,
+    }),
+    { number: 40000, message: 'The statement exceeded its budget of 10000 intermediate rows.' },
+  );
+});
+
+// @test-kind contract: a cross join within the tuple budget returns the same rows as an unbudgeted run.
+test('a cross join within the tuple budget returns every row', async () => {
+  const result = await run(
+    'SELECT w.contoso_name AS n, p.contoso_partid AS id FROM contoso_widget w CROSS JOIN contoso_part p',
+    { tupleBudget: 10000 },
+  );
+  assert.deepEqual(rowsOf(result), [
+    ['Bolt', 'P1'],
+    ['Bolt', 'P2'],
+    ['Bolt', 'P3'],
+    ['Bolt', 'P4'],
+    ['Nut', 'P1'],
+    ['Nut', 'P2'],
+    ['Nut', 'P3'],
+    ['Nut', 'P4'],
+    ['Gear', 'P1'],
+    ['Gear', 'P2'],
+    ['Gear', 'P3'],
+    ['Gear', 'P4'],
+    ['bolt pack', 'P1'],
+    ['bolt pack', 'P2'],
+    ['bolt pack', 'P3'],
+    ['bolt pack', 'P4'],
+  ]);
+});
+
 // ---- Aggregates, GROUP BY and HAVING. Expected values follow SQL Server.
 const aggregateCases = [
   ['COUNT(*) counts rows', 'SELECT COUNT(*) AS n FROM contoso_widget', [[4]]],
@@ -961,6 +1019,37 @@ test('aggregate result columns carry SQL Server types', async () => {
   assert.deepEqual([sp.type, sp.precision, sp.scale], ['money', 19, 4]);
   assert.equal(aq.type, 'int');
   assert.deepEqual([mn.type, mn.length], ['nvarchar', 100]);
+});
+
+// @test-kind contract: SUM of money is money(19,4) by SQL Server typing, so a finer source value is rounded, not widened.
+test('SUM of money with a finer source value stays money with scale 4', async () => {
+  const sourced = [
+    { ...widgets[0], contoso_price: { decimal: '2.5000' } },
+    { ...widgets[0], contoso_price: 1e-7 },
+  ];
+  const result = await run('SELECT SUM(w.contoso_price) AS s FROM contoso_widget w', {
+    scan: makeScan({ contoso_widget: sourced }).scan,
+  });
+  const [s] = result.resultSets[0].columns;
+  assert.deepEqual([s.type, s.precision, s.scale], ['money', 19, 4]);
+  assert.deepEqual(rowsOf(result), [['2.5000']]);
+});
+
+test('a text value longer than its declared length widens the result column', async () => {
+  const sourced = [{ ...widgets[0], contoso_name: 'n'.repeat(150) }];
+  const result = await run('SELECT w.contoso_name AS n FROM contoso_widget w', {
+    scan: makeScan({ contoso_widget: sourced }).scan,
+  });
+  assert.equal(result.resultSets[0].columns[0].length, 150);
+  assert.deepEqual(rowsOf(result), [['n'.repeat(150)]]);
+});
+
+test('a text value longer than 4000 characters makes the result column nvarchar(max)', async () => {
+  const sourced = [{ ...widgets[0], contoso_name: 'n'.repeat(4001) }];
+  const result = await run('SELECT w.contoso_name AS n FROM contoso_widget w', {
+    scan: makeScan({ contoso_widget: sourced }).scan,
+  });
+  assert.equal(result.resultSets[0].columns[0].length, 'max');
 });
 
 test('zero-row aggregate columns keep their static types', async () => {

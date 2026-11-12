@@ -113,6 +113,27 @@ test('keeps the gate and hotspot lines when the issues endpoint refuses the toke
   }
 });
 
+test('explains a hotspot refusal in plain words and keeps other hotspot failures generic', async () => {
+  const openIssues = [
+    'Open issues in new code: 2',
+    '  invented:rule-one scripts/example.mjs:12 Remove the unused value.',
+    '  invented:rule-two test/example.test.mjs:- Name the test better.',
+  ];
+  for (const status of [401, 403]) {
+    const { fetchImpl } = stubFetch({ ...healthyRoutes, '/api/hotspots/search': () => jsonResponse({}, status) });
+    const lines = await sonarGateReport({ base, token, project, branch: 'invented-branch', fetchImpl });
+    assert.deepEqual(lines, [
+      'Quality gate: ERROR',
+      '  FAILED new_violations: actual 3, GT 0',
+      ...openIssues,
+      '  (the token is not allowed to read security hotspots; the quality gate conditions above already count them)',
+    ]);
+  }
+  const { fetchImpl } = stubFetch({ ...healthyRoutes, '/api/hotspots/search': () => jsonResponse({}, 500) });
+  const lines = await sonarGateReport({ base, token, project, branch: 'invented-branch', fetchImpl });
+  assert.equal(lines.at(-1), '  (could not read api/hotspots/search: HTTP 500)');
+});
+
 test('the workflow runs the gate report as the last step of its job and only after a failure', async () => {
   const workflow = parse(await readFile(new URL('../.github/workflows/sonarqube.yml', import.meta.url), 'utf8'));
   const reporting = Object.values(workflow.jobs).map((job) => {

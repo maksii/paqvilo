@@ -1,3 +1,4 @@
+// @test-kind contract: short-key YAML sources import with the data model they declare, and project files carry it through inspect.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -318,7 +319,7 @@ test('serve treats a code site like any export, and discovered server logic enfo
 
 test('inspect and project files carry the data model; --data-model is validated and refused with --project', async (t) => {
   const run = (args) =>
-    execFileAsync(process.execPath, [CLI, ...args], { timeout: 120000 }).then(
+    execFileAsync(process.execPath, [CLI, ...args]).then(
       (result) => ({ code: 0, ...result }),
       (error) => error,
     );
@@ -375,6 +376,7 @@ test('the serverlogic Liquid tag gives its output an unsuccessful result instead
   assert.equal(rendered, '[false|501|]fallback');
 });
 
+// @test-kind security: exported operations deny anonymous callers
 test('cloud flows import with their trigger, flow and roles; source operations deny anonymous callers and explicit endpoints can mock them', async (t) => {
   const portal = await importPortal(SITE);
   assert.deepEqual(

@@ -149,7 +149,8 @@ export const canvasColorNames = Object.freeze(
 export function parseCanvasColor(value) {
   if (typeof value !== 'string') return null;
   const input = value.trim().toLowerCase();
-  const hex = NAMES[input] ?? (/^#[0-9a-f]{6}(?:[0-9a-f]{2})?$/.test(input) ? input.slice(1) : null);
+  const named = Object.hasOwn(NAMES, input) ? NAMES[input] : null;
+  const hex = named ?? (/^#[0-9a-f]{6}(?:[0-9a-f]{2})?$/.test(input) ? input.slice(1) : null);
   if (hex)
     return [
       Number.parseInt(hex.slice(0, 2), 16),

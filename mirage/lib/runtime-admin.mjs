@@ -1,6 +1,7 @@
 // Generic local administration shared by portal and solution-only hosts.
 import fs from 'node:fs/promises';
 import { platformSettingEntries, validatePlatformOverrides } from './platform-settings.mjs';
+import { sameToken } from './admin-origin.mjs';
 /** The Content-Security-Policy of the /_sim/ administration page on both hosts: same-origin only, no inline script or style. */
 export const ADMIN_CSP =
   "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
@@ -32,6 +33,8 @@ export const adminAssetType = (name) => {
   return 'text/html; charset=utf-8';
 };
 const error = (message, status = 400, code = 'INVALID_REQUEST') => Object.assign(new Error(message), { status, code });
+/** The refusal of an administration write without the simulator CSRF token; the router and the staff-session route both throw it. */
+export const missingCsrfToken = () => error('Missing simulator CSRF token.', 403);
 const decodeAdminIdentifier = (value) => {
   try {
     return decodeURIComponent(value);
@@ -224,10 +227,10 @@ export function createRuntimeAdminRouter({
     if (!prefix) return false;
     const relative = url.pathname.slice(prefix[0].length),
       method = req.method;
-    const token = csrf();
-    if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && (!token || req.headers['x-sim-csrf'] !== token))
-      throw error('Missing simulator CSRF token.', 403);
     if (staffSession && (await staffSession(req, res, url))) return true;
+    const token = csrf();
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && (!token || !sameToken(req.headers['x-sim-csrf'], token)))
+      throw missingCsrfToken();
     const context = {
       req,
       res,

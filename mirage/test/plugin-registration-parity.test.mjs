@@ -589,7 +589,7 @@ test('a global Create runs for the table it fires on, and an asynchronous Retrie
   assert.equal(seen[0].context.OutputParameters.BusinessEntityCollection.length, 1);
 });
 
-// @test-kind unproven: the sdkmessage/sdkmessagefilter lifecycle of a runtime custom API (create, delete) is a local model until a native step-registration-rules capture exists; the native and native-r2 customApi captures show the stage 10 edit seen at 20 and 40 and the asynchronous step, but no corpus file holds the custom API's sdkmessagefilter row (iscustomprocessingstepallowed) asserted here.
+// @test-kind unproven: the steps that run around a runtime custom API at stages 10, 20 and 40 are a local model; the native and native-r2 customApi captures show the stage 10 edit seen at 20 and 40 and the asynchronous step, but the invented type's handler values are not a native capture.
 // Native customApi scenario: custom APIs provisioned over the Web API took steps at stages 10, 20, 40 and asynchronous
 // PostOperation; the stage-10 step edited the Text input that later stages saw, and the reply carried the stage-40 output.
 test('a custom API created at runtime gets its message and filter, and its registered steps run around it', async (t) => {
@@ -647,16 +647,65 @@ test('a custom API created at runtime gets its message and filter, and its regis
     [20, 'edited at 10'],
     [40, 'edited at 10'],
   ]);
-  for (const step of f.store.tableRows('sdkmessageprocessingstep'))
-    assert.equal(
-      (await f.request('DELETE', `/sdkmessageprocessingsteps(${step.sdkmessageprocessingstepid})`)).status,
-      204,
-    );
+  // The native order: the steps go first, then the API. The message and filter lifecycle is in the test below.
+  const stepIds = f.store.tableRows('sdkmessageprocessingstep').map((step) => step.sdkmessageprocessingstepid);
+  for (const id of stepIds) assert.equal((await f.request('DELETE', `/sdkmessageprocessingsteps(${id})`)).status, 204);
   assert.equal((await f.request('DELETE', `/customapis(${api})`)).status, 204);
-  assert.equal(f.message('x_Ping'), undefined, 'deleting the API removes its message');
+});
+
+// @test-kind observation: native probe NP-9, 2026-11-12, Dataverse Web API on a developer environment, one capture (workbench notes/native-probes-2026-11-12/NP-9.json)
+test('a runtime custom API keeps its message and filter while its step is registered, then removes both with the API', async (t) => {
+  const f = await fixture(t);
+  await installCustomApi(f.api).ready;
+  const api = '41000000-0000-4000-8000-0000000000a2';
+  const created = await f.request('POST', '/customapis', {
+    customapiid: api,
+    uniquename: 'x_Ping',
+    name: 'x_Ping',
+    displayname: 'Invented ping',
+    description: 'Invented runtime custom API',
+    bindingtype: 0,
+    isfunction: false,
+    allowedcustomprocessingsteptype: 2,
+  });
+  assert.equal(created.status, 201, await created.clone().text());
+  const message = f.message('x_Ping');
+  assert.equal(message.availability, 0);
+  assert.equal(message.isprivate, false);
+  assert.equal(message.autotransact, true);
+  assert.equal(message.workflowsdkstepenabled, false);
+  const filterRow = f.filter('x_Ping', 'none');
+  assert.equal(filterRow.iscustomprocessingstepallowed, true);
+  assert.equal(filterRow.secondaryobjecttypecode, 'none');
+  assert.equal(filterRow.availability, 0);
+  assert.equal(filterRow.isvisible, true);
+  assert.equal((await f.register('x_Ping', { table: 'none', name: 'Ping 40', stage: 40, mode: 0 })).status, 201);
+  const refused = await f.request('DELETE', `/customapis(${api})`);
+  assert.equal(refused.status, 405, await refused.clone().text());
+  const body = await refused.json();
+  assert.equal(body.error.code, '0x80040227');
+  assert.match(
+    body.error.message,
+    /^The object you tried to delete is associated with another object and cannot be deleted\./,
+  );
+  assert.ok(f.message('x_Ping'), 'the message stays');
+  assert.ok(f.filter('x_Ping', 'none'), 'the filter stays');
+  assert.ok(
+    f.store.tableRows('customapi').some((row) => row.customapiid === api),
+    'the API stays',
+  );
+  const [step] = f.store.tableRows('sdkmessageprocessingstep');
   assert.equal(
-    f.store.tableRows('sdkmessagefilter').some((row) => row.sdkmessageid === listed.value[0].sdkmessageid),
+    (await f.request('DELETE', `/sdkmessageprocessingsteps(${step.sdkmessageprocessingstepid})`)).status,
+    204,
+  );
+  assert.equal((await f.request('DELETE', `/customapis(${api})`)).status, 204);
+  assert.equal(f.message('x_Ping'), undefined, 'the API delete removes its message');
+  assert.equal(f.filter('x_Ping', 'none'), undefined, 'and its filter');
+  assert.equal(
+    f.store.tableRows('customapi').some((row) => row.customapiid === api),
     false,
+    'and the API',
   );
 });
 

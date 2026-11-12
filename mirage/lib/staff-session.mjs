@@ -4,6 +4,8 @@ import { DataError } from './data-error.mjs';
 import { uuidV5 } from './dataverse-security.mjs';
 import { TIME_ZONE_IDS } from './platform-time-zones.mjs';
 import { portalLanguage } from './portal-languages.mjs';
+import { sameToken } from './admin-origin.mjs';
+import { missingCsrfToken } from './runtime-admin.mjs';
 
 const unavailable = () =>
   new DataError('The selected staff user is unavailable or disabled.', 401, 'StaffPrincipalUnavailable');
@@ -347,25 +349,37 @@ export function createStaffSessions({ organization, port = () => '', secret = ra
   };
 }
 
+// The simulator token must be a non-empty string, and the header must equal it in constant time.
+const tokenMatches = (header, token) => typeof token === 'string' && token.length > 0 && sameToken(header, token);
+
 export function createStaffSessionHandler({ sessions, csrf, json, readBody }) {
+  const answerError = (res, error) =>
+    json(res, error.status ?? 500, { error: { message: error.message, code: error.code ?? 'StaffSessionError' } });
+  const serve = async (req, res) => {
+    if (req.method === 'POST') {
+      const body = await readBody(req);
+      const header = sessions.select(req, body?.userId ?? body?.principalId);
+      res.setHeader('set-cookie', header);
+      json(res, 200, sessions.describe({ headers: { cookie: header.split(';')[0] } }));
+    } else if (req.method === 'DELETE') {
+      res.setHeader('set-cookie', sessions.cookie(null));
+      json(res, 200, sessions.describe({ headers: {} }));
+    } else json(res, 200, sessions.describe(req));
+  };
   return async (req, res, url) => {
     if (!/^\/(?:_sim|__sim)\/api\/dataverse\/session\/?$/.test(url.pathname)) return false;
+    // The token is checked before the method, as the router checks it, so a caller without it learns nothing about the methods.
+    // A missing or wrong token is thrown as the router throws it, so the host answers it and records it with the root.
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && !tokenMatches(req.headers['x-sim-csrf'], csrf()))
+      throw missingCsrfToken();
+    if (!['GET', 'POST', 'DELETE'].includes(req.method)) {
+      answerError(res, new DataError('Method not allowed.', 405, 'MethodNotAllowed'));
+      return true;
+    }
     try {
-      if (!['GET', 'POST', 'DELETE'].includes(req.method))
-        throw new DataError('Method not allowed.', 405, 'MethodNotAllowed');
-      if (req.method !== 'GET' && req.headers['x-sim-csrf'] !== csrf())
-        throw new DataError('Missing simulator CSRF token.', 403, 'CsrfRequired');
-      if (req.method === 'POST') {
-        const body = await readBody(req);
-        const header = sessions.select(req, body?.userId ?? body?.principalId);
-        res.setHeader('set-cookie', header);
-        json(res, 200, sessions.describe({ headers: { cookie: header.split(';')[0] } }));
-      } else if (req.method === 'DELETE') {
-        res.setHeader('set-cookie', sessions.cookie(null));
-        json(res, 200, sessions.describe({ headers: {} }));
-      } else json(res, 200, sessions.describe(req));
+      await serve(req, res);
     } catch (error) {
-      json(res, error.status ?? 500, { error: { message: error.message, code: error.code ?? 'StaffSessionError' } });
+      answerError(res, error);
     }
     return true;
   };

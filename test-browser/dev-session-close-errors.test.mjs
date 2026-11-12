@@ -1,3 +1,4 @@
+// @test-kind contract: development sessions and the owned browser report close, cancellation, retry and agent filesystem failures without losing drafts or ownership.
 import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -22,6 +23,8 @@ import { servesAgentSession } from './helpers/agent-endpoint.mjs';
 import { childOutput } from './helpers/child-output.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 import { freeDebugPort } from './helpers/debug-port.mjs';
+
+const HANG_GUARD_MS = 120_000; // hang guard only: Playwright's 30 s default fails a loaded machine
 
 async function fixture(t) {
   const owner = ownedFixture(t);
@@ -91,137 +94,132 @@ async function fixture(t) {
   };
 }
 
-test(
-  'owned browser isolates real wire timeouts in tabs and popups, cancellation, retry and transport loss',
-  { timeout: 60000 },
-  async (t) => {
-    const { owner, origin, selection, browserOptions, source } = await fixture(t);
-    const debugPort = await freeDebugPort();
-    const launch = chromium.launchPersistentContext;
-    // Network confinement only; the fault is injected by the independent proxy.
-    t.mock.method(chromium, 'launchPersistentContext', (profile, options) =>
-      launch.call(chromium, profile, {
-        ...options,
-        proxy: browserOptions.proxy,
-        args: [...options.args, ...browserOptions.args],
-      }),
-    );
-    const owned = await openBrowser(selection.initial, { headless: true, debugPort });
-    owner.add(() => owned.close());
-    assert.equal(owned.attached, false);
-    const version = await fetch(`http://127.0.0.1:${debugPort}/json/version`).then((response) => response.json());
-    const proxy = await createCdpFaultProxy(version.webSocketDebuggerUrl, t.signal);
-    owner.add(() => proxy.close());
-    const browser = await chromium.connectOverCDP(proxy.endpoint);
-    owner.add(() => browser.close());
-    const context = browser.contexts()[0],
-      logs = [];
-    const stopped = Promise.withResolvers();
-    const runtime = await startDevSessions(context, selection, {
-      attached: owned.attached,
-      debugPort,
-      stop: () => stopped.resolve(),
-      log: (line) => logs.push(line),
+test('owned browser isolates real wire timeouts in tabs and popups, cancellation, retry and transport loss', async (t) => {
+  const { owner, origin, selection, browserOptions, source } = await fixture(t);
+  const debugPort = await freeDebugPort();
+  const launch = chromium.launchPersistentContext;
+  // Network confinement only; the fault is injected by the independent proxy.
+  t.mock.method(chromium, 'launchPersistentContext', (profile, options) =>
+    launch.call(chromium, profile, {
+      ...options,
+      proxy: browserOptions.proxy,
+      args: [...options.args, ...browserOptions.args],
+    }),
+  );
+  const owned = await openBrowser(selection.initial, { headless: true, debugPort });
+  owner.add(() => owned.close());
+  assert.equal(owned.attached, false);
+  const version = await fetch(`http://127.0.0.1:${debugPort}/json/version`).then((response) => response.json());
+  const proxy = await createCdpFaultProxy(version.webSocketDebuggerUrl, t.signal);
+  owner.add(() => proxy.close());
+  const browser = await chromium.connectOverCDP(proxy.endpoint);
+  owner.add(() => browser.close());
+  const context = browser.contexts()[0],
+    logs = [];
+  context.setDefaultTimeout(HANG_GUARD_MS);
+  context.setDefaultNavigationTimeout(HANG_GUARD_MS);
+  const stopped = Promise.withResolvers();
+  const runtime = await startDevSessions(context, selection, {
+    attached: owned.attached,
+    debugPort,
+    stop: () => stopped.resolve(),
+    log: (line) => logs.push(line),
+  });
+  owner.add(() => runtime.close());
+  // These are the same owner stop events used by the development CLI.
+  browser.once('disconnected', () => stopped.resolve());
+  context.once('close', () => stopped.resolve());
+  const healthy = [];
+  for (let index = 0; index < 2; index++) {
+    const ready = proxy.nextAck('Fetch.enable');
+    const page = await context.newPage();
+    await ready;
+    await page.goto(origin);
+    assert.match(await page.evaluate(() => fetch('/scripts/app.js').then((r) => r.text())), /console\.log\("app"\)/);
+    await page.evaluate((index) => {
+      document.body.innerHTML += '<input id="draft">';
+      document.getElementById('draft').value = 'unsaved-' + index;
+    }, index);
+    healthy.push(page);
+  }
+  const record = runtime.active.get(origin);
+  const discovery = await readDiscovery(record.agent.discoveryFile);
+  const agentRead = async (path) => {
+    const response = await fetch(discovery.endpoint + path, {
+      headers: { authorization: `Bearer ${discovery.token}` },
     });
-    owner.add(() => runtime.close());
-    // These are the same owner stop events used by the development CLI.
-    browser.once('disconnected', () => stopped.resolve());
-    context.once('close', () => stopped.resolve());
-    const healthy = [];
-    for (let index = 0; index < 2; index++) {
-      const ready = proxy.nextAck('Fetch.enable');
-      const page = await context.newPage();
-      await ready;
-      await page.goto(origin);
-      assert.match(await page.evaluate(() => fetch('/scripts/app.js').then((r) => r.text())), /console\.log\("app"\)/);
-      await page.evaluate((index) => {
-        document.body.innerHTML += '<input id="draft">';
-        document.getElementById('draft').value = 'unsaved-' + index;
-      }, index);
-      healthy.push(page);
-    }
-    const record = runtime.active.get(origin);
-    const discovery = await readDiscovery(record.agent.discoveryFile);
-    const agentRead = async (path) => {
-      const response = await fetch(discovery.endpoint + path, {
-        headers: { authorization: `Bearer ${discovery.token}` },
-      });
-      assert.equal(response.status, 200);
-      return response.json();
-    };
-    // Cancel an actually stalled initializer before its deadline. Teardown must
-    // neither report a successful target nor poison the next attachment.
-    const cancelling = proxy.arm();
-    const cancelled = await context.newPage();
-    await cancelling;
-    await cancelled.close();
-    for (const popup of [false, true]) {
-      const fault = proxy.arm();
-      let failed;
-      if (popup) {
-        const opening = healthy[0].waitForEvent('popup');
-        await healthy[0].evaluate((origin) => window.open(origin + '/popup'), origin);
-        failed = await opening;
-      } else failed = await context.newPage();
-      const dropped = await fault;
-      assert.equal(dropped.method, 'Page.getFrameTree');
-      if (!failed.isClosed()) await failed.waitForEvent('close');
-      assert.equal(runtime.failure, undefined);
-      assert.equal(runtime.active.size, 1);
-      assert.equal(browser.isConnected(), true);
-      for (const [index, page] of healthy.entries()) {
-        assert.equal(page.isClosed(), false);
-        assert.equal(await page.locator('#draft').inputValue(), 'unsaved-' + index);
-        assert.match(
-          await page.evaluate(() => fetch('/scripts/app.js').then((r) => r.text())),
-          /console\.log\("app"\)/,
-        );
-      }
-      await agentRead('/v1/session');
-      const events = await agentRead('/v1/events?after=0&limit=500');
-      assert.equal(typeof events.nextSequence, 'number');
-      assert.equal(events.dropped, 0);
-    }
-    assert.equal(proxy.dropped.length, 3, 'one actual unanswered command per cancelled/tab/popup initializer');
-    assert.equal(logs.filter((line) => line.includes('Page.getFrameTree did not answer within 10000 ms')).length, 2);
-    // Live JS saves intentionally reload pages. Turn that user option off before
-    // testing watcher/retry continuity with unsaved drafts still present.
-    record.session.liveReload = false;
-    const refreshed = once(record.session, 'refreshed', { signal: t.signal });
-    source.write('web-files/app.js', 'window.fixtureRevision = "v2";');
-    await refreshed;
-    const retryReady = proxy.nextAck('Fetch.enable');
-    const retry = await context.newPage();
-    await retryReady;
-    await retry.goto(origin);
-    await retry.evaluate(async () => {
-      const script = document.createElement('script');
-      script.src = '/scripts/app.js';
-      const done = new Promise((resolve, reject) => {
-        script.onload = resolve;
-        script.onerror = reject;
-      });
-      document.body.append(script);
-      await done;
-    });
-    assert.equal(await retry.evaluate(() => window.fixtureRevision), 'v2');
-    await agentRead('/v1/pages');
-    for (const [index, page] of healthy.entries())
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  // Cancel an actually stalled initializer before its deadline. Teardown must
+  // neither report a successful target nor poison the next attachment.
+  const cancelling = proxy.arm();
+  const cancelled = await context.newPage();
+  await cancelling;
+  await cancelled.close();
+  for (const popup of [false, true]) {
+    const fault = proxy.arm();
+    let failed;
+    if (popup) {
+      const opening = healthy[0].waitForEvent('popup');
+      await healthy[0].evaluate((origin) => window.open(origin + '/popup'), origin);
+      failed = await opening;
+    } else failed = await context.newPage();
+    const dropped = await fault;
+    assert.equal(dropped.method, 'Page.getFrameTree');
+    if (!failed.isClosed()) await failed.waitForEvent('close');
+    assert.equal(runtime.failure, undefined);
+    assert.equal(runtime.active.size, 1);
+    assert.equal(browser.isConnected(), true);
+    for (const [index, page] of healthy.entries()) {
+      assert.equal(page.isClosed(), false);
       assert.equal(await page.locator('#draft').inputValue(), 'unsaved-' + index);
-    assert.equal(
-      logs.some((line) => line.includes(discovery.token)),
-      false,
-    );
-    const disconnected = once(browser, 'disconnected', { signal: t.signal });
-    proxy.disconnect();
-    await Promise.all([stopped.promise, disconnected]);
-    assert.equal(browser.isConnected(), false, 'actual shared transport loss reaches the owner stop path');
-    await runtime.close();
-    assert.equal(runtime.active.size, 0);
-    assert.deepEqual(Object.keys(record.watcher.getWatched()), []);
-    await assert.rejects(fs.access(record.agent.discoveryFile), { code: 'ENOENT' });
-  },
-);
+      assert.match(await page.evaluate(() => fetch('/scripts/app.js').then((r) => r.text())), /console\.log\("app"\)/);
+    }
+    await agentRead('/v1/session');
+    const events = await agentRead('/v1/events?after=0&limit=500');
+    assert.equal(typeof events.nextSequence, 'number');
+    assert.equal(events.dropped, 0);
+  }
+  assert.equal(proxy.dropped.length, 3, 'one actual unanswered command per cancelled/tab/popup initializer');
+  assert.equal(logs.filter((line) => line.includes('Page.getFrameTree did not answer within 10000 ms')).length, 2);
+  // Live JS saves intentionally reload pages. Turn that user option off before
+  // testing watcher/retry continuity with unsaved drafts still present.
+  record.session.liveReload = false;
+  const refreshed = once(record.session, 'refreshed', { signal: t.signal });
+  source.write('web-files/app.js', 'window.fixtureRevision = "v2";');
+  await refreshed;
+  const retryReady = proxy.nextAck('Fetch.enable');
+  const retry = await context.newPage();
+  await retryReady;
+  await retry.goto(origin);
+  await retry.evaluate(async () => {
+    const script = document.createElement('script');
+    script.src = '/scripts/app.js';
+    const done = new Promise((resolve, reject) => {
+      script.onload = resolve;
+      script.onerror = reject;
+    });
+    document.body.append(script);
+    await done;
+  });
+  assert.equal(await retry.evaluate(() => window.fixtureRevision), 'v2');
+  await agentRead('/v1/pages');
+  for (const [index, page] of healthy.entries())
+    assert.equal(await page.locator('#draft').inputValue(), 'unsaved-' + index);
+  assert.equal(
+    logs.some((line) => line.includes(discovery.token)),
+    false,
+  );
+  const disconnected = once(browser, 'disconnected', { signal: t.signal });
+  proxy.disconnect();
+  await Promise.all([stopped.promise, disconnected]);
+  assert.equal(browser.isConnected(), false, 'actual shared transport loss reaches the owner stop path');
+  await runtime.close();
+  assert.equal(runtime.active.size, 0);
+  assert.deepEqual(Object.keys(record.watcher.getWatched()), []);
+  await assert.rejects(fs.access(record.agent.discoveryFile), { code: 'ENOENT' });
+});
 
 for (const attached of [false, true]) {
   test(`a failed new target preserves two healthy drafts, the agent and retry (${attached ? 'attached' : 'owned'})`, async (t) => {
@@ -487,7 +485,10 @@ test('actual development CLI exits nonzero after agent filesystem cleanup failur
   // Browser closure is the documented stop path for the exact dedicated
   // browser launched above. Discovery credentials never enter a network call.
   remoteBrowser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
-  const ownedPage = remoteBrowser.contexts()[0].pages()[0];
+  const remoteContext = remoteBrowser.contexts()[0];
+  remoteContext.setDefaultTimeout(HANG_GUARD_MS);
+  remoteContext.setDefaultNavigationTimeout(HANG_GUARD_MS);
+  const ownedPage = remoteContext.pages()[0];
   await ownedPage.waitForFunction((expected) => location.origin === expected, origin);
   const protocol = await remoteBrowser.newBrowserCDPSession();
   await protocol.send('Browser.close');

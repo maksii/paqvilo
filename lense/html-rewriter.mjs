@@ -244,6 +244,13 @@ function nextScriptRawState(value, state) {
   return state;
 }
 
+// '<!-->' and '<!--->' end at once in script data, so they never enter the escaped states.
+function emptyCommentEnd(html, start) {
+  if (html.startsWith('>', start + 4)) return start + 5;
+  if (html.startsWith('->', start + 4)) return start + 6;
+  return -1;
+}
+
 function scriptRawEnd(html, from) {
   // Legacy HTML-comment escapes have a double-escaped state: a </script> after
   // <!--<script> is text until that state has ended, even inside a JavaScript string.
@@ -254,6 +261,11 @@ function scriptRawEnd(html, from) {
     token = tokens.exec(html);
     if (!token) break;
     const value = token[0].toLowerCase();
+    const emptyEnd = state === 'data' && value === '<!--' ? emptyCommentEnd(html, token.index) : -1;
+    if (emptyEnd >= 0) {
+      tokens.lastIndex = emptyEnd;
+      continue;
+    }
     state = nextScriptRawState(value, state);
     if (state === 'close') return readTag(html, token.index);
   }
@@ -363,14 +375,43 @@ function closingElementOffset(html, name) {
   return offset;
 }
 
+const ATTRIBUTE_PATTERN = /([^\s=/'"<>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g; // NOSONAR: regex kept: a rewrite would change matches or captures
+
 function attributes(attrs) {
   const out = new Map();
-  const pattern = /([^\s=/'"<>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g; // NOSONAR: regex kept: a rewrite would change matches or captures
-  for (const m of attrs.matchAll(pattern)) {
+  for (const m of attrs.matchAll(ATTRIBUTE_PATTERN)) {
     const name = m[1].toLowerCase();
     if (!out.has(name)) out.set(name, m[2] ?? m[3] ?? m[4] ?? '');
   }
   return out;
+}
+
+// The source text of the first nonce attribute, with the quote that delimits it ('' when unquoted).
+function nonceSource(attrs) {
+  for (const m of attrs.matchAll(ATTRIBUTE_PATTERN)) {
+    if (m[1].toLowerCase() !== 'nonce') continue;
+    if (m[2] !== undefined) return { raw: m[2], quote: '"' };
+    if (m[3] !== undefined) return { raw: m[3], quote: "'" };
+    return { raw: m[4] ?? '', quote: '' };
+  }
+  return null;
+}
+
+// The nonce of the first script that carries one, as text for a double-quoted attribute value. A double-quoted
+// value is copied as written; any other quoting is re-encoded only where its quote would end a double-quoted value.
+function pageScriptNonce(html) {
+  for (const block of codeBlocks(html)) {
+    if (block[1].toLowerCase() !== 'script') continue;
+    const source = nonceSource(block[2]);
+    if (source?.raw) return source.quote === '"' ? source.raw : source.raw.replaceAll('"', '&quot;');
+  }
+  return '';
+}
+
+// A strict CSP admits an inline script only with the nonce of the page, so the injected script carries it.
+function pageScriptOpening(html) {
+  const nonce = pageScriptNonce(html);
+  return `<script type="text/javascript"${nonce ? ` nonce="${nonce}"` : ''}>`;
 }
 
 function scriptType(values, useLanguage = true) {
@@ -720,6 +761,16 @@ function standsAlone(pattern, text, match) {
  * Prepares one diff hunk for patching: grows context until the old text is unique in the baseline.
  * Returns `{error}` when the change cannot be shown without deploying.
  */
+/** Why a change cannot be located: its online value is empty, Liquid tags surround it, or no unique text does. */
+function noAnchorReason(baseText, baseLines, hunk) {
+  if (baseText.trim() === '')
+    return 'the online value is empty, so no existing text can locate this change; deploy it to apply online';
+  const adjacentLogic = Boolean(baseLines[hunk.aStart - 1]?.logic || baseLines[hunk.aEnd]?.logic);
+  return adjacentLogic
+    ? 'no literal text next to the change to locate it in the page (it sits between Liquid tags)'
+    : 'no unique literal text next to the change to locate it in the page';
+}
+
 function prepareHunk(baseLines, newLines, hunk, baseText, otherLanguages = []) {
   const oldCore = baseLines.slice(hunk.aStart, hunk.aEnd);
   const added = newLines.slice(hunk.bStart, hunk.bEnd);
@@ -758,12 +809,7 @@ function prepareHunk(baseLines, newLines, hunk, baseText, otherLanguages = []) {
     pattern = buildPattern(baseLines, hunk, before, after);
     unique = good();
   }
-  if (!pattern.anchored || pattern.weight < 3) {
-    return {
-      where,
-      error: 'no literal text next to the change to locate it in the page (it sits between Liquid tags)',
-    };
-  }
+  if (!pattern.anchored || pattern.weight < 3) return { where, error: noAnchorReason(baseText, baseLines, hunk) };
   if (sharedLanguageAnchor())
     return {
       where,
@@ -1435,14 +1481,18 @@ export class HtmlRewriter {
       return out;
     }
     let element;
-    if (src.tag === 'style') element = `<style type="text/css">${src.text}</style>\n`;
+    let opening = '<style type="text/css">';
+    if (src.tag === 'style') element = `${opening}${src.text}</style>\n`;
     else if (external) element = `<script type="text/javascript" src="${inlineScriptUrl(src.rel)}"></script>\n`;
-    else element = `<script type="text/javascript">\n${src.text}\n</script>\n`;
+    else {
+      opening = pageScriptOpening(out);
+      element = `${opening}\n${src.text}\n</script>\n`;
+    }
     const anchor = closingElementOffset(out, src.tag === 'style' ? 'head' : 'body');
     if (anchor < 0) return out;
     if (provenance) {
       const source = !external ? this.#provenanceSource(src, provenance.index, src.text) : null;
-      const start = src.tag === 'style' ? '<style type="text/css">'.length : '<script type="text/javascript">\n'.length;
+      const start = opening.length + (src.tag === 'style' ? 0 : '\n'.length);
       const intervals = source
         ? [
             {

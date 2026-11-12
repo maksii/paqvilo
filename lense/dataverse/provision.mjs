@@ -184,6 +184,41 @@ function requiredTableMissing(found, table) {
   return !found && table.existing;
 }
 
+// Membership rules shared by remote plans and applies, so a plan lists the writes that apply will make.
+function isMember(rows, componentId, componentType) {
+  const id = componentId?.toLowerCase();
+  return Boolean(id) && rows.some((row) => row.componenttype === componentType && row.objectid?.toLowerCase() === id);
+}
+
+function tableRoots(rows) {
+  return rows.filter((row) => row.componenttype === 1 && row.rootcomponentbehavior === 0);
+}
+
+function undeclaredRoots(roots, known) {
+  return roots.filter((root) => !known.has(root.objectid?.toLowerCase()));
+}
+
+function membershipRoute(solutionId) {
+  return `solutioncomponents?$select=solutioncomponentid,objectid,componenttype,rootcomponentbehavior&$filter=_solutionid_value eq ${solutionId}`;
+}
+
+// The primary-name attribute of a table, or the lookup of a one-to-many relationship: apply includes each beside its component.
+function companionColumn(action) {
+  if (action.kind === 'table')
+    return { label: 'Primary-name', table: action.table, column: action.body.PrimaryNameAttribute };
+  if (action.kind === 'relationship' && action.body.Lookup)
+    return {
+      label: 'Lookup',
+      table: action.body.ReferencingEntity,
+      column: action.body.Lookup.SchemaName.toLowerCase(),
+    };
+  return null;
+}
+
+function columnRoute({ table, column }) {
+  return `EntityDefinitions(LogicalName='${table}')/Attributes(LogicalName='${column}')`;
+}
+
 export async function planManifest(manifest, { client } = {}) {
   manifest = validateManifest(manifest);
   const compiled = compileManifest(manifest),
@@ -204,17 +239,88 @@ export async function planManifest(manifest, { client } = {}) {
         : null;
     actions.push(planActionResult(action, existing, publisher));
   }
+  const membership = client ? await planMembership(client, actions) : [];
+  const count = (operation) => membership.filter((entry) => entry.operation === operation).length;
   return {
     ...compiled,
     environmentUrl: client?.origin ?? null,
     mode: client ? 'remote-read-only' : 'offline',
     actions,
+    membership,
     summary: {
       create: actions.filter((a) => a.status === 'create').length,
       exists: actions.filter((a) => a.status === 'exists').length,
       drift: actions.filter((a) => a.status === 'drift').length,
+      membershipAdd: count('membership:add'),
+      rootScoping: count('membership:scope-root'),
+      blocked: count('blocked'),
     },
   };
+}
+
+// Reads solution membership only (GET). Solutions that the plan will create have no membership yet and are skipped.
+async function planMembership(client, actions) {
+  const known = new Map(),
+    membership = [];
+  for (const action of actions) {
+    if (action.kind === 'table' && action.existingId) known.set(action.existingId.toLowerCase(), action.table);
+  }
+  for (const solution of actions.filter((a) => a.kind === 'solution' && a.existingId)) {
+    const name = solution.body.uniquename,
+      rows = await client.list(membershipRoute(solution.existingId));
+    membership.push(...(await planAdditions(client, name, rows, actions)), ...planRootScoping(name, rows, known));
+  }
+  return membership;
+}
+
+async function planAdditions(client, solution, rows, actions) {
+  const additions = [];
+  const want = (objectId, componentType, key) => {
+    if (!isMember(rows, objectId, componentType))
+      additions.push({ operation: 'membership:add', solution, componentType, objectId, key });
+  };
+  for (const action of actions.filter((a) => a.solution === solution && TYPES[a.kind])) {
+    if (action.status === 'create') {
+      // The identity of a component that does not exist yet is known only after apply creates it.
+      additions.push({
+        operation: 'membership:add',
+        solution,
+        componentType: TYPES[action.kind],
+        objectId: null,
+        key: action.key,
+      });
+      continue;
+    }
+    want(action.existingId, TYPES[action.kind], action.key);
+    const companion = companionColumn(action);
+    if (companion) {
+      const attribute = await client.optional(columnRoute(companion));
+      if (attribute?.MetadataId) want(attribute.MetadataId, 2, `${action.key}/${companion.column}`);
+    }
+  }
+  return additions;
+}
+
+function planRootScoping(solution, rows, known) {
+  const roots = tableRoots(rows),
+    undeclared = new Set(undeclaredRoots(roots, known));
+  return roots.map((root) =>
+    undeclared.has(root)
+      ? {
+          operation: 'blocked',
+          solution,
+          componentType: 1,
+          objectId: root.objectid,
+          reason: 'undeclared table root would include unrelated subcomponents',
+        }
+      : {
+          operation: 'membership:scope-root',
+          solution,
+          componentType: 1,
+          objectId: root.objectid,
+          table: known.get(root.objectid.toLowerCase()),
+        },
+  );
 }
 
 function planActionResult(action, existing, publisher) {
@@ -255,6 +361,12 @@ function planActionResult(action, existing, publisher) {
     throw new Error(
       `Existing metadata has ${plan.summary.drift} incompatible component(s). Inspect a remote plan; additive provisioning will not overwrite them.`,
     );
+  if (plan.summary.blocked) {
+    const roots = plan.membership.filter((e) => e.operation === 'blocked').map((e) => `${e.solution}/${e.objectId}`);
+    throw new Error(
+      `Undeclared table root would include unrelated subcomponents; apply refuses before writing: ${roots.join(', ')}.`,
+    );
+  }
   const journal = {
     schemaVersion: 1,
     manifestHash: plan.manifestHash,
@@ -274,7 +386,7 @@ function planActionResult(action, existing, publisher) {
     const included = await client.list(
       `solutioncomponents?$select=objectid,componenttype,rootcomponentbehavior&$filter=_solutionid_value eq ${solutionId} and objectid eq ${id} and componenttype eq ${type}`,
     );
-    if (!included.length)
+    if (!isMember(included, id, type))
       await client.request('AddSolutionComponent', {
         method: 'POST',
         body: {
@@ -340,24 +452,12 @@ function planActionResult(action, existing, publisher) {
           planned.solution,
           ['table', 'table-reference'].includes(planned.kind),
         );
-        if (planned.kind === 'table') {
-          const primaryName = planned.body.PrimaryNameAttribute;
-          const primary = await requiredMetadata(
-            client,
-            `EntityDefinitions(LogicalName='${planned.table}')/Attributes(LogicalName='${primaryName}')`,
-          );
-          if (!guid.test(primary.MetadataId ?? ''))
-            throw new Error('Primary-name metadata identity is unavailable; reconcile before exporting.');
-          await include(primary.MetadataId, 2, planned.solution);
-        }
-        if (planned.kind === 'relationship' && planned.body.Lookup) {
-          const lookup = await requiredMetadata(
-            client,
-            `EntityDefinitions(LogicalName='${planned.body.ReferencingEntity}')/Attributes(LogicalName='${planned.body.Lookup.SchemaName.toLowerCase()}')`,
-          );
-          if (!guid.test(lookup.MetadataId ?? ''))
-            throw new Error('Lookup metadata identity is unavailable; reconcile before exporting.');
-          await include(lookup.MetadataId, 2, planned.solution);
+        const companion = companionColumn(planned);
+        if (companion) {
+          const attribute = await requiredMetadata(client, columnRoute(companion));
+          if (!guid.test(attribute.MetadataId ?? ''))
+            throw new Error(`${companion.label} metadata identity is unavailable; reconcile before exporting.`);
+          await include(attribute.MetadataId, 2, planned.solution);
         }
       }
       const entry = {
@@ -433,10 +533,10 @@ function planActionResult(action, existing, publisher) {
     if (rows.length !== 1) throw new Error('Solution identity unavailable for table-root scoping.');
     const sid = rows[0].solutionid;
     solutionIds.set(solution.uniqueName, sid);
-    const route = `solutioncomponents?$select=solutioncomponentid,objectid,componenttype,rootcomponentbehavior&$filter=_solutionid_value eq ${sid}`,
+    const route = membershipRoute(sid),
       before = await client.list(route),
-      roots = before.filter((row) => row.componenttype === 1 && row.rootcomponentbehavior === 0);
-    if (roots.some((root) => !known.has(root.objectid?.toLowerCase())))
+      roots = tableRoots(before);
+    if (undeclaredRoots(roots, known).length)
       throw new Error('Undeclared table root would include unrelated subcomponents; scoping refused.');
     scopes.push({ solution, sid, route, before, roots });
   }

@@ -26,7 +26,7 @@ import { syncIo } from './sync-io-bridge.mjs';
 import { systemClock, systemIds } from './runtime-clock.mjs';
 import { DataError } from './data-error.mjs';
 import { messageNameOf } from './exported-plugins.mjs';
-import { clrContext, recordToSdkEntity } from './plugin-clr.mjs';
+import { clrContext, deleteExecutionUser, recordToSdkEntity } from './plugin-clr.mjs';
 import { imageAttributes } from './plugin-images.mjs';
 import { PLATFORM_TYPES } from './dataverse-operation-contracts.mjs';
 import { delegatedPluginParent } from './plugin-delegation.mjs';
@@ -576,7 +576,11 @@ function asyncRecordContext(store, facts, initiating) {
     SecondaryEntityName: 'none',
     SharedVariables: pairs(frame.sharedVariables?.values),
     Stage: stage,
-    UserId: item.impersonatingUserId ?? store.pluginPlatformUserId ?? initiating,
+    UserId:
+      item.impersonatingUserId ??
+      deleteExecutionUser(store, operation, stage) ??
+      store.pluginPlatformUserId ??
+      initiating,
   };
   if (frame.delegatedSourceOperation) {
     const source = frame.delegatedSourceOperation;

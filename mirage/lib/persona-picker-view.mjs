@@ -7,7 +7,10 @@ export const personaHtml = (value) =>
   );
 const html = personaHtml;
 
-function personaActionHtml(persona, mode, selected, key) {
+// A persona whose launch needs a context opens in the administration, so the sign-in page links there instead of submitting.
+function personaActionHtml(persona, mode, selected, key, adminUrl) {
+  if (mode === 'signin' && persona.needsAdministration)
+    return `<a class="persona-button persona-primary" href="${html(adminUrl)}?contact=${encodeURIComponent(persona.key)}" data-persona-administration="${html(persona.key)}">Open context in the administration</a>`;
   if (mode === 'signin')
     return `<button type="submit" class="persona-button persona-primary" name="${persona.key ? 'personaKey' : 'contactId'}" value="${html(persona.key ?? persona.contactId)}">${persona.context ? 'Open context' : 'Sign in'}</button>`;
   return `<button type="button" class="persona-button${selected ? ' persona-primary' : ''}" data-persona-choose="${html(key)}" aria-pressed="${selected}">${selected ? 'Selected' : 'Choose'}</button>`;
@@ -20,12 +23,12 @@ function personaTagsHtml(persona) {
 
 export function personaCard(
   persona,
-  { mode = 'select', selectedKey, selectedContactId, contexts = new Map(), shortcut = false } = {},
+  { mode = 'select', selectedKey, selectedContactId, contexts = new Map(), shortcut = false, adminUrl } = {},
 ) {
   const key = personaRowKey(persona),
     selected = selectedKey ? selectedKey === key : selectedContactId === persona.contactId;
   const context = contexts.get(persona.context);
-  const action = personaActionHtml(persona, mode, selected, key);
+  const action = personaActionHtml(persona, mode, selected, key, adminUrl);
   const keyCode = persona.key ? `<code>${html(persona.key)}</code>` : '';
   const summary = persona.summary
     ? `<p class="persona-summary" title="${html(persona.description)}">${html(persona.summary)}</p>`
@@ -49,10 +52,11 @@ export function renderPersonaPicker(
     enhanced = false,
     collapsed = false,
     q = '',
+    adminUrl,
   } = {},
 ) {
   const contexts = new Map((report.contexts ?? []).map((context) => [context.id, context]));
-  const options = { mode, selectedKey, selectedContactId, contexts };
+  const options = { mode, selectedKey, selectedContactId, contexts, adminUrl };
   const cards = (entries) =>
     `<ul class="persona-list">${entries.map((persona) => personaCard(persona, options)).join('')}</ul>`;
   const buckets = new Map();
@@ -92,7 +96,8 @@ export function renderPersonaPicker(
   const otherSection = (report.other ?? []).length
     ? `<details class="persona-group persona-other" data-persona-group="__other"${openAttribute}><summary><span>Other contacts</span><span class="persona-group-count" data-persona-group-count="__other">${report.other.length}</span></summary><div class="persona-group-body">${cards(report.other)}</div></details>`
     : '';
-  return `<div class="persona-picker" id="${html(id)}" data-persona-picker data-persona-mode="${html(mode)}"><div class="persona-tools" data-persona-tools${enhanced ? '' : ' hidden'}><label class="persona-search-label" for="${html(id)}-search">Find a persona</label><div class="persona-search-row"><input type="search" id="${html(id)}-search" data-persona-query value="${html(q)}" placeholder="Name, role, account, tag or description" autocomplete="off"><button type="button" class="persona-button" data-persona-clear>Clear filters</button></div><div class="persona-filters">${facets}<label class="persona-role-toggle"><input type="checkbox" data-persona-roles-only> Has web roles</label></div><p class="persona-filter-help">Search terms all match. Choose any values within a filter; filters combine to narrow results.</p></div><div class="persona-results-bar"><p role="status" aria-live="polite" data-persona-result-count>${report.total} of ${report.total}</p><span data-persona-selection></span></div><section class="persona-spotlight" data-persona-shortcuts="pinned" hidden><h3>Pinned</h3><div data-persona-shortcut-list></div></section><section class="persona-spotlight" data-persona-shortcuts="recent" hidden><h3>Recent</h3><div data-persona-shortcut-list></div></section>${defaultSection}<div class="persona-groups">${groups}${otherSection}</div><p class="persona-empty" data-persona-empty${report.total ? ' hidden' : ''}>${report.total ? 'No personas match these filters. Clear a filter or try fewer search terms.' : 'No active contacts are available for this catalogue. Review the dataset or manage the catalogue.'}</p></div>`;
+  const adminAttribute = adminUrl ? ` data-persona-admin-url="${html(adminUrl)}"` : '';
+  return `<div class="persona-picker" id="${html(id)}" data-persona-picker data-persona-mode="${html(mode)}"${adminAttribute}><div class="persona-tools" data-persona-tools${enhanced ? '' : ' hidden'}><label class="persona-search-label" for="${html(id)}-search">Find a persona</label><div class="persona-search-row"><input type="search" id="${html(id)}-search" data-persona-query value="${html(q)}" placeholder="Name, role, account, tag or description" autocomplete="off"><button type="button" class="persona-button" data-persona-clear>Clear filters</button></div><div class="persona-filters">${facets}<label class="persona-role-toggle"><input type="checkbox" data-persona-roles-only> Has web roles</label></div><p class="persona-filter-help">Search terms all match. Choose any values within a filter; filters combine to narrow results.</p></div><div class="persona-results-bar"><p role="status" aria-live="polite" data-persona-result-count>${report.total} of ${report.total}</p><span data-persona-selection></span></div><section class="persona-spotlight" data-persona-shortcuts="pinned" hidden><h3>Pinned</h3><div data-persona-shortcut-list></div></section><section class="persona-spotlight" data-persona-shortcuts="recent" hidden><h3>Recent</h3><div data-persona-shortcut-list></div></section>${defaultSection}<div class="persona-groups">${groups}${otherSection}</div><p class="persona-empty" data-persona-empty${report.total ? ' hidden' : ''}>${report.total ? 'No personas match these filters. Clear a filter or try fewer search terms.' : 'No active contacts are available for this catalogue. Review the dataset or manage the catalogue.'}</p></div>`;
 }
 
 function personaContextDetailsHtml(context) {

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { downloadVerifiedArchive } from './verified-download.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const assets = {
+export const assets = {
   'win32-x64': {
     actionlint: [
       '1.7.12',
@@ -37,6 +37,54 @@ const assets = {
       'b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6',
       'shellcheck-v0.11.0/shellcheck',
       'shellcheck-v0.11.0.linux.x86_64.tar.gz',
+    ],
+  },
+  'linux-arm64': {
+    actionlint: [
+      '1.7.12',
+      'https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_arm64.tar.gz',
+      '325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6',
+      'actionlint',
+      'actionlint_1.7.12_linux_arm64.tar.gz',
+    ],
+    shellcheck: [
+      '0.11.0',
+      'https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.aarch64.tar.gz',
+      '68a8133197a50beb8803f8d42f9908d1af1c5540d4bb05fdfca8c1fa47decefc',
+      'shellcheck-v0.11.0/shellcheck',
+      'shellcheck-v0.11.0.linux.aarch64.tar.gz',
+    ],
+  },
+  'darwin-x64': {
+    actionlint: [
+      '1.7.12',
+      'https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_darwin_amd64.tar.gz',
+      '5b44c3bc2255115c9b69e30efc0fecdf498fdb63c5d58e17084fd5f16324c644',
+      'actionlint',
+      'actionlint_1.7.12_darwin_amd64.tar.gz',
+    ],
+    shellcheck: [
+      '0.11.0',
+      'https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.darwin.x86_64.tar.gz',
+      'c2c15e08df0e8fbc374c335b230a7ee958c313fa5714817a59aa59f1aa594f51',
+      'shellcheck-v0.11.0/shellcheck',
+      'shellcheck-v0.11.0.darwin.x86_64.tar.gz',
+    ],
+  },
+  'darwin-arm64': {
+    actionlint: [
+      '1.7.12',
+      'https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_darwin_arm64.tar.gz',
+      'aba9ced2dee8d27fecca3dc7feb1a7f9a52caefa1eb46f3271ea66b6e0e6953f',
+      'actionlint',
+      'actionlint_1.7.12_darwin_arm64.tar.gz',
+    ],
+    shellcheck: [
+      '0.11.0',
+      'https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.darwin.aarch64.tar.gz',
+      '339b930feb1ea764467013cc1f72d09cd6b869ebf1013296ba9055ab2ffbd26f',
+      'shellcheck-v0.11.0/shellcheck',
+      'shellcheck-v0.11.0.darwin.aarch64.tar.gz',
     ],
   },
 };
@@ -85,21 +133,27 @@ async function provision(name, specification) {
   }
   return target;
 }
-async function main() {
-  const supported = assets[`${process.platform}-${process.arch}`];
-  if (!supported)
+export function workflowTools(platform = process.platform, arch = process.arch) {
+  const tools = assets[`${platform}-${arch}`];
+  if (!tools)
     throw new Error(
-      `Pinned workflow tools are not configured for ${process.platform}-${process.arch}; use the Linux x64 validation container.`,
+      `Pinned workflow tools are not configured for ${platform}-${arch}; supported platforms: ${Object.keys(assets).join(', ')}.`,
     );
+  return tools;
+}
+async function main() {
+  const supported = workflowTools();
   const actionlint = await provision('actionlint', supported.actionlint);
   const shellcheck = await provision('shellcheck', supported.shellcheck);
   execute(actionlint, ['-color', '-shellcheck', shellcheck, '-pyflakes=', '-oneline']);
   execute(shellcheck, ['--shell=sh', '.githooks/pre-commit', '.githooks/commit-msg', '.githooks/pre-push']);
   console.log('Workflow and hook checks passed (actionlint 1.7.12, ShellCheck 0.11.0).');
 }
-try {
-  await main();
-} catch (error) {
-  console.error(error.message);
-  process.exitCode = 1;
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    await main();
+  } catch (error) {
+    console.error(error.message);
+    process.exitCode = 1;
+  }
 }

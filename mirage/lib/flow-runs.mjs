@@ -1,6 +1,7 @@
 // Cloud flow run store: one `flowrun` row per run (the standard Dataverse table) plus the replay state in
 // state.simulator.flowRuns[runId] = { processId, definitionHash, input, parameters, steps, journal, wait, notResumable,
-// traceSealed? }.
+// traceSealed?, volatile? }. volatile is the run's tape of volatile draws (utcNow, guid), kept with its suspension: an entry
+// without it resumes with an empty tape.
 // Trace ids never enter that state: the trace store remembers a run's first flow-run span as 'flow-run:<runId>'.
 //
 // A run that waits (delay, approval, webhook) is suspended: its row becomes Waiting and the wait is recorded. Resume is
@@ -124,6 +125,8 @@ export function createFlowRunStore({
       endtime: row.endtime ?? null,
       triggertype: row.triggertype ?? null,
       correlationId: row.correlationid ?? null,
+      errorCode: row.errorcode ?? null,
+      errorMessage: row.errormessage ?? null,
       definitionHash: entry.definitionHash ?? null,
       wait: clone(entry.wait),
       notResumable: entry.notResumable ?? null,
@@ -197,7 +200,14 @@ export function createFlowRunStore({
     for (const row of tracked.filter((r) => !remove.has(r.flowrunid) && TERMINAL.has(r.status)).slice(keepJournals)) {
       const entry = all[row.flowrunid];
       if (entry.journalPruned) continue;
-      Object.assign(entry, { journal: null, steps: null, input: null, parameters: null, journalPruned: true });
+      Object.assign(entry, {
+        journal: null,
+        steps: null,
+        input: null,
+        parameters: null,
+        volatile: null,
+        journalPruned: true,
+      });
       pruned++;
     }
     let approvalsPruned = 0;
@@ -303,7 +313,7 @@ export function createFlowRunStore({
       });
     },
 
-    async suspend(runId, { actionPath, wait } = {}) {
+    async suspend(runId, { actionPath, wait, volatile } = {}) {
       if (typeof actionPath !== 'string' || !actionPath)
         throw new DataError('A suspended run needs its action path.', 400, 'InvalidRequest');
       if (!wait || !WAIT_KINDS.has(wait.kind) || typeof wait.id !== 'string' || !wait.id)
@@ -331,6 +341,7 @@ export function createFlowRunStore({
         }
         setRow(index, { status: 'Waiting' });
         entry.wait = recorded;
+        entry.volatile = clone(volatile ?? {});
       });
       arm(runId, recorded);
       if (ended && resumeRun) await resumeRun(runId, childOutcome(ended));
@@ -402,6 +413,7 @@ export function createFlowRunStore({
           definitionHash: live.definitionHash ?? null,
           background: Boolean(live.background),
           sealed: live.traceSealed === true,
+          volatile: clone(live.volatile ?? {}),
         };
       });
     },

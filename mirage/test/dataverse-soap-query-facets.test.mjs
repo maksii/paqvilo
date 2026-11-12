@@ -11,6 +11,9 @@ import { NS } from '../lib/dataverse-soap-xml.mjs';
 import { fromBulkDeleteJson, toFetchXml } from '../lib/dataverse-soap-query.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 
+// hang guard only: a blocked synchronous child cannot be ended by the test runner
+const CLI_HANG_GUARD_MS = 170_000;
+
 test(
   'installed SDK SOAP query facets are refused before the record provider runs; empty defaults remain accepted',
   { skip: CLR_SKIP },
@@ -86,7 +89,11 @@ if(mode=="body"||mode=="empty-body")new DataContractSerializer(typeof(ColumnSet)
       'byattribute-nil',
     ]) {
       const beforeCalls = calls;
-      const written = spawnSync(executable, [mode], { encoding: 'utf8', windowsHide: true, timeout: 10_000 });
+      const written = spawnSync(executable, [mode], {
+        encoding: 'utf8',
+        windowsHide: true,
+        timeout: CLI_HANG_GUARD_MS,
+      });
       assert.equal(written.status, 0, written.stderr);
       const request = written.stdout
         .trim()

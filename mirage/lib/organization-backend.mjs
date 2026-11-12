@@ -1,5 +1,5 @@
 import { runPluginPhase, pluginStepMatchesEntity, pluginPhaseRequiresCheckpoint } from './exported-plugins.mjs';
-import { prepareClrRuntime, closeClrHostPool } from './plugin-clr.mjs';
+import { prepareClrRuntime, closeClrHostPool, releaseClrRuntime } from './plugin-clr.mjs';
 import { releaseUploadedRuntime } from './plugin-uploaded.mjs';
 import { createAsyncPluginRunner } from './plugin-async.mjs';
 import { createFlowTriggerRunner } from './flow-triggers.mjs';
@@ -20,6 +20,8 @@ export async function createOrganizationBackend({
   descriptors = new Map(),
   // The organization host passes its sharedClrRuntimePreparer() (long-lived shared hosts).
   prepareRuntime = prepareClrRuntime,
+  // Closes the pooled hosts of one runtime at close(); the default is plugin-clr.mjs closeClrHostPool.
+  closeHostPool = closeClrHostPool,
   // { cacheRoot, sdkAssembly }: where registered uploaded assemblies are prepared and the SDK they bind (plugin-uploaded.mjs).
   clrUploads,
   operations = () => [],
@@ -81,13 +83,20 @@ export async function createOrganizationBackend({
         pluginPhaseRequiresCheckpoint(items(), { ...context, store, operation: multipleMessage(context.operation) }),
       ),
   );
+  // The CLR runtimes this backend prepares: close() removes their cache directories. A runtime the caller already mapped,
+  // or one a preparer returns from that map, belongs to the caller and keeps its directory after close.
+  const handedIn = new Set(runtimes.values()),
+    prepared = new Set();
+  // A runtime the caller mapped for a step is used as it is: it is never replaced or released by the backend.
   // Uploaded assemblies without a trusted descriptor are prepared when their step first runs (plugin-uploaded.mjs).
   for (const item of items().filter(
-    (item) => item.mode === 'clr' && !(item.uploadedAssemblyId && !descriptors.has(item.id)),
+    (item) => item.mode === 'clr' && !runtimes.has(item.id) && !(item.uploadedAssemblyId && !descriptors.has(item.id)),
   ))
     try {
       if (!item.clrAvailable) throw new Error('No exact trusted descriptor');
-      runtimes.set(item.id, await prepareRuntime(descriptors.get(item.id)));
+      const runtime = await prepareRuntime(descriptors.get(item.id));
+      runtimes.set(item.id, runtime);
+      if (!handedIn.has(runtime)) prepared.add(runtime);
     } catch (error) {
       diagnostic({ code: 'PLUGIN_CLR_PREPARATION_FAILED', stepId: item.id, message: error.message });
     }
@@ -117,7 +126,15 @@ export async function createOrganizationBackend({
   // Ready jobs saved before a restart run once the organization exists (createOrganizationRuntime resumes them too).
   const resume = () => committedJobs(store).resume();
   if (systemJobs()) resume();
-  let closed;
+  const close = backendCloser({
+    store,
+    triggerRunner,
+    asyncPluginRunner,
+    runtimes,
+    prepared,
+    diagnostic,
+    closeHostPool,
+  });
   return {
     webhooks,
     triggerRunner,
@@ -127,12 +144,52 @@ export async function createOrganizationBackend({
       return store.scheduler;
     },
     settle: () => settleCommittedWork(store, [triggerRunner, asyncPluginRunner]),
-    close: () =>
-      (closed ??= (async () => {
-        await settleCommittedWork(store, [triggerRunner, asyncPluginRunner], { close: true });
-        /* NOSONAR */ for (const [id, runtime] of [...runtimes])
-          if (runtime.uploaded) releaseUploadedRuntime(runtimes, id, diagnostic);
-          else await closeClrHostPool({ runtime, diagnostic }); // NOSONAR: await kept: the value may be a thenable and timing matters
-      })()),
+    close,
   };
+}
+
+/**
+ * close() runs every release step even after one fails, and throws an AggregateError naming the failures after the last
+ * step. The next close() runs only the steps that failed; a closed backend has none left, so closing again does nothing.
+ * Only the cache directories of the runtimes this backend prepared are removed. A directory shared with a runtime it does
+ * not own (its caller's) stays.
+ */
+function backendCloser({ store, triggerRunner, asyncPluginRunner, runtimes, prepared, diagnostic, closeHostPool }) {
+  const keptRuntimes = () => [...runtimes.values()].filter((runtime) => !prepared.has(runtime));
+  const releaseSteps = () => [
+    { run: () => settleCommittedWork(store, [triggerRunner, asyncPluginRunner], { close: true }) },
+    ...[...runtimes].map(([id, runtime]) => ({
+      run: () => closeRuntime(runtimes, id, runtime, { closeHostPool, diagnostic }),
+    })),
+    ...[...prepared].map((runtime) => ({
+      run: () => releaseClrRuntime(runtime, { liveRuntimes: keptRuntimes(), diagnostic }),
+    })),
+  ];
+  let steps = null,
+    closing = null;
+  async function attempt() {
+    steps ??= releaseSteps();
+    const failures = [],
+      failed = [];
+    for (const step of steps) {
+      try {
+        await step.run();
+      } catch (error) {
+        failures.push(error);
+        failed.push(step);
+      }
+    }
+    steps = failed;
+    if (failures.length)
+      throw new AggregateError(
+        failures,
+        'Organization backend close failed: ' + failures.map((failure) => failure.message).join('; '),
+      );
+  }
+  return () => (closing ??= attempt().finally(() => (closing = null)));
+}
+
+async function closeRuntime(runtimes, id, runtime, { closeHostPool, diagnostic }) {
+  if (runtime.uploaded) releaseUploadedRuntime(runtimes, id, diagnostic);
+  else await closeHostPool({ runtime, diagnostic });
 }

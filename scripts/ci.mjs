@@ -10,6 +10,7 @@ import { classifyChanges, suitesForScope } from '../.github/scripts/change-scope
 import { dependencyReadiness, browserExecutable } from './ensure-dependencies.mjs';
 import { downloadVerifiedArchive } from './verified-download.mjs';
 import { acquireCiWorkspaceLease, assertOwnedCiState } from './ci-workspace-lease.mjs';
+import { npmCliPath } from './npm-cli.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SDK_VERSION = '9.0.2.60'; // NOSONAR: version string or loopback address, not a network target
@@ -28,11 +29,13 @@ function execute(command, args, options = {}) {
   console.log(`[ci] ${path.basename(command)} ${args.join(' ')} (${seconds(start)})`);
   return result;
 }
-const npmCli = () =>
-  process.env.npm_execpath || path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js');
+export { npmCliPath };
 function npm(args) {
-  const cli = npmCli();
-  if (!fs.existsSync(cli)) throw new Error('Run CI commands through npm run ci:prepare or npm run ci:verify.');
+  const cli = npmCliPath();
+  if (!fs.existsSync(cli))
+    throw new Error(
+      'Run CI commands through npm run ci:prepare, npm run ci:verify, npm run ci:sdk:prepare or npm run ci:sdk.',
+    );
   execute(process.execPath, [cli, ...args]);
 }
 function npmScript(script) {
@@ -646,7 +649,7 @@ export function validationSteps(
   { unit = true, browser = true, changed = [], repeat = 0, env = process.env, base = 'origin/main' } = {},
   platform = process.platform,
 ) {
-  const npmRun = (script) => [npmCli(), 'run', script];
+  const npmRun = (script) => [npmCliPath(), 'run', script];
   const verify = (suite, kind, channel = 'chromium') => ({
     args: ['scripts/ci.mjs', 'verify', '--suite', suite, ...(kind ? [`--${kind}`] : []), '--prepared'],
     env: { PAQ_CI_BROWSER: channel },
@@ -986,7 +989,7 @@ export async function verificationBrowser({
 async function verificationIdentity(allowStaged = false) {
   const tree = validationTree({ allowStaged });
   if (!tree) return null;
-  const cli = process.env.npm_execpath || path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js');
+  const cli = npmCliPath();
   const npmVersion = spawnSync(process.execPath, [cli, '--version'], { encoding: 'utf8', windowsHide: true });
   if (npmVersion.status !== 0) return null;
   const require = createRequire(path.join(root, 'package.json'));

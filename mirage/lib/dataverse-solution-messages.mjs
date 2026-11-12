@@ -17,6 +17,7 @@ import { randomUUID } from 'node:crypto';
 import { registerInternalMessage } from './dataverse-addon-common.mjs';
 import { DataError } from './data-error.mjs';
 import { contextUrl } from './dataverse-odata.mjs';
+import { whenJobSettled } from './dataverse-async.mjs';
 import { SECURITY_LAYERS, uuidV5 } from './dataverse-security.mjs';
 import { organizationRecord } from './organization-context.mjs';
 import {
@@ -38,6 +39,7 @@ import {
 } from './dataverse-metadata-relationships.mjs';
 import { createColumn, dropColumn, dropTable, updateTable } from './dataverse-metadata-tables.mjs';
 import { removeSolutionAssetLayers, reassignSolutionAssetLayers } from './dataverse-solution-assets.mjs';
+import { releaseCustomApiMessages } from './dataverse-plugin-registration.mjs';
 import {
   payloadComponentsOf,
   PAYLOAD_COMPONENTS,
@@ -183,7 +185,8 @@ function requiredClosure(edges, start) {
 
 // ---- Patches, upgrades, staging, async export and the preferred solution
 // A patch is a solution row whose parentsolutionid is its parent's id and whose uniquename is the parent's. A holding
-// solution (the upgrade staged by StageAndUpgrade) is named <uniquename>_Upgrade.
+// solution (the upgrade staged by StageAndUpgrade) is named <uniquename>_Upgrade and is identified by the marker
+// its import records.
 // Membership is the solutioncomponent rows under each solution's own id, so a patch holds its own components.
 // The upgrade and uninstall paths remove the definitions a removed managed solution introduced (planRemoval, applyRemoval).
 
@@ -225,8 +228,22 @@ function baseOrThrow(store, uniquename) {
   if (!row) throw notFound(`Solution with UniqueName '${uniquename}' does not exist.`, 'NotFound');
   return row;
 }
-const holdingOf = (store, uniquename) =>
-  rowsOf(store, 'solution').find((s) => lower(s.uniquename) === lower(uniquename + HOLDING_SUFFIX)) ?? null;
+// The holding solution of a base solution. An import of a staged upgrade records the base's id against the holding
+// solution's id (state.dataverse.holdingSolutions), so a solution is never taken for a holding solution by its name.
+function holdingOf(store, uniquename) {
+  const base = rowsOf(store, 'solution').find(
+    (s) => lower(s.uniquename) === lower(uniquename) && s.parentsolutionid == null,
+  );
+  if (!base) return null;
+  const holdingIds = store.state.dataverse?.holdingSolutions ?? {};
+  return rowsOf(store, 'solution').find((s) => holdingIds[s.solutionid] === base.solutionid) ?? null;
+}
+// Upgrades apply only between managed solutions. Learn documents this message but no error code for it, so the 400
+// and the InvalidRequest code are Mirage's own choice.
+const MANAGED_UPGRADE_MESSAGE = 'The imported solution and the existing solution must both be managed for upgrade';
+function requireManagedUpgrade(...managedFlags) {
+  if (!managedFlags.every((flag) => flag === true)) throw new DataError(MANAGED_UPGRADE_MESSAGE, 400, 'InvalidRequest');
+}
 const patchesOf = (store, solutionid) =>
   rowsOf(store, 'solution').filter(
     (s) => s.parentsolutionid != null && lower(s.parentsolutionid) === lower(solutionid),
@@ -413,6 +430,7 @@ function promotable(store, uniquename) {
       'InvalidRequest',
       { innerCode: '0x8004853B' },
     );
+  requireManagedUpgrade(base.ismanaged, holding.ismanaged);
   return { base, holding };
 }
 // The objectids a solution holds (its solutioncomponent rows), lower-cased.
@@ -489,9 +507,15 @@ function applyRemoval(api, plan) {
       (plan.defaults.has(lower(r.solutionid)) && plan.removedIds.has(lower(r.objectid))),
   );
   removeWhere(tableOf(store, 'solution'), (s) => plan.removing.has(lower(s.solutionid)));
+  dropHoldingMarkers(store, plan.removing);
   const removed = [...plan.removedIds].map((id) => plan.byId.get(id)).filter(Boolean);
   const dropping = new Set(removed.filter((c) => c.kind === 'entity').map((c) => lower(c.logical)));
+  // The custom APIs this removal deletes take their messages and filters with them, unless a step still uses one.
+  const apiNames = rowsOf(store, 'customapi')
+    .filter((row) => plan.removedIds.has(lower(row.customapiid)))
+    .map((row) => row.uniquename);
   removeSolutionPayloads(state, plan.removing);
+  releaseCustomApiMessages(api, apiNames);
   removeSolutionAssetLayers(state, [...plan.removing]);
   removeComponentDefinitions(api, removed, dropping);
   const origin = state.dataverse?.componentOrigin ?? {};
@@ -564,6 +588,7 @@ function promote(api, uniquename) {
   for (const id of held) if (removing.has(lower(origin[id]))) origin[id] = holding.solutionid;
   holding.uniquename = base.uniquename;
   holding.modifiedon = stampOf(api);
+  delete store.state.dataverse.holdingSolutions[holding.solutionid];
   return holding.solutionid;
 }
 
@@ -578,28 +603,78 @@ function planUninstall(store, uniquename) {
 
 // Staged upgrade (StageAndUpgrade): the zip imports as the holding solution, and the base solution stays until
 // DeleteAndPromote applies the upgrade. The holding solution carries the zip's own version.
+// The id of an import's importjob row: a missing id gets a new one, and a given id must be a GUID that no import job has yet
+// and that no request in flight holds. The duplicate-id message is Mirage's own; the native text is not documented.
+const GUID_TEXT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// The ids in flight, per store: a request reserves its id before its first await, and releases it once its importjob row
+// is written or its import has failed.
+const inFlightJobIds = new WeakMap();
+const inFlightOf = (store) => {
+  if (!inFlightJobIds.has(store)) inFlightJobIds.set(store, new Set());
+  return inFlightJobIds.get(store);
+};
+export function reserveImportJobId(store, value) {
+  const id = value === undefined || value === null || value === '' ? randomUUID() : String(value);
+  if (!GUID_TEXT.test(id)) throw invalid(`ImportJobId ${id} is not a GUID.`);
+  const held = inFlightOf(store);
+  if (held.has(lower(id)) || rowsOf(store, 'importjob').some((row) => lower(row.importjobid) === lower(id)))
+    throw new DataError(`ImportJobId ${id} is already used by an import job.`, 400, 'InvalidRequest');
+  held.add(lower(id));
+  return id;
+}
+export function releaseImportJobId(store, id) {
+  inFlightOf(store).delete(lower(id));
+}
+// Releases a job id once its asynchronous job has settled (completed, failed or cancelled, on any path). An unknown job
+// settles by refusal, which releases the id too; the rejection is handled here, so it is never left unhandled.
+function releaseJobIdWhenSettled(store, id, asyncId) {
+  whenJobSettled(store, asyncId)
+    .finally(() => releaseImportJobId(store, id))
+    .catch(() => {});
+}
+// A holding marker lives while its holding solution and its base both do: removing either one removes the marker.
+export function dropHoldingMarkers(store, removed) {
+  const holdings = store.state.dataverse?.holdingSolutions ?? {};
+  for (const [holdingId, baseId] of Object.entries(holdings))
+    if (removed.has(lower(holdingId)) || removed.has(lower(baseId))) delete holdings[holdingId];
+}
+// holdingFor names the base solution the holding solution stages an upgrade of; its import records the marker
+// that identifies it.
 export const holdingArchive = (archive) => ({
   ...archive,
+  holdingFor: archive.solution.uniqueName,
   solution: { ...archive.solution, uniqueName: archive.solution.uniqueName + HOLDING_SUFFIX },
 });
-// The checks a holding (staged upgrade) import must pass before it writes: the base solution exists, no upgrade is pending and the
-// zip is a higher version than the base. Errors use the documented codes; their status is a guess.
+// The checks a holding (staged upgrade) import must pass before it writes: the base solution exists, both it and
+// the zip are managed, no upgrade is pending and the zip is a higher version than the base. Errors use the
+// documented codes; their status is a guess.
+export function baseMissingError(name) {
+  return new DataError(
+    `Cannot find the data for the previous version of the holding solution: [${name}].`,
+    400,
+    'InvalidRequest',
+    { innerCode: '0x8004F083' },
+  );
+}
 export function assertStageable(store, archive) {
   const name = archive.solution.uniqueName;
   const base = rowsOf(store, 'solution').find((s) => lower(s.uniquename) === lower(name) && s.parentsolutionid == null);
-  if (!base)
-    throw new DataError(
-      `Cannot find the data for the previous version of the holding solution: [${name}].`,
-      400,
-      'InvalidRequest',
-      { innerCode: '0x8004F083' },
-    );
+  if (!base) throw baseMissingError(name);
+  requireManagedUpgrade(base.ismanaged, archive.solution.managed);
   if (holdingOf(store, name))
     throw new DataError(
       'This solution has a pending upgrade. Please complete the upgrade before proceeding',
       400,
       'InvalidRequest',
       { innerCode: '0x8004F086' },
+    );
+  // The holding name is taken by the pending upgrade (checked above) or by an ordinary solution, which is never adopted.
+  const holdingName = `${name}${HOLDING_SUFFIX}`;
+  if (rowsOf(store, 'solution').some((s) => lower(s.uniquename) === lower(holdingName)))
+    throw new DataError(
+      `The solution ${holdingName} already exists and cannot hold the upgrade of ${name}.`,
+      400,
+      'InvalidRequest',
     );
   if (compareVersions(archive.solution.version, base.version) <= 0)
     throw new DataError(
@@ -747,14 +822,18 @@ function lifecycleOperations(api, tools) {
         const body = ctx.body ?? {};
         const archive = tools.readArchive(body.CustomizationFile);
         assertStageable(store, archive);
-        const jobId = typeof body.ImportJobId === 'string' && body.ImportJobId ? body.ImportJobId : randomUUID();
-        await tools.importArchive(holdingArchive(archive), {
-          overwrite: body.OverwriteUnmanagedCustomizations === true,
-          jobId,
-          origin: ctx.origin,
-          version: ctx.version,
-          caller: ctx.caller,
-        });
+        const jobId = reserveImportJobId(store, body.ImportJobId);
+        try {
+          await tools.importArchive(holdingArchive(archive), {
+            overwrite: body.OverwriteUnmanagedCustomizations === true,
+            jobId,
+            origin: ctx.origin,
+            version: ctx.version,
+            caller: ctx.caller,
+          });
+        } finally {
+          releaseImportJobId(store, jobId);
+        }
         return asyncResponse(ctx, 'Microsoft.Dynamics.CRM.StageAndUpgradeResponse', {
           SolutionId: holdingOf(store, archive.solution.uniqueName).solutionid,
         });
@@ -781,22 +860,31 @@ function lifecycleOperations(api, tools) {
         const body = ctx.body ?? {};
         const archive = tools.readArchive(body.CustomizationFile);
         assertStageable(store, archive);
-        const jobId = typeof body.ImportJobId === 'string' && body.ImportJobId ? body.ImportJobId : randomUUID();
-        const asyncId = await api.systemJob(
-          {
-            name: `Stage upgrade ${archive.solution.uniqueName}`,
-            operationtype: OPERATION_TYPE.stageAndUpgrade,
-            callerId: ctx.caller.systemuserid,
-          },
-          () =>
-            tools.importArchive(holdingArchive(archive), {
-              overwrite: body.OverwriteUnmanagedCustomizations === true,
-              jobId,
-              origin: ctx.origin,
-              version: ctx.version,
-              caller: ctx.caller,
-            }),
-        );
+        // The importjob row is written by the job's run, so the id stays reserved until the job has settled (a job cancelled
+        // before it runs settles without its run).
+        const jobId = reserveImportJobId(store, body.ImportJobId);
+        let asyncId;
+        try {
+          asyncId = await api.systemJob(
+            {
+              name: `Stage upgrade ${archive.solution.uniqueName}`,
+              operationtype: OPERATION_TYPE.stageAndUpgrade,
+              callerId: ctx.caller.systemuserid,
+            },
+            () =>
+              tools.importArchive(holdingArchive(archive), {
+                overwrite: body.OverwriteUnmanagedCustomizations === true,
+                jobId,
+                origin: ctx.origin,
+                version: ctx.version,
+                caller: ctx.caller,
+              }),
+          );
+        } catch (error) {
+          releaseImportJobId(store, jobId);
+          throw error;
+        }
+        releaseJobIdWhenSettled(store, jobId, asyncId);
         return asyncResponse(ctx, 'Microsoft.Dynamics.CRM.StageAndUpgradeAsyncResponse', { AsyncOperationId: asyncId });
       },
     },
@@ -1027,6 +1115,7 @@ function lifecycleOperations(api, tools) {
         response: [['MissingComponents', 'Collection(mscrm.MissingComponent)']],
       }, // how a binary file travels on a GET is a guess
       handle(ctx) {
+        requireMetadataPrivilege(api, ctx, 'prvImportCustomization', 'solution');
         const archive = tools.readArchive(ctx.params?.CustomizationFile ?? ctx.body?.CustomizationFile);
         return asyncResponse(ctx, 'Microsoft.Dynamics.CRM.RetrieveMissingComponentsResponse', {
           MissingComponents: missingOf(store, archive),
@@ -1084,6 +1173,8 @@ function lifecycleOperations(api, tools) {
         ],
       },
       handle(ctx) {
+        // Assumed: reading a solution needs prvReadSolution (the native privilege name is not confirmed).
+        requireMetadataPrivilege(api, ctx, 'prvReadSolution', 'solution');
         const id = lower(requireText(ctx.params?.SolutionId, 'SolutionId'));
         const users = Object.entries(store.state.dataverse?.preferredSolutions ?? {})
           .filter(([, solution]) => lower(solution) === id)

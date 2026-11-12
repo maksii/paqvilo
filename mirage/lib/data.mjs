@@ -65,7 +65,11 @@ import { pluginStepBypassed } from './plugin-bypass.mjs';
 import { compilePermissionFetchXml, serializePermissionFetchXml } from './permission-query.mjs';
 import { rebindPermissionQuery } from './permission-query-mutation.mjs';
 import { preparePortalFetchXml } from './portal-fetchxml.mjs';
-import { compileODataPermissionQuery, authoredScalarODataFetch } from './odata-permission-query.mjs';
+import {
+  compileODataPermissionQuery,
+  authoredScalarODataFetch,
+  permissionGrantColumn,
+} from './odata-permission-query.mjs';
 import { assertPortalFetchXmlTransport } from './portal-fetch-transport.mjs';
 import { recordToSdkEntity, recordToSdkReadEntity, sdkQueryParameters, executeSdkFetch } from './plugin-clr.mjs';
 import { isSecuredField } from './dataverse-fls.mjs';
@@ -213,6 +217,8 @@ const rowCountOf = (value) => {
   return value == null ? 0 : 1;
 };
 const own = (obj, key) => Object.hasOwn(obj, key);
+const pluginValueAbsent = (value) => value == null || value === '';
+const ownMember = (value, key) => (value != null && own(value, key) ? value[key] : undefined);
 // Row columns a write's Target never shows: the row version, and empty on-behalf/team ownership lookups
 // (native Create Targets carry an empty modifiedonbehalfby, never an empty createdonbehalfby or owningteam).
 export const notInTarget = (name, value) =>
@@ -281,7 +287,13 @@ const queuedFrame = (frame, before, asyncSourceParent) => ({
 
 const metadataField = (mapping, key) => {
   const fields = mapping?.fields ?? mapping?.fieldMetadata ?? {};
-  return fields[key] ?? fields[Object.keys(fields).find((name) => name.toLowerCase() === key.toLowerCase())];
+  return (
+    ownMember(fields, key) ??
+    ownMember(
+      fields,
+      Object.keys(fields).find((name) => name.toLowerCase() === key.toLowerCase()),
+    )
+  );
 };
 const choiceDefinition = (definition) => {
   const type = String(definition?.dataverseType ?? definition?.type ?? '').toLowerCase();
@@ -331,7 +343,7 @@ export function normalizeMockLiquidRecord(
 
 function normalizeLiquidRecordField(record, out, key, value, mapping, { aggregate, mappings, aliasFields }) {
   if (key.includes('@')) return;
-  const definition = aliasFields[key] ?? metadataField(mapping, key);
+  const definition = ownMember(aliasFields, key) ?? metadataField(mapping, key);
   if (!aggregate && typeof value === 'number' && choiceDefinition(definition)) {
     out[key] = {
       value,
@@ -348,7 +360,7 @@ function normalizeLiquidRecordField(record, out, key, value, mapping, { aggregat
   }
   if (value && typeof value === 'object' && mapping.relationships?.[key] && !own(value, 'id')) {
     const target = mapping.relationships[key].entity;
-    const targetMapping = typeof mappings === 'function' ? mappings(target) : mappings[target];
+    const targetMapping = typeof mappings === 'function' ? mappings(target) : ownMember(mappings, target);
     out[key] = normalizeMockLiquidRecord(value, targetMapping ?? {}, { aggregate, mappings });
   }
 }
@@ -359,7 +371,7 @@ export function normalizeMockLiquidFetchXml(result, xml, mappingResolver) {
     root = fetch.children.find((node) => node.name === 'entity');
   if (!root) throw new DataError('FetchXML requires a root entity');
   const resolve = (name) =>
-    typeof mappingResolver === 'function' ? mappingResolver(name) : (mappingResolver?.[name] ?? {});
+    typeof mappingResolver === 'function' ? mappingResolver(name) : (ownMember(mappingResolver, name) ?? {});
   const mapping = resolve(root.attrs.name),
     aliasFields = {};
   let serial = 0;
@@ -422,7 +434,7 @@ function formatMockRecordField(out, key, value, mapping, mappings, tables) {
     return;
   }
   if (value && typeof value === 'object' && relationship) {
-    out[key] = formatMockRecord(value, mappings[relationship.entity] ?? {}, mappings, tables);
+    out[key] = formatMockRecord(value, ownMember(mappings, relationship.entity) ?? {}, mappings, tables);
     return;
   }
   out[key] = value;
@@ -441,8 +453,8 @@ function isLabeledChoice(value) {
 function formatNamedLookup(out, key, value, mappings, tables) {
   const name = key.includes('.') || /^_.*_value$/.test(key) ? key : `_${key}_value`;
   out[name] = value.id;
-  const targetMapping = mappings[value.logical_name] ?? {};
-  const target = (tables[value.logical_name] ?? []).find(
+  const targetMapping = ownMember(mappings, value.logical_name) ?? {};
+  const target = (ownMember(tables, value.logical_name) ?? []).find(
     (row) =>
       String(row[targetMapping.idColumn ?? `${value.logical_name}id`]).toLowerCase() === String(value.id).toLowerCase(),
   );
@@ -467,8 +479,8 @@ function addFormattedLookupValue(out, key, value, mapping, mappings, tables) {
     (item) => item.many === false && item.from === physical,
   );
   if (!relationship || value == null || typeof value === 'object') return;
-  const targetMapping = mappings[relationship.entity] ?? {};
-  const target = (tables[relationship.entity] ?? []).find(
+  const targetMapping = ownMember(mappings, relationship.entity) ?? {};
+  const target = (ownMember(tables, relationship.entity) ?? []).find(
     (row) => String(row[targetMapping.idColumn ?? relationship.to]).toLowerCase() === String(value).toLowerCase(),
   );
   const name = key.includes('.') || /^_.*_value$/.test(key) ? key : `_${key}_value`;
@@ -671,6 +683,14 @@ const primaryKeyOf = (column) => {
       return typeof value === 'string' ? comparable(value) : undefined;
     });
   return primaryKeyFns.get(column);
+};
+/**
+ * Elastic row key: the comparable primary key with the partition (null when absent), so the same id in two partitions
+ * is two keys. Undefined for a non-string id or partition, which the index cannot answer: the lookup scans.
+ */
+const elasticKeyOf = (id, partition) => {
+  if (typeof id !== 'string' || (partition != null && typeof partition !== 'string')) return undefined;
+  return JSON.stringify([comparable(id), partition ?? null]);
 };
 /**
  * Key-segment lookup index key (findByKey): a bucket that every valuesEqual match shares. Only
@@ -1045,7 +1065,33 @@ function validatePermissionRule(rule) {
     throw new DataError('Parent permission requires relationship entity/from/to');
 }
 
+// Members every object literal inherits from Object.prototype, and the legacy __define*__/__lookup*__ accessors.
+const OBJECT_PROTOTYPE_MEMBERS = new Set([
+  'constructor',
+  '__proto__',
+  'prototype',
+  'toString',
+  'valueOf',
+  'hasOwnProperty',
+  'isPrototypeOf',
+  'propertyIsEnumerable',
+  'toLocaleString',
+]);
+const LEGACY_ACCESSOR_NAME = /^__(?:define|lookup)[A-Za-z]*__$/;
+// A path segment is an identifier that cannot reach a prototype member. An unknown root evaluates to undefined.
+function checkPluginPathSegment(segment) {
+  if (!/^\w+$/.test(segment) || OBJECT_PROTOTYPE_MEMBERS.has(segment) || LEGACY_ACCESSOR_NAME.test(segment))
+    throw new DataError(`Invalid plugin path segment ${segment}`);
+}
+function checkPluginPath(path) {
+  for (const segment of path.slice(1).split('.')) checkPluginPathSegment(segment);
+}
+
 function checkPluginExpression(expr) {
+  if (typeof expr === 'string' && expr.startsWith('$')) {
+    checkPluginPath(expr);
+    return;
+  }
   if (!expr || typeof expr !== 'object' || Array.isArray(expr) || own(expr, 'literal')) return;
   if (
     ![
@@ -1115,6 +1161,11 @@ function validatePluginRuleDefinition(validation) {
   // the simulated plugin names the platform error it reproduces.
   if (validation.innerCode != null && !/^0x[0-9a-f]{8}$/i.test(String(validation.innerCode)))
     throw new DataError('Plugin validation innerCode must be a 0x-prefixed 8-digit hex code');
+  if (validation.oneOf != null && !Array.isArray(validation.oneOf))
+    throw new DataError('Plugin validation oneOf must be an array');
+  for (const bound of ['min', 'max'])
+    if (validation[bound] != null && Number.isNaN(compareNumeric(validation[bound], 0)))
+      throw new DataError(`Plugin validation ${bound} must be a number`);
 }
 
 function validatePluginExpressionBag(bag) {
@@ -1172,12 +1223,7 @@ function concurrencyBehaviorOption(options) {
   if (rule.observedOrphanParent?.field) return field(row, rule.observedOrphanParent.field) != null;
   if (rule.identityRelationship)
     return permissionIdentityRelationshipAllows(store, rule.identityRelationship, row, identity, memo);
-  let column = rule.field;
-  if (column == null) {
-    if (scope === 'self') column = mapping.idColumn;
-    else column = scope === 'account' ? 'parentcustomerid' : 'contactid';
-  }
-  const value = scalar(field(row, column));
+  const value = scalar(field(row, permissionGrantColumn(rule, mapping.idColumn)));
   if (scope === 'self' || scope === 'contact')
     return Boolean(identity.contactId || identity.id) && equal(value, identity.contactId ?? identity.id);
   if (scope === 'account') return Boolean(identity.accountId) && equal(value, identity.accountId);
@@ -2374,15 +2420,48 @@ export class DataStore {
     this.rowIndexes?.get(rows)?.delete(name);
   }
   rowIndex(mapping, rows, id, options = {}) {
-    if (isElastic(mapping)) {
-      const key = typeof id === 'string' && id.includes('=') ? parseKeySegment(id) : null;
-      const primary = key?.[mapping.idColumn] ?? id;
-      const partition = key?.partitionid ?? options.partitionId ?? null;
-      return rows.findIndex(
-        (row) => equal(row[mapping.idColumn], primary) && samePartition(row.partitionid, partition),
-      );
-    }
+    if (isElastic(mapping)) return this.elasticRowIndex(mapping, rows, id, options);
     return this.rowPositions(mapping, rows, id)?.[0] ?? -1;
+  }
+  /**
+   * The position of the elastic row whose primary key equals `id` in its partition, or -1. Answered through the
+   * index keyed by primary key and partition, which the row choke points keep current like the primary-key index.
+   */
+  elasticRowIndex(mapping, rows, id, options) {
+    const key = typeof id === 'string' && id.includes('=') ? parseKeySegment(id) : null;
+    const primary = key?.[mapping.idColumn] ?? id;
+    const partition = key?.partitionid ?? options.partitionId ?? null;
+    const column = mapping.idColumn,
+      lookup = elasticKeyOf(primary, partition),
+      scan = () =>
+        rows.flatMap((row, index) =>
+          equal(row[column], primary) && samePartition(row.partitionid, partition) ? [index] : [],
+        );
+    const positions =
+      lookup === undefined
+        ? scan()
+        : this.indexedPositions(rows, `elasticRowKey\u0000${column}`, {
+            keyOf: (row) => elasticKeyOf(row?.[column], row?.partitionid),
+            key: lookup,
+            scan,
+          });
+    return positions[0] ?? -1;
+  }
+  /**
+   * Ascending positions of the rows whose key in the cached index `name` equals `key` (keyOf maps a row to its key).
+   * A hit is checked against its row; a stale index is rebuilt once, and `scan` answers when the index cannot.
+   */
+  indexedPositions(rows, name, { keyOf, key, scan, scoped = false }) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const entry = this.rowKeyIndex(rows, name, keyOf, { scoped });
+      if (!entry || entry.linear) return scan();
+      const found = entry.get(key);
+      // Validity check on hit: a position whose row no longer carries the key means the
+      // array changed outside the row choke points; rebuild once.
+      if (found.every((index) => rows[index] !== undefined && entry.keyOf(rows[index]) === key)) return found;
+      this.dropRowKeyIndex(rows, name);
+    }
+    return scan();
   }
   /**
    * Ascending positions of the rows whose primary key equals `id` (the store's coercive
@@ -2396,18 +2475,12 @@ export class DataStore {
     // Non-string identifiers keep the coercive comparison of the linear scan.
     if (typeof id !== 'string') return linear();
     // A scoped index (uniqueness checks) is rebuilt per transaction, so it never answers a stale miss across writes.
-    const name = `${scoped ? 'uid' : 'id'}\u0000${column}`,
-      key = comparable(id);
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const entry = this.rowKeyIndex(rows, name, primaryKeyOf(column), { scoped });
-      if (!entry || entry.linear) return linear();
-      const found = entry.get(key);
-      // Validity check on hit: a position whose row no longer carries the key means the
-      // array changed outside the row choke points; rebuild once.
-      if (found.every((index) => rows[index] !== undefined && entry.keyOf(rows[index]) === key)) return found;
-      this.dropRowKeyIndex(rows, name);
-    }
-    return linear();
+    return this.indexedPositions(rows, `${scoped ? 'uid' : 'id'}\u0000${column}`, {
+      keyOf: primaryKeyOf(column),
+      key: comparable(id),
+      scan: linear,
+      scoped,
+    });
   }
   /**
    * The stored rows of a local table whose primary key is one of `ids` (string ids), in table
@@ -3132,7 +3205,8 @@ export class DataStore {
   }
   /** Rows of a table: a virtual site table when the host supplies one, else local data. */
   tableRows(logical) {
-    const rows = this.virtualTable(logical)?.rows ?? this.state.tables[logical] ?? [];
+    const local = own(this.state.tables, logical) ? this.state.tables[logical] : undefined;
+    const rows = this.virtualTable(logical)?.rows ?? local ?? [];
     // Elastic tables only: rows past their time to live are hidden from every reader (dataverse-elastic.mjs installs expiryFilter).
     return this.expiryFilter && this.state.mappings?.[logical]?.tableType === 'Elastic'
       ? this.expiryFilter(logical, rows)
@@ -3161,9 +3235,14 @@ export class DataStore {
     return [wanted];
   }
   resolveMapping(entity) {
+    // A missing or empty name matches no table; an absent logical name is an invalid argument, not a table lookup.
+    if (typeof entity !== 'string' || entity === '')
+      throw new DataError(`Invalid entity or field name: ${entity}`, 400, 'InvalidRequest', {
+        innerCode: '0x80040203',
+      });
     safeName(entity);
     let logical = entity;
-    let m = this.state.mappings[entity];
+    let m = own(this.state.mappings, entity) ? this.state.mappings[entity] : undefined;
     if (!m) {
       const hit = Object.entries(this.state.mappings).find(([, value]) => value.entitySet === entity);
       if (hit) {
@@ -5006,7 +5085,7 @@ export class DataStore {
   evaluate(expr, context) {
     if (typeof expr === 'string' && expr.startsWith('$')) {
       const [root, ...parts] = expr.slice(1).split('.');
-      return parts.reduce((v, k) => v?.[k], context[root]);
+      return parts.reduce(ownMember, ownMember(context, root));
     }
     if (!expr || typeof expr !== 'object' || Array.isArray(expr)) return clone(expr);
     if (own(expr, 'literal')) return clone(expr.literal);
@@ -5302,13 +5381,15 @@ export class DataStore {
     let valid = true;
     if (validation.required) valid = value != null && value !== '';
     if (validation.pattern) valid = valid && new RegExp(validation.pattern).test(String(value ?? ''));
-    if (validation.min != null) valid = valid && Number(value) >= validation.min;
-    if (validation.max != null) valid = valid && Number(value) <= validation.max;
+    // An absent value passes min, max and unique here; `required` is the rule that demands presence.
+    const absent = pluginValueAbsent(value);
+    if (validation.min != null) valid = valid && (absent || compareNumeric(value, validation.min) >= 0);
+    if (validation.max != null) valid = valid && (absent || compareNumeric(value, validation.max) <= 0);
     if (validation.oneOf) valid = valid && validation.oneOf.some((item) => equal(item, value));
     if (validation.assert) valid = valid && compileFilter(validation.assert)(row);
-    if (validation.unique) {
+    if (validation.unique && !absent) {
       const mapping = this.resolveMapping(entity);
-      valid = valid && this.isUniquePluginValue(mapping, entity, validation, row, value);
+      valid = valid && this.isUniquePluginValue(mapping, validation, row, value);
     }
     if (valid) return;
     throw new DataError(
@@ -5323,8 +5404,8 @@ export class DataStore {
       },
     );
   }
-  isUniquePluginValue(mapping, entity, validation, row, value) {
-    return !(this.state.tables[entity] ?? []).some(
+  isUniquePluginValue(mapping, validation, row, value) {
+    return !(this.state.tables[mapping.logicalName] ?? []).some(
       (candidate) =>
         !equal(candidate[mapping.idColumn], row[mapping.idColumn]) && equal(field(candidate, validation.field), value),
     );
@@ -5402,7 +5483,7 @@ export class DataStore {
         key.endsWith('@odata.bind') ? (relationships[key.slice(0, -11)]?.from ?? key.slice(0, -11)) : key,
       ),
     );
-    for (const relationship of Object.values(relationships))
+    for (const relationship of this.scopeBareLookups(mapping, relationships, changed, row, previous))
       this.validateBindingRelationship(
         mapping,
         relationship,
@@ -5412,6 +5493,43 @@ export class DataStore {
         previous,
         nativeContactAssociation,
       );
+  }
+  /**
+   * The relationships to validate. A polymorphic lookup has one single-valued relationship per target table, all with the
+   * same `from`; a bare id names no table, so the relationship whose table holds it stands for the lookup.
+   */
+  scopeBareLookups(mapping, relationships, changed, row, previous) {
+    const dropped = new Set();
+    for (const group of this.polymorphicGroups(mapping, relationships, changed).values()) {
+      const holder = this.bareLookupHolder(group, row, previous);
+      if (holder) for (const relationship of group.filter((item) => item !== holder)) dropped.add(relationship);
+    }
+    return Object.values(relationships).filter((relationship) => !dropped.has(relationship));
+  }
+  polymorphicGroups(mapping, relationships, changed) {
+    const groups = new Map();
+    for (const relationship of Object.values(relationships)) {
+      if (relationship.many === true || relationship.from === mapping.idColumn || !changed.has(relationship.from))
+        continue;
+      groups.set(relationship.from, [...(groups.get(relationship.from) ?? []), relationship]);
+    }
+    return new Map([...groups].filter(([, group]) => group.length > 1));
+  }
+  /** The one relationship of a group that holds a bare id, or null: a typed value, or no table (or two) holding it. */
+  bareLookupHolder(group, row, previous) {
+    const { from } = group[0];
+    const bound = field(row, from) ?? field(previous ?? {}, from);
+    const id = scalar(bound);
+    if (id == null || bound?.logical_name) return null;
+    const holders = group.filter((relationship) => this.bindingTargetHolds(relationship, row, id));
+    if (holders.length > 1)
+      throw new DataError('Lookup value names records in more than one target table', 400, 'InvalidLookup');
+    return holders[0] ?? null;
+  }
+  bindingTargetHolds(relationship, row, id) {
+    const target = this.resolveMapping(relationship.entity);
+    const rows = this.tableRows(target.logicalName);
+    return this.rowIndex(target, rows, id, { partitionId: row[`${relationship.from}pid`] }) >= 0;
   }
   validateBindingRelationship(mapping, relationship, changed, row, identity, previous, nativeContactAssociation) {
     // Primary-key joins describe table inheritance, not a visitor-authored
@@ -7191,17 +7309,34 @@ export function parseEntityReference(value) {
     }
     if (url.search || url.hash || url.username || url.password) return null;
     origin = url.origin;
-    text = decodeURIComponent(url.pathname);
+    try {
+      text = decodeURIComponent(url.pathname);
+    } catch {
+      return null;
+    }
   }
   text = text.replace(/^\/?_api\//, '').replace(/^\//, '');
-  const match = /^([A-Za-z_]\w*)\(([^()]+)\)$/.exec(text);
+  const match = /^([A-Za-z_]\w*)\((.+)\)$/.exec(text);
   if (!match) return null;
   const key = match[2].trim();
+  if (!validEntityReferenceKey(key)) return null;
   return {
     set: match[1],
     id: /=/.test(key) ? key : key.replace(/^'(.*)'$/, '$1').replace(/^\{(.*)\}$/, '$1'),
     origin,
   };
+}
+const QUOTED_KEY_LITERAL = /'(?:[^']|'')*'/g;
+// Parentheses belong to a quoted literal only. An alternate-key list must parse as one.
+function validEntityReferenceKey(key) {
+  if (/[()]/.test(key.replace(QUOTED_KEY_LITERAL, ''))) return false;
+  if (!key.includes('=')) return true;
+  try {
+    parseKeySegment(key);
+    return true;
+  } catch {
+    return false;
+  }
 }
 // Internal synchronous UpsertMultiple classification scope. Only the record handler's
 // closed classification callback may use this bridge; arbitrary callbacks can mutate rows.
@@ -7797,12 +7932,15 @@ function coerceMultiChoice(entity, attribute, value, definition, options, conver
   if (Array.isArray(value)) parts = value;
   else if (typeof value === 'string') parts = value.split(',').filter((part) => part.trim() !== '');
   if (!parts) throw conversion('Edm.String');
+  const numbers = new Set();
   for (const part of parts) {
     const number = Number(typeof part === 'string' ? part.trim() : part);
     if (!Number.isInteger(number)) throw conversion('Edm.Int32');
     assertOption(number, definition, { entity, attribute });
+    numbers.add(number);
   }
-  return value;
+  // Portal Web API writes store the Dataverse Web API form: distinct options in first-seen order.
+  return options.portalRequest === true ? [...numbers].join(',') : value;
 }
 
 function coerceWebApiMultiChoice(entity, attribute, value, definition, conversion) {

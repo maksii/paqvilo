@@ -1,5 +1,5 @@
-import { parseArgs } from 'node:util';
 import { spawn } from 'node:child_process';
+import { parseOptions } from '../cli-options.mjs';
 import { startSetupServer } from '../setup/server.mjs';
 
 function openSetupUrl(url) {
@@ -27,7 +27,7 @@ Ctrl+C stops only this setup server. Saves apply on the next preview start.
 `;
 
 export async function runSetup(args) {
-  const { values } = parseArgs({
+  const { values } = parseOptions({
     args,
     options: {
       config: { type: 'string' },

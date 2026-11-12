@@ -1,3 +1,4 @@
+// @test-kind contract: data generation writes the same memberships through the library and the paqvilo mirage data generate command.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mergeDataset, runDataCommand } from '../lib/data-generation.mjs';
@@ -149,7 +150,7 @@ export default { id: 'fixture', name: 'Fixture', description: 'Invented data', m
       '--data-model',
       'enhanced',
     ],
-    { windowsHide: true, timeout: 30000 },
+    { windowsHide: true },
   );
   assert.equal(JSON.parse(stdout).addedMemberships, 1);
   const after = JSON.parse(await fs.readFile(stateFile, 'utf8'));

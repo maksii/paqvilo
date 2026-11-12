@@ -101,3 +101,90 @@ test('HTTP failures and both advertised and streamed size limits leave no cache 
     assert.equal(requests.get(route), route === '/unavailable' ? 3 : 1);
   }
 });
+
+async function scratchTarget(t) {
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-verified-download-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  return { directory, target: path.join(directory, 'archive.zip') };
+}
+
+async function streamingServer(t, respond) {
+  let attempts = 0;
+  const server = http.createServer((request, response) => {
+    attempts += 1;
+    respond(attempts, response);
+  });
+  t.after(
+    () =>
+      new Promise((resolve) => {
+        server.closeAllConnections();
+        server.close(resolve);
+      }),
+  );
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  return { url: `http://127.0.0.1:${server.address().port}/archive`, attempts: () => attempts };
+}
+
+test('a slow but steady body completes when the transfer takes several idle limits', async (t) => {
+  const { directory, target } = await scratchTarget(t);
+  const pieces = Array.from({ length: 40 }, (_, index) => Buffer.from(String(index % 10)));
+  const whole = Buffer.concat(pieces);
+  const { url, attempts } = await streamingServer(t, (attempt, response) => {
+    response.writeHead(200, { 'content-type': 'application/octet-stream' });
+    let sent = 0;
+    const timer = setInterval(() => {
+      if (sent === pieces.length) {
+        clearInterval(timer);
+        response.end();
+        return;
+      }
+      response.write(pieces[sent]);
+      sent += 1;
+    }, 30);
+    response.on('close', () => clearInterval(timer));
+  });
+  await downloadVerifiedArchive(url, target, createHash('sha256').update(whole).digest('hex'), {
+    idleTimeoutMs: 300,
+  });
+  assert.deepEqual(await fs.readFile(target), whole);
+  assert.equal(attempts(), 1);
+  assert.deepEqual(await fs.readdir(directory), ['archive.zip']);
+});
+
+test('a body that stalls mid-transfer is restarted and only the complete retry is published', async (t) => {
+  const { directory, target } = await scratchTarget(t);
+  const { url, attempts } = await streamingServer(t, (attempt, response) => {
+    response.writeHead(200, { 'content-type': 'application/octet-stream' });
+    if (attempt === 1) response.write(payload.subarray(0, 10));
+    else response.end(payload);
+  });
+  await downloadVerifiedArchive(url, target, expected, { idleTimeoutMs: 200 });
+  assert.deepEqual(await fs.readFile(target), payload);
+  assert.equal(attempts(), 2);
+  assert.deepEqual(await fs.readdir(directory), ['archive.zip']);
+});
+
+test('a body that stalls on every attempt fails with the stall, the host and the attempt count', async (t) => {
+  const { directory, target } = await scratchTarget(t);
+  const { url, attempts } = await streamingServer(t, (attempt, response) => {
+    response.writeHead(200, { 'content-type': 'application/octet-stream' });
+    response.write(payload.subarray(0, 10));
+  });
+  const host = new URL(url).host;
+  await assert.rejects(downloadVerifiedArchive(url, target, expected, { idleTimeoutMs: 200 }), {
+    message: `Archive download stalled from ${host}: no bytes for 0.2 s after 3 attempts.`,
+  });
+  assert.equal(attempts(), 3);
+  assert.deepEqual(await fs.readdir(directory), []);
+});
+
+test('a digest mismatch on a steadily streamed body is reported once and never retried', async (t) => {
+  const { directory, target } = await scratchTarget(t);
+  const { url, attempts } = await streamingServer(t, (attempt, response) => {
+    response.writeHead(200, { 'content-type': 'application/octet-stream' });
+    response.end(payload);
+  });
+  await assert.rejects(downloadVerifiedArchive(url, target, '0'.repeat(64), { idleTimeoutMs: 200 }), /digest mismatch/);
+  assert.equal(attempts(), 1);
+  assert.deepEqual(await fs.readdir(directory), []);
+});

@@ -1,6 +1,7 @@
 # Model-driven apps in Mirage
 
-Start Mirage as usual, then open `/main.aspx` (also linked from `/_sim/` and
+Start Mirage as usual, then open `/main.aspx` on the apps address (`appsUrl`)
+(also linked from `/_sim/` on the administration address and
 Mirage's setup navigation). Mirage Site Manager is available by default. Its
 Website, Content and Security navigation uses the selected export's data model.
 The enhanced model projects `mspp_*` management tables; standard exports use
@@ -23,7 +24,7 @@ pipeline as portal forms. `main.aspx?appname=<UniqueName>&pagetype=entitylist&et
 opens a table; `pagetype=entityrecord&id=<record-id>` opens a record. Omit `id`
 for a new record. `formid=<form-id>` selects an imported main form available to
 the selected app. Form-picker changes update that link, and saves retain the
-selected form. An unavailable form ID falls back to the app's first main form.
+selected form. A form ID missing from the imported main forms is refused with `FormUnavailable`; a source form excluded from the selected app falls back to the app's first eligible main form.
 `appid` selects an imported app ID. Exported IDs are not inferred
 from a live environment or a deployment commit. PAC exports can omit the app GUID;
 those apps receive a stable local GUID derived from their unique name, reported as
@@ -178,10 +179,13 @@ its Web API are unaffected.
 `POST /_apps/api/webapi` serves [`Xrm.WebApi.execute`](model-driven-client-api.md#xrmwebapiexecute)
 wherever the model-driven surface is: the Power Pages simulator and the standalone
 `model-driven` runtime. A standalone `dataverse-api` runtime has no model-driven surface
-and answers 404 there. The route is admin-adjacent: it runs any Web API request
-(CSRF-checked) as the selected staff user, or as the explicit local administrator when no
-staff cookie is set; a principal that is neither is refused (401
-`StaffPrincipalUnavailable`). Both hosts list it in status `adminAdjacentRoutes` (status
+and answers 404 there. On the Power Pages host the route is on the apps address (`appsUrl`): a
+browser request to it on the portal address is redirected (a navigation) or refused with
+`AppsOriginRequired` before it reaches the route. The route is admin-adjacent: it runs any
+Web API request (CSRF-checked with the apps token) as the selected staff user, or as the
+explicit local administrator when no staff cookie is set. The local administrator therefore
+applies on the apps address and to programmatic clients, not to a browser on the portal
+address. A principal that is neither is refused (401 `StaffPrincipalUnavailable`). Both hosts list it in status `adminAdjacentRoutes` (status
 `routes` keeps the `/_sim/api` prefixes).
 
 `control-descriptors.mjs` defines shared data-only control capabilities consumed by the catalogue, HTTP validation and browser registry. `controls.mjs` renders those types; unknown types remain explicit placeholders. Polymorphic lookups preserve the selected table alongside the ID and canonical logical-name annotation. A manually entered ID with multiple targets requires an explicit lookup selection. Existing-record PATCH requests contain only fields touched by actual control events, preserving untouched relationships and hidden values across tab changes. Create requests include editable rendered values.

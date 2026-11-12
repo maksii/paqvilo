@@ -60,7 +60,7 @@ const isCompactDescriptor = (preset) => preset?.builtin === true && !bodyKeys.so
 /** Refresh generated library entries; explicitly edited presets and mappings remain authoritative. */
 /* NOSONAR */ export function resolvePreset(state, name, generatedPresets = builtinPresets, context) {
   const copySaved = (value) => cloneStateData(value, { forkTables: Boolean(context?.records) });
-  const saved = state.presets?.[name];
+  const saved = hasOwn(state.presets, name) ? state.presets[name] : undefined;
   const generatedHas = hasOwn(generatedPresets, name);
   // Explicit project packs are absent from the compatibility library; their
   // stored descriptors resolve from the supplied portal library instead.

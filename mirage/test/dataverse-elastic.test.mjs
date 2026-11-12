@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's elastic-table runtime behaviour, designed for the simulator's Dataverse surface.
 // Elastic tables over HTTP and SOAP: TableType on create and read back, the documented restrictions, the built-in key and
 // system columns, and time-to-live expiry.
 // The organization runs on the suite's clock: wall time, or the instant the TTL cases pin (the store stamps modifiedon and
@@ -362,6 +363,7 @@ describe('elastic tables over HTTP and SOAP', () => {
     assert.equal(read.TableType, 'Elastic');
   });
 
+  // @test-kind security: a Basic User cannot create an elastic table
   it('refuses the same elastic create to a Basic User', async () => {
     const response = await call(webApi('EntityDefinitions'), {
       token: basic,
@@ -686,6 +688,21 @@ describe('elastic tables over HTTP and SOAP', () => {
       assert.equal((await query({ ...args, QueryText: 'SELECT COUNT(1) FROM c' })).status, 501);
     });
 
+    it('a Cosmos SQL paging cookie that is not a JSON object is refused as an invalid cookie', async () => {
+      const args = {
+        QueryText: 'SELECT c.props.new_payload.power AS power FROM c',
+        EntityLogicalName: ELASTIC,
+        PartitionId: 'json',
+        PageSize: 1,
+        QueryParameters: { Keys: [], Values: [] },
+      };
+      for (const value of [null, 5, 'text', []]) {
+        const res = await query({ ...args, PagingCookie: Buffer.from(JSON.stringify(value)).toString('base64url') });
+        assert.equal(res.status, 400, `cookie ${JSON.stringify(value)}`);
+        assert.match(await res.text(), /Invalid Cosmos SQL paging cookie/);
+      }
+    });
+
     it('elastic collection pages cap at 500 and collection joins are refused', async () => {
       await store.transact(() => {
         for (let index = 0; index < 501; index++)
@@ -727,6 +744,54 @@ describe('elastic tables over HTTP and SOAP', () => {
       );
       assert.equal(linked.status, 400);
       assert.equal((await linked.json()).error.code, '0x80048d0b');
+    });
+
+    // @test-kind security: a validForRead false column is the unknown-property refusal on an elastic table, as on a standard table, and its stored value reaches no response.
+    it('answers a validForRead false column on an elastic table as on a standard table, in projection, operands and FetchXML', async () => {
+      const hidden = { dataverseType: 'nvarchar', validForRead: false };
+      await store.transact(() => {
+        store.state.mappings[ELASTIC].fields.new_hidden = hidden;
+        store.state.mappings[GIZMO].fields.new_hidden = hidden;
+        store.createRecord(
+          ELASTIC,
+          { new_sensorreadingid: randomUUID(), partitionid: 'hidden-test', new_hidden: 'INVENTED-HIDDEN-VALUE' },
+          { admin: true },
+        );
+      });
+      const answers = async (set, entity) => {
+        const paths = {
+          select: `${set}?$select=new_hidden`,
+          filter: `${set}?$filter=new_hidden eq 'x'`,
+          orderby: `${set}?$orderby=new_hidden`,
+          fetch: `${set}?fetchXml=${encodeURIComponent(`<fetch><entity name="${entity}"><attribute name="new_hidden"/></entity></fetch>`)}`,
+        };
+        const result = {};
+        for (const [name, path] of Object.entries(paths)) {
+          const response = await call(webApi(path), { token: admin });
+          result[name] = { status: response.status, code: (await response.json()).error?.code ?? null };
+        }
+        return result;
+      };
+      const elastic = await answers('new_sensorreadings', ELASTIC);
+      assert.deepEqual(elastic, await answers('new_gizmos', GIZMO));
+      for (const name of ['select', 'filter', 'orderby'])
+        assert.deepEqual(elastic[name], { status: 400, code: '0x80060888' });
+
+      const projected = await call(webApi("new_sensorreadings?$filter=partitionid eq 'hidden-test'"), { token: admin });
+      assert.equal(projected.status, 200);
+      assert.equal((await projected.text()).includes('INVENTED-HIDDEN-VALUE'), false);
+
+      const operand = await query(
+        {
+          QueryText: 'SELECT c.id FROM c WHERE c.props.new_hidden = @value',
+          EntityLogicalName: ELASTIC,
+          PartitionId: 'hidden-test',
+          QueryParameters: { Keys: ['@value'], Values: [{ Type: 'System.String', Value: 'x' }] },
+        },
+        admin,
+      );
+      assert.equal(operand.status, 400);
+      assert.equal((await operand.json()).error.code, '0x80060888');
     });
   });
 
@@ -820,4 +885,56 @@ describe('elastic tables over HTTP and SOAP', () => {
       assert.equal(zero.status, 400);
     });
   });
+});
+
+it('rowIndex answers elastic lookups from the store index, one pass over the table then one read per lookup', async () => {
+  const mapping = { entitySet: 'x_targets', idColumn: 'x_targetid', tableType: 'Elastic' };
+  const idOf = (index) => `60000000-0000-0000-0000-${String(index).padStart(12, '0')}`;
+  const targets = Array.from({ length: 5000 }, (_, index) => ({ x_targetid: idOf(index), partitionid: 'p1' }));
+  const state = emptyState();
+  state.mappings.x_target = mapping;
+  state.tables.x_target = targets;
+  const store = await new DataStore({ state }).init();
+  let reads = 0;
+  store.state.tables.x_target = new Proxy(targets, {
+    get(target, key, receiver) {
+      if (typeof key === 'string' && /^\d+$/.test(key)) reads += 1;
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  const rows = store.tableRows('x_target');
+  const lookups = 200;
+  for (let index = 0; index < lookups; index++)
+    assert.equal(store.rowIndex(mapping, rows, idOf(index * 25), { partitionId: 'p1' }), index * 25);
+  assert.ok(reads <= targets.length + 10 * lookups, `row reads: ${reads}`);
+
+  const created = idOf(5000);
+  store.insertRow('x_target', rows, { x_targetid: created, partitionid: 'p1' });
+  assert.equal(store.rowIndex(mapping, rows, created, { partitionId: 'p1' }), 5000);
+  assert.equal(store.rowIndex(mapping, rows, created), -1, 'a null partition never matches a row in p1');
+
+  store.mutateRow('x_target', rows, 5000, { partitionid: 'p2' });
+  assert.equal(store.rowIndex(mapping, rows, created, { partitionId: 'p1' }), -1);
+  assert.equal(store.rowIndex(mapping, rows, created, { partitionId: 'p2' }), 5000);
+
+  store.insertRow('x_target', rows, { x_targetid: idOf(5001), partitionid: '' });
+  assert.equal(store.rowIndex(mapping, rows, idOf(5001), { partitionId: '' }), 5001);
+  assert.equal(store.rowIndex(mapping, rows, idOf(5001)), -1, 'an empty partition differs from a null one');
+
+  store.removeRow('x_target', rows, 5000);
+  assert.equal(store.rowIndex(mapping, rows, created, { partitionId: 'p2' }), -1);
+  assert.equal(store.rowIndex(mapping, rows, idOf(5001), { partitionId: '' }), 5000);
+
+  // A transaction clones the state, which a counting proxy cannot be; the rollback is checked on the plain array.
+  store.state.tables.x_target = targets;
+  await assert.rejects(
+    store.transact(() => {
+      store.insertRow('x_target', store.tableRows('x_target'), { x_targetid: idOf(5002), partitionid: 'p3' });
+      throw new Error('rolled back on purpose');
+    }),
+    /rolled back on purpose/,
+  );
+  const afterRollback = store.tableRows('x_target');
+  assert.equal(store.rowIndex(mapping, afterRollback, idOf(5002), { partitionId: 'p3' }), -1);
+  assert.equal(store.rowIndex(mapping, afterRollback, idOf(5001), { partitionId: '' }), 5000);
 });

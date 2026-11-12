@@ -1,3 +1,4 @@
+// @test-kind contract: edited form sources reach the overlay through the real watcher and recover after a failed edit.
 import { makeTemporaryDirectorySync, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 
 import { test } from 'node:test';
@@ -112,7 +113,7 @@ test('interception preserves multipart file uploads, empty files and Unicode for
 });
 
 for (const layout of ['classic', 'enhanced'])
-  test(`${layout} form sources edit and recover through the real watcher`, { timeout: 90_000 }, async (t) => {
+  test(`${layout} form sources edit and recover through the real watcher`, async (t) => {
     const fx = createFixture();
     const work = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-form-workflows-'));
     const sourceDir = layout === 'enhanced' ? fx.file('enhanced-source') : fx.dir;

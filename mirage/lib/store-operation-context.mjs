@@ -12,6 +12,10 @@ export const storeOperationFields = [
   // The user a platform main operation's delegated write runs as (Assign's owner Update as SYSTEM); changes UserId only.
   'pluginPlatformUserId',
   'pluginSdkTag',
+  // A named message's main operation, the SDK wrapper and the SDK request count belong to the request that runs them.
+  'pluginMainOperation',
+  'pluginSdkWrapper',
+  'pluginSdkRequests',
   'pluginRequestId',
   'pluginReadLane',
   'rowTransaction',

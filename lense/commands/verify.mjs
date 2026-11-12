@@ -18,8 +18,23 @@ import { GitBaseline } from '../git.mjs';
 import { editSource } from '../source-edit.mjs';
 import { portalResourceUrl } from '../online.mjs';
 import { replaceDelimitedAlternatives } from '../../mirage/lib/text-scanning.mjs';
+import { shutdownSignalCounter } from '../signal-forwarding.mjs';
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** Waits `ms`; an interrupt clears the timer at once and ends the wait with the interrupt reason. */
+function sleep(ms, signal) {
+  signal?.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const onInterrupt = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onInterrupt);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onInterrupt, { once: true });
+  });
+}
 const sha = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 const DIAGNOSTIC_LIMITS = { entriesPerCategory: 200, textCharacters: 1000 };
 const diagnosticText = (value) => (typeof value === 'string' ? value.slice(0, DIAGNOSTIC_LIMITS.textCharacters) : '');
@@ -152,18 +167,50 @@ function git(cwd, ...args) {
   );
 }
 
+const INTERRUPT_SIGNALS = ['SIGINT', 'SIGTERM'];
+
+/**
+ * Aborts the run's wait loops on the first interrupt; the second is absorbed and the third forces the exit.
+ * The returned function removes the listeners again.
+ */
+export function abortOnInterrupt(controller, options = {}) {
+  const onSignal = shutdownSignalCounter({
+    onFirst: (signal) => controller.abort(new Error(`Verification was interrupted by ${signal}`)),
+    ...options,
+  });
+  const listeners = INTERRUPT_SIGNALS.map((signal) => [signal, () => onSignal(signal)]);
+  for (const [signal, listener] of listeners) process.on(signal, listener);
+  return () => {
+    for (const [signal, listener] of listeners) process.off(signal, listener);
+  };
+}
+
+/**
+ * Settles with `promise`, or rejects with the interrupt reason as soon as the run is interrupted. The rejection
+ * handler stays attached after an interrupt, so a promise that fails later is not reported as unhandled.
+ */
+function untilInterrupted(promise, signal) {
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const onInterrupt = () => reject(signal.reason);
+    signal.addEventListener('abort', onInterrupt, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', onInterrupt));
+  });
+}
+
 /** Polls `fn` until it returns something truthy; survives reloads that destroy the page context. */
-async function until(fn, timeout = 30_000) {
+async function until(fn, timeout = 30_000, signal) {
   const end = Date.now() + timeout;
   let last;
   while (Date.now() < end) {
+    signal?.throwIfAborted();
     try {
       last = await fn();
       if (last) return last;
     } catch {
       /* page is navigating */
     }
-    await sleep(250);
+    await sleep(250, signal);
   }
   return last || null;
 }
@@ -232,14 +279,18 @@ async function openStableDocument(open, startPath) {
     diagnostics.comparison = compareDiagnostics(diagnostics.baseline, diagnostics.afterEdits);
   };
   const check = (name, ok, detail = '') => {
+    interrupt.signal.throwIfAborted();
     checks.push({ name, ok: Boolean(ok), detail });
     const detailText = detail ? `  (${detail})` : '';
     log(`  ${ok ? 'PASS' : 'FAIL'}  ${name}${detailText}`);
   };
   const skip = (name, why) => {
+    interrupt.signal.throwIfAborted();
     checks.push({ name, ok: null, detail: why });
     log(`  SKIP  ${name}  (${why})`);
   };
+  const interrupt = new AbortController();
+  const stopInterruptListeners = abortOnInterrupt(interrupt);
 
   try {
     log(`verifying ${cfg.siteName} @ ${cfg.envName}  ${cfg.origin}${startPath}`);
@@ -251,11 +302,16 @@ async function openStableDocument(open, startPath) {
       filter: (file) =>
         !['.git', '.paqvilo', 'node_modules'].includes(path.basename(file)) && !fs.lstatSync(file).isSymbolicLink(),
     });
+    // the copy is synchronous, so the interrupt is observed once it has returned
+    interrupt.signal.throwIfAborted();
     // A current local block may already differ from the served page. Preserve the caller's
     // comparison baseline in the temporary Git repository, then test its working text below.
     // Otherwise committing nonempty new CSS here would erase its empty-baseline injection case.
     const parentBaseline = new GitBaseline(cfg.sourceDir, cfg.site.markup.baseline);
-    const parentChanged = await parentBaseline.changedFilesAsync({ refreshRef: false });
+    const parentChanged = await untilInterrupted(
+      parentBaseline.changedFilesAsync({ refreshRef: false }),
+      interrupt.signal,
+    );
     inlineBaseline = {
       requested: parentBaseline.spec,
       commit: parentBaseline.commit ?? null,
@@ -265,7 +321,7 @@ async function openStableDocument(open, startPath) {
       fallbackReason: parentBaseline.error ?? null,
     };
     if (parentBaseline.available) {
-      const copiedModel = await PortalModel.create(tempSource);
+      const copiedModel = await untilInterrupted(PortalModel.create(tempSource), interrupt.signal);
       const candidates = copiedModel.inlineSources
         .filter((source) => source.mode === 'block')
         .map((source) => ({ source, original: path.join(cfg.sourceDir, path.relative(tempSource, source.file)) }))
@@ -297,22 +353,26 @@ async function openStableDocument(open, startPath) {
       sourceDir: tempSource,
       site: { ...cfg.site, routes: [], scope: 'changed', markup: { ...cfg.site.markup, baseline: 'HEAD' } },
     };
-    const session = await OverlaySession.create(vcfg);
+    const session = await untilInterrupted(OverlaySession.create(vcfg), interrupt.signal);
     const hits = [];
     session.on('hit', (h) => hits.push(h));
 
     // Preserve the complete dev identity, including an external root's child directory and
     // browser-managed credential policy. A root-only override would silently select Default.
-    const browserOverrides = { headless: !args.headed };
+    const browserOverrides = { headless: !args.headed, ownInterrupts: true };
     if (!args['signed-in']) browserOverrides.profileDir = path.join(work, 'profile');
-    const opened = await openBrowser({ ...vcfg, browser: { ...cfg.browser, cdpUrl: null } }, browserOverrides);
+    const launching = openBrowser({ ...vcfg, browser: { ...cfg.browser, cdpUrl: null } }, browserOverrides);
+    // An interrupt can end this wait first; a browser that finishes launching after it is closed here.
+    launching.then((late) => interrupt.signal.aborted && late.close()).catch(() => {});
+    const opened = await untilInterrupted(launching, interrupt.signal);
     close = opened.close;
+    interrupt.signal.throwIfAborted();
     const { context } = opened;
     detach = await attachSession(context, session);
     panel = enablePanel(context, session, browserOverrides);
     watcher = watchSources(session, context, { log: () => {} });
-    await watcher.ready;
-    page = context.pages()[0] ?? (await context.newPage());
+    await untilInterrupted(watcher.ready, interrupt.signal);
+    page = context.pages()[0] ?? (await untilInterrupted(context.newPage(), interrupt.signal));
 
     // Capture the unmodified page before testing local overlays.
     const requested = new Set();
@@ -338,11 +398,18 @@ async function openStableDocument(open, startPath) {
     // 'load' can take very long on data-heavy pages; the document itself is what matters here.
     // The body is read at once: a response cannot be read after the page has navigated away from it.
     const open = async () => {
-      const res = await page.goto(cfg.origin + startPath, { waitUntil: 'domcontentloaded', timeout: 120_000 });
+      const res = await untilInterrupted(
+        page.goto(cfg.origin + startPath, { waitUntil: 'domcontentloaded', timeout: 120_000 }),
+        interrupt.signal,
+      );
       const navigationsAtLoad = navigations;
       const html = res ? await res.text().catch(() => null) : null;
-      await page.waitForLoadState('load', { timeout: 30_000 }).catch(() => {});
-      await sleep(1500);
+      // a load timeout is tolerated; an interrupt is not
+      await untilInterrupted(page.waitForLoadState('load', { timeout: 30_000 }), interrupt.signal).catch(() =>
+        interrupt.signal.throwIfAborted(),
+      );
+      // fixed settle pause after the load; the page's navigations are compared after it
+      await sleep(1500, interrupt.signal);
       return { response: res, html: navigations === navigationsAtLoad ? html : null };
     };
     let started = await open();
@@ -355,14 +422,14 @@ async function openStableDocument(open, startPath) {
       log(
         `  ....  ${startPath} needs a sign-in: please sign in in the browser window (waiting up to ${signInTimeout} ms)`,
       );
-      if (!(await until(async () => onTarget(), signInTimeout)))
+      if (!(await until(async () => onTarget(), signInTimeout, interrupt.signal)))
         throw new Error('Sign-in did not complete within the configured deadline');
       check('sign-in works through the overlay', true, 'identity provider round trip ended back on the page');
       requested.clear();
       hits.length = 0;
       started = await open();
     }
-    if (started.html === null) started = await openStableDocument(open, startPath);
+    if (started.html === null) started = await untilInterrupted(openStableDocument(open, startPath), interrupt.signal);
     if (started.response?.status() !== 200) {
       const answer = started.response ? `HTTP ${started.response.status()}` : 'no document response';
       throw new Error(`${startPath} answered ${answer}`);
@@ -437,52 +504,55 @@ async function openStableDocument(open, startPath) {
     }
     let template = null;
     if (templateCandidates.length) {
-      const supported = await page.evaluate(
-        ({ candidates, html }) => {
-          const excluded = 'script,style,textarea,title,template,noscript,iframe,xmp,noembed,noframes,#paqvilo-panel';
-          const tags = 'div,section,footer,header,nav,ul,p,h1,h2,h3,h4,h5,h6';
-          const original = new DOMParser().parseFromString(html, 'text/html');
-          const literals = new Set(
-            [...original.querySelectorAll(tags)]
-              .filter((node) => !node.childElementCount && !node.closest(excluded))
-              .map((node) => node.outerHTML),
-          );
-          const visibility = new WeakMap();
-          const visible = (node) => {
-            if (!node) return true;
-            if (visibility.has(node)) return visibility.get(node);
-            const style = getComputedStyle(node);
-            const value =
-              style.visibility !== 'hidden' &&
-              style.visibility !== 'collapse' &&
-              style.display !== 'none' &&
-              style.opacity !== '0' &&
-              visible(node.parentElement);
-            visibility.set(node, value);
-            return value;
-          };
-          const rendered = new Set(
-            [...document.querySelectorAll(tags)]
-              .filter((node) => {
-                if (node.childElementCount || node.closest(excluded)) return false;
-                return node.getClientRects().length > 0 && visible(node);
+      const supported = await untilInterrupted(
+        page.evaluate(
+          ({ candidates, html }) => {
+            const excluded = 'script,style,textarea,title,template,noscript,iframe,xmp,noembed,noframes,#paqvilo-panel';
+            const tags = 'div,section,footer,header,nav,ul,p,h1,h2,h3,h4,h5,h6';
+            const original = new DOMParser().parseFromString(html, 'text/html');
+            const literals = new Set(
+              [...original.querySelectorAll(tags)]
+                .filter((node) => !node.childElementCount && !node.closest(excluded))
+                .map((node) => node.outerHTML),
+            );
+            const visibility = new WeakMap();
+            const visible = (node) => {
+              if (!node) return true;
+              if (visibility.has(node)) return visibility.get(node);
+              const style = getComputedStyle(node);
+              const value =
+                style.visibility !== 'hidden' &&
+                style.visibility !== 'collapse' &&
+                style.display !== 'none' &&
+                style.opacity !== '0' &&
+                visible(node.parentElement);
+              visibility.set(node, value);
+              return value;
+            };
+            const rendered = new Set(
+              [...document.querySelectorAll(tags)]
+                .filter((node) => {
+                  if (node.childElementCount || node.closest(excluded)) return false;
+                  return node.getClientRects().length > 0 && visible(node);
+                })
+                .map((node) => node.outerHTML),
+            );
+            return candidates
+              .filter((candidate) => {
+                const node = new DOMParser().parseFromString(candidate.literal, 'text/html').body.firstElementChild;
+                return node && literals.has(node.outerHTML) && rendered.has(node.outerHTML);
               })
-              .map((node) => node.outerHTML),
-          );
-          return candidates
-            .filter((candidate) => {
-              const node = new DOMParser().parseFromString(candidate.literal, 'text/html').body.firstElementChild;
-              return node && literals.has(node.outerHTML) && rendered.has(node.outerHTML);
-            })
-            .map((candidate) => candidate.rel);
-        },
-        {
-          candidates: templateCandidates.map(({ rel, text, line }) => ({
-            rel,
-            literal: text.replaceAll('\r\n', '\n').split('\n')[line].trim(),
-          })),
-          html: rawHtml,
-        },
+              .map((candidate) => candidate.rel);
+          },
+          {
+            candidates: templateCandidates.map(({ rel, text, line }) => ({
+              rel,
+              literal: text.replaceAll('\r\n', '\n').split('\n')[line].trim(),
+            })),
+            html: rawHtml,
+          },
+        ),
+        interrupt.signal,
       );
       template = templateCandidates.find((candidate) => supported.includes(candidate.rel)) ?? null;
     }
@@ -497,51 +567,55 @@ async function openStableDocument(open, startPath) {
     if (snippetCandidates.length) {
       // Plain-text snippets can also be configuration values inside scripts or attributes.
       // Verification may edit only visible text nodes, never telemetry keys or other settings.
-      const visible = await page.evaluate(
-        ({ candidates, html }) => /* NOSONAR: single-pass routine, splitting it would change shared state */ {
-          const found = new Set();
-          const excluded =
-            'script,style,textarea,title,template,noscript,iframe,xmp,noembed,noframes,[hidden],[aria-hidden="true"]';
-          // A configuration value may be copied into visible DOM by another script. Confirm the
-          // unique occurrence we would patch is itself a text node in the original response.
-          const original = new DOMParser().parseFromString(html, 'text/html');
-          const literalText = new Set();
-          const originals = original.createTreeWalker(original.body, NodeFilter.SHOW_TEXT);
-          while (originals.nextNode()) {
-            const node = originals.currentNode;
-            if (!node.parentElement || node.parentElement.closest(excluded)) continue;
-            for (const candidate of candidates)
-              if (node.textContent.includes(candidate.text)) literalText.add(candidate.rel);
-          }
-          const allowed = new WeakMap();
-          const visibleElement = (element) => {
-            if (!element) return false;
-            if (allowed.has(element)) return allowed.get(element);
-            let result = !element.closest(excluded);
-            if (result) {
-              const style = getComputedStyle(element);
-              result =
-                style.display !== 'none' &&
-                style.visibility !== 'hidden' &&
-                style.visibility !== 'collapse' &&
-                style.opacity !== '0' &&
-                element.getClientRects().length > 0;
+      const visible = await untilInterrupted(
+        page.evaluate(
+          ({ candidates, html }) => /* NOSONAR: single-pass routine, splitting it would change shared state */ {
+            const found = new Set();
+            const excluded =
+              'script,style,textarea,title,template,noscript,iframe,xmp,noembed,noframes,[hidden],[aria-hidden="true"]';
+            // A configuration value may be copied into visible DOM by another script. Confirm the
+            // unique occurrence we would patch is itself a text node in the original response.
+            const original = new DOMParser().parseFromString(html, 'text/html');
+            const literalText = new Set();
+            const originals = original.createTreeWalker(original.body, NodeFilter.SHOW_TEXT);
+            while (originals.nextNode()) {
+              const node = originals.currentNode;
+              if (!node.parentElement || node.parentElement.closest(excluded)) continue;
+              for (const candidate of candidates)
+                if (node.textContent.includes(candidate.text)) literalText.add(candidate.rel);
             }
-            if (result && element.parentElement) result = visibleElement(element.parentElement);
-            allowed.set(element, result);
-            return result;
-          };
-          if (!document.body) return [];
-          const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-          while (walker.nextNode()) {
-            const node = walker.currentNode;
-            if (!visibleElement(node.parentElement)) continue;
-            for (const candidate of candidates)
-              if (literalText.has(candidate.rel) && node.textContent.includes(candidate.text)) found.add(candidate.rel);
-          }
-          return [...found];
-        },
-        { candidates: snippetCandidates.map(({ rel, text }) => ({ rel, text })), html: rawHtml },
+            const allowed = new WeakMap();
+            const visibleElement = (element) => {
+              if (!element) return false;
+              if (allowed.has(element)) return allowed.get(element);
+              let result = !element.closest(excluded);
+              if (result) {
+                const style = getComputedStyle(element);
+                result =
+                  style.display !== 'none' &&
+                  style.visibility !== 'hidden' &&
+                  style.visibility !== 'collapse' &&
+                  style.opacity !== '0' &&
+                  element.getClientRects().length > 0;
+              }
+              if (result && element.parentElement) result = visibleElement(element.parentElement);
+              allowed.set(element, result);
+              return result;
+            };
+            if (!document.body) return [];
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+            while (walker.nextNode()) {
+              const node = walker.currentNode;
+              if (!visibleElement(node.parentElement)) continue;
+              for (const candidate of candidates)
+                if (literalText.has(candidate.rel) && node.textContent.includes(candidate.text))
+                  found.add(candidate.rel);
+            }
+            return [...found];
+          },
+          { candidates: snippetCandidates.map(({ rel, text }) => ({ rel, text })), html: rawHtml },
+        ),
+        interrupt.signal,
       );
       snippet = snippetCandidates.find((candidate) => visible.includes(candidate.rel)) ?? null;
     }
@@ -579,7 +653,11 @@ async function openStableDocument(open, startPath) {
     const htmlHit = (rel) => hits.flatMap((h) => (h.type === 'html' ? h.sources : [])).find((s) => s.rel === rel);
 
     if (cssFile) {
-      const ok = await until(async () => (await cssVar('--paqvilo-verify-css')).includes(token));
+      const ok = await until(
+        async () => (await cssVar('--paqvilo-verify-css')).includes(token),
+        undefined,
+        interrupt.signal,
+      );
       check(
         `web file (CSS)  ${cssFile.url}  <-  ${session.rel(cssFile.file)}`,
         ok && servedBy(cssFile.url),
@@ -588,7 +666,11 @@ async function openStableDocument(open, startPath) {
     } else skip('web file (CSS)', 'the page loads no CSS web file');
 
     if (jsFile) {
-      const ok = await until(() => page.evaluate((t) => globalThis.__paqviloVerifyJs === t, token));
+      const ok = await until(
+        () => page.evaluate((t) => globalThis.__paqviloVerifyJs === t, token),
+        undefined,
+        interrupt.signal,
+      );
       check(
         `web file (JS)   ${jsFile.url}  <-  ${session.rel(jsFile.file)}`,
         ok && servedBy(jsFile.url),
@@ -598,20 +680,24 @@ async function openStableDocument(open, startPath) {
 
     if (imgFile) {
       const expected = sha(fs.readFileSync(imgFile.file));
-      const got = await until(async () => {
-        const value = await page.evaluate(
-          async (u) => {
-            const r = await fetch(u, { cache: 'no-store' });
-            const d = await crypto.subtle.digest('SHA-256', await r.arrayBuffer());
-            return {
-              hash: [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, '0')).join(''),
-              local: r.headers.get('x-paqvilo'),
-            };
-          },
-          portalResourceUrl(cfg.origin, imgFile.url),
-        );
-        return value.hash === expected && value.local ? value : null;
-      });
+      const got = await until(
+        async () => {
+          const value = await page.evaluate(
+            async (u) => {
+              const r = await fetch(u, { cache: 'no-store' });
+              const d = await crypto.subtle.digest('SHA-256', await r.arrayBuffer());
+              return {
+                hash: [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, '0')).join(''),
+                local: r.headers.get('x-paqvilo'),
+              };
+            },
+            portalResourceUrl(cfg.origin, imgFile.url),
+          );
+          return value.hash === expected && value.local ? value : null;
+        },
+        undefined,
+        interrupt.signal,
+      );
       check(
         `web file (image) ${imgFile.url}  <-  ${session.rel(imgFile.file)}`,
         got?.hash === expected && got.local,
@@ -621,8 +707,11 @@ async function openStableDocument(open, startPath) {
 
     if (cssBlock) {
       // looked up in the <style> text, not as a computed value: the existing CSS may not be well formed
-      const ok = await until(() =>
-        page.evaluate((t) => [...document.querySelectorAll('style')].some((s) => s.textContent.includes(t)), token),
+      const ok = await until(
+        () =>
+          page.evaluate((t) => [...document.querySelectorAll('style')].some((s) => s.textContent.includes(t)), token),
+        undefined,
+        interrupt.signal,
       );
       check(
         `page custom CSS  <-  ${cssBlock.rel}`,
@@ -633,7 +722,11 @@ async function openStableDocument(open, startPath) {
 
     const inlineJs = jsBlock ?? jsEmpty;
     if (inlineJs) {
-      const ok = await until(() => page.evaluate((t) => globalThis.__paqviloVerifyInlineJs === t, token));
+      const ok = await until(
+        () => page.evaluate((t) => globalThis.__paqviloVerifyInlineJs === t, token),
+        undefined,
+        interrupt.signal,
+      );
       check(
         `page custom JS   <-  ${inlineJs.rel}`,
         ok && htmlHit(inlineJs.rel),
@@ -642,11 +735,14 @@ async function openStableDocument(open, startPath) {
     } else skip('page custom JS', 'this page has no custom JS file');
 
     for (const form of formScripts) {
-      const ok = await until(() =>
-        page.evaluate(({ kind, token }) => globalThis.__paqviloVerifyFormJs?.[kind] === token, {
-          kind: form.kind,
-          token,
-        }),
+      const ok = await until(
+        () =>
+          page.evaluate(({ kind, token }) => globalThis.__paqviloVerifyFormJs?.[kind] === token, {
+            kind: form.kind,
+            token,
+          }),
+        undefined,
+        interrupt.signal,
       );
       check(
         `${form.kind}  <-  ${form.rel}`,
@@ -658,7 +754,11 @@ async function openStableDocument(open, startPath) {
       skip('form / list custom JS', 'this page renders no basic form, advanced form step or list with custom JS');
 
     if (template) {
-      const ok = await until(async () => (await page.content()).includes(`paqvilo-verify-template:${token}`));
+      const ok = await until(
+        async () => (await page.content()).includes(`paqvilo-verify-template:${token}`),
+        undefined,
+        interrupt.signal,
+      );
       check(
         `web template literal patch  <-  ${template.rel}`,
         ok && htmlHit(template.rel),
@@ -671,7 +771,7 @@ async function openStableDocument(open, startPath) {
       );
 
     if (snippet) {
-      const ok = await until(async () => (await page.content()).includes(`[${token}]`));
+      const ok = await until(async () => (await page.content()).includes(`[${token}]`), undefined, interrupt.signal);
       check(
         `content snippet  <-  ${snippet.rel}`,
         ok && htmlHit(snippet.rel),
@@ -680,10 +780,13 @@ async function openStableDocument(open, startPath) {
     } else skip('content snippet', 'no unique plain-text snippet in visible markup text could be picked safely');
 
     // everything else must still be the real site
-    const stillOnline = await page.evaluate(async () => {
-      const r = await fetch(location.href, { cache: 'no-store' });
-      return { status: r.status, local: r.headers.get('x-paqvilo') };
-    });
+    const stillOnline = await untilInterrupted(
+      page.evaluate(async () => {
+        const r = await fetch(location.href, { cache: 'no-store' });
+        return { status: r.status, local: r.headers.get('x-paqvilo') };
+      }),
+      interrupt.signal,
+    );
     check('the rest of the page still comes from the online site', stillOnline.status === 200 && !stillOnline.local);
 
     // Verify that a stylesheet swap preserves the current document.
@@ -691,27 +794,38 @@ async function openStableDocument(open, startPath) {
       await watcher.whenIdle();
       await page.evaluate(() => (globalThis.__paqviloNoReload = true));
       fs.appendFileSync(cssFile.file, `\nhtml{--paqvilo-verify-css:"${token2}"}\n`);
-      const ok = await until(async () => (await cssVar('--paqvilo-verify-css')).includes(token2));
+      const ok = await until(
+        async () => (await cssVar('--paqvilo-verify-css')).includes(token2),
+        undefined,
+        interrupt.signal,
+      );
       const kept = await page.evaluate(() => globalThis.__paqviloNoReload === true).catch(() => false);
       check('second CSS edit is hot-swapped without a page reload', ok && kept);
     }
     if (jsFile) {
       fs.appendFileSync(jsFile.file, `\n;window.__paqviloVerifyJs="${token2}";\n`);
-      const ok = await until(() => page.evaluate((t) => globalThis.__paqviloVerifyJs === t, token2));
+      const ok = await until(
+        () => page.evaluate((t) => globalThis.__paqviloVerifyJs === t, token2),
+        undefined,
+        interrupt.signal,
+      );
       check('second JS edit reloads the page and runs', ok);
     }
 
-    const panelState = await until(() =>
-      page.evaluate(() => {
-        const host = document.getElementById('paqvilo-panel');
-        if (!host || !Number(host.dataset.overrides)) return null;
-        host.shadowRoot.querySelector('.pill').click();
-        return {
-          label: host.dataset.label,
-          overrides: Number(host.dataset.overrides),
-          rows: host.shadowRoot.querySelectorAll('.body .row').length,
-        };
-      }),
+    const panelState = await until(
+      () =>
+        page.evaluate(() => {
+          const host = document.getElementById('paqvilo-panel');
+          if (!host || !Number(host.dataset.overrides)) return null;
+          host.shadowRoot.querySelector('.pill').click();
+          return {
+            label: host.dataset.label,
+            overrides: Number(host.dataset.overrides),
+            rows: host.shadowRoot.querySelectorAll('.body .row').length,
+          };
+        }),
+      undefined,
+      interrupt.signal,
     );
     check(
       'the dev panel lists the overrides',
@@ -720,9 +834,11 @@ async function openStableDocument(open, startPath) {
     );
 
     fs.mkdirSync(outDir, { recursive: true });
-    await sleep(400);
+    // The diagnostics describe the page only after the watcher has applied the edits: whenIdle resolves once no
+    // refresh is in flight, and a refresh applies the saved changes to the open pages before it finishes.
+    await untilInterrupted(watcher.whenIdle(), interrupt.signal);
     captureDiagnostics('afterEdits');
-    await page.screenshot({ path: path.join(outDir, `${stamp}.png`) });
+    await untilInterrupted(page.screenshot({ path: path.join(outDir, `${stamp}.png`) }), interrupt.signal);
     const assessment = assessVerification(checks, diagnostics, Boolean(args.strict));
     report = {
       schemaVersion: 1,
@@ -775,7 +891,7 @@ async function openStableDocument(open, startPath) {
       coverage: 'incomplete',
       passed: false,
       error: err.message,
-      errorCode: 'VERIFY_FAILED',
+      errorCode: interrupt.signal.aborted ? 'VERIFY_INTERRUPTED' : 'VERIFY_FAILED',
       evidence: { report: path.join(outDir, `${stamp}.json`), screenshot },
     };
     failure = err;
@@ -814,6 +930,7 @@ async function openStableDocument(open, startPath) {
         failure = new Error(report.error, failure ? { cause: failure } : undefined);
       }
     }
+    stopInterruptListeners();
   }
   // Print one final JSON object only after teardown has determined the actual outcome.
   // Otherwise a cleanup exception could append a second CLI error object to a successful report.

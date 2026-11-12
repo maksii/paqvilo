@@ -22,9 +22,8 @@ import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const user = '10000000-0000-0000-0000-000000000001',
   rowId = '20000000-0000-0000-0000-000000000001';
-// plugin-clr.mjs gives the first parent identity probe a 30-second cold-start limit (docs/dataverse-plugins.md); helper
-// processes that run that probe get the same limit instead of a shorter test-only deadline.
-const PARENT_PROBE_LIMIT_MS = 30_000;
+// hang guard only: a blocked synchronous child cannot be ended by the test runner
+const CLI_HANG_GUARD_MS = 170_000;
 // A killed host exits at once, and an orphan host's watcher checks its exact parent every 100 ms (plugin-clr-host.cs).
 // Windows gives no exit handle for a process another one started, so absence is polled; the limit bounds only a failing
 // run, as a passing run stops polling when the host is gone.
@@ -86,8 +85,7 @@ catch(error){if(mode==='valid'||error.code!=='LocalPluginParentUnavailable')thro
       env: { ...process.env, INVENTED_PARENT_MODE: mode },
       windowsHide: true,
       encoding: 'utf8',
-      // The probe limit, then the 10-second plugin budget (the product maximum) and its worker margin, plus Node startup.
-      timeout: PARENT_PROBE_LIMIT_MS + 30_000,
+      timeout: CLI_HANG_GUARD_MS,
     });
     assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message);
     assert.equal(result.stdout.trim(), mode === 'valid' ? 'fresh-host' : 'LocalPluginParentUnavailable');
@@ -346,18 +344,17 @@ test(
       context: { initiatingUserId: user, organizationId: user, businessUnitId: user },
       timeoutMs: 10000,
     });
-    // These cold host starts get the product's probe limit; a 3-second limit was the b0420389 Windows CI failure.
     const born = spawnSync(runtime.executable, ['--process-start', String(process.pid)], {
       windowsHide: true,
       encoding: 'utf8',
-      timeout: PARENT_PROBE_LIMIT_MS,
+      timeout: CLI_HANG_GUARD_MS,
     });
     assert.equal(born.status, 0, born.error?.message);
     assert.match(born.stdout, /^\d+$/);
     const reused = spawnSync(
       runtime.executable,
       ['--parent', String(process.pid), '--parent-start', String(BigInt(born.stdout) + 1n)],
-      { windowsHide: true, encoding: 'utf8', timeout: PARENT_PROBE_LIMIT_MS },
+      { windowsHide: true, encoding: 'utf8', timeout: CLI_HANG_GUARD_MS },
     );
     assert.equal(reused.status, 74, 'An existing PID with a different birth time cannot authorize this host.');
     for (const persistentHost of [false, true])

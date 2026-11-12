@@ -1,3 +1,4 @@
+// @test-kind contract: native OData permission compilation of Paqvilo's own grants on invented tables
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -168,6 +169,7 @@ test('same-table Parent adds lookup existence without reinterpreting the witness
   assert.deepEqual(result.grantIds, ['unit', 'company']);
 });
 
+// @test-kind security: a permission graph with a missing grant or a drifted source order yields no authorized query
 test('source order is independently required and graph drift/missing grants reject construction', () => {
   const second = { ...permissions[1], id: 'second' },
     all = [...permissions, second];
@@ -194,6 +196,8 @@ test('source order is independently required and graph drift/missing grants reje
   );
 });
 
+// @test-kind security: a caller with a foreign role, or a grant path that is not complete,
+// gets no authorized query
 test('unqualified native conversion directions and foreign memberships cannot produce a partial authorized query', () => {
   assert.throws(
     () => compile({ identity: { ...actor, roleIds: ['foreign'] } }),
@@ -227,6 +231,22 @@ test('unqualified native conversion directions and foreign memberships cannot pr
       }),
     /separately qualified/,
   );
+});
+
+// @test-kind security: the compiled permission query admits the same rows as the row-level access check
+test('a grant without a field compares the same default column as the row evaluator', () => {
+  const ticketPermissions = (scope) => [
+    { id: 'ticket', entity: 'ticket', scope, operations: ['read'], roleIds: ['ra'] },
+  ];
+  const compileTicket = (scope) =>
+    compileODataPermissionQuery('<fetch><entity name="ticket"><attribute name="ticketid"/></entity></fetch>', {
+      permissions: ticketPermissions(scope),
+      mappings: { ...mappings, ticket: { idColumn: 'ticketid' } },
+      identity: { ...actor, accountId: '00000000-0000-0000-0000-000000000acc' },
+    }).xml;
+  assert.ok(compileTicket('contact').includes('<condition attribute="contactid" operator="eq"'));
+  assert.ok(compileTicket('account').includes('<condition attribute="parentcustomerid" operator="eq"'));
+  assert.ok(compileTicket('self').includes('<condition attribute="ticketid" operator="eq"'));
 });
 
 test('authored eighteen-term OData preserves boolean shape without inheriting the SDK sixteen-level limit', () => {

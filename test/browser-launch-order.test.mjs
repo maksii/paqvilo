@@ -30,7 +30,13 @@ test('owned browser starts cookie restore before a subsequent context close', as
     return Promise.resolve(context);
   });
   const opening = openBrowser(
-    { configDir: profileDir, siteName: 'test', envName: 'dev', browser: { channel: 'chromium', headless: true } },
+    {
+      configDir: profileDir,
+      siteName: 'test',
+      envName: 'dev',
+      origin: 'http://127.0.0.1:4100',
+      browser: { channel: 'chromium', headless: true },
+    },
     { profileDir },
   );
   queueMicrotask(() => {
@@ -42,4 +48,38 @@ test('owned browser starts cookie restore before a subsequent context close', as
   t.after(() => opened.close());
   assert.deepEqual(events.slice(0, 3), ['launch', 'cookies:open', 'close']);
   await opened.close();
+});
+
+test('owned browser without a portal origin neither reads nor rewrites the stored session cookies', async (t) => {
+  const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-browser-no-origin-'));
+  const sessionFile = `${profileDir}.session.json`;
+  t.after(() => {
+    fs.rmSync(profileDir, { recursive: true, force: true });
+    fs.rmSync(sessionFile, { force: true });
+  });
+  const stored = `${JSON.stringify([
+    { name: 'paqvilo-mirage-auth-4100', value: 'stored', domain: '127.0.0.1', path: '/', expires: -1 },
+  ])}\n`;
+  fs.writeFileSync(sessionFile, stored);
+  const context = new EventEmitter(),
+    calls = [];
+  context.cookies = async () => {
+    calls.push('cookies');
+    return [];
+  };
+  context.addCookies = async () => {
+    calls.push('addCookies');
+  };
+  context.close = async () => {
+    calls.push('close');
+    context.emit('close');
+  };
+  t.mock.method(chromium, 'launchPersistentContext', () => Promise.resolve(context));
+  const opened = await openBrowser(
+    { configDir: profileDir, siteName: 'test', envName: 'dev', browser: { channel: 'chromium', headless: true } },
+    { profileDir },
+  );
+  await opened.close();
+  assert.deepEqual(calls, ['close']);
+  assert.equal(fs.readFileSync(sessionFile, 'utf8'), stored);
 });

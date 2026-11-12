@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's client resource import, budgets and extension catalogue are designed runtime behaviour, exercised with invented fixtures.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -11,7 +12,7 @@ import { createSimulator } from '../server.mjs';
 import { loadOrganizationSources } from '../lib/solution-runtime-source.mjs';
 import { validateValues } from '../lib/model-driven/data.mjs';
 import { importModelDrivenProject } from '../../lense/model-driven.mjs';
-import { importCodeComponents } from '../lib/code-components.mjs';
+import { importCodeComponents, takeAdmittedFiles } from '../lib/code-components.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { mapLimit } from '../lib/solution-cache.mjs';
 
@@ -124,6 +125,7 @@ test('client extension trust is explicit, validated and cannot be inferred from 
   assert.equal(clientExtensionCatalogue({ resources: [] }, modelDrivenSettings()).trusted, false);
 });
 
+// @test-kind security: client asset import refuses traversal and stops at its size limits
 test('client import reads declared assets lazily and fails closed at aggregate layer, byte and traversal limits', async (t) => {
   const root = await fixture(t, {
     'WebResources/events.js': 'window.Example = {};',
@@ -160,6 +162,7 @@ test('client import reads declared assets lazily and fails closed at aggregate l
   assert.equal(zipped.diagnostics[0].code, 'MODEL_CLIENT_IMPORT_LIMIT');
 });
 
+// @test-kind security: client sources stay confined to their directory and fail closed at their budget
 test('explicit client sources are independent of metadata, ordered, confined and fail closed at their own budget', async (t) => {
   const metadata = await fixture(t, {
     'Other/Solution.xml':
@@ -281,6 +284,22 @@ test('PCF client budgets include manifests, RESX and images and reuse the admitt
   const manifest = await importModelDrivenResources([], { clientSources: [root], limits: { bytes: 1024 } });
   assert.equal(manifest.assets.size, 0);
   assert.equal(manifest.diagnostics[0].code, 'MODEL_CLIENT_IMPORT_LIMIT');
+});
+
+test('a client import that ends at a limit leaves no retained control bytes in the caller controls map', async (t) => {
+  const base = await fixture(t, {
+    'Controls/folder/ControlManifest.xml':
+      '<manifest><control namespace="fx" constructor="Widget" control-type="standard"><resources><code path="bundle.js"/></resources></control></manifest>',
+    'Controls/folder/ControlManifest.xml.data.xml': '<CustomControl><Name>fx.Widget</Name></CustomControl>',
+    'Controls/folder/bundle.js': 'window.Widget = true;',
+  });
+  const empty = await fixture(t, {});
+  const layers = [base, empty].map((dir) => ({ type: 'directory', dir }));
+  const components = await importCodeComponents(layers.slice(0, 1), { retainBytes: true });
+  assert.equal(components.controls.size, 1);
+  const exhausted = await importModelDrivenResources(layers, { codeComponents: components, limits: { layers: 1 } });
+  assert.ok(exhausted.diagnostics.some((item) => item.code === 'MODEL_CLIENT_IMPORT_LIMIT'));
+  assert.equal(takeAdmittedFiles(components.controls).size, 0);
 });
 
 test('PCF overriding declarations remove stale executables, preserve unrelated controls and allow later valid recovery', async (t) => {
@@ -533,6 +552,7 @@ test('create defers omitted platform-required columns without relaxing explicit 
   assert.throws(() => validateValues(table, {}, 'create'), /Name is required/);
 });
 
+// @test-kind security: untrusted solution code is denied and assets are served only after opt-in
 test('standalone HTTP denies untrusted code and only serves declared assets after opt-in', async (t) => {
   const root = await fixture(t, {
     'WebResources/x_events.js': 'window.Example = {};',

@@ -5,9 +5,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
-import { once } from 'node:events';
 import { execFileSync } from 'node:child_process';
 import { chromium } from 'playwright-core';
+import { listenOwnedServer, ownCloseSteps } from './helpers/owned-server.mjs';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { OverlaySession } from '../lense/session.mjs';
 import { attachSession } from '../lense/browser.mjs';
@@ -77,245 +77,225 @@ const body = `<header id="portal-header"><a class="wordmark" href="/">◈ &nbsp;
 <dialog id="dialog"><div class="dialog-header"><span class="kicker">WORK ITEM / QUICK EDIT</span><h2>A focused view.</h2><p class="description">Nested contexts keep their own source identity.</p></div><form data-entityname="fx_child" data-viewid="child-view"><label for="fx_name">Related item name</label><input id="fx_name" name="fx_name" placeholder="Name your next step"><button id="nested-open" type="button">Open related record ↗</button></form><button id="dialog-close" type="button">Close</button><div class="nested" role="dialog" aria-label="Related record" hidden><p class="kicker">RELATED RECORD</p><h2>The finer detail.</h2><form data-entityname="fx_widget" data-formid="widget-edit"><label for="nested-title">Title</label><input id="nested-title" name="fx_title" placeholder="A related detail"></form></div></dialog>`;
 const css = `*{box-sizing:border-box}body{margin:0;background:#f3f4f7;color:#26313c;font:14px/1.5 'Segoe UI',sans-serif;transform:translateZ(0)}header{height:84px;display:flex;align-items:center;padding:0 64px;gap:80px;background:#fff;border-bottom:1px solid #dfe3e9;position:sticky;top:0;z-index:20}a{color:inherit;text-decoration:none}nav{display:flex;gap:32px;color:#6c7484}.wordmark{font-size:23px;font-weight:650;letter-spacing:-1px}.avatar{margin-left:auto;border-radius:50%;padding:10px;background:#ece9f6;color:#6b6283}main{max-width:1240px;margin:auto;padding:46px 40px}.intro{display:flex;align-items:center;justify-content:space-between;margin-bottom:36px}.kicker{font-size:10px;letter-spacing:2px;color:#7b8190;font-weight:600;margin:0 0 14px}h1{font-size:44px;line-height:1.1;letter-spacing:-1.8px;font-weight:600;margin:0 0 18px}.description{color:#788191;line-height:1.7}button{border:0;border-radius:7px;background:#303e51;color:white;padding:13px 20px;cursor:pointer;font:600 12px 'Segoe UI',sans-serif}button:hover{background:#51667b}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-bottom:28px}.stats article{padding:23px 27px;border:1px solid #e0e4ec;background:white;border-radius:12px}.stats p{color:#788191;margin:0}.stats strong{font-size:38px;display:block;font-weight:500;margin:8px 0}.stats small{font-size:23px}.stats span{font-size:11px;color:#7a8793}.columns{display:grid;grid-template-columns:1.65fr 1fr;gap:24px}.editor{background:#fff;border:1px solid #e0e4ec;border-radius:12px;padding:28px}.section-title{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}h2{font-size:22px;font-weight:550;letter-spacing:-.5px;margin:0 0 14px}.section-title h2{margin:0}.section-title .kicker{margin-bottom:7px}.tag{border-radius:20px;padding:5px 12px;background:#f3efe4;color:#8e8057;font-size:11px}label{display:block;font-size:11px;font-weight:600;color:#667181;margin:15px 0 7px}input,select,textarea{width:100%;border:1px solid #dce1e9;border-radius:6px;background:#fcfcfd;padding:11px;font:13px 'Segoe UI',sans-serif;color:#495569}textarea{height:78px;resize:vertical}.formrow{display:grid;grid-template-columns:1fr 1fr;gap:16px}.formfoot{display:flex;align-items:center;justify-content:space-between;margin-top:18px}.formfoot span{font-size:10px;color:#9198a4}.updates{background:#e4e9f1;border-radius:12px;padding:30px;overflow:hidden;position:relative}.updates h2{font-size:28px;margin-top:20px}.updates a{font-size:12px}.chart{height:100px;display:flex;align-items:end;gap:9px;margin:30px 0}.chart i{flex:1;height:30%;border-radius:4px 4px 0 0;background:#b6c4d8}.chart i:nth-child(2n){height:48%}.chart i:nth-child(3n){height:75%;background:#7d95b5}.chart i:last-child{height:100%;background:#4e6a8e}.overflow{overflow:auto;width:270px;height:65px;margin-top:25px}.wide{width:700px;padding-left:190px}iframe{width:250px;height:60px;border:1px solid #dce1e9;margin-top:20px}dialog{border:1px solid #bccbdb;border-radius:18px;padding:36px;width:620px;overflow:visible;color:#26313c;box-shadow:0 40px 100px #0004}dialog::backdrop{background:#16253877;backdrop-filter:blur(3px)}dialog button{margin-top:20px}.nested{position:absolute;right:-90px;top:140px;width:380px;background:#fff;border:1px solid #bbc9d8;border-radius:16px;box-shadow:0 20px 80px #172d4b55;padding:30px;z-index:200}.nested[hidden]{display:none}@media(max-width:700px){main{padding:24px}.columns{grid-template-columns:1fr}header{padding:0 24px}nav{display:none}.intro{display:block}.stats{gap:8px}.stats article{padding:10px}h1{font-size:34px}.formfoot{gap:10px}.nested{right:0;width:300px}}`;
 
-test(
-  'X-ray inspects fields and sources without activating portal controls across clipping, dialogs, frames and rebuilds',
-  { timeout: 90_000 },
-  async (t) => {
-    const fx = inspectionFixture();
-    addNativeInspectionFixture(fx);
-    const sidebar = body.match(/<aside class="updates">[\s\S]*?<\/aside>/)[0];
-    fs.writeFileSync(
-      path.join(fx.portal, 'web-pages/home/Home.webpage.copy.html'),
-      body.replace(sidebar, '{% include "Partial" %}'),
-    );
-    fs.writeFileSync(path.join(fx.portal, 'web-templates/Partial.webtemplate.source.html'), sidebar);
-    fs.writeFileSync(path.join(fx.portal, 'web-files/widget.css'), css);
-    const previousSidebar = sidebar.replace('<h2>', '<h3>').replace('</h2>', '</h3>');
-    const partialFile = path.join(fx.portal, 'web-templates/Partial.webtemplate.source.html');
-    fs.writeFileSync(partialFile, previousSidebar);
-    const hooks = path.join(fx.work, 'empty-hooks');
-    fs.mkdirSync(hooks);
-    // Repository variables of a calling Git process and signing in the user's configuration stay out.
-    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_/i.test(key)));
-    const git = (...args) =>
-      execFileSync('git', ['-C', fx.portal, '-c', 'commit.gpgsign=false', ...args], { stdio: 'pipe', env });
-    git('init', '--quiet');
-    git('add', '.');
-    git(
-      '-c',
-      'user.name=Invented fixture',
-      '-c',
-      'user.email=fixture@example.invalid',
-      '-c',
-      `core.hooksPath=${hooks}`,
-      'commit',
-      '--quiet',
-      '-m',
-      'Invented baseline',
-    );
-    fs.writeFileSync(partialFile, sidebar);
-    const server = http.createServer((req, res) => {
-      if (req.url === '/widget.css') return res.writeHead(200, { 'content-type': 'text/css; charset=utf-8' }).end(css);
-      if (req.url === '/frame')
-        return res
-          .writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-          .end('<button onclick="parent.frameClicks++">Embedded action</button>');
-      res
+test('X-ray inspects fields and sources without activating portal controls across clipping, dialogs, frames and rebuilds', async (t) => {
+  const fx = inspectionFixture();
+  addNativeInspectionFixture(fx);
+  const sidebar = body.match(/<aside class="updates">[\s\S]*?<\/aside>/)[0];
+  fs.writeFileSync(
+    path.join(fx.portal, 'web-pages/home/Home.webpage.copy.html'),
+    body.replace(sidebar, '{% include "Partial" %}'),
+  );
+  fs.writeFileSync(path.join(fx.portal, 'web-templates/Partial.webtemplate.source.html'), sidebar);
+  fs.writeFileSync(path.join(fx.portal, 'web-files/widget.css'), css);
+  const previousSidebar = sidebar.replace('<h2>', '<h3>').replace('</h2>', '</h3>');
+  const partialFile = path.join(fx.portal, 'web-templates/Partial.webtemplate.source.html');
+  fs.writeFileSync(partialFile, previousSidebar);
+  const hooks = path.join(fx.work, 'empty-hooks');
+  fs.mkdirSync(hooks);
+  // Repository variables of a calling Git process and signing in the user's configuration stay out.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_/i.test(key)));
+  const git = (...args) =>
+    execFileSync('git', ['-C', fx.portal, '-c', 'commit.gpgsign=false', ...args], { stdio: 'pipe', env });
+  git('init', '--quiet');
+  git('add', '.');
+  git(
+    '-c',
+    'user.name=Invented fixture',
+    '-c',
+    'user.email=fixture@example.invalid',
+    '-c',
+    `core.hooksPath=${hooks}`,
+    'commit',
+    '--quiet',
+    '-m',
+    'Invented baseline',
+  );
+  fs.writeFileSync(partialFile, sidebar);
+  const server = http.createServer((req, res) => {
+    if (req.url === '/widget.css') return res.writeHead(200, { 'content-type': 'text/css; charset=utf-8' }).end(css);
+    if (req.url === '/frame')
+      return res
         .writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-        .end(
-          `<!doctype html><html><head><title>Fieldwork · invented X-ray fixture</title><link rel="stylesheet" href="/widget.css"></head><body>${body.replace(sidebar, previousSidebar)}<script>window.actions=0;window.frameClicks=0;for(const type of ['pointerdown','mousedown','click','dblclick'])document.getElementById('save').addEventListener(type,()=>window.actions++);document.getElementById('open-dialog').onclick=()=>document.getElementById('dialog').showModal();document.getElementById('dialog-close').onclick=()=>document.getElementById('dialog').close();document.getElementById('nested-open').onclick=()=>document.querySelector('.nested').hidden=false;document.getElementById('shadow-control').attachShadow({mode:'open'}).innerHTML='<button id="shadow-button">Shadow component</button>';</script></body></html>`,
-        );
-    });
-    let context, panel, detach;
-    ownedFixture(t).add(async () => {
-      await panel?.dispose();
-    });
-    ownedFixture(t).add(async () => {
-      await detach?.();
-    });
-    ownedFixture(t).add(async () => {
-      await context?.close();
-    });
-    ownedFixture(t).add(async () => {
-      server.closeAllConnections();
-    });
-    ownedFixture(t).add(async () => {
-      await new Promise((resolve) => server.close(resolve));
-    });
-    ownedFixture(t).remove(async () => {
-      fx.cleanup();
-    });
-    server.listen(0, '127.0.0.1');
-    await once(server, 'listening');
-    const origin = `http://127.0.0.1:${server.address().port}`;
-    context = await browser.newContext({ viewport: { width: 1440, height: 1060 }, serviceWorkers: 'block' });
-    await context.route('**/*', (route) =>
-      new URL(route.request().url()).origin === origin ? route.fallback() : route.abort(),
-    );
-    const session = new OverlaySession({
-      sourceDir: fx.portal,
-      origin,
-      site: structuredClone(SITE),
-      sourceMaps: false,
-      siteName: 'Fieldwork fixture',
-      envName: 'loopback',
-      stateDir: fx.work,
-      browser: {},
-      mirageConfig: { project: fx.project },
-    });
-    // The tab exists before attachment, so its first document is already intercepted instead of reloaded as a late tab.
-    const page = await context.newPage(),
-      errors = [];
-    page.on('pageerror', (error) => errors.push(error.message));
-    detach = await attachSession(context, session);
-    const opened = [];
-    let arrived = () => {};
-    panel = enablePanel(context, session, {
-      open: async (...args) => {
-        opened.push(args);
-        arrived();
-        return null;
-      },
-    });
-    await page.goto(origin);
-    const scope = page.locator('#paqvilo-panel'),
-      xray = page.locator('#paqvilo-xray');
-    const point = async (selector) => {
-      const r = await page.locator(selector).boundingBox();
-      assert.ok(r);
-      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-    };
-    const pick = async (selector) => {
-      const p = await point(selector);
-      await page.mouse.click(p.x, p.y);
-    };
-    // Source opening is asynchronous; nextOpen(click) resolves at the editor call the click causes.
-    let seenOpens = 0;
-    const nextOpen = async (click) => {
-      const next = new Promise((resolve) => (arrived = resolve));
-      await click();
-      await next;
-      assert.equal(opened.length, seenOpens + 1, 'exactly one source open');
-      seenOpens = opened.length;
-      return opened.at(-1);
-    };
-    const evidence = async (name) => {
-      if (!process.env.PAQVILO_EVIDENCE_DIR) return;
-      fs.mkdirSync(process.env.PAQVILO_EVIDENCE_DIR, { recursive: true });
-      await page.screenshot({ path: path.join(process.env.PAQVILO_EVIDENCE_DIR, name + '.png') });
-    };
-    await scope.locator('.pill').click();
-    await scope.getByRole('button', { name: 'Toggle Lense X-ray' }).click();
-    await xray.getByRole('toolbar').waitFor();
-    await pick('#fx_title');
-    await waitField(page, 'fx_widget.fx_title');
-    assert.equal(await xray.locator('[data-inspection-evidence]').getAttribute('data-owner-status'), 'exact');
-    assert.equal(await page.evaluate(() => window.actions), 0);
-    await evidence('01-field-sources');
-    const fieldSource = xray
+        .end('<button onclick="parent.frameClicks++">Embedded action</button>');
+    res
+      .writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+      .end(
+        `<!doctype html><html><head><title>Fieldwork · invented X-ray fixture</title><link rel="stylesheet" href="/widget.css"></head><body>${body.replace(sidebar, previousSidebar)}<script>window.actions=0;window.frameClicks=0;for(const type of ['pointerdown','mousedown','click','dblclick'])document.getElementById('save').addEventListener(type,()=>window.actions++);document.getElementById('open-dialog').onclick=()=>document.getElementById('dialog').showModal();document.getElementById('dialog-close').onclick=()=>document.getElementById('dialog').close();document.getElementById('nested-open').onclick=()=>document.querySelector('.nested').hidden=false;document.getElementById('shadow-control').attachShadow({mode:'open'}).innerHTML='<button id="shadow-button">Shadow component</button>';</script></body></html>`,
+      );
+  });
+  let context, panel, detach;
+  ownCloseSteps(t, [() => panel?.dispose(), () => detach?.(), () => context?.close()]);
+  ownedFixture(t).remove(async () => {
+    fx.cleanup();
+  });
+  const origin = await listenOwnedServer(t, server);
+  context = await browser.newContext({ viewport: { width: 1440, height: 1060 }, serviceWorkers: 'block' });
+  await context.route('**/*', (route) =>
+    new URL(route.request().url()).origin === origin ? route.fallback() : route.abort(),
+  );
+  const session = new OverlaySession({
+    sourceDir: fx.portal,
+    origin,
+    site: structuredClone(SITE),
+    sourceMaps: false,
+    siteName: 'Fieldwork fixture',
+    envName: 'loopback',
+    stateDir: fx.work,
+    browser: {},
+    mirageConfig: { project: fx.project },
+  });
+  // The tab exists before attachment, so its first document is already intercepted instead of reloaded as a late tab.
+  const page = await context.newPage(),
+    errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  detach = await attachSession(context, session);
+  const opened = [];
+  let arrived = () => {};
+  panel = enablePanel(context, session, {
+    open: async (...args) => {
+      opened.push(args);
+      arrived();
+      return null;
+    },
+  });
+  await page.goto(origin);
+  const scope = page.locator('#paqvilo-panel'),
+    xray = page.locator('#paqvilo-xray');
+  const point = async (selector) => {
+    const r = await page.locator(selector).boundingBox();
+    assert.ok(r);
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  };
+  const pick = async (selector) => {
+    const p = await point(selector);
+    await page.mouse.click(p.x, p.y);
+  };
+  // Source opening is asynchronous; nextOpen(click) resolves at the editor call the click causes.
+  let seenOpens = 0;
+  const nextOpen = async (click) => {
+    const next = new Promise((resolve) => (arrived = resolve));
+    await click();
+    await next;
+    assert.equal(opened.length, seenOpens + 1, 'exactly one source open');
+    seenOpens = opened.length;
+    return opened.at(-1);
+  };
+  const evidence = async (name) => {
+    if (!process.env.PAQVILO_EVIDENCE_DIR) return;
+    fs.mkdirSync(process.env.PAQVILO_EVIDENCE_DIR, { recursive: true });
+    await page.screenshot({ path: path.join(process.env.PAQVILO_EVIDENCE_DIR, name + '.png') });
+  };
+  await scope.locator('.pill').click();
+  await scope.getByRole('button', { name: 'Toggle Lense X-ray' }).click();
+  await xray.getByRole('toolbar').waitFor();
+  await pick('#fx_title');
+  await waitField(page, 'fx_widget.fx_title');
+  assert.equal(await xray.locator('[data-inspection-evidence]').getAttribute('data-owner-status'), 'exact');
+  assert.equal(await page.evaluate(() => window.actions), 0);
+  await evidence('01-field-sources');
+  const fieldSource = xray
+    .locator('[data-evidence-source]')
+    .filter({ hasText: 'Entity.xml' })
+    .getByRole('button', { name: 'Open source', exact: true });
+  assert.match((await nextOpen(() => fieldSource.click()))?.[1] ?? '', /Entities[\\/]fx_widget[\\/]Entity.xml$/);
+  await pick('#save');
+  assert.equal(await page.evaluate(() => window.actions), 0);
+  await page.keyboard.press('Enter');
+  assert.equal(await page.evaluate(() => window.actions), 0);
+  await xray.getByRole('button', { name: 'Details', exact: true }).click();
+  await pick('.updates h2');
+  await titled(page, 'Partial');
+  await xray.getByText('web-templates/Partial.webtemplate.source.html', { exact: false }).first().waitFor();
+  const template = await nextOpen(() =>
+    xray
       .locator('[data-evidence-source]')
-      .filter({ hasText: 'Entity.xml' })
-      .getByRole('button', { name: 'Open source', exact: true });
-    assert.match((await nextOpen(() => fieldSource.click()))?.[1] ?? '', /Entities[\\/]fx_widget[\\/]Entity.xml$/);
-    await pick('#save');
-    assert.equal(await page.evaluate(() => window.actions), 0);
-    await page.keyboard.press('Enter');
-    assert.equal(await page.evaluate(() => window.actions), 0);
-    await xray.getByRole('button', { name: 'Details', exact: true }).click();
-    await pick('.updates h2');
-    await titled(page, 'Partial');
-    await xray.getByText('web-templates/Partial.webtemplate.source.html', { exact: false }).first().waitFor();
-    const template = await nextOpen(() =>
-      xray
-        .locator('[data-evidence-source]')
-        .filter({ hasText: 'Partial.webtemplate.source.html' })
-        .getByRole('button', { name: 'Open source', exact: true })
-        .click(),
-    );
-    assert.match(template?.[1] ?? '', /Partial.webtemplate.source.html$/);
-    assert.equal(template?.[2], 1);
-    await evidence('02-template-source');
-    await page.evaluate(() => {
-      const heading = document.querySelector('.updates h2'),
-        wrapper = document.createElement('div');
-      heading.before(wrapper);
-      wrapper.append(heading);
-    });
-    await xray.locator('[data-disclosure=static-candidates] > summary').click();
-    await xray.getByRole('button', { name: 'Select matching ancestor' }).first().click();
-    assert.match(await xray.locator('.element-label').textContent(), /^aside\.updates/);
-    await page.evaluate(() => {
-      const node = document.querySelector('.updates');
-      node.style.position = 'relative';
-      document.querySelector('.columns').prepend(node);
-    });
-    await pick('.updates h2');
-    await titled(page, 'Partial');
-    await xray.getByRole('button', { name: 'Details', exact: true }).click();
-    await page.evaluate(() => window.scrollTo(0, 0));
-    await page.keyboard.down('Control');
-    await page.locator('#open-dialog').click();
-    await page.keyboard.up('Control');
-    await page.waitForFunction(() => document.getElementById('paqvilo-xray').parentElement.id === 'dialog');
-    await pick('#fx_name');
-    await waitField(page, 'fx_child.fx_name');
-    await xray.getByText('Related children', { exact: true }).first().waitFor({ state: 'attached' });
-    await page.keyboard.down('Control');
-    await page.locator('#nested-open').click();
-    await page.keyboard.up('Control');
-    await pick('#nested-title');
-    await waitField(page, 'fx_widget.fx_title');
-    await evidence('03-nested-modal');
-    await xray.locator('.ancestry summary').click();
-    await xray.getByText('Element & ancestry', { exact: true }).waitFor();
-    await xray.getByRole('button', { name: '↑ Parent', exact: true }).click();
-    assert.match(await xray.locator('.element-label').textContent(), /^form/);
-    await page.keyboard.press('Escape');
-    await page.keyboard.down('Control');
-    await page.locator('#dialog-close').click();
-    await page.keyboard.up('Control');
-    await page.locator('#embedded').scrollIntoViewIfNeeded();
-    const embeddedButton = await page.frameLocator('#embedded').locator('button').boundingBox();
-    await page.mouse.click(embeddedButton.x + embeddedButton.width / 2, embeddedButton.y + embeddedButton.height / 2);
-    assert.equal(await page.evaluate(() => window.frameClicks), 0);
-    assert.equal(await xray.locator('.element-label').textContent(), 'button');
-    await page.locator('#clipped').scrollIntoViewIfNeeded();
-    await pick('#clipped');
-    await painted(page);
-    const clip = await page.locator('#overflow').boundingBox(),
-      rect = await xray.locator('.selected').boundingBox();
-    assert.ok(rect.x >= clip.x && rect.x + rect.width <= clip.x + clip.width + 1);
-    await page.locator('#shadow-control').scrollIntoViewIfNeeded();
-    await pick('#shadow-button');
-    assert.match(await xray.locator('.element-label').textContent(), /shadow-button/);
-    await page.evaluate(() => {
-      document.querySelector('#shadow-control').shadowRoot.querySelector('button').remove();
-    });
-    // The selection is released when X-ray notices the removed node.
-    await page.waitForFunction(() => !document.getElementById('paqvilo-xray').shadowRoot.querySelector('.title'));
-    await page.evaluate(() => window.scrollTo(0, 0));
-    await page.setViewportSize({ width: 540, height: 900 });
-    await xray.getByRole('button', { name: 'Details', exact: true }).click();
-    await page.locator('#fx_title').scrollIntoViewIfNeeded();
-    await pick('#fx_title');
-    await evidence('04-narrow-viewport');
-    await xray.locator('.card').waitFor({ state: 'visible' });
-    const cr = await xray.locator('.card').boundingBox();
-    assert.ok(cr && cr.x >= 0 && cr.y >= 0 && cr.x + cr.width <= 540 && cr.y + cr.height <= 900);
-    await xray.getByRole('button', { name: 'Turn off X-ray' }).click();
-    await page.locator('#save').click();
-    assert.ok((await page.evaluate(() => window.actions)) > 0);
-    await page.keyboard.press('Alt+Shift+L');
-    await scope.locator('.wrap.hidden').waitFor({ state: 'attached' });
-    await page.keyboard.press('Alt+Shift+X');
-    await xray.getByRole('toolbar').waitFor();
-    await panel.draw(page);
-    await xray.getByRole('toolbar').waitFor();
-    await panel.dispose();
-    assert.equal(await page.locator('#paqvilo-xray').count(), 0);
-    assert.deepEqual(errors, []);
-  },
-);
+      .filter({ hasText: 'Partial.webtemplate.source.html' })
+      .getByRole('button', { name: 'Open source', exact: true })
+      .click(),
+  );
+  assert.match(template?.[1] ?? '', /Partial.webtemplate.source.html$/);
+  assert.equal(template?.[2], 1);
+  await evidence('02-template-source');
+  await page.evaluate(() => {
+    const heading = document.querySelector('.updates h2'),
+      wrapper = document.createElement('div');
+    heading.before(wrapper);
+    wrapper.append(heading);
+  });
+  await xray.locator('[data-disclosure=static-candidates] > summary').click();
+  await xray.getByRole('button', { name: 'Select matching ancestor' }).first().click();
+  assert.match(await xray.locator('.element-label').textContent(), /^aside\.updates/);
+  await page.evaluate(() => {
+    const node = document.querySelector('.updates');
+    node.style.position = 'relative';
+    document.querySelector('.columns').prepend(node);
+  });
+  await pick('.updates h2');
+  await titled(page, 'Partial');
+  await xray.getByRole('button', { name: 'Details', exact: true }).click();
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.keyboard.down('Control');
+  await page.locator('#open-dialog').click();
+  await page.keyboard.up('Control');
+  await page.waitForFunction(() => document.getElementById('paqvilo-xray').parentElement.id === 'dialog');
+  await pick('#fx_name');
+  await waitField(page, 'fx_child.fx_name');
+  await xray.getByText('Related children', { exact: true }).first().waitFor({ state: 'attached' });
+  await page.keyboard.down('Control');
+  await page.locator('#nested-open').click();
+  await page.keyboard.up('Control');
+  await pick('#nested-title');
+  await waitField(page, 'fx_widget.fx_title');
+  await evidence('03-nested-modal');
+  await xray.locator('.ancestry summary').click();
+  await xray.getByText('Element & ancestry', { exact: true }).waitFor();
+  await xray.getByRole('button', { name: '↑ Parent', exact: true }).click();
+  assert.match(await xray.locator('.element-label').textContent(), /^form/);
+  await page.keyboard.press('Escape');
+  await page.keyboard.down('Control');
+  await page.locator('#dialog-close').click();
+  await page.keyboard.up('Control');
+  await page.locator('#embedded').scrollIntoViewIfNeeded();
+  const embeddedButton = await page.frameLocator('#embedded').locator('button').boundingBox();
+  await page.mouse.click(embeddedButton.x + embeddedButton.width / 2, embeddedButton.y + embeddedButton.height / 2);
+  assert.equal(await page.evaluate(() => window.frameClicks), 0);
+  assert.equal(await xray.locator('.element-label').textContent(), 'button');
+  await page.locator('#clipped').scrollIntoViewIfNeeded();
+  await pick('#clipped');
+  await painted(page);
+  const clip = await page.locator('#overflow').boundingBox(),
+    rect = await xray.locator('.selected').boundingBox();
+  assert.ok(rect.x >= clip.x && rect.x + rect.width <= clip.x + clip.width + 1);
+  await page.locator('#shadow-control').scrollIntoViewIfNeeded();
+  await pick('#shadow-button');
+  assert.match(await xray.locator('.element-label').textContent(), /shadow-button/);
+  await page.evaluate(() => {
+    document.querySelector('#shadow-control').shadowRoot.querySelector('button').remove();
+  });
+  // The selection is released when X-ray notices the removed node.
+  await page.waitForFunction(() => !document.getElementById('paqvilo-xray').shadowRoot.querySelector('.title'));
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.setViewportSize({ width: 540, height: 900 });
+  await xray.getByRole('button', { name: 'Details', exact: true }).click();
+  await page.locator('#fx_title').scrollIntoViewIfNeeded();
+  await pick('#fx_title');
+  await evidence('04-narrow-viewport');
+  await xray.locator('.card').waitFor({ state: 'visible' });
+  const cr = await xray.locator('.card').boundingBox();
+  assert.ok(cr && cr.x >= 0 && cr.y >= 0 && cr.x + cr.width <= 540 && cr.y + cr.height <= 900);
+  await xray.getByRole('button', { name: 'Turn off X-ray' }).click();
+  await page.locator('#save').click();
+  assert.ok((await page.evaluate(() => window.actions)) > 0);
+  await page.keyboard.press('Alt+Shift+L');
+  await scope.locator('.wrap.hidden').waitFor({ state: 'attached' });
+  await page.keyboard.press('Alt+Shift+X');
+  await xray.getByRole('toolbar').waitFor();
+  await panel.draw(page);
+  await xray.getByRole('toolbar').waitFor();
+  await panel.dispose();
+  assert.equal(await page.locator('#paqvilo-xray').count(), 0);
+  assert.deepEqual(errors, []);
+});
 
 test('X-ray keeps nested table contexts, scaled clipping, dialog order and popovers isolated', async (t) => {
   const context = await browser.newContext({ viewport: { width: 1400, height: 1000 } });

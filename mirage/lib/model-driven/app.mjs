@@ -121,11 +121,19 @@ let catalogue,
 let recent = storage.get('recent', []),
   pinned = storage.get('pinned', []);
 let touchedFields = new Set();
+// A save rebuilds the form's tab and section objects, so script-set layout is keyed by the item's id (a tab) or by its
+// tab's id and name (a section, since sections of different tabs may share a name); an item without the id or name it
+// needs keeps its own identity.
+const layoutKey = (item, tab) => {
+  if (item.sections) return item.id ? `tab:${item.id}` : item;
+  return item.name && tab?.id ? `section:${tab.id}/${item.name}` : item;
+};
 // Tab and section visibility changed by client scripts, for the open form only (tab.setVisible, section.setVisible).
 const layoutState = new Map();
-const layoutVisible = (item) => (layoutState.has(item) ? layoutState.get(item) : item.visible !== false);
+const layoutVisible = (item, tab) =>
+  layoutState.has(layoutKey(item, tab)) ? layoutState.get(layoutKey(item, tab)) : item.visible !== false;
 const layoutLabels = new Map();
-const layoutLabel = (item) => layoutLabels.get(item) ?? item.label;
+const layoutLabel = (item, tab) => layoutLabels.get(layoutKey(item, tab)) ?? item.label;
 let loadedFormType = 1;
 let clientRuntime,
   clientReady = Promise.resolve(),
@@ -176,17 +184,25 @@ const disposeControls = () => {
   for (const entry of controls) entry.control.destroy?.();
   controls = [];
 };
-function disposeClient() {
+// Script-set layout, labels, control state and form notifications end with the runtime that set them.
+function clearClientState() {
   layoutState.clear();
   layoutLabels.clear();
+  clientControlState.clear();
+  $('#form-notifications')?.remove();
+}
+// keepRuntime: an in-place reload of the open form (save, data.refresh) keeps the client runtime and the script-set state,
+// so scripts' contexts and the state they set continue; the reload itself does not replay the form's OnLoad.
+function disposeClient({ keepRuntime = false } = {}) {
   dismissPicker?.(false);
   clearTimeout(gridSearchTimer);
   formLifetime?.abort();
   tabObserver?.disconnect();
-  clientRuntime?.destroy();
-  clientRuntime = undefined;
-  clientControlState.clear();
-  $('#form-notifications')?.remove();
+  if (!keepRuntime) {
+    clientRuntime?.destroy();
+    clientRuntime = undefined;
+    clearClientState();
+  }
   $('#record-status')?.remove();
   disposeControls();
   clientReady = Promise.resolve();
@@ -231,7 +247,16 @@ function loadFailed(error, retry) {
   $('#commands').inert = true;
   document.documentElement.dataset.mirageAppState = 'error';
   notice(error.message, true);
-  $('#notice').append(document.createTextNode(' '), button('Try again', retry));
+  if (retry) $('#notice').append(document.createTextNode(' '), button('Try again', retry));
+}
+const NO_APP_MODULE_MESSAGE =
+  'This solution has no app module, so there is no table to open. Add an app module to the solution and reload this page.';
+/** Without an app module the picker has nothing to choose, so it says so and the message says what to add. */
+function showMissingApplication() {
+  if (catalogue.apps.length)
+    throw new Error('This application is not imported. Choose an available application above.');
+  $('#apps').innerHTML = `<span>No application</span>${icon('chevron', 'chevron')}`;
+  loadFailed(new Error(NO_APP_MODULE_MESSAGE));
 }
 async function api(path = '', options = {}) {
   // x-mirage-app keys the staff session's mobile offline copy: while offline, the shell's records come from it.
@@ -485,7 +510,7 @@ async function offlineDialog() {
   const description = () => {
     if (state.error != null) return state.error;
     if (state.lastSync) return 'Last sync ' + state.lastSync;
-    return 'Not synchronized yet.';
+    return 'Not synchronized.';
   };
   body.innerHTML =
     `<p><strong>${esc(state.profile ?? 'Mobile offline')}</strong> · ${offline ? 'Offline' : 'Online'}</p><p>${esc(description())}</p>` +
@@ -972,6 +997,14 @@ const firstPage = (application) =>
     .flatMap((area) => area.groups.flatMap((group) => group.items))
     .find((item) => item.supported && item.entity);
 const firstEntity = (application) => firstPage(application)?.entity;
+// A lookup default travels as the id plus the target's table and primary name, so the lookup control can show the name.
+function lookupDefaults(field, { id, entity, name }) {
+  return {
+    [field]: id,
+    [`${field}type`]: entity,
+    ...(typeof name === 'string' ? { [`${field}name`]: name } : {}),
+  };
+}
 function targetUrl(entity, { id, view, application = app, defaults, form } = {}) {
   const params = new URLSearchParams({
     appname: application.uniqueName ?? application.id,
@@ -1019,6 +1052,7 @@ async function navigate(
     navigation,
     nextCatalogue,
     ownerCatalogue,
+    reload,
   } = {},
 ) {
   if (switchingStaff) return;
@@ -1042,7 +1076,7 @@ async function navigate(
     '',
     url,
   );
-  await loadRoute();
+  await loadRoute({ reload });
 }
 function remember(entry) {
   recent = [entry, ...recent.filter((item) => item.url !== entry.url)].slice(0, 12);
@@ -1103,7 +1137,7 @@ function renderNavigationHistory(nav) {
       );
     if (!history.querySelector('button')) {
       const empty = document.createElement('p');
-      empty.textContent = 'No items yet';
+      empty.textContent = 'No items.';
       empty.className = 'source-info';
       history.append(empty);
     }
@@ -1215,11 +1249,9 @@ function renderCommands(mode) {
     }),
   );
   appendSolutionCommands(mode, commands, firstFormAction);
-  if (mode === 'form') {
-    commandObserver = new ResizeObserver(() => fitFormCommands(commands));
-    commandObserver.observe(commands);
-    fitFormCommands(commands);
-  }
+  commandObserver = new ResizeObserver(() => fitCommands(commands));
+  commandObserver.observe(commands);
+  fitCommands(commands);
   for (const [index, entry] of [...commands.querySelectorAll('button')].entries())
     if (!entry.dataset.solutionCommand)
       bindModel(entry, modelBinding('platform-command', `${mode}:${index}`, { sourceKind: 'platform' }));
@@ -1250,7 +1282,7 @@ function appendFormCommands(commands, separator) {
     button(loadedFormType === 4 ? 'Activate' : 'Deactivate', null, {
       iconName: 'deactivate',
       disabled: true,
-      title: 'Record activation commands are not supported locally yet.',
+      title: 'Record activation commands are not available in the local host.',
     }),
   );
   if (loadedFormType === 4)
@@ -1292,7 +1324,7 @@ function appendFormCommands(commands, separator) {
     }),
     button('Run Report', null, { disabled: true, chevron: true, title: 'Reports are not supported locally.' }),
   );
-  commands.append(createFormMoreCommand(commands));
+  commands.append(createOverflowCommand(commands, 'form'));
   return firstFormAction;
 }
 
@@ -1303,12 +1335,18 @@ function formDeleteTitle() {
   return undefined;
 }
 
-function createFormMoreCommand(commands) {
+/** The More commands menu lists the commands that did not fit the bar; a form's menu also opens its record commands. */
+function createOverflowCommand(commands, mode) {
   const more = button(
     'More commands',
     () => {
       const hidden = [...commands.querySelectorAll('button[data-command-overflow]')];
-      if (!hidden.length) return showRecordCommands();
+      if (!hidden.length) {
+        if (mode === 'form') showRecordCommands();
+        return;
+      }
+      const recordEntries =
+        mode === 'form' ? [{ label: 'Record commands', value: 'record', role: 'menuitem', separatorBefore: true }] : [];
       picker(
         more,
         [
@@ -1319,7 +1357,7 @@ function createFormMoreCommand(commands) {
             disabled: node.disabled,
             reason: node.title,
           })),
-          { label: 'Record commands', value: 'record', role: 'menuitem', separatorBefore: true },
+          ...recordEntries,
         ],
         {
           label: 'More commands',
@@ -1365,7 +1403,7 @@ function appendGridCommands(commands) {
       }),
     );
   commands.append(
-    button('Show Chart', null, { disabled: true, title: 'Charts are not supported locally yet.' }),
+    button('Show Chart', null, { disabled: true, title: 'Charts are not available in the local host.' }),
     button('＋ New', () => navigate(table.entity, { id: 'new' }), {
       className: 'new-command',
       disabled: !capability('create', current?.capabilities ?? table.capabilities),
@@ -1373,24 +1411,15 @@ function appendGridCommands(commands) {
         ? 'Create a local record'
         : capabilityReason(current?.capabilities ?? table.capabilities),
     }),
-    button(
-      'Delete',
-      async () => {
-        const rows = await Promise.all(
-          [...selected].map((id) => api(tablePath(table.entity, id)).then((value) => ({ id, etag: value.etag }))),
-        );
-        await deleteRecords(rows);
-      },
-      {
-        disabled:
-          !selected.size ||
-          !capability('delete', current?.capabilities ?? table.capabilities) ||
-          [...selected].some(
-            (id) => table.protectedIds?.includes(id) || current?.rowCapabilities?.[id]?.delete === false,
-          ),
-        title: selectedDeleteTitle(),
-      },
-    ),
+    button('Delete', () => deleteRecords([...selected].map((id) => ({ id }))), {
+      disabled:
+        !selected.size ||
+        !capability('delete', current?.capabilities ?? table.capabilities) ||
+        [...selected].some(
+          (id) => table.protectedIds?.includes(id) || current?.rowCapabilities?.[id]?.delete === false,
+        ),
+      title: selectedDeleteTitle(),
+    }),
     button('↻ Refresh', () => refreshGrid()),
   );
   commands.append(
@@ -1398,12 +1427,7 @@ function appendGridCommands(commands) {
     button('Email a Link', null, { disabled: true, chevron: true, title: 'Email links are not supported locally.' }),
     button('Flow', null, { disabled: true, chevron: true, title: 'Flow is not supported locally.' }),
     button('Run Report', null, { disabled: true, chevron: true, title: 'Reports are not supported locally.' }),
-    button('More commands', null, {
-      disabled: true,
-      iconName: 'more',
-      iconOnly: true,
-      title: 'Additional ribbon commands are not supported locally.',
-    }),
+    createOverflowCommand(commands, 'grid'),
   );
 }
 
@@ -1460,7 +1484,7 @@ function appendSolutionCommands(mode, commands, firstFormAction) {
     );
   }
 }
-function fitFormCommands(commands) {
+function fitCommands(commands) {
   const children = [...commands.children],
     more = children.find((node) => node.getAttribute('aria-label') === 'More commands'),
     share = commands.querySelector('.share-command');
@@ -1471,7 +1495,9 @@ function fitFormCommands(commands) {
       node.removeAttribute('data-command-overflow'); // NOSONAR: preserve DOM attribute operations
     }
   }
-  const pinned = new Set([...children.slice(0, 4), more, share]),
+  // A form keeps its first four commands on the bar; a list keeps only Back and its separator.
+  const leading = commands.classList.contains('form-commands') ? 4 : 2,
+    pinned = new Set([...children.slice(0, leading), more, share]),
     width = (node) => node.offsetWidth + (node.classList.contains('separator') ? 8 : 0);
   let remaining =
       innerWidth <= 650 ? 0 : commands.clientWidth - 14 - [...pinned].reduce((sum, node) => sum + width(node), 0),
@@ -1485,6 +1511,15 @@ function fitFormCommands(commands) {
       node.setAttribute('data-command-overflow', ''); // NOSONAR: preserve DOM attribute operations
     } else remaining -= needed;
   }
+  setOverflowMenuState(more, commands);
+}
+// A list's More commands button is enabled only while a command overflows; a form's button always opens its record commands.
+function setOverflowMenuState(more, commands) {
+  if (commands.classList.contains('form-commands')) return;
+  const overflowing = [...commands.children].some((node) => node.hasAttribute('data-command-overflow'));
+  more.disabled = !overflowing;
+  if (overflowing) more.removeAttribute('title');
+  else more.title = 'No additional commands';
 }
 function refreshCommandRules(mode) {
   const context = {
@@ -2534,7 +2569,7 @@ async function lookupSuggestions(field, search, { signal } = {}) {
   );
   return results.flat().slice(0, 5);
 }
-async function loadRecord(id) {
+async function loadRecord(id, loadState = 1) {
   const token = ++generation;
   contentLoading(id ? 'Loading record and form…' : 'Preparing new record…');
   try {
@@ -2554,8 +2589,8 @@ async function loadRecord(id) {
     setLoadedFormType(id);
     if (!id) applyNewRecordDefaults();
     initialRecord = structuredClone(record);
-    const requestedTab = selectRecordForm(result.etag);
-    await renderRecord();
+    const requestedTab = selectRecordForm(result.etag, loadState);
+    await renderRecord({ loaded: true, loadState });
     if (token !== generation) return;
     if (id)
       remember({
@@ -2570,7 +2605,7 @@ async function loadRecord(id) {
       loadFailed(error, () => {
         disposeClient();
         dirty = false;
-        return loadRecord(id);
+        return loadRecord(id, loadState);
       });
   }
 }
@@ -2585,8 +2620,41 @@ function setLoadedFormType(id) {
   if (!id) loadedFormType = 1;
   else if (stateField && Number(record[stateField.name]) === 1) loadedFormType = 4;
   else loadedFormType = 2;
+  if (loadedFormType === 4) dropDisabledOverrides();
+}
+// An inactive record keeps its default read-only presentation, so script-set disabled state does not apply to it.
+function dropDisabledOverrides() {
+  for (const states of clientControlState.values()) states.delete('disabled');
+}
+// Script-set state for a control that the rendered form no longer has is dropped; the names match the runtime's controlName.
+function dropRemovedControlState(form) {
+  const cells = form.tabs.flatMap((tab) => tab.sections.flatMap((section) => section.fields));
+  const present = new Set([
+    ...cells.map((cell) => cell.sourceControl?.id ?? cell.name),
+    ...(form.regionControls ?? []).map((control) => control.id),
+  ]);
+  for (const name of [...clientControlState.keys()]) if (!present.has(name)) clientControlState.delete(name);
 }
 
+// The lookup default that lookupDefaults wrote: the id with the target table and primary name, as a picked value holds them.
+// A table named in the link is used only when the field targets it (or targets no table) and the catalogue has it; a link
+// naming any other table falls back to the field's single target, and with several targets the default is dropped.
+function lookupDefault(field, defaults) {
+  const typed = defaults.get(`${field.name}type`);
+  const single = field.targets?.length === 1 ? field.targets[0] : undefined;
+  const entity = typed === undefined ? single : (lookupTableFrom(field, typed) ?? single);
+  if (typed !== undefined && entity === undefined) return undefined;
+  const name = defaults.get(`${field.name}name`);
+  return {
+    id: defaults.get(field.name),
+    entity,
+    ...(name === undefined ? {} : { name }),
+  };
+}
+function lookupTableFrom(field, entity) {
+  const targeted = !field.targets?.length || field.targets.includes(entity);
+  return targeted && Object.hasOwn(catalogue.tables, entity) ? entity : undefined;
+}
 function applyNewRecordDefaults() {
   const principal = staffSession?.current,
     principalId = principal?.principalId ?? principal?.id;
@@ -2610,13 +2678,14 @@ function applyNewRecordDefaults() {
       let initialValue;
       if (field.type === 'number') initialValue = Number(value);
       else if (field.type === 'boolean') initialValue = value === 'true';
+      else if (field.type === 'lookup') initialValue = lookupDefault(field, defaults);
       else initialValue = value;
       return [field.name, initialValue];
     });
   record = { ...record, ...Object.fromEntries(initialValues) };
 }
 
-function selectRecordForm(resultEtag) {
+function selectRecordForm(resultEtag, loadState) {
   const requestedForm = new URLSearchParams(location.search).get('formid')?.replace(/[{}]/g, '').toLowerCase();
   const availableForms = appForms(),
     preferredForm = requestedForm === undefined ? storage.get(preferredFormKey()) : requestedForm;
@@ -2641,12 +2710,17 @@ function selectRecordForm(resultEtag) {
       ?.tabs.some((tab) => tab.id === requestedTab && tab.visible !== false)
   )
     throw new Error('The requested form tab is unavailable in the selected exported form.');
-  activeTab = requestedTab;
+  // A save (2) or a refresh (3) keeps the selected tab, even when the URL names another; an open takes the URL's tab.
+  const keepsTab = loadState === 2 || loadState === 3;
+  activeTab = keepsTab && activeTab ? activeTab : requestedTab;
   return requestedTab;
 }
-async function renderRecord() {
+// A render that follows a data load (loaded) runs OnLoad with that load state: 2 after a save, 3 after data.refresh.
+// A plain re-render (tab, layout) runs no OnLoad; the first render of the form runs it once.
+async function renderRecord({ loaded = false, loadState = 1 } = {}) {
   provenance.beginUI();
   renderRecordStatus();
+  setFormNotification(null, undefined, REQUIRED_FIELDS_NOTIFICATION);
   const {
     renderGeneration,
     content,
@@ -2684,11 +2758,16 @@ async function renderRecord() {
   if (initializing) clientRuntime = createShellClient(selectedForm);
   const runtime = clientRuntime;
   const ready = Promise.all(controls.map((entry) => entry.control.ready));
-  if (initializing && catalogue.clientExtensions?.trusted === true)
-    clientReady = ready.then(() => runtime.prepare()).then(() => runtime.dispatch('onload'));
+  // An in-place reload keeps the runtime: only its script-added OnLoad handlers run again, with the reload's load state.
+  const runsOnLoad = initializing || loaded;
+  if (catalogue.clientExtensions?.trusted === true)
+    clientReady = ready
+      .then(() => (initializing ? runtime.prepare() : undefined))
+      .then(() => runsOnLoad && runtime.dispatch('onload', undefined, loadState, { formHandlers: initializing }));
   else await ready;
   await clientReady;
   if (runtime !== clientRuntime || renderGeneration !== generation) return;
+  dropRemovedControlState(selectedForm);
   for (const [name, states] of clientControlState)
     for (const [key, value] of states) applyControlState(name, key, value);
   renderCommands('form');
@@ -2835,7 +2914,7 @@ function createRecordTabs(selectedForm, recordCard, content) {
   const tabs = document.createElement('div');
   tabs.className = 'tabs';
   tabs.setAttribute('role', 'tablist');
-  const availableTabs = selectedForm.tabs.filter(layoutVisible);
+  const availableTabs = selectedForm.tabs.filter((tab) => layoutVisible(tab));
   activeTab = availableTabs.some((tab) => tab.id === activeTab) ? activeTab : availableTabs[0]?.id;
   const chooseTab = async (tab, focus = false) => {
     captureDraft();
@@ -2962,7 +3041,7 @@ function createRecordForm(actualForm, availableTabs) {
 
 function renderRecordSections(tab, columns, selectedForm, existing) {
   for (const section of tab?.sections ?? []) {
-    if (!layoutVisible(section)) continue;
+    if (!layoutVisible(section, tab)) continue;
     // Native-style markers (data-id) name each section, field and subgrid as the exported form does, for tools such as Lense X-ray.
     const panel = document.createElement('section');
     panel.className = 'form-section';
@@ -2976,9 +3055,9 @@ function renderRecordSections(tab, columns, selectedForm, existing) {
       { coverage: 'self' },
     );
     if (section.name) panel.dataset.id = section.name;
-    if (layoutLabel(section) && section.showLabel !== false) {
+    if (layoutLabel(section, tab) && section.showLabel !== false) {
       const title = document.createElement('h2');
-      title.textContent = layoutLabel(section);
+      title.textContent = layoutLabel(section, tab);
       panel.append(title);
     }
     if (section.labelPosition) panel.dataset.labelPosition = section.labelPosition;
@@ -3056,6 +3135,35 @@ function appendRecordCell(cell, section, fields, existing) {
   controls.push({ name: field.name, controlName: name, cell, wrapper, label, control, disabled });
 }
 
+/** Shows (message) or removes (null) a form notification, keyed by id, in the form notification host. */
+function setFormNotification(message, level, id) {
+  let host = $('#form-notifications'),
+    element = [...(host?.children ?? [])].find((element) => element.dataset.formNotification === id);
+  if (message == null) {
+    element?.remove();
+    return;
+  }
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'form-notifications';
+    $('#commands').before(host);
+  }
+  if (!element) {
+    element = document.createElement('p');
+    element.dataset.formNotification = id;
+    element.setAttribute('role', 'status');
+    host.append(element);
+  }
+  if (level === 'ERROR') element.className = 'error';
+  else if (level === 'WARNING') element.className = 'warning';
+  else element.className = 'info';
+  element.replaceChildren();
+  const glyph = document.createElement('span');
+  glyph.innerHTML = icon('info');
+  glyph.setAttribute('aria-hidden', 'true');
+  element.append(glyph, document.createTextNode(message));
+}
+
 function attachRecordFormEvents(form) {
   const markDirty = (event) => {
     const entry = controls.find(
@@ -3067,8 +3175,69 @@ function attachRecordFormEvents(form) {
     notice('');
     $('#save-status').textContent = ' - Unsaved changes';
   };
-  form.addEventListener('input', markDirty);
-  form.addEventListener('change', (event) => handleRecordFormChange(event, markDirty));
+  form.addEventListener('input', (event) => {
+    markDirty(event);
+    clearRequiredMessage(event.target);
+  });
+  form.addEventListener('change', (event) => {
+    handleRecordFormChange(event, markDirty);
+    clearRequiredMessage(event.target);
+  });
+}
+
+// The native rejection text of a save with a missing business-required field.
+const REQUIRED_FIELDS_MESSAGE = 'Please make sure all the field requirements are met.';
+const REQUIRED_FIELDS_NOTIFICATION = 'required-fields';
+let requiredMessageSequence = 0;
+
+/** Names each missing field beside its control, notifies the form and moves focus to the first missing control. */
+function markMissingFields(form) {
+  const missing = [...form.querySelectorAll('input,select,textarea')].filter(
+    (input) => input.willValidate && !input.validity.valid,
+  );
+  for (const input of missing) showRequiredMessage(input);
+  setFormNotification(REQUIRED_FIELDS_MESSAGE, 'ERROR', REQUIRED_FIELDS_NOTIFICATION);
+  missing[0]?.focus();
+  missing[0]?.scrollIntoView({ block: 'center' });
+}
+
+function showRequiredMessage(input) {
+  const message = document.createElement('p');
+  message.id = `required-message-${++requiredMessageSequence}`;
+  message.className = 'field-message';
+  message.setAttribute('data-required-message', '');
+  message.textContent = REQUIRED_FIELDS_MESSAGE;
+  setDescribedBy(input, [...withoutRequiredMessages(input), message.id]);
+  input.setAttribute('aria-invalid', 'true');
+  (input.closest('.field') ?? input.parentElement).append(message);
+}
+
+/** A marked control that now holds a valid value loses its message; the form notice goes with the last one. */
+function clearRequiredMessage(target) {
+  if (!target.willValidate || target.getAttribute('aria-invalid') !== 'true' || !target.validity.valid) return;
+  setDescribedBy(target, withoutRequiredMessages(target));
+  target.removeAttribute('aria-invalid');
+  if (!$('#record-form [aria-invalid="true"]')) setFormNotification(null, undefined, REQUIRED_FIELDS_NOTIFICATION);
+}
+
+/** The ids a control references through aria-describedby, minus the required messages this code added. */
+function withoutRequiredMessages(input) {
+  const ids = (input.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean);
+  return ids.filter((id) => !removeRequiredMessage(id));
+}
+
+/** Removes the element with this id when this code created it as a required message; reports whether it did. */
+function removeRequiredMessage(id) {
+  const element = document.getElementById(id);
+  if (!element?.hasAttribute('data-required-message')) return false;
+  element.remove();
+  return true;
+}
+
+/** Writes the token list, or drops the attribute when no reference is left. */
+function setDescribedBy(input, ids) {
+  if (ids.length) input.setAttribute('aria-describedby', ids.join(' '));
+  else input.removeAttribute('aria-describedby');
 }
 
 function handleRecordFormChange(event, markDirty) {
@@ -3269,12 +3438,19 @@ function createShellClient(selectedForm) {
     .filter((cell) => cell.name && cell.supported);
   const controlName = (cell) => cell.sourceControl?.id ?? cell.name;
   const regionControls = (selectedForm.regionControls ?? []).filter((control) => table.fields[control.name]);
+  // The record, table and loaded baseline are read at each call: a save reloads the open form in place.
   const runtime = createFormClientRuntime({
-    table,
+    get table() {
+      return table;
+    },
     tables: catalogue.tables,
     form: selectedForm,
-    record: record ?? {},
-    initialRecord,
+    get record() {
+      return record ?? {};
+    },
+    get initialRecord() {
+      return initialRecord;
+    },
     extensions: catalogue.clientExtensions,
     metadata: (entity) => ensureMetadata(entity),
     getFormType: () => loadedFormType,
@@ -3298,8 +3474,8 @@ function createShellClient(selectedForm) {
         : { pageType: 'entitylist', entityName: table.entity, viewId: query.view ?? null, viewType: 'savedquery' },
     layoutVisible,
     layoutLabel,
-    setLayoutLabel: (item, label) => {
-      layoutLabels.set(item, label);
+    setLayoutLabel: (item, label, tab) => {
+      layoutLabels.set(layoutKey(item, tab), label);
       const runtime = clientRuntime;
       requestAnimationFrame(() => {
         if (runtime === clientRuntime && record) {
@@ -3308,8 +3484,8 @@ function createShellClient(selectedForm) {
         }
       });
     },
-    setLayoutVisible: (item, visible) => {
-      layoutState.set(item, visible);
+    setLayoutVisible: (item, visible, tab) => {
+      layoutState.set(layoutKey(item, tab), visible);
       const runtime = clientRuntime;
       requestAnimationFrame(() => {
         if (runtime === clientRuntime && record) {
@@ -3416,33 +3592,7 @@ function createShellClient(selectedForm) {
         readClientControlState(name, 'options', options, regionControls, cells, controlName);
       }
     },
-    notification: (message, level, id) => {
-      let host = $('#form-notifications'),
-        element = [...(host?.children ?? [])].find((element) => element.dataset.formNotification === id);
-      if (message == null) {
-        element?.remove();
-        return;
-      }
-      if (!host) {
-        host = document.createElement('div');
-        host.id = 'form-notifications';
-        $('#commands').before(host);
-      }
-      if (!element) {
-        element = document.createElement('p');
-        element.dataset.formNotification = id;
-        element.setAttribute('role', 'status');
-        host.append(element);
-      }
-      if (level === 'ERROR') element.className = 'error';
-      else if (level === 'WARNING') element.className = 'warning';
-      else element.className = 'info';
-      element.replaceChildren();
-      const glyph = document.createElement('span');
-      glyph.innerHTML = icon('info');
-      glyph.setAttribute('aria-hidden', 'true');
-      element.append(glyph, document.createTextNode(message));
-    },
+    notification: setFormNotification,
     request: async (entity, id, options = {}) => {
       if (!Object.hasOwn(catalogue.tables, entity)) throw new Error(`Table ${entity} is not imported.`);
       return api(
@@ -3455,8 +3605,17 @@ function createShellClient(selectedForm) {
         },
       );
     },
-    save: (close) => saveRecord(close),
-    refresh: () => loadRoute({ preserveContent: true }),
+    save: (close, mode) => saveRecord(close, mode),
+    // The context saved as saveandnew is detached by the runtime; the open form becomes a new record with a new context.
+    openNewRecord: () => {
+      clientRuntime = undefined;
+      return navigate(table.entity, { id: 'new', form: formId });
+    },
+    refresh: () =>
+      loadRoute({
+        preserveContent: true,
+        reload: { loadState: 3, keepFor: routeKeys(new URLSearchParams(location.search)) },
+      }),
     close: returnToGrid,
     openForm: (options) => {
       if (!options || !catalogue.tables[options.entityName]) throw new Error('The target form table is not imported.');
@@ -3623,6 +3782,8 @@ function renderSubgrid(cell) {
     heading.replaceWith(chooseView);
   }
   const selectedRelated = new Set();
+  // Rows a refused bulk delete left selected; the next page load selects them again.
+  let keepSelected = new Set();
   const toolbar = document.createElement('div'),
     results = document.createElement('div'),
     footer = document.createElement('div');
@@ -3630,7 +3791,13 @@ function renderSubgrid(cell) {
   results.className = 'related-results';
   const newRelated = button(
     `New ${target.singular}`,
-    () => navigate(target.entity, { id: 'new', ...(field ? { defaults: { [field]: parentId } } : {}) }),
+    () =>
+      navigate(target.entity, {
+        id: 'new',
+        ...(field && parentId
+          ? { defaults: lookupDefaults(field, { id: parentId, entity: table.entity, name: record[table.nameColumn] }) }
+          : {}),
+      }),
     {
       iconName: 'add',
       disabled: target.capabilities?.create === false,
@@ -3647,12 +3814,18 @@ function renderSubgrid(cell) {
       ))
     )
       return;
-    for (const id of selectedRelated) {
-      const found = await api(tablePath(target.entity, id));
-      await api(tablePath(target.entity, id), { method: 'DELETE', headers: { 'if-match': found.etag } });
+    const outcome = await deleteEach(
+      target.entity,
+      [...selectedRelated].map((id) => ({ id })),
+    );
+    keepSelected = new Set(outcome.failed.map((entry) => entry.id));
+    try {
+      catalogue = await api();
+      await load();
+    } finally {
+      keepSelected = new Set();
     }
-    catalogue = await api();
-    await load();
+    if (outcome.failed.length) throw deletionFailure(outcome);
   });
   deleteRelated.hidden = true;
   toolbar.append(
@@ -3711,6 +3884,7 @@ function renderSubgrid(cell) {
         footer,
         deleteRelated,
         selectedRelated,
+        keepSelected,
         page,
         load,
         previousPage: () => {
@@ -3821,6 +3995,7 @@ function renderSubgridResult({
   footer,
   deleteRelated,
   selectedRelated,
+  keepSelected,
   page,
   load,
   previousPage,
@@ -3830,6 +4005,7 @@ function renderSubgridResult({
   bindView,
 }) {
   selectedRelated.clear();
+  restoreRelatedSelection(result, target, selectedRelated, keepSelected);
   deleteRelated.hidden = true;
   results.replaceChildren();
   bindView();
@@ -3857,6 +4033,7 @@ function renderSubgridResult({
   head.append(headings);
   grid.append(head);
   const body = renderSubgridRows(result, { target, gridContext, selectedRelated, deleteRelated, all });
+  if (selectedRelated.size) updateRelatedSelection(result, target, selectedRelated, deleteRelated, all);
   if (!result.rows.length) {
     const empty = document.createElement('p');
     empty.textContent = 'No related records.';
@@ -3924,6 +4101,8 @@ function renderSubgridRows(result, { target, gridContext, selectedRelated, delet
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
     checkbox.setAttribute('aria-label', `Select ${display(row[target.nameColumn]) || id}`);
+    checkbox.checked = selectedRelated.has(id);
+    tr.classList.toggle('selected', checkbox.checked);
     checkbox.addEventListener('change', () => {
       if (checkbox.checked) selectedRelated.add(id);
       else selectedRelated.delete(id);
@@ -3946,6 +4125,14 @@ function renderSubgridRows(result, { target, gridContext, selectedRelated, delet
     updateSelection();
   });
   return body;
+}
+
+/** Selects the rows of a freshly loaded page that a refused bulk delete kept selected. */
+function restoreRelatedSelection(result, target, selectedRelated, keepSelected) {
+  for (const row of result.rows) {
+    const id = String(row[target.idColumn]);
+    if (keepSelected.has(id)) selectedRelated.add(id);
+  }
 }
 
 function updateRelatedSelection(result, target, selectedRelated, deleteRelated, all) {
@@ -3974,8 +4161,9 @@ function captureDraft() {
   for (const entry of controls)
     if (!entry.disabled && entry.control.supported) record[entry.name] = entry.control.read();
 }
-async function saveRecord(close) {
-  if (requestingSave) return;
+// Resolves with the save outcome persistRecord reports; a call made while a save is in flight resolves 'busy'.
+async function saveRecord(close, mode) {
+  if (requestingSave) return 'busy';
   requestingSave = true;
   const form = $('#record-form'),
     status = $('#save-status'),
@@ -3988,7 +4176,7 @@ async function saveRecord(close) {
   $('#commands').classList.add('busy');
   $('#commands').setAttribute('aria-busy', 'true');
   try {
-    await persistRecord(close);
+    return await persistRecord(close, mode);
   } finally {
     requestingSave = false;
     if (saveGeneration === generation) {
@@ -4005,21 +4193,27 @@ async function saveRecord(close) {
     }
   }
 }
-/* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ async function persistRecord(close) {
+/* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ async function persistRecord(
+  close,
+  mode,
+) {
   const saveGeneration = generation;
   await clientReady;
   await clientChanges;
   if (saveGeneration !== generation) return;
-  const save = await clientRuntime?.dispatch('onsave', undefined, close ? 2 : 1);
+  const save = await clientRuntime?.dispatch('onsave', undefined, mode ?? (close ? 2 : 1));
   if (save?.prevented) {
     notice('Save cancelled by the exported form event.');
-    return;
+    return 'cancelled';
   }
   if (saveGeneration !== generation) return;
-  if (pending || !capability(record?.[table.idColumn] ? 'update' : 'create')) return;
+  if (pending || !capability(record?.[table.idColumn] ? 'update' : 'create')) return 'denied';
   const form = $('#record-form');
   form.inert = false;
-  if (!form.reportValidity()) return;
+  if (!form.reportValidity()) {
+    markMissingFields(form);
+    return 'invalid';
+  }
   form.inert = true;
   notice('');
   captureDraft();
@@ -4069,13 +4263,14 @@ async function saveRecord(close) {
   if (existing && !Object.keys(values).length) {
     if (unsaved.length) {
       notice(`These changed columns cannot be saved locally: ${unsaved.join(', ')}.`, true);
-      return;
+      return 'unsupported';
     }
     dirty = false;
     touchedFields.clear();
+    setFormNotification(null, undefined, REQUIRED_FIELDS_NOTIFICATION);
     if (close) await returnToGrid();
     else notice('No record changes to save.');
-    return;
+    return 'unchanged';
   }
   pending = true;
   $('#commands').classList.add('busy');
@@ -4103,11 +4298,18 @@ async function saveRecord(close) {
     } else {
       const savedEntity = table.entity,
         savedId = record[table.idColumn];
-      await navigate(savedEntity, { id: savedId, form: formId, replace: true });
+      await navigate(savedEntity, {
+        id: savedId,
+        form: formId,
+        replace: true,
+        reload: { loadState: 2, keepFor: { entity: savedEntity, id: savedId, formId } },
+      });
       if (!switchingStaff && table?.entity === savedEntity && record?.[table.idColumn] === savedId)
         for (const [name, mode] of submitModes) clientRuntime?.formContext.getAttribute(name)?.setSubmitMode(mode);
       notice(`Record saved locally.${notCarried}`, Boolean(notCarried));
     }
+    setFormNotification(null, undefined, REQUIRED_FIELDS_NOTIFICATION);
+    return 'saved';
   } finally {
     pending = false;
   }
@@ -4126,26 +4328,58 @@ async function deleteRecords(rows) {
   )
     return;
   if (deleteGeneration !== generation) return;
-  let deleted = 0;
   pending = true;
   contentLoading(`Deleting ${rows.length} local record${rows.length === 1 ? '' : 's'}…`);
   try {
-    for (const row of rows) {
-      await api(tablePath(entity, row.id), { method: 'DELETE', headers: { 'if-match': row.etag } });
-      deleted++;
-    }
+    const outcome = await deleteEach(entity, rows);
     if (deleteGeneration !== generation) return;
-    dirty = false;
-    catalogue = await api();
-    table = catalogue.tables[table.entity];
-    await navigate(table.entity);
-    notice(`${deleted} record${deleted === 1 ? '' : 's'} deleted locally.`);
-  } catch (error) {
-    throw new Error(`${deleted} record${deleted === 1 ? '' : 's'} deleted. ${error.message}`, { cause: error });
+    if (outcome.deleted.length) await reloadGridAfterDelete(outcome);
+    if (outcome.failed.length) throw deletionFailure(outcome);
+    notice(`${outcome.deleted.length} record${outcome.deleted.length === 1 ? '' : 's'} deleted locally.`);
   } finally {
     pending = false;
     if (deleteGeneration === generation) contentLoaded();
   }
+}
+/** Deletes the rows one at a time. A refused row is recorded and the rows after it are still deleted. */
+async function deleteEach(entity, rows) {
+  const outcome = { deleted: [], failed: [] };
+  for (const row of rows) {
+    try {
+      await deleteRow(entity, row);
+      outcome.deleted.push(row.id);
+    } catch (error) {
+      outcome.failed.push({ id: row.id, error });
+    }
+  }
+  return outcome;
+}
+/** Reads the etag when the caller has none. A row that is already gone (404) counts as deleted. */
+async function deleteRow(entity, { id, etag }) {
+  const path = tablePath(entity, id);
+  try {
+    const ifMatch = etag ?? (await api(path)).etag;
+    await api(path, { method: 'DELETE', headers: { 'if-match': ifMatch } });
+  } catch (error) {
+    if (error.status !== 404) throw error;
+  }
+}
+/** Reloads the list after deletes; the rows that were refused stay selected so a retry targets only them. */
+async function reloadGridAfterDelete({ failed }) {
+  dirty = false;
+  catalogue = await api();
+  const entity = table.entity;
+  table = catalogue.tables[entity];
+  await navigate(entity);
+  if (!failed.length) return;
+  selected = new Set(failed.map((entry) => entry.id));
+  renderGrid();
+}
+function deletionFailure({ deleted, failed }) {
+  const [first] = failed;
+  return new Error(`${deleted.length} deleted, ${failed.length} failed: ${first.error.message}`, {
+    cause: first.error,
+  });
 }
 /** The local address of a navigateTo page input (the native main.aspx page types). */
 function pageUrl(input) {
@@ -4626,15 +4860,29 @@ const sidePanes = {
   getPane: (paneId) => panes.find((pane) => pane.paneId === paneId),
   getSelectedPane: () => selectedPane,
 };
+// The record and form a route opens, read from the query it is loaded with.
+const routeKeys = (params) => ({ entity: params.get('etn'), id: params.get('id'), formId: params.get('formid') });
+// Braces and letter case do not change which record or form a route names.
+const routeValue = (value) =>
+  String(value ?? '')
+    .replace(/[{}]/g, '')
+    .toLowerCase();
+/** A reload keeps the open runtime only when the route being loaded opens the record and form it was started for. */
+function reloadKeepsRuntime(reload) {
+  if (!reload || !clientRuntime) return false;
+  const target = routeKeys(new URLSearchParams(location.search));
+  return ['entity', 'id', 'formId'].every((key) => routeValue(target[key]) === routeValue(reload.keepFor[key]));
+}
 /* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ async function loadRoute({
   identityChange = false,
   preserveContent = false,
+  reload,
 } = {}) {
   provenance.beginUI();
   if (switchingStaff && !identityChange) return;
   const routeGeneration = ++generation,
     routeCatalogue = catalogue;
-  disposeClient();
+  disposeClient({ keepRuntime: reloadKeepsRuntime(reload) });
   // The form or grid context is gone until the route renders again (a mode switch reloads from the other data source).
   $('#commands').replaceChildren();
   if (!preserveContent) $('#content').replaceChildren();
@@ -4647,7 +4895,7 @@ const sidePanes = {
   app = application
     ? catalogue.apps.find((app) => app.id === application || app.uniqueName === application)
     : catalogue.apps.find((app) => app.id === catalogue.defaultApp);
-  if (!app) throw new Error('This application is not imported. Choose an available application above.');
+  if (!app) return showMissingApplication();
   $('#apps').innerHTML = `<span>${esc(app.name ?? app.uniqueName)}</span>${icon('chevron', 'chevron')}`;
   $('#apps').title = 'Select an app';
   $('#source-label').textContent = app.name ?? app.uniqueName;
@@ -4710,7 +4958,7 @@ const sidePanes = {
   recordCapabilities = undefined;
   current = null;
   etag = null;
-  if (params.get('pagetype') === 'entityrecord') await loadRecord(params.get('id'));
+  if (params.get('pagetype') === 'entityrecord') await loadRecord(params.get('id'), reload?.loadState);
   else {
     const availableViews = appViews(),
       requestedView = requestedViewId;
@@ -4807,17 +5055,18 @@ window.addEventListener('focus', () =>
     }
   }),
 );
+// The shell names its portal in a meta tag: an empty value means the host has no portal to link to.
+function showPortalLink() {
+  const portal = $('#open-portal'),
+    target = document.querySelector('meta[name="mirage-portal"]')?.content ?? '';
+  portal.hidden = !target;
+  if (target) portal.href = target;
+}
 async function initialize() {
   contentLoading('Loading application and staff identity…');
   try {
     await loadStaffSession();
-    const response = await fetch('/_sim/api/status');
-    if (response.ok) {
-      const status = await response.json();
-      const portal = $('#open-portal');
-      portal.hidden = status.capabilities?.powerPages === false;
-      if (status.links?.powerPages) portal.href = status.links.powerPages;
-    }
+    showPortalLink();
     catalogue = await api();
     $('#apps').disabled = !catalogue.apps.length;
     await loadRoute();

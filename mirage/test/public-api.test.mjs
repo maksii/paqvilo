@@ -1,3 +1,4 @@
+// @test-kind contract: the simulator's public entry points and their runtime behaviour, exercised with invented projects
 import test from 'node:test';
 import { inventedProjectFixture } from './fixtures/source-site.mjs';
 import assert from 'node:assert/strict';
@@ -12,6 +13,15 @@ import { platformStylesStatus, formStyleDiagnostics } from '../lib/platform-styl
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const project = (t) => inventedProjectFixture(t, 'paqvilo-public-api-');
+
+// @test-kind tooling: the public API document lists every export of the testing entry point
+test('every export of the testing entry point appears in the paqvilo/mirage/testing row of the public API table', async () => {
+  const doc = await fs.readFile(new URL('../../docs/public-api.md', import.meta.url), 'utf8');
+  const row = doc.split('\n').find((line) => line.startsWith('| `paqvilo/mirage/testing`'));
+  assert.ok(row, 'docs/public-api.md has a paqvilo/mirage/testing row');
+  const missing = Object.keys(await import('../testing.mjs')).filter((name) => !row.includes(`\`${name}\``));
+  assert.deepEqual(missing, []);
+});
 
 test('bootstrap preset mode preserves records on restart and always mode resets them', async (t) => {
   const root = await project(t),
@@ -69,6 +79,7 @@ test('bootstrap preset mode preserves records on restart and always mode resets 
   }
 });
 
+// @test-kind security: local override files cannot be read from outside the configured directory
 test('local overrides confine files, preserve head order and disable bundled footer code', async (t) => {
   const root = await project(t);
   await fs.writeFile(path.join(root, 'extra.css'), 'body{color:purple}');
@@ -117,6 +128,7 @@ test('local overrides confine files, preserve head order and disable bundled foo
   assert.deepEqual(formStyleDiagnostics('<div class="crmEntityFormView">', profile), []);
 });
 
+// @test-kind security: a directory replaced after startup cannot expose files outside the asset root
 test('local head assets remain confined when a directory is replaced after startup', async (t) => {
   const root = await project(t),
     outside = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-head-outside-'));

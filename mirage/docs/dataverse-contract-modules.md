@@ -300,21 +300,22 @@ Module: `mirage/lib/dataverse-bpf.mjs`. Capability record: level `contract`, req
 **Behaviour.** A business process flow is a workflow row of category 4, with `primaryentity` set to the table it runs on and `uniquename` naming its instance table. The module reads these rows in two places:
 
 - `api.businessProcessFlows.list()`, `.for(table)` and `.diagnostics()` expose the inventory (read only, computed from the store on each call).
-- `createInstance(api, workflowid, targetId)` (exported) inserts one instance row for a record, at the flow's first stage, through `api.change` and `store.createRecord` with the platform's admin identity, in a nested transaction. Awaited inside an open write it joins that write and rolls back with it; on its own it is one committed transaction. It runs only when the instance table exists in the store. The row does not go through the records pipeline, so no plug-in step or audit entry runs for it.
+- `createInstance(api, workflowid, targetId)` (exported) inserts one instance row for a record, at the flow's first stage, through `api.records.createInternal` with the platform's admin identity, inside `api.change` and a nested transaction. Awaited inside an open write it joins that write and rolls back with it; on its own it is one committed transaction. It runs only when the instance table exists in the store. The row goes through the records pipeline, so plug-in steps and write hooks run for it. No runtime path calls `createInstance`; it is contract-only, and a caller invokes it directly.
 
 The module registers no message. `RetrieveProcessInstances`, `RetrieveActivePath` and `SetProcess` are already answered by `mirage/lib/dataverse-misc-messages.mjs`. `RetrieveProcessInstances` and `RetrieveActivePath` read the instance rows that `createInstance` writes. `SetProcess` answers 501 (see below).
 
-| Operation                      | Level       | Meaning                                                                                                                                                                            |
-| ------------------------------ | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `BusinessProcessFlowInventory` | `inventory` | Lists category-4 workflow rows as `{ workflowid, name, uniquename, primaryentity, stages: [{ id, name, entity }] }`.                                                               |
-| `BusinessProcessFlowInstance`  | `contract`  | `createInstance`: inserts `{ <pk>, businessprocessflowinstanceid, processid, activestageid, traversedpath, bpf_<primaryentity>id }`. Executes only when the instance table exists. |
+| Operation                      | Level       | Meaning                                                                                                                                                                                                      |
+| ------------------------------ | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `BusinessProcessFlowInventory` | `inventory` | Lists category-4 workflow rows as `{ workflowid, name, uniquename, primaryentity, stages: [{ id, name, entity }] }`.                                                                                         |
+| `BusinessProcessFlowInstance`  | `contract`  | `createInstance`: inserts `{ <pk>, businessprocessflowinstanceid, processid, activestageid, traversedpath, bpf_<primaryentity>id }`. Executes only when the instance table exists. No runtime path calls it. |
 
 **Inventory / contract.**
 
 - The stage list is read only when it is simple: clientdata JSON `{ "stages": [{ "stageid", "stagename", "entityname"? }] }`, or XAML with `stage` elements that carry `stageid` (or `id`) and `stagename` (or `name`). A stage without an entity takes the flow's primary entity. A flow without a simple list has `stages: []`.
-- Stage validation and stage moves are not implemented. There is no `moveStage`. No operation rewrites `activestageid` or `traversedpath` of an existing instance row; those are the two columns `createInstance` writes.
+- A `beforeWrite` hook on each instance table (a table named by the `uniquename` of a category-4 flow) checks a write that sets `activestageid`. The stage must belong to the instance's process: it is a stage of the simple stage list, or a `processstage` row with that `processid`. Otherwise the write answers `400 InvalidRequest` with inner code `0x80040203` and changes nothing. An update that moves the instance sets `traversedpath` to comma-separated stage ids: a stage new to the path is appended, and a stage already on the path truncates the path after it. A `traversedpath` that the same write carries is replaced. The refusal code and the path format are assumed; no native capture is cited.
+- Finish, abandon and reactivate (`statecode` and `statuscode` of an instance) are not modelled. There is no `moveStage` operation.
 - `createInstance` does not create `processstage` rows. `RetrieveActivePath` reads those rows, so an instance whose stages are not in the store has an empty path.
-- Instances carry no `statecode` or `statuscode`. The store stamps `createdon` and `modifiedon` as for any created row.
+- Instances take the store defaults for `statecode` (0) and `statuscode` (1), and no operation here sets them. The store stamps `createdon` and `modifiedon` as for any created row.
 
 **Diagnostics.** Each fires once per flow (per code and workflow id) until reset.
 

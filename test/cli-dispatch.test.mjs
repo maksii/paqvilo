@@ -3,10 +3,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { EventEmitter } from 'node:events';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { MIRAGE_COMMANDS, MIRAGE_TOOLS } from '../mirage/tool-registry.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
+import { forwardTerminationSignals } from '../lense/signal-forwarding.mjs';
 import { tempDirSync } from './fixture.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
@@ -18,7 +20,7 @@ const run = (args, options = {}) =>
         execFile(
           process.execPath,
           [cli, ...args],
-          { env, encoding: 'utf8', windowsHide: true, timeout: 30000, ...options },
+          { env, encoding: 'utf8', windowsHide: true, ...options },
           (error, stdout, stderr) => resolve({ status: error ? error.code : 0, stdout, stderr }),
         );
       }),
@@ -143,11 +145,8 @@ test('shell quoting preserves spaced Cyrillic and metacharacter paths', async (t
   const result = await withProcessSlot(
     () =>
       new Promise((resolve) => {
-        execFile(
-          program,
-          args,
-          { cwd, env, encoding: 'utf8', windowsHide: true, timeout: 30000 },
-          (error, stdout, stderr) => resolve({ status: error?.code ?? 0, stdout, stderr }),
+        execFile(program, args, { cwd, env, encoding: 'utf8', windowsHide: true }, (error, stdout, stderr) =>
+          resolve({ status: error?.code ?? 0, stdout, stderr }),
         );
       }),
   );
@@ -155,4 +154,28 @@ test('shell quoting preserves spaced Cyrillic and metacharacter paths', async (t
   assert.equal(result.stderr, '');
   assert.equal(JSON.parse(result.stdout).directory, target);
   assert.ok(fs.existsSync(path.join(target, 'paqvilo.config.yml')));
+});
+
+test('terminal interrupts stay with the child on Windows and are forwarded elsewhere', () => {
+  const signals = [];
+  const child = { kill: (signal) => signals.push(signal) };
+
+  const windowsSource = new EventEmitter();
+  const stopWindows = forwardTerminationSignals(child, { platform: 'win32', source: windowsSource });
+  assert.equal(windowsSource.listenerCount('SIGINT'), 1);
+  windowsSource.emit('SIGINT');
+  assert.deepEqual(signals, []);
+  stopWindows();
+  assert.equal(windowsSource.listenerCount('SIGINT'), 0);
+  assert.equal(windowsSource.listenerCount('SIGBREAK'), 0);
+
+  const posixSource = new EventEmitter();
+  const stopPosix = forwardTerminationSignals(child, { platform: 'linux', source: posixSource });
+  posixSource.emit('SIGINT');
+  assert.deepEqual(signals, ['SIGINT']);
+  posixSource.emit('SIGTERM');
+  assert.deepEqual(signals, ['SIGINT', 'SIGTERM']);
+  stopPosix();
+  assert.equal(posixSource.listenerCount('SIGINT'), 0);
+  assert.equal(posixSource.listenerCount('SIGTERM'), 0);
 });

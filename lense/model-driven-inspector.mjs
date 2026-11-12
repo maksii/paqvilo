@@ -1,6 +1,5 @@
-import { EventEmitter } from 'node:events';
 import { randomBytes } from 'node:crypto';
-import { startAgentServer, redactText, redactUrl } from './agent-server.mjs';
+import { redactText, redactUrl } from './agent-server.mjs';
 import { inspectModelDrivenContext } from './model-driven-inspection.mjs';
 import { createModelDrivenMetadataIndex, normalizeModelDrivenMetadataRequest } from './model-driven-metadata.mjs';
 import { modelDrivenObservationRuntime } from './model-driven-observation.mjs';
@@ -41,19 +40,66 @@ const bounded = (rows, limit = MAX_ITEMS) => {
   }
   return selected;
 };
-const within = async (operation, milliseconds) => {
+// Hang guard for page reads. The page may be paused in a debugger, which gives no progress signal, so a read that
+// has not answered by the guard is reported as timed out. A page that is slow but healthy is awaited up to the guard.
+export const NATIVE_READ_GUARD_MS = 30_000;
+const MAX_TIMER_MS = 2_147_483_647;
+const GUARD_EXPIRED = Symbol('native read guard expired');
+const guarded = async (operation, milliseconds) => {
   let timer;
   try {
     return await Promise.race([
       operation,
       new Promise((resolve) => {
-        timer = setTimeout(resolve, milliseconds);
+        timer = setTimeout(() => resolve(GUARD_EXPIRED), milliseconds);
       }),
     ]);
   } finally {
     clearTimeout(timer);
   }
 };
+const nativeReadTimedOutMessage = (guardMs) =>
+  `The page did not answer within ${guardMs} ms (it may be paused in a debugger). Resume the page and retry; embedders can raise nativeReadGuardMs.`;
+const nativeReadTimedOut = (guardMs) => ({
+  ok: false,
+  reason: 'native-read-timed-out',
+  error: nativeReadTimedOutMessage(guardMs),
+});
+// Returns the observed native structure, null when it is unavailable or obsolete, or GUARD_EXPIRED when the page
+// did not answer one of its two reads within the guard.
+async function readNativeStructure(page, body, guardMs) {
+  const observed = await guarded(
+    page.evaluate(
+      (request) => {
+        const tools = document.getElementById('paqvilo-xray')?.__px;
+        const node = tools?.selectedNode?.();
+        if (!node) return null;
+        const current = tools.getSelectionScope(node);
+        if (!['documentId', 'frameId', 'uiEpoch', 'sourceRevision'].every((key) => current[key] === request.scope[key]))
+          return null;
+        return node.ownerDocument.defaultView.__paqviloModelDrivenProvider?.observe({
+          scope: request.scope,
+          anchorGeneration: request.anchorGeneration,
+          cursor: request.cursor,
+          budget: { items: 256, bytes: 128 * 1024 },
+        });
+      },
+      { scope: body.scope, anchorGeneration: body.anchorGeneration, cursor: body.cursor },
+    ),
+    guardMs,
+  );
+  if (observed === GUARD_EXPIRED) return GUARD_EXPIRED;
+  if (!observed || observed.obsolete) return null;
+  const generation = await guarded(
+    page.evaluate(() => {
+      const node = document.getElementById('paqvilo-xray')?.__px?.selectedNode?.();
+      return node?.ownerDocument.defaultView.__paqviloModelDrivenProvider?.generation();
+    }),
+    guardMs,
+  );
+  if (generation === GUARD_EXPIRED) return GUARD_EXPIRED;
+  return generation === observed.nativeGeneration ? observed : null;
+}
 
 /** Only known-size identity-encoded native source responses are read via CDP.
  * Unknown/compressed bodies stay unavailable: Content-Length cannot bound their decoded allocation.
@@ -129,17 +175,16 @@ function installModelDrivenContextWatch({ origin, token }) {
 
 /** Dedicated-tab inspector; shares the bounded browser agent with Power Pages via state adapters. */
 export async function startModelDrivenInspector({
-  context,
   page,
   overlay,
   cfg,
   imported,
-  attached = false,
-  stop,
   runtime = {},
   savedState = null,
+  nativeReadGuardMs = NATIVE_READ_GUARD_MS,
 }) {
-  const session = Object.assign(new EventEmitter(), { cfg, rel: String });
+  if (!Number.isSafeInteger(nativeReadGuardMs) || nativeReadGuardMs < 1 || nativeReadGuardMs > MAX_TIMER_MS)
+    throw new Error('nativeReadGuardMs must be a positive integer millisecond count.');
   const token = randomBytes(12).toString('hex');
   const identity = createModelDrivenIdentity({ origin: cfg.origin, page });
   let sourceRevision = 1;
@@ -161,7 +206,6 @@ export async function startModelDrivenInspector({
     busy = false,
     dirty = false,
     closed = false,
-    agent,
     pageBindings,
     inspectionError = '';
   const problems = [],
@@ -328,21 +372,28 @@ export async function startModelDrivenInspector({
       });
       catalogue = metadataDetails.catalogue;
       await installProviders();
-      nativeStructure =
-        (await within(
-          page.evaluate(() => {
-            const tools = document.getElementById('paqvilo-xray')?.__px;
-            const scope = tools?.getSelectionScope(document.documentElement);
-            return scope
-              ? globalThis.__paqviloModelDrivenProvider?.observe({
-                  scope,
-                  anchorGeneration: 0,
-                  budget: { items: 128, bytes: 64 * 1024 },
-                })
-              : null;
-          }),
-          2500,
-        )) ?? null;
+      const structure = await guarded(
+        page.evaluate(() => {
+          const tools = document.getElementById('paqvilo-xray')?.__px;
+          const scope = tools?.getSelectionScope(document.documentElement);
+          return scope
+            ? globalThis.__paqviloModelDrivenProvider?.observe({
+                scope,
+                anchorGeneration: 0,
+                budget: { items: 128, bytes: 64 * 1024 },
+              })
+            : null;
+        }),
+        nativeReadGuardMs,
+      );
+      if (structure === GUARD_EXPIRED) {
+        recordProblem({
+          type: 'error',
+          code: 'native-read-timed-out',
+          text: `Native structure read: ${nativeReadTimedOutMessage(nativeReadGuardMs)}`,
+        });
+        nativeStructure = null;
+      } else nativeStructure = structure ?? null;
       observedAt = new Date().toISOString();
       inspectionVersion++;
     } catch {
@@ -386,11 +437,16 @@ export async function startModelDrivenInspector({
         void update();
       }, 75);
   };
-  const problem = (item) => {
-    if (!active()) return;
+  // Records an issue in the session log without scheduling a refresh, so a read that is still unanswered does not
+  // start another inspection cycle.
+  const recordProblem = (item) => {
     problems.push(item);
     const retained = bounded(problems.slice().reverse());
     problems.splice(0, problems.length - retained.length);
+  };
+  const problem = (item) => {
+    if (!active()) return;
+    recordProblem(item);
     refresh();
   };
   on(page, 'pageerror', (error) => {
@@ -505,44 +561,9 @@ export async function startModelDrivenInspector({
         if (input.name === 'native-structure') {
           if (!normalizeInspectionScope(body.scope) || !(await selectionEvidenceCurrent(page, body)))
             return { ok: false, reason: 'selection-obsolete' };
-          const observed = await within(
-            page.evaluate(
-              (request) => {
-                const tools = document.getElementById('paqvilo-xray')?.__px;
-                const node = tools?.selectedNode?.();
-                if (!node) return null;
-                const current = tools.getSelectionScope(node);
-                if (
-                  !['documentId', 'frameId', 'uiEpoch', 'sourceRevision'].every(
-                    (key) => current[key] === request.scope[key],
-                  )
-                )
-                  return null;
-                return node.ownerDocument.defaultView.__paqviloModelDrivenProvider?.observe({
-                  scope: request.scope,
-                  anchorGeneration: request.anchorGeneration,
-                  cursor: request.cursor,
-                  budget: { items: 256, bytes: 128 * 1024 },
-                });
-              },
-              { scope: body.scope, anchorGeneration: body.anchorGeneration, cursor: body.cursor },
-            ),
-            2500,
-          );
-          const currentGeneration =
-            observed && !observed.obsolete
-              ? await within(
-                  page.evaluate(() => {
-                    const node = document.getElementById('paqvilo-xray')?.__px?.selectedNode?.();
-                    return node?.ownerDocument.defaultView.__paqviloModelDrivenProvider?.generation();
-                  }),
-                  2500,
-                )
-              : null;
-          return observed &&
-            !observed.obsolete &&
-            currentGeneration === observed.nativeGeneration &&
-            (await selectionEvidenceCurrent(page, body))
+          const observed = await readNativeStructure(page, body, nativeReadGuardMs);
+          if (observed === GUARD_EXPIRED) return nativeReadTimedOut(nativeReadGuardMs);
+          return observed && (await selectionEvidenceCurrent(page, body))
             ? { ok: true, ...observed }
             : { ok: false, reason: 'native-structure-unavailable-or-obsolete' };
         }
@@ -554,15 +575,12 @@ export async function startModelDrivenInspector({
             revision = overlay.report().revision,
             document = documentRevision;
           try {
-            const result = await within(
+            const result = await guarded(
               page.evaluate(readModelDrivenNativeSource, { origin: cfg.origin, path: lease.path, token: lease.token }),
-              13000,
+              nativeReadGuardMs,
             );
-            if (!result)
-              return {
-                ok: false,
-                error: 'The native comparison did not complete within 13 seconds. Resume the debugger and retry.',
-              };
+            if (result === GUARD_EXPIRED) return nativeReadTimedOut(nativeReadGuardMs);
+            if (!result) return { ok: false, error: 'The native comparison returned no result.' };
             if (!active() || revision !== overlay.report().revision || document !== documentRevision)
               return { ok: false, error: 'The page or source revision changed during comparison. Try again.' };
             if (!result.ok) return result;
@@ -753,47 +771,39 @@ export async function startModelDrivenInspector({
       }
     };
     pageBindings = await createOwnedPageBindings(page, { origin: cfg.origin, bindings });
-    agent = await startAgentServer({
-      session,
-      context,
-      attached,
-      stop,
-      runtime,
-      options: {
-        ownsPage: (candidate) => candidate === page,
-        sessionState: () => {
-          const state = snapshot();
-          return {
-            kind: 'model-driven',
-            browserScope: { mode: 'dedicated-app-tab', stopScope: 'browser', origin: cfg.origin },
-            overlay: {
-              revision: state.revision,
-              applied: state.applied,
-              currentRevisionApplied: state.currentRevisionApplied,
-              resourceCount: state.resourceCount,
-              resources: state.resources,
-              diagnostics: state.diagnostics,
-              truncated: state.truncated,
-            },
-            inspection: {
-              context: latestContext,
-              observedAt,
-              pending: state.pendingInspection,
-              error: inspectionError || undefined,
-              limits: { maxItems: MAX_ITEMS, maxSectionBytes: MAX_SECTION_BYTES },
-            },
-          };
-        },
-        pageState: () => {
-          const { token: _token, ...state } = snapshot(); // NOSONAR: binding is excluded from the rest object or is a placeholder
-          return { kind: 'model-driven', ...state };
-        },
+    const agentState = {
+      origin: cfg.origin,
+      sessionState: () => {
+        const state = snapshot();
+        return {
+          kind: 'model-driven',
+          browserScope: { mode: 'dedicated-app-tab', stopScope: 'browser', origin: cfg.origin },
+          overlay: {
+            revision: state.revision,
+            applied: state.applied,
+            currentRevisionApplied: state.currentRevisionApplied,
+            resourceCount: state.resourceCount,
+            resources: state.resources,
+            diagnostics: state.diagnostics,
+            truncated: state.truncated,
+          },
+          inspection: {
+            context: latestContext,
+            observedAt,
+            pending: state.pendingInspection,
+            error: inspectionError || undefined,
+            limits: { maxItems: MAX_ITEMS, maxSectionBytes: MAX_SECTION_BYTES },
+          },
+        };
       },
-    });
+      pageState: () => {
+        const { token: _token, ...state } = snapshot(); // NOSONAR: binding is excluded from the rest object or is a placeholder
+        return { kind: 'model-driven', ...state };
+      },
+    };
     refresh();
-    if (agent) console.log(`Model-driven agent API: ${agent.discoveryFile}`);
     return {
-      agent,
+      agentState,
       refresh,
       snapshot,
       persistentState: () => ({ ui: modelDrivenPanelUi(ui), panelSources }),
@@ -814,39 +824,51 @@ export async function startModelDrivenInspector({
         await drain(() => identity.close());
         for (const remove of removers) await drain(remove);
         await drain(() => pageBindings?.close());
-        for (const frame of page.frames())
-          await drain(() =>
-            within(
-              frame
-                .evaluate((ownedToken) => {
-                  const provider = globalThis.__paqviloModelDrivenProvider;
-                  if (provider?.token === ownedToken) provider.dispose();
-                }, token)
-                .catch(() => {}),
-              250,
-            ),
-          );
-        await drain(() => agent?.close());
-        session.removeAllListeners();
+        // A cleanup call that does not answer within the guard leaves owned page code live. The leak is recorded in the
+        // session log and close still completes. The disposals and the retirement wait together, so a paused page
+        // costs one guard rather than one per call.
+        const settle = async (operation, what) => {
+          if ((await guarded(operation, nativeReadGuardMs)) !== GUARD_EXPIRED) return;
+          recordProblem({
+            type: 'error',
+            code: 'cleanup-timed-out',
+            text: `${what} did not answer within ${nativeReadGuardMs} ms (the page may be paused in a debugger), so the owned page code may stay live until the page reloads.`,
+          });
+        };
         problems.length = 0;
-        await drain(async () => {
-          if (!page.isClosed())
-            await within(
-              page
-                .evaluate((retired) => {
-                  const retiredSessions = (globalThis.__paqviloRetiredModelInspectors ??= []);
-                  retiredSessions.push(retired);
-                  if (retiredSessions.length > 64) retiredSessions.shift();
-                  const canonicalRetired = (globalThis.__paqviloRetiredSessions ??= []);
-                  canonicalRetired.push(retired);
-                  if (canonicalRetired.length > 64) canonicalRetired.shift();
-                  const inspector = document.getElementById('paqvilo-panel')?.__paqModelInspector;
-                  if (inspector?.token === retired) inspector.dispose();
-                }, token)
-                .catch(() => {}),
-              250,
-            );
-        });
+        await Promise.all([
+          ...page.frames().map((frame) =>
+            drain(() =>
+              settle(
+                frame
+                  .evaluate((ownedToken) => {
+                    const provider = globalThis.__paqviloModelDrivenProvider;
+                    if (provider?.token === ownedToken) provider.dispose();
+                  }, token)
+                  .catch(() => {}),
+                'Owned provider disposal',
+              ),
+            ),
+          ),
+          drain(async () => {
+            if (!page.isClosed())
+              await settle(
+                page
+                  .evaluate((retired) => {
+                    const retiredSessions = (globalThis.__paqviloRetiredModelInspectors ??= []);
+                    retiredSessions.push(retired);
+                    if (retiredSessions.length > 64) retiredSessions.shift();
+                    const canonicalRetired = (globalThis.__paqviloRetiredSessions ??= []);
+                    canonicalRetired.push(retired);
+                    if (canonicalRetired.length > 64) canonicalRetired.shift();
+                    const inspector = document.getElementById('paqvilo-panel')?.__paqModelInspector;
+                    if (inspector?.token === retired) inspector.dispose();
+                  }, token)
+                  .catch(() => {}),
+                'Panel inspector retirement',
+              );
+          }),
+        ]);
         if (failures.length === 1) throw failures[0];
         if (failures.length) throw new AggregateError(failures, 'Model-driven inspector cleanup failed.');
       },
@@ -855,14 +877,13 @@ export async function startModelDrivenInspector({
     closed = true;
     clearTimeout(timer);
     const failures = [error];
-    for (const cleanup of [() => identity.close(), ...removers, () => pageBindings?.close(), () => agent?.close()]) {
+    for (const cleanup of [() => identity.close(), ...removers, () => pageBindings?.close()]) {
       try {
         await cleanup();
       } catch (cause) {
         failures.push(cause);
       }
     }
-    session.removeAllListeners();
     if (failures.length > 1)
       throw new AggregateError(failures, 'Model-driven inspector initialization and cleanup failed.', { cause: error });
     throw error;

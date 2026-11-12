@@ -5,15 +5,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import diagnosticsChannel from 'node:diagnostics_channel';
-import { once } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import net from 'node:net';
 import {
   createServiceBusEmulatorBus,
   messagingSettings,
   mappedEntities,
   serviceBusEmulatorDescriptor,
+  serviceBusEmulatorPreflight,
 } from '../lib/message-bus.mjs';
+import { providerRequirements } from '../lib/organization-host.mjs';
 import { startFakeBroker } from '../testing/amqp-fake-broker.mjs';
+import { silentEndpointPort } from './support/emulator-transport.mjs';
 
 const KEY = 'invented-key-7f3a9c';
 const env = (key = KEY, host = '127.0.0.1') => ({
@@ -238,6 +241,126 @@ test('preflight against a silent port answers not ready at its 1.8 s connect bou
   assert.ok(Date.now() - started < 4000);
 });
 
+const STEP_MS = 20_000;
+
+// A loopback relay between the bus and the fake broker. Client bytes pass straight through. Each broker answer is held on a mock
+// timer for STEP_MS and released only when the test ticks the clock, so one protocol step takes one tick. A silent relay drops
+// every broker answer instead. Events: 'client-data' for each client write, 'held' for each held answer, 'broker-end' when the
+// broker's side of a closed connection ends.
+async function holdingRelay(t, brokerPort, { silent = false } = {}) {
+  const events = new EventEmitter();
+  const sockets = new Set();
+  const server = net.createServer((client) => {
+    const upstream = net.connect({ host: '127.0.0.1', port: brokerPort });
+    sockets.add(client).add(upstream);
+    client.on('error', () => {});
+    upstream.on('error', () => {});
+    client.on('data', (chunk) => {
+      events.emit('client-data');
+      upstream.write(chunk);
+    });
+    upstream.on('data', (chunk) => {
+      if (silent) return;
+      events.emit('held');
+      setTimeout(() => {
+        if (!client.destroyed) client.write(chunk);
+      }, STEP_MS);
+    });
+    upstream.on('end', () => events.emit('broker-end'));
+    client.on('close', () => upstream.end());
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => {
+    for (const socket of sockets) socket.destroy();
+    await new Promise((resolve) => server.close(resolve));
+  });
+  return { port: server.address().port, events };
+}
+
+// The bus probe as the host runs it (providerRequirements), with the bus reaching the fake broker through the relay.
+async function probeThroughRelay(t, { silent = false } = {}) {
+  const broker = await startFakeBroker({ key: KEY, queues: ['fx-orders'], topics: { 'fx-events': ['fx-audit'] } });
+  t.after(() => broker.close());
+  const relay = await holdingRelay(t, broker.port, { silent });
+  const bus = createServiceBusEmulatorBus({
+    id: 'emulator',
+    settings: { connectionString: 'env:FX_SB', amqpPort: relay.port },
+    entities: ['fx-orders', 'fx-events'],
+    env: env(),
+  });
+  t.after(() => bus.close());
+  const providers = {
+    messaging: {
+      settings: { emulator: { kind: 'servicebus-emulator', connectionString: 'env:FX_SB' } },
+      buses: { emulator: bus },
+    },
+  };
+  return { relay, rows: providerRequirements({ providers, env: env() }) };
+}
+
+// Ticks the mock clock once per held answer until the probe settles; returns the mocked time the probe ran for.
+async function releaseEachAnswer(t, events, rows) {
+  let elapsed = 0;
+  for (;;) {
+    const answered = await Promise.race([once(events, 'held').then(() => true), rows.then(() => false)]);
+    if (!answered) return elapsed;
+    t.mock.timers.tick(STEP_MS);
+    elapsed += STEP_MS;
+  }
+}
+
+test('a broker answering each protocol step 20 s apart is ready: each completed step resets the idle guard', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { relay, rows } = await probeThroughRelay(t);
+  const elapsed = await releaseEachAnswer(t, relay.events, rows);
+  const [row] = await rows;
+  assert.equal(row.reachable, true, row.message);
+  assert.ok(
+    elapsed > 30_000,
+    `the probe ran ${elapsed} ms of mocked time, past the 30 s idle window, on progress alone`,
+  );
+});
+
+test('a broker that accepts the socket and never answers ends the probe at the idle guard, and the socket closes', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { relay, rows } = await probeThroughRelay(t, { silent: true });
+  let settled = false;
+  rows.then(() => {
+    settled = true;
+  });
+  await once(relay.events, 'client-data');
+  const brokerEnded = once(relay.events, 'broker-end');
+  t.mock.timers.tick(29_000);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false, 'the probe waits for the idle window, not for a shorter bound');
+  t.mock.timers.tick(1_000);
+  const [row] = await rows;
+  assert.equal(row.status, 'unknown');
+  assert.equal(row.reason, 'PROVIDER_PREFLIGHT_TIMEOUT');
+  assert.match(row.message, /did not answer its readiness probe: The provider gave no answer for 30000 ms\./);
+  await brokerEnded;
+});
+
+test('the emulator health probe with the default is ended by the idle window at 30 s, not by a 2 s bound', async (t) => {
+  const healthPort = await silentEndpointPort(t);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let settled = false;
+  const probe = serviceBusEmulatorPreflight({ connectionString: env().FX_SB, healthPort }).then((result) => {
+    settled = true;
+    return result;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(29_999);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false, 'the idle window has not ended one millisecond early');
+  t.mock.timers.tick(1);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, true, 'the idle window ended the probe at 30 s');
+  const result = await probe;
+  assert.equal(result.reachable, false);
+  assert.equal(result.diagnostics[0].code, 'SERVICEBUS_EMULATOR_UNREACHABLE');
+});
+
 test('the client keeps an idle connection alive with empty frames inside the broker idle-time-out', async (t) => {
   // The keepalive interval is a mock timer; a later round trip orders after the empty frames it wrote.
   t.mock.timers.enable({ apis: ['setInterval'] });
@@ -349,6 +472,79 @@ test('a connection reset while a message is in flight fails that send naming the
   assert.match(error.message, /'fx-orders' was not settled: The Service Bus emulator closed the connection/);
   assert.doesNotMatch(error.message, /not reachable/);
   await bus.send('fx-orders', { n: 2 });
+});
+
+// Raw client bytes for the broker's framing checks, encoded here rather than through amqp-client.mjs.
+const SASL_HEADER_BYTES = Buffer.from('AMQP\x03\x01\x00\x00', 'latin1');
+const AMQP_HEADER_BYTES = Buffer.from('AMQP\x00\x01\x00\x00', 'latin1');
+const OPEN_EMPTY = Buffer.from([0x00, 0x53, 0x10, 0x45]);
+const rawFrame = (type, body) => {
+  const header = Buffer.alloc(8);
+  header.writeUInt32BE(8 + body.length, 0);
+  header[4] = 2;
+  header[5] = type;
+  return Buffer.concat([header, body]);
+};
+// sasl-init (security 5.3.3.2): PLAIN with the broker's default rule name and the invented key.
+const saslInit = (key) => {
+  const initialResponse = Buffer.from(`\0RootManageSharedAccessKey\0${key}`);
+  const items = Buffer.concat([
+    Buffer.from([0xa3, 5]),
+    Buffer.from('PLAIN'),
+    Buffer.from([0xa0, initialResponse.length]),
+    initialResponse,
+  ]);
+  return rawFrame(1, Buffer.concat([Buffer.from([0x00, 0x53, 0x41, 0xc0, items.length + 1, 2]), items]));
+};
+function rawClient(port) {
+  const socket = net.connect(port, '127.0.0.1');
+  socket.on('error', () => socket.destroy());
+  let received = Buffer.alloc(0);
+  let wake = () => {};
+  socket.on('data', (chunk) => {
+    received = Buffer.concat([received, chunk]);
+    wake();
+  });
+  return {
+    socket,
+    received: () => received,
+    // Resolves once the bytes received so far contain text; the wait is an event, not a timer.
+    async until(text) {
+      while (!received.includes(text)) await new Promise((resolve) => (wake = resolve));
+    },
+  };
+}
+
+test('a client frame larger than the broker max-frame-size is refused with framing-error and the connection closes', async (t) => {
+  const broker = await startFakeBroker({ key: KEY, queues: ['fx-orders'], maxFrameSize: 1024 });
+  t.after(() => broker.close());
+  const client = rawClient(broker.port);
+  client.socket.write(Buffer.concat([SASL_HEADER_BYTES, saslInit(KEY), AMQP_HEADER_BYTES, rawFrame(0, OPEN_EMPTY)]));
+  await client.until('fake-broker');
+  // An empty end performative padded to 1100 bytes, above the 1024 the broker announced in its open.
+  const oversize = rawFrame(0, Buffer.concat([Buffer.from([0x00, 0x53, 0x17, 0x45]), Buffer.alloc(1088)]));
+  const replied = once(client.socket, 'data');
+  client.socket.write(oversize);
+  await replied;
+  assert.ok(
+    client.received().includes('amqp:connection:framing-error'),
+    'the broker answers the oversize frame with a close',
+  );
+  await once(client.socket, 'close');
+  assert.equal(broker.stats.protocolErrors, 1);
+});
+
+test('an undecodable frame closes its connection with amqp:decode-error and the test process survives', async (t) => {
+  const broker = await startFakeBroker({ key: KEY, queues: ['fx-orders'], maxFrameSize: 1024 });
+  t.after(() => broker.close());
+  const client = rawClient(broker.port);
+  // sasl-init whose initial-response is a value code no AMQP 1.0 type uses.
+  client.socket.write(
+    Buffer.concat([SASL_HEADER_BYTES, rawFrame(1, Buffer.from([0x00, 0x53, 0x41, 0xc0, 0x03, 0x01, 0xff, 0x01]))]),
+  );
+  await once(client.socket, 'close');
+  assert.ok(client.received().includes('amqp:decode-error'), 'the broker names the decode error in its close');
+  assert.equal(broker.stats.protocolErrors, 1);
 });
 
 test('settings, descriptor and entity mapping for servicebus-emulator', () => {

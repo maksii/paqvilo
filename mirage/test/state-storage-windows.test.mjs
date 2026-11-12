@@ -1,3 +1,4 @@
+// @test-kind contract: state storage keeps the exact NTFS timestamp boundary that a .NET writer produces, and detects the edit it makes.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -7,6 +8,9 @@ import { spawnSync } from 'node:child_process';
 import { DataStore } from '../lib/data.mjs';
 import { stateFileSignature } from '../lib/state-storage.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+
+// hang guard only: a blocked synchronous child cannot be ended by the test runner
+const CLI_HANG_GUARD_MS = 170_000;
 
 // .NET retains NTFS's 100 ns timestamp precision; fs.utimes(Date) would round
 // the timestamp and test an ordinary detectable edit instead of this boundary.
@@ -125,7 +129,7 @@ for (const journal of [false, true])
           env: { ...process.env, PAQ_STORAGE_FIXTURE: file },
           encoding: 'utf8',
           windowsHide: true,
-          timeout: 150_000,
+          timeout: CLI_HANG_GUARD_MS,
         },
       );
       assert.equal(edited.status, 0, edited.stderr || edited.error?.message);

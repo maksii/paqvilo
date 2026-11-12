@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
+import { createHash } from 'node:crypto';
 import { chromium } from 'playwright-core';
 import { windowsLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { stripTrailingCharacters } from '../mirage/lib/text-scanning.mjs';
@@ -14,16 +15,25 @@ import { pageKey } from './html-rewriter.mjs';
 import { browserProfileInfo, validateBrowserProfile, validateDebuggerMode } from './browser-profile.mjs';
 export { browserProfileDir } from './browser-profile.mjs';
 
+// Hang guard for each browser start-up wait that Playwright would otherwise bound by its 30 s default. It only stops
+// an operation that never finishes; `overrides.hangGuardMs` replaces it.
+const BROWSER_HANG_GUARD_MS = 120_000;
+// Hang guard for each step of closing: the final session-cookie save and the window placement restore.
+const BROWSER_CLOSE_GUARD_MS = 30_000;
+const DEBUGGER_POLL_MS = 200;
+
 /**
  * @param {Awaited<ReturnType<import('./config.mjs').loadConfig>>} cfg
- * @param {{headless?: boolean, profileDir?: string, debugPort?: number}} [overrides]
+ * @param {{headless?: boolean, profileDir?: string, debugPort?: number, hangGuardMs?: number, closeGuardMs?: number}} [overrides]
  * @returns {Promise<{context: import('playwright-core').BrowserContext, attached: boolean, close: () => Promise<void>}>}
  */
 export async function openBrowser(cfg, overrides = {}) {
   const b = cfg.browser;
+  const guardMs = guardDuration(overrides.hangGuardMs, BROWSER_HANG_GUARD_MS, 'hangGuardMs');
+  const closeGuardMs = guardDuration(overrides.closeGuardMs, BROWSER_CLOSE_GUARD_MS, 'closeGuardMs');
   validateDebuggerMode(b.cdpUrl, overrides.debugPort ?? b.debugPort);
   if (b.cdpUrl) {
-    const browser = await chromium.connectOverCDP(b.cdpUrl);
+    const browser = await connectAttachedBrowser(b.cdpUrl, guardMs);
     const contexts = browser.contexts();
     const context = contexts[0];
     if (contexts.length !== 1) {
@@ -51,9 +61,14 @@ export async function openBrowser(cfg, overrides = {}) {
   appendDebuggerArgs(args, debugPort);
   let context;
   try {
-    context = await chromium.launchPersistentContext(profileDir, browserLaunchSettings(b, headless, args));
+    context = await chromium.launchPersistentContext(profileDir, {
+      ...browserLaunchSettings(b, headless, args),
+      timeout: guardMs,
+      // A caller that handles interrupts itself keeps Playwright from exiting the process before that cleanup runs.
+      ...(overrides.ownInterrupts ? { handleSIGINT: false, handleSIGTERM: false } : {}),
+    });
   } catch (err) {
-    throwBrowserLaunchError(err, profileDir, profile, b);
+    throwBrowserLaunchError(hangGuardError(err, 'Launching the browser profile', guardMs), profileDir, profile, b);
   }
   if (initializePlacement) {
     try {
@@ -65,18 +80,7 @@ export async function openBrowser(cfg, overrides = {}) {
   }
   if (debugPort) {
     try {
-      const page = context.pages()[0] ?? (await context.newPage());
-      const cdp = await context.newCDPSession(page);
-      let targetId;
-      try {
-        targetId = (await cdp.send('Target.getTargetInfo')).targetInfo.targetId;
-      } finally {
-        await cdp.detach();
-      }
-      if (!(await debuggerListening(debugPort, targetId)))
-        throw new Error(
-          `Debugger port ${debugPort} did not expose the selected browser profile. The new browser has been closed; choose a free port and retry.`,
-        );
+      await awaitDebuggerEndpoint(context, debugPort, guardMs);
     } catch (error) {
       await context.close().catch(() => {});
       throw error;
@@ -86,16 +90,14 @@ export async function openBrowser(cfg, overrides = {}) {
   const stopKeeping =
     profile.kind === 'external'
       ? async () => {}
-      : await keepSessionCookies(context, `${profileDir}.session.json`, {
-          origins: overrides.cookieOrigins ?? [cfg.origin].filter(Boolean),
-        });
+      : await keepOwnedSession(context, profileDir, overrides.cookieOrigins ?? [cfg.origin].filter(Boolean));
   keepHeadedDownloads(context, headless);
   return {
     context,
     attached: false,
     profile,
     debugPort: debugPort || null,
-    close: () => closeLaunchedBrowser(context, stopKeeping, previousWindow),
+    close: () => closeLaunchedBrowser(context, stopKeeping, previousWindow, closeGuardMs),
   };
 }
 
@@ -134,6 +136,31 @@ function keepHeadedDownloads(context, headless) {
   if (!headless) keepDownloads(context);
 }
 
+// Without a portal origin nothing is kept, so no session file is read, written or removed.
+async function keepOwnedSession(context, profileDir, origins) {
+  if (!portalHosts(origins).size) return async () => {};
+  removeLegacySessionFile(`${profileDir}.session.json`);
+  return keepSessionCookies(context, sessionFileFor(profileDir, origins), { origins });
+}
+
+// Each portal scope has its own session file. The name carries a hash of the scope's hosts, so no host text appears in it.
+export function sessionFileFor(profileDir, origins) {
+  const hosts = [...portalHosts(origins)].map((host) => host.toLowerCase()).toSorted((a, b) => a.localeCompare(b));
+  const scope = createHash('sha256').update(hosts.join(',')).digest('hex').slice(0, 16);
+  return `${profileDir}.session.${scope}.json`;
+}
+
+// The unscoped session file of earlier versions may hold identity-provider cookies, so it is deleted and never read.
+function removeLegacySessionFile(file) {
+  try {
+    fs.rmSync(file, { force: true });
+  } catch (error) {
+    console.error(
+      `Could not remove the unscoped session file ${file}: ${error.message.split('\n')[0]}. It is not read.`,
+    );
+  }
+}
+
 function throwBrowserLaunchError(err, profileDir, profile, b) {
   const first = err.message.split('\n')[0];
   if (
@@ -155,16 +182,38 @@ function throwBrowserLaunchError(err, profileDir, profile, b) {
   throw err;
 }
 
-async function closeLaunchedBrowser(context, stopKeeping, previousWindow) {
+// Largest delay that setTimeout honours; a longer guard would fire at once.
+const MAX_GUARD_MS = 2_147_483_647;
+const GUARD_TIMEOUT_CODE = 'PAQVILO_GUARD_TIMEOUT';
+
+// An override is checked where it is read, so a bad value is reported before any browser starts.
+function guardDuration(value, fallback, name) {
+  const ms = value ?? fallback;
+  if (!Number.isFinite(ms) || ms <= 0) throw new Error(`${name} must be a positive number of milliseconds.`);
+  return Math.min(ms, MAX_GUARD_MS);
+}
+
+// A browser the user has closed cannot answer the final save; the session file then stays as it was, without a notice.
+function browserClosedError(error) {
+  return /Target page, context or browser has been closed/.test(error.message);
+}
+
+function sessionSaveNotice(error, guardMs) {
+  if (error.code === GUARD_TIMEOUT_CODE)
+    return `Session cookies were not saved: the browser did not answer within ${guardMs / 1000} s.`;
+  return `Session cookies were not saved: ${error.message.split('\n')[0]}`;
+}
+
+async function closeLaunchedBrowser(context, stopKeeping, previousWindow, guardMs) {
   try {
     try {
-      await bounded(stopKeeping(), 5000);
-    } catch {
-      /* browser stopped responding */
+      await bounded(stopKeeping(), guardMs);
+    } catch (error) {
+      if (!browserClosedError(error)) console.error(sessionSaveNotice(error, guardMs));
     }
     if (previousWindow) {
       try {
-        await bounded(restoreBrowserWindow(context, previousWindow), 5000);
+        await bounded(restoreBrowserWindow(context, previousWindow), guardMs);
       } catch (error) {
         console.error(`Could not restore browser window placement: ${error.message.split('\n')[0]}`);
       }
@@ -225,21 +274,76 @@ async function debuggerPortAvailable(port) {
   });
 }
 
-/** Confirm the endpoint exposes a page from this exact launched browser, not another profile. */
-async function debuggerListening(port, targetId, attempts = 10) {
-  for (let attempt = 0; attempt < attempts; attempt++) {
-    try {
-      const res = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(1000) });
-      if (res.ok) {
-        const targets = await res.json();
-        if (Array.isArray(targets) && targets.some((target) => target.id === targetId)) return true;
-      } else await res.body?.cancel();
-    } catch {
-      /* not up yet */
-    }
-    await new Promise((r) => setTimeout(r, 200));
+// Playwright's own 30 s deadline is replaced by the named hang guard; a timeout error names the guard and the wait.
+function hangGuardError(error, what, guardMs) {
+  if (!/Timeout \d+ms exceeded/.test(error.message)) return error;
+  return new Error(
+    `${what} did not finish within ${guardMs} ms. That is the browser hang guard, not a readiness deadline.`,
+    {
+      cause: error,
+    },
+  );
+}
+
+async function connectAttachedBrowser(endpoint, guardMs) {
+  try {
+    return await chromium.connectOverCDP(endpoint, { timeout: guardMs });
+  } catch (error) {
+    throw hangGuardError(error, 'Attaching to the debugging endpoint', guardMs);
+  }
+}
+
+// The debugger wait ends when the browser context closes or when the hang guard expires.
+function debuggerWaitSignal(context, guardMs) {
+  const closed = new AbortController();
+  context.once('close', () => closed.abort());
+  return AbortSignal.any([closed.signal, AbortSignal.timeout(guardMs)]);
+}
+
+async function awaitDebuggerEndpoint(context, debugPort, guardMs) {
+  const page = context.pages()[0] ?? (await context.newPage());
+  const cdp = await context.newCDPSession(page);
+  let targetId;
+  try {
+    targetId = (await cdp.send('Target.getTargetInfo')).targetInfo.targetId;
+  } finally {
+    await cdp.detach();
+  }
+  if (!(await debuggerListening(debugPort, targetId, { signal: debuggerWaitSignal(context, guardMs) })))
+    throw new Error(
+      `Debugger port ${debugPort} did not expose the selected browser profile before the browser closed or the ${guardMs} ms hang guard expired. The new browser has been closed; choose a free port and retry.`,
+    );
+}
+
+/**
+ * Confirm the endpoint exposes a page from this exact launched browser, not another profile. Refused connections and
+ * listings without the target are polled again; only the signal ends the wait without a listing.
+ */
+async function debuggerListening(
+  port,
+  targetId,
+  { fetch: request = globalThis.fetch, signal = AbortSignal.timeout(BROWSER_HANG_GUARD_MS) } = {},
+) {
+  while (!signal?.aborted) {
+    if (await debuggerListsTarget(port, targetId, request, signal)) return true;
+    await new Promise((resolve) => setTimeout(resolve, DEBUGGER_POLL_MS));
   }
   return false;
+}
+
+async function debuggerListsTarget(port, targetId, request, signal) {
+  try {
+    const res = await request(`http://127.0.0.1:${port}/json/list`, { signal });
+    if (!res.ok) {
+      await res.body?.cancel();
+      return false;
+    }
+    const targets = await res.json();
+    return Array.isArray(targets) && targets.some((target) => target.id === targetId);
+  } catch {
+    // Refused, or a listing without the target: the caller polls again until its signal ends the wait.
+    return false;
+  }
 }
 
 /**
@@ -293,13 +397,56 @@ function keepDownloads(context) {
   context.on('page', watch);
 }
 
+// Cookie domains and URL host names are compared lower-case, and IPv6 brackets are not part of a host name.
+function bareHost(host) {
+  return host.toLowerCase().replace(/^\[(.*)\]$/, '$1');
+}
+
+function portalHosts(origins) {
+  return new Set(
+    origins.flatMap((origin) => {
+      try {
+        return [bareHost(new URL(origin).hostname)];
+      } catch {
+        return [];
+      }
+    }),
+  );
+}
+
+function removeTemporaryFile(temporary) {
+  try {
+    fs.rmSync(temporary, { force: true });
+  } catch {
+    /* unavailable filesystem: the write error is the one reported */
+  }
+}
+
+function ignoreFailedPeriodicSave() {
+  // A failed periodic save keeps the last complete cookie file; the final save at close reports its own failure.
+}
+
+// RFC 6265 domain matching: a host-only cookie names a portal host, and a domain cookie names a portal host or a
+// parent of one. A domain without a dot, such as '.localhost', matches only that exact host, never every name under it.
+function inPortalScope(cookie, hosts) {
+  const domain = bareHost(String(cookie.domain ?? ''));
+  if (!domain.startsWith('.')) return hosts.has(domain);
+  const parent = domain.slice(1);
+  if (!parent.includes('.')) return hosts.has(parent);
+  return [...hosts].some((host) => host === parent || host.endsWith(`.${parent}`));
+}
+
 /**
  * The portal's sign-in cookie is a session cookie, and a browser forgets those when it closes. They
  * are written next to the profile and put back on the next launch, so one sign-in lasts until the
  * portal itself expires it.
+ * Only cookies that belong to the hosts of `origins` are written or restored; other sites' sessions stay in the
+ * browser's own store. Without any origin nothing is restored and the stored file is left as it is.
  * @returns {Promise<() => Promise<void>>} stops the periodic save after one last save
  */
 export async function keepSessionCookies(context, file, { origins = [] } = {}) {
+  const hosts = portalHosts(origins);
+  if (!hosts.size) return async () => {};
   const ports = new Set(
     origins.flatMap((origin) => {
       try {
@@ -315,12 +462,13 @@ export async function keepSessionCookies(context, file, { origins = [] } = {}) {
     /^paqvilo-mirage-(?:auth|idp)-(\d+)$/.test(cookie.name) &&
     ports.size &&
     !ports.has(cookie.name.split('-').at(-1));
+  const keep = (cookie) => !stale(cookie) && inPortalScope(cookie, hosts);
   for (const cookie of await context.cookies())
     if (stale(cookie)) await context.clearCookies({ name: cookie.name, domain: cookie.domain, path: cookie.path });
   let lastSaved = null;
   try {
     const stored = JSON.parse(fs.readFileSync(file, 'utf8'));
-    const saved = Array.isArray(stored) ? stored.filter((cookie) => !stale(cookie)) : stored;
+    const saved = Array.isArray(stored) ? stored.filter(keep) : stored;
     if (Array.isArray(saved)) {
       if (saved.length) await context.addCookies(saved);
       lastSaved = JSON.stringify(stored);
@@ -330,35 +478,31 @@ export async function keepSessionCookies(context, file, { origins = [] } = {}) {
   }
   let closed = false;
   let saving = null;
+  const writeSession = async () => {
+    const session = (await context.cookies()).filter((c) => c.expires === -1 && keep(c));
+    const serialized = JSON.stringify(session);
+    if (serialized === lastSaved) return;
+    const temporary = `${file}.tmp`;
+    try {
+      fs.writeFileSync(temporary, serialized, { mode: 0o600 });
+      fs.renameSync(temporary, file);
+      lastSaved = serialized;
+    } catch (error) {
+      // Preserve the last complete cookie file if a write fails midway; the caller reports the error.
+      removeTemporaryFile(temporary);
+      throw error;
+    }
+  };
   const save = async () => {
     if (closed) return;
     if (saving) return saving;
-    saving = (async () => {
-      const temporary = `${file}.tmp`;
-      try {
-        const session = (await context.cookies()).filter((c) => c.expires === -1 && !stale(c));
-        const serialized = JSON.stringify(session);
-        if (serialized === lastSaved) return;
-        fs.writeFileSync(temporary, serialized, { mode: 0o600 });
-        fs.renameSync(temporary, file);
-        lastSaved = serialized;
-      } catch {
-        // Preserve the last complete cookie file if a browser closes during a save.
-        try {
-          fs.rmSync(temporary, { force: true });
-        } catch {
-          /* unavailable filesystem */
-        }
-      }
-    })();
-    try {
-      await saving;
-    } finally {
+    saving = writeSession().finally(() => {
       saving = null;
-    }
+    });
+    return saving;
   };
   // the user may simply close the window, so do not rely on a save at shutdown
-  const timer = setInterval(save, 5000);
+  const timer = setInterval(() => save().catch(ignoreFailedPeriodicSave), 5000);
   timer.unref();
   context.once('close', () => {
     closed = true;
@@ -368,7 +512,8 @@ export async function keepSessionCookies(context, file, { origins = [] } = {}) {
   return () =>
     (stopping ??= (async () => {
       clearInterval(timer);
-      await saving;
+      // a periodic save still writing may fail; the final save below reports its own result
+      await saving?.catch(ignoreFailedPeriodicSave);
       await save();
     })());
 }
@@ -390,17 +535,33 @@ const STYLE_TIMEOUT = 5000;
 
 // Reload through an explicit GET. Chromium's reload() can repeat the POST that produced a
 // form result, so a local save must never use it to replay the user's last submission.
-const refreshDocument = (page, signal) =>
-  signal?.aborted
-    ? Promise.resolve(false)
-    : bounded(
-        page.goto(refreshUrl(page.url()), { waitUntil: 'commit', timeout: RELOAD_TIMEOUT }),
-        RELOAD_TIMEOUT,
-        signal,
-      ).then(
-        () => true,
-        () => false,
-      );
+async function refreshDocument(page, signal) {
+  if (signal?.aborted) return false;
+  try {
+    await bounded(
+      page.goto(refreshUrl(page.url()), { waitUntil: 'commit', timeout: RELOAD_TIMEOUT }),
+      RELOAD_TIMEOUT,
+      signal,
+    );
+    return true;
+  } catch (error) {
+    reportGivenUpReload(error, signal);
+    return false;
+  }
+}
+
+// A reload that gets no document in time keeps the tab on its previous document; the caller's log does not show that.
+function reportGivenUpReload(error, signal) {
+  const timedOut = error.name === 'TimeoutError' || error.code === GUARD_TIMEOUT_CODE;
+  if (timedOut && !signal?.aborted)
+    console.error(
+      `Browser tab was not reloaded: its document did not arrive within ${RELOAD_TIMEOUT / 1000} s. It keeps its previous document.`,
+    );
+}
+
+function guardTimeoutError() {
+  return Object.assign(new Error('browser operation timed out'), { code: GUARD_TIMEOUT_CODE });
+}
 
 async function bounded(promise, ms, signal) {
   let timer;
@@ -409,7 +570,7 @@ async function bounded(promise, ms, signal) {
     return await Promise.race([
       promise,
       new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error('browser operation timed out')), ms);
+        timer = setTimeout(() => reject(guardTimeoutError()), ms);
         onAbort = () => reject(new Error('browser operation stopped'));
         if (signal?.aborted) onAbort();
         else signal?.addEventListener('abort', onAbort, { once: true });

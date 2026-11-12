@@ -6,7 +6,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { mirageDebugOutput } from '../lense/mirage-debug-output.mjs';
 import { withMirageDebugOutput } from '../lense/mirage-debug-output-scope.mjs';
+import { stopStarted } from '../lense/commands/mirage.mjs';
 import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { captureConsoleOutput, openLatch } from './helpers/mirage-session-doubles.mjs';
 
 const line =
   'Mirage plug-in debugger: attach to paqvilo-plugin-host.exe PID 1234 (Invented.Plugin). Waiting before plug-in construction; local debug deadline is 30 minutes.';
@@ -69,4 +71,58 @@ test('the dev wrapper retires its watchers when the foreground action fails', as
     /owned dev failure/,
   );
   await fs.rename(log, path.join(root, 'retired.log'));
+});
+
+test('a repeated stop signal while the debug relays close is absorbed, and the started runtimes still stop afterwards', async () => {
+  const noop = () => {};
+  process.on('SIGINT', noop);
+  process.on('SIGTERM', noop);
+  const { output, restore } = captureConsoleOutput();
+  const relayClosing = openLatch();
+  const relayReleased = openLatch();
+  let relayCloses = 0;
+  let stops = 0;
+  try {
+    const before = process.listenerCount('SIGINT');
+    const beforeTerm = process.listenerCount('SIGTERM');
+    const relay = () => ({
+      close: async () => {
+        relayCloses++;
+        relayClosing.open();
+        await relayReleased.promise;
+      },
+    });
+    const portals = [{ site: 'alpha', session: { started: true, pid: 4321, url: 'http://127.0.0.1:4100/' } }];
+    const stop = async () => {
+      stops++;
+      return { stopped: [{ pid: 4321 }], remaining: [] };
+    };
+    // Same order as runPortals: the debug relays close after the action, then the started runtimes stop.
+    const run = (async () => {
+      const value = await withMirageDebugOutput([{ log: 'daemon.log' }], async () => 'action-result', { relay });
+      await stopStarted(portals, {}, stop);
+      return value;
+    })();
+    await relayClosing.promise;
+    process.emit('SIGINT');
+    process.emit('SIGTERM');
+    assert.ok(
+      process.listenerCount('SIGINT') > before,
+      'the relay close must keep a SIGINT listener while it is pending',
+    );
+    assert.equal(relayCloses, 1);
+    assert.equal(stops, 0);
+    relayReleased.open();
+    assert.equal(await run, 'action-result');
+    assert.equal(relayCloses, 1);
+    assert.equal(stops, 1);
+    assert.deepEqual(output.errors, ['stopping…']);
+    assert.equal(process.listenerCount('SIGINT'), before);
+    assert.equal(process.listenerCount('SIGTERM'), beforeTerm);
+  } finally {
+    relayReleased.open();
+    restore();
+    process.off('SIGINT', noop);
+    process.off('SIGTERM', noop);
+  }
 });

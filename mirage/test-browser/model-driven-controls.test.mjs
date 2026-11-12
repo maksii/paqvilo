@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
-import { sharedBrowser, fileScope } from './shared-browser.mjs';
+import { sharedBrowser, fileScope, appsOrigin } from './shared-browser.mjs';
 import { prepareNativeControls } from './native-controls-fixture.mjs';
 import { installJsonConsumptionProbe } from './helpers/json-consumption-probe.mjs';
 
@@ -15,9 +15,9 @@ let sharedApp;
 const readOnlyApp = () => (sharedApp ??= modelDrivenFixture(scope));
 
 test('model-driven choice fields preserve typed values, required validation, keyboard selection and disabled state', async (t) => {
-  const { origin } = await readOnlyApp();
+  const { sim, origin } = await readOnlyApp();
   const page = await chrome.page(t);
-  await prepareNativeControls(page, origin);
+  await prepareNativeControls(page, appsOrigin(sim, origin));
   await page.evaluate(async () => {
     const renderControl = window.renderFixtureControl;
     document.body.replaceChildren();
@@ -139,9 +139,9 @@ test('model-driven choice fields preserve typed values, required validation, key
 });
 
 test('disabled lookup presentation hides search and clear while preserving typed references and restoring native editing', async (t) => {
-  const { origin } = await readOnlyApp();
+  const { sim, origin } = await readOnlyApp();
   const page = await chrome.page(t);
-  await prepareNativeControls(page, origin);
+  await prepareNativeControls(page, appsOrigin(sim, origin));
   await page.evaluate(async () => {
     const renderControl = window.renderFixtureControl;
     document.body.replaceChildren();
@@ -185,9 +185,9 @@ test('disabled lookup presentation hides search and clear while preserving typed
 });
 
 test('numeric controls show exported precision and currency without changing raw values, validation or editing', async (t) => {
-  const { origin } = await readOnlyApp();
+  const { sim, origin } = await readOnlyApp();
   const page = await chrome.page(t);
-  await prepareNativeControls(page, origin);
+  await prepareNativeControls(page, appsOrigin(sim, origin));
   await page.evaluate(async () => {
     const renderControl = window.renderFixtureControl;
     document.body.replaceChildren();
@@ -243,9 +243,9 @@ test('numeric controls show exported precision and currency without changing raw
 });
 
 test('source text formats retain native scalar action glyphs and input semantics with external actions explicitly disabled', async (t) => {
-  const { origin } = await readOnlyApp();
+  const { sim, origin } = await readOnlyApp();
   const page = await chrome.page(t);
-  await prepareNativeControls(page, origin);
+  await prepareNativeControls(page, appsOrigin(sim, origin));
   await page.evaluate(async () => {
     const renderControl = window.renderFixtureControl;
     document.body.replaceChildren();
@@ -309,9 +309,9 @@ test('source text formats retain native scalar action glyphs and input semantics
 });
 
 test('standard memo controls use the compact native height while declared rows and source editors retain their size', async (t) => {
-  const { origin } = await readOnlyApp();
+  const { sim, origin } = await readOnlyApp();
   const page = await chrome.page(t);
-  await prepareNativeControls(page, origin);
+  await prepareNativeControls(page, appsOrigin(sim, origin));
   const dimensions = await page.evaluate(async () => {
     const renderControl = window.renderFixtureControl;
     document.body.replaceChildren();
@@ -366,7 +366,7 @@ test('saved state and status remain editable with legacy text class IDs while ne
     '<row><cell><control datafieldname="statecode" classid="{4273EDBD-AC1D-40D3-9FB2-095C621B552D}"/></cell></row><row><cell><control datafieldname="statuscode" classid="{4273EDBD-AC1D-40D3-9FB2-095C621B552D}"/></cell></row>';
   await fs.writeFile(formFile, (await fs.readFile(formFile, 'utf8')).replace('</rows>', cells + '</rows>'));
   const sim = await source.start();
-  const origin = sim.origin ?? sim.url;
+  const origin = appsOrigin(sim, sim.url);
   const page = await chrome.page(t);
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item');
   const state = page.getByRole('combobox', { name: 'Record state', exact: true }),
@@ -397,10 +397,10 @@ test('saved state and status remain editable with legacy text class IDs while ne
 });
 
 test('advanced lookup uses staged Done, preserves a cancelled value, queries exported views and saves a typed reference', async (t) => {
-  const { origin } = await modelDrivenFixture(t);
+  const { sim, origin } = await modelDrivenFixture(t);
   const page = await chrome.page(t);
   const id = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
-  await page.goto(`${origin}/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_child&id=${id}`);
+  await page.goto(`${appsOrigin(sim, origin)}/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_child&id=${id}`);
   await page.getByLabel('Parent', { exact: true }).waitFor();
   await page.getByRole('button', { name: 'Look up Parent', exact: true }).click();
   await page.getByRole('button', { name: 'Advanced', exact: true }).click();
@@ -448,7 +448,7 @@ test('inline lookup applies its exported lookup view and keeps lookup-only views
     .replace('value="1"', 'value="8"');
   await fs.writeFile(path.join(path.dirname(file), 'lookup.xml'), lookupView);
   const sim = await fixture.start();
-  const origin = sim.origin ?? sim.url;
+  const origin = appsOrigin(sim, sim.url);
   const catalogue = await (await fetch(origin + '/_apps/api')).json();
   assert.equal(catalogue.tables.x_item.lookupViews[0].id, 'qualified-lookup');
   assert.equal(
@@ -502,7 +502,7 @@ test('advanced lookup preserves all exported columns and their widths instead of
     );
   await fs.writeFile(path.join(path.dirname(queryFile), 'wide.xml'), lookup);
   const sim = await source.start();
-  const origin = sim.origin ?? sim.url;
+  const origin = appsOrigin(sim, sim.url);
   const page = await chrome.page(t);
   await page.goto(
     origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_child&id=dddddddd-dddd-4ddd-8ddd-dddddddddddd',
@@ -548,8 +548,8 @@ async function openParentLookup(t, origin) {
 }
 
 test('advanced lookup renders the native empty state, then recovers to selectable results without changing the field', async (t) => {
-  const { origin } = await readOnlyApp();
-  const { page, dialog } = await openParentLookup(t, origin);
+  const { sim, origin } = await readOnlyApp();
+  const { page, dialog } = await openParentLookup(t, appsOrigin(sim, origin));
   const search = dialog.getByRole('searchbox', { name: 'Search lookup records' });
   await search.fill('No matching invented record');
   await dialog.getByRole('heading', { name: 'We don’t have any data for this view', exact: true }).waitFor();
@@ -573,10 +573,10 @@ test('advanced lookup renders the native empty state, then recovers to selectabl
 });
 
 test('lookup cancels an in-flight search, invalidates selection and settles Escape', async (t) => {
-  const { origin } = await readOnlyApp();
+  const { sim, origin } = await readOnlyApp();
   const pending = Promise.withResolvers();
   t.after(() => pending.resolve());
-  const { page, dialog } = await openParentLookup(t, origin);
+  const { page, dialog } = await openParentLookup(t, appsOrigin(sim, origin));
   const requestStarted = Promise.withResolvers();
   await page.route('**/_apps/api/tables/x_item?*', async (route) => {
     const request = route.request(),
@@ -622,8 +622,8 @@ test('lookup ignores a late Copper body after the Silver search has settled', as
     pending.resolve();
     await probe?.restore();
   });
-  const { origin } = await readOnlyApp();
-  const { page, dialog } = await openParentLookup(t, origin);
+  const { sim, origin } = await readOnlyApp();
+  const { page, dialog } = await openParentLookup(t, appsOrigin(sim, origin));
   probe = await installJsonConsumptionProbe(page, {
     key: '__paqviloLookupJsonProbe',
     pathname: '/_apps/api/tables/x_item',
@@ -670,7 +670,7 @@ test('lookup ignores a late Copper body after the Silver search has settled', as
 });
 
 test('lookup target picker clears selection and preserves polymorphic target identity', async (t) => {
-  const { origin } = await modelDrivenFixture(t);
+  const { sim, origin } = await modelDrivenFixture(t);
   const page = await chrome.page(t);
   let targetLabel;
   await page.route('**/_apps/api/metadata/x_child', async (route) => {
@@ -681,7 +681,8 @@ test('lookup target picker clears selection and preserves polymorphic target ide
     await route.fulfill({ response, json: table });
   });
   await page.goto(
-    origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_child&id=dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+    appsOrigin(sim, origin) +
+      '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_child&id=dddddddd-dddd-4ddd-8ddd-dddddddddddd',
   );
   await page.getByRole('button', { name: 'Look up Parent', exact: true }).click();
   await page.getByRole('button', { name: 'Advanced', exact: true }).click();
@@ -703,9 +704,9 @@ test('lookup target picker clears selection and preserves polymorphic target ide
 });
 
 test('inline lookup rejects stale keyboard choices during debounce and after an adapter ignores cancellation', async (t) => {
-  const { origin } = await readOnlyApp();
+  const { sim, origin } = await readOnlyApp();
   const page = await chrome.page(t);
-  await prepareNativeControls(page, origin);
+  await prepareNativeControls(page, appsOrigin(sim, origin));
   await page.evaluate(async () => {
     const renderControl = window.renderFixtureControl;
     document.body.replaceChildren();

@@ -26,6 +26,8 @@ import {
 } from '../lense/dataverse/connection.mjs';
 import { tempDir, loopbackServer } from './fixture.mjs';
 
+const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
+
 function fixtureManifest() {
   const manifest = {
     schemaVersion: 1,
@@ -472,6 +474,51 @@ test('solution scoping refuses metadata drift before replacing any membership', 
   assert.ok(state.components.filter((c) => c.componenttype === 1).every((c) => c.rootcomponentbehavior === 0));
 });
 
+test('remote plan lists the membership apply writes: root re-scoping and a missing primary-name membership', async (t) => {
+  const { state, client } = await serverFixture(t),
+    manifest = fixtureManifest();
+  await applyManifest(manifest, { client, expectedOrganisationId: state.organisationId });
+  const node = state.tables.get('tst_node'),
+    primary = node.Attributes.find((a) => a.LogicalName === 'tst_name').MetadataId;
+  state.components = state.components.filter((c) => c.objectid !== primary);
+  state.components.find((c) => c.componenttype === 1 && c.objectid === node.MetadataId).rootcomponentbehavior = 0;
+  const requests = state.requests.length;
+  const plan = await planManifest(manifest, { client });
+  assert.equal(plan.summary.rootScoping, 1);
+  assert.equal(plan.summary.membershipAdd, 1);
+  assert.equal(plan.summary.blocked, 0);
+  assert.ok(state.requests.slice(requests).every((r) => r.method === 'GET'));
+});
+
+test('remote plan blocks apply before its first write when a table root is undeclared', async (t) => {
+  const { state, client } = await serverFixture(t),
+    manifest = fixtureManifest(),
+    stray = randomUUID();
+  await applyManifest(manifest, { client, expectedOrganisationId: state.organisationId });
+  state.components.push({
+    solutioncomponentid: randomUUID(),
+    objectid: stray,
+    componenttype: 1,
+    rootcomponentbehavior: 0,
+    _solutionid_value: state.solutions[0].solutionid,
+  });
+  const plan = await planManifest(manifest, { client });
+  assert.equal(plan.summary.blocked, 1);
+  assert.deepEqual(
+    plan.membership.filter((e) => e.operation === 'blocked').map((e) => e.objectId),
+    [stray],
+  );
+  const requests = state.requests.length;
+  await assert.rejects(
+    applyManifest(manifest, { client, expectedOrganisationId: state.organisationId }),
+    /Undeclared table root/,
+  );
+  assert.deepEqual(
+    state.requests.slice(requests).filter((r) => r.method !== 'GET'),
+    [],
+  );
+});
+
 // @test-kind security+contract: mutations are not blindly retried and server responses do not leak through errors
 test('mutations are not blindly retried and server responses do not leak through errors', async (t) => {
   const { state, client } = await serverFixture(t);
@@ -621,7 +668,7 @@ test('dataverse help lists its register, plan and export commands', () => {
   const result = spawnSync(
     process.execPath,
     [fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url)), 'dataverse', '--help'],
-    { encoding: 'utf8', windowsHide: true, timeout: 30_000 },
+    { encoding: 'utf8', windowsHide: true, timeout: CLI_HANG_GUARD_MS },
   );
   assert.equal(result.status, 0, result.stdout + result.stderr);
   for (const command of ['register', 'plan', 'export'])

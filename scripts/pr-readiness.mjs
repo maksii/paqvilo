@@ -4,8 +4,38 @@ import { parseArgs } from 'node:util';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+function checkKey(check) {
+  return check.__typename === 'StatusContext'
+    ? JSON.stringify(['status', check.context ?? ''])
+    : JSON.stringify(['run', check.workflowName ?? '', check.name ?? '']);
+}
+
+const TERMINAL_STATUS_STATES = new Set(['SUCCESS', 'FAILURE', 'ERROR']);
+// GitHub reports queued runs with a 0001-01-01 start time; no real run starts before this instant.
+const EARLIEST_REPORTED_TIME = Date.parse('2000-01-01T00:00:00Z');
+
+function isSettled(check) {
+  return check.__typename === 'StatusContext' ? TERMINAL_STATUS_STATES.has(check.state) : check.status === 'COMPLETED';
+}
+
+// An unsettled entry or one without a plausible timestamp counts as the newest, so a queued or running rerun
+// cannot be hidden by an older result.
+function checkTime(check) {
+  const time = Date.parse(check.__typename === 'StatusContext' ? check.createdAt : check.startedAt);
+  if (!isSettled(check) || Number.isNaN(time) || time < EARLIEST_REPORTED_TIME) return Number.POSITIVE_INFINITY;
+  return time;
+}
+
+// Keeps the newest result of each check in each workflow; a rerun or a later push supersedes older results.
+function newestChecks(checks) {
+  return [...Map.groupBy(checks, checkKey).values()].flatMap((group) => {
+    const newest = Math.max(...group.map(checkTime));
+    return group.filter((check) => checkTime(check) === newest);
+  });
+}
+
 export function qualifyPullRequest(pr, expectedHead) {
-  const checks = pr.statusCheckRollup ?? [];
+  const checks = newestChecks(pr.statusCheckRollup ?? []);
   const gates = ['CI gate', 'Security gate'];
   const reasons = [];
   if (!expectedHead || pr.headRefOid !== expectedHead) reasons.push('The PR head differs from the checked-out commit.');
@@ -17,11 +47,7 @@ export function qualifyPullRequest(pr, expectedHead) {
     if (!results.length || results.some((check) => check.status !== 'COMPLETED' || check.conclusion !== 'SUCCESS'))
       reasons.push(`${gate} has no unambiguous successful result for this PR head.`);
   }
-  const pending = checks.filter((check) =>
-    check.__typename === 'StatusContext'
-      ? !['SUCCESS', 'FAILURE', 'ERROR'].includes(check.state)
-      : check.status !== 'COMPLETED',
-  );
+  const pending = checks.filter((check) => !isSettled(check));
   if (pending.length) reasons.push(`${pending.length} checks have not completed.`);
   const failed = checks.filter((check) =>
     check.__typename === 'StatusContext'

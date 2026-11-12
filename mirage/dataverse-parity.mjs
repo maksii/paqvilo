@@ -22,6 +22,9 @@ const clone = (value) => structuredClone(value);
 const escapePointer = (text) => text.replaceAll('~', '~0').replaceAll('/', '~1');
 const bodyBytes = (response) => Buffer.from(response.bodyBase64 ?? '', 'base64');
 const credentialError = (message) => Object.assign(new Error(message), { code: 'PARITY_CREDENTIAL' });
+const usageError = (message) => Object.assign(new Error(message), { code: 'USAGE' });
+// Errors whose message the operator needs: usage, plan validation, and missing or existing files and folders.
+const SHOWN_ERROR_CODES = new Set(['USAGE', 'PLAN', 'ENOENT', 'EEXIST']);
 
 function assertNoCredentials(value) {
   function walk(node) {
@@ -330,14 +333,17 @@ function parseBatchHttpPart(headers, body, parseHeaders) {
 }
 
 // No implicit retry: an interrupted write has an unknown outcome until reconciled.
+function assertWritesAllowed(plan, allowWrites) {
+  if (!allowWrites && plan.cases.some((entry) => !['GET', 'HEAD', 'OPTIONS'].includes(entry.request.method)))
+    throw Object.assign(new Error('Plan contains writes; explicit allowWrites required'), { code: 'PLAN' });
+}
 export async function runSuite(
   input,
   { transport, variables = {}, allowWrites = false, sink = async () => {}, onProgress = () => {} } = {},
 ) {
   const plan = validatePlan(input);
   if (typeof transport !== 'function') throw new Error('A parity transport is required');
-  if (!allowWrites && plan.cases.some((entry) => !['GET', 'HEAD', 'OPTIONS'].includes(entry.request.method)))
-    throw new Error('Plan contains writes; explicit allowWrites required');
+  assertWritesAllowed(plan, allowWrites);
   const state = { ...clone(plan.variables ?? {}), ...clone(variables) };
   assertNoCredentials(state);
   // Initial variables can supply encoded bodies. Inspect every resolvable
@@ -956,10 +962,14 @@ function assertionTypeMatches(value, expected) {
   );
 }
 
+const USAGE =
+  'Use catalogue --metadata FILE --out FILE; record/replay --plan FILE --base URL --out DIRECTORY [--reference RUN]; diff --reference RUN --actual RUN --out FILE [--rules FILE] [--plan FILE]; assert --actual FILE --checks FILE --out FILE';
+
 async function main() {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
     options: {
+      help: { type: 'boolean', short: 'h' },
       plan: { type: 'string' },
       base: { type: 'string' },
       out: { type: 'string' },
@@ -973,14 +983,16 @@ async function main() {
       'allow-writes': { type: 'boolean' },
     },
   });
+  if (values.help) {
+    console.log(USAGE);
+    return;
+  }
   const command = positionals[0];
   if (command === 'catalogue') return catalogueCommand(values);
   if (command === 'record' || command === 'replay') return recordCommand(values);
   if (command === 'assert') return assertCommand(values);
   if (command === 'diff') return diffCommand(values);
-  throw new Error(
-    'Use catalogue --metadata FILE --out FILE; record/replay --plan FILE --base URL --out DIRECTORY [--reference RUN]; diff --reference RUN --actual RUN --out FILE',
-  );
+  throw usageError(USAGE);
 }
 const readJson = async (file) => JSON.parse(await fs.readFile(file, 'utf8'));
 async function catalogueCommand(values) {
@@ -988,8 +1000,19 @@ async function catalogueCommand(values) {
   await fs.writeFile(values.out, JSON.stringify(catalogue, null, 2), { flag: 'wx' });
   console.log(JSON.stringify({ operations: catalogue.operations.length, entitySets: catalogue.entitySets.length }));
 }
+// Plan errors are shown to the operator; a credential refusal keeps its own code and the generic text.
+function checkedPlan(input) {
+  try {
+    return validatePlan(input);
+  } catch (error) {
+    if (!error.code) error.code = 'PLAN';
+    throw error;
+  }
+}
 async function recordCommand(values) {
-  const plan = await readJson(values.plan);
+  if (!values.plan || !values.base || !values.out)
+    throw usageError('record and replay require --plan, --base and --out');
+  const plan = checkedPlan(await readJson(values.plan));
   const secret = values['token-env'] ? process.env[values['token-env']] : undefined;
   if (values['token-env'] && !secret) throw new Error('Requested token environment variable is unavailable');
   const transport = createFetchTransport({
@@ -997,6 +1020,8 @@ async function recordCommand(values) {
     token: secret ? async () => secret : undefined,
     allowRemote: values['allow-remote'],
   });
+  assertWritesAllowed(plan, values['allow-writes']);
+  // The evidence folder is created only once the plan and the write permission are accepted.
   const writer = await createRunWriter(values.out);
   let run;
   try {
@@ -1049,9 +1074,11 @@ async function diffCommand(values) {
   if (!comparison.exactMatch) process.exitCode = 1;
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
-  /* NOSONAR: module-level promise chain must not block evaluation */ main().catch(() => {
+  /* NOSONAR: module-level promise chain must not block evaluation */ main().catch((error) => {
     console.error(
-      'Dataverse parity command failed; inspect private journal and arguments. No automatic retry was attempted.',
+      SHOWN_ERROR_CODES.has(error.code)
+        ? error.message
+        : 'Dataverse parity command failed; inspect private journal and arguments. No automatic retry was attempted.',
     );
     process.exitCode = 1;
   });

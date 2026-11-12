@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own SOAP metadata messages over the Dataverse emulation, with invented schemas and fixture organisations
 // Dataverse SOAP metadata messages: DataContract XML in xrm/2011/Metadata, parsed back with the SOAP codec.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -424,6 +425,12 @@ const attributeXml = (schema) =>
   `<m:Attribute i:type="m:IntegerAttributeMetadata"><m:SchemaName>${schema}</m:SchemaName>` +
   `${labelXml('DisplayName', 'Quantity')}<m:MinValue>0</m:MinValue><m:MaxValue>100</m:MaxValue></m:Attribute>`;
 
+// A Boolean column whose option set names its type by the SDK enum value 'Boolean', with the True and False options.
+const booleanAttributeXml = (schema) =>
+  `<m:Attribute i:type="m:BooleanAttributeMetadata"><m:SchemaName>${schema}</m:SchemaName>` +
+  `${labelXml('DisplayName', 'Flag')}<m:OptionSet><m:OptionSetType>Boolean</m:OptionSetType>` +
+  `<m:TrueOption><m:Value>1</m:Value></m:TrueOption><m:FalseOption><m:Value>0</m:Value></m:FalseOption></m:OptionSet></m:Attribute>`;
+
 async function writeSession() {
   const { DataStore, emptyState } = await import('../lib/data.mjs');
   const { createPrincipals, ensureSecurityModel } = await import('../lib/dataverse-security.mjs');
@@ -585,6 +592,38 @@ test('RetrieveMetadataChanges writes SDK contract types and a typed DeletedMetad
   const deleted = valueOf(result, 'DeletedMetadata');
   assert.equal(typeOfNode(deleted), 'q:DeletedMetadataCollection');
   assert.equal(deleted.scope.get('q'), `${METADATA_NS}/Query`);
+});
+
+test('CreateAttribute of a Boolean column keeps TrueOption and FalseOption on the SOAP RetrieveAttribute read', async () => {
+  const { session, handlers } = await writeSession();
+  await handlers.get('CreateEntity')(
+    new Map([
+      ['Entity', typed(entityXml('new_Shelf'))],
+      ['PrimaryAttribute', typed(primaryXml('new_ShelfName'))],
+      ['HasActivities', { type: 'boolean', value: false }],
+      ['HasNotes', { type: 'boolean', value: false }],
+    ]),
+    session,
+  );
+  const created = await handlers.get('CreateAttribute')(
+    new Map([
+      ['EntityName', text('new_shelf')],
+      ['Attribute', typed(booleanAttributeXml('new_Flag'))],
+    ]),
+    session,
+  );
+  assert.equal(created.responseType, 'CreateAttributeResponse');
+  const read = handlers.get('RetrieveAttribute')(
+    new Map([
+      ['EntityLogicalName', text('new_shelf')],
+      ['LogicalName', text('new_flag')],
+    ]),
+  );
+  const value = valueOf(read, 'AttributeMetadata');
+  assert.equal(typeOfNode(value), 'm:BooleanAttributeMetadata');
+  const optionSet = child(value, 'OptionSet');
+  assert.ok(child(optionSet, 'TrueOption'), 'TrueOption');
+  assert.ok(child(optionSet, 'FalseOption'), 'FalseOption');
 });
 
 test('RetrieveAllOptionSets returns an OptionSetMetadataBase array', () => {

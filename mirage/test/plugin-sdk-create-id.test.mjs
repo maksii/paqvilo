@@ -257,7 +257,7 @@ test('early Target projection retains authored inputs without changing unchanged
 // @test-kind tooling: the semantic fixture must allow a real nested CLR child to outlive its former two-second budget
 test(
   'the SDK identity fixture budget permits a nested CLR observer to complete beyond two seconds',
-  { skip: CLR_SKIP, timeout: 60_000 },
+  { skip: CLR_SKIP },
   async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-sdk-identity-budget-'));
     let runtime, backend;

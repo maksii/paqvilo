@@ -100,36 +100,66 @@ function mergeMappings(result, latest) {
   }
 }
 
-function mergePlugins(current, result, latest, legacy, report) {
-  const oldPlugins = new Map((legacy?.plugins ?? []).map((plugin) => [plugin.id, plugin]));
-  const plugins = new Map((result.plugins ?? []).map((plugin) => [plugin.id, plugin]));
-  for (const fresh of latest.plugins ?? []) {
-    const saved = plugins.get(fresh.id);
-    if (!saved || isDeepStrictEqual(saved, oldPlugins.get(fresh.id))) plugins.set(fresh.id, cloneStateData(fresh));
-    else report.preservedCustomPlugins.push(fresh.id);
+const hasRuleId = (rule) => rule.id != null;
+
+/** Rules match by id when they have one, otherwise by equal content. */
+function isSameRule(rule, fresh) {
+  return hasRuleId(fresh) ? rule.id === fresh.id : isDeepStrictEqual(rule, fresh);
+}
+
+/**
+ * Rules with an id merge by id, keeping the saved position. Saved rules without an id stay where they are,
+ * and a fresh rule without an id is appended only when no equal rule is present, so repeats add nothing.
+ */
+function mergeRules(savedRules, latestRules, previousRules, preserved) {
+  const previousById = new Map(previousRules.filter(hasRuleId).map((rule) => [rule.id, rule]));
+  const rulesById = new Map(savedRules.filter(hasRuleId).map((rule) => [rule.id, rule]));
+  for (const fresh of latestRules.filter(hasRuleId)) {
+    const saved = rulesById.get(fresh.id);
+    if (!saved || isDeepStrictEqual(saved, previousById.get(fresh.id))) rulesById.set(fresh.id, cloneStateData(fresh));
+    else preserved.push(fresh.id);
   }
-  result.plugins = [...plugins.values()];
+  const merged = [];
+  for (const rule of savedRules) {
+    if (!hasRuleId(rule)) merged.push(rule);
+    else if (rulesById.has(rule.id)) {
+      merged.push(rulesById.get(rule.id));
+      rulesById.delete(rule.id);
+    }
+  }
+  merged.push(...rulesById.values());
+  for (const fresh of latestRules.filter((rule) => !hasRuleId(rule)))
+    if (!merged.some((rule) => isDeepStrictEqual(rule, fresh))) merged.push(cloneStateData(fresh));
+  return merged;
+}
+
+function mergePlugins(current, result, latest, legacy, report) {
+  result.plugins = mergeRules(
+    result.plugins ?? [],
+    latest.plugins ?? [],
+    legacy?.plugins ?? [],
+    report.preservedCustomPlugins,
+  );
   const fingerprint = (plugin) =>
     plugin == null ? null : createHash('sha256').update(JSON.stringify(plugin)).digest('hex');
+  const findRule = (rules, fresh) => (rules ?? []).find((rule) => isSameRule(rule, fresh));
   report.plugins = (latest.plugins ?? []).map((fresh) => ({
     id: fresh.id,
-    beforeSha256: fingerprint((current.plugins ?? []).find((plugin) => plugin.id === fresh.id)),
-    afterSha256: fingerprint(plugins.get(fresh.id)),
+    beforeSha256: fingerprint(findRule(current.plugins, fresh)),
+    afterSha256: fingerprint(findRule(result.plugins, fresh)),
     canonicalSha256: fingerprint(fresh),
-    currentCanonical: isDeepStrictEqual(plugins.get(fresh.id), fresh),
+    currentCanonical: isDeepStrictEqual(findRule(result.plugins, fresh), fresh),
   }));
 }
 
 function mergePermissions(current, result, latest, legacy, report) {
   if (current.simulator?.permissionSource === 'exported') return;
-  const previousRules = new Map((legacy?.permissions ?? []).map((rule) => [rule.id, rule]));
-  const rules = new Map((result.permissions ?? []).map((rule) => [rule.id, rule]));
-  for (const fresh of latest.permissions ?? []) {
-    const saved = rules.get(fresh.id);
-    if (!saved || isDeepStrictEqual(saved, previousRules.get(fresh.id))) rules.set(fresh.id, cloneStateData(fresh));
-    else report.preservedCustomPermissions.push(fresh.id);
-  }
-  result.permissions = [...rules.values()];
+  result.permissions = mergeRules(
+    result.permissions ?? [],
+    latest.permissions ?? [],
+    legacy?.permissions ?? [],
+    report.preservedCustomPermissions,
+  );
 }
 
 function validManagedControls(managedControls) {
@@ -166,6 +196,34 @@ function applyManagedControls(result, managedControls) {
   result.simulator ??= {};
   if (result.simulator.managedControls == null && result.simulator.shellProfile?.managedControls == null)
     result.simulator.managedControls = cloneStateData(managedControls);
+}
+
+const UPGRADE_SUFFIX = '_upgrade';
+const lowerText = (value) => String(value ?? '').toLowerCase();
+
+/**
+ * A holding solution of a staged upgrade is named <base>_Upgrade, and the dataverse state records it against its base's id
+ * (state.dataverse.holdingSolutions). The name is read once, for a state without state.dataverse.holdingMarkersMigrated: it
+ * records each such solution whose base is present, and a solution with no base is left alone. The flag is then set, so a
+ * later solution with the holding name is never taken for a holding solution.
+ */
+export function markStagedUpgrades(state) {
+  if (state.dataverse?.holdingMarkersMigrated) return state;
+  const solutions = state.tables?.solution ?? [];
+  for (const holding of solutions) {
+    const name = lowerText(holding.uniquename);
+    if (!name.endsWith(UPGRADE_SUFFIX) || Object.hasOwn(state.dataverse?.holdingSolutions ?? {}, holding.solutionid))
+      continue;
+    const baseName = name.slice(0, -UPGRADE_SUFFIX.length);
+    const base = solutions.find((s) => s.parentsolutionid == null && lowerText(s.uniquename) === baseName);
+    if (!base) continue;
+    state.dataverse ??= {};
+    state.dataverse.holdingSolutions ??= {};
+    state.dataverse.holdingSolutions[holding.solutionid] = base.solutionid;
+  }
+  state.dataverse ??= {};
+  state.dataverse.holdingMarkersMigrated = true;
+  return state;
 }
 
 /** Three-way fixture refresh: authored local edits/deletions win over generated defaults. */

@@ -29,7 +29,8 @@
 //   host.dataSource(name) -> FxDataSource | undefined; host.navigate/back/notify/trace callbacks; host.user (a record for
 //   User()); host.language (Language(), default "en-US"); host.timeZone (IANA name for local date/time parts, default
 //   "UTC"); host.numberIsFloat (optional explicit Power Fx numeric literal mode); host.now() (ms, default Date.now); host.guid() (GUID() text, default crypto.randomUUID); host.dataRowLimit (non-delegated reads, default 500); host.diagnostic(entry)
-//   (delegation warnings); host.self / host.parent records; host.app ('canvas' makes IsMatch default to Complete).
+//   (delegation warnings); host.regexGuardMs (hang guard in ms for a pattern that can backtrack without bound, default 10000);
+//   host.self / host.parent records; host.app ('canvas' makes IsMatch default to Complete).
 import { DataError } from './data-error.mjs';
 import { canvasColorNames } from './power-fx-colors.mjs';
 import {
@@ -108,7 +109,7 @@ export class FxEnum {
     );
   }
 }
-class FxChoice {
+export class FxChoice {
   constructor(enumName, label, value) {
     this.enumName = enumName;
     this.label = label;
@@ -313,18 +314,20 @@ function parseIsoDateText(value) {
 }
 const DMY_DATE_PATTERN = String.raw`^(\d{1,2})\/(\d{1,2})\/(\d{2,4})`;
 const DMY_TIME_PATTERN = String.raw`(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?)?$`;
-function parseDmyDateText(value, kind, app) {
+// A slash date is month first unless dayFirst is set (the day and month order of the language in DateValue's argument).
+function parseDmyDateText(value, kind, app, dayFirst = false) {
   const match = new RegExp(DMY_DATE_PATTERN + DMY_TIME_PATTERN, 'i').exec(value);
   if (!match) return null;
   let hour = +(match[4] ?? 0);
   if (match[7]) hour = (hour % 12) + (match[7].toUpperCase() === 'PM' ? 12 : 0);
   const year = match[3].length === 2 ? 2000 + Number(match[3]) : Number(match[3]);
+  const [month, day] = dayFirst ? [+match[2], +match[1]] : [+match[1], +match[2]];
   // Native Canvas normalizes numeric slash-date parts: en-US13/01/2024 is January1,2025, rather than a parse error.
   return {
     wall:
       kind === 'date' && app === 'canvas'
-        ? Date.UTC(year, +match[1] - 1, +match[2], hour, +(match[5] ?? 0), +(match[6] ?? 0))
-        : wallOfParts(year, +match[1], +match[2], hour, +(match[5] ?? 0), +(match[6] ?? 0)),
+        ? Date.UTC(year, month - 1, day, hour, +(match[5] ?? 0), +(match[6] ?? 0))
+        : wallOfParts(year, month, day, hour, +(match[5] ?? 0), +(match[6] ?? 0)),
     zoned: null,
   };
 }
@@ -341,10 +344,11 @@ function parseTimeDateText(value, kind) {
     invalidForDateTime: kind === 'datetime',
   };
 }
-function parseDateText(text, kind, timeZone, app) {
+function parseDateText(text, kind, timeZone, app, dayFirst) {
   const value = String(text).trim();
   if (!value) return null;
-  let parsed = parseIsoDateText(value) ?? parseDmyDateText(value, kind, app) ?? parseTimeDateText(value, kind);
+  let parsed =
+    parseIsoDateText(value) ?? parseDmyDateText(value, kind, app, dayFirst) ?? parseTimeDateText(value, kind);
   if (!parsed) {
     const timestamp = Date.parse(value);
     if (Number.isNaN(timestamp)) return null;
@@ -542,13 +546,13 @@ function convertFxDate(value, kind, fx) {
   if (kind === 'datetime') return fromWall('datetime', value.ms, fx?.timeZone);
   return fromWall(kind, wallOf(value, fx?.timeZone), fx?.timeZone);
 }
-export function toDate(v, kind, fx) {
+export function toDate(v, kind, fx, dayFirst) {
   if (v === null || v === undefined) return null;
   if (v instanceof FxDate) return convertFxDate(v, kind, fx);
   if (typeof v === 'string' || v instanceof FxUntyped) {
     const text = v instanceof FxUntyped ? v.raw : v;
     if (text === null) return null;
-    const parsed = parseDateText(text, kind === 'any' ? 'datetime' : kind, fx?.timeZone, fx?.host?.app);
+    const parsed = parseDateText(text, kind === 'any' ? 'datetime' : kind, fx?.timeZone, fx?.host?.app, dayFirst);
     return parsed ?? fxError(ErrorKind.InvalidArgument, `The value '${text}' cannot be converted to a date/time.`);
   }
   if (typeof v === 'number') return new FxDate(kind === 'any' ? 'datetime' : kind, v);
@@ -831,13 +835,13 @@ function lexQuotedIdentifier(text, start) {
   }
   return { token: { k: 'id', v: value, quoted: true, at: start }, end: i };
 }
-function lexToken(text, start, numberIsFloat) {
+function lexToken(text, start, numberIsFloat, depth) {
   const ch = text[start];
   if (/\d/.test(ch) || (ch === '.' && /\d/.test(text[start + 1] ?? '')))
     return lexNumberToken(text, start, numberIsFloat);
   if (ch === '"') return lexStringToken(text, start);
   if (ch === '$' && text[start + 1] === '"') {
-    const { parts, end } = lexInterpolation(text, start + 2, numberIsFloat);
+    const { parts, end } = lexInterpolation(text, start + 2, numberIsFloat, depth);
     return { token: { k: 'interp', parts, at: start }, end };
   }
   if (ch === "'") return lexQuotedIdentifier(text, start);
@@ -850,7 +854,7 @@ function lexToken(text, start, numberIsFloat) {
   if (!op) throw new FxSyntaxError(`Unexpected character '${ch}'`, start);
   return { token: { k: 'op', v: op, at: start }, end: start + op.length };
 }
-function lex(text, numberIsFloat) {
+function lex(text, numberIsFloat, depth) {
   const tokens = [];
   let i = 0;
   while (i < text.length) {
@@ -869,7 +873,7 @@ function lex(text, numberIsFloat) {
       i = end + 2;
       continue;
     }
-    const next = lexToken(text, i, numberIsFloat);
+    const next = lexToken(text, i, numberIsFloat, depth);
     tokens.push(next.token);
     i = next.end;
   }
@@ -898,7 +902,7 @@ function interpolationEscape(text, index, ch) {
   if (ch === '}' && text[index + 1] === '}') return '}';
   return null;
 }
-function lexInterpolation(text, from, numberIsFloat) {
+function lexInterpolation(text, from, numberIsFloat, depth) {
   const parts = [];
   let literal = '';
   let i = from;
@@ -919,7 +923,7 @@ function lexInterpolation(text, from, numberIsFloat) {
       if (literal) parts.push(literal);
       literal = '';
       const j = interpolationIslandEnd(text, i);
-      parts.push({ node: parse(text.slice(i + 1, j - 1), { numberIsFloat }) });
+      parts.push({ node: parse(text.slice(i + 1, j - 1), { numberIsFloat, depth: depth + 1 }) });
       i = j;
       continue;
     }
@@ -960,23 +964,34 @@ const parsed = new Map();
 const FORMAT_QUOTED_PATTERN = String.raw`"([^"]*)"|\\(.)`;
 const FORMAT_TOKEN_PATTERN = String.raw`|(yyyy|yy|mmmm|mmm|mm|m|dddd|ddd|dd|d|hh|h|ss|s|f{1,3}|AM\/PM|am\/pm|A\/P|a\/p)`;
 const FORMAT_OTHER_PATTERN = String.raw`|(.)`; // NOSONAR: escaping is intentional
-/** Parses a Power Fx expression (with `;` chaining) into an AST. Cached per text. */
+// Parser nesting limit: every nested expression (parenthesis, call argument, prefix operator, interpolation island) counts one.
+const MAX_NESTING = 500;
+// Terms in one left-deep chain (`a + b + c`, `a.b.c`, `x As a As b`): the evaluator walks a chain in a loop, and this bound keeps
+// every chain walk finite and the parse of a chain from building an unbounded tree.
+const MAX_CHAIN = 10_000;
+/** Parses a Power Fx expression (with `;` chaining) into an AST. Top-level results are cached per text. */
 function dottedName(node) {
-  if (node.t === 'id' && !node.global) return node.name;
-  if (node.t === 'dot') {
-    const base = dottedName(node.obj);
-    return base === null ? null : `${base}.${node.name}`;
+  const names = [];
+  let current = node;
+  while (current.t === 'dot') {
+    names.push(current.name);
+    current = current.obj;
   }
-  return null;
+  if (current.t !== 'id' || current.global) return null;
+  return [current.name, ...names.toReversed()].join('.');
 }
-export function parse(text, { numberIsFloat } = {}) {
+export function parse(text, { numberIsFloat, depth = 0 } = {}) {
+  // Islands are parsed inside the lexer before the parser's own nesting check, so the island depth is checked here.
+  if (depth > MAX_NESTING) throw new FxSyntaxError('The formula is nested too deeply', 0);
   let mode = 'default';
   if (numberIsFloat === true) mode = 'float';
   else if (numberIsFloat === false) mode = 'decimal';
   const cacheKey = `${mode}:${text}`;
-  if (parsed.has(cacheKey)) return parsed.get(cacheKey);
-  const tokens = lex(String(text), numberIsFloat);
+  // A nested island is cached only with its outer formula: its cached tree would not carry the depth it was reached at.
+  if (depth === 0 && parsed.has(cacheKey)) return parsed.get(cacheKey);
+  const tokens = lex(String(text), numberIsFloat, depth);
   let pos = 0;
+  let nesting = depth;
   const peek = () => tokens[pos];
   const next = () => tokens[pos++];
   const isOp = (v) => peek().k === 'op' && peek().v === v;
@@ -1005,11 +1020,25 @@ export function parse(text, { numberIsFloat } = {}) {
     }
     return items.length === 1 ? items[0] : { t: 'chain', items };
   }
+  // Each operator or member step extends the current left-deep chain by one term.
+  const countTerm = (terms) => {
+    if (terms >= MAX_CHAIN) throw new FxSyntaxError('The formula is nested too deeply', peek().at);
+    return terms + 1;
+  };
+  // Every nested expression passes through here (a parenthesis, call argument, prefix operand or island), so each counts once.
   function expression(min) {
+    if (++nesting > MAX_NESTING) throw new FxSyntaxError('The formula is nested too deeply', peek().at);
+    const tree = binaryTail(min);
+    nesting--;
+    return tree;
+  }
+  function binaryTail(min) {
     let left = unary();
+    let terms = 1;
     for (;;) {
       const op = binaryOp();
       if (!op || BINARY[op] < min) return left;
+      terms = countTerm(terms);
       next();
       if (op === 'As') {
         left = { t: 'as', e: left, name: identifier() };
@@ -1042,8 +1071,10 @@ export function parse(text, { numberIsFloat } = {}) {
     return postfix(primary());
   }
   function postfix(node) {
+    let terms = 1;
     for (;;) {
       if (isOp('.')) {
+        terms = countTerm(terms);
         next();
         const name = identifier();
         if (isOp('(') && dottedName(node) !== null) {
@@ -1054,6 +1085,7 @@ export function parse(text, { numberIsFloat } = {}) {
         continue;
       }
       if (isOp('[@') && node.t === 'id') {
+        terms = countTerm(terms);
         next();
         const field = identifier();
         expect(']');
@@ -1061,6 +1093,7 @@ export function parse(text, { numberIsFloat } = {}) {
         continue;
       }
       if (isOp('%')) {
+        terms = countTerm(terms);
         next();
         node = { t: 'pct', e: node };
         continue;
@@ -1155,8 +1188,10 @@ export function parse(text, { numberIsFloat } = {}) {
   if (peek().k === 'eof') throw new FxSyntaxError('The formula is empty', 0);
   const ast = chain();
   if (peek().k !== 'eof') throw new FxSyntaxError(`Unexpected '${peek().v ?? peek().k}'`, peek().at);
-  if (parsed.size > 2000) parsed.clear(); // ponytail: bounded parse cache, cleared wholesale; an LRU if formulas churn.
-  parsed.set(cacheKey, ast);
+  if (depth === 0) {
+    if (parsed.size > 2000) parsed.clear(); // ponytail: bounded parse cache, cleared wholesale; an LRU if formulas churn.
+    parsed.set(cacheKey, ast);
+  }
   return ast;
 }
 
@@ -1295,7 +1330,8 @@ class Fx {
     // ponytail: one counter per evaluation, a local safeguard (not a platform limit);
     // hosts raise host.scopeBudget when a formula legitimately needs more.
     this.scopeBudget = Number(this.host.scopeBudget ?? 5_000_000);
-    this.scopesEntered = 0;
+    // A host may share one counter across nested evaluations (component functions); a standalone formula counts its own.
+    this.scopeCounter = this.host.scopeCounter ?? { entered: 0 };
     this.warnings = [];
   }
   now() {
@@ -1307,7 +1343,7 @@ class Fx {
   }
   // Evaluates node with an extra record scope for the duration of fn.
   inScope(scope, fn) {
-    if (++this.scopesEntered > this.scopeBudget) throw new FxBudgetError(this.scopeBudget);
+    if (++this.scopeCounter.entered > this.scopeBudget) throw new FxBudgetError(this.scopeBudget);
     this.scopes.push(scope);
     try {
       return fn();
@@ -1451,8 +1487,7 @@ function evaluateDisambiguation(fx, node) {
     if (fx.scopes[i].source === node.table) return member(fx, fx.scopes[i].record, node.field);
   throw new FxNameError(`${node.table}[@${node.field}]`);
 }
-function evaluateDot(fx, node) {
-  const base = fx.ev(node.obj);
+function memberOf(fx, node, base) {
   // An unknown member of a built-in enumeration is a name error, not a blank.
   const isEnum = node.obj.t === 'id' && Object.hasOwn(ENUMS, node.obj.name) && base === ENUMS[node.obj.name];
   if (isEnum && node.obj.name === 'Color') {
@@ -1492,6 +1527,33 @@ function evaluateChain(fx, node) {
   }
   return errors.length ? new FxError(errors) : last;
 }
+// A left-deep chain (binary operators, As, %, member access) is evaluated from its innermost operand outwards in a loop, so
+// the call stack does not grow with the chain. Each step receives the value of the step below it, as nested evaluation did.
+const SPINE_NODES = new Set(['bin', 'as', 'pct', 'dot']);
+function spineOperand(node) {
+  if (node.t === 'bin') return node.l;
+  if (node.t === 'dot') return node.obj;
+  return node.e;
+}
+function applySpineStep(fx, node, value) {
+  if (node.t === 'dot') return memberOf(fx, node, value);
+  if (node.t === 'bin') {
+    return node.op === '&&' || node.op === '||' ? logicalStep(fx, node, value) : binaryStep(fx, node, value);
+  }
+  if (node.t === 'pct') return value instanceof FxError ? value : arithmetic(fx, '/', value, 100);
+  return value;
+}
+function evaluateSpine(fx, node) {
+  const steps = [];
+  let operand = node;
+  while (SPINE_NODES.has(operand.t)) {
+    steps.push(operand);
+    operand = spineOperand(operand);
+  }
+  let value = fx.ev(operand);
+  for (let index = steps.length - 1; index >= 0; index -= 1) value = applySpineStep(fx, steps[index], value);
+  return value;
+}
 function evaluateNode(fx, node) {
   switch (node.t) {
     case 'lit':
@@ -1503,21 +1565,16 @@ function evaluateNode(fx, node) {
     case 'disamb':
       return evaluateDisambiguation(fx, node);
     case 'dot':
-      return evaluateDot(fx, node);
+    case 'bin':
+    case 'as':
+    case 'pct':
+      return evaluateSpine(fx, node);
     case 'rec':
       return evaluateRecord(fx, node);
     case 'tbl':
       return evaluateTable(fx, node);
     case 'unary':
       return evaluateUnary(fx, node);
-    case 'pct': {
-      const value = fx.ev(node.e);
-      return value instanceof FxError ? value : arithmetic(fx, '/', value, 100);
-    }
-    case 'bin':
-      return binary(fx, node);
-    case 'as':
-      return fx.ev(node.e);
     case 'chain':
       return evaluateChain(fx, node);
     case 'call':
@@ -1527,10 +1584,10 @@ function evaluateNode(fx, node) {
   }
 }
 
-/* NOSONAR: mixed return values are part of the contract */ function logicalBinary(fx, node, op) {
-  const left = toBoolean(fx.ev(node.l));
+/* NOSONAR: mixed return values are part of the contract */ function logicalStep(fx, node, value) {
+  const left = toBoolean(value);
   if (left instanceof FxError) return left;
-  if (op === '&&' ? !left : left) return left;
+  if (node.op === '&&' ? !left : left) return left;
   const right = toBoolean(fx.ev(node.r));
   return right;
 }
@@ -1542,13 +1599,13 @@ function evaluateNode(fx, node) {
   if (op === '>') return comparison > 0;
   return comparison >= 0;
 }
-function binary(fx, node) {
-  const { op } = node;
-  if (op === '&&' || op === '||') return logicalBinary(fx, node, op);
-  const l = fx.ev(node.l);
+function binaryStep(fx, node, l) {
   if (l instanceof FxError) return l;
   const r = fx.ev(node.r);
   if (r instanceof FxError) return r;
+  return combineBinary(fx, node.op, l, r);
+}
+function combineBinary(fx, op, l, r) {
   const differentChoices =
     ['=', '<>', '<', '<=', '>', '>='].includes(op) &&
     l instanceof FxChoice &&

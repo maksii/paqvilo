@@ -1,6 +1,8 @@
+// @test-kind contract: reference enrichment writes Paqvilo's own state format, one normalised row per live record
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';
+import { normalizeLiveRecord } from '../lib/live.mjs';
 import { enrichReference } from '../enrich-reference.mjs';
 
 const query = '<fetch><entity name="item"><attribute name="name"/></entity></fetch>';
@@ -38,6 +40,31 @@ test('enrichment imports complete bounded pages, merges records and records prov
   assert.match(queries[0], /attribute name="itemid"/);
   assert.match(queries[1], /paging-cookie="&lt;cookie/);
   assert.equal(JSON.stringify(report).includes('cookie'), false);
+});
+
+test('enrichment saves normalised rows only: no annotation keys and no raw lookup column', async () => {
+  const input = await options();
+  const mapping = input.store.resolveMapping('item');
+  const annotated = {
+    '@odata.etag': 'W/"1"',
+    itemid: 'annotated',
+    name: 'Reference',
+    _ownerid_value: 'owner-id',
+    '_ownerid_value@OData.Community.Display.V1.FormattedValue': 'Owner label',
+    '_ownerid_value@Microsoft.Dynamics.CRM.lookuplogicalname': 'systemuser',
+  };
+  await enrichReference({
+    ...input,
+    bridge: {
+      fetchXml: async () => ({ entities: [normalizeLiveRecord(annotated, mapping)], more_records: false }),
+    },
+  });
+  const row = input.store.snapshot().tables.item.find((item) => item.itemid === 'annotated');
+  assert.deepEqual(
+    Object.keys(row).filter((key) => key.includes('@') || key.startsWith('_')),
+    [],
+  );
+  assert.equal(row.ownerid.id, 'owner-id');
 });
 
 test('incomplete/reference errors leave state intact; concurrent changes prevent overwriting local edits', async () => {

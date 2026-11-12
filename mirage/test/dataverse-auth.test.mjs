@@ -587,6 +587,33 @@ test('verifyBearer tolerates five minutes of clock skew after expiry', () => {
   assert.equal(auth.verifyBearer(`Bearer ${access}`, { origin: ORIGIN, tenantId: TENANT }).ok, true);
 });
 
+// @test-kind security: a bearer or assertion segment that does not decode to a JSON object is malformed input, refused without a server fault.
+test('a JWT whose header or claims segment is not a JSON object is refused as malformed', () => {
+  const { auth } = fixture();
+  const opts = { origin: ORIGIN, tenantId: TENANT };
+  for (const segment of [null, 5, 'text', []]) {
+    assert.deepEqual(auth.verifyBearer(`Bearer ${b64(segment)}.${b64({})}.x`, opts), {
+      ok: false,
+      reason: 'malformed',
+    });
+    assert.deepEqual(auth.verifyBearer(`Bearer ${b64({ alg: 'RS256' })}.${b64(segment)}.x`, opts), {
+      ok: false,
+      reason: 'malformed',
+    });
+  }
+  assert.deepEqual(auth.verifyBearer('Bearer bnVsbA.e30.x', opts), { ok: false, reason: 'malformed' });
+  const obo = (assertion) =>
+    call(auth, {
+      grant_type: JWT_BEARER,
+      ...DELEGATED_CLIENT,
+      requested_token_use: 'on_behalf_of',
+      assertion,
+      scope: `${ORIGIN}/user_impersonation`,
+    });
+  assert.equal(obo('bnVsbA.e30.x').status, 400);
+  assert.equal(obo(`${b64({ alg: 'RS256' })}.${b64(5)}.x`).status, 400);
+});
+
 // @test-kind security: Toolkit credential storage verifies its own salted hash and rejects a different secret; Microsoft token-service storage internals are outside this guarantee.
 test('hashSecret and verifySecret round trip and reject a mismatch', () => {
   const stored = hashSecret('invented-secret');

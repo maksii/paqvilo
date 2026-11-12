@@ -309,6 +309,8 @@ export class LiveBridge {
     }
   }
   async connect(cdpUrl) {
+    if (typeof cdpUrl !== 'string' || !URL.canParse(cdpUrl))
+      throw fail('Use a loopback browser debugging endpoint.', 400);
     const url = new URL(cdpUrl);
     if (
       !['http:', 'ws:'].includes(url.protocol) ||

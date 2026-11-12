@@ -3,11 +3,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
-import { ensureSecurityModel, createPrincipals } from '../lib/dataverse-security.mjs';
+import { ensureSecurityModel, createPrincipals, grantTablePrivileges } from '../lib/dataverse-security.mjs';
 import { createRecordHandlers, createRecordHooks } from '../lib/dataverse-records.mjs';
 import { install as installDuplicates } from '../lib/dataverse-duplicates.mjs';
 import { createChangeLog } from '../lib/dataverse-changes.mjs';
-import { handleSoap } from '../lib/dataverse-soap.mjs';
+import { handleSoap, SOAP_MESSAGES } from '../lib/dataverse-soap.mjs';
+import { metadataRequests } from '../lib/dataverse-soap-metadata.mjs';
+import { readFileSync } from 'node:fs';
 import { NS } from '../lib/dataverse-soap-xml.mjs';
 import { runAtomic } from '../lib/dataverse-api.mjs';
 import { createOperationRegistry } from '../lib/dataverse-operations.mjs';
@@ -15,6 +17,11 @@ import { createOrganizationBackend } from '../lib/organization-backend.mjs';
 import { pluginCatalogue } from '../lib/exported-plugins.mjs';
 import { DataError } from '../lib/data-error.mjs';
 import { recordToSdkEntity } from '../lib/plugin-clr.mjs';
+import { QUEUE_MESSAGE_MAPPING, QUEUE_MESSAGE_TABLE } from '../lib/message-bus.mjs';
+import { parseDataverseRoute, parsePrefer } from '../lib/dataverse-odata.mjs';
+import { isExactNumeric, parseExactJson } from '../lib/exact-numeric.mjs';
+import { install as installCustomApi } from '../lib/dataverse-customapi.mjs';
+import { install as installRegistration, resyncMessageFilters } from '../lib/dataverse-plugin-registration.mjs';
 
 const ORIGIN = 'http://127.0.0.1:5555';
 const ORG = '6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f';
@@ -345,6 +352,76 @@ test('Delete removes the record and a later Retrieve faults', async () => {
   assert.equal(del.status, 200, del.body);
   const read = await t.send(execOne('RetrieveRequest', 'Retrieve', [pair('Target', refValue('widget', id))]));
   assert.equal(errorCode(read.body), -2147220969);
+});
+
+// @test-kind unproven: the SOAP fault code 0x80040227 is assumed to match the Web API refusal captured by native probe NP-9; no SOAP capture of this delete exists
+test('a SOAP Delete of a custom API with a step is a fault that deletes nothing; once the step is gone the API, message and filter go', async () => {
+  const t = await setup();
+  // The API row is seeded before the extensions install: their seed step creates its message and filter, as a create does.
+  const api = '41000000-0000-4000-8000-0000000000b1';
+  await t.store.transact(() => {
+    (t.store.state.tables.customapi ??= []).push({
+      customapiid: api,
+      uniquename: 'new_Ping',
+      name: 'new_Ping',
+      description: 'Invented ping API',
+      bindingtype: 0,
+      isfunction: false,
+      isprivate: false,
+      allowedcustomprocessingsteptype: 2,
+    });
+  });
+  await installCustomApi(t.api).ready;
+  installRegistration(t.api);
+  await t.store.transact(() => resyncMessageFilters(t.api));
+  // The table's privileges, granted as a table's creation grants them, so the administrator may delete its rows.
+  await t.store.transact(() => grantTablePrivileges(t.store, ORG, 'customapi'));
+  // The step table's mapping: the platform table the SOAP route resolves a Delete of a step through.
+  t.store.state.mappings.sdkmessageprocessingstep ??= {
+    logicalName: 'sdkmessageprocessingstep',
+    entitySet: 'sdkmessageprocessingsteps',
+    idColumn: 'sdkmessageprocessingstepid',
+    fields: {},
+  };
+  await t.store.transact(() => grantTablePrivileges(t.store, ORG, 'sdkmessageprocessingstep'));
+  const message = () => t.store.tableRows('sdkmessage').find((row) => row.name === 'new_Ping');
+  const filter = () =>
+    t.store
+      .tableRows('sdkmessagefilter')
+      .find((row) => row.sdkmessageid === message()?.sdkmessageid && row.primaryobjecttypecode === 'none');
+  assert.ok(message(), 'the API has its message');
+  assert.ok(filter(), 'and its filter');
+  const STEP = '99999999-0000-4000-8000-0000000000b1';
+  await t.store.transact(() => {
+    (t.store.state.tables.sdkmessageprocessingstep ??= []).push({
+      sdkmessageprocessingstepid: STEP,
+      name: 'Invented step on new_Ping',
+      sdkmessageid: message().sdkmessageid,
+      sdkmessagefilterid: filter().sdkmessagefilterid,
+      stage: 40,
+      mode: 0,
+      rank: 1,
+      statecode: 0,
+      statuscode: 1,
+    });
+  });
+  const refused = await t.send(execOne('DeleteRequest', 'Delete', [pair('Target', refValue('customapi', api))]));
+  assert.equal(refused.status, 500, refused.body);
+  assert.equal(errorCode(refused.body), -2147220953, refused.body);
+  assert.match(refused.body, /associated with another object and cannot be deleted/);
+  assert.ok(
+    t.store.tableRows('customapi').some((row) => row.customapiid === api),
+    'the API stays',
+  );
+  assert.ok(message() && filter(), 'its message and filter stay');
+  const removedStep = await t.send(
+    execOne('DeleteRequest', 'Delete', [pair('Target', refValue('sdkmessageprocessingstep', STEP))]),
+  );
+  assert.equal(removedStep.status, 200, removedStep.body);
+  const removed = await t.send(execOne('DeleteRequest', 'Delete', [pair('Target', refValue('customapi', api))]));
+  assert.equal(removed.status, 200, removed.body);
+  assert.equal(message(), undefined, 'the message is removed with the API');
+  assert.equal(filter(), undefined, 'and its filter');
 });
 
 test('RetrieveMultiple pages a QueryExpression: the paging cookie round-trips to the next page with a total count', async () => {
@@ -909,6 +986,27 @@ test('a body operation (Create without Execute) answers its named result', async
   assert.equal(res.status, 200, res.body);
   assert.match(res.body, /<svc:CreateResponse><svc:CreateResult i:type="e:guid">[0-9a-f-]{36}<\/svc:CreateResult>/);
   assert.equal(t.store.state.tables.widget.length, 1);
+});
+
+// @test-kind contract: a Create whose entity names no table is refused by the SDK fault for an invalid request, not routed to an internal table
+test('a Create whose entity has no LogicalName is a 0x80040203 fault, and no table is written', async () => {
+  const t = await setup();
+  const attributes = `<a:Attributes>${pair('name', str('nameless'))}</a:Attributes>`;
+  // The internal queue table is the mapping with no entity set, which an untyped name would otherwise match.
+  t.store.state.mappings[QUEUE_MESSAGE_TABLE] = QUEUE_MESSAGE_MAPPING;
+  const before = JSON.stringify(t.store.state.tables);
+  const untyped = await t.send(envelope(`<Create xmlns="${NS.svc}"><entity>${attributes}</entity></Create>`));
+  const empty = await t.send(
+    envelope(
+      `<Create xmlns="${NS.svc}"><entity i:type="a:Entity">${attributes}<a:LogicalName></a:LogicalName></entity></Create>`,
+    ),
+  );
+  for (const res of [untyped, empty]) {
+    assert.equal(res.status, 500, res.body);
+    assert.equal(errorCode(res.body), -2147220989, res.body);
+    assert.doesNotMatch(res.body, /paqvilo_queuemessage/);
+  }
+  assert.equal(JSON.stringify(t.store.state.tables), before);
 });
 
 test('the SOAP CallerObjectId header impersonates the named user', async () => {
@@ -2082,4 +2180,172 @@ test('SOAP Assign hands its Update PreOperation Target the named new owner and o
   const encoded = recordToSdkEntity(t.store, t.logical, target, { allColumns: true, target: true });
   assert.equal(encoded.attributes.ownerid.name, fullname);
   assert.equal(encoded.attributes.owninguser.name, null);
+});
+
+// The Web API call the SOAP service makes for the same operation: the record handler with the parsed JSON body.
+const webCall = (t, method, path, body) => {
+  const url = new URL(`/api/data/v9.2/${path}`, ORIGIN);
+  return t.api.records.handle({
+    method,
+    route: parseDataverseRoute(url.pathname),
+    url,
+    origin: ORIGIN,
+    version: 'v9.2',
+    prefer: parsePrefer(''),
+    headers: { prefer: '' },
+    body,
+    user: t.admin,
+    caller: t.admin,
+    identity: { admin: true, id: t.admin.systemuserid, systemUserId: t.admin.systemuserid },
+    requestId: 'test',
+  });
+};
+// The text of one SOAP value, Money's a:Value included. A Web API value is its digits: its lexeme when it has one.
+const soapText = (xml, key) =>
+  new RegExp(`<b:key>${key}</b:key><b:value i:type="[^"]+">(?:<a:Value>)?([^<]*)`).exec(xml)?.[1];
+const digitsOf = (value) => (isExactNumeric(value) ? (value.lexeme ?? value.value) : String(value));
+
+// @test-kind contract: a SOAP Money or decimal keeps the digits of its lexeme, so it stores and reads back as the same literal written through the Web API
+test('SOAP Money and decimal values keep their digits, as the Web API write of the same literals does', async () => {
+  const t = await setup();
+  Object.assign(t.store.state.mappings.widget.fields, {
+    amount: { dataverseType: 'decimal', precision: 5 },
+    fee: { dataverseType: 'decimal' },
+    ratio: { dataverseType: 'float' },
+    count: { dataverseType: 'int' },
+  });
+  // Small decimals, doubles and integers come first: they keep their current results; the long digits follow.
+  const literals = {
+    fee: '2.5',
+    ratio: '1.5',
+    count: '7',
+    amount: '12345678901234.56789',
+    price: '922337203685477.5807',
+  };
+  const created = await t.send(
+    execOne('CreateRequest', 'Create', [
+      pair(
+        'Target',
+        entityValue('widget', [
+          pair('name', str('exact')),
+          pair('price', valueEl('a:Money', `<a:Value>${literals.price}</a:Value>`)),
+          pair('amount', valueEl('c:decimal', literals.amount)),
+          pair('fee', valueEl('c:decimal', literals.fee)),
+          pair('ratio', valueEl('c:double', literals.ratio)),
+          pair('count', int(literals.count)),
+        ]),
+      ),
+    ]),
+  );
+  assert.equal(created.status, 200, created.body);
+  const json = `{"name":"exact","price":${literals.price},"amount":${literals.amount},"fee":${literals.fee},"ratio":${literals.ratio},"count":${literals.count}}`;
+  const written = await webCall(t, 'POST', 'widgets', parseExactJson(json));
+  const webId = /\(([^()]+)\)$/.exec(written.headers['OData-EntityId'])[1];
+  const webRow = (await webCall(t, 'GET', `widgets(${webId})`)).body;
+  const read = await t.send(
+    execOne('RetrieveRequest', 'Retrieve', [
+      pair('Target', refValue('widget', guidOf(created.body, 'id'))),
+      pair('ColumnSet', valueEl('a:ColumnSet', '<a:AllColumns>true</a:AllColumns><a:Columns/>')),
+    ]),
+  );
+  assert.equal(read.status, 200, read.body);
+  for (const key of Object.keys(literals))
+    assert.equal(soapText(read.body, key), digitsOf(webRow[key]), `${key} reads back as the Web API write does`);
+  for (const bad of [
+    pair('amount', valueEl('c:decimal', 'abc')),
+    pair('price', valueEl('a:Money', '<a:Value>1,5</a:Value>')),
+  ]) {
+    const refused = await t.send(execOne('CreateRequest', 'Create', [pair('Target', entityValue('widget', [bad]))]));
+    assert.equal(refused.status, 500, refused.body);
+    assert.equal(errorCode(refused.body), -2147220989, 'a malformed numeric value is the 0x80040203 fault');
+  }
+});
+
+// @test-kind contract: an entity member without xsi:type is an Entity by its DataContract shape, so a Create or Update with a LogicalName writes its row
+test('an untyped entity member with a LogicalName is an Entity: Create and Update write its row', async () => {
+  const t = await setup();
+  const body = (attributes, extra = '') =>
+    `<a:Attributes>${attributes}</a:Attributes>${extra}<a:LogicalName>widget</a:LogicalName>`;
+  const created = await t.send(
+    envelope(`<Create xmlns="${NS.svc}"><entity>${body(pair('name', str('untyped')))}</entity></Create>`),
+  );
+  assert.equal(created.status, 200, created.body);
+  const id = /CreateResult i:type="e:guid">([^<]+)</.exec(created.body)?.[1];
+  assert.ok(id, 'CreateResponse names the new widget');
+  const viaExecute = await t.send(
+    execOne('CreateRequest', 'Create', [pair('Target', `<b:value>${body(pair('name', str('execute')))}</b:value>`)]),
+  );
+  assert.equal(viaExecute.status, 200, viaExecute.body);
+  const updated = await t.send(
+    envelope(
+      `<Update xmlns="${NS.svc}"><entity>${body(pair('name', str('renamed')), `<a:Id>${id}</a:Id>`)}</entity></Update>`,
+    ),
+  );
+  assert.equal(updated.status, 200, updated.body);
+  const read = await t.send(execOne('RetrieveRequest', 'Retrieve', [pair('Target', refValue('widget', id))]));
+  assert.equal(attrText(read.body, 'name'), 'renamed');
+  assert.equal(t.store.tableRows('widget').length, 2);
+});
+
+const UNEXPECTED_ERROR = -2147220970;
+const INVALID_REQUEST_CODE = -2147220989;
+// The dispatcher names the parameter; the metadata writes name it as "<Name> is required.".
+const MISSING_PARAMETER = /requires the parameter \w+|\w+ is required\./;
+
+// @test-kind contract: a message with no parameters succeeds, or answers the 0x80040203 fault that names a missing parameter
+test('every SOAP message with no parameters succeeds or names the parameter it lacks', async (t) => {
+  const names = [...SOAP_MESSAGES, ...metadataRequests((await setup()).api).keys()];
+  for (const name of names) {
+    await t.test(name, async () => {
+      const fixture = await setup();
+      const res = await fixture.send(execOne(`${name}Request`, name, []));
+      if (res.status === 200) return;
+      assert.notEqual(errorCode(res.body), UNEXPECTED_ERROR, `${name} answers the unexpected-error fault`);
+      assert.equal(errorCode(res.body), INVALID_REQUEST_CODE, `${name} answers ${res.status}: ${res.body}`);
+      assert.match(res.body, MISSING_PARAMETER, `${name} names the parameter it lacks`);
+    });
+  }
+});
+
+// @test-kind contract: the dispatcher's named messages are all in SOAP_MESSAGES, so the table test above covers each one
+test('SOAP_MESSAGES lists every message the dispatcher answers by name', () => {
+  const source = readFileSync(new URL('../lib/dataverse-soap.mjs', import.meta.url), 'utf8');
+  const start = source.indexOf('async function runRequestCore');
+  const dispatch = source.slice(start, source.indexOf('default: {', start));
+  const labels = [...dispatch.matchAll(/case '([A-Za-z]+)':/g)].map((match) => match[1]);
+  assert.ok(labels.includes('SetState'), 'the dispatch block is found');
+  for (const label of labels) assert.ok(SOAP_MESSAGES.includes(label), `${label} is listed in SOAP_MESSAGES`);
+});
+
+// @test-kind contract: a required input of the wrong shape is the same 0x80040203 fault as a missing one
+test('a required input of the wrong shape is the 0x80040203 fault: Create, Retrieve, RetrieveMultiple', async () => {
+  const t = await setup();
+  const wrong = [
+    ['Create', pair('Target', refValue('widget', MISSING))],
+    ['Retrieve', pair('Target', str('widget'))],
+    ['RetrieveMultiple', pair('Query', str('widget'))],
+  ];
+  for (const [name, input] of wrong) {
+    const res = await t.send(execOne(`${name}Request`, name, [input]));
+    assert.equal(res.status, 500, res.body);
+    assert.equal(errorCode(res.body), INVALID_REQUEST_CODE, `${name}: ${res.body}`);
+  }
+  assert.equal(t.store.tableRows('widget').length, 0, 'no row is written');
+});
+
+// @test-kind contract: a SOAP message without a required input is a 0x80040203 fault naming the parameter
+test('a SOAP message without a required input is a 0x80040203 fault naming the parameter', async () => {
+  const t = await setup();
+  const target = pair('Target', refValue('widget', MISSING));
+  const cases = [
+    ['Retrieve', [], 'Target'],
+    ['Delete', [], 'Target'],
+    ['Associate', [target], 'Relationship'],
+  ];
+  for (const [name, pairs, missing] of cases) {
+    const res = await t.send(execOne(`${name}Request`, name, pairs));
+    assert.equal(res.status, 500, res.body);
+    assert.equal(errorCode(res.body), -2147220989, `${name} without ${missing}: ${res.body}`);
+    assert.match(res.body, new RegExp(`requires the parameter ${missing}\\.`));
+  }
 });

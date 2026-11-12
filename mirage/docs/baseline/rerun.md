@@ -57,14 +57,22 @@ For a checkout, use `node <toolkit>/bin/paqvilo.mjs`.
 
 ```sh
 paqvilo mirage baseline-suite --help
-paqvilo mirage baseline-suite capture --matrix matrix/full.json --out .paqvilo/parity --side live --label live --ids matrix/ids.json
+paqvilo mirage baseline-suite capture --matrix matrix/full.json --out .paqvilo/parity --side live --label live --only @matrix/subset.txt
 paqvilo mirage baseline-suite capture --matrix matrix/full.json --out .paqvilo/parity --side mirage --config paqvilo.config.yml --site baseline --label mirage --ids matrix/ids.json
 paqvilo mirage baseline-suite compare --matrix matrix/full.json --out .paqvilo/parity --allowlist allowlist.json
 ```
 
+A live capture must name its scenarios: `--only <ids>` or `--only @matrix/subset.txt`, or
+`--all-scenarios` to capture every scenario of the matrix (the run record notes the choice).
+Without either option the run is refused before the browser bridge starts. `--ids` holds
+record alias values only, so it never selects scenarios. An unknown `--only` id is refused
+before anything is written.
+
 Live capture denies writes by default. Add `--allow-writes` only after reviewing the
 matrix's fixture table/page scope and obtaining authorization. Keep authentication,
-persona selection and cleanup within the intended browser identity.
+persona selection and cleanup within the intended browser identity. The matrix's live
+cache-refresh and clear-cache steps write to the portal too, so a matrix that configures
+them is refused at set-up unless the run has `--allow-writes`.
 
 Use `--only <ids>` or `--only @matrix/subset.txt` for focused reruns. A list file takes
 the first whitespace-delimited token of each nonblank, noncomment line. Reset only the

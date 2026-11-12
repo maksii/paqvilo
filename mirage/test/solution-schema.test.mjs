@@ -1,3 +1,4 @@
+// @test-kind contract: solution schema parsing, column metadata and solution data are Paqvilo's own designed behaviour, checked against local fixtures
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -12,6 +13,7 @@ import {
 } from '../lib/solution-schema.mjs';
 import { importSolutionData, applySolutionData, solutionSeedRows, sourceRecordId } from '../lib/solution-data.mjs';
 import { pluralizeEntitySetName, standardTable } from '../lib/solution-standard.mjs';
+import { createMetadataService } from '../lib/dataverse-metadata.mjs';
 import { discoverSolutionRoots, resolveSolutionRoots, solutionWatchFilter } from '../lib/solution-roots.mjs';
 import { SolutionFileCache, shareSolutionParses } from '../lib/solution-cache.mjs';
 import { DataStore } from '../lib/data.mjs';
@@ -99,6 +101,36 @@ test('solution paths are classified for table metadata, forms, views and environ
     'envvalue',
   );
   assert.equal(classifySolutionPath('WebResources/script.js'), null);
+});
+
+// @test-kind compatibility: Microsoft Learn BooleanAttributeMetadata reports a Two Options column with TrueOption and FalseOption
+test('an exported Two Options column imports as a boolean option set and reports BooleanAttributeMetadata', async (t) => {
+  const twoOptions =
+    '<AppDefaultValue>1</AppDefaultValue><optionset Name="sample_flag"><OptionSetType>bit</OptionSetType><IntroducedVersion>1.0.0.0</IntroducedVersion><IsCustomizable>1</IsCustomizable><displaynames><displayname description="Flag" languagecode="1033" /></displaynames><options><option value="1" ExternalValue="" IsHidden="0"><labels><label description="Yes" languagecode="1033" /></labels></option><option value="0" ExternalValue="" IsHidden="0"><labels><label description="No" languagecode="1033" /></labels></option></options></optionset>';
+  const root = await tree(t, {
+    'Entities/sample_item/Entity.xml': entityXml('sample_item', {
+      attributes: attribute('sample_itemid', 'primarykey') + attribute('sample_flag', 'bit', twoOptions),
+    }),
+  });
+  const schema = buildSolutionSchema(await scanSolutionSources([root]));
+  assert.equal(
+    fieldDefinition(schema, 'sample_item', schema.tables.sample_item.attributes.sample_flag).optionSetType,
+    'boolean',
+  );
+  const service = createMetadataService({
+    organizationId: '7014a3e5-497a-439e-b4a1-3f2b79879001',
+    schema,
+    mappings: {},
+  });
+  const column = service
+    .attributes('sample_item', { cast: 'BooleanAttributeMetadata' })
+    .find((a) => a.LogicalName === 'sample_flag');
+  assert.equal(column.AttributeType, 'Boolean');
+  assert.equal(column.OptionSet.OptionSetType, 3);
+  assert.equal(column.OptionSet.TrueOption.Value, 1);
+  assert.equal(column.OptionSet.TrueOption.Label.UserLocalizedLabel.Label, 'Yes');
+  assert.equal(column.OptionSet.FalseOption.Value, 0);
+  assert.equal(column.OptionSet.FalseOption.Label.UserLocalizedLabel.Label, 'No');
 });
 
 test('entity sets come from Entity.xml, then the documented catalogue, then pluralization', async (t) => {
@@ -1350,4 +1382,27 @@ test('a self-referencing relationship with IsHierarchical is hierarchical on bot
   assert.equal(data.mappings.sample_node.relationships.sample_node_parent.hierarchical, true, 'the one-to-many side');
   assert.equal(Object.hasOwn(data.mappings.sample_node.relationships.sample_Related, 'hierarchical'), false);
   assert.equal(Object.hasOwn(data.mappings.sample_other.relationships.sample_node_related, 'hierarchical'), false);
+});
+
+// @test-kind compatibility: an exported Two Options column typed boolean is a boolean field, not free text, in the solution schema
+test('a Two Options column exported as boolean imports as a boolean field with its option labels', async (t) => {
+  const root = await tree(t, {
+    'Entities/sample_item/Entity.xml': entityXml('sample_item', {
+      set: 'sample_items',
+      full: true,
+      attributes: attribute(
+        'sample_Consent',
+        'boolean',
+        `<AppDefaultValue>0</AppDefaultValue><optionset Name="sample_item_sample_consent"><OptionSetType>bit</OptionSetType><options><option value="0">${label('No')}</option><option value="1">${label('Yes')}</option></options></optionset>`,
+      ),
+    }),
+  });
+  const schema = buildSolutionSchema(await scanSolutionSources([root]), { lcid: 1036 });
+  const field = tableFields(schema, 'sample_item').sample_consent;
+  assert.equal(field.type, 'boolean');
+  assert.equal(field.defaultValue, false);
+  assert.deepEqual(field.options, [
+    { value: 0, label: 'No (fr)' },
+    { value: 1, label: 'Yes (fr)' },
+  ]);
 });

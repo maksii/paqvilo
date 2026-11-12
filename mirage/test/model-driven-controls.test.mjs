@@ -1,7 +1,9 @@
+// @test-kind contract: model-driven control descriptors and the PCF host are Paqvilo's own designed runtime behaviour, checked against invented components and a stub document.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { controlDescriptor } from '../lib/model-driven/control-descriptors.mjs';
 import { compileForm } from '../lib/model-driven/solution.mjs';
+import { renderCanvasPcfControl, renderPcfControl } from '../lib/model-driven/pcf-runtime.mjs';
 
 test('registered native column types select scalar controls without redundant presentation metadata', () => {
   for (const [dataverseType, type] of [
@@ -58,7 +60,7 @@ test('supported scalar, lookup and choice controls have no unsupported reason; u
   assert.equal(fields[3].supported, false);
   assert.equal(fields[3].reason, 'Column metadata is unavailable.');
   assert.equal(fields[4].supported, false);
-  assert.equal(fields[4].reason, 'This control is not supported locally yet.');
+  assert.equal(fields[4].reason, 'This control is not available in the local host.');
 });
 
 test('compiled forms retain custom bindings and event dependencies for explicitly trusted hosts', () => {
@@ -98,4 +100,164 @@ test('custom field hosts preserve all form factors and select only the desktop b
   ).tabs[0].sections[0].fields[0];
   assert.equal(phoneOnly.supported, false);
   assert.equal(phoneOnly.pcf, undefined);
+});
+
+const flush = () => new Promise((resolve) => queueMicrotask(resolve));
+
+// A stub document: elements record nothing, and appended script or link elements are kept for the test to settle.
+function stubBrowser() {
+  const appended = [];
+  const element = () => ({
+    className: '',
+    dataset: {},
+    style: {},
+    classList: { add() {} },
+    inert: false,
+    clientWidth: 0,
+    clientHeight: 0,
+    setAttribute() {},
+    dispatchEvent: () => true,
+    replaceChildren() {},
+    append() {},
+    remove() {},
+  });
+  globalThis.document = { createElement: element, head: { append: (node) => appended.push(node) } };
+  globalThis.location = { href: 'http://127.0.0.1:1234/main.aspx', origin: 'http://127.0.0.1:1234' };
+  return {
+    appended,
+    restore() {
+      delete globalThis.document;
+      delete globalThis.location;
+      delete globalThis.Invented;
+    },
+  };
+}
+
+const editorProperties = [
+  { name: 'Value', usage: 'bound', ofType: 'SingleLine.Text' },
+  { name: 'Label', usage: 'input', ofType: 'SingleLine.Text' },
+];
+
+class StubEditor {
+  init() {}
+  updateView() {
+    return null;
+  }
+}
+
+// @test-kind contract: the PCF host batches the property changes queued within one tick into a single updateView that names each of them.
+test('PCF field host passes every property changed within one tick to one updateView', async () => {
+  const browser = stubBrowser();
+  const views = [];
+  globalThis.Invented = {
+    Editor: class extends StubEditor {
+      updateView(context) {
+        views.push([...context.updatedProperties]);
+        return null;
+      }
+    },
+  };
+  const definition = {
+    name: 'tst_Invented.Editor',
+    constructor: 'Invented.Editor',
+    type: 'standard',
+    properties: [editorProperties[0]],
+  };
+  try {
+    const runtime = renderPcfControl({ name: 'x_note', type: 'text', label: 'Note' }, 'a', {
+      pcf: { name: 'tst_Invented.Editor', bindings: { Value: { field: 'x_note' } } },
+      clientExtensions: { trusted: true, pcf: { controls: [definition], platformLibraries: [] } },
+    });
+    await runtime.ready;
+    views.length = 0;
+    runtime.setValue('b');
+    runtime.setDisabled(true);
+    await flush();
+    assert.equal(views.length, 1);
+    assert.ok(views[0].includes('Value'));
+    assert.ok(views[0].includes('isControlDisabled'));
+    runtime.destroy();
+  } finally {
+    browser.restore();
+  }
+});
+
+// @test-kind contract: the Canvas PCF host batches the property changes queued within one tick into a single updateView that names each of them.
+test('Canvas PCF host passes every property changed within one tick to one updateView', async () => {
+  const browser = stubBrowser();
+  const views = [];
+  globalThis.Invented = {
+    Editor: class extends StubEditor {
+      updateView(context) {
+        views.push([...context.updatedProperties]);
+        return null;
+      }
+    },
+  };
+  try {
+    const runtime = renderCanvasPcfControl(
+      {
+        name: 'tst_Invented.Editor',
+        admitted: true,
+        constructor: 'Invented.Editor',
+        type: 'standard',
+        properties: editorProperties,
+      },
+      { Value: 'a', Label: 'x' },
+      {},
+    );
+    await runtime.ready;
+    views.length = 0;
+    runtime.update({ Value: 'b', Label: 'x' });
+    runtime.update({ Value: 'b', Label: 'y' });
+    await flush();
+    assert.equal(views.length, 1);
+    assert.ok(views[0].includes('Value'));
+    assert.ok(views[0].includes('Label'));
+    runtime.destroy();
+  } finally {
+    browser.restore();
+  }
+});
+
+// @test-kind contract: a component resource settles on its load event however long the browser takes, so a slow same-origin load does not fail the component.
+test('PCF resource load waits for the load event after fifteen seconds', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const browser = stubBrowser();
+  globalThis.Invented = { Editor: StubEditor };
+  try {
+    const runtime = renderCanvasPcfControl(
+      {
+        name: 'tst_Invented.Editor',
+        admitted: true,
+        constructor: 'Invented.Editor',
+        type: 'standard',
+        properties: editorProperties,
+        resources: { code: ['/__sim-static/pcf/invented/bundle.js'] },
+      },
+      { Value: 'a', Label: 'x' },
+      {},
+    );
+    await flush();
+    const [script] = browser.appended;
+    t.mock.timers.tick(20000);
+    script.onload();
+    await runtime.ready;
+    assert.equal(runtime.inspect().state, 'ready');
+    runtime.destroy();
+  } finally {
+    t.mock.timers.reset();
+    browser.restore();
+  }
+});
+
+// @test-kind compatibility: a two-options column is a two-option control, as Dataverse types it, whatever field type the import recorded.
+test('a two-options column is a boolean control even when the import recorded text', () => {
+  for (const dataverseType of ['bit', 'boolean'])
+    assert.deepEqual(controlDescriptor({ dataverseType, type: 'text' }), {
+      type: 'boolean',
+      supported: true,
+      create: true,
+      update: true,
+    });
 });

@@ -1,3 +1,4 @@
+// @test-kind contract: start-up progress, guards and settle rules of the Lense start-up wait, exercised in a real browser
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -92,7 +93,10 @@ test('startup separates delayed navigation, delayed usable application, failures
   const redirect = await run('/redirect', { modelDriven: true });
   assert.equal(new URL(page.url()).pathname, '/signin');
   assert.doesNotMatch(redirect.events.at(-1).detail, /usable/);
-  await assert.rejects(run('/hang', { timeout: 100 }), /Timeout/);
+  await assert.rejects(
+    run('/hang', { timeout: 100 }),
+    /Initial page navigation did not finish: the 100 ms cap guard ended the wait/,
+  );
   await page.goto(origin);
   // Stopping while the request is in flight ends the wait without a load.
   const inFlight = new Promise((resolve) => (hangReceived = resolve));
@@ -188,7 +192,9 @@ test('real browser replacement finishes after current data despite missing old t
       if (key === 'goto')
         return async (url, options) => {
           assert.equal(url, origin + '/first');
-          assert.equal(options.timeout, 200, 'retain the resource-settlement deadline');
+          // The navigation gets what is left of the 200 ms cap, so the exact value depends on the clock.
+          assert.equal(typeof options.timeout, 'number');
+          assert.ok(options.timeout > 0 && options.timeout <= 200, 'retain the remaining resource-settlement deadline');
           const enrolled = page.waitForRequest((request) => new URL(request.url()).pathname === '/orphan-current');
           await page.evaluate(() => {
             void fetch('/orphan-current');

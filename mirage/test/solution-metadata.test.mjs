@@ -1,3 +1,4 @@
+// @test-kind contract: solution metadata imports the FetchXML and view shapes that exported Solution XML designs, keeping text literal once.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -12,6 +13,7 @@ import {
 import { formCells } from '../lib/native-services.mjs';
 import { approximateFormSchema } from '../lib/form-schema-fallback.mjs';
 import { formattedValue, isDateOnlyField } from '../lib/dataverse-values.mjs';
+import { parseXmlDocument } from '../lib/fetchxml-engine.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 async function fixture(t, files) {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'solution-metadata-'));
@@ -650,6 +652,33 @@ test('several active systemforms with the form name: the first is used and the c
   const chosen = await importSolutionMetadata(root, { portal: p });
   assert.equal(chosen.componentSchemas['basic-form'].fields[0].label, 'Second');
   assert.ok(!chosen.diagnostics.some((d) => d.code === 'SYSTEMFORM_NAME_AMBIGUOUS'));
+});
+
+test('a saved query FetchXML held in CDATA imports to the same FetchXML as its entity-escaped markup', async (t) => {
+  // Both saved queries carry the same FetchXML: an `&amp;` value and a `&lt;` value, each read literally once.
+  const fetchXml =
+    '<fetch><entity name="contact"><attribute name="fullname"></attribute><filter><condition attribute="fullname" operator="eq" value="a &amp; b"></condition><condition attribute="fullname" operator="ne" value="a &lt; b"></condition></filter></entity></fetch>';
+  const viewFetch = '<fetchxml><fetch><entity name="contact"><attribute name="fullname"/></entity></fetch></fetchxml>';
+  const savedQuery = (fetchxmlElement) => view.replace(viewFetch, () => fetchxmlElement);
+  const importedFetchXml = async (xml) => {
+    const root = await fixture(t, { 'Solution/Entities/Contact/SavedQueries/{view-id}.xml': xml });
+    return (await importSolutionMetadata(root, { portal: portal() })).componentSchemas.list.fetchXml;
+  };
+  // The text form is the same FetchXML escaped as character data, so one reader decode yields it.
+  const escapedText = (value) => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+  const conditionValues = (node) =>
+    node.name === 'condition' ? [node.attrs.value] : node.children.flatMap(conditionValues);
+  const fromCdata = await importedFetchXml(savedQuery(`<fetchxml><![CDATA[${fetchXml}]]></fetchxml>`));
+  const fromEscaped = await importedFetchXml(savedQuery(`<fetchxml>${fetchXml}</fetchxml>`));
+  const fromText = await importedFetchXml(savedQuery(`<fetchxml>${escapedText(fetchXml)}</fetchxml>`));
+  assert.equal(fromCdata, fetchXml);
+  assert.equal(fromEscaped, fetchXml);
+  assert.equal(fromText, fetchXml);
+  for (const imported of [fromCdata, fromEscaped, fromText]) {
+    const fetch = parseXmlDocument(imported, { root: 'fetch' });
+    assert.equal(fetch.name, 'fetch');
+    assert.deepEqual(conditionValues(fetch), ['a & b', 'a < b']);
+  }
 });
 
 test('lookup DefaultViewId imports its dependent table and preserves the exact saved query', async (t) => {

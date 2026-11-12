@@ -48,8 +48,9 @@ keep their own kind.
 - A hand-written test cannot be newly tagged `parity`. The checker accepts a new `parity` tag only as the file-level
   tag of a replay runner: a file whose tests are registered only through `replayParityCases` or
   `replayParityDirectory`.
-- Existing `parity` tags stay protected. Removing or rewriting a protected line, deleting a file or stripping a
-  legacy file's tags needs a `// @parity-evidence: <proof>` line in the same change, or a retirement entry for the file.
+- Existing `parity` tags stay protected. Removing or rewriting a protected line, inserting lines between the first and
+  last code line of a parity body, deleting a file or stripping a legacy file's tags needs a
+  `// @parity-evidence: <proof>` line in the same change, or a retirement entry for the file.
 - Hand-written tests that were tagged `parity` before replay cases existed keep their tag and its protection; their
   evidence is the source named in the tag. `scripts/parity-tags-legacy.json` lists each such tag line by file. The
   checker accepts a listed tag where a new `parity` tag would otherwise be refused, the list only shrinks, and an entry

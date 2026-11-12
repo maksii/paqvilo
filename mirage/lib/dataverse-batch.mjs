@@ -506,13 +506,10 @@ async function runBatch(parsed, context, continueOnError) {
         return failed(result(boundary, response.status, blocks), response);
     } else {
       const { responses, failure } = await runChangeset(part, context, refs, ++changesetNumber);
-      // A failed changeset answers as a changeset part holding the failing response (rollback), Content-ID kept.
+      // A failed changeset answers as a changeset part holding only the failing response (rollback), Content-ID kept.
+      blocks.push(changesetPart(boundary, failure ? [failure] : responses, json));
       if (failure && !continueOnError)
-        return failed(
-          result(boundary, failure.response.status, [...blocks, changesetPart(boundary, [failure], json)]),
-          failure.response,
-        );
-      blocks.push(changesetPart(boundary, responses, json));
+        return failed(result(boundary, failure.response.status, blocks), failure.response);
     }
   }
   return result(boundary, 200, blocks);

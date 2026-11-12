@@ -235,7 +235,7 @@ test('status is cheap, carries CSRF, revision, diagnostics, presets and the effe
   assert.ok(json.presets.some((preset) => preset.id === 'two-contacts'));
   assert.equal(json.identity.roleSource, 'override');
   assert.equal(json.diagnostics.total, app.state().diagnostics.length);
-  assert.equal(json.adminUrl, `${app.url}/_sim/`);
+  assert.equal(json.adminUrl, `${app.adminOrigin}/_sim/`);
   assert.deepEqual(
     [json.confinePortalPages, json.externalAssets, json.externalFrameOrigins],
     [false, false, 0],
@@ -771,7 +771,7 @@ test('page inspection answers with the identity a portal request with the same c
   const verdicts = {};
   for (const [label, headers] of cases) {
     const inspected = (
-      await (await fetch(`${app.url}/__sim/api/page-resources?path=/secure/&view=summary`, { headers })).json()
+      await (await fetch(`${app.adminOrigin}/__sim/api/page-resources?path=/secure/&view=summary`, { headers })).json()
     ).page.access.allowed;
     const served = (await fetch(`${app.url}/secure/`, { headers, redirect: 'manual' })).status === 200;
     assert.equal(inspected, served, label);
@@ -782,4 +782,63 @@ test('page inspection answers with the identity a portal request with the same c
     [false, false, false, true, true],
     'portal requests take their identity from the session only',
   );
+});
+
+// @test-kind security: an inherited Object name is an unknown preset, and a cross-site read must not stop the runtime.
+test('inherited Object names are unknown presets for reads and apply, a cross-site read is refused by both listeners, and the runtime keeps serving', async (t) => {
+  const { app, call } = await setup(t);
+  const crossSite = { 'sec-fetch-site': 'cross-site', 'sec-fetch-mode': 'no-cors', 'sec-fetch-dest': 'image' };
+  for (const name of ['toString', 'constructor', '__proto__', 'hasOwnProperty']) {
+    const read = await call(`/__sim/api/presets/${name}`);
+    assert.equal(read.status, 404, `GET ${name}`);
+    assert.equal(read.json.error.message, 'Configuration item not found.', `GET ${name}`);
+    const portalRead = await call(`/__sim/api/presets/${name}`, 'GET', undefined, crossSite);
+    assert.equal(portalRead.status, 403, `cross-site GET ${name} on the portal listener`);
+    assert.equal(portalRead.json.error.code, 'AdminOriginRequired', `cross-site GET ${name} on the portal listener`);
+    const adminRead = await fetch(`${app.adminOrigin}/__sim/api/presets/${name}`, { headers: crossSite });
+    assert.equal(adminRead.status, 403, `cross-site GET ${name} on the admin listener`);
+    assert.equal(
+      (await adminRead.json()).error.code,
+      'CrossSiteAdminRequest',
+      `cross-site GET ${name} on the admin listener`,
+    );
+    const applied = await call(`/__sim/api/presets/${name}/apply`, 'POST', {});
+    assert.equal(applied.status, 404, `POST apply ${name}`);
+    assert.equal(applied.json.error.message, 'Preset not found.', `POST apply ${name}`);
+  }
+  assert.equal((await call('/__sim/api/status')).status, 200, 'the runtime still answers after the cross-site reads');
+});
+
+// @test-kind security: a route error with a non-string code is answered as a 500, and the runtime must keep serving.
+test('a route error with a non-string code is answered as a 500 and the runtime keeps serving', async (t) => {
+  const fixture = syntheticPresetPack();
+  const pack = {
+    ...fixture.pack,
+    presets: () => ({
+      [presetId]: {
+        name: 'Uncloneable',
+        description: 'Its body cannot be cloned',
+        load: () => {
+          throw new DOMException('Preset body cannot be cloned.', 'DataCloneError');
+        },
+      },
+    }),
+  };
+  const { call } = await setup(t, { packs: [pack] });
+  const read = await call(`/__sim/api/presets/${presetId}`);
+  assert.equal(read.status, 500);
+  assert.equal(read.json.error.code, 'SIMULATOR_ERROR');
+  assert.equal(read.json.error.message, 'Preset body cannot be cloned.');
+  assert.equal((await call('/__sim/api/status')).status, 200, 'the runtime still answers after the failed read');
+});
+
+// @test-kind contract: missing prerequisites and inputs are named as 4xx errors, not internal failures.
+test('capture-shell without a persisted state directory answers 409 and live connect without an endpoint answers 400', async (t) => {
+  const { call } = await setup(t, { stateFile: undefined });
+  const shell = await call('/__sim/api/assets/capture-shell', 'POST', { path: '/' });
+  assert.equal(shell.status, 409);
+  assert.equal(shell.json.error.message, 'Asset capture requires a persisted simulator state directory.');
+  const connect = await call('/__sim/api/live/connect', 'POST', {});
+  assert.equal(connect.status, 400);
+  assert.equal(connect.json.error.message, 'Use a loopback browser debugging endpoint.');
 });

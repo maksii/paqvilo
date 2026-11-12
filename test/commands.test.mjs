@@ -48,7 +48,7 @@ const runWithEnv = (extra, ...args) =>
         execFile(
           process.execPath,
           [cli, ...args],
-          { env: { ...env, ...extra }, encoding: 'utf8', windowsHide: true, timeout: 30_000, maxBuffer: 64 << 20 },
+          { env: { ...env, ...extra }, encoding: 'utf8', windowsHide: true, maxBuffer: 64 << 20 },
           (error, stdout, stderr) =>
             resolve({ status: error ? (typeof error.code === 'number' ? error.code : null) : 0, stdout, stderr }),
         ),
@@ -259,7 +259,10 @@ test('Mirage start waits for runtime readiness and exposes page dependency conte
   assert.equal(session.ready, true);
   assert.equal(session.owned, true);
   assert.equal(session.started, true);
-  assert.equal(session.adminUrl, new URL('/_sim/', session.url).href);
+  // The printed administration address is the one the runtime reports on its own admin port, not the portal port.
+  const reported = await (await fetch(new URL('/_sim/api/status', session.url))).json();
+  assert.equal(session.adminUrl, reported.adminUrl);
+  assert.notEqual(new URL(session.adminUrl).port, new URL(session.url).port);
   assert.ok(path.isAbsolute(session.stateFile));
   assert.ok(session.stateFile.startsWith(path.join(path.dirname(config), '.paqvilo') + path.sep));
   assert.match(session.stop, /^npx paqvilo mirage stop --config /);
@@ -830,4 +833,13 @@ test('mirage start refuses a port held by another program before spawning anythi
   );
   const status = await run('mirage', 'status', '--config', config, '--repo', fx.dir, '--json');
   assert.deepEqual(JSON.parse(status.stdout).sessions, [], 'no runtime was spawned or recorded');
+});
+
+test('mirage takes the shutdown guard from signal-forwarding, so the standalone dev path never loads dev.mjs for it', () => {
+  // Source assertion: the set-up runs under the browser doubles of the standalone tests, so loaded modules are not observable here.
+  const mirageSource = fs.readFileSync(new URL('../lense/commands/mirage.mjs', import.meta.url), 'utf8');
+  const devSource = fs.readFileSync(new URL('../lense/commands/dev.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(mirageSource, /guardShutdownSignals\s*\}\s*=\s*await import\(['"]\.\/dev\.mjs['"]\)/);
+  assert.match(mirageSource, /import \{ guardShutdownSignals \} from '\.\.\/signal-forwarding\.mjs';/);
+  assert.doesNotMatch(devSource, /export \{ guardShutdownSignals \}/);
 });

@@ -3,16 +3,33 @@
 // pack's dataverseMessages handler replaces it. The feature-control shapes, probe answers, card defaults and the profile clone
 // are not confirmed natively.
 // ponytail: GetFeatureControlStringSettingsForNamespaceWithUserContext ignores its setting names and additional filters.
-import { randomUUID } from 'node:crypto';
 import { DataError } from './data-error.mjs';
-import { argsOf, featureNotEnabled, registerAddon } from './dataverse-addon-common.mjs';
+import { argsOf, featureNotEnabled, registerAddon, STAMPED_COLUMNS } from './dataverse-addon-common.mjs';
+import { privilegeDeniedError } from './dataverse-security.mjs';
 
 const key = (value) => String(value ?? '').toLowerCase();
 const sameId = (a, b) => key(a) === key(b);
 const invalid = (message, innerCode = '0x80040203') => new DataError(message, 400, 'InvalidRequest', { innerCode });
 const notFound = (logical, id) =>
   new DataError(`${logical} With Id = ${id} Does Not Exist`, 404, 'NotFound', { id, innerCode: '0x80040217' });
-const iso = (at) => new Date(at).toISOString();
+const ADMIN_ROLE = 'System Administrator';
+// The tables of a mobile offline profile clone, the profile first.
+const PROFILE_TABLES = [
+  'mobileofflineprofile',
+  'mobileofflineprofileitem',
+  'mobileofflineprofileitemassociation',
+  'mobileofflineprofileitemfilter',
+];
+// A copy of a stored row for a create: its declared columns without the primary key and the stamped columns.
+function copyOf(store, logical, row) {
+  const { idColumn } = store.resolveMapping(logical);
+  const known = store.fieldDefinitions(logical);
+  return Object.fromEntries(
+    Object.entries(row).filter(
+      ([name]) => Object.hasOwn(known, name) && name !== idColumn && !STAMPED_COLUMNS.has(name),
+    ),
+  );
+}
 
 // Feature control setting: a featurecontrolsetting row's uniquename is the namespace, its content the JSON object { "<name>": value }.
 // Only active rows (statecode 0) count.
@@ -66,9 +83,30 @@ function operations(api) {
     return row;
   };
   const namespaceOf = (name) => settingsOf(store).filter((s) => s.namespace === name);
+  // The privilege and row check of the CRUD path for one operation, made before any read or write.
+  const requireAccess = (c, logical, operation, row) =>
+    api.principals.authorize({ user: c.user, entity: logical, operation, row, mapping: store.resolveMapping(logical) });
+  // The System Administrator role check of dataverse-security-messages2.mjs; the privilege name in the refusal is a guess.
+  const requireSystemAdministrator = (c) => {
+    if (!api.principals.roles(c.user).some((role) => role.name === ADMIN_ROLE))
+      throw privilegeDeniedError(c.user, 'prvSystemAdministrator', 'organization');
+  };
+  // Creates a copy of each row through the create rule of the caller; returns the new primary key of each old one.
+  async function copyRows(c, logical, rows, columnsOf) {
+    const { idColumn } = store.resolveMapping(logical);
+    const ids = new Map();
+    for (const row of rows) {
+      const copy = await api.records.createInternal(c, logical, columnsOf(row), { authorized: true });
+      ids.set(key(row[idColumn]), copy[idColumn]);
+    }
+    return ids;
+  }
 
   // Clone of a mobile offline profile: the profile, its items, their associations and the filters on them, under new ids.
-  async function cloneProfile(source) {
+  // The source and every table are checked for the caller first; each copy is written through the create rule.
+  async function cloneProfile(c, source) {
+    requireAccess(c, 'mobileofflineprofile', 'read', source);
+    for (const logical of PROFILE_TABLES) requireAccess(c, logical, 'create');
     const name = `${source.name} (Copy)`;
     if (name.length > 200) {
       throw new DataError(
@@ -78,46 +116,38 @@ function operations(api) {
         { innerCode: '0x80071112' },
       );
     }
-    const at = api.clock();
-    const profileId = randomUUID();
     const items = tableOf('mobileofflineprofileitem').filter((row) =>
       sameId(row.regardingobjectid, source.mobileofflineprofileid),
     );
-    const itemIds = new Map(items.map((row) => [key(row.mobileofflineprofileitemid), randomUUID()]));
-    const cloned = { ...source, mobileofflineprofileid: profileId, name, createdon: iso(at), modifiedon: iso(at) };
-    await write(() => {
-      tableOf('mobileofflineprofile').push(cloned);
-      for (const row of items) {
-        tableOf('mobileofflineprofileitem').push({
-          ...row,
-          mobileofflineprofileitemid: itemIds.get(key(row.mobileofflineprofileitemid)),
-          regardingobjectid: profileId,
-        });
-      }
-      /* NOSONAR */ for (const row of [...tableOf('mobileofflineprofileitemassociation')]) {
-        if (!itemIds.has(key(row.mobileofflineprofileitemid))) continue;
-        tableOf('mobileofflineprofileitemassociation').push({
-          ...row,
-          mobileofflineprofileitemassociationid: randomUUID(),
-          mobileofflineprofileitemid: itemIds.get(key(row.mobileofflineprofileitemid)),
-        });
-      }
-      /* NOSONAR */ for (const row of [...tableOf('mobileofflineprofileitemfilter')]) {
-        if (
-          !itemIds.has(key(row.mobileofflineprofileitemid)) &&
-          !sameId(row.mobileofflineprofileid, source.mobileofflineprofileid)
-        )
-          continue;
-        tableOf('mobileofflineprofileitemfilter').push({
-          ...row,
-          mobileofflineprofileitemfilterid: randomUUID(),
-          mobileofflineprofileid: profileId,
-          mobileofflineprofileitemid:
-            itemIds.get(key(row.mobileofflineprofileitemid)) ?? row.mobileofflineprofileitemid,
-        });
-      }
+    const onCopiedItem = (row) =>
+      items.some((item) => sameId(item.mobileofflineprofileitemid, row.mobileofflineprofileitemid));
+    const associations = tableOf('mobileofflineprofileitemassociation').filter(onCopiedItem);
+    const filters = tableOf('mobileofflineprofileitemfilter').filter(
+      (row) => onCopiedItem(row) || sameId(row.mobileofflineprofileid, source.mobileofflineprofileid),
+    );
+    return write(async () => {
+      const profile = await api.records.createInternal(
+        c,
+        'mobileofflineprofile',
+        { ...copyOf(store, 'mobileofflineprofile', source), name },
+        { authorized: true },
+      );
+      const profileId = profile.mobileofflineprofileid;
+      const itemIds = await copyRows(c, 'mobileofflineprofileitem', items, (row) => ({
+        ...copyOf(store, 'mobileofflineprofileitem', row),
+        regardingobjectid: profileId,
+      }));
+      await copyRows(c, 'mobileofflineprofileitemassociation', associations, (row) => ({
+        ...copyOf(store, 'mobileofflineprofileitemassociation', row),
+        mobileofflineprofileitemid: itemIds.get(key(row.mobileofflineprofileitemid)),
+      }));
+      await copyRows(c, 'mobileofflineprofileitemfilter', filters, (row) => ({
+        ...copyOf(store, 'mobileofflineprofileitemfilter', row),
+        mobileofflineprofileid: profileId,
+        mobileofflineprofileitemid: itemIds.get(key(row.mobileofflineprofileitemid)) ?? row.mobileofflineprofileitemid,
+      }));
+      return profile;
     });
-    return cloned;
   }
 
   return [
@@ -243,6 +273,7 @@ function operations(api) {
         ],
       },
       handle: async (c) => {
+        requireSystemAdministrator(c);
         const { FeatureType, ConfigData } = argsOf(c);
         await write(() => {
           store.state.dataverse ??= {};
@@ -259,7 +290,7 @@ function operations(api) {
       binding: 'entity',
       entity: 'mobileofflineprofile',
       signature: { params: [], returns: 'mscrm.mobileofflineprofile' },
-      handle: async (c) => ({ ...(await cloneProfile(c.target.row)) }),
+      handle: async (c) => ({ ...(await cloneProfile(c, c.target.row)) }),
     },
     // Cards.
     {
@@ -276,9 +307,17 @@ function operations(api) {
       handle: async (c) => {
         const { CardName, CardId } = argsOf(c);
         const card = cardOf(CardId);
-        const id = randomUUID();
-        await write(() => tableOf('card').push({ ...card, cardid: id, name: CardName }));
-        return { CardIdClone: id };
+        requireAccess(c, 'card', 'read', card);
+        requireAccess(c, 'card', 'create');
+        const copy = await write(() =>
+          api.records.createInternal(
+            c,
+            'card',
+            { ...copyOf(store, 'card', card), name: CardName },
+            { authorized: true },
+          ),
+        );
+        return { CardIdClone: copy.cardid };
       },
     },
     {
@@ -286,7 +325,11 @@ function operations(api) {
       kind: 'action',
       binding: 'unbound',
       signature: { params: [['CardId', 'Edm.String']], response: [['CardFullJson', 'Edm.String']] },
-      handle: async (c) => ({ CardFullJson: cardOf(argsOf(c).CardId).appdefinition ?? null }),
+      handle: async (c) => {
+        const card = cardOf(argsOf(c).CardId);
+        requireAccess(c, 'card', 'read', card);
+        return { CardFullJson: card.appdefinition ?? null };
+      },
     },
     {
       name: 'ImportCardTypeSchema',

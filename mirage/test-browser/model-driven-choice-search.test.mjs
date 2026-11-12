@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
-import { sharedBrowser, fileScope } from './shared-browser.mjs';
+import { sharedBrowser, fileScope, appsOrigin } from './shared-browser.mjs';
 import { prepareNativeControls } from './native-controls-fixture.mjs';
 
 const chrome = sharedBrowser();
@@ -11,9 +11,9 @@ let sharedApp;
 const readOnlyApp = () => (sharedApp ??= modelDrivenFixture(scope));
 
 test('multiselect search preserves typed terms and keyboard selection cannot toggle hidden choices', async (t) => {
-  const { origin } = await readOnlyApp();
+  const { sim, origin } = await readOnlyApp();
   const page = await chrome.page(t);
-  await prepareNativeControls(page, origin);
+  await prepareNativeControls(page, appsOrigin(sim, origin));
   await page.evaluate(async () => {
     const renderControl = window.renderFixtureControl;
     window.control = renderControl(
@@ -67,9 +67,9 @@ test('multiselect search preserves typed terms and keyboard selection cannot tog
 });
 
 test('choice lists stay inside the form viewport and keyboard navigation scrolls only their options', async (t) => {
-  const { origin } = await readOnlyApp();
+  const { sim, origin } = await readOnlyApp();
   const page = await chrome.page(t, { viewport: { width: 1000, height: 700 } });
-  await prepareNativeControls(page, origin);
+  await prepareNativeControls(page, appsOrigin(sim, origin));
   await page.evaluate(async () => {
     const renderControl = window.renderFixtureControl;
     document.body.replaceChildren();

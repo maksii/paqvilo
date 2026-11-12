@@ -1,8 +1,11 @@
 // Declarative repository setup via gh. No tokens, private data or registry publishing.
 import fs from 'node:fs';
+import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const apply = process.argv.includes('--apply');
+const isEntry = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 const repo = 'maksii/paqvilo';
 const endpoint = `repos/${repo}`;
 function api(method, route, body, { missing = false } = {}) {
@@ -65,8 +68,13 @@ const tagRules = {
   conditions: { ref_name: { include: ['refs/tags/v*'], exclude: [] } },
   rules: [{ type: 'deletion' }, { type: 'update', parameters: { update_allows_fetch_and_merge: false } }],
 };
+export const selectedActionsPolicy = {
+  github_owned_allowed: true,
+  verified_allowed: false,
+  patterns_allowed: ['SonarSource/sonarqube-scan-action@*'],
+};
 
-if (!apply) {
+if (isEntry && !apply) {
   console.log(
     JSON.stringify(
       {
@@ -76,7 +84,7 @@ if (!apply) {
         tagRules,
         additional: [
           'read-only workflow tokens',
-          'only GitHub-owned actions; immutable action pins',
+          'GitHub-owned actions and SonarSource/sonarqube-scan-action; immutable action pins',
           'Dependabot alerts and security fixes',
           'private vulnerability reporting',
           'Pages Actions source and main-only environment',
@@ -88,7 +96,7 @@ if (!apply) {
       2,
     ),
   );
-} else {
+} else if (isEntry) {
   const state = api('GET', endpoint);
   if (!state.permissions?.admin) throw new Error('Repository admin permission is required.');
   if (state.visibility !== 'public')
@@ -108,11 +116,7 @@ if (!apply) {
     allowed_actions: 'selected',
     sha_pinning_required: true,
   });
-  api('PUT', `${endpoint}/actions/permissions/selected-actions`, {
-    github_owned_allowed: true,
-    verified_allowed: false,
-    patterns_allowed: [],
-  });
+  api('PUT', `${endpoint}/actions/permissions/selected-actions`, selectedActionsPolicy);
   api('PUT', `${endpoint}/branches/main/protection`, protection);
   console.log('Main protected, including admins; CI/security gates required.');
   const existingRules = api('GET', `${endpoint}/rulesets`);

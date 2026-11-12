@@ -1,3 +1,4 @@
+// @test-kind contract: shared model-driven panel tests run on owned loopback fixtures with the agent ownership the command gives them.
 import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -11,6 +12,8 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 
 import { startModelDrivenInspector } from '../lense/model-driven-inspector.mjs';
+import { startAgentServer } from '../lense/agent-server.mjs';
+import { EventEmitter } from 'node:events';
 import { createModelDrivenOverlay } from '../lense/model-driven.mjs';
 import { interceptOrigin } from '../lense/intercept.mjs';
 import { readModelDrivenNativeSource } from '../lense/model-driven-native-comparison.mjs';
@@ -29,7 +32,7 @@ async function settled(inspector, ready, signal) {
   assert.ok(ready(inspector.snapshot()), 'inspector state settled');
 }
 
-async function modelPanelFixture(t, { nativeBody, withGit = true, archive = false } = {}) {
+async function modelPanelFixture(t, { nativeBody, withGit = true, archive = false, nativeReadGuardMs } = {}) {
   const owner = ownedFixture(t),
     root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'model-panel-parity-'));
   // Async Git reads started by a refresh can still hold the directory briefly on Windows.
@@ -101,6 +104,7 @@ async function modelPanelFixture(t, { nativeBody, withGit = true, archive = fals
     page,
     overlay,
     imported,
+    nativeReadGuardMs,
     cfg: { origin, stateDir: path.join(root, '.state'), sourceDir: root },
     runtime: {
       liveReload: false,
@@ -110,6 +114,20 @@ async function modelPanelFixture(t, { nativeBody, withGit = true, archive = fals
     },
   });
   owner.add(() => inspector.close());
+  // The command starts one agent per dev session and attaches each inspector's state to it.
+  const agent = await startAgentServer({
+    session: Object.assign(new EventEmitter(), {
+      cfg: { stateDir: path.join(root, '.state'), origin, sourceDir: root },
+      rel: String,
+    }),
+    context,
+    stop: () => {},
+    runtime: { watching: true, debugPort: null },
+    options: { deferred: true, ownsPage: (candidate) => candidate === page },
+  });
+  agent.setInspector(inspector.agentState);
+  // The failed-removal test asserts this rejection itself; teardown only releases what remains.
+  owner.add(() => agent.close().catch(() => {}));
   await page.goto(origin + '/main.aspx');
   await page.locator('#paqvilo-panel').waitFor();
   await page.keyboard.press('Alt+Shift+P');
@@ -120,6 +138,7 @@ async function modelPanelFixture(t, { nativeBody, withGit = true, archive = fals
     context,
     overlay,
     inspector,
+    agent,
     origin,
     errors,
     makeImported,
@@ -282,10 +301,10 @@ test('comparison preserves UTF8 BOM and rejects a stale source revision without 
 });
 
 test('a paused comparison evaluator releases its lease at the Node deadline and permits a fresh read', async (t) => {
-  const f = await modelPanelFixture(t),
+  const f = await modelPanelFixture(t, { nativeReadGuardMs: 1500 }),
     original = f.page.evaluate.bind(f.page);
-  // The deadline timer is created synchronously after the paused read starts; only that window uses
-  // mock timers, and the deadline elapses at once instead of after 13 real seconds.
+  // The guard timer is created synchronously after the paused read starts; only that window uses
+  // mock timers, and the guard elapses at once instead of after its real duration.
   let paused = 0,
     settled = false,
     settledBeforeDeadline;
@@ -295,7 +314,7 @@ test('a paused comparison evaluator releases its lease at the Node deadline and 
     t.mock.timers.enable({ apis: ['setTimeout'] });
     queueMicrotask(async () => {
       // A result released early would reach Node within this real 300 ms window (immediates are not mocked).
-      t.mock.timers.tick(12_999);
+      t.mock.timers.tick(1_499);
       for (const end = performance.now() + 300; performance.now() < end;)
         await new Promise((resolve) => setImmediate(resolve));
       settledBeforeDeadline = settled;
@@ -312,15 +331,185 @@ test('a paused comparison evaluator releases its lease at the Node deadline and 
     settled = true;
   });
   assert.equal(paused, 1);
-  assert.equal(settledBeforeDeadline, false, 'the paused read is still awaited 1 ms before the deadline');
+  assert.equal(settledBeforeDeadline, false, 'the paused read is still awaited 1 ms before the guard');
   assert.equal(result.ok, false);
-  assert.match(result.error, /13 seconds/);
+  assert.equal(result.reason, 'native-read-timed-out');
+  assert.match(result.error, /1500 ms/);
+  assert.match(result.error, /did not answer/);
   f.page.evaluate = original;
   const fresh = await original(
     (token) => window.__paqviloModelPanelApi({ token, name: 'diff', body: { rel: 'x_script.js' } }),
     token,
   );
   assert.equal(fresh.ok, true);
+});
+
+test('a native structure read that answers after ten seconds is kept under the default guard', async (t) => {
+  const f = await modelPanelFixture(t),
+    original = f.page.evaluate.bind(f.page),
+    token = f.inspector.snapshot().token;
+  // The startup structure read is the only page evaluation that selects the document scope; it is gated here so
+  // that the mocked clock passes the guard before the answer arrives.
+  f.page.evaluate = (fn, input) => {
+    if (!String(fn).includes('getSelectionScope(document.documentElement)')) return original(fn, input);
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let release;
+    queueMicrotask(() => {
+      t.mock.timers.tick(10_000);
+      t.mock.timers.reset();
+      release({ invented: 'structure' });
+    });
+    return new Promise((resolve) => {
+      release = resolve;
+    });
+  };
+  try {
+    await original(
+      (token) => window.__paqviloModelPanelApi({ token, name: 'inspect', body: { refresh: true } }),
+      token,
+    );
+    await settled(
+      f.inspector,
+      (state) => state.nativeStructure?.invented === 'structure',
+      new AbortController().signal,
+    );
+    assert.deepEqual(f.inspector.snapshot().nativeStructure, { invented: 'structure' });
+  } finally {
+    f.page.evaluate = original;
+  }
+});
+
+test('a native structure read that never answers reports native-read-timed-out under the configured guard', async (t) => {
+  const f = await modelPanelFixture(t, { nativeReadGuardMs: 1000 }),
+    original = f.page.evaluate.bind(f.page),
+    token = f.inspector.snapshot().token;
+  f.page.evaluate = (fn, input) => {
+    if (!String(fn).includes('getSelectionScope(document.documentElement)')) return original(fn, input);
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    queueMicrotask(() => {
+      t.mock.timers.tick(1_000);
+      t.mock.timers.reset();
+    });
+    return new Promise(() => {});
+  };
+  try {
+    await original(
+      (token) => window.__paqviloModelPanelApi({ token, name: 'inspect', body: { refresh: true } }),
+      token,
+    );
+    await settled(
+      f.inspector,
+      (state) => state.problems.some((item) => item.code === 'native-read-timed-out'),
+      new AbortController().signal,
+    );
+    const state = f.inspector.snapshot(),
+      problem = state.problems.find((item) => item.code === 'native-read-timed-out');
+    assert.equal(state.nativeStructure, null);
+    assert.match(problem.text, /1000 ms/);
+    assert.match(problem.text, /did not answer/);
+  } finally {
+    f.page.evaluate = original;
+  }
+});
+
+test('owned provider cleanup that answers after five seconds completes and disposes the provider', async (t) => {
+  const f = await modelPanelFixture(t),
+    realFrames = f.page.frames.bind(f.page);
+  assert.equal(await f.page.evaluate(() => typeof globalThis.__paqviloModelDrivenProvider), 'object');
+  // Each frame the cleanup visits is wrapped so that only the provider disposal call is gated.
+  let answerDispose, requestDispose, markRetired;
+  const requested = new Promise((resolve) => {
+      requestDispose = resolve;
+    }),
+    retirementDone = new Promise((resolve) => {
+      markRetired = resolve;
+    });
+  const gated = (frame) =>
+    new Proxy(frame, {
+      get(target, key) {
+        if (key !== 'evaluate') {
+          const value = Reflect.get(target, key, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        }
+        return (fn, input) => {
+          if (!String(fn).includes('provider.dispose()')) return target.evaluate(fn, input);
+          requestDispose();
+          t.mock.timers.enable({ apis: ['setTimeout'] });
+          queueMicrotask(() => {
+            t.mock.timers.tick(5_000);
+            t.mock.timers.reset();
+          });
+          return new Promise((resolve) => {
+            answerDispose = () => resolve(target.evaluate(fn, input));
+          });
+        };
+      },
+    });
+  f.page.frames = () => realFrames().map(gated);
+  const originalEvaluate = f.page.evaluate.bind(f.page);
+  f.page.evaluate = (fn, input) => {
+    const call = originalEvaluate(fn, input);
+    return String(fn).includes('__paqviloRetiredModelInspectors') ? call.finally(markRetired) : call;
+  };
+  try {
+    let closed = false;
+    const closing = f.inspector.close();
+    closing.then(
+      () => {
+        closed = true;
+      },
+      () => {
+        closed = true;
+      },
+    );
+    await requested;
+    // The retirement runs alongside the disposal, so it completes while the disposal is still unanswered; close must
+    // still wait for the disposal.
+    await retirementDone;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(closed, false, 'close waits for the owned provider disposal to answer');
+    answerDispose();
+    await closing;
+    assert.equal(await originalEvaluate(() => globalThis.__paqviloModelDrivenProvider), undefined);
+  } finally {
+    f.page.evaluate = originalEvaluate;
+    f.page.frames = realFrames;
+  }
+});
+
+test('owned provider cleanup that never answers records the leak in the session log and still completes close', async (t) => {
+  const f = await modelPanelFixture(t, { nativeReadGuardMs: 1000 }),
+    realFrames = f.page.frames.bind(f.page);
+  // The disposal is never answered: only the mocked guard, advanced once the call is in flight, ends the wait.
+  f.page.frames = () =>
+    realFrames().map(
+      (frame) =>
+        new Proxy(frame, {
+          get(target, key) {
+            if (key !== 'evaluate') {
+              const value = Reflect.get(target, key, target);
+              return typeof value === 'function' ? value.bind(target) : value;
+            }
+            return (fn, input) => {
+              if (!String(fn).includes('provider.dispose()')) return target.evaluate(fn, input);
+              t.mock.timers.enable({ apis: ['setTimeout'] });
+              queueMicrotask(() => {
+                t.mock.timers.tick(1_000);
+                t.mock.timers.reset();
+              });
+              return new Promise(() => {});
+            };
+          },
+        }),
+    );
+  try {
+    await f.inspector.close();
+    const problem = f.inspector.snapshot().problems.find((item) => item.code === 'cleanup-timed-out');
+    assert.ok(problem, 'the unanswered disposal is recorded in the session log');
+    assert.match(problem.text, /Owned provider disposal did not answer within 1000 ms/);
+  } finally {
+    f.page.frames = realFrames;
+  }
 });
 
 test('canonical Issues shows source reasons, console warnings and request failures in distinct groups', async (t) => {
@@ -386,10 +575,13 @@ test('mapped runtime locations open the exact selected source at one-based line 
 
 test('inspector drains shared-panel DOM and listeners even when owned discovery removal fails', async (t) => {
   const f = await modelPanelFixture(t);
-  const discovery = f.inspector.agent.discoveryFile;
+  const discovery = f.agent.discoveryFile;
   await fs.rm(discovery);
   await fs.mkdir(discovery);
-  await assert.rejects(f.inspector.close(), (cause) => ['EPERM', 'EISDIR', 'ERR_FS_EISDIR'].includes(cause.code));
+  // The owner retires the inspector first, then closes the agent, as the command's cleanup does.
+  f.agent.setInspector(null);
+  await f.inspector.close();
+  await assert.rejects(f.agent.close(), (cause) => ['EPERM', 'EISDIR', 'ERR_FS_EISDIR'].includes(cause.code));
   await f.page.waitForFunction(
     () => !document.getElementById('paqvilo-panel') && !document.getElementById('paqvilo-xray'),
   );

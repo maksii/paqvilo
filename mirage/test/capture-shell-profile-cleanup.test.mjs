@@ -1,3 +1,4 @@
+// @test-kind contract: launchCaptureBrowser removes its temporary profile after close(), retrying while a busy profile file is held.
 // launchCaptureBrowser (capture-shell.mjs) removes its temporary profile after close(); a closed browser can keep a
 // profile file busy for seconds on Windows, so the removal must retry while the event loop keeps running.
 import test from 'node:test';
@@ -15,7 +16,6 @@ const BUSY_MS = 2000;
 test(
   'closing the capture browser removes its profile once a busy profile file is released',
   {
-    timeout: 60_000,
     // Exclusive (non-shared) file handles that block deletion are a Windows capability.
     skip: process.platform !== 'win32' && 'mandatory file locks exist only on Windows',
   },

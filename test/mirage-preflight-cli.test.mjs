@@ -1,3 +1,4 @@
+// @test-kind contract: mirage preflight reports placeholder flows, blocks only under strict or scenario use, and exits 2 on invocation errors.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -60,7 +61,7 @@ const runIn = ({ root, stateDir }, command, ...args) =>
         execFile(
           process.execPath,
           [cli, command, ...args, ...(command === 'preflight' ? [] : ['--state-dir', stateDir])],
-          { cwd: root, encoding: 'utf8', windowsHide: true, env: env(), timeout: 60000 },
+          { cwd: root, encoding: 'utf8', windowsHide: true, env: env() },
           (error, stdout, stderr) =>
             resolve({
               status: error ? error.code : 0,

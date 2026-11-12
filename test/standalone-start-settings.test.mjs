@@ -1,3 +1,4 @@
+// @test-kind contract: standalone reuse keeps the effective platform and managed-identity settings in its launch identity.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -10,69 +11,84 @@ import { tempDir } from './fixture.mjs';
 const execute = promisify(execFile),
   cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 
-test(
-  'standalone reuse retains effective platform and managed-identity settings in its launch identity',
-  { timeout: 120000 },
-  async (t) => {
-    const root = await tempDir('paq-start-settings-');
-    const project = path.join(root, 'project.json');
-    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_')));
-    const run = async (action) =>
-      JSON.parse(
-        (
-          await execute(process.execPath, [cli, 'mirage', action, '--project', project, '--port', '0', '--json'], {
+test('standalone reuse retains effective platform and managed-identity settings in its launch identity', async (t) => {
+  const root = await tempDir('paq-start-settings-');
+  const project = path.join(root, 'project.json');
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_')));
+  const run = async (action, ...extra) =>
+    JSON.parse(
+      (
+        await execute(
+          process.execPath,
+          [cli, 'mirage', action, '--project', project, '--port', '0', '--json', ...extra],
+          {
             cwd: root,
             env,
             windowsHide: true,
-            timeout: 30000,
-          })
-        ).stdout,
-      );
-    const started = [];
-    t.after(async () => {
-      try {
-        // Every Mirage this test started is stopped through the command under test, not left running.
-        const { stopped } = await run('stop');
-        assert.deepEqual(stopped.map((item) => item.pid).sort(), [...started].sort());
-      } finally {
-        await fs.rm(root, { recursive: true, force: true });
-      }
-    });
-    const write = (limit, mode) =>
-      fs.writeFile(
-        project,
-        JSON.stringify({
-          version: 2,
-          runtime: { kind: 'dataverse-api' },
-          simulation: { level: 'dry-run' },
-          solutions: [],
-          platform: { QueryLinkEntityLimit: limit, evidence: 'Invented settings-reuse regression' },
-          dataverse: { tls: false, tds: { enabled: false }, managedIdentity: { mode } },
-        }),
-      );
-    const status = async (session) => await (await fetch(session.url + '/_sim/api/status')).json();
-    await write(1, 'imds');
-    const first = await run('start'),
-      reused = await run('start');
-    started.push(first.pid);
-    assert.equal(reused.started, false);
-    assert.equal(reused.pid, first.pid);
-    await write(50, 'imds');
-    const changedPlatform = await run('start');
-    assert.equal(changedPlatform.started, true);
-    assert.notEqual(changedPlatform.pid, first.pid);
-    started.push(changedPlatform.pid);
-    assert.equal(
-      (await status(changedPlatform)).platformSettings.find((item) => item.key === 'QueryLinkEntityLimit').value,
-      50,
+          },
+        )
+      ).stdout,
     );
-    assert.equal((await status(first)).platformSettings.find((item) => item.key === 'QueryLinkEntityLimit').value, 1);
-    await write(50, 'appservice');
-    const changedIdentity = await run('start');
-    assert.equal(changedIdentity.started, true);
-    assert.notEqual(changedIdentity.pid, changedPlatform.pid);
-    started.push(changedIdentity.pid);
-    assert.equal((await status(changedIdentity)).dataverse.managedIdentity.mode, 'appservice');
-    assert.equal((await status(changedPlatform)).dataverse.managedIdentity.mode, 'imds');
-  },
-);
+  // A start whose effective settings differ from the live runtime on the same state file is refused, naming it:
+  // the settings are part of the launch identity (an identity without them would reuse that runtime instead).
+  const refusedFor = async (owner) => {
+    const failure = await run('start').then(
+      (value) => assert.fail(`start was not refused: ${JSON.stringify(value)}`),
+      (error) => JSON.parse(error.stdout),
+    );
+    assert.equal(failure.ok, false);
+    assert.match(
+      failure.error.message,
+      new RegExp(`^Mirage pid ${owner.pid} already uses state file .+ with different settings`),
+    );
+  };
+  const otherState = (name) => ['--state', path.join(root, name, 'state.json')];
+  const started = [];
+  t.after(async () => {
+    try {
+      // Every Mirage this test started is stopped through the command under test, not left running.
+      const { stopped } = await run('stop');
+      assert.deepEqual(stopped.map((item) => item.pid).sort(), [...started].sort());
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+  const write = (limit, mode) =>
+    fs.writeFile(
+      project,
+      JSON.stringify({
+        version: 2,
+        runtime: { kind: 'dataverse-api' },
+        simulation: { level: 'dry-run' },
+        solutions: [],
+        platform: { QueryLinkEntityLimit: limit, evidence: 'Invented settings-reuse regression' },
+        dataverse: { tls: false, tds: { enabled: false }, managedIdentity: { mode } },
+      }),
+    );
+  const status = async (session) => await (await fetch(session.url + '/_sim/api/status')).json();
+  await write(1, 'imds');
+  const first = await run('start'),
+    reused = await run('start');
+  started.push(first.pid);
+  assert.equal(reused.started, false);
+  assert.equal(reused.pid, first.pid);
+  await write(50, 'imds');
+  await refusedFor(first);
+  const changedPlatform = await run('start', ...otherState('platform'));
+  assert.equal(changedPlatform.started, true);
+  assert.notEqual(changedPlatform.pid, first.pid);
+  started.push(changedPlatform.pid);
+  assert.equal(
+    (await status(changedPlatform)).platformSettings.find((item) => item.key === 'QueryLinkEntityLimit').value,
+    50,
+  );
+  assert.equal((await status(first)).platformSettings.find((item) => item.key === 'QueryLinkEntityLimit').value, 1);
+  await write(50, 'appservice');
+  await refusedFor(first);
+  const changedIdentity = await run('start', ...otherState('identity'));
+  assert.equal(changedIdentity.started, true);
+  assert.notEqual(changedIdentity.pid, changedPlatform.pid);
+  started.push(changedIdentity.pid);
+  assert.equal((await status(changedIdentity)).dataverse.managedIdentity.mode, 'appservice');
+  assert.equal((await status(changedPlatform)).dataverse.managedIdentity.mode, 'imds');
+});

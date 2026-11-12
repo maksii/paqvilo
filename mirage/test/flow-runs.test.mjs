@@ -1,7 +1,8 @@
+// @test-kind contract: Paqvilo's designed flow run store behaviour, its run rows and their error fields, on invented flows and a fixed clock.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
-import { createScheduler, fixedClock, sequentialIds } from '../lib/runtime-clock.mjs';
+import { createScheduler, fixedClock, MAX_TIMER_DELAY, sequentialIds } from '../lib/runtime-clock.mjs';
 import { createFlowRunStore, describe } from '../lib/flow-runs.mjs';
 import { executeFlowDefinition } from '../lib/flow-runtime.mjs';
 
@@ -325,6 +326,27 @@ test('prune drops finished approvals beyond keepRuns and keeps every pending one
   assert.equal(notes.find((n) => n.code === 'FLOW_RUN_JOURNAL_PRUNED').approvals, 250);
 });
 
+test('a failed run exposes the stored errorCode and errorMessage in its summary and detail', async (t) => {
+  const { store, runs } = await fixture(t);
+  const failed = await runs.start({ processId: FLOW });
+  await runs.complete(failed.id, {
+    status: 'Failed',
+    error: { code: 'LocalFlowFailed', message: 'Invented failure text.' },
+  });
+  const detail = runs.get(failed.id);
+  assert.equal(detail.errorCode, 'LocalFlowFailed');
+  assert.equal(detail.errorMessage, 'Invented failure text.');
+  assert.equal(store.state.tables.flowrun[0].errormessage, 'Invented failure text.');
+  const summary = runs.list({ processId: FLOW }).find((row) => row.id === failed.id);
+  assert.equal(summary.errorCode, 'LocalFlowFailed');
+  assert.equal(summary.errorMessage, 'Invented failure text.');
+
+  const done = await runs.start({ processId: FLOW });
+  await runs.complete(done.id, { status: 'Succeeded' });
+  assert.equal(runs.get(done.id).errorCode, null);
+  assert.equal(runs.get(done.id).errorMessage, null);
+});
+
 test('describe() reports behaviour mechanics and contract parity with its requirements', () => {
   const record = describe();
   assert.equal(record.level, 'behaviour');
@@ -333,4 +355,71 @@ test('describe() reports behaviour mechanics and contract parity with its requir
     record.operations.filter((op) => op.level === 'contract').map((op) => op.name),
     ['approvalOutcomeShape', 'runHistoryApiParity'],
   );
+});
+
+// A provider that records the context of each call and answers after several turns of the event loop.
+function timedProvider() {
+  const contexts = [];
+  return {
+    contexts,
+    resolve: () => ({ referenceLogicalName: null, bound: true, provider: 'invented', connectionId: null }),
+    supports: () => true,
+    invoke: async ({ context }) => {
+      contexts.push(context);
+      for (let turn = 0; turn < 3; turn++) await new Promise((resolve) => setImmediate(resolve));
+      return { status: 200, body: { invented: true }, headers: {} };
+    },
+  };
+}
+
+test('a run timeout above the timer limit, or not a number, reaches the provider as a usable delay', async () => {
+  const definition = {
+    triggers: { manual: { type: 'Request', kind: 'Button' } },
+    actions: { Call: { type: 'Http', runAfter: {}, inputs: { method: 'GET', uri: 'https://invented.test/' } } },
+  };
+  for (const [timeoutMs, expected] of [
+    [3e9, MAX_TIMER_DELAY],
+    [Number.NaN, undefined],
+  ]) {
+    const store = await new DataStore({ state: emptyState(), clock: fixedClock(), ids: sequentialIds() }).init();
+    const provider = timedProvider();
+    await executeFlowDefinition({
+      definition,
+      input: {},
+      store,
+      connectors: provider,
+      limits: { timeoutMs },
+      context: { background: true },
+    });
+    assert.equal(provider.contexts.length, 1);
+    assert.equal(provider.contexts[0].timeoutMs, expected, `limits.timeoutMs ${timeoutMs}`);
+  }
+});
+
+test('an Until limit follows the run clock, not the wall clock', async () => {
+  let ms = Date.parse('2026-01-01T00:00:00Z');
+  const clock = { now: () => (ms += 30 * 60 * 1000) };
+  const store = await new DataStore({ state: emptyState(), clock, ids: sequentialIds() }).init();
+  const definition = {
+    triggers: { manual: { type: 'Request', kind: 'Button' } },
+    actions: {
+      Init: { type: 'InitializeVariable', inputs: { variables: [{ name: 'n', type: 'integer', value: 0 }] } },
+      Loop: {
+        type: 'Until',
+        runAfter: { Init: ['Succeeded'] },
+        expression: "@equals(variables('n'), 99)",
+        limit: { count: 60, timeout: 'PT1H' },
+        actions: { Step: { type: 'IncrementVariable', inputs: { name: 'n', value: 1 } } },
+      },
+      Reply: {
+        type: 'Response',
+        runAfter: { Loop: ['Succeeded', 'Failed', 'TimedOut'] },
+        inputs: { statusCode: 200, body: { status: "@actions('Loop')['status']", n: "@variables('n')" } },
+      },
+    },
+  };
+  const result = await executeFlowDefinition({ definition, input: {}, store });
+  const iterations = Number(String(result.body.n.value ?? result.body.n));
+  assert.equal(result.body.status, 'TimedOut');
+  assert.ok(iterations < 60, `the injected clock ended the loop after ${iterations} iterations`);
 });

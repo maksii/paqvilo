@@ -132,7 +132,8 @@ export function parseSiteMap(root, { lcid = 1033 } = {}) {
               ...destination,
               supported: destination?.supported ?? Boolean(destination),
               reason:
-                destination?.reason ?? (destination ? undefined : 'This navigation type is not supported locally yet.'),
+                destination?.reason ??
+                (destination ? undefined : 'This navigation type is not available in the local host.'),
             };
           }),
       })),
@@ -364,8 +365,9 @@ export function compileForm(form, fields, lcid = 1033) {
     name: node.attrs.name ?? null,
     attributes: { ...node.attrs },
   });
-  const tabs = descendants(root, 'tab').map((tab) => ({
-    id: tab.attrs.name ?? tab.attrs.id,
+  // A tab with neither a name nor an id is addressed by its position in the form.
+  const tabs = descendants(root, 'tab').map((tab, index) => ({
+    id: tab.attrs.name ?? tab.attrs.id ?? `tab-${index}`,
     sourceStructure: sourceStructure(tab),
     label: label(child(tab, 'labels'), lcid) ?? tab.attrs.name ?? 'General',
     visible: formBoolean(tab.attrs.visible, true),
@@ -569,9 +571,9 @@ function layoutCells(section) {
   const supported = Boolean(name && fields[name] && (!isCustom || pcf));
   let unsupportedReason;
   if (!supported) {
-    if (!name) unsupportedReason = 'This control is not supported locally yet.';
+    if (!name) unsupportedReason = 'This control is not available in the local host.';
     else if (!fields[name]) unsupportedReason = 'Column metadata is unavailable.';
-    else unsupportedReason = 'This custom control is not supported locally yet.';
+    else unsupportedReason = 'This custom control is not available in the local host.';
   }
   return [
     {

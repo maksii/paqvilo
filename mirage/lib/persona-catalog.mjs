@@ -526,3 +526,45 @@ export function resolvePersonaCatalog({ contacts = [], catalogs = [], defaultCon
     scenarios: [...scenarios.values()].sort(ordered),
   };
 }
+
+const nullsFor = (entries) => Object.fromEntries(Object.keys(entries).map((key) => [key, null]));
+
+function publicPortalOverrides(overrides) {
+  const reduced = {};
+  if (overrides.snippets !== undefined) reduced.snippets = nullsFor(overrides.snippets);
+  if (overrides.settings !== undefined) reduced.settings = nullsFor(overrides.settings);
+  return reduced;
+}
+
+// The picker needs a context's text and start page, the name of its deployment profile and the key names of its
+// overrides. Values, the definition and the browser settings stay on the runtime.
+export function publicPersonaContext(context) {
+  const reduced = {};
+  for (const key of ['id', 'label', 'description', 'startPath']) {
+    if (context[key] !== undefined) reduced[key] = context[key];
+  }
+  if (context.deploymentProfile !== undefined)
+    reduced.deploymentProfile = { profile: context.deploymentProfile.profile ?? null };
+  if (context.environmentVariables !== undefined) reduced.environmentVariables = nullsFor(context.environmentVariables);
+  if (context.portalOverrides !== undefined) reduced.portalOverrides = publicPortalOverrides(context.portalOverrides);
+  return reduced;
+}
+
+const publicPersonaContexts = (contexts) => (Array.isArray(contexts) ? contexts.map(publicPersonaContext) : contexts);
+
+const publicRuntimeItem = ({ browser, origin, ...item }) => item;
+
+// The picker payload with the context definitions of its resolved, effective and state catalogues reduced, and the
+// runtime items without their browser settings and origins. The report itself, including the cached one, is not changed.
+export function publicPersonaReport(report) {
+  return {
+    ...report,
+    contexts: publicPersonaContexts(report.contexts),
+    catalog: report.catalog && { ...report.catalog, contexts: publicPersonaContexts(report.catalog.contexts) },
+    stateCatalog: report.stateCatalog && {
+      ...report.stateCatalog,
+      contexts: publicPersonaContexts(report.stateCatalog.contexts),
+    },
+    runtimes: report.runtimes && { ...report.runtimes, items: report.runtimes.items?.map(publicRuntimeItem) },
+  };
+}

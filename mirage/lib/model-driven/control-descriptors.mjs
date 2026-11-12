@@ -45,6 +45,7 @@ export function controlDescriptor(field = {}) {
   let type;
   if (field.dataverseType && !dataverseTypes.has(native)) type = 'unsupported';
   else if (native === 'multiselectpicklist') type = 'multiselect';
+  else if (['bit', 'boolean'].includes(native)) type = 'boolean';
   else type = field.type ?? inferred;
   const supported = CONTROL_TYPES.includes(type);
   return {

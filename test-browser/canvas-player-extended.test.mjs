@@ -36,6 +36,25 @@ function silentWav() {
   buffer.writeUInt32LE(length, 40);
   return buffer;
 }
+// Serves one Canvas app on a loopback port and opens a browser context for it; the server and browser close with the test.
+async function canvasContext(t, app) {
+  const runtime = createCanvasRuntime({ apps: () => [app], evaluator: createPowerFxEvaluator() });
+  const handler = createCanvasHandler({
+    apps: () => [app],
+    runtime,
+    principal: () => ({ kind: 'staff', principalId: 'local' }),
+    csrf: () => 'fixture-token',
+  });
+  const server = http.createServer((req, res) => {
+    if (!handler(req, res)) res.writeHead(404).end();
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  ownedFixture(t).add(() => closeServer(server));
+  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
+  ownedFixture(t).add(() => browser.close());
+  const context = await browser.newContext();
+  return { context, runtime, server };
+}
 async function player(t, { display, resolution, onDanger, watch, onRevision, onStart, assetWarnings } = {}) {
   const rows = Array.from({ length: 60 }, (_, i) => i + 1).join(',');
   const files = {
@@ -257,6 +276,28 @@ async function player(t, { display, resolution, onDanger, watch, onRevision, onS
               Width: '=100',
               Height: '=40',
             }),
+            control('Save', 'Classic/Button@2.0', {
+              Text: '="Save"',
+              OnSelect: '=Notify("Saved", NotificationType.Success, 1000)',
+              X: '=950',
+              Y: '=650',
+              Width: '=120',
+              Height: '=40',
+            }),
+            control('HintInput', 'Classic/TextInput@2.3.2', {
+              HintText: '="Enter a name"',
+              X: '=950',
+              Y: '=700',
+              Width: '=150',
+              Height: '=40',
+            }),
+            control('PickedRow', 'Label@2.0', {
+              Text: '=Text(Rows.Selected.Value)',
+              X: '=320',
+              Y: '=240',
+              Width: '=100',
+              Height: '=40',
+            }),
             control('Counter', 'Timer@2.0', {
               Duration: '=2000',
               Repeat: '=true',
@@ -287,21 +328,7 @@ async function player(t, { display, resolution, onDanger, watch, onRevision, onS
       canvasDisplay: { [app.uniqueName]: display },
       evidence: 'invented fixture',
     }).canvasDisplay[app.uniqueName];
-  const runtime = createCanvasRuntime({ apps: () => [app], evaluator: createPowerFxEvaluator() });
-  const handler = createCanvasHandler({
-    apps: () => [app],
-    runtime,
-    principal: () => ({ kind: 'staff', principalId: 'local' }),
-    csrf: () => 'fixture-token',
-  });
-  const server = http.createServer((req, res) => {
-    if (!handler(req, res)) res.writeHead(404).end();
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  ownedFixture(t).add(() => closeServer(server));
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  ownedFixture(t).add(() => browser.close());
-  const context = await browser.newContext();
+  const { context, runtime, server } = await canvasContext(t, app);
   const page = await context.newPage();
   page.canvasServer = server;
   page.canvasApp = app;
@@ -333,77 +360,69 @@ async function player(t, { display, resolution, onDanger, watch, onRevision, onS
   return page;
 }
 
-test(
-  'player filters multi-select choices and pages gallery with row scope and auto layout',
-  { timeout: 60000 },
-  async (t) => {
-    const page = await player(t);
-    const combo = page.locator('[data-control="Search"]');
-    const search = combo.locator('input[type="search"]');
-    assert.equal(await combo.locator('option').first().textContent(), 'Choice Alpha');
-    await search.fill('a');
-    await page.waitForFunction(
-      () =>
-        document.activeElement?.getAttribute('aria-label') === 'Search search' && document.activeElement.value === 'a',
-    );
-    await combo.locator('select').selectOption(['0', '1']);
-    await page.waitForFunction(() => document.querySelector('[data-control="Chosen"]')?.textContent === 'Alpha,Beta');
-    const gallery = page.locator('[data-control="Rows"]');
-    assert.equal(await gallery.locator('[data-item-index]').count(), 50);
-    assert.equal(await gallery.locator('[data-item-index="0"]').evaluate((el) => el.style.backgroundColor), 'blue');
-    await gallery.getByRole('button', { name: 'Next', exact: true }).click();
-    const row = gallery.locator('[data-item-index="50"]');
-    await row.waitFor();
-    assert.equal(await row.evaluate((el) => el.style.backgroundColor), 'red');
-    const label = await row.locator('[data-control="RowLabel"]').boundingBox();
-    const button = await row.locator('[data-control="RowButton"]').boundingBox();
-    assert.ok(button.x >= label.x + label.width);
-    await row.locator('[data-control="RowButton"]').click();
-    await page.waitForFunction(() => document.querySelector('[data-control="Picked"]')?.textContent === '51');
-  },
-);
+test('player filters multi-select choices and pages gallery with row scope and auto layout', async (t) => {
+  const page = await player(t);
+  const combo = page.locator('[data-control="Search"]');
+  const search = combo.locator('input[type="search"]');
+  assert.equal(await combo.locator('option').first().textContent(), 'Choice Alpha');
+  await search.fill('a');
+  await page.waitForFunction(
+    () =>
+      document.activeElement?.getAttribute('aria-label') === 'Search search' && document.activeElement.value === 'a',
+  );
+  await combo.locator('select').selectOption(['0', '1']);
+  await page.waitForFunction(() => document.querySelector('[data-control="Chosen"]')?.textContent === 'Alpha,Beta');
+  const gallery = page.locator('[data-control="Rows"]');
+  assert.equal(await gallery.locator('[data-item-index]').count(), 50);
+  assert.equal(await gallery.locator('[data-item-index="0"]').evaluate((el) => el.style.backgroundColor), 'blue');
+  await gallery.getByRole('button', { name: 'Next', exact: true }).click();
+  const row = gallery.locator('[data-item-index="50"]');
+  await row.waitFor();
+  assert.equal(await row.evaluate((el) => el.style.backgroundColor), 'red');
+  const label = await row.locator('[data-control="RowLabel"]').boundingBox();
+  const button = await row.locator('[data-control="RowButton"]').boundingBox();
+  assert.ok(button.x >= label.x + label.width);
+  await row.locator('[data-control="RowButton"]').click();
+  await page.waitForFunction(() => document.querySelector('[data-control="Picked"]')?.textContent === '51');
+});
 
-test(
-  'timer uses the explicit browser clock, repeats, and pauses through the runtime',
-  { timeout: 60000 },
-  async (t) => {
-    const page = await player(t);
-    await page.clock.install();
-    const timer = page.locator('[data-control="Counter"]');
-    const started = page.waitForResponse(
-      (response) => response.request().method() === 'POST' && response.request().postDataJSON()?.action === 'select',
-    );
-    await timer.click();
-    await started;
-    const tick = page.waitForResponse(
-      (response) => response.request().method() === 'POST' && response.request().postDataJSON()?.action === 'tick',
-    );
-    await page.clock.fastForward(2500);
-    assert.equal((await tick).ok(), true);
-    await page.waitForFunction(() =>
-      document.querySelector('[data-testid="canvas-inspector"]')?.textContent.includes('"finished": true'),
-    );
-    const paused = page.waitForResponse(
-      (response) => response.request().method() === 'POST' && response.request().postDataJSON()?.action === 'select',
-    );
-    await timer.click();
-    const snapshot = (await (await paused).json()).snapshot;
-    const control = snapshot.screens.find((screen) => screen.current).controls.find((item) => item.name === 'Counter');
-    assert.equal(control.properties.Running, false);
-    const reset = page.waitForResponse(
-      (response) =>
-        response.request().method() === 'POST' && response.request().postDataJSON()?.control === 'ResetCounter',
-    );
-    await page.locator('[data-control="ResetCounter"]').click();
-    const resetSnapshot = (await (await reset).json()).snapshot;
-    const resetTimer = resetSnapshot.screens
-      .find((screen) => screen.current)
-      .controls.find((item) => item.name === 'Counter');
-    assert.equal(resetTimer.properties.Value, 0);
-  },
-);
+test('timer uses the explicit browser clock, repeats, and pauses through the runtime', async (t) => {
+  const page = await player(t);
+  await page.clock.install();
+  const timer = page.locator('[data-control="Counter"]');
+  const started = page.waitForResponse(
+    (response) => response.request().method() === 'POST' && response.request().postDataJSON()?.action === 'select',
+  );
+  await timer.click();
+  await started;
+  const tick = page.waitForResponse(
+    (response) => response.request().method() === 'POST' && response.request().postDataJSON()?.action === 'tick',
+  );
+  await page.clock.fastForward(2500);
+  assert.equal((await tick).ok(), true);
+  await page.waitForFunction(() =>
+    document.querySelector('[data-testid="canvas-inspector"]')?.textContent.includes('"finished": true'),
+  );
+  const paused = page.waitForResponse(
+    (response) => response.request().method() === 'POST' && response.request().postDataJSON()?.action === 'select',
+  );
+  await timer.click();
+  const snapshot = (await (await paused).json()).snapshot;
+  const control = snapshot.screens.find((screen) => screen.current).controls.find((item) => item.name === 'Counter');
+  assert.equal(control.properties.Running, false);
+  const reset = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' && response.request().postDataJSON()?.control === 'ResetCounter',
+  );
+  await page.locator('[data-control="ResetCounter"]').click();
+  const resetSnapshot = (await (await reset).json()).snapshot;
+  const resetTimer = resetSnapshot.screens
+    .find((screen) => screen.current)
+    .controls.find((item) => item.name === 'Counter');
+  assert.equal(resetTimer.properties.Value, 0);
+});
 
-test('browser viewport option resizes the runtime when the window changes', { timeout: 60000 }, async (t) => {
+test('browser viewport option resizes the runtime when the window changes', async (t) => {
   const page = await player(t);
   await page.getByTestId('canvas-resolution').selectOption('browser');
   const resized = page.waitForResponse(
@@ -417,70 +436,62 @@ test('browser viewport option resizes the runtime when the window changes', { ti
   await page.waitForFunction(() => document.querySelector('[data-testid="canvas-stage"]')?.style.width === '700px');
 });
 
-test(
-  'local assets render and native media and accessible image actions reach the runtime',
-  { timeout: 60000 },
-  async (t) => {
-    const page = await player(t);
-    const image = page.locator('[data-control="LogoView"]');
-    assert.equal(await image.evaluate((el) => el.tagName), 'IMG');
-    assert.ok(await image.getAttribute('src').then((src) => src.startsWith('/_apps/canvas/')));
-    await image.focus();
-    await image.press('Enter');
-    await page.waitForFunction(() =>
-      document.querySelector('[data-testid="canvas-inspector"]')?.textContent.includes('"imageClicked": true'),
-    );
-    const audio = page.locator('[data-control="Sound"]');
-    assert.equal(await audio.evaluate((el) => el.tagName), 'AUDIO');
-    const media = page.waitForResponse(
-      (response) => response.request().method() === 'POST' && response.request().postDataJSON()?.action === 'media',
-    );
-    await audio.evaluate((el) => {
-      window.playingNode = el;
-      return el.play();
-    });
-    assert.equal((await media).ok(), true);
-    await page.waitForFunction(() =>
-      document.querySelector('[data-testid="canvas-inspector"]')?.textContent.includes('"mediaPlayed": true'),
-    );
-    assert.equal(await audio.evaluate((el) => el === window.playingNode && !el.paused), true);
-    const paused = page.waitForResponse(
-      (response) => response.request().method() === 'POST' && response.request().postDataJSON()?.event === 'pause',
-    );
-    await audio.evaluate((el) => el.pause());
-    assert.equal((await paused).ok(), true);
-    await page.waitForFunction(() =>
-      document.querySelector('[data-testid="canvas-inspector"]')?.textContent.includes('"mediaPaused": true'),
-    );
-  },
-);
+test('local assets render and native media and accessible image actions reach the runtime', async (t) => {
+  const page = await player(t);
+  const image = page.locator('[data-control="LogoView"]');
+  assert.equal(await image.evaluate((el) => el.tagName), 'IMG');
+  assert.ok(await image.getAttribute('src').then((src) => src.startsWith('/_apps/canvas/')));
+  await image.focus();
+  await image.press('Enter');
+  await page.waitForFunction(() =>
+    document.querySelector('[data-testid="canvas-inspector"]')?.textContent.includes('"imageClicked": true'),
+  );
+  const audio = page.locator('[data-control="Sound"]');
+  assert.equal(await audio.evaluate((el) => el.tagName), 'AUDIO');
+  const media = page.waitForResponse(
+    (response) => response.request().method() === 'POST' && response.request().postDataJSON()?.action === 'media',
+  );
+  await audio.evaluate((el) => {
+    window.playingNode = el;
+    return el.play();
+  });
+  assert.equal((await media).ok(), true);
+  await page.waitForFunction(() =>
+    document.querySelector('[data-testid="canvas-inspector"]')?.textContent.includes('"mediaPlayed": true'),
+  );
+  assert.equal(await audio.evaluate((el) => el === window.playingNode && !el.paused), true);
+  const paused = page.waitForResponse(
+    (response) => response.request().method() === 'POST' && response.request().postDataJSON()?.event === 'pause',
+  );
+  await audio.evaluate((el) => el.pause());
+  assert.equal((await paused).ok(), true);
+  await page.waitForFunction(() =>
+    document.querySelector('[data-testid="canvas-inspector"]')?.textContent.includes('"mediaPaused": true'),
+  );
+});
 
-test(
-  'modern text input and selectable text use supported aliases with a visible approximation warning',
-  { timeout: 60000 },
-  async (t) => {
-    const page = await player(t);
-    const readOnly = page.locator('[data-control="ReadOnly"]');
-    assert.equal(await readOnly.isDisabled(), false);
-    assert.equal(await readOnly.isEditable(), false);
-    const input = page.locator('[data-control="ModernInput"]');
-    assert.equal(await input.inputValue(), 'initial');
-    await input.fill('changed');
-    await input.press('Tab');
-    await page.waitForFunction(() =>
-      document.querySelector('[data-testid="canvas-inspector"]')?.textContent.includes('"modernChanged": true'),
-    );
-    const label = page.locator('[data-control="ModernLabel"]');
-    await label.focus();
-    await label.press('Space');
-    await page.waitForFunction(() =>
-      document.querySelector('[data-testid="canvas-inspector"]')?.textContent.includes('"modernSelected": true'),
-    );
-    assert.match(await page.getByTestId('canvas-inspector').textContent(), /Modern control behavior is approximated/);
-  },
-);
+test('modern text input and selectable text use supported aliases with a visible approximation warning', async (t) => {
+  const page = await player(t);
+  const readOnly = page.locator('[data-control="ReadOnly"]');
+  assert.equal(await readOnly.isDisabled(), false);
+  assert.equal(await readOnly.isEditable(), false);
+  const input = page.locator('[data-control="ModernInput"]');
+  assert.equal(await input.inputValue(), 'initial');
+  await input.fill('changed');
+  await input.press('Tab');
+  await page.waitForFunction(() =>
+    document.querySelector('[data-testid="canvas-inspector"]')?.textContent.includes('"modernChanged": true'),
+  );
+  const label = page.locator('[data-control="ModernLabel"]');
+  await label.focus();
+  await label.press('Space');
+  await page.waitForFunction(() =>
+    document.querySelector('[data-testid="canvas-inspector"]')?.textContent.includes('"modernSelected": true'),
+  );
+  assert.match(await page.getByTestId('canvas-inspector').textContent(), /Modern control behavior is approximated/);
+});
 
-test('one browser tab owns a shared timer clock and another takes over after close', { timeout: 60000 }, async (t) => {
+test('one browser tab owns a shared timer clock and another takes over after close', async (t) => {
   const first = await player(t);
   await first.locator('[data-control="Counter"]').click();
   await first.waitForFunction(
@@ -498,7 +509,7 @@ test('one browser tab owns a shared timer clock and another takes over after clo
   );
 });
 
-test('screen navigation applies the selected transition and respects reduced motion', { timeout: 60000 }, async (t) => {
+test('screen navigation applies the selected transition and respects reduced motion', async (t) => {
   const page = await player(t);
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.locator('[data-control="GoDetail"]').click();
@@ -508,7 +519,7 @@ test('screen navigation applies the selected transition and respects reduced mot
   assert.equal(await stage.evaluate((el) => getComputedStyle(el).animationName), 'none');
 });
 
-test('slider, number input and radio drive native changes with keyboard access', { timeout: 60000 }, async (t) => {
+test('slider, number input and radio drive native changes with keyboard access', async (t) => {
   const page = await player(t);
   const range = page.locator('[data-control="Range"]');
   await range.fill('7');
@@ -530,7 +541,7 @@ test('slider, number input and radio drive native changes with keyboard access',
   );
 });
 
-test('observed display settings control logical size, letterboxing and orientation', { timeout: 60000 }, async (t) => {
+test('observed display settings control logical size, letterboxing and orientation', async (t) => {
   const page = await player(t, {
     display: { designWidth: 800, designHeight: 400, scaleToFit: true, lockAspectRatio: true },
     resolution: '390x844',
@@ -552,24 +563,20 @@ test('observed display settings control logical size, letterboxing and orientati
 });
 
 // @test-kind contract+security: hostile HTML cannot execute, issue unsafe requests or retain active URL attributes.
-test(
-  'HTML viewer renders a safe markup subset without active elements or URL attributes',
-  { timeout: 60000 },
-  async (t) => {
-    let danger = 0;
-    const page = await player(t, { onDanger: () => danger++ });
-    const rich = page.locator('[data-control="Rich"]');
-    assert.equal(await rich.locator('strong').textContent(), 'Safe');
-    assert.match(await rich.textContent(), /link/);
-    assert.equal(await rich.locator('script,a,iframe,form').count(), 0);
-    assert.equal(await rich.locator('img').count(), 1);
-    assert.equal(await rich.locator('strong').evaluate((el) => el.style.color), 'red');
-    assert.equal(danger, 0);
-    assert.equal(await page.evaluate(() => window.bad), undefined);
-  },
-);
+test('HTML viewer renders a safe markup subset without active elements or URL attributes', async (t) => {
+  let danger = 0;
+  const page = await player(t, { onDanger: () => danger++ });
+  const rich = page.locator('[data-control="Rich"]');
+  assert.equal(await rich.locator('strong').textContent(), 'Safe');
+  assert.match(await rich.textContent(), /link/);
+  assert.equal(await rich.locator('script,a,iframe,form').count(), 0);
+  assert.equal(await rich.locator('img').count(), 1);
+  assert.equal(await rich.locator('strong').evaluate((el) => el.style.color), 'red');
+  assert.equal(danger, 0);
+  assert.equal(await page.evaluate(() => window.bad), undefined);
+});
 
-test('nested media keeps playing across unrelated snapshot redraws', { timeout: 60000 }, async (t) => {
+test('nested media keeps playing across unrelated snapshot redraws', async (t) => {
   const page = await player(t);
   const audio = page.locator('[data-control="NestedSound"]');
   await page.locator('[data-control="ModernLabel"]').click();
@@ -592,64 +599,60 @@ test('nested media keeps playing across unrelated snapshot redraws', { timeout: 
   assert.equal(await page.evaluate(() => !window.nestedAudio.isConnected && window.nestedAudio.paused), true);
 });
 
-test(
-  'watched source revision reloads without restarting the app and releases timer ownership',
-  { timeout: 60000 },
-  async (t) => {
-    let release,
-      arrived,
-      starts = 0,
-      revisions = 0;
-    const gate = new Promise((resolve) => {
-      release = resolve;
-    });
-    const seen = new Promise((resolve) => {
-      arrived = resolve;
-    });
-    t.after(() => release());
-    const page = await player(t, {
-      watch: true,
-      onStart: (payload) => {
-        starts++;
-        assert.equal(payload.sourceRevision, 'initial-revision');
-      },
-      onRevision: async (route) => {
-        revisions++;
-        arrived();
-        await gate;
-        await route.fulfill({ status: 200, json: { revision: 'updated-revision' } });
-      },
-    });
-    await page.locator('[data-control="Counter"]').click();
-    await page.waitForFunction(
-      () => document.querySelector('[data-testid="canvas-stage"]')?.dataset.clockOwned === 'true',
-    );
-    await page.clock.fastForward(1000);
-    await seen;
-    await page.clock.fastForward(4000);
-    assert.equal(revisions, 1, 'only one revision request is outstanding');
-    const priorKey = (
-      await (await page.request.get(new URL('/_apps/api/canvas/fx_inventedcanvas', page.url()).href)).json()
-    ).clockKey;
-    page.canvasApp.source.revision = 'updated-revision';
-    page.canvasRuntime.reset(page.canvasApp.uniqueName, { kind: 'staff', principalId: 'local' });
-    const loaded = page.waitForEvent('load');
-    release();
-    await loaded;
-    await page.waitForFunction(
-      () =>
-        document.querySelector('[data-testid="canvas-status"]')?.textContent === 'Source updated. Start the app again.',
-    );
-    assert.equal(starts, 1);
-    assert.equal(await page.locator('[data-control="Counter"]').count(), 0);
-    assert.equal(
-      await page.evaluate(async (key) => navigator.locks.request(`paqvilo-canvas-clock:${key}`, () => true), priorKey),
-      true,
-    );
-  },
-);
+test('watched source revision reloads without restarting the app and releases timer ownership', async (t) => {
+  let release,
+    arrived,
+    starts = 0,
+    revisions = 0;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const seen = new Promise((resolve) => {
+    arrived = resolve;
+  });
+  t.after(() => release());
+  const page = await player(t, {
+    watch: true,
+    onStart: (payload) => {
+      starts++;
+      assert.equal(payload.sourceRevision, 'initial-revision');
+    },
+    onRevision: async (route) => {
+      revisions++;
+      arrived();
+      await gate;
+      await route.fulfill({ status: 200, json: { revision: 'updated-revision' } });
+    },
+  });
+  await page.locator('[data-control="Counter"]').click();
+  await page.waitForFunction(
+    () => document.querySelector('[data-testid="canvas-stage"]')?.dataset.clockOwned === 'true',
+  );
+  await page.clock.fastForward(1000);
+  await seen;
+  await page.clock.fastForward(4000);
+  assert.equal(revisions, 1, 'only one revision request is outstanding');
+  const priorKey = (
+    await (await page.request.get(new URL('/_apps/api/canvas/fx_inventedcanvas', page.url()).href)).json()
+  ).clockKey;
+  page.canvasApp.source.revision = 'updated-revision';
+  page.canvasRuntime.reset(page.canvasApp.uniqueName, { kind: 'staff', principalId: 'local' });
+  const loaded = page.waitForEvent('load');
+  release();
+  await loaded;
+  await page.waitForFunction(
+    () =>
+      document.querySelector('[data-testid="canvas-status"]')?.textContent === 'Source updated. Start the app again.',
+  );
+  assert.equal(starts, 1);
+  assert.equal(await page.locator('[data-control="Counter"]').count(), 0);
+  assert.equal(
+    await page.evaluate(async (key) => navigator.locks.request(`paqvilo-canvas-clock:${key}`, () => true), priorKey),
+    true,
+  );
+});
 
-test('source watch pauses while hidden and checks again on visibility regain', { timeout: 60000 }, async (t) => {
+test('source watch pauses while hidden and checks again on visibility regain', async (t) => {
   let checks = 0,
     arrived;
   const seen = new Promise((resolve) => {
@@ -679,7 +682,7 @@ test('source watch pauses while hidden and checks again on visibility regain', {
   assert.equal(checks, 1);
 });
 
-test('local picture picker validates image bytes and updates Media and FileName', { timeout: 60000 }, async (t) => {
+test('local picture picker validates image bytes and updates Media and FileName', async (t) => {
   const page = await player(t);
   const picker = page.locator('[data-control="Upload"] input[type="file"]');
   const png = Buffer.from(
@@ -715,7 +718,7 @@ test('local picture picker validates image bytes and updates Media and FileName'
   assert.equal(await page.locator('[data-control="UploadName"]').textContent(), 'invented.png');
 });
 
-test('auto-layout stretches the cross axis and honors an explicit container variant', { timeout: 60000 }, async (t) => {
+test('auto-layout stretches the cross axis and honors an explicit container variant', async (t) => {
   const page = await player(t);
   const parent = await page.locator('[data-control="StretchParent"]').boundingBox();
   const child = await page.locator('[data-control="StretchChild"]').boundingBox();
@@ -725,7 +728,7 @@ test('auto-layout stretches the cross axis and honors an explicit container vari
   assert.ok(second.y >= first.y + first.height);
 });
 
-test('player inspector reports source asset diagnostics', { timeout: 60000 }, async (t) => {
+test('player inspector reports source asset diagnostics', async (t) => {
   const page = await player(t, { assetWarnings: true });
   assert.match(
     await page.getByTestId('canvas-inspector').textContent(),
@@ -733,13 +736,13 @@ test('player inspector reports source asset diagnostics', { timeout: 60000 }, as
   );
 });
 
-test('choice dropdown displays labels and filters inactive backing values', { timeout: 60000 }, async (t) => {
+test('choice dropdown displays labels and filters inactive backing values', async (t) => {
   const page = await player(t);
   const options = page.locator('[data-control="ChoiceStatus"] option');
   assert.deepEqual(await options.allTextContents(), ['Active']);
 });
 
-test('player fixture drains accepted idle sockets before browser cleanup', { timeout: 60000 }, async (t) => {
+test('player fixture drains accepted idle sockets before browser cleanup', async (t) => {
   const hooks = [];
   let socket, cleanup;
   const close = () =>
@@ -761,4 +764,164 @@ test('player fixture drains accepted idle sockets before browser cleanup', { tim
   await socketClosed;
   await pending;
   assert.equal(page.isClosed(), true);
+});
+
+// @test-kind unproven: local banner model of Notify; no native capture of the banner has been taken.
+test('Notify shows a timed banner on the stage and removes it when its timeout elapses', async (t) => {
+  const page = await player(t);
+  await page.locator('[data-control="Save"]').click();
+  const banner = page.locator('[data-testid="canvas-notifications"] [role="status"]', { hasText: 'Saved' });
+  await banner.waitFor();
+  assert.equal(await banner.locator('span').innerText(), 'Saved');
+  await banner.waitFor({ state: 'hidden' });
+});
+
+// @test-kind unproven: local gallery selection model; native click routing of a row child is not captured.
+test('a click on a row label selects the row, and a child with its own OnSelect still selects it', async (t) => {
+  const page = await player(t);
+  await page.locator('[data-item-index="2"] [data-control="RowLabel"]').click();
+  await page.waitForFunction(() => document.querySelector('[data-control="PickedRow"]')?.textContent === '3');
+  await page.locator('[data-item-index="4"] [data-control="RowButton"]').click();
+  await page.waitForFunction(() => document.querySelector('[data-control="PickedRow"]')?.textContent === '5');
+  await page.waitForFunction(() => document.querySelector('[data-control="Picked"]')?.textContent === '5');
+});
+
+// @test-kind unproven: local placeholder model of a classic TextInput HintText; no native capture of the hint exists.
+test('a classic text input shows HintText as its placeholder when Placeholder is unset', async (t) => {
+  const page = await player(t);
+  assert.equal(await page.locator('[data-control="HintInput"]').getAttribute('placeholder'), 'Enter a name');
+});
+
+// A small app whose buttons call Notify with a Timeout of 0 and with a long timeout, for the reload checks.
+async function noticePlayer(t) {
+  const files = {
+    'Src/App.pa.yaml': stringify({ App: { Properties: { StartScreen: '=Home' } } }),
+    'Src/Home.pa.yaml': stringify({
+      Screens: {
+        Home: {
+          Children: [
+            control('Sticky', 'Classic/Button@2.0', {
+              Text: '="Sticky"',
+              OnSelect: '=Notify("Kept", NotificationType.Success, 0)',
+              X: '=5',
+              Y: '=5',
+              Width: '=120',
+              Height: '=40',
+            }),
+            control('Timed', 'Classic/Button@2.0', {
+              Text: '="Timed"',
+              OnSelect: '=Notify("Later", NotificationType.Information, 600000)',
+              X: '=5',
+              Y: '=60',
+              Width: '=120',
+              Height: '=40',
+            }),
+          ],
+        },
+      },
+    }),
+  };
+  const app = await fixtureApp(files);
+  const { context, server } = await canvasContext(t, app);
+  const page = await context.newPage();
+  await page.goto(`http://127.0.0.1:${server.address().port}/_apps/canvas/${app.uniqueName}`);
+  await page.getByTestId('canvas-start').click();
+  await page.locator('[data-control="Sticky"]').waitFor();
+  return page;
+}
+// The Canvas renders after its snapshot is read, so the control is visible only once the banners have been announced.
+async function reloadNoticePlayer(page) {
+  await page.reload();
+  await page.locator('[data-control="Sticky"]').waitFor();
+}
+
+// @test-kind unproven: local banner model of Notify; a Timeout of 0 is kept across reloads, no native capture taken.
+test('a Notify with Timeout 0 stays across reloads until its banner is dismissed', async (t) => {
+  const page = await noticePlayer(t);
+  await page.locator('[data-control="Sticky"]').click();
+  const banner = page.locator('[data-testid="canvas-notifications"] [role="status"]', { hasText: 'Kept' });
+  await banner.waitFor();
+  await reloadNoticePlayer(page);
+  await banner.waitFor();
+  await banner.locator('button').click();
+  await banner.waitFor({ state: 'hidden' });
+  await reloadNoticePlayer(page);
+  assert.equal(await banner.count(), 0);
+});
+
+// @test-kind unproven: local banner model of Notify; a timed notice inside its timeout is shown again after a reload.
+test('a timed Notify still inside its timeout is shown again after a reload', async (t) => {
+  const page = await noticePlayer(t);
+  await page.locator('[data-control="Timed"]').click();
+  const banner = page.locator('[data-testid="canvas-notifications"] [role="status"]', { hasText: 'Later' });
+  await banner.waitFor();
+  await reloadNoticePlayer(page);
+  await banner.waitFor();
+  assert.equal(await banner.locator('span').innerText(), 'Later');
+  assert.equal(await banner.count(), 1);
+});
+
+// A Notify whose Timeout is longer than one browser timer can wait. The page records each setTimeout call, so the test
+// reads the delays the player arms and runs a recorded callback itself: no wall-clock wait is involved.
+async function longNoticePlayer(t) {
+  const files = {
+    'Src/App.pa.yaml': stringify({ App: { Properties: { StartScreen: '=Home' } } }),
+    'Src/Home.pa.yaml': stringify({
+      Screens: {
+        Home: {
+          Children: [
+            control('Long', 'Classic/Button@2.0', {
+              Text: '="Long"',
+              OnSelect: '=Notify("Long", NotificationType.Information, 3000000000)',
+              X: '=5',
+              Y: '=5',
+              Width: '=120',
+              Height: '=40',
+            }),
+          ],
+        },
+      },
+    }),
+  };
+  const app = await fixtureApp(files);
+  const { context, server } = await canvasContext(t, app);
+  await context.addInitScript(() => {
+    const nativeSetTimeout = window.setTimeout.bind(window);
+    window.__timers = [];
+    window.setTimeout = (callback, delay, ...rest) => {
+      window.__timers.push({ delay, callback });
+      return nativeSetTimeout(callback, delay, ...rest);
+    };
+  });
+  const page = await context.newPage();
+  await page.goto(`http://127.0.0.1:${server.address().port}/_apps/canvas/${app.uniqueName}`);
+  await page.getByTestId('canvas-start').click();
+  await page.locator('[data-control="Long"]').waitFor();
+  return page;
+}
+
+// @test-kind contract: a Notify Timeout above the browser timer limit is armed in limited steps and stays until its remaining time runs out.
+test('a Notify Timeout above the browser timer limit stays shown while time remains', async (t) => {
+  const page = await longNoticePlayer(t);
+  await page.locator('[data-control="Long"]').click();
+  await page.waitForFunction(() => window.__timers.some((timer) => timer.delay >= 2147483647));
+  const delays = await page.evaluate(() => window.__timers.map((timer) => timer.delay));
+  assert.deepEqual(
+    delays.filter((delay) => delay > 2147483647),
+    [],
+    'no timer is armed beyond the 2,147,483,647 ms limit, which a browser would fire at once',
+  );
+  const banner = page.locator('[data-testid="canvas-notifications"] [role="status"]', { hasText: 'Long' });
+  await banner.waitFor();
+  const rearmed = await page.evaluate(() => {
+    const before = window.__timers.length;
+    window.__timers.find((timer) => timer.delay === 2147483647).callback();
+    return window.__timers.slice(before).map((timer) => timer.delay);
+  });
+  assert.equal(await banner.count(), 1, 'the banner stays when its first step ends with time remaining');
+  assert.equal(
+    rearmed.some((delay) => delay > 0 && delay <= 3000000000 - 2147483647),
+    true,
+    `the remainder is armed again, got ${rearmed}`,
+  );
 });

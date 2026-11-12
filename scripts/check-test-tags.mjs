@@ -12,7 +12,8 @@ import { validateParityCases } from '../mirage/testing/parity-cases.mjs';
 //   node scripts/check-test-tags.mjs <file...>         tag syntax of the named files only
 // A changed test file needs a valid kind for every test. Removing or rewriting a line inside a `parity` region
 // also needs a `// @parity-evidence: <proof>` line added by the same change, or a retirement entry in
-// scripts/parity-retirements.json. A new parity tag is valid only on a replay runner. Recorded parity cases change
+// scripts/parity-retirements.json. Inserting lines inside a parity body counts the same way.
+// A new parity tag is valid only on a replay runner. Recorded parity cases change
 // only with a new history entry, and a recorded case cannot receive a new known gap. Files listed in
 // scripts/test-kinds-legacy.json predate the rule: they are skipped while they carry no @test-kind line at all, and
 // checked in full once one is added. Hand-written parity tags that predate replay cases are listed in
@@ -21,6 +22,9 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const KINDS = new Set(['parity', 'observation', 'compatibility', 'unproven', 'contract', 'security', 'tooling']);
 const EVIDENCE_KINDS = new Set(['parity', 'observation']);
 const TEST_FILE = /\.test\.[cm]?js$/;
+// The portal harness runs its test.mjs under node --test; a module of that name is a test file only where it calls one.
+const TEST_RUNNER_FILE = /(?:^|\/)test\.[cm]?js$/;
+const TEST_CALL = /(?:^|[^\w$.])(?:test|it|describe|suite)\s*\(/;
 const CASE_FILE = /(?:^|\/)parity\/cases\/(?<surface>[a-z0-9-]+)\/(?<suite>[a-z0-9-]+)\.json$/;
 const GAP_FILE = /(?:^|\/)parity\/known-gaps\/(?<surface>[a-z0-9-]+)\.json$/;
 const GAP_KEY = /^(?<suite>[a-z0-9-]+)#(?<caseId>.+)$/;
@@ -67,13 +71,10 @@ function hasAnyTag(text) {
   return false;
 }
 
-function legacyFiles() {
-  try {
-    return new Set(JSON.parse(fs.readFileSync(path.join(root, 'scripts', 'test-kinds-legacy.json'), 'utf8')));
-  } catch (error) {
-    if (error.code === 'ENOENT') return new Set();
-    throw error;
-  }
+// Read through the same text source as the checked files, so a staged check never sees an unstaged list.
+function legacyFiles(newText) {
+  const text = newText('scripts/test-kinds-legacy.json');
+  return new Set(text == null ? [] : JSON.parse(text));
 }
 
 function git(args, { allowFailure = false } = {}) {
@@ -98,6 +99,12 @@ function parseJson(text) {
   } catch (error) {
     return { error: error.message };
   }
+}
+
+/** Test files: *.test.* names, and runner modules whose old or new text calls a test function (texts is lazy). */
+function isTestFile(file, texts = () => []) {
+  if (TEST_FILE.test(file)) return true;
+  return TEST_RUNNER_FILE.test(file) && texts().some((text) => TEST_CALL.test(text ?? ''));
 }
 
 function workingText(file) {
@@ -186,13 +193,15 @@ function rangeInto(list, start, count) {
 
 /**
  * Line facts of a unified -U0 diff: old-side line numbers removed, new-side line numbers added, the texts of those
- * lines without their +/- sign, and whether the diff adds a @parity-evidence line.
+ * lines without their +/- sign, whether the diff adds a @parity-evidence line, and the old lines that insertions
+ * follow (a zero-count old range at N inserts between old lines N and N+1).
  */
 export function diffFacts(diff) {
   const removed = [],
     added = [],
     addedText = [],
-    removedText = [];
+    removedText = [],
+    insertedAfter = [];
   let evidence = false,
     inHunk = false;
   for (const line of diff.split('\n')) {
@@ -201,11 +210,12 @@ export function diffFacts(diff) {
       inHunk = true;
       rangeInto(removed, Number(hunk[1]), hunk[2]);
       rangeInto(added, Number(hunk[3]), hunk[4]);
+      if (hunk[2] === '0') insertedAfter.push(Number(hunk[1]));
     } else if (inHunk && line.startsWith('+')) addedText.push(line.slice(1));
     else if (inHunk && line.startsWith('-')) removedText.push(line.slice(1));
     if (/^\+(?!\+\+)/.test(line) && /\/\/\s*@parity-evidence:\s*\S{3}/.test(line)) evidence = true;
   }
-  return { removed, added, addedText, removedText, evidence };
+  return { removed, added, addedText, removedText, evidence, insertedAfter };
 }
 
 const isRepoPath = (value) =>
@@ -251,9 +261,40 @@ function retiredByChange(newText, oldText) {
   return new Set(added.filter((entry) => retirementProblems(entry, '').length === 0).map((entry) => entry.file));
 }
 
+const isCodeLine = (line) => !/^\s*(?:\/\/|$)/.test(line);
+
+// The innermost region holding a line, else the file-level scope when the file declares one.
+function scopeAt(parsed, lines, line) {
+  const region = parsed.regions
+    .filter((item) => line >= item.start && line <= item.end)
+    .sort((a, b) => b.start - a.start)[0];
+  if (region) return region;
+  return parsed.fileKinds && line <= lines.length ? { start: 1, end: lines.length, kinds: parsed.fileKinds } : null;
+}
+
+// The last line of a scope that holds code. Trailing blank and comment-only lines belong to no test body.
+function bodyEnd(lines, scope) {
+  let end = scope.end;
+  while (end > scope.start && !isCodeLine(lines[end - 1])) end--;
+  return end;
+}
+
+// An insertion after old line `after` changes a parity body when both neighbouring lines lie between the first and
+// the last code line of a parity scope. Lines appended after that last code line are new tests, not body changes.
+function insertsIntoParity(parsed, lines, after) {
+  const scope = scopeAt(parsed, lines, after + 1);
+  if (!scope?.kinds.includes('parity')) return false;
+  return after >= scope.start && after + 1 <= bodyEnd(lines, scope);
+}
+
 function checkParityRemoval(file, old, facts, ctx, failures) {
   const before = parseTestKinds(old);
-  const touched = facts.removed.filter((line) => kindsAt(before, line).includes('parity'));
+  const lines = old.split(/\r?\n/);
+  const removed = facts.removed.filter((line) => kindsAt(before, line).includes('parity'));
+  const inserted = facts.insertedAfter
+    .filter((after) => insertsIntoParity(before, lines, after))
+    .map((after) => after + 1);
+  const touched = [...removed, ...inserted].toSorted((a, b) => a - b);
   if (!touched.length || facts.evidence || ctx.retired.has(file)) return;
   const first = touched.slice(0, 5).join(', ');
   const more = touched.length > 5 ? ', ...' : '';
@@ -475,7 +516,7 @@ export function check({ files, newText, oldText, diffOf = () => '', legacy = new
   };
   if (files.includes(LEGACY_PARITY_FILE)) failures.push(...legacyParityProblems(ctx));
   for (const file of files) {
-    if (TEST_FILE.test(file)) checkFile(file, ctx, failures);
+    if (isTestFile(file, () => [newText(file), oldText?.(file)])) checkFile(file, ctx, failures);
     else if (CASE_FILE.test(file)) checkCaseFile(file, ctx, failures);
     else if (GAP_FILE.test(file)) checkKnownGaps(file, ctx, failures);
   }
@@ -520,22 +561,23 @@ function run(args) {
   } else {
     options = { files: args, newText: workingText };
   }
-  const failures = check({ ...options, legacy: legacyFiles() });
+  const failures = check({ ...options, legacy: legacyFiles(options.newText) });
   for (const failure of failures) console.error(failure);
   if (failures.length) {
     console.error(`${failures.length} test-kind problem(s); see docs/test-kinds.md.`);
     return 1;
   }
-  console.log(
-    `Test kinds valid for ${options.files.filter((file) => TEST_FILE.test(file)).length} changed test file(s).`,
+  const testFiles = options.files.filter((file) =>
+    isTestFile(file, () => [options.newText(file), options.oldText?.(file)]),
   );
+  console.log(`Test kinds valid for ${testFiles.length} changed test file(s).`);
   return 0;
 }
 
 function reportKinds() {
   // Tracked files deleted in the working tree have no text on disk and are not counted.
   const tracked = git(['ls-files', '-z']).split('\0').filter(Boolean);
-  const files = tracked.filter((file) => TEST_FILE.test(file) && workingText(file) !== null);
+  const files = tracked.filter((file) => workingText(file) !== null && isTestFile(file, () => [workingText(file)]));
   const counts = {};
   for (const file of files) {
     const parsed = parseTestKinds(workingText(file));

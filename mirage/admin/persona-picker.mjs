@@ -67,7 +67,7 @@ export function mountPersonaPicker(root, report, { filters = {}, onSelect, onFil
         .filter((key) => byKey.has(key) && (type !== 'recent' || !(preferences.pinned ?? []).includes(key)))
         .map((key) => byKey.get(key));
       section.querySelector('[data-persona-shortcut-list]').innerHTML =
-        `<ul class="persona-list">${entries.map((persona) => personaCard(persona, { mode, selectedKey: selected, contexts, shortcut: true })).join('')}</ul>`;
+        `<ul class="persona-list">${entries.map((persona) => personaCard(persona, { mode, selectedKey: selected, contexts, shortcut: true, adminUrl: root.dataset.personaAdminUrl })).join('')}</ul>`;
       section.hidden = !entries.length;
     }
     collectRows();

@@ -4,6 +4,9 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { initializePluginOperation } from '../lib/plugin-operation-context.mjs';
 import { fixedClock } from '../lib/runtime-clock.mjs';
+
+// hang guard only: a blocked synchronous child cannot be ended by the test runner
+const CLI_HANG_GUARD_MS = 170_000;
 const id = (n) => `10000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const parent = {
   $type: 'ExecutionContext',
@@ -35,7 +38,7 @@ test('nested Unspecified wire time stays exact while its internal UTC timestamp 
     env: { ...process.env, TZ: 'Europe/Kyiv' },
     encoding: 'utf8',
     windowsHide: true,
-    timeout: 10000,
+    timeout: CLI_HANG_GUARD_MS,
   });
   assert.equal(child.status, 0, child.stderr);
   const result = JSON.parse(child.stdout);

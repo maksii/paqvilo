@@ -253,7 +253,7 @@ export const MIRAGE_SETTINGS = Object.freeze({
   presetMode: {
     scopes: ['catalogue'],
     option: null,
-    doc: 'bootstrap or always.',
+    doc: 'always (default) or bootstrap.',
     parse: choice(['bootstrap', 'always'], 'must be bootstrap or always'),
     resolve: (value) => value || undefined,
   },

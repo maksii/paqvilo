@@ -9,6 +9,8 @@ import { pathToFileURL } from 'node:url';
 import { parse } from 'yaml';
 import { ciLanes } from '../.github/scripts/change-scope.mjs';
 
+const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
+
 const root = process.cwd();
 const workflowFile = path.join(root, '.github/workflows/sonarqube.yml');
 const ciModule = await import(pathToFileURL(path.join(root, 'scripts/ci.mjs')));
@@ -114,7 +116,7 @@ test('Mirage unit and browser shards are nonempty, disjoint, and cover their act
   assertPartition('mirage', 'test:browser', 'browser', 'mirage');
 });
 
-test('the real Mirage verify lane executes volume and toolkit files once on shard one', { timeout: 60000 }, (t) => {
+test('the real Mirage verify lane executes volume and toolkit files once on shard one', (t) => {
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-mirage-shard-fixture-'));
   t.after(() => fs.rmSync(fixtureRoot, { recursive: true, force: true }));
   for (const directory of [
@@ -131,6 +133,7 @@ test('the real Mirage verify lane executes volume and toolkit files once on shar
     'scripts/ensure-dependencies.mjs',
     'scripts/verified-download.mjs',
     'scripts/ci-workspace-lease.mjs',
+    'scripts/npm-cli.mjs',
     '.github/scripts/change-scope.mjs',
   ])
     fs.copyFileSync(path.join(root, file), path.join(fixtureRoot, file));
@@ -183,7 +186,7 @@ verifyLane('mirage', { unit: true, browser: false, shard: process.argv[2] });
       env,
       encoding: 'utf8',
       windowsHide: true,
-      timeout: 30000,
+      timeout: CLI_HANG_GUARD_MS,
     });
     assert.equal(result.status, 0, result.stderr || result.stdout);
   }

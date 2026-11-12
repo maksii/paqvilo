@@ -3,7 +3,8 @@ import { existsSync } from 'node:fs';
 import { browserSettings, readEnvSettings, resolveMirageConfig, loadCatalogue } from './config.mjs';
 import { openBrowser } from './browser.mjs';
 import { runtimeSettings } from '../mirage/lib/runtime-config.mjs';
-import { startupProgress, waitForStartupPage } from './startup-progress.mjs';
+import { startupProgress, startupWaitOptions, waitForStartupPage } from './startup-progress.mjs';
+import { guardShutdownSignals } from './signal-forwarding.mjs';
 
 export function standaloneMirageConfiguration(project, args = {}) {
   const configDir = project ? path.dirname(project.configFile) : process.cwd();
@@ -100,12 +101,22 @@ export async function developStandalone(cfg, args, session, { open = openBrowser
     const destination = args.path ?? (cfg.runtime.kind === 'model-driven' ? '/main.aspx' : '/_sim/');
     if (!destination.startsWith('/') || destination.startsWith('//') || destination.includes('\\'))
       throw new Error('The starting path must be local to this runtime.');
+    if (session.adminUrl) console.log(`admin       ${session.adminUrl}`);
     console.log(`Opening ${session.url}${destination}. Close the dedicated browser or press Ctrl+C to stop.`);
-    await waitForStartupPage(page, session.url + destination, {
-      progress,
-      stopped,
-      modelDriven: cfg.runtime.kind === 'model-driven',
-    });
+    const loaded = await waitForStartupPage(
+      page,
+      session.url + destination,
+      startupWaitOptions(args, {
+        progress,
+        stopped,
+        modelDriven: cfg.runtime.kind === 'model-driven',
+      }),
+    );
+    // A closed page ends the session, whatever the browser still shows; the finally block then closes the browser.
+    if (!loaded && page.isClosed()) {
+      console.log('browser closed before start-up finished');
+      stop();
+    }
     await stopped;
     if (signal?.aborted) throw signal.reason;
   } finally {
@@ -116,13 +127,15 @@ export async function developStandalone(cfg, args, session, { open = openBrowser
     context.off('close', stop);
     browser?.off('disconnected', stop);
     page?.off('close', stop);
-    for (const cleanup of [() => (attached && page && !page.isClosed() ? page.close() : undefined), close]) {
-      try {
-        await cleanup();
-      } catch (error) {
-        errors.push(error);
+    await guardShutdownSignals(async () => {
+      for (const cleanup of [() => (attached && page && !page.isClosed() ? page.close() : undefined), close]) {
+        try {
+          await cleanup();
+        } catch (error) {
+          errors.push(error);
+        }
       }
-    }
+    });
   }
   if (errors.length) throw new AggregateError(errors, 'Standalone browser cleanup failed.');
   return 0;

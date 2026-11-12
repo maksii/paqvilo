@@ -104,7 +104,8 @@ export function classify(test, rules) {
 
 export async function conformance({ suite, rules: rulesFile = DEFAULT_RULES, timeoutMs = 5000 }) {
   const document = JSON.parse(await fs.readFile(suite, 'utf8'));
-  const tests = Array.isArray(document.tests) ? document.tests : [];
+  if (!Array.isArray(document?.tests)) throw new Error(`Suite ${suite} has no tests array`);
+  const tests = document.tests;
   const rulesDocument = JSON.parse(await fs.readFile(rulesFile, 'utf8'));
   const rules = rulesDocument.rules ?? [];
   const reasons = rulesDocument.reasons ?? {};

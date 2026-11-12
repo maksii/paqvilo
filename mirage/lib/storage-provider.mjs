@@ -90,30 +90,114 @@ export function assertProvider(provider) {
     fail('preflight must be a function when present');
 }
 
+/** The default idle bound of a readiness probe: a provider that makes no progress for this long has given no answer. */
+export const PREFLIGHT_IDLE_TIMEOUT_MS = 30000;
+
+// The longest delay a Node timer accepts; a longer one fires after 1 ms.
+const MAX_TIMER_DELAY_MS = 2147483647;
+
 /**
- * Readiness of an instantiated storage provider or message bus through its optional preflight() → { ready, reason? }, bounded
- * by timeoutMs (2 s, as local-service probes). null when the instance has no preflight(): it is declared, never probed.
+ * Arms a timer for ms, clamped to MAX_TIMER_DELAY_MS. A non-finite ms (Infinity, or null for no bound) arms nothing and
+ * returns null, so that bound never ends by itself. clearTimeout(null) is a no-op.
  */
-export async function preflightProvider(instance, { timeoutMs = 2000 } = {}) {
+function armTimer(ms, callback) {
+  return Number.isFinite(ms) ? setTimeout(callback, Math.min(ms, MAX_TIMER_DELAY_MS)) : null;
+}
+
+/**
+ * The bounds of a one-request probe, shared by requestBound and preflightProvider: an explicit timeoutMs is the only bound
+ * (deadlineMs, with no idle window: idleMs null). Without it the idle window applies and no deadline does.
+ */
+function probeBounds(timeoutMs, idleTimeoutMs) {
+  return timeoutMs != null ? { deadlineMs: timeoutMs, idleMs: null } : { deadlineMs: null, idleMs: idleTimeoutMs };
+}
+
+/**
+ * An idle guard: onIdle runs once when idleMs pass without a progress() call. Each progress() restarts that window, and
+ * stop() ends the guard for good (a late progress() after stop() re-arms nothing). A null or non-finite idleMs never fires.
+ */
+function startIdleGuard(idleMs, onIdle) {
+  let timer = null;
+  let done = false;
+  const progress = () => {
+    if (done) return;
+    clearTimeout(timer);
+    timer = armTimer(idleMs, () => {
+      done = true;
+      onIdle();
+    });
+  };
+  progress();
+  return {
+    progress,
+    stop() {
+      done = true;
+      clearTimeout(timer);
+    },
+  };
+}
+
+/**
+ * The bound of a one-request probe: the caller's timeoutMs when it gives one, else the idle window (no answer within
+ * PREFLIGHT_IDLE_TIMEOUT_MS). signal aborts with a TimeoutError when the bound ends; limitMs names the bound in a message;
+ * done() releases the deadline and the idle guard once the answer is in.
+ */
+export function requestBound(timeoutMs) {
+  const { deadlineMs, idleMs } = probeBounds(timeoutMs, PREFLIGHT_IDLE_TIMEOUT_MS);
+  if (deadlineMs != null) return { signal: deadlineSignal(deadlineMs), limitMs: deadlineMs, done() {} };
+  const controller = new AbortController();
+  const guard = startIdleGuard(idleMs, () =>
+    controller.abort(new DOMException(`no answer within ${PREFLIGHT_IDLE_TIMEOUT_MS} ms`, 'TimeoutError')),
+  );
+  return { signal: controller.signal, limitMs: PREFLIGHT_IDLE_TIMEOUT_MS, done: () => guard.stop() };
+}
+
+/**
+ * The signal of an explicit request deadline: AbortSignal.timeout on the clamped delay (it fires after 1 ms for a longer one).
+ * A non-finite deadline is no bound, so its signal never aborts.
+ */
+function deadlineSignal(ms) {
+  return Number.isFinite(ms) ? AbortSignal.timeout(Math.min(ms, MAX_TIMER_DELAY_MS)) : new AbortController().signal;
+}
+
+/**
+ * Readiness of an instantiated storage provider or message bus through its optional preflight() → { ready, reason? }. The probe
+ * ends at the first of: the provider's answer, a caller's timeoutMs (when given, and then the only bound), or idleTimeoutMs
+ * (30 s by default) without progress. Either bound answers ready: false and calls onTimeout. preflight() receives
+ * { signal, progress }: the signal aborts when the probe ends, and each progress() call restarts the idle window, so a
+ * provider that keeps signalling is never cut off. null when the instance has no preflight(): it is declared, never probed.
+ */
+export async function preflightProvider(
+  instance,
+  { timeoutMs, idleTimeoutMs = PREFLIGHT_IDLE_TIMEOUT_MS, onTimeout } = {},
+) {
   if (typeof instance?.preflight !== 'function') return null;
-  let timer;
-  // A CLI may have no other active handles while awaiting a provider. Keep its
-  // deadline alive until an answer is delivered, then release it in finally.
-  const timeout = new Promise((resolve) => {
-    timer = setTimeout(
-      () => resolve({ ready: false, reason: `No preflight answer within ${timeoutMs} ms.` }),
-      timeoutMs,
-    );
+  const controller = new AbortController();
+  const bounds = probeBounds(timeoutMs, idleTimeoutMs);
+  let deadline = null;
+  let guard = null;
+  // A CLI may have no other active handles while awaiting a provider. The deadline and the idle guard stay alive until an
+  // answer is delivered, then both are released in finally.
+  const ended = new Promise((resolve) => {
+    const expire = (reason) => {
+      onTimeout?.();
+      controller.abort();
+      resolve({ ready: false, reason });
+    };
+    deadline = armTimer(bounds.deadlineMs, () => expire(`No preflight answer within ${timeoutMs} ms.`));
+    guard = startIdleGuard(bounds.idleMs, () => expire(`The provider gave no answer for ${idleTimeoutMs} ms.`));
   });
+  const context = { signal: controller.signal, progress: () => guard.progress() };
   try {
-    const result = await Promise.race([Promise.resolve().then(() => instance.preflight()), timeout]);
+    const result = await Promise.race([Promise.resolve().then(() => instance.preflight(context)), ended]);
     return result?.ready === true
       ? { ready: true, reason: null }
       : { ready: false, reason: String(result?.reason ?? 'The provider reported it is not ready.') };
   } catch (error) {
     return { ready: false, reason: error?.message ?? String(error) };
   } finally {
-    clearTimeout(timer);
+    clearTimeout(deadline);
+    guard.stop();
   }
 }
 
@@ -204,7 +288,7 @@ export function guardProvider(provider, { counters = () => null } = {}) {
     }
   };
   if (typeof provider.compact === 'function') guarded.compact = () => provider.compact();
-  if (typeof provider.preflight === 'function') guarded.preflight = () => provider.preflight();
+  if (typeof provider.preflight === 'function') guarded.preflight = (context) => provider.preflight(context);
   guarded.close = async () => {
     await provider.close?.();
   };
@@ -367,7 +451,7 @@ export function createStorageRouter({ config, providers = {}, counters = () => n
     }),
   });
   // Readiness of one created provider (preflightProvider); null when it was not created or has no preflight().
-  const preflight = (id) => preflightProvider(instances[id]);
+  const preflight = (id, options) => preflightProvider(instances[id], options);
   return { forRoute, routes, describe, preflight };
 }
 

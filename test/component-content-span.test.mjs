@@ -1,3 +1,4 @@
+// @test-kind contract: component content span scanning bounds incomplete tags in a worker and refuses them semantically.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
@@ -48,7 +49,8 @@ test('malformed real markup is refused while fake records inside valid sections 
   assert.deepEqual(componentContent(xml), { copy: "<powerpagecomponent powerpagecomponentid='fake'>" });
 });
 
-test('large incomplete content tags finish in a bounded worker with semantic refusal', { timeout: 30000 }, async () => {
+// @test-kind security: hostile large incomplete tags cannot cause unbounded parsing
+test('large incomplete content tags finish in a bounded worker with semantic refusal', async () => {
   const worker = new Worker(
     `
     const { parentPort, workerData } = require('node:worker_threads');

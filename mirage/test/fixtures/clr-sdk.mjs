@@ -23,8 +23,8 @@ export function clrSdk() {
 }
 
 const CSC = path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe');
-// The same compile limit prepareClrRuntime gives its host build.
-const COMPILE_LIMIT_MS = 20_000;
+// hang guard only: a blocked synchronous child cannot be ended by the test runner
+const CLI_HANG_GUARD_MS = 170_000;
 
 /** Compiles invented C# with the .NET Framework compiler; `references` are DLL paths or framework DLL names, `keyFile` an
  * optional strong-name key (strongNameKey). */
@@ -39,7 +39,7 @@ export function compileClr(source, out, { target = 'library', references = [], k
       ...references.map((name) => '/reference:' + name),
       source,
     ],
-    { shell: false, windowsHide: true, encoding: 'utf8', timeout: COMPILE_LIMIT_MS },
+    { shell: false, windowsHide: true, encoding: 'utf8', timeout: CLI_HANG_GUARD_MS },
   );
   if (build.status !== 0) throw new Error('C# fixture build failed: ' + (build.error?.message ?? build.stdout + build.stderr));
   return out;

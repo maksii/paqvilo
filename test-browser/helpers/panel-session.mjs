@@ -1,8 +1,10 @@
+import fs from 'node:fs';
 import { ownedFixture } from '../../mirage/testing/owned-fixture.mjs';
 import { createFixture, SITE } from '../../test/fixture.mjs';
 import { fakeBrowser } from '../../test/fake-browser.mjs';
 import { OverlaySession } from '../../lense/session.mjs';
 import { enablePanel } from '../../lense/panel.mjs';
+import { ownCloseSteps } from './owned-server.mjs';
 
 // A panel state for an invented site and a fresh browser context, both owned by the test.
 // The caller routes the page; nothing listens on the loopback origin.
@@ -31,4 +33,13 @@ export async function panelSession(t, browser, origin) {
     source.cleanup();
   });
   return { state, page: await context.newPage() };
+}
+
+// A Mirage simulator and its work directory, owned by the test. The closers release the panel and browser
+// resources in order before the simulator closes, and the work directory is removed last.
+export function ownMirageSession(t, { app, work, closers }) {
+  ownCloseSteps(t, [...closers, () => app.close()]);
+  ownedFixture(t).remove(async () => {
+    fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  });
 }

@@ -54,6 +54,17 @@
       val.enabled = false;
     }
   };
+  // WebUIValidation.js hooks through the inline on<event> property, which jQuery's .trigger also calls.
+  // An inline handler that is already set runs first, and its return value is kept.
+  function hookValidationEvent(control, eventType) {
+    const property = 'on' + eventType;
+    const previous = control[property];
+    control[property] = function (event) {
+      const result = typeof previous === 'function' ? previous.call(this, event) : undefined;
+      w.ValidatorOnChange(event);
+      return result;
+    };
+  }
   w.ValidatorHookupControl = function (control, val) {
     if (typeof control.tagName !== 'string') return;
     if (control.tagName !== 'INPUT' && control.tagName !== 'TEXTAREA' && control.tagName !== 'SELECT') {
@@ -62,8 +73,7 @@
     }
     if (control.Validators === undefined) {
       control.Validators = [];
-      const eventType = control.type === 'radio' ? 'click' : 'change';
-      control.addEventListener(eventType, (event) => w.ValidatorOnChange(event));
+      hookValidationEvent(control, control.type === 'radio' ? 'click' : 'change');
     }
     // Several forms on one page each run ValidatorOnLoad; hook a validator once.
     if (!control.Validators.includes(val)) control.Validators[control.Validators.length] = val;
@@ -545,10 +555,22 @@
   }
   function numberControlValue(element) {
     if (element?.value === '' || element == null) return null;
-    const number = Number(String(element.value).replaceAll(',', ''));
-    // JSON.stringify(NaN) becomes null; retain the invalid textbox instead
-    // so the native server format validator rejects it without a write.
+    const text = String(element.value);
+    const decimal = element.getAttribute('data-numberdecimalseparator') === ',' ? ',' : '.';
+    const normalized = numberText(text, decimal);
+    // Only plain decimal text is a number. Anything else keeps the textbox text, so the native server
+    // format validator rejects it without a write (JSON.stringify(NaN) would become null).
+    const number = normalized !== null && PLAIN_DECIMAL.test(normalized) ? Number(normalized) : Number.NaN;
     return Number.isFinite(number) ? number : element.value;
+  }
+  const PLAIN_DECIMAL = /^[-+]?(\d+(\.\d*)?|\.\d+)$/;
+  // A group separator is a number's separator only between two digits, so one at either end or two in a row is
+  // left in the text and makes it null (not a number).
+  const GROUP_BETWEEN_DIGITS = { '.': /(?<=\d)\.(?=\d)/g, ',': /(?<=\d),(?=\d)/g };
+  function numberText(text, decimal) {
+    const group = decimal === ',' ? '.' : ',';
+    const grouped = text.replace(/\s/g, '').replace(GROUP_BETWEEN_DIGITS[group], '');
+    return grouped.includes(group) ? null : grouped.replaceAll(decimal, '.');
   }
   function richTextControlValue(field, element) {
     try {

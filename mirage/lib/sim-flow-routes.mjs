@@ -11,7 +11,7 @@
 // Mounted by the host: `const flowRoutes = createFlowRoutes({ api, csrf, resumeRun })`, then
 // `if (await flowRoutes(req, res, url)) return;` before the generic runtime admin router.
 import { redactSecrets } from './sim-messaging-routes.mjs';
-import { inspectFlowTrigger, runTrackedFlow, triggerPrincipal, validateFlowInput } from './flow-runtime.mjs';
+import { inspectFlowTrigger, runTrackedFlow, triggerPrincipal, validateTriggerInput } from './flow-runtime.mjs';
 import { flowTriggersOf, flowCallbackUrl, verifyFlowCallback } from './flow-triggers.mjs';
 import { runOwned } from './dataverse-transaction-context.mjs';
 import { isExactNumeric, parseExactJson, stringifyExactJson } from './exact-numeric.mjs';
@@ -23,6 +23,41 @@ const PREFIX = /^\/(?:_sim|__sim)\/api(?=\/|$)/;
 /** The /_sim/api prefixes this router answers (status `routes`). */
 export const routes = Object.freeze(['/flow-runs', '/flow-waits', '/flow-triggers', '/connections']);
 const failure = (status, code, message) => Object.assign(new Error(message), { status, code });
+
+// The approval block of an approval wait, read from the approvals provider at each answer so a response shows at once.
+// Only presentation fields leave here: connection references, tokens, details and connector payloads never do. A secure
+// wait keeps the response comments back. A wait whose approval no longer exists is listed without the block.
+const DEFAULT_OPTIONS = ['Approve', 'Reject'];
+const CUSTOM_TYPES = new Set(['Custom', 'CustomAwaitAll']);
+const ALL_TYPES = new Set(['AwaitAll', 'CustomAwaitAll']);
+function responseView(response, secure) {
+  const responder = response.responder ?? {};
+  return {
+    responder: responder.displayName ?? responder.email ?? responder.id ?? null,
+    response: response.approverResponse,
+    ...(secure || response.comments == null ? {} : { comments: response.comments }),
+    at: response.responseDate,
+  };
+}
+function approvalBlock(approval, secure) {
+  const assignees = [...(approval.assignedTo ?? [])],
+    answered = approval.answeredBy ?? [];
+  return {
+    type: approval.type,
+    title: approval.title,
+    options: CUSTOM_TYPES.has(approval.type) ? [...(approval.options ?? [])] : [...DEFAULT_OPTIONS],
+    assignees,
+    responses: (approval.responses ?? []).map((response) => responseView(response, secure)),
+    awaiting: assignees.filter((name) => !answered.includes(name)),
+    requireAll: ALL_TYPES.has(approval.type),
+  };
+}
+function withApprovalBlocks(waits, approvals) {
+  return waits.map((wait) => {
+    const approval = wait.kind === 'approval' ? approvals?.get(wait.id) : null;
+    return approval ? { ...wait, approval: approvalBlock(approval, wait.secure === true) } : wait;
+  });
+}
 
 function send(res, status, value, headers = {}) {
   res.writeHead(status, { ...headers, 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
@@ -207,7 +242,7 @@ function flowRoot(traces, req, url, { origin, route, signed }) {
             throw failure(405, 'MethodNotAllowed', `The trigger accepts ${inspected.method} requests only.`);
           const input = await body(req);
           try {
-            validateFlowInput(input, flow.definition.triggers[name].inputs?.schema ?? {});
+            validateTriggerInput(flow.definition.triggers[name], input);
           } catch (error) {
             throw failure(400, 'InvalidRequest', error.message);
           }
@@ -280,7 +315,7 @@ function flowRoot(traces, req, url, { origin, route, signed }) {
               vault: runs.vault,
               processId,
               triggerName: Object.keys(flow.definition.triggers)[0],
-              origin: `http://${req.headers.host}`,
+              origin: url.origin,
               method: inspected.method,
             }),
           );
@@ -350,7 +385,8 @@ function flowRoot(traces, req, url, { origin, route, signed }) {
           return true;
         }
         if (waitsRoute && req.method === 'GET' && !waitsRoute[1]) {
-          reply(200, runs.waits({ state: url.searchParams.get('state') || undefined }));
+          const waits = runs.waits({ state: url.searchParams.get('state') || undefined });
+          reply(200, withApprovalBlocks(waits, api.providers?.connectors?.approvals));
           return true;
         }
         if (waitsRoute && req.method === 'POST' && waitsRoute[1]) {
@@ -371,11 +407,17 @@ function flowRoot(traces, req, url, { origin, route, signed }) {
           if (wait.kind === 'approval') {
             const approvals = api.providers?.connectors?.approvals;
             if (!approvals) throw failure(501, 'ApprovalsNotConfigured', 'This runtime has no approvals provider.');
-            outputs = await approvals.respond(id, {
+            const { completed, ...result } = await approvals.respond(id, {
               outcome: input.outcome,
               responder: input.responder,
               comments: input.comments,
             });
+            // A Pending approval keeps its run waiting: the run resumes only once the approval completes.
+            if (!completed) {
+              reply(202, { runId: wait.runId, waitId: id, kind: wait.kind, scheduled: false, outcome: null });
+              return true;
+            }
+            outputs = result;
           } else outputs = input.outputs ?? {};
           const outcome = { status: 'Succeeded', outputs };
           const scheduled = runs

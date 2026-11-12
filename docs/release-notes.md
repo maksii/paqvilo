@@ -27,7 +27,10 @@ organization's metadata. Large datasets use far less memory.
   [static analysis](static-analysis.md).
 - **Canvas player.** `/_apps/canvas/<app>` runs a Canvas app from its exported source: controls, Power Fx,
   components, PCF, media, galleries and local data, with an inspector for source locations, state and errors.
-  Source edits reload the app. See [Canvas apps](../mirage/docs/canvas-apps.md).
+  Source edits reload the app. Start opens a new instance, `Notify` honours its timeout and survives reload, the
+  native `Form.Unsaved` is true only after input, and PCF resources are served from the apps address at
+  `/_apps/canvas/pcf/<token>/`. A visitor without a Dataverse user answers 401 `CanvasPrincipalRequired`.
+  See [Canvas apps](../mirage/docs/canvas-apps.md).
 - **Code Apps development.** `mirage dev` starts your app servers, opens a workbench to switch between apps and
   set parameters, and shows connections and requests. The Vite plug-in keeps the Microsoft SDK's `/app` and
   `/data` imports working against Mirage, with HMR and source breakpoints. See
@@ -48,9 +51,31 @@ organization's metadata. Large datasets use far less memory.
 - **Pack transactions.** Opt-in, authenticated, local-only pack endpoints write records with declared targets,
   rollback, concurrency checks and idempotency receipts. See
   [data packs](../mirage/docs/data-packs.md#authenticated-local-endpoint-writes).
+- **Single-page application registrations.** A Dataverse API application registration with `publicClient: true`
+  takes `spaRedirectUris`. An authorization request to one needs PKCE with `S256`. Its code and refresh token
+  are redeemed from that URI's origin, and the response names that origin in `Access-Control-Allow-Origin`.
+  See [Dataverse API](../mirage/docs/dataverse-api.md).
+- **Approval types.** Approval actions model Basic, AwaitAll, Custom and CustomAwaitAll. A responder must be an
+  assignee, and the `/_sim/` flows view lists the approval's response options and an assignee picker.
+- **Excel export.** The grid action `download-as-excel` returns an `.xlsx` workbook with typed cells on one
+  sheet.
 
 ### Improved
 
+- **Administration and apps on their own addresses.** `/_sim/` and `/_setup/` are served on their own loopback
+  port, printed as `adminUrl`. On the Power Pages host, the model-driven, Canvas and Code Apps surfaces are
+  served on another, printed as `appsUrl`; the standalone host serves its apps on its main address. Opening
+  them on the portal address in a browser redirects there (a document) or answers 403 `AdminOriginRequired`
+  or `AppsOriginRequired` (any other request). A request whose `Host` is not the listener's own address
+  answers 403 `INVALID_REQUEST`. Scripts in portal pages cannot read or change the administration or call the
+  apps. The administration token (`csrf`) differs from the portal's anti-forgery token (`portalToken`) and
+  from the apps token (`appsToken`); the administration token is accepted wherever either of them is. Clients
+  that send neither `Sec-Fetch-Site` nor `Origin`, such as Node `fetch`, `connectRuntime` and the CLI, use
+  `/_sim/api` on the portal address with `csrf`. A persona with its own setup (a context persona) opens from
+  the administration, and the sign-in picker on the portal links there; the persona catalogue served to portal
+  pages carries the names of a context's variables, snippets and settings without their values. The
+  administration signs a browser in through the portal with a single-use link. See
+  [administration](../mirage/docs/sim-administration.md).
 - **Plug-in parity.** Reads, images, shared variables, parent contexts, request IDs, tags, async targets and
   SOAP serialization follow native behavior more closely. JavaScript plug-ins receive `sharedVariables`. This
   does not make Mirage complete Dataverse parity; see
@@ -59,7 +84,11 @@ organization's metadata. Large datasets use far less memory.
   when a lookup or subgrid needs them. Counts above 5,000 show as `5000+`. Side panes, form and choice
   contracts, PCF resize, ribbon labels and requirement levels behave more like the platform.
 - **Flows.** Stricter expression parsing with diagnostics (`inspectFlowExpression`), more functions, exact UTC
-  `ticks`, JSON Schema for request inputs and ParseJson, and trigger conditions evaluated before a run starts.
+  `ticks`, JSON Schema for request inputs and ParseJson, and trigger conditions evaluated before a run starts. A
+  run has a deadline only when `limits.timeoutMs` is set. `utcNow`, `formatDateTime`, `addToTime`,
+  `subtractFromTime`, `startOfDay`, `startOfHour`, `startOfMonth`, `dayOfWeek`, `dayOfMonth`, `dayOfYear`, `guid`
+  and the tick-span functions (`addDays`, `addHours` and the like) evaluate on the run's clock. Failed runs show
+  their reason in `/_sim/`. `CancelAllCloudFlowRuns` cancels through the record pipeline.
 - **Performance at scale.** A row write no longer scales with the size of the solution. Startup, restarts,
   status polling and the full catalogue use less memory and stream their output. Qualified with invented data
   up to 100 million records.
@@ -69,6 +98,86 @@ organization's metadata. Large datasets use far less memory.
   works at phone width and follows the browser's dark mode.
 - **CLI.** Commands validate their arguments before any file, browser or PAC work. JSON errors go to stdout and
   readable errors to stderr. Report paths cannot overwrite inputs or credentials.
+- **Column security.** A column marked not valid for read is hidden from every read path: Web API projections,
+  FetchXML attributes and conditions, `$apply`, SOAP and TDS. Using one as an operand answers the error that an
+  unknown column gets. The secure configuration of plug-in steps, service endpoints and the plug-in trace log
+  are readable by administrators and customizers only.
+- **Message authorization.** Add-on messages (Power Virtual Agents, feature control, knowledge search, email
+  templates, work queues, bound flow messages, business process flow reports) check privileges and the caller's
+  read access to their target rows. `Restore` applies field security and lookup checks like `Create`.
+  `ReassignObjectsOwner` and team moves stamp the caller and advance the row version.
+- **Solution import and uninstall.** A staged upgrade answers 400 `InvalidRequest` when either solution is
+  unmanaged, so `DeleteAndPromote` cannot delete unmanaged tables or rows. `ImportJobId` must be a GUID that no
+  import job uses. Uninstalling a solution removes the message and filter of a custom API it contained.
+- **Custom APIs.** Deleting a custom API while a plug-in step is registered on its message answers 405 with
+  `0x80040227`; after the step is deleted, deleting the API removes its message and filter. A second custom API
+  with the same unique name answers 400 with `0x80072013`. This matches the behaviour observed on a native
+  environment.
+- **Notes and files.** A failed write of a note body, file, image or chunk answers 503. The saved row keeps its
+  body inline until the blob write succeeds.
+- **TDS.** `decimal`, `money` and `datetime` values are returned, `nvarchar` defaults to 4000 or `max`, a
+  statement that builds more than 1,000,000 intermediate rows answers error 40000, and long queries yield so the
+  time limit and cancel apply. Pre-login packets over 64 KiB are refused.
+- **SOAP Organization service.** Decimal and money values keep their exact digits, an untyped `entity` element
+  is decoded, and every message validates its required inputs.
+- **Web API and FetchXML.** Paging cookies continue past boolean and untyped numeric order columns, `count="0"`
+  returns no rows, a bare id binds to a polymorphic lookup, `$expand=transactioncurrencyid` is kept, and money
+  columns read in the row's own currency with `exchangerate` and `_base` values. Metadata `$filter` and
+  `$expand` depth is limited to 100. Paging links carry the address of the listener that served the request.
+- **Column types.** Multi-select columns report `AttributeType` 17 (Virtual) and partylist columns 10. Liquid
+  `attribute_type` returns the documented `AttributeTypeCode` names (`DateTime`, `Lookup`), and
+  `AttributeTypeName` keeps the `...Type` names. Liquid renders a multi-select column as its labels on every
+  path, related rows included. A table that only a mapping declares reports its typed columns to forms, grids
+  and layouts.
+- **Power Fx.** A regular expression that can backtrack without bound is stopped by a hang guard
+  (`host.regexGuardMs`, default 10,000 ms) and answers a Power Fx error. One scope counter covers a formula and
+  the component functions it calls. `Distinct` runs in linear time, `DateValue` follows the language argument, and
+  `Date` accepts years before 1900.
+- **Model-driven client API.** A refused `data.save()` rejects with a plain object holding `errorCode`, `code`,
+  `message` and `title` (2200000005 when OnSave prevents the save, 2200000007 when a required column is empty,
+  2200000003 when a save is in flight). The form context survives a save, `entity.save('saveandnew')` opens a
+  blank create form, OnLoad reports load state 1, 2 or 3, and OnChange `getEventArgs()` returns `undefined`.
+  This matches the behaviour observed on a native environment. See
+  [client API](../mirage/docs/model-driven-client-api.md).
+- **Model-driven forms and grids.** Date Only columns show a date picker, Two Options columns without labels
+  render as a toggle, the list search matches the start of the Quick Find columns (lookup and choice columns by
+  label), a missing form ID is refused with `FormUnavailable`, and the command bar fits phone width.
+- **Code Apps.** Connector calls wait up to 120 s by default. A Windows `.cmd` or `.bat` dev-server command
+  runs through the command interpreter with its arguments escaped. `devServer.timeoutMs` (1000 to 300000, default 120000) bounds a server that never becomes ready, and a dev server that exits is reported with its own status.
+  The Vite proxy refuses cross-site requests. `PAQVILO_MIRAGE_URL` is the address that serves the Code Apps
+  surface (`appsUrl` on the Power Pages host). The `/_sim/` staff session panel selects the user for Canvas and
+  Code Apps.
+- **Liquid and portal rendering.** An `include` of a missing template renders `Template "<name>" not found.` as
+  escaped text, never as Liquid. Only the first `entityform` or `webform` tag of a page renders and the others
+  report a diagnostic. `request.params` includes cookies, and the renderer uses the runtime clock. A file name
+  outside Latin-1 uploads intact through `x-ms-file-name-encoding: uri-component`. A basic form's validation
+  message is inserted without HTML encoding, with summary links on or off, as observed on a native site.
+- **Plug-ins.** A pooled C# host that died while idle is replaced on the next call. `RelatedEntitiesQuery` and
+  N:1 related queries survive the `Retrieve` pipeline, a Delete step runs as the SYSTEM user, and queue sequence
+  numbers are kept per entity in `paqvilo_queuesequence`.
+- **Redaction.** Audit and trace redaction covers connection strings, URL credentials and unclosed secret
+  conditions.
+- **Lense start-up.** `--startup-timeout <ms>` (default 120000, cap 600000) bounds the silence without progress,
+  not the total start-up time, for `mirage start`, `mirage dev` and `model-driven dev`. Closing the browser
+  during start-up stops the command. A second `mirage start` on a state file that a running Mirage uses with
+  different settings is refused and names the pid.
+- **Lense stop and interrupts.** `mirage stop` exits with status 2 when a selected session could not be verified
+  and was kept. `verify` ends at its next wait on Ctrl+C, SIGINT or SIGTERM, writes its report with `errorCode`
+  `VERIFY_INTERRUPTED`, cleans up and exits 1; a third interrupt while cleanup runs ends the process with status
+  130 (SIGINT) or 143 (SIGTERM), as it does for `dev`, `mirage` and `model-driven`.
+- **Lense agent API.** `agent sessions --timeout <ms>` (2000 to 120000, default 35000) sets the probe budget for
+  each session file. A model-driven agent API serves one target origin: it survives a sign-in redirect and is
+  retired when the target switches to another origin.
+- **Lense catalogue commands.** The documented `PAQVILO_*` tool variables do not break catalogue commands,
+  repeated options share one parser, and `--help` lists every option.
+- **Dataverse CLI.** A remote `dataverse plan` lists the membership writes and blocked roots that `apply` makes,
+  and `apply` refuses blocked roots before its first write. Reads retry on 429 and 503.
+- **`paqvilo analyze`.** UTF-8 byte-order marks parse, plug-in rules read the SDK message ID, form rules know
+  the standard columns of standard tables, unreadable configuration reports its own error code, and a Canvas
+  source that the runtime plays is accepted.
+- **Baseline capture.** Live writes need `--allow-writes`, including the cache refresh and clear-cache steps,
+  and a live capture names its scenarios with `--only` or `--all-scenarios`. Sign-in callback bodies, identity
+  tokens and hidden credential inputs are redacted, and popups are covered by the write guard.
 
 ### Fixed
 
@@ -95,7 +204,8 @@ organization's metadata. Large datasets use far less memory.
   hang the runtime, and a malformed character set no longer answers an unexpected error.
 - TDS `GO <count>` accepts up to 1,000 repeats and honours the query time limit.
 - `$filter` expressions nested deeper than 100 levels answer 400 instead of an unexpected error.
-- A sign-in or sign-out `returnUrl` with dot segments can no longer redirect off the site.
+- A sign-in or sign-out `returnUrl` with dot segments can no longer redirect off the site. A forged `//host` or
+  backslash `returnUrl` and encoded dot segments cannot redirect off the site.
 - `paqvilo analyze` reviews portal pages, templates and web resources in folders named like build output (`metrics`,
   `build`, `dist`), runs from a checkout under such a folder, and no longer reports an unpacked solution as
   incomplete because of ribbon, formula or web resource content files. The text report names every skipped source.
@@ -119,6 +229,9 @@ organization's metadata. Large datasets use far less memory.
   loading every key.
 - An interrupted setup save no longer blocks later saves: a lock left by a stopped process is removed.
 - The `_sim` top bar keeps the page title readable at tablet width, and `mirage serve` reports the `/_sim/` address.
+- A request to `/_sim/api/presets/<name>` with the name of an inherited object property answers 404.
+- Shutdown does not wait for a stalled request body: a body without progress for 30 s is dropped, and accepted
+  streaming requests are drained.
 
 ### Upgrade notes
 
@@ -126,6 +239,24 @@ organization's metadata. Large datasets use far less memory.
 - The old `_sim` addresses `#dashboard`, `#logs`, `#audit`, `#trace` and `#evidence` redirect to Monitor with their
   filters; `#overview` opens Home.
 - The CLI now rejects extra or misplaced arguments that it used to ignore. Check scripts that call it.
+- The administration and the apps are reached on `adminUrl` and `appsUrl`. A script that sends `Origin` or
+  `Sec-Fetch-Site` to `/_sim/` or `/_apps/` on the portal address gets 403 `AdminOriginRequired` or
+  `AppsOriginRequired`: point it at the printed addresses. Clients without those headers keep the portal address.
+- `handle.csrf` is the administration token; the portal form token is `handle.portalToken`, and the apps token is
+  `handle.appsToken`.
+- Delete the plug-in steps of a custom API's message before deleting the API: the delete answers 405
+  `0x80040227` while a step is registered.
+- Browser session cookies are saved per portal scope in `<profile>.session.<hash>.json`. An unscoped
+  `<profile>.session.json` is deleted and never read, so a headed `verify --signed-in` signs in once more.
+- A staged upgrade of an unmanaged solution is refused with 400; export and import managed solutions for
+  upgrades.
+- Live baseline captures need `--allow-writes` for cache refresh and clear-cache steps, and `--only` or
+  `--all-scenarios` for every live capture.
+- `mirage stop` exits 2 when it keeps a session it could not verify; scripts that read the exit status handle 2.
+- Tests that pinned `AttributeType` 16 for multi-select columns or 14 for partylist columns, or `...Type`
+  names from Liquid `attribute_type`, use 17, 10 and the `AttributeTypeCode` names.
+- `navigationCommitReserveMs` in `runAcceptance` reserves at most half of the remaining action time for held
+  writes.
 
 ### Contributor validation
 
@@ -143,6 +274,10 @@ organization's metadata. Large datasets use far less memory.
   `scripts/parity-tags-legacy.json`, and that list only shrinks. See [test kinds](test-kinds.md).
 - When the SonarQube quality gate fails, the last step of its job prints the failed conditions and the open issues in
   new code.
+- `check:pr` reads the newest result of each check per workflow. The test-kind checker treats an insertion
+  inside a `parity` test body as a change to it, reads runner modules that call `test(`, and runs from the staged
+  snapshot. Pre-push accepts annotated tags, and `check:workflows` has pinned actionlint and ShellCheck assets
+  for macOS and Linux arm64.
 
 Update with `npm install --save-dev paqvilo@^0.9.8` and commit the lockfile.
 

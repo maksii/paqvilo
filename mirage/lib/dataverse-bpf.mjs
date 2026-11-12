@@ -11,21 +11,23 @@ import { cloneStateData } from './state-clone.mjs';
 // elements (at most 64 elements deep), each with an id and a name. Otherwise stages is [] and the flow reports
 // BPF_DEFINITION_UNPARSED once.
 //
-// Instances (level contract; createInstance executes only when the instance table exists): createInstance inserts one row in
-// the table named by the uniquename, at the first stage, through store.createRecord in a nested transaction: awaited inside an
-// open write it joins that write and rolls back with it; on its own it is one committed transaction. A missing table reports
-// BPF_INSTANCE_TABLE_MISSING and creates nothing. An inactive flow reports BPF_DEFINITION_NOT_ACTIVE.
-// Stage validation and stage moves are not implemented: there is no moveStage. A stage move would rewrite activestageid and
-// traversedpath of an existing instance row, the same two columns createInstance writes.
+// Instances (level contract: no runtime path calls createInstance; a caller invokes it directly): createInstance
+// inserts one row in the table named by the uniquename, at the first stage, through api.records.createInternal with
+// the admin identity, in a nested transaction: awaited inside an open write it joins that write and rolls back with it;
+// on its own it is one committed transaction. A missing table reports BPF_INSTANCE_TABLE_MISSING and creates nothing.
+// An inactive flow reports BPF_DEFINITION_NOT_ACTIVE.
+// A beforeWrite hook on each instance table handles a write that sets activestageid: the stage must belong to the
+// instance's process, or the write answers 400 with innerCode 0x80040203. An update that moves the instance also
+// maintains traversedpath (comma-separated stage ids): a stage new to the path is appended, and an earlier stage of the
+// path truncates it there. Finish, abandon and reactivate (statecode and statuscode) are not modelled.
 //
 // Assumption: the clientdata shape (a stages array of { stageid, stagename, entityname }); a live designer export was not read.
 // Assumption: the instance primary key (businessprocessflowinstanceid unless the mapping names one) and the lookup
 // bpf_<primaryentity>id on the instance row follow the existing message code.
 // ponytail: the inventory is re-parsed on every call (no parse cache). Fine for the definition counts a site holds.
 // ponytail: a stage with no entity name takes the flow's primary entity.
-// ponytail: an instance row carries no statecode or statuscode.
-// ponytail: the instance row is written with the platform's admin identity through the store, not the records pipeline, so no
-// plug-in step or audit entry runs for it; route it through api.records when a test needs them.
+// ponytail: an instance row takes the store's default statecode and statuscode; no operation here sets them.
+import { DataError } from './data-error.mjs';
 import { uuidV5 } from './dataverse-security.mjs';
 import { parseSolutionXml } from './solution-xml.mjs';
 import { onceReporter } from './dataverse-addon-common.mjs';
@@ -232,12 +234,67 @@ export async function createInstance(api, workflowid, targetId) {
   );
 }
 
+// ---- Instance writes
+
+const flowRows = (store) => store.tableRows('workflow').filter((row) => Number(row.category) === BPF_CATEGORY);
+const isInstanceTable = (store, logical) =>
+  flowRows(store).some((row) => String(row.uniquename ?? '').toLowerCase() === logical);
+
+// The stage ids of a process: its simple stage list, and the processstage rows that the stage messages read for it.
+function stageIdsOf(store, processId) {
+  const row = flowRows(store).find((flow) => bare(flow.workflowid) === processId);
+  const parsed = row
+    ? stagesOf(
+        row,
+        String(row.primaryentity ?? '')
+          .trim()
+          .toLowerCase(),
+      )
+    : null;
+  const native = store.tableRows('processstage').filter((stage) => bare(stage.processid) === processId);
+  return new Set([...(parsed ?? []).map((stage) => stage.id), ...native.map((stage) => bare(stage.processstageid))]);
+}
+
+// The traversed path of an instance row: its comma-separated stage ids, or its current stage when the path is empty.
+function traversedOf(row) {
+  const path = String(row.traversedpath ?? '')
+    .split(',')
+    .map((id) => bare(id.trim()))
+    .filter(Boolean);
+  if (path.length || !row.activestageid) return path;
+  return [bare(row.activestageid)];
+}
+
+// The path after a move to a stage: a stage already on the path truncates it there, any other stage is appended.
+function movedPath(path, stage) {
+  const at = path.indexOf(stage);
+  return at < 0 ? [...path, stage] : path.slice(0, at + 1);
+}
+
+const foreignStage = (stage, processId) =>
+  new DataError(`Stage '${stage}' is not a stage of business process flow '${processId}'.`, 400, 'InvalidRequest', {
+    innerCode: '0x80040203',
+  });
+
+// beforeWrite on an instance table: a write that sets activestageid must name a stage of the instance's process.
+// An update that moves the instance also sets traversedpath from the path it had.
+function checkInstanceWrite(store, mapping, { operation, data, existing }) {
+  if (operation === 'delete' || !data || !Object.hasOwn(data, 'activestageid')) return;
+  if (!isInstanceTable(store, mapping.logicalName)) return;
+  const stage = bare(data.activestageid);
+  if (operation === 'update' && stage === bare(existing?.activestageid)) return;
+  const processId = bare(data.processid ?? existing?.processid);
+  if (!stageIdsOf(store, processId).has(stage)) throw foreignStage(stage, processId);
+  if (operation === 'update') data.traversedpath = movedPath(traversedOf(existing), stage).join(',');
+}
+
 // ---- Extension
 
 /** install(api, { diagnostic }): exposes api.businessProcessFlows = { list(), for(table), diagnostics() }. */
 function install(api, { diagnostic } = {}) {
   const state = stateOf(api);
   state.reporter = onceReporter(diagnostic ?? api.diagnostic ?? null);
+  api.recordHooks.add('beforeWrite', (c, mapping, info) => checkInstanceWrite(api.store, mapping, info));
   const list = () => definitionsOf(api.store, state).map(publicOf);
   api.businessProcessFlows = {
     list,

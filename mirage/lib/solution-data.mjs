@@ -95,11 +95,11 @@ function addStateDefaults(mapping, table) {
  */
 export async function importSolutionData(
   roots = [],
-  { entities, cacheFile, cache, order = 'explicit', lcid = 1033, scan, schema } = {},
+  { entities, cacheFile, cache, order = 'explicit', lcid = 1033, scan, schema, sideHashes } = {},
 ) {
   if (typeof roots === 'string') roots = [roots];
   scan ??= await scanSolutionSources(roots, { cacheFile, cache, order });
-  schema ??= buildSolutionSchema(scan, { lcid });
+  schema ??= buildSolutionSchema(scan, { lcid, sideHashes });
 
   const mappings = {};
   for (const name of Object.keys(schema.tables).sort(/* NOSONAR: preserve default string coercion */))

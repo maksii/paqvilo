@@ -90,6 +90,8 @@ const STATE_COLUMNS = new Set([
 // A cancel of a background operation: Ready or Locked moves to Locked/Canceling, and its run then finishes it as Canceled.
 const CANCEL_PATCH = { backgroundoperationstatecode: STATE.Locked, backgroundoperationstatuscode: CANCELING };
 const TERMINAL_CANCEL = 'Canceling background operation is not allowed after it is in terminal state.';
+// Learn (Background operations, Retries): up to three retries of a failed operation, on an exponential backoff (ms).
+const BACKGROUND_RETRY_DELAYS = [1000, 2000, 4000];
 const MONITOR = /^\/api\/backgroundoperation\/([^/]+)$/;
 
 const invalid = (message, code = 'InvalidRequest', details) => new DataError(message, 400, code, details);
@@ -231,6 +233,55 @@ const jobOperation = (store, jobId) =>
   (store.state.tables.bulkdeleteoperation ?? []).find((row) =>
     sameGuid(row.asyncoperationid?.id ?? row.asyncoperationid, jobId),
   ) ?? null;
+
+// Completion waiters of asyncoperation rows, per store. whenJobSettled makes an entry for a job that is not Completed yet,
+// and settleJobWaiters removes it when the job's row is Completed.
+const jobWaiters = new WeakMap();
+const isCompleted = (row) => Number(row?.statecode) === STATE.Completed;
+const pendingSettle = () => {
+  let resolve;
+  const promise = new Promise((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+};
+
+/** Resolves with the asyncoperation row once the job is Completed (Succeeded, Failed or Canceled), whichever path wrote that.
+ * A job already Completed resolves at once from its stored row; an unknown job is refused. */
+export function whenJobSettled(store, jobId) {
+  const row = rowOf(store, 'asyncoperation', jobId);
+  if (!row) return Promise.reject(new Error(`System job ${jobId} does not exist.`));
+  if (isCompleted(row)) return Promise.resolve(row);
+  if (!jobWaiters.has(store)) jobWaiters.set(store, new Map());
+  const waiters = jobWaiters.get(store),
+    key = String(jobId).toLowerCase();
+  if (!waiters.has(key)) waiters.set(key, pendingSettle());
+  return waiters.get(key).promise;
+}
+
+// Resolves and removes the waiters whose job row is Completed now.
+function settleJobWaiters(store) {
+  const waiters = jobWaiters.get(store);
+  if (!waiters) return;
+  for (const [key, waiter] of waiters) {
+    const row = rowOf(store, 'asyncoperation', key);
+    if (!isCompleted(row)) continue;
+    waiters.delete(key);
+    waiter.resolve(row);
+  }
+}
+
+// Settles the waiters once the write that completed a job is durable. Inside a transaction that is the commit of its
+// outermost transaction (onCommit runs only after a commit, never after a rollback); outside one the write has committed.
+function settleAfterCommit(store) {
+  afterCommit(store, () => settleJobWaiters(store));
+}
+
+// Runs the action once the write that called it is durable: at the commit of the outermost transaction, or now outside one.
+function afterCommit(store, action) {
+  if (store.inTransaction()) store.onCommit(action);
+  else action();
+}
 
 // Checks an update against the transition table and fills the status the transition writes. `running` is whether the job
 // has a live run: a cancel or pause of a running job writes its transitional status (see TRANSITIONAL).
@@ -535,7 +586,12 @@ export async function install(
   seedMappings(store);
   const stamp = () => new Date(api.clock()).toISOString();
   const uuid = () => (api.ids ?? systemIds).uuid();
-  const write = (fn) => api.change(() => store.transact(fn));
+  // Every write of the module settles the waiters of the jobs it completes, once the write has committed.
+  const write = async (fn) => {
+    const result = await api.change(() => store.transact(fn));
+    settleAfterCommit(store);
+    return result;
+  };
   const setRow = (logical, id, patch) =>
     write(() => {
       const row = rowOf(store, logical, id);
@@ -555,6 +611,7 @@ export async function install(
   const isCustomApi = (name) => store.tableRows('customapi').some((row) => row.uniquename === name);
   const active = new Map(); // jobId -> the token of the run allowed to continue; a newer run supersedes older ones
   activeRuns.set(api, active);
+  const systemStarts = new Map(); // jobId -> the task that starts a system job; kept until the job completes, for a resume
   const liveRuns = new Map(); // requestId of a run's deletes -> its live check, read by the delete hook (see beforeWrite)
 
   // One Ready bulk delete job and its operation row. The submission (QuerySet and submitter ids, no tokens) is kept on the
@@ -595,8 +652,10 @@ export async function install(
   }
 
   // A system job for another module (duplicate detection): one Ready asyncoperation row, then work() on a later tick under the
-  // same state machine as BulkDelete. work() returns the job's message. ponytail: the job writes no submission, so a restart
-  // does not run it again (it stays Ready); a postponed or recurring system job is not modelled.
+  // same state machine as BulkDelete. work() returns the job's message. A job that is not Ready when its tick comes (cancelled,
+  // or suspended until resumed) does not start. ponytail: the job writes no submission, so a restart fails it (see the restart
+  // pass); a postponed or recurring system job is not modelled.
+  // ponytail: a system job paused while its work runs runs that work again when it is resumed; native resume is not known.
   // columns: extra asyncoperation values (dataverse-workflows.mjs). A work() error with jobStatus 32 ends the job Canceled.
   api.systemJob = async ({ name, operationtype, regardingobjectid = null, callerId, columns = {} }, work) => {
     const jobId = uuid();
@@ -623,42 +682,73 @@ export async function install(
       actor: userActor(api.principals?.byId?.(callerId), callerId),
       attributes: { jobId, operationType: operationtype ?? null },
     };
-    defer(() =>
-      runJob(store, traced, async (span) => {
-        await setRow('asyncoperation', jobId, {
-          statecode: STATE.Locked,
-          statuscode: STATUS.InProgress,
-          startedon: stamp(),
-        });
-        try {
-          const message = await work();
-          span?.output(() => ({ message: message ?? null }));
-          await setRow('asyncoperation', jobId, {
-            statecode: STATE.Completed,
-            statuscode: STATUS.Succeeded,
-            completedon: stamp(),
-            message: message ?? null,
-          });
-        } catch (error) {
-          const statuscode = error?.jobStatus ?? STATUS.Failed;
-          await setRow('asyncoperation', jobId, {
-            statecode: STATE.Completed,
-            statuscode,
-            completedon: stamp(),
-            message: error.message,
-            errorcode: errorNumber(error),
-          });
-          // The row records the failure; the span says so too (a Canceled job ends cancelled).
-          span?.end({
-            status: statuscode === STATUS.Canceled ? 'cancelled' : 'error',
-            error,
-            attributes: { jobStatus: statuscode },
-          });
-        }
-      }),
-    );
+    const start = () => {
+      forgetIfDone(jobId);
+      if (rowOf(store, 'asyncoperation', jobId)?.statecode !== STATE.Ready) return Promise.resolve();
+      return runJob(store, traced, (span) => runSystemJob(jobId, work, span));
+    };
+    systemStarts.set(jobId, start);
+    defer(start);
     return jobId;
   };
+
+  // The task that starts a system job is dropped once the job has completed or its row is gone. A suspended job keeps it
+  // for its resume.
+  const forgetIfDone = (jobId) => {
+    const row = rowOf(store, 'asyncoperation', jobId);
+    if (!row || row.statecode === STATE.Completed) systemStarts.delete(jobId);
+  };
+
+  // The row values a system job takes when its work() returns: the status a cancel or pause written during the run asks for.
+  const systemJobEnd = (row, message) => {
+    if (row.statuscode === CANCELING)
+      return { statecode: STATE.Completed, statuscode: STATUS.Canceled, completedon: stamp() };
+    if (row.statuscode === PAUSING) return { statecode: STATE.Suspended, statuscode: STATUS.Waiting };
+    return { statecode: STATE.Completed, statuscode: STATUS.Succeeded, completedon: stamp(), message: message ?? null };
+  };
+
+  // The status a system job's failed work ends with: the error's own jobStatus, else Canceled when a cancel was held
+  // during the run (the row is Canceling), else Failed.
+  const failedJobStatus = (error, row) =>
+    error?.jobStatus ?? (row?.statuscode === CANCELING ? STATUS.Canceled : STATUS.Failed);
+
+  // A system job's run. It is registered as active while work() runs, so a cancel or pause written meanwhile is held
+  // (checkJobUpdate) and the row takes the status that request asked for when work() returns. Work already done is kept.
+  async function runSystemJob(jobId, work, span) {
+    const token = {};
+    active.set(jobId, token);
+    try {
+      await setRow('asyncoperation', jobId, {
+        statecode: STATE.Locked,
+        statuscode: STATUS.InProgress,
+        startedon: stamp(),
+      });
+      const message = await work();
+      span?.output(() => ({ message: message ?? null }));
+      await write(() => {
+        const row = rowOf(store, 'asyncoperation', jobId);
+        if (row) Object.assign(row, systemJobEnd(row, message));
+      });
+    } catch (error) {
+      const statuscode = failedJobStatus(error, rowOf(store, 'asyncoperation', jobId));
+      await setRow('asyncoperation', jobId, {
+        statecode: STATE.Completed,
+        statuscode,
+        completedon: stamp(),
+        message: error.message,
+        errorcode: errorNumber(error),
+      });
+      // The row records the failure; the span says so too (a Canceled job ends cancelled).
+      span?.end({
+        status: statuscode === STATUS.Canceled ? 'cancelled' : 'error',
+        error,
+        attributes: { jobStatus: statuscode },
+      });
+    } finally {
+      if (active.get(jobId) === token) active.delete(jobId);
+      forgetIfDone(jobId);
+    }
+  }
 
   // Collects every id a QuerySet item selects, page by page, before any delete (rows created later are not deleted).
   async function collectIds(job, item, queryIndex) {
@@ -1030,6 +1120,22 @@ export async function install(
   // the caller's identity, and its output or error becomes the row's result.
   const monitorOf = (origin, id) => `${origin}/api/backgroundoperation/${id}`;
 
+  // A run that failed is queued again after its backoff while retries remain and no cancel has arrived meanwhile.
+  const retryable = (id, patch, attempt) =>
+    patch.backgroundoperationstatuscode === STATUS.Failed &&
+    attempt < BACKGROUND_RETRY_DELAYS.length &&
+    rowOf(store, 'backgroundoperation', id)?.backgroundoperationstatuscode !== CANCELING;
+
+  // The row waits for its retry, with the retry count raised; the retry is queued on the backoff for this attempt.
+  async function queueRetry(id, op, call, callback, location, attempt) {
+    await setRow('backgroundoperation', id, {
+      backgroundoperationstatecode: STATE.Ready,
+      backgroundoperationstatuscode: STATUS.WaitingForResources,
+      retrycount: attempt + 1,
+    });
+    queueBackground(id, op, call, callback, location, BACKGROUND_RETRY_DELAYS[attempt]);
+  }
+
   async function runBackground(id, op, call, callback, location, span = null) {
     const current = rowOf(store, 'backgroundoperation', id);
     if (!current) return;
@@ -1043,6 +1149,11 @@ export async function install(
       });
       // A cancel that arrives while the operation runs does not stop it: Dataverse keeps the started result.
       patch = await invokeOutcome(op, call);
+      const attempt = current.retrycount ?? 0;
+      if (retryable(id, patch, attempt)) {
+        await queueRetry(id, op, call, callback, location, attempt);
+        return span?.end();
+      }
     }
     await setRow('backgroundoperation', id, {
       backgroundoperationstatecode: STATE.Completed,
@@ -1083,6 +1194,30 @@ export async function install(
     settle();
   }
 
+  // Queues a background operation's run on a later tick, or after delayMs for a retry. A row a reset removed, or one no
+  // longer Ready (and not being canceled), runs nothing and opens no job span.
+  function queueBackground(id, op, call, callback, location, delayMs = 0) {
+    defer(() => {
+      const queued = rowOf(store, 'backgroundoperation', id);
+      if (
+        !queued ||
+        (queued.backgroundoperationstatuscode !== CANCELING && queued.backgroundoperationstatecode !== STATE.Ready)
+      )
+        return Promise.resolve();
+      return runJob(
+        store,
+        {
+          key: `job:${id}`,
+          name: op.name,
+          kind: 'background-operation',
+          actor: userActor(call.user),
+          attributes: { backgroundOperationId: id, message: op.name, callback: callback !== null },
+        },
+        (span) => runBackground(id, op, call, callback, location, span),
+      );
+    }, delayMs);
+  }
+
   // The router's hook for a registered operation: a respond-async call to a custom API is queued and answered 202; any
   // other call resolves to null and runs as usual.
   api.backgroundOperations = {
@@ -1115,26 +1250,7 @@ export async function install(
         });
       });
       stageJob(store, `job:${id}`, { kind: 'background-operation', backgroundOperationId: id });
-      // A row a reset removed, or one no longer Ready (and not being canceled), runs nothing and opens no job span.
-      defer(() => {
-        const queued = rowOf(store, 'backgroundoperation', id);
-        if (
-          !queued ||
-          (queued.backgroundoperationstatuscode !== CANCELING && queued.backgroundoperationstatecode !== STATE.Ready)
-        )
-          return Promise.resolve();
-        return runJob(
-          store,
-          {
-            key: `job:${id}`,
-            name: op.name,
-            kind: 'background-operation',
-            actor: userActor(call.user),
-            attributes: { backgroundOperationId: id, message: op.name, callback: callback !== null },
-          },
-          (span) => runBackground(id, op, call, callback, location, span),
-        );
-      });
+      queueBackground(id, op, call, callback, location);
       const headers = {
         Location: location,
         'x-ms-dyn-backgroundoperationid': id,
@@ -1151,14 +1267,12 @@ export async function install(
     if (!c.caller) throw new DataError('Authentication is required.', 401, 'Unauthorized');
     const id = MONITOR.exec(c.url.pathname)[1];
     const mapping = store.resolveMapping('backgroundoperation');
-    api.principals.authorize({
-      user: c.caller,
-      entity: 'backgroundoperation',
-      operation: c.method === 'DELETE' ? 'write' : 'read',
-      mapping,
-    });
+    const operation = c.method === 'DELETE' ? 'write' : 'read';
+    api.principals.authorize({ user: c.caller, entity: 'backgroundoperation', operation, mapping });
     const row = rowOf(store, 'backgroundoperation', id);
     if (!row) throw new DataError(`Could not find item '${id}'.`, 404, 'NotFound');
+    // The operation's own row decides, as a record read or write of the row does (owner or sufficient access level).
+    api.principals.authorize({ user: c.caller, entity: 'backgroundoperation', operation, mapping, row });
     if (c.method === 'DELETE') {
       if (row.backgroundoperationstatecode === STATE.Completed) throw invalid(TERMINAL_CANCEL);
       await setRow('backgroundoperation', id, CANCEL_PATCH);
@@ -1197,13 +1311,14 @@ export async function install(
     // Resume: the job starts again on the next tick, if the write survives (a rollback leaves it Suspended and start() does nothing).
     if (before === STATE.Suspended && Number(data.statecode) === STATE.Ready) {
       // The resuming request stages the run (its trace shows the job it restarted).
-      if (existing.submission)
+      if (existing.submission) {
         stageJob(store, `job:${existing.asyncoperationid}`, {
           kind: 'bulk-delete',
           asyncOperationId: existing.asyncoperationid,
           resumed: true,
         });
-      defer(() => start(existing.asyncoperationid));
+        defer(() => start(existing.asyncoperationid));
+      } else if (systemStarts.has(existing.asyncoperationid)) defer(systemStarts.get(existing.asyncoperationid));
     }
   }
 
@@ -1233,13 +1348,32 @@ export async function install(
   api.recordHooks.add('beforeWrite', (c, mapping, { operation, data, existing }) =>
     checkSystemBeforeWrite(c, mapping, operation, data, existing),
   );
+  // A Web API write of an asyncoperation row (a cancel that completes a job before its tick) settles its waiters and drops the
+  // start task of a job it completed. Inside a transaction both wait for the commit of its outermost transaction.
+  api.recordHooks.add('afterWrite', (c, mapping, { id }) => {
+    if (mapping.logicalName !== 'asyncoperation') return;
+    settleAfterCommit(store);
+    afterCommit(store, () => forgetIfDone(id));
+  });
 
-  // A restart. A bulk delete still Ready or Locked runs again, since its submission is on its row. A background operation
-  // still in flight is failed: its request was not kept, so it cannot run again. ponytail: no re-run of background work.
+  // A restart. A bulk delete still Ready or Locked runs again, since its submission is on its row. A system job still Ready or
+  // Locked without a submission is failed: its work is not kept, so it cannot run again. A background operation still in
+  // flight is failed for the same reason: its request was not kept. ponytail: no re-run of background work.
   const resumed = [];
   await write(() => {
     for (const row of store.state.tables.asyncoperation) {
-      if (!row.submission || (row.statecode !== STATE.Ready && row.statecode !== STATE.Locked)) continue;
+      if (row.statecode !== STATE.Ready && row.statecode !== STATE.Locked) continue;
+      // A durable committed-event job keeps its kind and event in data; its own runner recovers it (committed-work.mjs).
+      if (row.data != null) continue;
+      if (!row.submission) {
+        Object.assign(row, {
+          statecode: STATE.Completed,
+          statuscode: STATUS.Failed,
+          completedon: stamp(),
+          message: 'The system job was interrupted by a restart.',
+        });
+        continue;
+      }
       // A cancel or pause requested before the restart is finished here: its run cannot continue.
       if (row.statecode === STATE.Locked && row.statuscode === CANCELING) {
         Object.assign(row, { statecode: STATE.Completed, statuscode: STATUS.Canceled, completedon: stamp() });

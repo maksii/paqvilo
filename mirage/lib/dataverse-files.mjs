@@ -12,6 +12,7 @@ import { contextUrl, parseDataverseRoute, parseKey } from './dataverse-odata.mjs
 import { guidKey } from './dataverse-values.mjs';
 import { contentDisposition, fileNameHeader } from './response-headers.mjs';
 import { authorizeGrant, validateServiceProfile } from './local-organization-service.mjs';
+import { denied as fieldDenied } from './dataverse-fls.mjs';
 
 const CHUNK_SIZE = 4194304;
 const BLOCK_LIMIT = 4194304; // The docs say a block is under 4 MB; the exact native bound is a guess.
@@ -147,6 +148,20 @@ const CSDL = {
 
 const invalid = (message, innerCode = '0x80040203') => new DataError(message, 400, 'InvalidRequest', { innerCode });
 const missing = (message) => new DataError(message, 404, 'NotFound', { innerCode: MISSING_INNER });
+// A provider write that fails answers the note path's storage failure; the provider's own error never reaches the response.
+const storageWriteFailed = () =>
+  new DataError(
+    'The body could not be written to its storage provider; the write was rolled back.',
+    503,
+    'STORAGE_WRITE_FAILED',
+  );
+async function awaitStored(write, failure) {
+  try {
+    return await write();
+  } catch {
+    throw failure();
+  }
+}
 const imageFailure = (logical, id, column) =>
   invalid(
     `Error occured when processing image. Reason: Update image properties failed for objectid: ${id}, logicalName: ${logical}, attribute: ${column}`,
@@ -526,6 +541,8 @@ export function install(api) {
       );
     return provider;
   };
+  // A failed provider write answers the storage failure, and the routing module records its STORAGE_WRITE_FAILED diagnostic.
+  const failedWrite = (logical, id, key) => storage()?.failed?.(logical, id, key) ?? storageWriteFailed();
   // Rollback safety: bytes reach the provider before the row transaction; a write hands the keys it released to the routing
   // module after it settles, which deletes those no committed row references. Bytes a failed write stored are swept as orphans.
   const writeFiles = async (fn) => {
@@ -541,7 +558,10 @@ export function install(api) {
     if (!routed(fileKey(fileId))) entry.data = bytes.toString('base64');
     else {
       entry.key = fileKey(fileId);
-      await storage().files.put(entry.key, bytes, { contentType: entry.mimeType });
+      await awaitStored(
+        () => storage().files.put(entry.key, bytes, { contentType: entry.mimeType }),
+        () => failedWrite(entry.entity, entry.recordId, entry.key),
+      );
     }
     return entry;
   };
@@ -552,7 +572,11 @@ export function install(api) {
   // the provider if abandoned uploads pile up.
   const stageBlock = async (session, blockId, body) => {
     if (!routed(session.key)) return session.blocks.set(blockId, body);
-    await providerOf(session.key).put(session.key, body, { blockId });
+    const provider = providerOf(session.key);
+    await awaitStored(
+      () => provider.put(session.key, body, { blockId }),
+      () => failedWrite(session.entity ?? null, session.id ?? null, session.key),
+    );
     session.blocks.set(blockId, body.length);
   };
   // Joins the listed blocks: committed by the provider (never joined in memory) or concatenated. Returns { size, head, bytes? }.
@@ -561,7 +585,11 @@ export function install(api) {
       const bytes = Buffer.concat(list.map((blockId) => session.blocks.get(String(blockId))));
       return { size: bytes.length, head: bytes, bytes };
     }
-    const { size } = await providerOf(session.key).commit(session.key, list.map(String), { contentType });
+    const provider = providerOf(session.key);
+    const { size } = await awaitStored(
+      () => provider.commit(session.key, list.map(String), { contentType }),
+      () => failedWrite(session.entity ?? null, session.id ?? null, session.key),
+    );
     const head = size
       ? await readStoredBytes(api, { key: session.key }, { start: 0, end: Math.min(size, 16) - 1 })
       : Buffer.alloc(0);
@@ -572,6 +600,23 @@ export function install(api) {
     c.authorized === true
       ? undefined
       : principals.authorize({ user: c.user, entity: mapping.logicalName, operation, row, mapping });
+  // Column security: a secured file or image column needs the field permission a column read or write needs. api.fieldSecurity
+  // comes from the FLS extension, installed after this module, so it is read per call. A refusal is fls denied(), the same 403
+  // a column gets. c.authorized (fileContentInternal) checked its own grants.
+  const authorizeColumn = (c, mapping, column, operation, recordId) => {
+    const fls = api.fieldSecurity;
+    if (c.authorized === true || !fls || !column) return;
+    const allowed =
+      operation === 'read'
+        ? fls.canRead(c.user, mapping.logicalName, column, recordId)
+        : fls.canWrite(c.user, mapping.logicalName, column, operation, recordId);
+    if (!allowed) throw fieldDenied(operation, c.user, column, mapping.logicalName);
+  };
+  // A block session names the row and column it reads or writes. Every use checks the caller's field permission again.
+  const authorizeSession = (c, session, operation) => {
+    if (session.entity && session.column)
+      authorizeColumn(c, store.resolveMapping(session.entity), session.column, operation, session.id);
+  };
   const sessionOf = (token, mode) => {
     const session = liveSession(String(token ?? ''));
     if (session?.mode !== mode) throw invalid('The file continuation token is not valid.');
@@ -603,6 +648,7 @@ export function install(api) {
 
   async function upload(c, { mapping, id, column, kind, def }) {
     authorize(c, mapping, 'update', recordOf(store, mapping, id));
+    authorizeColumn(c, mapping, column, 'update', id);
     const token = c.url.searchParams.get('sessiontoken');
     if (token) return chunk(c, { mapping, id, column, kind, def, token });
     const name = fileName(c);
@@ -686,7 +732,10 @@ export function install(api) {
     }
     reserve(session, end + 1);
     if (routed(session.key)) {
-      await storage().files.put(session.key, bytes, { blockId: `r${start}` });
+      await awaitStored(
+        () => storage().files.put(session.key, bytes, { blockId: `r${start}` }),
+        () => failedWrite(mapping.logicalName, id, session.key),
+      );
       session.chunks.push(`r${start}`);
     } else session.chunks.push(bytes);
     if (start === 0) session.head = bytes.subarray(0, 16);
@@ -711,7 +760,10 @@ export function install(api) {
       if (data) entry.data = data.toString('base64');
       else {
         entry.key = session.key;
-        await storage().files.commit(session.key, session.chunks, { contentType: entry.mimeType });
+        await awaitStored(
+          () => storage().files.commit(session.key, session.chunks, { contentType: entry.mimeType }),
+          () => failedWrite(mapping.logicalName, id, session.key),
+        );
       }
       await writeFiles((released) =>
         place(store, recordOf(store, mapping, id), column, kind, entry, session.fileId, released),
@@ -728,6 +780,7 @@ export function install(api) {
   ) {
     const row = recordOf(store, mapping, id);
     authorize(c, mapping, 'read', row);
+    authorizeColumn(c, mapping, column, 'read', id);
     const entry = row[column] ? filesRead(store)[row[column]] : null;
     // Native answers the download route's own errors (404 and 416 observed) as plain application/json, not the OData minimal type.
     const plain = (error) => Object.assign(error, { details: { ...error.details, contentType: 'application/json' } });
@@ -789,6 +842,7 @@ export function install(api) {
 
   async function clear(c, { mapping, id, column, kind }) {
     authorize(c, mapping, 'update', recordOf(store, mapping, id));
+    authorizeColumn(c, mapping, column, 'update', id);
     await writeFiles((released) => release(store, recordOf(store, mapping, id), column, kind, released));
     return { status: 204 };
   }
@@ -1175,6 +1229,7 @@ export function install(api) {
       const name = String(input.FileName ?? '');
       if (!name) throw invalid('FileName is required.');
       authorize(c, mapping, 'update', recordOf(store, mapping, id));
+      authorizeColumn(c, mapping, found.column, 'update', id);
       const token = uuid(),
         fileId = uuid();
       openSession(token, {
@@ -1188,6 +1243,7 @@ export function install(api) {
         blocks: new Map(),
         fileId,
         key: fileKey(fileId),
+        grantee: c.user, // The caller a signed upload URL for this session acts for (its anonymous PUT has no caller).
       });
       return reply(c, 'InitializeFileBlocksUpload', { FileContinuationToken: token });
     },
@@ -1195,6 +1251,7 @@ export function install(api) {
     async UploadBlock(c) {
       const input = bodyOf(c);
       const session = sessionOf(input.FileContinuationToken, 'blocks');
+      authorizeSession(c, session, 'update');
       const blockId = Buffer.from(String(input.BlockId ?? ''), 'base64');
       const block = Buffer.from(String(input.BlockData ?? ''), 'base64');
       if (
@@ -1226,6 +1283,7 @@ export function install(api) {
       const mapping = session.entity ? store.resolveMapping(session.entity) : null;
       if (mapping) authorize(c, mapping, 'update', recordOf(store, mapping, session.id));
       else if (session.creator !== c.user?.systemuserid) throw invalid('The file continuation token is not valid.');
+      authorizeSession(c, session, 'update');
       const listed = parts.reduce((total, part) => total + sizeOf(part), 0);
       if (session.expectedSize != null && listed !== session.expectedSize)
         throw invalid('The uploaded size does not match FileSize.');
@@ -1268,10 +1326,17 @@ export function install(api) {
       if (!found) throw invalid(`${input.FileAttributeName} is not a file or image column of ${mapping.logicalName}.`);
       const row = recordOf(store, mapping, id);
       authorize(c, mapping, 'read', row);
+      authorizeColumn(c, mapping, found.column, 'read', id);
       const entry = row[found.column] ? filesRead(store)[row[found.column]] : null;
       if (!entry) throw missing(`No file found for ${found.column} of ${mapping.logicalName} record ${id}.`); // Native wording not known.
       const token = uuid();
-      openSession(token, { mode: 'download', fileId: row[found.column], entity: mapping.logicalName, id });
+      openSession(token, {
+        mode: 'download',
+        fileId: row[found.column],
+        entity: mapping.logicalName,
+        id,
+        column: found.column,
+      });
       return reply(c, 'InitializeFileBlocksDownload', {
         FileSizeInBytes: entry.size,
         FileName: entry.name,
@@ -1291,6 +1356,7 @@ export function install(api) {
       if (!entry) throw missing(`File ${session.fileId} does not exist.`);
       const mapping = store.resolveMapping(session.entity);
       authorize(c, mapping, 'read', recordOf(store, mapping, session.id));
+      authorizeSession(c, session, 'read');
       const offset = Number(input.Offset ?? 0);
       const length = Number(input.BlockLength ?? 0);
       if (!Number.isInteger(offset) || !Number.isInteger(length) || length <= 0) {
@@ -1322,6 +1388,7 @@ export function install(api) {
       }
       const mapping = store.resolveMapping(entry.entity);
       authorize(c, mapping, 'update', recordOf(store, mapping, entry.recordId));
+      authorizeColumn(c, mapping, entry.column, 'update', entry.recordId);
       const found = fileColumn(mapping, entry.column);
       await writeFiles((released) => {
         const row = recordOf(store, mapping, entry.recordId);
@@ -1418,6 +1485,7 @@ export function install(api) {
   function columnSasResponse(c, input, row, mapping) {
     const found = fileColumn(mapping, input.FileAttributeName);
     if (!found) throw invalid('FileAttributeName is not a file or image column.');
+    authorizeColumn(c, mapping, found.column, 'read', row[mapping.idColumn]);
     if (found.kind === 'image' && found.def?.canStoreFullImage !== true)
       throw invalid('GetFileSasUrl only works for image columns that store full images.');
     const key = row[found.column];
@@ -1508,8 +1576,10 @@ export function install(api) {
       )
         return failure();
       if (permission === 'w' && c.method === 'PUT' && key.startsWith('upload:')) {
-        const session = sessionOf(key.slice(7), 'blocks'),
-          blockId = Buffer.from('sas').toString('base64');
+        // The URL is the caller's capability: its bytes are refused once the minting caller loses the field permission.
+        const session = sessionOf(key.slice(7), 'blocks');
+        authorizeSession({ user: session.grantee }, session, 'update');
+        const blockId = Buffer.from('sas').toString('base64');
         let received = 0;
         // Anonymous routes run before the authenticated body's reader. Verify the capability first, then enforce
         // the same column size limit while streaming; a large request never materializes an unbounded buffer.

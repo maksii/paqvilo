@@ -110,6 +110,224 @@ export function redactTokens(text) {
   );
 }
 
+// Credential-bearing keys (identity callbacks, token responses, SAML and WS-Federation assertions): their values are
+// replaced in every recorded request and response body, JSON or form-encoded, at any depth.
+const CREDENTIAL_KEYS = new Set(
+  [
+    'id_token',
+    'access_token',
+    'refresh_token',
+    'client_secret',
+    'client_assertion',
+    'password',
+    'samlresponse',
+    'wresult',
+    'assertion',
+  ].map((key) => key.toLowerCase()),
+);
+// Flow keys name an OAuth code or state, which an ordinary API body also uses for row columns and error codes. Their
+// values are replaced in form-encoded bodies, and in JSON only at the top level of a request body or a token response.
+const FLOW_KEYS = new Set(['code', 'state', 'session_state']);
+// The OAuth 2.0 token path, on an identity provider or on a local authority that serves the same path.
+const TOKEN_ENDPOINT = /\/oauth2\/(?:v2\.0\/)?token$/i;
+const CREDENTIAL_PLACEHOLDER = '{token}';
+const isCredentialKey = (key) => CREDENTIAL_KEYS.has(String(key).toLowerCase());
+const isFlowKey = (key) => FLOW_KEYS.has(String(key).toLowerCase());
+const isAnyCredentialKey = (key) => isCredentialKey(key) || isFlowKey(key);
+function isTokenEndpoint(url) {
+  try {
+    return TOKEN_ENDPOINT.test(new URL(url).pathname);
+  } catch {
+    return false;
+  }
+}
+function parseJsonObject(text) {
+  try {
+    const value = JSON.parse(text);
+    return value && typeof value === 'object' ? value : null;
+  } catch {
+    return null;
+  }
+}
+// flowKeys: the object is the top level of a body whose flow keys are redacted too.
+function redactJsonCredentials(value, flowKeys) {
+  if (Array.isArray(value)) return value.map((item) => redactJsonCredentials(item, false));
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [
+      key,
+      isCredentialKey(key) || (flowKeys && isFlowKey(key))
+        ? CREDENTIAL_PLACEHOLDER
+        : redactJsonCredentials(item, false),
+    ]),
+  );
+}
+function decodeFormKey(key) {
+  try {
+    return decodeURIComponent(key.replaceAll('+', ' '));
+  } catch {
+    return key;
+  }
+}
+function redactFormCredentials(text) {
+  // Spaces in a form body are encoded, so raw whitespace or markup means the text is not a form body.
+  if (/[\s<]/.test(text)) return text;
+  let changed = false;
+  const pairs = text.split('&').map((pair) => {
+    const equals = pair.indexOf('=');
+    if (equals < 0 || !isAnyCredentialKey(decodeFormKey(pair.slice(0, equals)))) return pair;
+    changed = true;
+    return pair.slice(0, equals + 1) + CREDENTIAL_PLACEHOLDER;
+  });
+  return changed ? pairs.join('&') : text;
+}
+/**
+ * Keep the keys and replace each credential value with {token}; a body without credential keys is returned as is.
+ * flowKeys: whether the top level of a JSON body also redacts code, state and session_state.
+ */
+export function redactCredentialBody(text, flowKeys) {
+  const value = parseJsonObject(text);
+  if (value === null) return redactFormCredentials(text);
+  const redacted = JSON.stringify(redactJsonCredentials(value, flowKeys));
+  return redacted === JSON.stringify(value) ? text : redacted;
+}
+// A body that carries a credential takes the redacted-text provenance, as a body changed by the token redaction does.
+function redactCredentialResponse(response, tokenEndpoint) {
+  if (typeof response?.body !== 'string') return response;
+  const body = redactCredentialBody(response.body, tokenEndpoint);
+  if (body === response.body) return response;
+  const result = { ...response, body };
+  delete result.bodyHashInput;
+  result.bodyHashProvenance = 'redacted-text-sha256';
+  return result;
+}
+function redactCredentialEntry(entry) {
+  // A request body's top level always takes the flow keys; a response does so only from a token endpoint.
+  const result = { ...entry, response: redactCredentialResponse(entry.response, isTokenEndpoint(entry.url)) };
+  if (typeof entry.body === 'string') result.body = redactCredentialBody(entry.body, true);
+  return result;
+}
+// A hidden form input that names a credential keeps its name and loses its value, in every captured DOM. Attribute
+// values may be double-quoted, single-quoted or unquoted, in any order and letter case. The attributes of a tag are read
+// once, left to right, so text inside another attribute's value is never taken for an attribute.
+const QUOTE_CHARACTERS = new Set(['"', "'"]);
+const attributeNameEnd = (text, index) => {
+  let end = index;
+  while (end < text.length && !/[\s=/>]/.test(text[end])) end++;
+  return end;
+};
+const skipSpace = (text, index) => {
+  let end = index;
+  while (end < text.length && /\s/.test(text[end])) end++;
+  return end;
+};
+// A quoted value ends at its matching quote, or at the end of the text when that quote never closes. An unquoted value
+// ends at whitespace or '>'. `next` is the index after the value.
+const attributeValue = (text, start) => {
+  const quote = QUOTE_CHARACTERS.has(text[start]) ? text[start] : null;
+  if (quote) {
+    const close = text.indexOf(quote, start + 1);
+    const valueEnd = close < 0 ? text.length : close;
+    return {
+      value: text.slice(start + 1, valueEnd),
+      valueStart: start + 1,
+      valueEnd,
+      quote,
+      next: close < 0 ? text.length : close + 1,
+    };
+  }
+  let valueEnd = start;
+  while (valueEnd < text.length && !/[\s>]/.test(text[valueEnd])) valueEnd++;
+  return { value: text.slice(start, valueEnd), valueStart: start, valueEnd, quote: null, next: valueEnd };
+};
+// The attribute that starts at `index`. A name without '=' has an empty value and no value span (valueStart -1).
+const readAttribute = (text, index) => {
+  const nameEnd = attributeNameEnd(text, index);
+  const name = text.slice(index, nameEnd).toLowerCase();
+  const equals = skipSpace(text, nameEnd);
+  if (text[equals] !== '=') {
+    return { attribute: { name, value: '', valueStart: -1, valueEnd: -1, quote: null }, next: equals };
+  }
+  const { next, ...value } = attributeValue(text, skipSpace(text, equals + 1));
+  return { attribute: { name, ...value }, next };
+};
+// The attributes of an '<input' tag, in order. The first occurrence of a name is the one that counts, as in HTML.
+function inputAttributes(tag) {
+  const attributes = [];
+  let index = '<input'.length;
+  while (index < tag.length && tag[index] !== '>') {
+    if (/[\s/]/.test(tag[index])) {
+      index++;
+    } else {
+      const { attribute, next } = readAttribute(tag, index);
+      attributes.push(attribute);
+      index = next;
+    }
+  }
+  return attributes;
+}
+const attributeNamed = (attributes, name) => attributes.find((attribute) => attribute.name === name);
+function redactCredentialTag(tag) {
+  const attributes = inputAttributes(tag);
+  const name = attributeNamed(attributes, 'name')?.value;
+  const type = attributeNamed(attributes, 'type')?.value.toLowerCase();
+  if (type !== 'hidden' || !name || !isAnyCredentialKey(name)) return tag;
+  const value = attributeNamed(attributes, 'value');
+  if (!value || value.valueStart < 0) return tag;
+  const quoteWidth = value.quote ? 1 : 0;
+  const before = tag.slice(0, value.valueStart - quoteWidth);
+  return `${before}"${CREDENTIAL_PLACEHOLDER}"${tag.slice(value.valueEnd + quoteWidth)}`;
+}
+// The '>' that closes the tag whose attributes start at `from`, searched only before `limit` (the next '<input').
+// A '>' inside a quoted attribute value does not close the tag, and a quote opens a value only after '=', as in HTML.
+// When no '>' outside a quote closes the tag before `limit`, the first '>' before `limit` ends it; -1 when there is none.
+function closingBracket(text, from, limit) {
+  let quote = null;
+  let afterEquals = false;
+  let firstBracket = -1;
+  for (let index = from; index < limit; index++) {
+    const char = text[index];
+    if (char === '>' && firstBracket < 0) firstBracket = index;
+    if (quote) {
+      if (char === quote) quote = null;
+    } else if (char === '>') {
+      return index;
+    } else if (afterEquals && (char === '"' || char === "'")) {
+      quote = char;
+    }
+    if (char === '=') afterEquals = true;
+    else if (!/\s/.test(char)) afterEquals = false;
+  }
+  return firstBracket;
+}
+// Every '<input' starts its own tag and every tag ends before the next '<input', so no input is skipped and the scan
+// stays linear: each span between two '<input' starts is read a bounded number of times. A tag with no closing bracket
+// before the next '<input' (or the end of the text, for a truncated capture) runs to that limit.
+export function redactDomCredentials(html) {
+  const text = String(html);
+  const starts = /<input\b/gi;
+  let output = '';
+  let copied = 0;
+  let match = starts.exec(text);
+  while (match) {
+    const from = match.index + match[0].length;
+    starts.lastIndex = from;
+    const next = starts.exec(text);
+    const limit = next ? next.index : text.length;
+    const close = closingBracket(text, from, limit);
+    const end = close < 0 ? limit : close + 1;
+    output += text.slice(copied, match.index) + redactCredentialTag(text.slice(match.index, end));
+    copied = end;
+    starts.lastIndex = copied;
+    match = starts.exec(text);
+  }
+  return output + text.slice(copied);
+}
+function redactCredentialEvidence(raw) {
+  if (!Array.isArray(raw?.requests)) return raw;
+  return { ...raw, requests: raw.requests.map(redactCredentialEntry) };
+}
+
 // The capture's own origin (referer, origin, location headers) is reduced to the same `{site}` form the meta uses.
 export const siteOriginPlaceholder = (origin) => {
   try {
@@ -160,6 +378,8 @@ function redactHeaders(headers, origin = null) {
     settle: settleDefaults = {},
     maxBody = 2 * 1024 * 1024,
     readPosts = ['^/_services/entity-(?:grid|subgrid)-data.json(?:/|$)', '^/_services/entity-notes/[^/]+$'],
+    // Hang guard for the screenshot, in milliseconds; the page's own screenshot deadline is disabled.
+    screenshotGuardMs = 240_000,
   } = options;
   const textTypes = new RegExp(
     options.textTypes ??
@@ -200,84 +420,136 @@ function redactHeaders(headers, origin = null) {
     }
   };
   const identityHosts = /(?:^|\.)login\.microsoftonline\.com$|(?:^|\.)login\.live\.com$|(?:^|\.)b2clogin\.com$/i;
+  const hostOf = (value) => {
+    try {
+      return new URL(value).hostname;
+    } catch {
+      return '';
+    }
+  };
+  const referrerHost = (request) => hostOf(request.headers().referer) || hostOf(request.headers().origin);
+  const isTopLevel = (request) => request.frame()?.parentFrame() === null;
+  // Identity traffic is the sign-in flow's own navigations: a provider's form_post back to the portal, a form
+  // posted from an identity host, the start of an external challenge, or a top-level navigation to an identity host.
+  const isIdentityTraffic = (request, url) => {
+    if (!request.isNavigationRequest()) return false;
+    if (url.origin !== origin) return identityHosts.test(url.hostname) && isTopLevel(request);
+    const headers = request.headers();
+    return (
+      /^\/signin-[^/]+$/i.test(url.pathname) ||
+      /^\/Account\/Login\/ExternalLogin$/i.test(url.pathname) ||
+      [headers.referer, headers.origin].some((value) => identityHosts.test(hostOf(value)))
+    );
+  };
+  // Entries name the host only when it is not the portal's own, so portal evidence keeps its {method, path} shape.
+  const hostField = (url) => (url.origin === origin ? {} : { host: url.hostname });
+  // The guard covers the captured origin: its writes are blocked unless the run allows them. Identity navigations are
+  // recorded wherever they go, and every other request to another origin is left to the browser.
+  // A route answer fails with a closed-target error when its page or popup closed while the request was in flight. Only
+  // that failure is ignored, so an error in the guard itself still rejects. Defined here because pageRunner is serialised.
+  const answerRoute = (action) =>
+    Promise.resolve(action).catch((error) => {
+      if (!/has been closed|Target closed|Target page, context or browser/i.test(String(error?.message ?? error))) {
+        throw error;
+      }
+    });
   const guard = async (route) => {
     const request = route.request();
     const method = request.method().toUpperCase();
-    if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return route.fallback();
-    const pathname = new URL(request.url()).pathname;
-    // The browser's own sign-in completion (an identity provider's form_post back to the portal)
-    // is identity traffic, not a scenario write: let it through and record it.
-    const headers = request.headers();
-    let referrer = '';
-    try {
-      referrer = new URL(headers.referer || headers.origin || '').hostname;
-    } catch {
-      /* no referrer */
+    if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return answerRoute(route.fallback());
+    const url = new URL(request.url());
+    if (isIdentityTraffic(request, url)) {
+      raw.identityTraffic.push({ method, path: url.pathname, ...hostField(url), from: referrerHost(request) });
+      return answerRoute(route.fallback());
     }
-    if (
-      request.isNavigationRequest() &&
-      (identityHosts.test(referrer) ||
-        /^\/signin(?:-|\/|$|\?)/i.test(pathname) ||
-        /^\/Account\/Login\//i.test(pathname))
-    ) {
-      raw.identityTraffic.push({ method, path: pathname, from: referrer });
-      return route.fallback();
-    }
-    if (allowWrite(method, pathname)) return route.fallback();
-    raw.blockedWrites.push({ method, path: pathname });
-    return route.abort('blockedbyclient');
+    if (url.origin !== origin || allowWrite(method, url.pathname)) return answerRoute(route.fallback());
+    raw.blockedWrites.push({ method, path: url.pathname });
+    return answerRoute(route.abort('blockedbyclient'));
   };
-  await owned.route((url) => url.origin === origin, guard);
-  owned.on('request', (request) => {
-    lastActivity = Date.now();
-    if (!sameOrigin(request.url())) return;
-    const method = request.method().toUpperCase();
-    const entry = {
-      seq: ++seq,
-      method,
-      url: request.url(),
-      resourceType: request.resourceType(),
-      headers: request.headers(),
-      body: method === 'GET' || method === 'HEAD' ? null : (request.postData() ?? ''),
-      response: null,
-    };
-    entries.set(request, entry);
-    raw.requests.push(entry);
-    // Persistent streams (a local runtime's /__sim/events, EventSource, WebSocket) never finish: not in-flight work.
-    if (!/^(?:eventsource|websocket)$/.test(entry.resourceType) && !new URL(entry.url).pathname.startsWith('/__sim/'))
-      inflight.add(request);
-  });
-  owned.on('requestfailed', (request) => {
-    inflight.delete(request);
-    const entry = entries.get(request);
-    if (entry) entry.response = { status: 0, failure: request.failure()?.errorText || 'failed' };
-  });
-  owned.on('requestfinished', (request) => inflight.delete(request));
-  owned.on('response', async (response) => {
-    lastActivity = Date.now();
-    const entry = entries.get(response.request());
-    if (!entry) return;
-    const headers = response.headers();
-    const contentType = headers['content-type'] || '';
-    entry.response = {
-      status: response.status(),
-      headers,
-      body: null,
-      bodyBytes: null,
-      bodySha256: null,
-      binary: !textTypes.test(contentType),
-    };
-    try {
-      const buffer = await response.body();
-      entry.response.bodyBytes = buffer.length;
-      if (entry.response.binary)
-        entry.response.base64 = buffer.toString('base64').slice(0, 64) + (buffer.length > 48 ? '…' : '');
-      else entry.response.body = buffer.length > maxBody ? null : buffer.toString('utf8');
-      if (entry.response.binary || buffer.length > maxBody) entry.response.bodyHashInput = buffer.toString('base64');
-    } catch {
-      /* redirects and aborted responses expose no body */
+  const observe = (target) => {
+    target.on('request', (request) => {
+      lastActivity = Date.now();
+      if (!sameOrigin(request.url())) return;
+      const method = request.method().toUpperCase();
+      const entry = {
+        seq: ++seq,
+        method,
+        url: request.url(),
+        resourceType: request.resourceType(),
+        headers: request.headers(),
+        body: method === 'GET' || method === 'HEAD' ? null : (request.postData() ?? ''),
+        response: null,
+      };
+      entries.set(request, entry);
+      raw.requests.push(entry);
+      // Persistent streams (a local runtime's /__sim/events, EventSource, WebSocket) never finish: not in-flight work.
+      if (!/^(?:eventsource|websocket)$/.test(entry.resourceType) && !new URL(entry.url).pathname.startsWith('/__sim/'))
+        inflight.add(request);
+    });
+    target.on('requestfailed', (request) => {
+      inflight.delete(request);
+      const entry = entries.get(request);
+      if (entry) entry.response = { status: 0, failure: request.failure()?.errorText || 'failed' };
+    });
+    target.on('requestfinished', (request) => inflight.delete(request));
+    target.on('response', async (response) => {
+      lastActivity = Date.now();
+      const entry = entries.get(response.request());
+      if (!entry) return;
+      const headers = response.headers();
+      const contentType = headers['content-type'] || '';
+      entry.response = {
+        status: response.status(),
+        headers,
+        body: null,
+        bodyBytes: null,
+        bodySha256: null,
+        binary: !textTypes.test(contentType),
+      };
+      try {
+        const buffer = await response.body();
+        entry.response.bodyBytes = buffer.length;
+        if (entry.response.binary)
+          entry.response.base64 = buffer.toString('base64').slice(0, 64) + (buffer.length > 48 ? '…' : '');
+        else entry.response.body = buffer.length > maxBody ? null : buffer.toString('utf8');
+        if (entry.response.binary || buffer.length > maxBody) entry.response.bodyHashInput = buffer.toString('base64');
+      } catch {
+        /* redirects and aborted responses expose no body */
+      }
+    });
+  };
+  // Playwright's page routes do not see a popup's first request, so the guard lives on the context. A page is
+  // unrelated only when its opener is known to be unrelated (no opener, or an unrelated page); any other page,
+  // including one whose opener is unknown, is guarded.
+  const popups = [];
+  const unrelated = new Set();
+  const onPage = async (popup) => {
+    const opener = await popup.opener().catch(() => undefined);
+    if (opener === null || unrelated.has(opener)) {
+      unrelated.add(popup);
+      return;
     }
-  });
+    if (opener !== owned) return;
+    popups.push(popup);
+    observe(popup);
+  };
+  const pageOf = (route) => {
+    try {
+      return route.request().frame().page();
+    } catch {
+      return null;
+    }
+  };
+  // The owned page's own route applies the guard to its requests, so the context route leaves them to it.
+  const guardPopups = async (route) => {
+    const page = pageOf(route);
+    if (page === owned || unrelated.has(page)) return answerRoute(route.fallback());
+    return answerRoute(guard(route));
+  };
+  context.on('page', onPage);
+  await context.route('**/*', guardPopups);
+  await owned.route('**/*', guard);
+  observe(owned);
   owned.on('console', (message) => {
     const location = message.location();
     raw.console.push({
@@ -615,12 +887,28 @@ function redactHeaders(headers, origin = null) {
   raw.title = await owned.title().catch(() => '');
   raw.finalUrl = urlBeforeHarness && urlBeforeHarness !== 'about:blank' ? urlBeforeHarness : owned.url();
   try {
-    raw.screenshot = (await owned.screenshot({ fullPage: true, timeout: 30000 })).toString('base64');
+    // Only the guard bounds the screenshot, so a slow host gets the full budget before the capture is marked failed.
+    let guard;
+    const shot = owned.screenshot({ fullPage: true, timeout: 0 });
+    const expired = new Promise((_resolve, reject) => {
+      guard = setTimeout(
+        () => reject(new Error(`screenshot guard expired after ${screenshotGuardMs} ms without a screenshot`)),
+        screenshotGuardMs,
+      );
+    });
+    try {
+      raw.screenshot = (await Promise.race([shot, expired])).toString('base64');
+    } finally {
+      clearTimeout(guard);
+    }
   } catch (error) {
     summary.problems.push('screenshot: ' + String(error && error.message).slice(0, 200)); // NOSONAR: optional chaining would change the false/null result
   }
   mark('screenshot');
-  await owned.unroute((url) => url.origin === origin, guard).catch(() => {});
+  context.off('page', onPage);
+  await context.unroute('**/*', guardPopups).catch(() => {});
+  for (const popup of popups) await popup.close().catch(() => {});
+  await owned.unroute('**/*', guard).catch(() => {});
   await owned.close().catch(() => {});
   summary.finishedAt = new Date().toISOString();
   return { summary, raw };
@@ -634,7 +922,9 @@ export async function writeCapture(
   { summary, raw },
   { outDir, outputRoot = outDir, origin, side, meta = {}, scenarioId = null },
 ) {
-  ({ summary, raw } = redactCaptureQueryValues(redactCaptureControlEvidence({ summary, raw })));
+  ({ summary, raw } = redactCaptureQueryValues(
+    redactCaptureControlEvidence({ summary, raw: redactCredentialEvidence(raw) }),
+  ));
   // Evidence of another scenario (a late post of an abandoned bridge run) never lands in this folder.
   if (scenarioId && summary?.id !== scenarioId)
     throw new Error(`Capture of ${summary?.id ?? '(unknown)'} refused for scenario ${scenarioId}`);
@@ -689,13 +979,17 @@ export async function writeCapture(
   }));
   const pageErrors = raw.pageErrors.map((text) => normalizeText(text, { origins }).slice(0, 2000));
   await fs.writeFile(path.join(outDir, 'requests.json'), JSON.stringify(requests, null, 2));
-  await fs.writeFile(path.join(outDir, 'dom.html'), redactTokens(raw.dom ?? ''));
+  await fs.writeFile(path.join(outDir, 'dom.html'), redactTokens(redactDomCredentials(raw.dom ?? '')));
   await fs.writeFile(path.join(outDir, 'elements.json'), JSON.stringify(raw.elements ?? [], null, 2));
   // Same-origin frame documents (pageRunner): path → DOM, written only when the page has any.
   if (raw.frames?.length)
     await fs.writeFile(
       path.join(outDir, 'frames.json'),
-      JSON.stringify(Object.fromEntries(raw.frames.map((frame) => [frame.path, redactTokens(frame.dom)])), null, 2),
+      JSON.stringify(
+        Object.fromEntries(raw.frames.map((frame) => [frame.path, redactTokens(redactDomCredentials(frame.dom))])),
+        null,
+        2,
+      ),
     );
   await fs.writeFile(
     path.join(outDir, 'console.json'),
@@ -726,6 +1020,9 @@ export async function writeCapture(
   return capture;
 }
 
+// The scenario's own budget in seconds (the live side's per-scenario default), also the screenshot guard's default.
+const SCENARIO_TIMEOUT_DEFAULT_SECONDS = 240;
+
 /** Runner options shared by every side, from the matrix and the run. */
 export function runnerOptions({ scenario, origin, ids, matrix, allowWrites }) {
   return {
@@ -733,6 +1030,7 @@ export function runnerOptions({ scenario, origin, ids, matrix, allowWrites }) {
     scenario: { id: scenario.id, steps: scenario.steps, expect: scenario.expect ?? {} },
     ids,
     allowWrites: Boolean(allowWrites),
+    screenshotGuardMs: (scenario.timeout ?? SCENARIO_TIMEOUT_DEFAULT_SECONDS) * 1000,
     ...(matrix.readPosts ? { readPosts: matrix.readPosts } : {}),
     allowPaths: matrix.writeScope?.paths ?? [],
     allowEntitySets: matrix.writeScope?.entitySets ?? [],

@@ -14,6 +14,8 @@ import { comparison } from '../lense/panel.mjs';
 import { freeDebugPort } from './helpers/debug-port.mjs';
 import { drainFixture, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 
+const HANG_GUARD_MS = 120_000; // hang guard only: Playwright's 30 s default fails a loaded machine
+
 const server = http.createServer((request, response) =>
   response.writeHead(200, { 'content-type': 'text/html' }).end('<!doctype html><h1>Invented</h1>'),
 );
@@ -34,9 +36,8 @@ after(() =>
   ]),
 );
 
-// lense/owned-page-binding.mjs: concurrent callbacks per bridge and the reply delivery deadline.
+// lense/owned-page-binding.mjs: concurrent callbacks per bridge and reply delivery.
 const OWNED_CALL_CAPACITY = 32;
-const REPLY_DEADLINE_MS = 1500;
 
 // A fresh context per test on the shared browser. t.after hooks run in registration order,
 // so bridges registered through own() close (newest first) before this context does.
@@ -121,7 +122,7 @@ test('persistent binding fixture releases its browser and profile after initial 
 test('owned raw binding survives independent persistent-browser CDP owners and observers', async (t) => {
   const f = await persistentFixture(t);
   const helper = new URL('../lense/owned-page-binding.mjs', import.meta.url).href;
-  const child = `import{chromium}from'playwright-core';import{createOwnedPageBindings}from'${helper}';const b=await chromium.connectOverCDP('http://127.0.0.1:${f.port}');let observer;try{const p=await b.contexts()[0].newPage();await p.goto('${f.origin}/attached');const bridge=await createOwnedPageBindings(p,{origin:'${f.origin}',bindings:{inventedEcho:(_source,v)=>({echo:v})}});const before=await p.evaluate(()=>inventedEcho('before'));observer=await chromium.connectOverCDP('http://127.0.0.1:${f.port}');const during=await p.evaluate(()=>inventedEcho('during'));await observer.close();observer=null;const after=await p.evaluate(()=>inventedEcho('after'));await p.reload();const navigation=await p.evaluate(()=>inventedEcho('navigation'));await bridge.close();const closed=await p.evaluate(()=>typeof inventedEcho);await p.reload();const retired=await p.evaluate(()=>typeof inventedEcho);console.log(JSON.stringify({before,during,after,navigation,closed,retired}));await p.close()}finally{await observer?.close();await b.close()}`;
+  const child = `import{chromium}from'playwright-core';import{createOwnedPageBindings}from'${helper}';const b=await chromium.connectOverCDP('http://127.0.0.1:${f.port}');const c=b.contexts()[0];c.setDefaultTimeout(${HANG_GUARD_MS});c.setDefaultNavigationTimeout(${HANG_GUARD_MS});let observer;try{const p=await c.newPage();await p.goto('${f.origin}/attached');const bridge=await createOwnedPageBindings(p,{origin:'${f.origin}',bindings:{inventedEcho:(_source,v)=>({echo:v})}});const before=await p.evaluate(()=>inventedEcho('before'));observer=await chromium.connectOverCDP('http://127.0.0.1:${f.port}');const during=await p.evaluate(()=>inventedEcho('during'));await observer.close();observer=null;const after=await p.evaluate(()=>inventedEcho('after'));await p.reload();const navigation=await p.evaluate(()=>inventedEcho('navigation'));await bridge.close();const closed=await p.evaluate(()=>typeof inventedEcho);await p.reload();const retired=await p.evaluate(()=>typeof inventedEcho);console.log(JSON.stringify({before,during,after,navigation,closed,retired}));await p.close()}finally{await observer?.close();await b.close()}`;
   const result = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', child], {
     windowsHide: true,
   });
@@ -372,7 +373,7 @@ test('closing the bridge preserves a real user debugger pause and the owned brow
   assert.equal(await execution, 'continued');
 });
 
-test('blocked protocol replies release capacity and expired delivery cannot complete a request', async (t) => {
+test('blocked protocol replies release capacity and a late reply still completes its call', async (t) => {
   const f = await fixture(t),
     original = f.context.newCDPSession.bind(f.context);
   let send,
@@ -403,25 +404,22 @@ test('blocked protocol replies release capacity and expired delivery cannot comp
     window.ownedDeliveryProbe = Promise.all(
       Array.from({ length: 32 }, () =>
         window.inventedEcho('held').then(
-          () => 'incorrect-success',
+          (value) => value,
           (error) => error.message,
         ),
       ),
     );
   });
+  // Each callback has settled once its reply send is recorded, so every capacity slot is free by now.
   await capacityHeld;
   assert.equal(delayed.length, OWNED_CALL_CAPACITY);
-  // Every reply's deadline timer was scheduled before its blocked send was recorded, and
-  // Node fires timers in expiry order, so this later timer runs only after all of them have
-  // released capacity. The page also sees its expiresAt stamp in the past.
-  await new Promise((resolve) => setTimeout(resolve, REPLY_DEADLINE_MS + 100));
   blocked = false;
-  assert.equal(await f.page.evaluate(() => window.inventedEcho('fresh-after-deadlines')), 'fresh-after-deadlines');
-  for (const params of delayed) await send('Runtime.callFunctionOn', params);
-  assert.deepEqual(
-    await f.page.evaluate(() => window.ownedDeliveryProbe),
-    Array(32).fill('The owned page reply expired.'),
+  assert.equal(
+    await f.page.evaluate(() => window.inventedEcho('fresh-after-blocked-replies')),
+    'fresh-after-blocked-replies',
   );
+  for (const params of delayed) await send('Runtime.callFunctionOn', params);
+  assert.deepEqual(await f.page.evaluate(() => window.ownedDeliveryProbe), Array(32).fill('held'));
 });
 
 test('existing Unicode Diff results above4MiB remain supported and results above16MiB are refused', async (t) => {

@@ -623,7 +623,7 @@ test('selected Dataverse locale reaches source apps, navigation, forms, views an
   assert.equal(overlaidFields[1].supported, false);
   assert.equal(overlaidFields[1].reason, 'Column metadata is unavailable.');
   assert.equal(overlaidFields[2].supported, false);
-  assert.equal(overlaidFields[2].reason, 'This control is not supported locally yet.');
+  assert.equal(overlaidFields[2].reason, 'This control is not available in the local host.');
   for (const [relative, content] of Object.entries(files))
     assert.equal(await fs.readFile(path.join(solution, relative), 'utf8'), content);
 });

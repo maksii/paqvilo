@@ -1,9 +1,12 @@
+// @test-kind contract: the MCP stdio client implements the JSON-RPC behaviour of Paqvilo's baseline bridge
 // MCP stdio client regression against a tiny fake server in a temp dir.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { startMcpServer } from '../mcp-stdio.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
@@ -26,6 +29,96 @@ readline.createInterface({ input: process.stdin })
   })
   .on("close", () => { fs.appendFileSync(marker, "closed\\n"); process.exit(0); });
 `;
+
+// The server asks for a ping with the id of the pending tools/call, waits for the client's reply, then answers the call.
+const PING_SERVER = `
+import readline from "node:readline";
+import fs from "node:fs";
+const marker = process.argv[2];
+const send = (message) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\\n");
+let waiting = null;
+readline.createInterface({ input: process.stdin })
+  .on("line", (line) => {
+    const message = JSON.parse(line);
+    if (message.method === undefined) {
+      if (message.id === waiting) {
+        fs.appendFileSync(marker, "reply:" + JSON.stringify(message) + "\\n");
+        send({ id: waiting, result: { content: [{ type: "text", text: "after ping" }] } });
+        waiting = null;
+      }
+      return;
+    }
+    if (message.method === "initialize") send({ id: message.id, result: {} });
+    else if (message.method === "tools/call") {
+      waiting = message.id;
+      send({ id: message.id, method: "ping" });
+    }
+  })
+  .on("close", () => process.exit(0));
+`;
+
+test('a server ping that reuses a pending call id is answered and does not resolve that call', async (t) => {
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-mcp-ping-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const script = path.join(directory, 'server.mjs');
+  const marker = path.join(directory, 'marker.txt');
+  await fs.writeFile(script, PING_SERVER);
+  const client = startMcpServer({ command: process.execPath, args: [script, marker], cwd: directory });
+  try {
+    await client.initialize();
+    assert.equal(await client.callTool('echo', {}, 5000), 'after ping');
+    assert.equal(await fs.readFile(marker, 'utf8'), 'reply:{"jsonrpc":"2.0","id":2,"result":{}}\n');
+  } finally {
+    await client.close();
+  }
+});
+
+// The server writes lines that are valid JSON but not JSON-RPC objects before it answers the call.
+const NON_OBJECT_SERVER = `
+import readline from "node:readline";
+const send = (text) => process.stdout.write(text + "\\n");
+readline.createInterface({ input: process.stdin })
+  .on("line", (line) => {
+    const message = JSON.parse(line);
+    if (message.method === "initialize") send(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: {} }));
+    else if (message.method === "tools/call") {
+      for (const noise of ["null", "42", '"x"', "[]"]) send(noise);
+      send(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: "after noise" }] } }));
+    }
+  })
+  .on("close", () => process.exit(0));
+`;
+
+test('non-object lines from the server are ignored and the pending call still resolves', async (t) => {
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-mcp-noise-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const script = path.join(directory, 'server.mjs');
+  await fs.writeFile(script, NON_OBJECT_SERVER);
+  const client = startMcpServer({ command: process.execPath, args: [script], cwd: directory });
+  try {
+    await client.initialize();
+    assert.equal(await client.callTool('echo', {}, 5000), 'after noise');
+  } finally {
+    await client.close();
+  }
+});
+
+// An injected child whose output ends while it is still alive: the pending call settles with the child's exit.
+test('a pending call settles when the server output ends while the child is alive', async () => {
+  const child = new EventEmitter();
+  child.stdin = new PassThrough();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.kill = () => {
+    child.emit('exit', null, 'SIGTERM');
+    return true;
+  };
+  const client = startMcpServer({ command: 'unused', spawnProcess: () => child });
+  const pending = client.listTools();
+  child.stdout.end();
+  await assert.rejects(pending, /MCP process exited \(SIGTERM\)/);
+  await client.close();
+});
 
 test('MCP stdio client round trips, surfaces errors, times out and closes the child', async (t) => {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-mcp-stdio-'));

@@ -314,7 +314,9 @@ function sendExternal(state, api, c, mapping, info) {
     } catch (error) {
       throw failed(state, resolved, kind, messageOf(error));
     }
-    if (!transactional(resolved.provider))
+    // Registered only once the provider has answered successfully: a rejected write is rolled back by the failure itself.
+    const noteUncompensated = () => {
+      if (transactional(resolved.provider)) return;
       api.store.onRollback(() =>
         uncompensated(
           state,
@@ -324,15 +326,25 @@ function sendExternal(state, api, c, mapping, info) {
           'its provider declares no transaction contract (begin, commit, rollback)',
         ),
       );
+    };
     const done = (returned) => mirrorWrite(state, api, resolved, mapping, { kind, returned, info, callerKeyed });
-    if (typeof answer?.then !== 'function') return done(answer);
+    if (typeof answer?.then !== 'function') {
+      noteUncompensated();
+      return done(answer);
+    }
     if (info.sync) {
       answer.then(undefined, () => {});
       throw failed(state, resolved, kind, `its ${kind}Sync operation answered a promise`);
     }
-    return answer.then(done, (error) => {
-      throw failed(state, resolved, kind, messageOf(error));
-    });
+    return answer.then(
+      (returned) => {
+        noteUncompensated();
+        return done(returned);
+      },
+      (error) => {
+        throw failed(state, resolved, kind, messageOf(error));
+      },
+    );
   };
   const begun = enlist(state, api, resolved, c, info.sync);
   return begun ? begun.then(write) : write();

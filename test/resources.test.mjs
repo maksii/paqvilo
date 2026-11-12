@@ -1,3 +1,4 @@
+// @test-kind contract: offline resources expose exact classic paths, filter localized routes and keep configured page relationships.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -16,6 +17,8 @@ import { auditResources } from '../lense/resource-audit.mjs';
 import { HtmlRewriter } from '../lense/html-rewriter.mjs';
 import { createFixture, SITE, HOME_ID, tempDirSync } from './fixture.mjs';
 import { settleFileTimes } from '../mirage/test/support/file-times.mjs';
+
+const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
 
 const cfgFor = (dir, site = SITE) => ({
   siteName: 'test',
@@ -201,7 +204,7 @@ test('resources CLI JSON is deterministic and does not create mapping files or p
     '--json',
   ];
   // Two independent read-only runs overlap; a failing run rejects with its exit code and stderr.
-  const run = () => promisify(execFile)(process.execPath, args, { env, windowsHide: true, timeout: 30_000 });
+  const run = () => promisify(execFile)(process.execPath, args, { env, windowsHide: true });
   const [first, second] = await Promise.all([run(), run()]);
   assert.equal(second.stdout, first.stdout);
   const report = JSON.parse(first.stdout);
@@ -226,7 +229,7 @@ test('large piped resource reports drain completely before the CLI exits', (t) =
   const result = spawnSync(
     process.execPath,
     [cli, 'resources', '--config', config, '--kind', 'page-js', '--limit', '500', '--json'],
-    { env, encoding: 'utf8', windowsHide: true, timeout: 30_000, maxBuffer: 4 * 1024 * 1024 },
+    { env, encoding: 'utf8', windowsHide: true, timeout: CLI_HANG_GUARD_MS, maxBuffer: 4 * 1024 * 1024 },
   );
   assert.equal(result.status, 0, result.stderr);
   assert.ok(result.stdout.length > 64 * 1024, 'exercise more than a pipe buffer');

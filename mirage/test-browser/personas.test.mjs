@@ -107,8 +107,9 @@ test('admin contact memberships refresh Liquid/source scripts and isolate compan
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
   ownedFixture(t).add(() => browser.close());
   const context = await browser.newContext({ serviceWorkers: 'block' });
+  const served = [app.url, app.adminOrigin];
   await context.route('**/*', (route) =>
-    route.request().url().startsWith(app.url) ? route.continue() : route.abort(),
+    served.some((origin) => route.request().url().startsWith(origin)) ? route.continue() : route.abort(),
   );
   const portal = await context.newPage(),
     admin = await context.newPage(),

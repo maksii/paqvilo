@@ -56,13 +56,20 @@
       request.onerror = () => reject(request); // NOSONAR: rejection value is part of the contract
       request.send(body);
     });
+  // A header value must be a ByteString, so a name outside printable ASCII is sent percent-encoded
+  // (UTF-8) and marked; the server decodes a name only when the marker is present.
+  const PRINTABLE_ASCII = /^[\x20-\x7e]*$/;
+  const fileNameHeaders = (name) =>
+    PRINTABLE_ASCII.test(name)
+      ? { 'x-ms-file-name': name }
+      : { 'x-ms-file-name': encodeURIComponent(name), 'x-ms-file-name-encoding': 'uri-component' };
   const upload = async (file) => {
     const verification = await token();
     const common = { formId: value('_HiddenField_FormID'), formType: value('_HiddenField_FormType') };
     const headers = {
       __RequestVerificationToken: verification,
       'Content-Type': file.type || 'application/octet-stream',
-      'x-ms-file-name': file.name,
+      ...fileNameHeaders(file.name),
       'x-ms-file-type': file.type,
       'x-ms-form-session-id': value('_HiddenField_InstanceId'),
       'X-Requested-With': 'XMLHttpRequest',

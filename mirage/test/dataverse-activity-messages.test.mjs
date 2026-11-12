@@ -449,6 +449,85 @@ describe('activity, email and queue messages', () => {
     );
   });
 
+  // ---- Templates read by the caller
+
+  // @test-kind security: a template the caller cannot read is refused with the Web API 403 of that template; no email is created
+  it('a Basic User cannot use an admin-owned template: InstantiateTemplate answers 403 and creates no email', async () => {
+    const direct = await request('GET', `templates(${templateId})?$select=title`, basicToken);
+    assert.equal(direct.status, 403, direct.text);
+    const basicAccount = idIn(await act('accounts', { name: 'Basic account' }, basicToken));
+    const before = rows('email').length;
+    const response = await act(
+      'InstantiateTemplate',
+      { TemplateId: templateId, ObjectType: 'account', ObjectId: basicAccount },
+      basicToken,
+    );
+    refused(response, 403);
+    assert.equal(response.json.error.code, direct.json.error.code);
+    assert.equal(rows('email').length, before);
+  });
+
+  // @test-kind security: a recipient the caller cannot read is refused with the Web API 403 of that recipient; no email is created
+  it('a Basic User cannot address a template to an admin-owned contact: SendTemplate answers 403 and creates no email', async () => {
+    const contactId = idIn(await act('contacts', { lastname: 'Admin-owned', emailaddress1: 'private@contoso.test' }));
+    const direct = await request('GET', `contacts(${contactId})?$select=emailaddress1`, basicToken);
+    assert.equal(direct.status, 403, direct.text);
+    const basicTemplate = idIn(
+      await act(
+        'templates',
+        { title: 'Basic', subject: 'Hello', body: 'Body', templatetypecode: 'account' },
+        basicToken,
+      ),
+    );
+    const basicAccount = idIn(await act('accounts', { name: 'Basic account' }, basicToken));
+    const before = rows('email').length;
+    const response = await act(
+      'SendTemplate',
+      {
+        TemplateId: basicTemplate,
+        Sender: ref('systemusers', basicId),
+        Recipients: [ref('contacts', contactId)],
+        Regarding: ref('accounts', basicAccount),
+      },
+      basicToken,
+    );
+    refused(response, 403);
+    assert.equal(response.json.error.code, direct.json.error.code);
+    assert.equal(rows('email').length, before);
+  });
+
+  it('the owner of a template instantiates it for its own account and sends it to its own contact', async () => {
+    const ownTemplate = idIn(
+      await act(
+        'templates',
+        { title: 'Own', subject: 'Hi {name}', body: 'Body', templatetypecode: 'account' },
+        basicToken,
+      ),
+    );
+    const ownAccount = idIn(await act('accounts', { name: 'Own account' }, basicToken));
+    const ownContact = idIn(await act('contacts', { lastname: 'Own', emailaddress1: 'own@basic.test' }, basicToken));
+    const drafted = await act(
+      'InstantiateTemplate',
+      { TemplateId: ownTemplate, ObjectType: 'account', ObjectId: ownAccount },
+      basicToken,
+    );
+    assert.equal(drafted.status, 200, drafted.text);
+    const before = rows('email').length;
+    const sent = await act(
+      'SendTemplate',
+      {
+        TemplateId: ownTemplate,
+        Sender: ref('systemusers', basicId),
+        Recipients: [ref('contacts', ownContact)],
+        Regarding: ref('accounts', ownAccount),
+      },
+      basicToken,
+    );
+    assert.equal(sent.status, 204, sent.text);
+    assert.equal(rows('email').length, before + 1);
+    assert.equal(rows('email').at(-1).torecipients, 'own@basic.test');
+  });
+
   // ---- Queues
 
   it('AddToQueue creates a queue item for the record, with the given title', async () => {

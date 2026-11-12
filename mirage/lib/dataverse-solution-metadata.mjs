@@ -122,15 +122,103 @@ const layerMatches = (layer, stamp) =>
     layerFields.every((key, index) => Object.is(layer[key], stamp.values[index])) &&
     rowsMatch(layer.entries ?? [], stamp.entries),
   );
+// The column facts a mapping field supplies: its columnMetadata, or for a field the mapping declares only by type the
+// minimal facts of that type. A column the solution already declares keeps the solution's definition.
+const mappingFacts = (field, solutionField) => {
+  if (field?.columnMetadata) return field.columnMetadata;
+  if (solutionField || !field?.dataverseType) return null;
+  return { type: String(field.dataverseType).toLowerCase() };
+};
+const mappingFieldFacts = (base, name, mapping) =>
+  Object.entries(mapping?.fields ?? {}).some(([attribute, field]) =>
+    mappingFacts(field, base.entities?.[name]?.fields?.[attribute]),
+  );
+// Whether a base entity's mapping carries Dataverse metadata, or types a column the solution does not declare.
 const hasBaseMappingMetadata = (base, mappings) =>
   Object.keys(base.entities ?? {}).some((name) => {
     const mapping = mappings?.[name];
-    return (
-      mapping &&
-      (mapping.dataverseMetadata ||
-        Object.keys(mapping.fields ?? {}).some((field) => mapping.fields[field]?.columnMetadata))
-    );
+    return Boolean(mapping) && (Boolean(mapping.dataverseMetadata) || mappingFieldFacts(base, name, mapping));
   });
+// The columns of a table only a mapping declares: each field that carries column facts or a type.
+const mappedFields = (mapping, lcid) => {
+  const fields = {};
+  for (const [attribute, field] of Object.entries(mapping.fields ?? {})) {
+    const facts = mappingFacts(field, undefined);
+    if (!facts) continue;
+    const { type: metadataType, ...properties } = facts; // NOSONAR: binding is excluded from the rest object or is a placeholder
+    fields[attribute] = structuredClone({
+      ...field,
+      ...properties,
+      name: attribute,
+      label: pickLabel(properties.labels, lcid) ?? field.label ?? attribute,
+    });
+  }
+  return fields;
+};
+/** The metadata with each table that only a mapping declares listed by its mapped columns; the metadata itself when there is none. */
+function withMappedTables(metadata, mappings) {
+  const lcid = metadata.lcid ?? 1033;
+  const tables = Object.entries(mappings ?? {}).filter(
+    ([name, mapping]) => !metadata.entities?.[name] && mappingFieldFacts(metadata, name, mapping),
+  );
+  if (!tables.length) return metadata;
+  const entities = Object.fromEntries(
+    tables.map(([name, mapping]) => [name, { entity: name, fields: mappedFields(mapping, lcid) }]),
+  );
+  return { ...metadata, entities: { ...metadata.entities, ...entities } };
+}
+// The same keys, each bound to a value that `same` accepts for the pair of the old and the new value.
+const sameEntries = (previous, current, same = Object.is) => {
+  const names = Object.keys(current ?? {});
+  return names.length === Object.keys(previous).length && names.every((name) => same(previous[name], current[name]));
+};
+// A mapping field's snapshot: the field object, then each own key and its value in order, because mappedFields spreads
+// the whole field. A writer that replaces the field or changes any of its keys in place makes the snapshot differ.
+const fieldSnapshot = (field) =>
+  field && typeof field === 'object' ? [field, ...Object.entries(field).flat()] : [field];
+const fieldReads = (mapping) =>
+  Object.fromEntries(
+    Object.entries(mapping?.fields ?? {}).map(([attribute, field]) => [attribute, fieldSnapshot(field)]),
+  );
+// Whether two field snapshots hold the same values in the same order.
+const sameReads = (previous, current) =>
+  Array.isArray(previous) &&
+  previous.length === current.length &&
+  previous.every((value, index) => Object.is(value, current[index]));
+const sameTableReads = (previous, current) => Boolean(previous) && sameEntries(previous, current, sameReads);
+// The field reads of each table only a mapping declares, keyed by table name.
+const mappedTableReads = (metadata, mappings) =>
+  Object.fromEntries(
+    Object.entries(mappings ?? {})
+      .filter(([name]) => !metadata.entities?.[name])
+      .map(([name, mapping]) => [name, fieldReads(mapping)]),
+  );
+/**
+ * One memo of withMappedTables: rebuilt only when the metadata it extends, a mapping object, a field the mapped tables
+ * read or the metadata log changes. The metadata is the overlay's result, which keeps its identity across ordinary
+ * record writes.
+ */
+export function createMappedTables() {
+  let last = null;
+  return (metadata, state) => {
+    const seq = state.dataverse?.metadataLog?.at(-1)?.seq ?? 0;
+    const tables = mappedTableReads(metadata, state.mappings);
+    if (
+      last?.metadata !== metadata ||
+      last.seq !== seq ||
+      !sameEntries(last.mappings, state.mappings) ||
+      !sameEntries(last.tables, tables, sameTableReads)
+    )
+      last = {
+        metadata,
+        seq,
+        mappings: { ...state.mappings },
+        tables,
+        value: withMappedTables(metadata, state.mappings),
+      };
+    return last.value;
+  };
+}
 
 /** Build one host-local overlay, never write exported files or run imported code.
  * Parsed documents are cached by immutable asset digest. Normal business-record
@@ -273,7 +361,7 @@ export function createSolutionMetadataOverlay({ appsOf = () => [], parseDocument
       };
       const mapping = state.mappings?.[name];
       for (const [attribute, field] of Object.entries(mapping?.fields ?? {})) {
-        const facts = field.columnMetadata;
+        const facts = mappingFacts(field, entities[name].fields[attribute]);
         if (!facts) continue;
         const { type: metadataType, ...properties } = facts; // NOSONAR: binding is excluded from the rest object or is a placeholder
         entities[name].fields[attribute] = {
@@ -296,15 +384,16 @@ export function createSolutionMetadataOverlay({ appsOf = () => [], parseDocument
       if (!mapping) continue;
       const next = (entities[name] = { ...entity, fields: { ...entity.fields } });
       for (const [attribute, field] of Object.entries(mapping.fields ?? {})) {
-        if (!field.columnMetadata) continue;
-        const { type: metadataType, ...properties } = field.columnMetadata; // NOSONAR: binding is excluded from the rest object or is a placeholder
+        const facts = mappingFacts(field, next.fields[attribute]);
+        if (!facts) continue;
+        const { type: metadataType, ...properties } = facts; // NOSONAR: binding is excluded from the rest object or is a placeholder
         next.fields[attribute] = structuredClone({
           ...next.fields[attribute],
           ...field,
           ...properties,
           name: attribute,
           label: pickLabel(properties.labels, base.lcid) ?? next.fields[attribute]?.label ?? attribute,
-          ...(!isDeepStrictEqual(field.columnMetadata, base.entities?.[name]?.fields?.[attribute]?.columnMetadata)
+          ...(!isDeepStrictEqual(facts, base.entities?.[name]?.fields?.[attribute]?.columnMetadata)
             ? { sourceOriginVerified: false }
             : {}),
         });

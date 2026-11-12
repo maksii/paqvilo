@@ -1,3 +1,4 @@
+// @test-kind contract: the sign-in flows a portal and the platform sign-in page run through the local identity provider, as a browser drives them
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -134,203 +135,188 @@ async function portal(t, settings, header) {
   return { app, idp, tab, errors, navigations };
 }
 
-test(
-  "a portal's own Sign in button signs in through the local identity provider and its Sign out link signs out",
-  { timeout: 90000 },
-  async (t) => {
-    const settings = [
-      ['Authentication/Registration/AzureADLoginEnabled', 'true'],
-      ['Authentication/Registration/ExternalLoginEnabled', 'true'],
-      ['Authentication/Registration/LocalLoginEnabled', 'false'],
-      ['Authentication/Registration/Enabled', 'false'],
-      ['Authentication/OpenIdConnect/AzureAD/Caption', 'Sign In'],
-    ];
-    const { app, idp, tab, errors, navigations } = await portal(t, settings, Sample_HEADER);
-    await tab.goto(app.url + '/');
-    assert.equal(await tab.locator('#user').innerText(), 'anonymous');
-    // The authored control: the header button inserts the provider form; its button posts ExternalLogin.
-    await tab.locator('#nav-btn-signIn').click();
-    await tab.locator('#modal-signin-button').waitFor();
-    await Promise.all([tab.waitForURL((url) => url.origin === idp), tab.locator('#modal-signin-button').click()]);
-    assert.equal(await tab.title(), 'Local identity provider (simulation)');
-    assert.equal(new URL(tab.url()).pathname, '/azuread/oauth2/authorize');
-    assert.equal(new URL(tab.url()).searchParams.get('redirect_uri'), app.url + '/');
-    assert.equal(await tab.locator('li.paqvilo-mirage-idp-user').count(), 2);
-    // Choosing a preset user posts the answer back to the site root, then ExternalLoginCallback returns home.
-    await Promise.all([
-      tab.waitForURL(app.url + '/'),
-      tab.getByRole('button', { name: 'Continue as Alex Local' }).click(),
-    ]);
-    assert.equal(await tab.locator('#who').innerText(), 'Alex Local');
-    assert.equal((await tab.goto(app.url + '/members/')).status(), 200);
-    assert.equal(await tab.locator('#user').innerText(), 'Alex Local');
-    const session = await (await tab.request.get(app.url + '/_sim/api/session')).json();
-    assert.deepEqual([session.contactId, session.provider?.id], ['alex', TENANT]);
-    // Sign out (external logout is off): local sign-out; the protected page asks to sign in again.
-    await Promise.all([
-      tab.waitForURL((url) => url.pathname === '/signin' && url.searchParams.get('ReturnUrl') === '/members/'),
-      tab.locator('#sign-out').click(),
-    ]);
-    // The platform's sign-in page lists the site's provider with its caption, and no local personas.
-    const provider = tab.locator("form[action*='ExternalLogin'] button[name=provider]");
-    assert.equal(await provider.innerText(), 'Sign In');
-    assert.equal(await provider.getAttribute('value'), TENANT);
-    assert.equal(await tab.locator('li.paqvilo-mirage-persona').count(), 0);
-    // A new user meets the site's registration settings (registration is off).
-    await Promise.all([tab.waitForURL((url) => url.origin === idp), provider.click()]);
-    assert.equal(
-      await tab.getByLabel('Given name').count(),
-      0,
-      'the default chooser does not offer disabled registration',
-    );
-    // Explicitly request the negative registration flow instead of suggesting it
-    // to every operator on a site that disallows registration.
-    const registrationTest = new URL(tab.url());
-    registrationTest.searchParams.set('prompt', 'create');
-    await tab.goto(registrationTest.href);
-    await tab.getByLabel('Given name').fill('Nina');
-    await tab.getByLabel('Family name').fill('New');
-    await tab.getByLabel('Email').fill('nina@example.test');
-    await Promise.all([
-      tab.waitForURL((url) => url.origin === app.url && url.pathname === '/Account/Login/ExternalLoginCallback'),
-      tab.getByRole('button', { name: 'Continue as a new user' }).click(),
-    ]);
-    assert.equal(await tab.locator('.alert-danger').innerText(), 'Registration is disabled for this site.');
-    assert.ok(
-      navigations.filter((origin) => origin === idp).length >= 2,
-      'both sign-ins visited the identity provider',
-    );
-    assert.deepEqual(errors, []);
-  },
-);
+test("a portal's own Sign in button signs in through the local identity provider and its Sign out link signs out", async (t) => {
+  const settings = [
+    ['Authentication/Registration/AzureADLoginEnabled', 'true'],
+    ['Authentication/Registration/ExternalLoginEnabled', 'true'],
+    ['Authentication/Registration/LocalLoginEnabled', 'false'],
+    ['Authentication/Registration/Enabled', 'false'],
+    ['Authentication/OpenIdConnect/AzureAD/Caption', 'Sign In'],
+  ];
+  const { app, idp, tab, errors, navigations } = await portal(t, settings, Sample_HEADER);
+  await tab.goto(app.url + '/');
+  assert.equal(await tab.locator('#user').innerText(), 'anonymous');
+  // The authored control: the header button inserts the provider form; its button posts ExternalLogin.
+  await tab.locator('#nav-btn-signIn').click();
+  await tab.locator('#modal-signin-button').waitFor();
+  await Promise.all([tab.waitForURL((url) => url.origin === idp), tab.locator('#modal-signin-button').click()]);
+  assert.equal(await tab.title(), 'Local identity provider (simulation)');
+  assert.equal(new URL(tab.url()).pathname, '/azuread/oauth2/authorize');
+  assert.equal(new URL(tab.url()).searchParams.get('redirect_uri'), app.url + '/');
+  assert.equal(await tab.locator('li.paqvilo-mirage-idp-user').count(), 2);
+  // Choosing a preset user posts the answer back to the site root, then ExternalLoginCallback returns home.
+  await Promise.all([
+    tab.waitForURL(app.url + '/'),
+    tab.getByRole('button', { name: 'Continue as Alex Local' }).click(),
+  ]);
+  assert.equal(await tab.locator('#who').innerText(), 'Alex Local');
+  assert.equal((await tab.goto(app.url + '/members/')).status(), 200);
+  assert.equal(await tab.locator('#user').innerText(), 'Alex Local');
+  const session = await (await tab.request.get(app.url + '/_sim/api/session')).json();
+  assert.deepEqual([session.contactId, session.provider?.id], ['alex', TENANT]);
+  // Sign out (external logout is off): local sign-out; the protected page asks to sign in again.
+  await Promise.all([
+    tab.waitForURL((url) => url.pathname === '/signin' && url.searchParams.get('ReturnUrl') === '/members/'),
+    tab.locator('#sign-out').click(),
+  ]);
+  // The platform's sign-in page lists the site's provider with its caption, and no local personas.
+  const provider = tab.locator("form[action*='ExternalLogin'] button[name=provider]");
+  assert.equal(await provider.innerText(), 'Sign In');
+  assert.equal(await provider.getAttribute('value'), TENANT);
+  assert.equal(await tab.locator('li.paqvilo-mirage-persona').count(), 0);
+  // A new user meets the site's registration settings (registration is off).
+  await Promise.all([tab.waitForURL((url) => url.origin === idp), provider.click()]);
+  assert.equal(
+    await tab.getByLabel('Given name').count(),
+    0,
+    'the default chooser does not offer disabled registration',
+  );
+  // Explicitly request the negative registration flow instead of suggesting it
+  // to every operator on a site that disallows registration.
+  const registrationTest = new URL(tab.url());
+  registrationTest.searchParams.set('prompt', 'create');
+  await tab.goto(registrationTest.href);
+  await tab.getByLabel('Given name').fill('Nina');
+  await tab.getByLabel('Family name').fill('New');
+  await tab.getByLabel('Email').fill('nina@example.test');
+  await Promise.all([
+    tab.waitForURL((url) => url.origin === app.url && url.pathname === '/Account/Login/ExternalLoginCallback'),
+    tab.getByRole('button', { name: 'Continue as a new user' }).click(),
+  ]);
+  assert.equal(await tab.locator('.alert-danger').innerText(), 'Registration is disabled for this site.');
+  assert.ok(navigations.filter((origin) => origin === idp).length >= 2, 'both sign-ins visited the identity provider');
+  assert.deepEqual(errors, []);
+});
 
-test(
-  "the platform's sign-in page registers a new user through the provider, and Sign out runs the provider's end-session",
-  { timeout: 90000 },
-  async (t) => {
-    const settings = [
-      ['Authentication/Registration/ExternalLoginEnabled', 'true'],
-      ['Authentication/Registration/LocalLoginEnabled', 'false'],
-      ['Authentication/OpenIdConnect/Local/Authority', 'https://idp.example.test/local/'],
-      ['Authentication/OpenIdConnect/Local/ClientId', 'local-client'],
-      ['Authentication/OpenIdConnect/Local/Caption', 'Local IdP'],
-      ['Authentication/OpenIdConnect/Local/ExternalLogoutEnabled', 'true'],
-    ];
-    const header =
-      '<header id="site-header">{% if user %}<span id="who">{{ user.fullname }}</span> <a id="sign-out" href="{{ website.sign_out_url_substitution }}">Sign out</a>{% else %}<a id="sign-in" href="{{ website.sign_in_url_substitution }}">Sign in</a>{% endif %}</header>';
-    const { app, idp, tab, errors, navigations } = await portal(t, settings, header);
-    await tab.goto(app.url + '/');
-    // Fixture with explicit sign-in link: the header link opens the platform's sign-in page with the provider form.
-    await Promise.all([tab.waitForURL((url) => url.pathname === '/SignIn'), tab.locator('#sign-in').click()]);
-    const provider = tab.locator("form[action*='ExternalLogin'] button[name=provider]");
-    assert.equal(await provider.innerText(), 'Local IdP');
-    await Promise.all([tab.waitForURL((url) => url.origin === idp), provider.click()]);
-    await tab.getByLabel('Given name').fill('Dana');
-    await tab.getByLabel('Family name').fill('New');
-    await tab.getByLabel('Email').fill('dana@example.test');
-    await Promise.all([
-      tab.waitForURL(app.url + '/'),
-      tab.getByRole('button', { name: 'Continue as a new user' }).click(),
-    ]);
-    assert.equal(await tab.locator('#who').innerText(), 'Dana New');
-    // Registration recorded the contact and its external identity.
-    const { identities } = await (await tab.request.get(app.url + '/_sim/api/session/identities')).json();
-    assert.deepEqual(
-      identities.map((item) => [item.contactName, item.origin]),
-      [['Dana New', 'registration']],
-    );
-    const personas = await (await tab.request.get(app.url + '/_sim/api/personas')).json();
-    assert.ok(personas.personas.some((persona) => persona.name === 'Dana New'));
-    // Sign out: LogOff, the provider's end-session, back to the portal anonymous.
-    const before = navigations.length;
-    // Sign-out returns to the page it started from, so await the replacement document's load, then its URL.
-    await Promise.all([tab.waitForEvent('load'), tab.locator('#sign-out').click()]);
-    assert.equal(tab.url(), app.url + '/');
-    assert.ok(navigations.slice(before).includes(idp), "sign-out visited the identity provider's end-session");
-    assert.equal(await tab.locator('#user').innerText(), 'anonymous');
-    // Switching accounts: sign in again as a preset user through the provider page.
-    await Promise.all([tab.waitForURL((url) => url.pathname === '/SignIn'), tab.locator('#sign-in').click()]);
-    await Promise.all([tab.waitForURL((url) => url.origin === idp), provider.click()]);
-    await Promise.all([
-      tab.waitForURL(app.url + '/'),
-      tab.getByRole('button', { name: 'Continue as Blair Local' }).click(),
-    ]);
-    assert.equal(await tab.locator('#who').innerText(), 'Blair Local');
-    assert.deepEqual(errors, []);
-  },
-);
+test("the platform's sign-in page registers a new user through the provider, and Sign out runs the provider's end-session", async (t) => {
+  const settings = [
+    ['Authentication/Registration/ExternalLoginEnabled', 'true'],
+    ['Authentication/Registration/LocalLoginEnabled', 'false'],
+    ['Authentication/OpenIdConnect/Local/Authority', 'https://idp.example.test/local/'],
+    ['Authentication/OpenIdConnect/Local/ClientId', 'local-client'],
+    ['Authentication/OpenIdConnect/Local/Caption', 'Local IdP'],
+    ['Authentication/OpenIdConnect/Local/ExternalLogoutEnabled', 'true'],
+  ];
+  const header =
+    '<header id="site-header">{% if user %}<span id="who">{{ user.fullname }}</span> <a id="sign-out" href="{{ website.sign_out_url_substitution }}">Sign out</a>{% else %}<a id="sign-in" href="{{ website.sign_in_url_substitution }}">Sign in</a>{% endif %}</header>';
+  const { app, idp, tab, errors, navigations } = await portal(t, settings, header);
+  await tab.goto(app.url + '/');
+  // Fixture with explicit sign-in link: the header link opens the platform's sign-in page with the provider form.
+  await Promise.all([tab.waitForURL((url) => url.pathname === '/SignIn'), tab.locator('#sign-in').click()]);
+  const provider = tab.locator("form[action*='ExternalLogin'] button[name=provider]");
+  assert.equal(await provider.innerText(), 'Local IdP');
+  await Promise.all([tab.waitForURL((url) => url.origin === idp), provider.click()]);
+  await tab.getByLabel('Given name').fill('Dana');
+  await tab.getByLabel('Family name').fill('New');
+  await tab.getByLabel('Email').fill('dana@example.test');
+  await Promise.all([
+    tab.waitForURL(app.url + '/'),
+    tab.getByRole('button', { name: 'Continue as a new user' }).click(),
+  ]);
+  assert.equal(await tab.locator('#who').innerText(), 'Dana New');
+  // Registration recorded the contact and its external identity.
+  const { identities } = await (await tab.request.get(app.url + '/_sim/api/session/identities')).json();
+  assert.deepEqual(
+    identities.map((item) => [item.contactName, item.origin]),
+    [['Dana New', 'registration']],
+  );
+  const personas = await (await tab.request.get(app.url + '/_sim/api/personas')).json();
+  assert.ok(personas.personas.some((persona) => persona.name === 'Dana New'));
+  // Sign out: LogOff, the provider's end-session, back to the portal anonymous.
+  const before = navigations.length;
+  // Sign-out returns to the page it started from, so await the replacement document's load, then its URL.
+  await Promise.all([tab.waitForEvent('load'), tab.locator('#sign-out').click()]);
+  assert.equal(tab.url(), app.url + '/');
+  assert.ok(navigations.slice(before).includes(idp), "sign-out visited the identity provider's end-session");
+  assert.equal(await tab.locator('#user').innerText(), 'anonymous');
+  // Switching accounts: sign in again as a preset user through the provider page.
+  await Promise.all([tab.waitForURL((url) => url.pathname === '/SignIn'), tab.locator('#sign-in').click()]);
+  await Promise.all([tab.waitForURL((url) => url.origin === idp), provider.click()]);
+  await Promise.all([
+    tab.waitForURL(app.url + '/'),
+    tab.getByRole('button', { name: 'Continue as Blair Local' }).click(),
+  ]);
+  assert.equal(await tab.locator('#who').innerText(), 'Blair Local');
+  assert.deepEqual(errors, []);
+});
 
-test(
-  "the authorization code flow runs end to end in the browser: the provider's redirect carries only the code, and UserInfo claims register the user",
-  { timeout: 90000 },
-  async (t) => {
-    const settings = [
-      ['Authentication/Registration/ExternalLoginEnabled', 'true'],
-      ['Authentication/Registration/LocalLoginEnabled', 'false'],
-      ['Authentication/OpenIdConnect/Code/Authority', 'https://idp.example.test/code/'],
-      ['Authentication/OpenIdConnect/Code/ClientId', 'code-client'],
-      ['Authentication/OpenIdConnect/Code/ClientSecret', 's3cret'],
-      ['Authentication/OpenIdConnect/Code/Caption', 'Code IdP'],
-      ['Authentication/OpenIdConnect/Code/ResponseType', 'code'],
-      ['Authentication/OpenIdConnect/Code/ResponseMode', 'query'],
-      ['Authentication/OpenIdConnect/Code/UseUserInfoEndpointforClaims', 'true'],
-      [
-        'Authentication/OpenIdConnect/Code/RegistrationClaimsMapping',
-        'firstname=given_name,lastname=family_name,emailaddress1=email,telephone1=userinfo.phone_number',
-      ],
-    ];
-    const header =
-      '<header id="site-header">{% if user %}<span id="who">{{ user.fullname }}</span> <a id="sign-out" href="{{ website.sign_out_url_substitution }}">Sign out</a>{% else %}<a id="sign-in" href="{{ website.sign_in_url_substitution }}">Sign in</a>{% endif %}</header>';
-    const { app, idp, tab, errors } = await portal(t, settings, header);
-    const urls = [];
-    tab.on('request', (request) => {
-      if (request.isNavigationRequest() && request.frame() === tab.mainFrame()) urls.push(new URL(request.url()));
-    });
-    await tab.goto(app.url + '/');
-    await Promise.all([tab.waitForURL((url) => url.pathname === '/SignIn'), tab.locator('#sign-in').click()]);
-    const provider = tab.locator("form[action*='ExternalLogin'] button[name=provider]");
-    assert.equal(await provider.innerText(), 'Code IdP');
-    await Promise.all([tab.waitForURL((url) => url.origin === idp), provider.click()]);
-    const authorize = new URL(tab.url());
-    assert.deepEqual(
-      [
-        authorize.searchParams.get('response_type'),
-        authorize.searchParams.get('response_mode'),
-        authorize.searchParams.get('code_challenge_method'),
-      ],
-      ['code', 'query', 'S256'],
-    );
-    await tab.getByLabel('Given name').fill('Nia');
-    await tab.getByLabel('Family name').fill('New');
-    await tab.getByLabel('Email').fill('nia@example.test');
-    await tab.getByLabel(/Phone/).fill('+44 20 7946 0000');
-    await Promise.all([
-      tab.waitForURL(app.url + '/'),
-      tab.getByRole('button', { name: 'Continue as a new user' }).click(),
-    ]);
-    assert.equal(await tab.locator('#who').innerText(), 'Nia New');
-    // The browser saw the code at the reply URL; the tokens stayed between the portal and the provider.
-    const replies = urls.filter((url) => url.origin === app.url && url.searchParams.has('code'));
-    assert.equal(replies.length, 1);
-    assert.deepEqual([...replies[0].searchParams.keys()], ['code', 'state']);
-    assert.ok(
-      !urls.some((url) => url.searchParams.has('id_token') || url.searchParams.has('access_token')),
-      'no token in any browser URL',
-    );
-    assert.ok(urls.some((url) => url.pathname === '/Account/Login/ExternalLoginCallback'));
-    // Registration mapped the UserInfo phone number.
-    const contacts = (await (await tab.request.get(app.url + '/__sim/api/state')).json()).data.contact;
-    assert.equal(contacts.find((row) => row.emailaddress1 === 'nia@example.test').telephone1, '+44 20 7946 0000');
-    // A preset user signs in through the same flow.
-    await Promise.all([tab.waitForEvent('load'), tab.locator('#sign-out').click()]);
-    assert.equal(new URL(tab.url()).pathname, '/');
-    await Promise.all([tab.waitForURL((url) => url.pathname === '/SignIn'), tab.locator('#sign-in').click()]);
-    await Promise.all([tab.waitForURL((url) => url.origin === idp), provider.click()]);
-    await Promise.all([
-      tab.waitForURL(app.url + '/'),
-      tab.getByRole('button', { name: 'Continue as Alex Local' }).click(),
-    ]);
-    assert.equal(await tab.locator('#who').innerText(), 'Alex Local');
-    assert.deepEqual(errors, []);
-  },
-);
+test("the authorization code flow runs end to end in the browser: the provider's redirect carries only the code, and UserInfo claims register the user", async (t) => {
+  const settings = [
+    ['Authentication/Registration/ExternalLoginEnabled', 'true'],
+    ['Authentication/Registration/LocalLoginEnabled', 'false'],
+    ['Authentication/OpenIdConnect/Code/Authority', 'https://idp.example.test/code/'],
+    ['Authentication/OpenIdConnect/Code/ClientId', 'code-client'],
+    ['Authentication/OpenIdConnect/Code/ClientSecret', 's3cret'],
+    ['Authentication/OpenIdConnect/Code/Caption', 'Code IdP'],
+    ['Authentication/OpenIdConnect/Code/ResponseType', 'code'],
+    ['Authentication/OpenIdConnect/Code/ResponseMode', 'query'],
+    ['Authentication/OpenIdConnect/Code/UseUserInfoEndpointforClaims', 'true'],
+    [
+      'Authentication/OpenIdConnect/Code/RegistrationClaimsMapping',
+      'firstname=given_name,lastname=family_name,emailaddress1=email,telephone1=userinfo.phone_number',
+    ],
+  ];
+  const header =
+    '<header id="site-header">{% if user %}<span id="who">{{ user.fullname }}</span> <a id="sign-out" href="{{ website.sign_out_url_substitution }}">Sign out</a>{% else %}<a id="sign-in" href="{{ website.sign_in_url_substitution }}">Sign in</a>{% endif %}</header>';
+  const { app, idp, tab, errors } = await portal(t, settings, header);
+  const urls = [];
+  tab.on('request', (request) => {
+    if (request.isNavigationRequest() && request.frame() === tab.mainFrame()) urls.push(new URL(request.url()));
+  });
+  await tab.goto(app.url + '/');
+  await Promise.all([tab.waitForURL((url) => url.pathname === '/SignIn'), tab.locator('#sign-in').click()]);
+  const provider = tab.locator("form[action*='ExternalLogin'] button[name=provider]");
+  assert.equal(await provider.innerText(), 'Code IdP');
+  await Promise.all([tab.waitForURL((url) => url.origin === idp), provider.click()]);
+  const authorize = new URL(tab.url());
+  assert.deepEqual(
+    [
+      authorize.searchParams.get('response_type'),
+      authorize.searchParams.get('response_mode'),
+      authorize.searchParams.get('code_challenge_method'),
+    ],
+    ['code', 'query', 'S256'],
+  );
+  await tab.getByLabel('Given name').fill('Nia');
+  await tab.getByLabel('Family name').fill('New');
+  await tab.getByLabel('Email').fill('nia@example.test');
+  await tab.getByLabel(/Phone/).fill('+44 20 7946 0000');
+  await Promise.all([
+    tab.waitForURL(app.url + '/'),
+    tab.getByRole('button', { name: 'Continue as a new user' }).click(),
+  ]);
+  assert.equal(await tab.locator('#who').innerText(), 'Nia New');
+  // The browser saw the code at the reply URL; the tokens stayed between the portal and the provider.
+  const replies = urls.filter((url) => url.origin === app.url && url.searchParams.has('code'));
+  assert.equal(replies.length, 1);
+  assert.deepEqual([...replies[0].searchParams.keys()], ['code', 'state']);
+  assert.ok(
+    !urls.some((url) => url.searchParams.has('id_token') || url.searchParams.has('access_token')),
+    'no token in any browser URL',
+  );
+  assert.ok(urls.some((url) => url.pathname === '/Account/Login/ExternalLoginCallback'));
+  // Registration mapped the UserInfo phone number.
+  const contacts = (await (await tab.request.get(app.url + '/__sim/api/state')).json()).data.contact;
+  assert.equal(contacts.find((row) => row.emailaddress1 === 'nia@example.test').telephone1, '+44 20 7946 0000');
+  // A preset user signs in through the same flow.
+  await Promise.all([tab.waitForEvent('load'), tab.locator('#sign-out').click()]);
+  assert.equal(new URL(tab.url()).pathname, '/');
+  await Promise.all([tab.waitForURL((url) => url.pathname === '/SignIn'), tab.locator('#sign-in').click()]);
+  await Promise.all([tab.waitForURL((url) => url.origin === idp), provider.click()]);
+  await Promise.all([
+    tab.waitForURL(app.url + '/'),
+    tab.getByRole('button', { name: 'Continue as Alex Local' }).click(),
+  ]);
+  assert.equal(await tab.locator('#who').innerText(), 'Alex Local');
+  assert.deepEqual(errors, []);
+});

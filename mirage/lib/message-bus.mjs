@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import dns from 'node:dns';
 import { DataError } from './data-error.mjs';
 import { isLoopbackUrl, loopbackAddresses, loopbackFetch } from './dataverse-webhooks.mjs';
-import { ProviderError } from './storage-provider.mjs';
+import { ProviderError, requestBound } from './storage-provider.mjs';
 import { CODE, connectAmqp, decodeMessage, described, encodeMessage, sym } from './amqp-client.mjs';
 import { registerSettingParser } from './config-keys.mjs';
 import { packCheck, registerPackExport } from './pack-exports.mjs';
@@ -31,6 +31,20 @@ export const QUEUE_MESSAGE_MAPPING = Object.freeze({
     deliverycount: { dataverseType: 'int' },
     locktoken: { dataverseType: 'nvarchar' },
     lockeduntil: { dataverseType: 'bigint' },
+  },
+  relationships: {},
+});
+// One counter row per entity. It outlives the messages it numbered, so a sequence number is never issued twice.
+export const QUEUE_SEQUENCE_TABLE = 'paqvilo_queuesequence';
+const SEQUENCE_ID = 'paqvilo_queuesequenceid';
+export const QUEUE_SEQUENCE_MAPPING = Object.freeze({
+  logicalName: QUEUE_SEQUENCE_TABLE,
+  idColumn: SEQUENCE_ID,
+  dataverseOnly: true,
+  fields: {
+    [SEQUENCE_ID]: { dataverseType: 'uniqueidentifier' },
+    entity: { dataverseType: 'nvarchar' },
+    sequencenumber: { dataverseType: 'bigint' },
   },
   relationships: {},
 });
@@ -188,16 +202,32 @@ export function createLocalMessageBus({
   const rowsOf = () => store.state.tables?.[QUEUE_MESSAGE_TABLE] ?? [];
   // The organization composes the table at startup (dataverse-organization.mjs INTERNAL_TABLES); this insert-only seed
   // inside each write covers a bus over a bare store and a replaced state.
-  const seed = () => {
-    store.state.mappings[QUEUE_MESSAGE_TABLE] ??= structuredClone(QUEUE_MESSAGE_MAPPING);
-    store.state.tables[QUEUE_MESSAGE_TABLE] ??= [];
-    return store.state.tables[QUEUE_MESSAGE_TABLE];
+  const seedTable = (mapping) => {
+    store.state.mappings[mapping.logicalName] ??= structuredClone(mapping);
+    store.state.tables[mapping.logicalName] ??= [];
+    return store.state.tables[mapping.logicalName];
   };
+  const seed = () => seedTable(QUEUE_MESSAGE_MAPPING);
   const write = (fn, nested) => store.transact(() => fn(seed()), { incremental: true, nested });
   const indexOf = (rows, rowId) => rows.findIndex((row) => row[ID] === rowId);
   // ponytail: every operation scans the table (O(messages)); index by entity if queues grow past a few thousand rows.
   const ordered = (rows, entity) =>
     rows.filter((row) => row.entity === entity).sort((a, b) => a.sequencenumber - b.sequencenumber);
+  // The counter starts at the highest number the entity's messages hold when no counter row exists yet.
+  function nextSequenceNumber(rows, entity) {
+    const counters = seedTable(QUEUE_SEQUENCE_MAPPING),
+      index = counters.findIndex((row) => row.entity === entity);
+    if (index < 0) {
+      const highest = rows
+        .filter((row) => row.entity === entity || row.entity === entity + DEAD_LETTER_SUFFIX)
+        .reduce((max, row) => Math.max(max, row.sequencenumber), 0);
+      store.insertRow(QUEUE_SEQUENCE_TABLE, counters, { [SEQUENCE_ID]: uuid(), entity, sequencenumber: highest + 1 });
+      return highest + 1;
+    }
+    const sequencenumber = counters[index].sequencenumber + 1;
+    store.mutateRow(QUEUE_SEQUENCE_TABLE, counters, index, { sequencenumber });
+    return sequencenumber;
+  }
 
   function moveToDeadLetter(rows, row, reason, description, explicit = false) {
     const index = indexOf(rows, row[ID]);
@@ -246,7 +276,7 @@ export function createLocalMessageBus({
           messageid: key,
           body: value,
           properties,
-          sequencenumber: rows.reduce((max, item) => Math.max(max, item.sequencenumber), 0) + 1,
+          sequencenumber: nextSequenceNumber(rows, entity),
           enqueuedon: iso(at),
           scheduledat: scheduled,
           visibleat: scheduled ?? at,
@@ -388,8 +418,11 @@ function emulatorConnection(connectionString) {
   };
 }
 
-/** Probe a Service Bus emulator's health endpoint on loopback. Never throws; the result never carries the connection string or its key. */
-export async function serviceBusEmulatorPreflight({ connectionString, healthPort = 5300, timeoutMs = 2000 } = {}) {
+/**
+ * Probe a Service Bus emulator's health endpoint on loopback. Never throws; the result never carries the connection string or its key.
+ * timeoutMs, when given, is the caller's bound; by default the probe is ended by the idle window (requestBound).
+ */
+export async function serviceBusEmulatorPreflight({ connectionString, healthPort = 5300, timeoutMs } = {}) {
   const result = {
     name: 'message-bus:servicebus-emulator',
     kind: 'servicebus-emulator',
@@ -412,8 +445,9 @@ export async function serviceBusEmulatorPreflight({ connectionString, healthPort
   if (target.error) return fail(target.error.code, target.error.message);
   const probe = `http://${target.bracketed}:${healthPort}/health`;
   result.endpoint = `sb://${target.bracketed}`;
+  const bound = requestBound(timeoutMs);
   try {
-    const response = await loopbackFetch(probe, { method: 'GET', signal: AbortSignal.timeout(timeoutMs) });
+    const response = await loopbackFetch(probe, { method: 'GET', signal: bound.signal });
     await response.body?.cancel();
     result.reachable = true;
     result.ready = response.ok;
@@ -428,6 +462,8 @@ export async function serviceBusEmulatorPreflight({ connectionString, healthPort
         `No emulator health endpoint answered on loopback port ${Number(healthPort)}.`,
       ),
     );
+  } finally {
+    bound.done();
   }
   return result;
 }
@@ -508,7 +544,7 @@ export function createServiceBusEmulatorBus({
     locks = new Map();
   let session = null;
 
-  function open(source, ms, signal = null) {
+  function open(source, bound = {}) {
     const target = emulatorConnection(source?.[variable]);
     if (target.error) {
       const message =
@@ -517,7 +553,7 @@ export function createServiceBusEmulatorBus({
           : `${target.error.message} (${variable})`;
       return Promise.reject(new ProviderError('Unavailable', message, { provider: id, diagnostic: target.error.code }));
     }
-    return checkedHosts(target).then((hosts) => connectFirst(hosts, target, ms, signal));
+    return checkedHosts(target).then((hosts) => connectFirst(hosts, target, bound));
   }
   // The sockets go to the addresses that the loopback check accepts for the endpoint name, in lookup order, because a *.localhost
   // name may resolve to a routable address. Any other answer, or none, refuses the endpoint before a connection is attempted.
@@ -532,7 +568,8 @@ export function createServiceBusEmulatorBus({
   }
   // Each host is tried in turn; the first connection that becomes usable is returned. When every attempt fails, the last failure
   // is rethrown. An aborted signal stops the attempts, because an already-aborted signal would never bound the next one.
-  async function connectFirst(hosts, target, ms, signal) {
+  // bound: { timeoutMs, signal, onProgress } as connectAmqp takes them.
+  async function connectFirst(hosts, target, bound) {
     let failure;
     for (const host of hosts) {
       try {
@@ -540,14 +577,13 @@ export function createServiceBusEmulatorBus({
           host,
           port,
           hostname: target.host,
-          timeoutMs: ms,
-          signal,
+          ...bound,
           provider: id,
           credentials: () => ({ user: target.keyName, password: target.key }),
         });
       } catch (error) {
         failure = error;
-        if (signal?.aborted) break;
+        if (bound.signal?.aborted) break;
       }
     }
     throw failure;
@@ -563,7 +599,7 @@ export function createServiceBusEmulatorBus({
     senders.clear();
     receivers.clear();
     locks.clear();
-    session = open(env, timeoutMs);
+    session = open(env, { timeoutMs });
     session.catch(() => {});
     return session;
   }
@@ -720,12 +756,16 @@ export function createServiceBusEmulatorBus({
         },
       );
     },
-    /** Ready when a fresh connection opens (SASL PLAIN included) and a sender link attaches to every configured entity, within
-     * 1.8 s (inside the 2 s preflight bound). env overrides the environment for this probe only. */
-    async preflight({ env: source = env } = {}) {
+    /** Ready when a fresh connection opens (SASL PLAIN included) and a sender link attaches to every configured entity. env
+     * overrides the environment for this probe only. Under a probe ({ signal, progress } from preflightProvider) the probe's idle
+     * guard bounds every wait and each completed step calls progress(); a direct call keeps a 1.8 s bound. */
+    async preflight({ env: source = env, signal, progress } = {}) {
       let connection = null;
+      const bound = signal
+        ? { timeoutMs: null, signal, onProgress: progress }
+        : { timeoutMs: 1800, signal: AbortSignal.timeout(1800) };
       try {
-        connection = await open(source, 1800, AbortSignal.timeout(1800));
+        connection = await open(source, bound);
         for (const entity of names)
           await connection.detach(await connection.attach({ role: 'sender', address: entity }));
         return { ready: true, reason: null };

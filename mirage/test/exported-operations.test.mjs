@@ -1,3 +1,4 @@
+// @test-kind contract: exported server logic runs in a worker whose cold start and execution budgets are separate, and cannot change local records.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -19,6 +20,7 @@ import { createSimulator } from '../server.mjs';
 import { isExactNumeric, stringifyExactJson } from '../lib/exact-numeric.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
+// @test-kind security: a flow file that grows during import is refused, so an oversized file is never imported
 test('modern flow imports bound the opened file and reject growth during its read', async (t) => {
   const { dir } = await source(t, '');
   const relative = 'modernflows/invented/flow.json',
@@ -135,6 +137,7 @@ function store() {
   });
 }
 
+// @test-kind security: exported server code reads only what the caller's roles allow and a role-less caller is refused
 test('server-logic exported code uses invocation context, local role-scoped reads and connector envelope', async (t) => {
   const { record } = await source(
     t,
@@ -163,6 +166,8 @@ test('server-logic exported code uses invocation context, local role-scoped read
 
 // The delayed Worker bootstrap: longer than the 1000 ms execution budget plus its 300 ms watchdog grace.
 const BOOTSTRAP_DELAY_MS = 1500;
+// hang guard only: a blocked synchronous child cannot be ended by the test runner
+const CLI_HANG_GUARD_MS = 170_000;
 test('cold server-logic worker startup does not consume the exported-code execution budget', async (t) => {
   const { dir, record } = await source(t, 'function get(){return "Invented ready result";}');
   const preload = path.join(dir, 'preload.mjs');
@@ -183,7 +188,7 @@ console.log(JSON.stringify({value,elapsed:performance.now()-started}));`,
   const result = spawnSync(process.execPath, ['--import', pathToFileURL(preload).href, program], {
     encoding: 'utf8',
     windowsHide: true,
-    timeout: 30_000,
+    timeout: CLI_HANG_GUARD_MS,
   });
   assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message);
   const answer = JSON.parse(result.stdout);
@@ -191,7 +196,7 @@ console.log(JSON.stringify({value,elapsed:performance.now()-started}));`,
   assert.ok(answer.elapsed >= BOOTSTRAP_DELAY_MS, 'the execution completed after the delayed worker bootstrap');
 });
 
-// Above the former 2 s default (plus its 300 ms grace) and well inside the documented 5 s local limit.
+// Above 2.3 s and well inside the documented 5 s local limit.
 const SLOW_CUSTOM_API_MS = 2500;
 test('default server-logic allowance covers a slow local custom API within the documented five-second limit', async (t) => {
   const { record } = await source(
@@ -212,6 +217,7 @@ test('default server-logic allowance covers a slow local custom API within the d
   assert.deepEqual(JSON.parse(JSON.parse(answer).Body), { completed: true });
 });
 
+// @test-kind security: exported server code is stopped at its time limit and a read request cannot delete records
 test('exported server code is bounded and read requests cannot change local records', async (t) => {
   const fixture = await source(t, 'function get(){while(true){}}');
   await assert.rejects(
@@ -238,6 +244,7 @@ test('exported server code is bounded and read requests cannot change local reco
   assert.equal(await runExportedServerLogic({ record: fixture.record, portal: {}, store: data }), 'async result');
 });
 
+// @test-kind security: exported server code cannot create, update or delete without the caller's permission
 test('exported server CRUD uses local permissions, projection and the DELETE del convention', async (t) => {
   const fixture = await source(
     t,
@@ -367,6 +374,8 @@ test('flow definition is selected by exported process id and unknown connectors 
   assert.throws(() => runExportedCloudFlow({ ...context, record: { processId: 'missing' } }), /no JSON definition/);
 });
 
+// @test-kind security: HTTP operations refuse callers without the exported role or CSRF token
+// and never reach the live bridge
 test('registered HTTP operations enforce exported roles and CSRF and server logic never uses a live bridge', async (t) => {
   const { dir } = await source(t, '');
   const flow = 'd0000000-0000-4000-8000-000000000002';

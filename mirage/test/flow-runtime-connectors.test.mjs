@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's designed flow runtime behaviour for Dataverse actions under connection principals and flow identity overrides.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -199,7 +200,7 @@ test('a flow with an unbound connection reference stays a placeholder until the 
   );
 });
 
-test('Dataverse actions behave as before and a connection principal yields to the flowIdentities override', async () => {
+test('Dataverse actions run under their connection principal, which yields to the flowIdentities override', async () => {
   const actions = {
     create: dataverse('CreateRecord', { entityName: 'x_widgets', 'item/x_name': "@triggerBody()?['name']" }, 'x_dv'),
     reply: {

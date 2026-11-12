@@ -325,19 +325,22 @@ With `--local-simulation`, Lense observes and overlays those exact declared loca
 resource URLs as well as `/WebResources/` paths. Native targets retain their explicit
 resource mappings and never infer a resource from an arbitrary hashed URL.
 
-`model-driven dev --startup-timeout 120000` sets a separate 1,000–600,000 ms
-startup budget, starting before project/source loading and ending after the
-native document's load event. Workers and continuing application requests do not
-block startup; sign-in and native application readiness remain unverified.
+`model-driven dev --startup-timeout 120000` sets the longest silence allowed without
+start-up progress: 1,000–600,000 ms, default 120,000 ms. Progress is a phase change,
+a completed step, or a page request, its completion or failure, or a navigation
+(including a sign-in redirect). An absolute cap of 600,000 ms also ends a start that
+keeps progressing. Both guards apply until the native document's load event.
+Workers and requests that continue after that event do not hold the start open;
+sign-in and native application readiness remain unverified.
 With `--local-simulation`, the Mirage application readiness marker also gates
-startup. The budget covers browser attachment, interception,
-watcher setup and navigation; failures name the active phase. Async waits
-are interrupted at the deadline; synchronous filesystem/parsing work observes
-it when control returns to an async boundary. It is not a process watchdog for
-blocked native code. Late browser acquisitions are disposed, only the owned app
-tab is closed in an attached browser, and the attached browser remains running.
-Ctrl+C cancels pending startup. Cleanup drains owned resources separately from
-the startup budget. `--timeout` starts after startup and limits session lifetime.
+startup. A failure names the guard that ended the start (silence or cap), the last
+phase reached, and the duration. Async waits are interrupted at the guard;
+synchronous filesystem/parsing work observes it when control returns to an async
+boundary. It is not a process watchdog for blocked native code. Late browser
+acquisitions are disposed, only the owned app tab is closed in an attached browser,
+and the attached browser remains running. Ctrl+C cancels pending startup. Cleanup
+drains owned resources separately from the start guards. `--timeout` starts after
+startup and limits session lifetime.
 
 Source links use `PAQVILO_EDITOR` from the shell or the selected catalogue's
 `.env`, then the catalogue's `editor`, then `code`. By default, the catalogue is

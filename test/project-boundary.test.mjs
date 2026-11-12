@@ -1,3 +1,4 @@
+// @test-kind tooling: the project boundary guard keeps the core free of private business dependencies and selects namespaces independently.
 import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -29,7 +30,7 @@ test('public command namespaces select Lense and Mirage independently', async (t
           execFile(
             process.execPath,
             [cli, ...args],
-            { cwd, env, encoding: 'utf8', windowsHide: true, timeout: 30_000 },
+            { cwd, env, encoding: 'utf8', windowsHide: true },
             (error, stdout, stderr) => resolve({ status: error ? error.code : 0, stdout, stderr }),
           ),
         ),

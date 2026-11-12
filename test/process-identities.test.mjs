@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's batched and single process identity reads for owned, live and system processes.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import childProcess, { spawn } from 'node:child_process';
@@ -23,7 +24,7 @@ test('batched process identities match single reads for owned live and system pr
   // Hold the child's PID throughout both observations: an exited PID can be reused between OS reads.
   const pids = [process.pid, child.pid, SYSTEM_PID];
   const single = new Map(pids.map((pid) => [pid, processIdentity(pid)]));
-  // More than one PID takes the batched path; repeats and invalid PIDs are ignored as before.
+  // More than one PID takes the batched path; repeats and invalid PIDs are ignored.
   const batched = processIdentities([...pids, process.pid, 0, -1, 1.5]);
   assert.deepEqual([...batched.keys()], pids);
   assert.deepEqual(batched, single);

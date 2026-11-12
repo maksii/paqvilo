@@ -1033,3 +1033,29 @@ test('HTTP PATCH/PUT/DELETE cannot change immutable metadata columns while permi
   assert.equal(saved.fullname, 'Updated');
   assert.equal(saved.createdon, '2026-01-01T00:00:00Z');
 });
+
+test('a user-configured mapping publishes a lookup alias only when Solution metadata proves the column; a seeded table uses its own field types', () => {
+  const probeStore = (extra = {}) =>
+    new DataStore({
+      state: {
+        ...fixture(),
+        mappings: {
+          ...fixture().mappings,
+          x_probeentry: {
+            entitySet: 'x_probeentries',
+            idColumn: 'x_probeentryid',
+            fields: { x_name: { dataverseType: 'string' }, x_parentid: { dataverseType: 'lookup' } },
+            ...extra,
+          },
+        },
+      },
+    });
+  const portal = {
+    settings: { 'Webapi/x_probeentry/enabled': 'true', 'Webapi/x_probeentry/fields': 'x_name,x_parentid' },
+  };
+  const userFields = webApiPolicy(portal, probeStore(), 'x_probeentry').fields;
+  assert.equal(userFields.includes('x_parentid'), true);
+  assert.equal(userFields.includes('_x_parentid_value'), false);
+  const seededFields = webApiPolicy(portal, probeStore({ dataverseOnly: true }), 'x_probeentry').fields;
+  assert.equal(seededFields.includes('_x_parentid_value'), true);
+});

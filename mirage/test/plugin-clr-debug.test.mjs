@@ -18,6 +18,9 @@ import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { editorFiles } from '../../lense/project-editor.mjs';
 import { pluginCatalogue } from '../lib/exported-plugins.mjs';
 
+// hang guard only: a blocked synchronous child cannot be ended by the test runner
+const CLI_HANG_GUARD_MS = 170_000;
+
 const user = '10000000-0000-0000-0000-000000000001';
 const debugStep = '10000000-0000-0000-0000-000000000002';
 const descriptor = (root) => ({
@@ -248,7 +251,7 @@ test(
         shell: false,
         windowsHide: true,
         encoding: 'utf8',
-        timeout: 30000,
+        timeout: CLI_HANG_GUARD_MS,
       });
       return probe.status === 0 ? probe.stdout.trim() : null;
     };

@@ -1,3 +1,4 @@
+// @test-kind contract: the Mirage campaign replay runs in a fresh process with the runtime fingerprint of the toolkit it loads.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -8,6 +9,9 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { frozenReplayIdentity, runMirageReplayCampaign } from '../portal-harness/mirage-campaign-replay.mjs';
 import { makeTemporaryDirectory } from 'paqvilo/mirage/testing/owned-fixture.mjs';
+
+// hang guard only: a blocked synchronous child cannot be ended by the test runner
+const CLI_HANG_GUARD_MS = 170_000;
 const actor = '10000000-0000-0000-0000-000000000001',
   site = '20000000-0000-0000-0000-000000000001',
   role = '30000000-0000-0000-0000-000000000001',
@@ -197,7 +201,7 @@ test('runtime receipts resolve an installed toolkit from an external project wit
         '-e',
         `const {replayRuntimeFingerprint}=await import(${JSON.stringify(module)});console.log(await replayRuntimeFingerprint());`,
       ],
-      { encoding: 'utf8', timeout: 150_000, windowsHide: true },
+      { encoding: 'utf8', timeout: CLI_HANG_GUARD_MS, windowsHide: true },
     );
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout.trim(), /^[a-f\d]{64}$/);

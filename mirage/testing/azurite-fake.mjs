@@ -31,11 +31,15 @@ const escapeXml = (text) =>
     (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' })[c],
   );
 
-/** Starts the fake; returns { blobEndpoint, connectionString, accountName, requests, containers, close() }. */
+/**
+ * Starts the fake; returns { blobEndpoint, connectionString, accountName, requests, containers, close() }.
+ * onBodyAbort, when given, is called once for each request whose body the client aborted; nothing is recorded for it.
+ */
 export async function startAzuriteFake({
   accountName = 'devstoreaccount1',
   accountKey = FAKE_ACCOUNT_KEY,
   now = () => Date.now(),
+  onBodyAbort,
 } = {}) {
   const containers = new Map(); // name → Map(blobName → { data, etag, lastModified, contentType, metadata, uncommitted: Map })
   const requests = [];
@@ -107,14 +111,42 @@ export async function startAzuriteFake({
     return same(sign(fields.join('\n')), q.sig);
   }
 
-  /* NOSONAR */ const server = http.createServer(async (request, response) => {
+  const readBody = async (request) => {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
-    const body = Buffer.concat(chunks);
+    return Buffer.concat(chunks);
+  };
+  const decodeSegments = (rawPath) => {
+    try {
+      return rawPath.split('/').slice(1).map(decodeURIComponent);
+    } catch (error) {
+      throw Object.assign(new Error('InvalidUri', { cause: error }), { code: 'InvalidUri' });
+    }
+  };
+  // Answers a request whose handling threw: 400 for a path that is not valid percent-encoding, 500 otherwise.
+  const failRequest = (request, response, error) => {
+    if (response.headersSent) {
+      response.destroy();
+      return;
+    }
+    const code = error.code === 'InvalidUri' ? 'InvalidUri' : 'InternalError';
+    response.writeHead(code === 'InvalidUri' ? 400 : 500, {
+      'x-ms-version': request.headers['x-ms-version'] ?? '',
+      'x-ms-error-code': code,
+      'content-type': 'application/xml',
+    });
+    response.end(
+      request.method === 'HEAD'
+        ? undefined
+        : `<?xml version="1.0" encoding="utf-8"?><Error><Code>${code}</Code><Message>${code}</Message></Error>`,
+    );
+  };
+
+  /* NOSONAR */ const respond = (request, response, body) => {
     const [rawPath, rawQuery = ''] = request.url.split('?');
     const query = [...new URLSearchParams(rawQuery)];
     const q = Object.fromEntries(query);
-    const segments = rawPath.split('/').slice(1).map(decodeURIComponent);
+    const segments = decodeSegments(rawPath);
     requests.push({
       method: request.method,
       path: rawPath,
@@ -269,6 +301,22 @@ export async function startAzuriteFake({
       return send(200, { ...props(committed), 'content-length': size }, committed.data);
     }
     return error(400, 'UnsupportedHttpVerb');
+  };
+  const answer = (request, response, body) => {
+    try {
+      respond(request, response, body);
+    } catch (error) {
+      failRequest(request, response, error);
+    }
+  };
+  const server = http.createServer((request, response) => {
+    readBody(request).then(
+      (body) => answer(request, response, body),
+      () => {
+        onBodyAbort?.();
+        response.destroy();
+      },
+    );
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const blobEndpoint = `http://127.0.0.1:${server.address().port}/${accountName}`;

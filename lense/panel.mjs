@@ -969,17 +969,21 @@ export function enablePanel(context, session, opts = {}) {
         'templateChain',
       ].every((key) => value[key] === undefined || Array.isArray(value[key])),
     );
-  const loadRuntime = async (page, requestedPath) => {
-    if (!runtimePageUsable(page, cfg.origin, disposed, adminPage)) return;
+  /**
+   * Stores the runtime of one page. A failure before the final attempt returns 'retry' and stores nothing,
+   * so no redraw shows a transient inactive runtime; otherwise the outcome is stored and this returns 'done'.
+   */
+  const loadRuntime = async (page, requestedPath, finalAttempt) => {
+    if (!runtimePageUsable(page, cfg.origin, disposed, adminPage)) return 'done';
     profileFilesByPage.delete(page);
     // A navigation is reported before the tab commits it; its own path wins over page.url().
     const pathname =
       typeof requestedPath === 'string' && requestedPath.startsWith('/') ? requestedPath : (pathOf(page.url()) ?? '/');
-    if (adminPage(new URL(pathname, cfg.origin).href)) return;
+    if (adminPage(new URL(pathname, cfg.origin).href)) return 'done';
     try {
       if (!cfg.mirage) {
         const result = await sourceInspector.inspect(pathname);
-        if (!runtimePageStillOnPortal(page, cfg.origin, disposed)) return;
+        if (!runtimePageStillOnPortal(page, cfg.origin, disposed)) return 'done';
         const roots = result.roots.map(realNative);
         runtimeByPage.set(page, {
           active: true,
@@ -994,7 +998,7 @@ export function enablePanel(context, session, opts = {}) {
           error: null,
         });
         runtimeFilesByPage.set(page, annotateRuntime(result.report, roots));
-        return;
+        return 'done';
       }
       // Every navigation asks for a small summary; the Inspect tab loads the full report on demand.
       // Page inspection and the session read carry this browser's session cookie.
@@ -1003,8 +1007,9 @@ export function enablePanel(context, session, opts = {}) {
         mirageGet(`/page-resources?path=${encodeURIComponent(pathname)}&view=summary`, 8000, page.context().request),
         readSession(page).catch(() => null),
       ]);
-      if (!runtimePageStillOnPortal(page, cfg.origin, disposed)) return;
+      if (!runtimePageStillOnPortal(page, cfg.origin, disposed)) return 'done';
       if (!status) {
+        if (!finalAttempt) return 'retry';
         storeMissingMirageStatus(page, runtimeByPage, runtimeFilesByPage);
       } else {
         lastMirageStatus = status;
@@ -1022,11 +1027,14 @@ export function enablePanel(context, session, opts = {}) {
         });
       }
     } catch (error) {
+      if (!finalAttempt) return 'retry';
       runtimeByPage.set(page, { active: false, error: error.message.split('\n')[0] });
       runtimeFilesByPage.delete(page);
     }
     schedule(page);
+    return 'done';
   };
+  const RUNTIME_ATTEMPTS = 3;
   /** One inspection per tab at a time; requests arriving meanwhile collapse into one rerun. */
   const refreshRuntime = (page, requestedPath) => {
     if (disposed || !page || page.isClosed()) return Promise.resolve();
@@ -1041,12 +1049,20 @@ export function enablePanel(context, session, opts = {}) {
       return job.running;
     }
     job.running = (async () => {
+      let attempts = 0;
       do {
         job.id = ++inspectionSequence;
         job.again = false;
         const path = job.path;
         job.path = undefined;
-        await loadRuntime(page, path);
+        const outcome = await loadRuntime(page, path, attempts + 1 >= RUNTIME_ATTEMPTS);
+        if (outcome === 'retry') {
+          attempts += 1;
+          job.path ??= path;
+          job.again = true;
+        } else {
+          attempts = 0;
+        }
         schedule(page);
       } while (job.again && !disposed && !page.isClosed()); // NOSONAR: loop flag is changed asynchronously
     })().finally(() => {

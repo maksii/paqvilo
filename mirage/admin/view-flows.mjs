@@ -18,7 +18,8 @@ const flowName = (ctx, run) => {
   const id = String(run?.processId ?? '')
     .replace(/[{}]/g, '')
     .toLowerCase();
-  const operation = (ctx.state?.()?.config?.operations ?? []).find(
+  const operations = ctx.state?.()?.config?.operations;
+  const operation = (Array.isArray(operations) ? operations : []).find(
     (item) =>
       item.kind === 'cloud-flow' &&
       String(item.processId ?? item.id ?? '')
@@ -73,6 +74,12 @@ function runDetail(ctx, d) {
     ['Correlation id', `<code>${e(run.correlationId ?? '—')}</code>`],
     ['Wait', e(run.wait ? `${run.wait.kind} ${run.wait.id}` : 'none')],
     ['Not resumable', e(run.notResumable ?? 'no')],
+    ...(run.errorCode || run.errorMessage
+      ? [
+          ['Error code', `<code>${e(run.errorCode ?? '—')}</code>`],
+          ['Error message', e(run.errorMessage ?? '—')],
+        ]
+      : []),
   ]);
   const table = run.journalPruned
     ? kit.notice('The journal of this run was pruned: only the newest finished runs keep their journals.', 'info')
@@ -189,15 +196,63 @@ function runsPanel(ctx, d) {
   );
 }
 
+// The approval block of the wait (from GET /flow-waits); an approval without one answers as Approve or Reject.
+const APPROVAL_DEFAULTS = { options: ['Approve', 'Reject'], awaiting: [], responses: [], requireAll: false };
+const responseLine = (response) =>
+  `<li>${e(response.responder ?? 'Unknown responder')} answers ${e(response.response)}${response.comments ? `, comment: ${e(response.comments)}` : ''}.</li>`;
+// Who has responded with what, and for a wait-for-all approval who is still awaited.
+function responseSummary(approval) {
+  const responded = approval.responses.length
+    ? `<ul class="ui-help">${approval.responses.map(responseLine).join('')}</ul>`
+    : '<p class="ui-help">Nobody has responded yet.</p>';
+  const awaited =
+    approval.requireAll && approval.awaiting.length
+      ? `<p class="ui-help">Still awaited: ${e(approval.awaiting.join(', '))}.</p>`
+      : '';
+  return responded + awaited;
+}
+// The assignee select lists only the assignees still awaited; it is hidden when nobody is awaited.
+function responderField(ctx, awaiting) {
+  if (!awaiting.length) return '';
+  const placeholder = awaiting.length > 1 ? '<option value="" selected>Choose who responds</option>' : '';
+  const choices = awaiting
+    .map((name) => `<option value="${e(name)}"${awaiting.length === 1 ? ' selected' : ''}>${e(name)}</option>`)
+    .join('');
+  return `<div><label for="flow-responder">Responder</label><select id="flow-responder" name="responder" aria-describedby="flow-responder-help">${placeholder}${choices}</select>${fieldHelp(ctx, 'flow-responder', 'flows.waits', 'responder')}</div>`;
+}
+// One button per response option of the approval; the first option is the primary one.
+const responseButtons = (options) =>
+  options
+    .map(
+      (option, index) =>
+        `<button type="submit" class="ui-button ${index === 0 ? 'ui-primary ' : ''}ui-small" name="outcome" value="${e(option)}">${e(option)}</button>`,
+    )
+    .join(' ');
+const commentsField = (ctx) =>
+  `<div><label for="flow-comments">Comments</label><textarea id="flow-comments" name="comments" rows="3" aria-describedby="flow-comments-help"></textarea>${fieldHelp(ctx, 'flow-comments', 'flows.waits', 'comments')}</div>`;
+// A wait listed without its approval block answers as Approve or Reject, with the responder typed in.
+const typedResponderBody = (ctx) =>
+  `<div><label for="flow-responder">Responder</label><input id="flow-responder" name="responder" type="text" aria-describedby="flow-responder-help">${kit.fieldHelp('flow-responder', 'Who answers, for example reviewer@example.test.')}</div>` +
+  commentsField(ctx) +
+  `<p>${responseButtons(APPROVAL_DEFAULTS.options)}</p>`;
+function approvalBody(ctx, wait) {
+  if (!wait.approval) return typedResponderBody(ctx);
+  const approval = { ...APPROVAL_DEFAULTS, ...wait.approval };
+  return (
+    responseSummary(approval) +
+    responderField(ctx, approval.awaiting) +
+    commentsField(ctx) +
+    `<p>${responseButtons(approval.options)}</p>`
+  );
+}
+
 function answerForm(ctx, d) {
   const wait = Array.isArray(d.waits) ? d.waits.find((item) => item.id === d.answer) : null;
   if (!wait) return '';
   const approval = wait.kind === 'approval';
   const outputsHelp = `The outputs the ${wait.kind} wait returns to the run, as a JSON object.`;
   const body = approval
-    ? `<div><label for="flow-responder">Responder</label><input id="flow-responder" name="responder" type="text" aria-describedby="flow-responder-help">${kit.fieldHelp('flow-responder', 'Who answers, for example reviewer@example.test.')}</div>` +
-      `<div><label for="flow-comments">Comments</label><textarea id="flow-comments" name="comments" rows="3" aria-describedby="flow-comments-help"></textarea>${fieldHelp(ctx, 'flow-comments', 'flows.waits', 'comments')}</div>` +
-      '<p><button type="submit" class="ui-button ui-primary ui-small" name="outcome" value="Approve">Approve</button> <button type="submit" class="ui-button ui-small" name="outcome" value="Reject">Reject</button></p>'
+    ? approvalBody(ctx, wait)
     : `<div><label for="flow-outputs">Outputs JSON</label><textarea id="flow-outputs" name="outputs" rows="4" aria-describedby="flow-outputs-help">{}</textarea>${kit.fieldHelp('flow-outputs', outputsHelp)}</div>` +
       '<p><button type="submit" class="ui-button ui-primary ui-small">Resume run</button></p>';
   return (
@@ -368,7 +423,8 @@ function submitFlowWait(ctx, event, d, form) {
       body: JSON.stringify(body),
     });
     d.answer = null;
-    ctx.notify(`Run ${result.runId} is scheduled to resume${flowWaitOutcome(result)}.`);
+    if (result.scheduled === false) ctx.notify(`Run ${result.runId} keeps waiting: the approval is still pending.`);
+    else ctx.notify(`Run ${result.runId} is scheduled to resume${flowWaitOutcome(result)}.`);
     await ctx.refresh();
   });
 }

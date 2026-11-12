@@ -1,5 +1,5 @@
 // @test-kind contract: explicitly registered Paqvilo project packs resolve connection aliases and selected providers; unimplemented local operations report ConnectorNotSimulated/501.
-import test from 'node:test';
+import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { createConnectorRuntime } from '../lib/connector-runtime.mjs';
@@ -96,4 +96,52 @@ test('connector-id connection fallback uses its selected provider before declari
   });
   assert.equal(await invoke({ reference, operationId: 'Other', principal: { principalId: STAFF } }), undefined);
   assert.deepEqual(calls, ['selected']);
+});
+
+// A loopback service that answers only when the test opens the gate; `arrived` resolves once a request is in flight.
+async function gatedService(t) {
+  const arrived = Promise.withResolvers();
+  const gate = Promise.withResolvers();
+  const service = http.createServer(async (req, res) => {
+    arrived.resolve();
+    await gate.promise;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{"ok":true}');
+  });
+  await new Promise((resolve) => service.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => service.close(resolve)));
+  return { uri: `http://127.0.0.1:${service.address().port}/slow`, arrived: arrived.promise, open: gate.resolve };
+}
+
+test('a Code App connector call to a slow loopback service is not cut off after two seconds', async (t) => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  t.after(() => mock.timers.reset());
+  const service = await gatedService(t);
+  const call = codeAppConnectors(createConnectorRuntime({}), {});
+  const pending = call({
+    reference: { key: 'http', apiId: 'http' },
+    operationId: 'Http',
+    body: { uri: service.uri, method: 'GET' },
+    principal: { principalId: STAFF },
+  });
+  await service.arrived;
+  mock.timers.tick(3000);
+  service.open();
+  assert.equal((await pending).statusCode, 200);
+});
+
+test('a connector call with an explicit timeoutMs fails with ProviderTimeout once the clock passes it', async (t) => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  t.after(() => mock.timers.reset());
+  const service = await gatedService(t);
+  const pending = createConnectorRuntime({}).invoke({
+    connectorId: 'http',
+    operationId: 'Http',
+    parameters: { method: 'GET', uri: service.uri },
+    context: { timeoutMs: 1000 },
+  });
+  await service.arrived;
+  mock.timers.tick(3000);
+  service.open();
+  await assert.rejects(pending, { status: 504, code: 'ProviderTimeout' });
 });

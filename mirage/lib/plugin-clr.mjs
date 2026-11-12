@@ -43,7 +43,6 @@ import {
   stageImageSet,
 } from './plugin-images.mjs';
 import { captureSdkResponse } from './plugin-response.mjs';
-import { isElastic, samePartition } from './dataverse-elastic.mjs';
 import { convertSdkQuery } from './plugin-query-conversion.mjs';
 import { CRM_FUNCTIONS } from './dataverse-conditions.mjs';
 import { runtimeConstructorSettings } from './plugin-constructor-configuration.mjs';
@@ -521,6 +520,8 @@ function validateClrSymbolFiles(descriptor, symbols) {
       fail('VS Code CLR debugging requires a portable PDB. Build with DebugType=portable.');
   }
 }
+// A hang guard, not a deadline: the compiler runs synchronously, so a compiler that never exits is stopped after this long.
+const CLR_COMPILE_GUARD_MS = 600_000;
 /**
  * Snapshots already-read bytes into a new owned directory under descriptor.cacheRoot and compiles the host there. Each file is
  * { bytes, path } (read from disk: path is re-verified on every execution) or { bytes, name } (registered content the
@@ -533,7 +534,7 @@ export function buildClrRuntime(descriptor, { assembly, sdk, dependencies = [], 
   // No link components; the native spelling is the canonical one (as prepareClrRuntime's fs.realpath gives it).
   canonicalClrDirectorySync(descriptor.cacheRoot);
   const cacheParent = syncFs.realpathSync.native(descriptor.cacheRoot);
-  const { compiler, kind = 'original-clr-assembly', securityModel } = options;
+  const { compiler, kind = 'original-clr-assembly', securityModel, compileGuardMs = CLR_COMPILE_GUARD_MS } = options;
   const originals = [assembly, sdk, ...dependencies, ...symbols],
     nameOf = (file) => file.name ?? path.basename(file.path);
   validateClrSymbolFiles(descriptor, symbols);
@@ -574,7 +575,7 @@ export function buildClrRuntime(descriptor, { assembly, sdk, dependencies = [], 
           '/reference:System.ServiceModel.dll',
           sourceFile,
         ],
-        { shell: false, windowsHide: true, encoding: 'utf8', timeout: 20000, maxBuffer: 256 * 1024 },
+        { shell: false, windowsHide: true, encoding: 'utf8', maxBuffer: 256 * 1024, timeout: compileGuardMs },
       );
     // The ILogger, IFeatureControlService(2) and IManagedIdentityService classes compile when the SDK declares them.
     const services = clrServiceDefines(sdk.bytes);
@@ -585,11 +586,7 @@ export function buildClrRuntime(descriptor, { assembly, sdk, dependencies = [], 
       build = compile(services);
     }
     if (build.error || build.status !== 0)
-      fail(
-        'CLR host compilation failed: ' + String(build.error?.message ?? build.stdout ?? build.stderr).slice(0, 4000),
-        'LocalPluginClrBuild',
-        501,
-      );
+      fail(clrCompileFailure(build, compilerFile, compileGuardMs), 'LocalPluginClrBuild', 501);
     files.push({ path: executable, sha256: sha(readClrFileSync(executable)) });
     const allowed = new Set([...files.map((f) => path.basename(f.path)), path.basename(sourceFile)]);
     if (syncFs.readdirSync(directory).some((name) => !allowed.has(name)))
@@ -625,6 +622,12 @@ export function buildClrRuntime(descriptor, { assembly, sdk, dependencies = [], 
       }
     throw cause;
   }
+}
+// A compiler the guard stopped names itself and the option; every other failure reports the compiler's own output.
+function clrCompileFailure(build, compilerFile, compileGuardMs) {
+  if (build.error?.code === 'ETIMEDOUT')
+    return `CLR host compilation failed: the compiler ${compilerFile} did not exit within the ${compileGuardMs} ms guard (compileGuardMs option).`;
+  return 'CLR host compilation failed: ' + String(build.error?.message ?? build.stdout ?? build.stderr).slice(0, 4000);
 }
 const CLR_SERVICE_TYPES = [
   ['PAQVILO_LOGGER', 'Microsoft.Xrm.Sdk.PluginTelemetry.ILogger'],
@@ -668,6 +671,11 @@ export function pluginRuntimeDescriptors(packs = []) {
   return descriptors;
 }
 const typed = (type, value) => ({ $type: type, value });
+// The stored row of a mapping whose primary key is `id` (case- and brace-insensitive), through the store's row index.
+const storedRowById = (store, mapping, id, partitionId) => {
+  const rows = store.tableRows(mapping.logicalName);
+  return rows[store.rowIndex(mapping, rows, canon(id), { partitionId })];
+};
 /* NOSONAR */ export function recordToSdkEntity(store, entity, row, columns) {
   if (columns === undefined) columns = { allColumns: true };
   const mapping = store.resolveMapping(entity),
@@ -692,15 +700,7 @@ const typed = (type, value) => ({ $type: type, value });
           Object.entries(target.fields ?? target.fieldMetadata ?? {}).find(
             ([, definition]) => definition.isPrimaryName,
           )?.[0]),
-      record = primaryName
-        ? store
-            .tableRows(target.logicalName)
-            .find(
-              (record) =>
-                canon(record[target.idColumn]) === canon(id) &&
-                (!isElastic(target) || samePartition(record.partitionid, partitionId)),
-            )
-        : null,
+      record = primaryName ? storedRowById(store, target, id, partitionId) : null,
       name = suppliedName ?? record?.[primaryName] ?? null;
     // A message Target's references carry no resolved names (native Create/Update Targets: Name null), unless the
     // Target also carries the lookup's yominame (Assign's ownerid and owneridyominame); retrieved rows and images name them.
@@ -866,22 +866,13 @@ const typed = (type, value) => ({ $type: type, value });
       } catch (error) {
         if (error.code !== 'UnknownEntity') throw error;
       }
-      const source =
-        related && store.tableRows(related.logicalName).find((r) => canon(r[related.idColumn]) === canon(value.id));
+      const source = related && storedRowById(store, related, value.id, row?.[`${key}pid`]);
       const yomi = source?.yomifullname ?? value.name;
       if (yomi != null) attributes[companion] = yomi;
     }
   const id = row?.[mapping.idColumn] ?? '00000000-0000-0000-0000-000000000000',
     versionColumn = mapping.sdkRowVersionColumn;
-  const sourceVersion =
-    versionColumn &&
-    store
-      .tableRows(mapping.logicalName)
-      .find(
-        (source) =>
-          canon(source[mapping.idColumn]) === canon(id) &&
-          (!isElastic(mapping) || samePartition(source.partitionid, row.partitionid)),
-      )?.[versionColumn];
+  const sourceVersion = versionColumn && storedRowById(store, mapping, id, row?.partitionid)?.[versionColumn];
   const rowVersion = sourceVersion == null ? null : String(sourceVersion?.value ?? sourceVersion);
   if (rowVersion !== null && !/^\d+$/.test(rowVersion))
     fail('Source SDK RowVersion column requires an unsigned integral value.', 'LocalPluginSdkUnsupported', 501);
@@ -910,9 +901,7 @@ export function recordToSdkReadEntity(store, entity, row, columns) {
   // A retrieved Dataverse row reports its stored row version as Entity.RowVersion (native Retrieve/RetrieveMultiple).
   if (result.rowVersion == null && store.platformFields) {
     const mapping = store.resolveMapping(entity),
-      stored = store
-        .tableRows(mapping.logicalName)
-        .find((source) => canon(source[mapping.idColumn]) === canon(result.id))?.versionnumber;
+      stored = storedRowById(store, mapping, result.id, row?.partitionid)?.versionnumber;
     const version = stored == null ? null : String(stored?.value ?? stored);
     if (version !== null && /^\d+$/.test(version)) result.rowVersion = version;
   }
@@ -1632,6 +1621,13 @@ function sdkMethodResult(method, results, captured) {
   return captured.value;
 }
 
+// A PostOperation step's response replaces the entity the Retrieve built; the related rows the request asked for stay on it.
+function withRelatedEntities(method, captured, results) {
+  const related = captured.value?.relatedEntities;
+  if (method !== 'Retrieve' || !related || results.BusinessEntity?.$type !== 'Entity') return results;
+  return { ...results, BusinessEntity: { ...results.BusinessEntity, relatedEntities: related } };
+}
+
 function invokeSdkMethod({ store, service, message }, namedResponse) {
   const args = message.arguments ?? [],
     method = message.method;
@@ -1641,11 +1637,20 @@ function invokeSdkMethod({ store, service, message }, namedResponse) {
     executeSdkMethod({ store, service, message, responseToken }),
   );
   const defaults = sdkMethodDefaults(method, captured.value),
-    results = captured.results ?? defaults;
+    results = withRelatedEntities(method, captured, captured.results ?? defaults);
   if (namedResponse) return sdkNamedResponse(method, results);
   // These defaults mirror the installed SDK response getters; original-DLL tests
   // qualify the missing-key behavior separately from native organization faults.
   return sdkMethodResult(method, results, captured);
+}
+// A RelatedEntitiesQuery reads its lookup from the stored row: the caller's ColumnSet may omit the lookup column. The row is
+// read once, when the first query needs it; the projected row answers when the store has no row for the key.
+function storedLookups(store, entity, row) {
+  let stored;
+  return (column) => {
+    stored ??= store.get(entity, row[store.resolveMapping(entity).idColumn], { admin: true }, { skipPluginRead: true });
+    return (stored ?? row)[column];
+  };
 }
 const hasCollectionCriteria = (filter) =>
   Boolean(filter?.anyAllFilterLinkEntity || filter?.filters?.some(hasCollectionCriteria));
@@ -1742,7 +1747,8 @@ const hasCollectionCriteria = (filter) =>
         result = recordToSdkReadEntity(store, args[0], row, args[2]);
       // RetrieveRequest.RelatedEntitiesQuery: each relationship's query, restricted to the rows related to this one.
       const queries = message.requestOptions?.relatedEntitiesQuery?.values ?? [];
-      if (queries.length)
+      if (queries.length) {
+        const storedLookup = storedLookups(store, args[0], row);
         result.relatedEntities = queries.map(({ relationship, query }) => {
           if (query?.$type !== 'QueryExpression') fail('SDK RelatedEntitiesQuery requires QueryExpression values.');
           const { rel } = relatedBinding(store, args[0], relationship, [query], query.entityName),
@@ -1787,7 +1793,7 @@ const hasCollectionCriteria = (filter) =>
                     ...(criteria.filters ?? []),
                     // N:1: the row this one looks up; 1:N: the rows that look this one up.
                     rel.many === false
-                      ? equal(rel.to, key(row[rel.from]) ?? '00000000-0000-0000-0000-000000000000')
+                      ? equal(rel.to, key(storedLookup(rel.from)) ?? '00000000-0000-0000-0000-000000000000')
                       : equal(rel.to, row[mapping.idColumn]),
                   ],
                 },
@@ -1801,6 +1807,7 @@ const hasCollectionCriteria = (filter) =>
             }),
           };
         });
+      }
       return result;
     }
     case 'RetrieveMultiple': {
@@ -2046,7 +2053,46 @@ export function closeClrHostPool({ runtime, diagnostic = () => {} } = {}) {
     allAbsenceVerified: selected.map((session) => stopClrHost(session, diagnostic)).every(Boolean),
   };
 }
+/**
+ * Closes a prepared runtime and removes its cache directory. liveRuntimes are the runtimes that remain in use after this
+ * release: the caller leaves out the entry being released, and a runtime still mapped under another id counts as live.
+ * A directory any of them shares (a shared preparer returns copies of one runtime) is kept, and its hosts with it, until
+ * the last of them is released. A directory is removed only when it is a clr- child of the canonical cache root.
+ */
+export function releaseClrRuntime(runtime, { liveRuntimes = [], diagnostic = () => {} } = {}) {
+  if (liveRuntimes.some((other) => other.directory === runtime.directory)) return;
+  closeClrHostPool({ runtime, diagnostic });
+  if (!isOwnedCacheDirectory(runtime)) return;
+  try {
+    syncFs.rmSync(runtime.directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 25 });
+  } catch (cause) {
+    diagnostic({ code: 'PLUGIN_CLR_CLEANUP', message: 'CLR runtime cache cleanup failed: ' + cause.code });
+  }
+}
+function isOwnedCacheDirectory(runtime) {
+  try {
+    const directory = syncFs.realpathSync.native(runtime.directory);
+    const cacheRoot = syncFs.realpathSync.native(runtime.descriptor.cacheRoot);
+    return path.dirname(directory) === cacheRoot && path.basename(directory).startsWith('clr-');
+  } catch {
+    return false; // A directory that is already gone, or that cannot be resolved, is not removed.
+  }
+}
+// A host reports its exit as a session-level `host-exited` packet. Per-invocation lines stay in their backlog; a session
+// whose exit was reported is stopped and leaves the pool.
+function drainSessionPackets(session) {
+  for (let packet; (packet = receiveMessageOnPort(session.port1));) {
+    if (packet.message.kind === 'host-exited') return true;
+    session.backlog.get(packet.message.invocationId)?.push(packet.message);
+  }
+  return false;
+}
+function drainPooledSessions(diagnostic = () => {}) {
+  for (const session of [...pooledHosts.values()])
+    if (drainSessionPackets(session)) stopClrHost(session, diagnostic, { failed: true });
+}
 export function clrHostPoolStatus() {
+  drainPooledSessions();
   return [...pooledHosts.values()].map((session) => ({
     pid: session.pid ?? null,
     active: session.active > 0,
@@ -2058,6 +2104,7 @@ export function clrHostPoolStatus() {
 function executePooledClr(runtime, input, options, verified) {
   const key = runtime.directory;
   if (executionDepth + 1 > PLUGIN_MAX_DEPTH) throw pluginDepthFault();
+  drainPooledSessions(options.diagnostic);
   let session = pooledHosts.get(key);
   if (!session) {
     // ponytail: past 32 hosts an idle one is replaced; active hosts are bounded by the depth cap, so none waits.
@@ -2390,6 +2437,16 @@ export function pluginImage(store, entity, row, registration, formatUserId) {
   });
   return Object.keys(formattedValues).length ? { ...value, formattedValues } : value;
 }
+/**
+ * The SYSTEM user a native Delete executes as: its main operation and its PreOperation, PostOperation and asynchronous
+ * steps. PreValidation (stage 10) runs as the caller, and so does a Delete a plug-in issued. Null when the caller applies.
+ * Shared by the CLR, JavaScript handler and web hook contexts.
+ */
+export function deleteExecutionUser(store, operation, stage) {
+  if (operation !== 'delete' || stage === 10 || store.pluginParentContext || pluginInvocationSdkParent(store))
+    return null;
+  return store.tableRows('systemuser').find((row) => row.fullname === 'SYSTEM')?.systemuserid ?? null;
+}
 /* NOSONAR: single-pass routine, splitting it would change shared state */ export function clrContext({
   runtime,
   store,
@@ -2631,14 +2688,8 @@ export function pluginImage(store, entity, row, registration, formatUserId) {
     inherited = (key) => parent?.values?.[key],
     guidOf = (value) => value?.value ?? value ?? null,
     empty = '00000000-0000-0000-0000-000000000000';
-  // A native Delete's main operation (and its PreOperation, PostOperation and asynchronous steps) executes as the
-  // organization's SYSTEM user; PreValidation still runs as the caller.
-  const systemDelete =
-    operation === 'delete' && stage !== 10 && !store.pluginParentContext && !pluginInvocationSdkParent(store)
-      ? store.tableRows('systemuser').find((row) => row.fullname === 'SYSTEM')?.systemuserid
-      : null;
   const callerUserId =
-      systemDelete ??
+      deleteExecutionUser(store, operation, stage) ??
       store.pluginPlatformUserId ??
       store.pluginExecutionUserId ??
       caller?.systemUserId ??

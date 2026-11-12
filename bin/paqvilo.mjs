@@ -3,8 +3,10 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 import { parseArgs } from 'node:util';
+import { parseOptions } from '../lense/cli-options.mjs';
 import { MIRAGE_TOOLS, MIRAGE_LIFECYCLE, mirageToolHelp } from '../mirage/tool-registry.mjs';
 import { parseToolHelp } from '../mirage/tool-options.mjs';
+import { forwardTerminationSignals } from '../lense/signal-forwarding.mjs';
 
 const HELP = `paqvilo — Power Platform source development
 
@@ -35,12 +37,13 @@ const ANALYZE_HELP = `Usage: paqvilo analyze [--source PATH | --project FILE | -
 
 Review declared Power Platform sources locally, including standalone Dataverse projects.
   --source PATH    Review a source folder or supported package without a catalogue.
+                   With --config or --site, --source overrides the selected site's portal source; with --all the same folder is applied to every site. Without a catalogue it is a standalone folder.
   --project FILE   Review a Mirage project's declared sources without a portal.
   --config FILE    Select a catalogue and its declared source roots.
   --site NAME      Select a catalogue site, including a standalone runtime.
   --all            Review every catalogue site's declared sources separately.
-  --repo DIR       Override the catalogue source checkout root.
-  --env NAME       Select the catalogue environment context; no request is made.
+  --repo DIR       Override the catalogue source checkout root; cannot be combined with --source or --project alone.
+  --env NAME       Select the catalogue environment context; no request is made; cannot be combined with --source or --project alone.
   --fail-on LEVEL  none, error (default), warning or hint; incomplete inspection fails.
   --json           Include rule, domain, inventory and separate-evidence capability details.
 
@@ -57,6 +60,8 @@ function failure(error, code, label = 'paqvilo', items = args) {
   else console.error(`${label}: ${error.message.replace(/[\r\n]+/g, ' ')}`);
   process.exitCode = 1;
 }
+// A repeated single-value option is an invalid_argument whatever the command's fallback code is.
+const argumentFailureCode = (error, fallback) => (error.code === 'invalid_argument' ? error.code : fallback);
 const exitStatus = (code, signal) => {
   if (code != null) return code;
   if (signal === 'SIGINT') return 130;
@@ -79,7 +84,7 @@ if (['--version', '-v', '--help', '-h'].includes(product)) {
   try {
     process.exitCode = await (await import('../lense/commands/setup.mjs')).runSetup(setupArgs);
   } catch (error) {
-    failure(error, 'SETUP_FAILED', 'paqvilo setup', setupArgs);
+    failure(error, argumentFailureCode(error, 'SETUP_FAILED'), 'paqvilo setup', setupArgs);
   }
 } else if (product === 'init') {
   try {
@@ -89,7 +94,7 @@ if (['--version', '-v', '--help', '-h'].includes(product)) {
   }
 } else if (product === 'doctor') {
   try {
-    const { values } = parseArgs({
+    const { values } = parseOptions({
       args,
       options: {
         setup: { type: 'boolean' },
@@ -131,11 +136,11 @@ if (['--version', '-v', '--help', '-h'].includes(product)) {
       });
     }
   } catch (error) {
-    failure(error, 'SETUP_CHECK_FAILED', 'paqvilo doctor');
+    failure(error, argumentFailureCode(error, 'SETUP_CHECK_FAILED'), 'paqvilo doctor');
   }
 } else if (product === 'analyze' && hasFlag(args, '--help', '-h')) {
   try {
-    parseArgs({
+    parseOptions({
       args,
       options: {
         source: { type: 'string' },
@@ -152,7 +157,7 @@ if (['--version', '-v', '--help', '-h'].includes(product)) {
     });
     console.log(ANALYZE_HELP);
   } catch (error) {
-    failure(error, 'INVALID_ARGUMENT', 'paqvilo analyze');
+    failure(error, argumentFailureCode(error, 'INVALID_ARGUMENT'), 'paqvilo analyze');
   }
 } else if (product === 'mirage' && Object.hasOwn(MIRAGE_TOOLS, args[0]) && hasFlag(args, '--help', '-h')) {
   try {
@@ -203,16 +208,12 @@ if (['--version', '-v', '--help', '-h'].includes(product)) {
   child.on('error', (error) => {
     failure(error, 'SPAWN_FAILED');
   });
+  // A terminal interrupt is also sent to the child; allow its browser/runtime cleanup to finish.
+  const stopForwarding = forwardTerminationSignals(child);
   child.on('exit', (code, signal) => {
+    stopForwarding();
     process.exitCode = exitStatus(code, signal);
     // A failed help parse must not prefix a JSON error with human-readable help.
     if (code === 0 && helpSupplement) console.log(helpSupplement);
-  });
-  // A terminal interrupt is also sent to the child; allow its browser/runtime cleanup to finish.
-  process.on('SIGINT', () => {
-    child.kill('SIGINT');
-  });
-  process.on('SIGTERM', () => {
-    child.kill('SIGTERM');
   });
 }

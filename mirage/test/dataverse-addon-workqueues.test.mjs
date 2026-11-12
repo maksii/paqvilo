@@ -1,11 +1,13 @@
 // Work-queue messages (lib/dataverse-addon-workqueues.mjs) over HTTP: enqueue, dequeue (priority, FIFO, delay and expiry, FetchXML),
 // clear, SLA computation and processing history.
+// @test-kind contract: Paqvilo's designed work-queue behaviour; the simulated answers and error texts are guesses listed in the module.
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
+import { ownerColumns } from '../lib/dataverse-security.mjs';
 
 const APP_ID = '55555555-5555-5555-5555-555555555555';
 const SECRET_VAR = 'PAQVILO_WORKQUEUE_SECRET';
@@ -333,5 +335,192 @@ describe('dataverse work-queue messages over HTTP', () => {
     assert.equal((await queueCall(Q.waiting, 'Dequeue', { request })).status, 204);
     assert.equal((await queueCall(Q.waiting, 'Dequeue', { request: 'null' })).status, 400);
     assert.equal((await queueCall(Q.main, 'EnqueueWorkQueueItem', { workQueueItem: 'invalid' })).status, 400);
+  });
+});
+
+// @test-kind security: each work-queue item is checked against the caller's row privileges, and an enqueued item takes the caller as its owner.
+describe('work-queue messages check the row privileges of each item', () => {
+  const ADMIN_APP = '99999999-9999-4999-8999-999999999999';
+  const BASIC_APP = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const ADMIN_SECRET = 'PAQVILO_WORKQUEUE_ADMIN_SECRET';
+  const BASIC_SECRET = 'PAQVILO_WORKQUEUE_BASIC_SECRET';
+  const MIXED = queueId(21);
+  const ORDER = queueId(23);
+  const STAMP = queueId(24);
+  const ADMIN_QUEUE = queueId(25);
+  const TYPED = queueId(26);
+  let store;
+  let secured;
+  let adminToken;
+  let basicToken;
+
+  async function tokenFor(appId, secretVar) {
+    const response = await fetch(`${secured.origin}/${secured.tenantId}/oauth2/v2.0/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'client_credentials',
+        client_id: appId,
+        client_secret: process.env[secretVar],
+        scope: `${secured.origin}/.default`,
+      }),
+    });
+    return (await response.json()).access_token;
+  }
+
+  // One request as a token holder; a 204 answer has no body.
+  async function send(token, method, path, body) {
+    const result = await fetch(`${secured.origin}/api/data/${VERSION}/${path}`, {
+      method,
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const text = await result.text();
+    return { status: result.status, body: text ? JSON.parse(text) : null };
+  }
+  const bound = (token, set, id, name, body = {}) =>
+    send(token, 'POST', `${set}(${id})/Microsoft.Dynamics.CRM.${name}`, body);
+  const enqueue = (token, queueOf, item) =>
+    bound(token, 'workqueues', queueOf, 'EnqueueWorkQueueItem', { workQueueItem: item });
+  const itemRow = (id) => store.state.tables.workqueueitem.find((row) => row.workqueueitemid === id);
+  const itemsIn = (queueOf) => store.state.tables.workqueueitem.filter((row) => row.workqueueid === queueOf);
+  const ownerOf = (row) => row.ownerid?.id ?? row.ownerid ?? null;
+
+  before(async () => {
+    process.env[ADMIN_SECRET] = 'workqueue-admin-secret';
+    process.env[BASIC_SECRET] = 'workqueue-basic-secret';
+    store = await new DataStore({ state: emptyState() }).init();
+    const settings = dataverseSettings({
+      enabled: true,
+      applications: [
+        {
+          appId: ADMIN_APP,
+          displayName: 'Queue admin',
+          secretEnvironmentVariable: ADMIN_SECRET,
+          roles: ['System Administrator'],
+        },
+        {
+          appId: BASIC_APP,
+          displayName: 'Queue basic',
+          secretEnvironmentVariable: BASIC_SECRET,
+          roles: ['Basic User'],
+        },
+      ],
+    });
+    secured = await startDataverseApi({ store, settings, log: () => {}, extensions: EXTENSIONS });
+    adminToken = await tokenFor(ADMIN_APP, ADMIN_SECRET);
+    basicToken = await tokenFor(BASIC_APP, BASIC_SECRET);
+    // The Basic User owns the three queues, so it may read them (the queue read check of each message).
+    const basicUser = store.state.tables.systemuser.find((row) => row.applicationid === BASIC_APP);
+    const owner = ownerColumns(store, { id: basicUser.systemuserid, logical_name: 'systemuser' });
+    await store.transact(() => {
+      store.state.tables.workqueue ??= [];
+      store.state.tables.workqueue.push(
+        queue(MIXED, owner),
+        queue(ORDER, owner),
+        queue(STAMP, owner),
+        queue(TYPED, owner),
+      );
+    });
+  });
+
+  after(async () => {
+    delete process.env[ADMIN_SECRET];
+    delete process.env[BASIC_SECRET];
+    await secured?.close();
+  });
+
+  // @test-kind security: clear cannot remove queue items the caller may not delete
+  it('clear refuses with 403 when an item is not deletable by the caller, and removes nothing', async () => {
+    const adminItem = (await enqueue(adminToken, MIXED, { name: 'admin job' })).body.workQueueItemId;
+    const basicItem = (await enqueue(basicToken, MIXED, { name: 'basic job' })).body.workQueueItemId;
+    const refused = await bound(basicToken, 'workqueues', MIXED, 'ClearWorkQueue');
+    assert.equal(refused.status, 403);
+    assert.deepEqual(
+      itemsIn(MIXED)
+        .map((row) => row.workqueueitemid)
+        .sort(),
+      [adminItem, basicItem].sort(),
+    );
+    assert.equal((await bound(adminToken, 'workqueues', MIXED, 'ClearWorkQueue')).status, 200);
+    assert.equal(itemsIn(MIXED).length, 0);
+  });
+
+  it('dequeue claims only an item the caller may write', async () => {
+    const adminItem = (await enqueue(adminToken, ORDER, { name: 'admin first', priority: 1 })).body.workQueueItemId;
+    const basicItem = (await enqueue(basicToken, ORDER, { name: 'basic second', priority: 2 })).body.workQueueItemId;
+    const claim = await bound(basicToken, 'workqueues', ORDER, 'Dequeue', {});
+    assert.equal(claim.status, 200);
+    assert.equal(claim.body.workqueueitemid, basicItem);
+    assert.equal(itemRow(basicItem).statecode, 1);
+    assert.equal(itemRow(adminItem).statecode, 0);
+  });
+
+  // @test-kind security: a queue message checks the caller's read on the queue row first, so a Basic User gets 403 and no row changes.
+  it('enqueue, dequeue and clear answer 403 for a Basic User on an admin-owned queue, and change no row', async () => {
+    const created = await send(adminToken, 'POST', 'workqueues', {
+      workqueueid: ADMIN_QUEUE,
+      name: 'Invented admin queue',
+    });
+    assert.equal(created.status, 204, JSON.stringify(created.body));
+    const adminItem = (await enqueue(adminToken, ADMIN_QUEUE, { name: 'admin only' })).body.workQueueItemId;
+    const unchanged = JSON.stringify([store.state.tables.workqueue, store.state.tables.workqueueitem]);
+    const enqueued = await enqueue(basicToken, ADMIN_QUEUE, { name: 'basic intruder' });
+    const dequeued = await bound(basicToken, 'workqueues', ADMIN_QUEUE, 'Dequeue', {});
+    const cleared = await bound(basicToken, 'workqueues', ADMIN_QUEUE, 'ClearWorkQueue');
+    assert.deepEqual([enqueued.status, dequeued.status, cleared.status], [403, 403, 403]);
+    assert.equal(itemRow(adminItem).statecode, 0);
+    assert.equal(JSON.stringify([store.state.tables.workqueue, store.state.tables.workqueueitem]), unchanged);
+  });
+
+  it('enqueue refuses a property the table does not have, and stamps the caller as the owner', async () => {
+    const unknown = await enqueue(basicToken, STAMP, { name: 'bad job', notAColumn: 1 });
+    assert.equal(unknown.status, 400);
+    assert.equal(unknown.body.error.code, '0x80040203');
+    assert.equal(itemsIn(STAMP).length, 0);
+    const adminId = (await enqueue(adminToken, STAMP, { name: 'admin job' })).body.workQueueItemId;
+    const basicId = (await enqueue(basicToken, STAMP, { name: 'basic job' })).body.workQueueItemId;
+    const adminRow = itemRow(adminId);
+    assert.ok(ownerOf(adminRow), 'the administrator owns the item it enqueued');
+    assert.ok(ownerOf(itemRow(basicId)), 'the caller owns the item it enqueued');
+    assert.notEqual(ownerOf(itemRow(basicId)), ownerOf(adminRow));
+    const spoofed = (await enqueue(basicToken, STAMP, { name: 'spoofed job', ownerid: adminRow.ownerid })).body
+      .workQueueItemId;
+    assert.equal(ownerOf(itemRow(spoofed)), ownerOf(itemRow(basicId)));
+  });
+
+  it('enqueue accepts a work item that carries @odata.type and stores no annotation key', async () => {
+    const created = await enqueue(basicToken, TYPED, {
+      '@odata.type': 'Microsoft.Dynamics.CRM.workqueueitem',
+      name: 'typed job',
+      priority: 3,
+    });
+    assert.equal(created.status, 200, JSON.stringify(created.body));
+    const row = itemRow(created.body.workQueueItemId);
+    assert.equal(row.name, 'typed job');
+    assert.equal(row.priority, 3);
+    assert.deepEqual(
+      Object.keys(row).filter((name) => name.includes('@')),
+      [],
+    );
+  });
+
+  it('enqueue refuses a bind on the queue or the owner with a 400 that names the annotation, and creates no item', async () => {
+    const count = itemsIn(TYPED).length;
+    const queueBind = await enqueue(basicToken, TYPED, {
+      'workqueueid@odata.bind': `/workqueues(${TYPED})`,
+      name: 'bound job',
+    });
+    const ownerBind = await enqueue(basicToken, TYPED, {
+      'ownerid@odata.bind': '/systemusers(a1000000-0000-4000-8000-000000000001)',
+      name: 'owned job',
+    });
+    assert.equal(queueBind.status, 400);
+    assert.match(queueBind.body.error.message, /workqueueid@odata\.bind/);
+    assert.doesNotMatch(queueBind.body.error.message, /is not a column/);
+    assert.equal(ownerBind.status, 400);
+    assert.match(ownerBind.body.error.message, /ownerid@odata\.bind/);
+    assert.doesNotMatch(ownerBind.body.error.message, /is not a column/);
+    assert.equal(itemsIn(TYPED).length, count);
   });
 });

@@ -416,14 +416,23 @@ function compareNumericCondition(left, operator, right) {
   }
 }
 
+// Linear glob match: the first and last segments anchor the value, and each middle
+// segment is found from the end of the previous one, so no wildcard backtracks.
 function conditionLike(text, patternText) {
-  return new RegExp(
-    `^${String(patternText)
-      .replace(/[.+?^${}()|[\]\\]/g, String.raw`\$&`)
-      .replaceAll('*', '.*')
-      .replaceAll('%', '.*')}$`,
-    'i',
-  ).test(String(text ?? ''));
+  const value = String(text ?? '').toLowerCase();
+  const segments = String(patternText).toLowerCase().split(/[*%]/);
+  if (segments.length === 1) return value === segments[0];
+  const first = segments[0];
+  const last = segments.at(-1);
+  if (value.length < first.length + last.length || !value.startsWith(first) || !value.endsWith(last)) return false;
+  const end = value.length - last.length;
+  let cursor = first.length;
+  for (const segment of segments.slice(1, -1)) {
+    const found = value.indexOf(segment, cursor);
+    if (found < 0 || found + segment.length > end) return false;
+    cursor = found + segment.length;
+  }
+  return true;
 }
 
 function compareScalarCondition(a, operator, right) {
@@ -665,6 +674,27 @@ export const notesFilter = (portal) => siteSetting(portal ?? {}, 'KnowledgeManag
 // Basic form modes (adx_mode) as the form span names them.
 const FORM_MODES = { 100000000: 'insert', 100000001: 'edit', 100000002: 'readonly' };
 
+function lookupBindingId(value) {
+  const captured = value.match(/\(([^()]*)\)$/)?.[1] ?? value;
+  try {
+    return decodeURIComponent(captured);
+  } catch {
+    return fail('Lookup binding is not a valid entity reference', 400, 'InvalidLookup');
+  }
+}
+
+// A save updates the record that the form's record source names; a posted recordId may only repeat that record.
+// A record reached through the current contact or an associated record is never replaced by a posted recordId.
+async function savedRecordId({ bodyRecordId, query, ...source }) {
+  const record = await resolveFormRecord({ ...source, context: { request: { params: query } } });
+  const id = record.id ? canonical(record.id) : null;
+  const posted = bodyRecordId ? canonical(bodyRecordId) : null;
+  const contactNamed = Boolean(record.sourceType || record.createOnNull);
+  if (posted && (id || contactNamed) && posted !== id)
+    fail('The submitted record differs from the form record source', 403, 'FormRecordMismatch');
+  return id ?? posted;
+}
+
 /**
  * A portal form submission (a basic or advanced form save, a step, a record state action) is one `form` span above the
  * Dataverse operations it runs (D-R3-10): the form, its kind, mode, the action (button) and table; at level full the
@@ -891,10 +921,21 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
       [756150003, 100000004].includes(sourceType) &&
       truthy(portalField(sourceMetadata, 'recordsourceallowcreateonnull')));
   if (create && body.recordId) fail('A create form cannot select an existing record');
-  const recordId = schema.recordId ?? body.recordId ?? sessionRecordId;
+  const recordId = create
+    ? (schema.recordId ?? sessionRecordId)
+    : await savedRecordId({
+        bodyRecordId: body.recordId,
+        kind,
+        definition,
+        schema,
+        metadata,
+        query,
+        readProvider,
+        store,
+        identity,
+        session,
+      });
   if (!create && !recordId) fail('This native form requires its record identifier', 400, 'FormRecordRequired');
-  if (schema.recordId && body.recordId && canonical(schema.recordId) !== canonical(body.recordId))
-    fail('The submitted record differs from the form record', 403, 'FormRecordMismatch');
   const mapping = store.resolveMapping(schema.entity);
   const configuredActions = nativeFormActions(componentMetadata);
   if (stateAction) {
@@ -1017,7 +1058,7 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
       ? value === null // NOSONAR: preserve lazy branch evaluation and coercion
         ? null
         : typeof value === 'string' // NOSONAR: preserve lazy branch evaluation and coercion
-          ? decodeURIComponent(value.match(/\(([^()]*)\)$/)?.[1] ?? value) // NOSONAR: preserve receiver match dispatch and captured values
+          ? lookupBindingId(value)
           : value
       : value;
   }
@@ -1192,6 +1233,9 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
         fail('Invalid postback or callback argument. Event validation is enabled.', 500, 'FormEventValidationInvalid');
       if (control === 'email' && (typeof value !== 'string' || !/^[^\s@<>]+@[^\s@<>]+$/.test(value)))
         invalid(field, 'FormFieldInvalid', field.validationMessage || `${field.label} must be a valid email address.`);
+      // A native text control posts a string; the server-assigned on-save values are exempt. Email is checked above.
+      if (['text', 'textarea'].includes(control) && !assigned.has(key) && typeof value !== 'string')
+        invalid(field, 'FormFieldInvalid', field.validationMessage || `${field.label} must be text.`);
       if (['integer', 'decimal', 'double', 'money'].includes(control)) {
         const number = typeof value === 'number' ? value : Number.NaN;
         const exact = nativePostback && isExactNumeric(value) ? decimalParts(value) : null;

@@ -35,7 +35,7 @@ import {
 } from './dataverse-elastic.mjs';
 
 // Assumed: a customization prefix of 2 to 8 letters, then an underscore and a name (the quote and space forms are refused).
-const SCHEMA_NAME = /^[A-Za-z][A-Za-z0-9]{1,7}_\w+$/;
+export const SCHEMA_NAME = /^[A-Za-z][A-Za-z0-9]{1,7}_\w+$/;
 const GUID = /^\{?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\}?$/i;
 const LOGICAL_KEY = /^LogicalName='([^']+)'$/i;
 // GlobalOptionSetDefinitions(Name='x') or GlobalOptionSetDefinitions(<MetadataId>), the two forms the bind documents.
@@ -90,7 +90,7 @@ const VERB = { POST: 'Create', PUT: 'Write', DELETE: 'Delete' };
 // The inner codes are native; refusal messages and statuses are guesses.
 const fail = (message, status = 400, code = 'InvalidRequest', innerCode) =>
   new DataError(message, status, code, innerCode ? { innerCode } : undefined);
-const schemaNameError = (name, type) =>
+export const schemaNameError = (name, type) =>
   fail(
     `The schema name ${name} for type ${type} is invalid or missing.Custom attribute, entity, entitykey, option set and relationship names must start with a valid customization prefix.`,
     400,
@@ -177,6 +177,22 @@ function optionSetOf(api, attr) {
   return { options: list };
 }
 
+const MAX_LENGTH_LIMITS = { nvarchar: 4000, memo: 1048576 };
+// A given MaxLength is a whole number from 1 to the type's maximum (Learn: MaxSupportedLength).
+function checkMaxLength(name, dataverseType, value) {
+  if (value == null) return null;
+  const limit = MAX_LENGTH_LIMITS[dataverseType];
+  if (!Number.isInteger(value) || value < 1 || value > limit)
+    throw fail(`MaxLength for ${name} must be a whole number from 1 to ${limit}.`);
+  return value;
+}
+
+// The one-to-many relationship whose lookup column this is, or null: a lookup column is owned by its relationship.
+function lookupOwnerOf(mapping, name) {
+  const owner = Object.values(mapping.relationships ?? {}).find((rel) => !rel.many && rel.from === name);
+  return owner?.schemaName ?? null;
+}
+
 // Column definition as the read side expects it: dataverseType plus columnMetadata facts (attribute-metadata.mjs).
 function columnField(api, attr, dataverseType, schemaName, primary) {
   const facts = {
@@ -195,12 +211,12 @@ function columnField(api, attr, dataverseType, schemaName, primary) {
   switch (dataverseType) {
     case 'nvarchar':
       Object.assign(facts, {
-        maxLength: attr.MaxLength ?? null,
+        maxLength: checkMaxLength(schemaName, dataverseType, attr.MaxLength),
         format: String(attr.FormatName?.Value ?? attr.FormatName ?? 'Text').toLowerCase(),
       });
       break;
     case 'memo':
-      facts.maxLength = attr.MaxLength ?? null;
+      facts.maxLength = checkMaxLength(schemaName, dataverseType, attr.MaxLength);
       break;
     case 'int':
     case 'bigint':
@@ -524,7 +540,7 @@ function updateColumnLimits(body, name, field, facts) {
   if (body.RequiredLevel !== undefined) facts.requiredLevel = requiredLevelOf(body.RequiredLevel);
   if (body.MaxLength !== undefined) {
     if (!TEXT.has(field.dataverseType)) throw fail(`MaxLength applies to text columns, not ${name}.`);
-    facts.maxLength = Number(body.MaxLength);
+    facts.maxLength = checkMaxLength(name, field.dataverseType, body.MaxLength);
   }
   if (body.MinValue !== undefined || body.MaxValue !== undefined) {
     if (!NUMERIC.has(field.dataverseType)) throw fail(`MinValue and MaxValue apply to numeric columns, not ${name}.`);
@@ -544,6 +560,9 @@ function deleteColumn(c, key, attributeId) {
   const { logical, mapping } = anyTable(c.api, key);
   const name = columnNamed(c.api, logical, mapping, attributeId);
   assertNotManaged(c.api, 'attribute', logical, name, `${logical}.${name}`);
+  const owner = lookupOwnerOf(mapping, name);
+  if (owner)
+    throw fail(`${name} belongs to relationship ${owner} and must be deleted through RelationshipDefinitions.`);
   const facts = customColumnOf(c.api, logical, mapping, name).columnMetadata;
   if (facts.isPrimaryName) throw fail('The primary name column cannot be deleted.');
   if ((mapping.alternateKeys ?? []).some((k) => k.attributes.includes(name)))

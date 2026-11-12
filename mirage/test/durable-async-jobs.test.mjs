@@ -13,7 +13,9 @@ import { pluginCatalogue } from '../lib/exported-plugins.mjs';
 import { operationCatalogue } from '../lib/operation-catalogue.mjs';
 import { createScheduler, fixedClock } from '../lib/runtime-clock.mjs';
 import { committedJobs, encodeEvent } from '../lib/committed-work.mjs';
-import { defaultSchedule } from '../lib/dataverse-async.mjs';
+import { defaultSchedule, install } from '../lib/dataverse-async.mjs';
+import { createOperationRegistry } from '../lib/dataverse-operations.mjs';
+import { createRecordHooks } from '../lib/dataverse-records.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const stepId = '77777777-7777-4777-8777-000000000001',
@@ -502,4 +504,42 @@ test('a composition that fails after opening the scheduler closes it again', asy
   assert.equal(store.scheduler.status().closed, false, 'a later composition reopens it');
   await retry.close();
   assert.equal(store.scheduler.status().closed, true);
+});
+
+// The system jobs of an async api over a store: the router's shape, with no live runtime. install() runs the restart pass.
+const systemJobRunner = (store) => ({
+  store,
+  change: (fn) => fn(),
+  registry: createOperationRegistry(),
+  recordHooks: createRecordHooks(),
+  clock: () => Date.parse('2026-10-19T09:00:00Z'),
+  addRoute: () => {},
+});
+const READY_SYSTEM_JOB = '77777777-7777-4777-8777-000000000011',
+  LOCKED_SYSTEM_JOB = '77777777-7777-4777-8777-000000000012';
+
+// @test-kind contract: a system job's work is not saved, so a job the stopped runtime left Ready or Locked is finished Failed on restart
+test('a system job left Ready or Locked by a stopped runtime is finished Failed when the runtime restarts', async (t) => {
+  const file = await stateFile(t);
+  const first = await new DataStore({ file, state: initialState() }).init();
+  const systemJob = (asyncoperationid, statecode, statuscode) => ({
+    asyncoperationid,
+    name: 'Invented system job',
+    operationtype: 203,
+    statecode,
+    statuscode,
+  });
+  await first.transact(() => {
+    first.state.tables.asyncoperation ??= [];
+    first.state.tables.asyncoperation.push(systemJob(READY_SYSTEM_JOB, 0, 0), systemJob(LOCKED_SYSTEM_JOB, 2, 20));
+  });
+  await first.close();
+
+  const second = await new DataStore({ file }).init();
+  await install(systemJobRunner(second));
+  const interrupted = 'The system job was interrupted by a restart.';
+  for (const id of [READY_SYSTEM_JOB, LOCKED_SYSTEM_JOB]) {
+    const row = second.state.tables.asyncoperation.find((job) => job.asyncoperationid === id);
+    assert.deepEqual([row.statecode, row.statuscode, row.message], [3, 31, interrupted]);
+  }
 });

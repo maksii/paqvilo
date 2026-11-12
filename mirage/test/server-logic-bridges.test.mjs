@@ -1,5 +1,6 @@
 // Server objects in exported server logic, through runExportedServerLogic (the production caller), not the bare worker:
 // environment variables, Dataverse.InvokeCustomApi, CloudFlow.TriggerAsync, HttpClient (loopback contract) and Logger.
+// @test-kind contract: exported server logic, custom API bridges and connector envelopes over invented fixtures.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -38,6 +39,7 @@ const run = async (t, code, options = {}) =>
     }),
   );
 
+// @test-kind security: server code never receives a Secret environment variable value
 test('Server.EnvironmentVariable.get reads the store effective values when the caller passes none; a Secret answers null', async (t) => {
   const state = emptyState();
   state.tables.environmentvariabledefinition = [
@@ -68,6 +70,40 @@ test('Server.EnvironmentVariable.get reads the store effective values when the c
   );
   assert.ok(diagnostics[0].operationId);
   assert.doesNotMatch(JSON.stringify(diagnostics), /vault/);
+});
+
+test('a custom API function parameter keeps commas inside its quoted literal', async (t) => {
+  const store = await new DataStore({ state: emptyState() }).init();
+  const handler = async (context) => ({ outputs: { Result: `echo:${context.inputs.Text}` } });
+  const organization = await createOrganizationRuntime({
+    store,
+    extensions: await sourceOrganizationExtensions({ customApis: new Map([['fx_echo', { handler }]]) }),
+    settings: dataverseSettings({ enabled: false }),
+  });
+  t.after(() => organization.close());
+  const api = await store.create(
+    'customapi',
+    { uniquename: 'fx_Echo', name: 'Echo', bindingtype: 0, isfunction: true },
+    { admin: true },
+  );
+  const customApiid = { id: api.customapiid, logical_name: 'customapi' };
+  await store.create(
+    'customapirequestparameter',
+    { uniquename: 'Text', name: 'Text', type: 10, isoptional: false, customapiid: customApiid },
+    { admin: true },
+  );
+  await store.create(
+    'customapiresponseproperty',
+    { uniquename: 'Result', name: 'Result', type: 10, customapiid: customApiid },
+    { admin: true },
+  );
+  const system =
+    store.tableRows('systemuser').find((row) => /SYSTEM/i.test(String(row.fullname ?? row.domainname ?? ''))) ??
+    store.tableRows('systemuser')[0];
+  const invoke = organizationCustomApi(organization, { principal: system.systemuserid });
+  const response = await invoke({ method: 'GET', url: "fx_Echo(Text='a,b')" });
+  assert.equal(response.status, 200, JSON.stringify(response.body));
+  assert.equal(response.body.Result, 'echo:a,b');
 });
 
 test('Dataverse.InvokeCustomApi runs the custom API through the organization', async (t) => {
@@ -123,6 +159,7 @@ test('Dataverse.InvokeCustomApi runs the custom API through the organization', a
   assert.deepEqual([unwired.StatusCode, unwired.IsSuccessStatusCode, unwired.ServerError], [501, false, true]);
 });
 
+// @test-kind security: a caller without the web role cannot trigger a cloud flow
 test('CloudFlow.TriggerAsync answers the trigger pipeline envelope, including the web-role refusal and 202', async (t) => {
   const calls = [];
   const triggerFlow = async ({ flowId, payload, identity: caller }) => {
@@ -156,6 +193,7 @@ test('CloudFlow.TriggerAsync answers the trigger pipeline envelope, including th
   assert.deepEqual([refused.StatusCode, refused.IsSuccessStatusCode], [403, false]);
 });
 
+// @test-kind security: server code can reach only declared loopback hosts
 test('HttpClient reaches a declared loopback rewrite and refuses any other host with the envelope; Logger writes with the operation id', async (t) => {
   const server = http.createServer((req, res) => {
     let body = '';

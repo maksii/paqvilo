@@ -5,6 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { Readable } from 'node:stream';
 import { createTraceStore } from '../lib/trace-store.mjs';
 import { tracedFetch } from '../lib/trace-hosts.mjs';
 
@@ -138,4 +139,270 @@ test('a fetch implementation that throws synchronously fails the span and rethro
   assert.equal(await tracedFetch(traces, { url: 'http://127.0.0.1/x', fetch: async () => answer }), answer);
   assert.deepEqual(await answer.json(), { ok: true }, 'the body was read from a clone');
   assert.deepEqual(traces.spans({ kind: 'http-out' }).items[0].output.body, { ok: true });
+});
+
+function closeServerAfter(t, server) {
+  t.after(() => {
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
+}
+
+// @test-kind contract: at level full the response returns at its headers, while its body is still open (ADM-5)
+test('at level full tracedFetch returns while the body is open, and the caller then reads the whole body', async (t) => {
+  let release;
+  const released = new Promise((resolve) => {
+    release = resolve;
+  });
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.write('first ');
+    released.then(() => res.end('second'));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => {
+    release();
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
+  const traces = createTraceStore({ settings: { level: 'full' } });
+  const ended = nextSpanEnd(traces);
+  // The gate: the body is held open until the test releases it, so an await that waits for the body never returns.
+  const response = await tracedFetch(traces, { url: `http://127.0.0.1:${server.address().port}/stream` });
+  assert.equal(response.status, 200);
+  release();
+  assert.equal(await response.text(), 'first second', 'the caller reads the whole body');
+  const span = await ended;
+  assert.equal(span.status, 'ok');
+  assert.equal(span.output.body, 'first second');
+});
+
+// @test-kind contract: a caller that cancels an open body ends the span as cancelled and releases the connection (ADM-5)
+test('a caller that cancels an open body ends its span as cancelled, and the connection closes', async (t) => {
+  let connectionClosed;
+  const closed = new Promise((resolve) => {
+    connectionClosed = resolve;
+  });
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.write('first ');
+    res.on('close', () => connectionClosed());
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  closeServerAfter(t, server);
+  const traces = createTraceStore({ settings: { level: 'full' } });
+  const ended = nextSpanEnd(traces);
+  const response = await tracedFetch(traces, { url: `http://127.0.0.1:${server.address().port}/held` });
+  // The body stays open: only the caller's cancel can end it.
+  await response.body.cancel('the caller stopped reading');
+  await closed;
+  const span = await ended;
+  assert.equal(span.status, 'cancelled');
+  assert.equal(span.output.status, 200);
+});
+
+// @test-kind contract: an aborted request ends its span as cancelled (ADM-5)
+test('an aborted request ends its span as cancelled', async (t) => {
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.write('first ');
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  closeServerAfter(t, server);
+  const traces = createTraceStore({ settings: { level: 'full' } });
+  const ended = nextSpanEnd(traces);
+  const controller = new AbortController();
+  const response = await tracedFetch(traces, {
+    url: `http://127.0.0.1:${server.address().port}/held`,
+    init: { signal: controller.signal },
+  });
+  controller.abort();
+  await assert.rejects(response.text());
+  const span = await ended;
+  assert.equal(span.status, 'cancelled');
+});
+
+// A loopback server that answers text/plain with its first chunk and holds the body open. `closed` settles when the
+// server sees the connection close.
+async function heldServer(t) {
+  let connectionClosed;
+  const closed = new Promise((resolve) => {
+    connectionClosed = resolve;
+  });
+  const server = http.createServer((req, res) => {
+    req.on('close', () => connectionClosed());
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.write('first ');
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  closeServerAfter(t, server);
+  return { url: `http://127.0.0.1:${server.address().port}/held`, closed };
+}
+
+// A loopback server that answers text/plain completely: 'first second' and the end.
+async function completeServer(t) {
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.write('first ');
+    res.end('second');
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  return `http://127.0.0.1:${server.address().port}/whole`;
+}
+
+function nextSpanEnd(traces) {
+  return new Promise((resolve) => {
+    const stop = traces.subscribe(
+      ({ span }) => {
+        stop();
+        resolve(span);
+      },
+      { events: ['span-end'] },
+    );
+  });
+}
+
+// Unhandled rejections seen while the test runs: the listener is attached now and removed when the test ends. The
+// returned function yields them after one event-loop turn, when a rejection would have been reported.
+function collectUnhandled(t) {
+  const reasons = [];
+  const listener = (reason) => reasons.push(reason);
+  process.on('unhandledRejection', listener);
+  t.after(() => process.off('unhandledRejection', listener));
+  return async () => {
+    await new Promise((resolve) => setImmediate(resolve));
+    return reasons;
+  };
+}
+
+// @test-kind contract: breaking out of for await over the caller's body is a caller cancel (ADM-5 cancel paths)
+test('breaking out of for await over the body ends the span as cancelled and closes the connection', async (t) => {
+  const unhandled = collectUnhandled(t);
+  const held = await heldServer(t);
+  const traces = createTraceStore({ settings: { level: 'full' } });
+  const ended = nextSpanEnd(traces);
+  const response = await tracedFetch(traces, { url: held.url });
+  const chunks = [];
+  for await (const chunk of response.body) {
+    chunks.push(Buffer.from(chunk).toString('utf8'));
+    break;
+  }
+  assert.deepEqual(chunks, ['first ']);
+  await held.closed;
+  assert.equal((await ended).status, 'cancelled');
+  assert.deepEqual(await unhandled(), []);
+});
+
+// @test-kind contract: a pipe whose destination errors cancels the caller's body (ADM-5 cancel paths)
+test('a pipe whose destination errors on its first write ends the span as cancelled', async (t) => {
+  const unhandled = collectUnhandled(t);
+  const held = await heldServer(t);
+  const traces = createTraceStore({ settings: { level: 'full' } });
+  const ended = nextSpanEnd(traces);
+  const response = await tracedFetch(traces, { url: held.url });
+  const refusing = new WritableStream({
+    write() {
+      throw new Error('The destination refused the chunk.');
+    },
+  });
+  await assert.rejects(response.body.pipeTo(refusing), /refused the chunk/);
+  await held.closed;
+  assert.equal((await ended).status, 'cancelled');
+  assert.deepEqual(await unhandled(), []);
+});
+
+// @test-kind contract: a pipe aborted by its signal cancels the caller's body (ADM-5 cancel paths)
+test('a pipe aborted by its signal ends the span as cancelled', async (t) => {
+  const unhandled = collectUnhandled(t);
+  const held = await heldServer(t);
+  const traces = createTraceStore({ settings: { level: 'full' } });
+  const ended = nextSpanEnd(traces);
+  const response = await tracedFetch(traces, { url: held.url });
+  const controller = new AbortController();
+  const firstWrite = Promise.withResolvers();
+  const sink = new WritableStream({
+    write() {
+      firstWrite.resolve();
+    },
+  });
+  const piped = response.body.pipeTo(sink, { signal: controller.signal });
+  await firstWrite.promise;
+  controller.abort();
+  await assert.rejects(piped, { name: 'AbortError' });
+  await held.closed;
+  assert.equal((await ended).status, 'cancelled');
+  assert.deepEqual(await unhandled(), []);
+});
+
+// @test-kind contract: destroying a Node readable adapted from the caller's body cancels it (ADM-5 cancel paths)
+test('destroying a Node readable made from the body ends the span as cancelled', async (t) => {
+  const unhandled = collectUnhandled(t);
+  const held = await heldServer(t);
+  const traces = createTraceStore({ settings: { level: 'full' } });
+  const ended = nextSpanEnd(traces);
+  const response = await tracedFetch(traces, { url: held.url });
+  const readable = Readable.fromWeb(response.body);
+  const firstData = Promise.withResolvers();
+  readable.once('data', (chunk) => firstData.resolve(chunk));
+  assert.equal(Buffer.from(await firstData.promise).toString('utf8'), 'first ');
+  readable.destroy();
+  await held.closed;
+  assert.equal((await ended).status, 'cancelled');
+  assert.deepEqual(await unhandled(), []);
+});
+
+// @test-kind contract: a caller that reads the whole body through text() gets the captured body on an ok span (ADM-5)
+test('a caller that reads the whole body through text() ends the span ok with the captured body', async (t) => {
+  const url = await completeServer(t);
+  const traces = createTraceStore({ settings: { level: 'full' } });
+  const ended = nextSpanEnd(traces);
+  const response = await tracedFetch(traces, { url });
+  assert.equal(await response.text(), 'first second');
+  assert.equal(response.bodyUsed, true);
+  const span = await ended;
+  assert.equal(span.status, 'ok');
+  assert.equal(span.output.body, 'first second');
+});
+
+// @test-kind contract: a caller that reads the whole body through a reader or for await ends the span ok (ADM-5)
+test('a caller that reads the whole body through a reader or for await ends the span ok', async (t) => {
+  const url = await completeServer(t);
+  const traces = createTraceStore({ settings: { level: 'full' } });
+  const ended = nextSpanEnd(traces);
+  const response = await tracedFetch(traces, { url });
+  const reader = response.body.getReader();
+  const parts = [];
+  let next = await reader.read();
+  while (!next.done) {
+    parts.push(Buffer.from(next.value).toString('utf8'));
+    next = await reader.read();
+  }
+  assert.equal(parts.join(''), 'first second');
+  assert.equal((await ended).status, 'ok');
+
+  const again = createTraceStore({ settings: { level: 'full' } });
+  const endedAgain = nextSpanEnd(again);
+  const second = await tracedFetch(again, { url });
+  let text = '';
+  for await (const chunk of second.body) text += Buffer.from(chunk).toString('utf8');
+  assert.equal(text, 'first second');
+  const span = await endedAgain;
+  assert.equal(span.status, 'ok');
+  assert.equal(span.output.body, 'first second');
+});
+
+// @test-kind contract: a clone the caller takes does not break the capture, and both responses read the whole body (ADM-5)
+test('a caller clone is read in full next to the original, and the span ends ok once', async (t) => {
+  const url = await completeServer(t);
+  const traces = createTraceStore({ settings: { level: 'full' } });
+  const ended = nextSpanEnd(traces);
+  const response = await tracedFetch(traces, { url });
+  const copy = response.clone();
+  assert.equal(await copy.text(), 'first second');
+  assert.equal(await response.text(), 'first second');
+  const span = await ended;
+  assert.equal(span.status, 'ok');
+  assert.equal(span.output.body, 'first second');
+  assert.equal(traces.spans({ kind: 'http-out' }).items.length, 1);
 });

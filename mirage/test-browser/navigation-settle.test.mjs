@@ -1,3 +1,4 @@
+// @test-kind contract: a document navigation waits for the replaced page's in-flight script writes, bounded by the settle timeout
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';

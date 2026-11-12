@@ -31,6 +31,8 @@ function stop(message, owner = null) {
   for (const timer of active.values()) clearTimeout(timer);
   child.kill();
   if (message) for (const id of active.keys()) send({ ...(owner && id !== owner ? crash : message), invocationId: id });
+  // Session-level: the host is gone for the pool even when no invocation was in flight.
+  send({ kind: 'host-exited', hostExitCode: child.exitCode });
   port.close();
 }
 child.on('spawn', () => send({ kind: 'owned-child', pid: child.pid }));

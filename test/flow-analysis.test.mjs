@@ -457,3 +457,40 @@ test('wide and deeply nested action trees retain incomplete coverage instead of 
   for (let index = 0; index < 80; index++) nested = { Child: scope(nested) };
   assert.ok(review([entry('Workflows/deep.json', definition(nested))]).ids.includes('FLOW-SOURCE-003'));
 });
+
+test('run-only user connections exported with runtimeSource invoker are invoker connections, embedded ones are not', () => {
+  // Microsoft Learn ("Share a cloud flow", FAQ): exported run-only-user connections have a RuntimeSource value of invoker.
+  const flow = (reference) =>
+    entry('Workflows/invoker.json', {
+      properties: {
+        definition: { triggers: { request: { type: 'Request', kind: 'Http' } }, actions: {} },
+        connectionReferences: { invented: reference },
+      },
+    });
+  assert.ok(review([flow({ runtimeSource: 'invoker' })]).ids.includes('FLOW-CONNECTION-003'));
+  assert.ok(review([flow({ runtimeSource: 'Invoker' })]).ids.includes('FLOW-CONNECTION-003'));
+  assert.ok(review([flow({ source: 'Invoker' })]).ids.includes('FLOW-CONNECTION-003'));
+  assert.equal(review([flow({ runtimeSource: 'embedded' })]).ids.includes('FLOW-CONNECTION-003'), false);
+});
+
+// @test-kind security: An interpolated credential is dynamic; only a literal credential is reported as a literal secret.
+test('credential values with interpolated expressions are dynamic and literal credentials stay reported', () => {
+  const credential = (value, secureData) => ({
+    type: 'Http',
+    inputs: { uri: 'https://invented.invalid', headers: { Authorization: value } },
+    ...(secureData ? { runtimeConfiguration: { secureData: { properties: secureData } } } : {}),
+  });
+  const secured = review([
+    entry('Workflows/interpolated.json', definition({ Call: credential("Bearer @{outputs('Token')}", ['inputs']) })),
+  ]);
+  assert.equal(secured.ids.includes('FLOW-SEC-002'), false);
+  assert.equal(secured.ids.includes('FLOW-SEC-003'), false);
+  const unsecured = review([
+    entry('Workflows/interpolated.json', definition({ Call: credential("Bearer @{outputs('Token')}") })),
+  ]);
+  assert.equal(unsecured.ids.includes('FLOW-SEC-002'), false);
+  assert.equal(unsecured.ids.filter((id) => id === 'FLOW-SEC-003').length, 1);
+  const literal = review([entry('Workflows/literal.json', definition({ Call: credential('Bearer abc') }))]);
+  assert.equal(literal.ids.includes('FLOW-SEC-002'), true);
+  assert.ok(!JSON.stringify(literal.findings).includes('Bearer abc'));
+});

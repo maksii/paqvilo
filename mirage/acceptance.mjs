@@ -7,12 +7,14 @@ import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseToolArgs } from './tool-options.mjs';
+import { assertToolOptions } from './tool-registry.mjs';
 import { createCapabilityRegistry } from './lib/capability-registry.mjs';
 import { chromium } from 'playwright-core';
 import { windowsLaunchOptions } from './lib/browser-launch.mjs';
 import { editRichText, assertRichText } from './lib/richtext-actions.mjs';
 import { reconcileSupersededRead, correlateNetworkConsole } from './lib/request-evidence.mjs';
 import { auditQuery } from './lib/audit-log.mjs';
+import { redactUrl } from './parity-suite.mjs';
 import {
   awaitWritesBeforeDocument,
   DOCUMENT_REQUEST_PATTERN,
@@ -30,9 +32,11 @@ const safeUrl = (value) => {
     return '<invalid URL>';
   }
 };
-const failureUrl = (value) => {
+const failureUrl = (value, { isLive = false } = {}) => {
   try {
     const url = new URL(value);
+    // Live portal URLs keep the path and parameter names only; the fragment never reaches evidence.
+    if (isLive) return redactUrl(url.origin + url.pathname + url.search);
     const query = new URLSearchParams(auditQuery(url.searchParams));
     return url.origin + url.pathname + (url.search ? '?' + query.toString() : '');
   } catch {
@@ -50,6 +54,83 @@ const loopback = (value) => {
   if (!LOOPBACK_HOSTS.includes(url.hostname) || url.username || url.password)
     throw new Error('Local simulator and browser debugging addresses must use loopback without credentials.');
   return url;
+};
+// Each run writes into its own folder under the output root; an existing run folder is never reused.
+const createRunDirectory = async (outputRoot, startedAt) => {
+  await fs.mkdir(outputRoot, { recursive: true });
+  const runDir = path.join(outputRoot, startedAt.toISOString().replace(/[:.]/g, ''));
+  try {
+    await fs.mkdir(runDir);
+  } catch (error) {
+    if (error.code === 'EEXIST')
+      throw new Error(`Evidence folder ${runDir} already exists; choose another --output.`, { cause: error });
+    throw error;
+  }
+  return runDir;
+};
+// Live flows: the flow's request guard is a context route, so it sees the first request of a popup, which Playwright
+// reports before the popup's page event. The flow's own page keeps its page route and falls through here. A page the
+// flow did not open is released once its opener is known; a page whose opener is still unknown stays guarded. The
+// returned stop function removes the route and closes the pages it opened.
+const pageOfRoute = (route) => {
+  try {
+    return route.request().frame().page();
+  } catch {
+    return null;
+  }
+};
+// A route answer fails with a closed-target error when its page closed while the request was in flight. Only that failure
+// is ignored, so an error in the guard itself still rejects.
+const answerRoute = (action) =>
+  Promise.resolve(action).catch((error) => {
+    if (!/has been closed|Target closed|Target page, context or browser/i.test(String(error?.message ?? error))) {
+      throw error;
+    }
+  });
+const guardOpenedPages = async (context, owner, guard, onOpened) => {
+  const guarded = new Set([owner]);
+  const unrelated = new Set();
+  const guardFlowRequest = (route) => {
+    const page = pageOfRoute(route);
+    if (page === owner || unrelated.has(page)) return answerRoute(route.fallback());
+    return answerRoute(guard(route));
+  };
+  const onPage = async (popup) => {
+    const opener = await popup.opener().catch(() => undefined);
+    if (opener === null || unrelated.has(opener)) {
+      unrelated.add(popup);
+      return;
+    }
+    if (!guarded.has(opener)) return;
+    guarded.add(popup);
+    onOpened(popup, opener);
+  };
+  context.on('page', onPage);
+  try {
+    await context.route('**/*', guardFlowRequest);
+  } catch (error) {
+    context.off('page', onPage);
+    throw error;
+  }
+  return async () => {
+    context.off('page', onPage);
+    await context.unroute('**/*', guardFlowRequest).catch(() => {});
+    await Promise.all([...guarded].filter((page) => page !== owner).map((page) => page.close().catch(() => {})));
+  };
+};
+// The popup entry names its opener until the popup first navigates to a page; a popup that closes first keeps that label.
+// Each listener is removed when its popup closes, and the run closes every popup it guarded.
+const recordOpenedPopup = (observation, popup, opener) => {
+  const entry = { url: `opened by ${safeUrl(opener.url())}` };
+  const onNavigated = (frame) => {
+    if (frame !== popup.mainFrame()) return;
+    entry.url = safeUrl(frame.url());
+    popup.off('framenavigated', onNavigated);
+  };
+  popup.on('framenavigated', onNavigated);
+  popup.once('close', () => popup.off('framenavigated', onNavigated));
+  observation.popups ??= [];
+  observation.popups.push(entry);
 };
 const expand = (value, variables) => {
   if (Array.isArray(value)) return value.map((item) => expand(item, variables));
@@ -130,8 +211,8 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
   )
     throw new Error('Live comparison requires a credential-free HTTPS origin.');
   if (!Array.isArray(flows) || !flows.length) throw new Error('Provide explicit acceptance flows.');
-  outputDir = path.resolve(outputDir);
-  await fs.mkdir(outputDir, { recursive: true });
+  const startedAt = new Date();
+  outputDir = await createRunDirectory(path.resolve(outputDir), startedAt);
   let observedIdentity;
   const readState = async (full = false) => {
     const response = await fetch(new URL('/__sim/api/state' + (full ? '' : '?summary=1'), local.origin), {
@@ -156,7 +237,8 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
   if (!state.status?.sourceFingerprint || !state.status?.implementationFingerprint)
     throw new Error('Acceptance requires the portal source and loaded mirage implementation fingerprints.');
   const result = {
-    time: new Date().toISOString(),
+    time: startedAt.toISOString(),
+    evidenceDirectory: outputDir,
     passed: false,
     sourceFingerprint: state.status?.sourceFingerprint,
     implementationFingerprint: state.status?.implementationFingerprint,
@@ -472,7 +554,7 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
           observation.consoleMessages.push({
             text: safeMessage(message.text()),
             argumentCount: message.args().length,
-            url: message.location().url ? failureUrl(message.location().url) : null,
+            url: message.location().url ? failureUrl(message.location().url, { isLive }) : null,
           });
         }
       });
@@ -509,7 +591,7 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
           kind: 'network',
           requestKey,
           method: request.method(),
-          url: failureUrl(request.url()),
+          url: failureUrl(request.url(), { isLive }),
           status: record?.status,
           error: safeMessage(request.failure()?.errorText),
           errorText: safeMessage(request.failure()?.errorText),
@@ -535,7 +617,7 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
           observation.noContentNavigations ??= [];
           observation.noContentNavigations.push({
             method: response.request().method(),
-            url: failureUrl(response.url()),
+            url: failureUrl(response.url(), { isLive }),
             status: response.status(),
           });
         }
@@ -544,7 +626,7 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
             kind: 'http',
             requestKey: String(record?.order ?? ''),
             method: response.request().method(),
-            url: failureUrl(response.url()),
+            url: failureUrl(response.url(), { isLive }),
             status: response.status(),
           };
           observation.failedResponses.push(failure);
@@ -607,18 +689,24 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
         });
       // Live observations block every non-read request. Local flows are confined to loopback
       // by the owned browser's proxy (blocked requests are recorded when they fail).
-      if (isLive)
-        await page.route('**/*', (route) => {
+      let stopGuardingPages = null;
+      if (isLive) {
+        const guardRequest = (route) => {
           const request = route.request();
           if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method())) {
             observation.blockedRequests.push({
               method: request.method(),
               url: safeUrl(request.url()),
             });
-            return route.abort('blockedbyclient');
+            return answerRoute(route.abort('blockedbyclient'));
           }
-          return route.continue();
-        });
+          return answerRoute(route.continue());
+        };
+        await page.route('**/*', guardRequest);
+        stopGuardingPages = await guardOpenedPages(context, page, guardRequest, (popup, opener) =>
+          recordOpenedPopup(observation, popup, opener),
+        );
+      }
       const capture = async (label) => {
         const file = path.join(outputDir, `${index + 1}-${flow.name.replace(/[^a-z0-9]/gi, '-')}-${label}.png`);
         await page.screenshot({
@@ -952,7 +1040,7 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
             observation.browserRequestConsole.push({ console: message, path: own.path, status });
           } else observation.unexpectedConsoleErrors.push(message);
         }
-        const failures = ['pageErrors', 'blockedRequests'].filter((key) => observation[key].length);
+        const failures = ['pageErrors', 'blockedRequests', 'popups'].filter((key) => observation[key]?.length);
         if (observation.unexpectedConsoleErrors.length) failures.push('consoleErrors');
         if (unexpectedRequests.length) failures.push('failedRequests');
         if (unexpectedResponses.some((response) => !(flow.allowedHttpStatuses ?? []).includes(response.status)))
@@ -991,6 +1079,7 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
           } catch (error) {
             observation.auditError = safeMessage(error.message);
           }
+        await stopGuardingPages?.();
         await page.close();
       }
     }
@@ -1055,9 +1144,12 @@ function throwIfActiveRequests(active) {
     );
 }
 
+export const __testing = { failureUrl, guardOpenedPages, createRunDirectory, recordOpenedPopup };
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const values = parseToolArgs('acceptance', process.argv.slice(2));
+    assertToolOptions('acceptance', values, ['local', 'origin', 'cdp']);
     const flows = JSON.parse(await fs.readFile(values.plan, 'utf8'));
     const result = await runAcceptance({
       localUrl: values.local,

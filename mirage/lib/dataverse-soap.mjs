@@ -25,12 +25,13 @@ import {
   parseEnvelope,
   assertSoapQueryProperties,
   decodeColumnSet,
+  decodeDeclaredEntity,
 } from './dataverse-soap-xml.mjs';
 import { fromQueryByAttribute, toFetchXml, toSdkQuery, toSdkValue } from './dataverse-soap-query.mjs';
 import { dataverseError, parseDataverseRoute, parsePrefer } from './dataverse-odata.mjs';
 import { privilegeDeniedError } from './dataverse-security.mjs';
 import { fieldKind } from './dataverse-values.mjs';
-import { isExactNumeric } from './exact-numeric.mjs';
+import { decimalParts, isExactNumeric, parseNumericLiteral } from './exact-numeric.mjs';
 import { FORMATTED } from './webapi-format.mjs';
 import { metadataRequests } from './dataverse-soap-metadata.mjs';
 import { relationshipsOf } from './dataverse-standard.mjs';
@@ -57,6 +58,26 @@ const BODY_OPERATIONS = new Set([
   'Disassociate',
 ]);
 const BODY_RESULTS = { Create: 'CreateResult', Retrieve: 'RetrieveResult', RetrieveMultiple: 'RetrieveMultipleResult' };
+// Every message runRequestCore answers by name. The metadata messages are answered by dataverse-soap-metadata.mjs.
+export const SOAP_MESSAGES = Object.freeze([
+  'Create',
+  'Retrieve',
+  'RetrieveMultiple',
+  'Update',
+  'Delete',
+  'Associate',
+  'Disassociate',
+  'Upsert',
+  'Assign',
+  'SetState',
+  'WhoAmI',
+  'RetrieveVersion',
+  'RetrieveCurrentOrganization',
+  'ExecuteMultiple',
+  'ExecuteTransaction',
+]);
+// Messages whose Target is the declared Entity member (an untyped one is decoded by its shape).
+const ENTITY_TARGET_MESSAGES = new Set(['Create', 'Update']);
 const LOOKUP_NAME = '@Microsoft.Dynamics.CRM.lookuplogicalname';
 const ANNOTATION = (term) => `@Microsoft.Dynamics.CRM.${term}`;
 const INT_MIN = -2147483648;
@@ -139,13 +160,17 @@ function requestOf(node) {
   if (requestId !== undefined && !GUID.test(requestId))
     throw invalid('OrganizationRequest.RequestId requires a GUID value.');
   const type = typeKey(node);
-  const params = new Map();
-  for (const pair of kids(node, NS.a, 'Parameters'))
-    params.set(kidText(pair, NS.b, 'key'), valueOf(kid(pair, NS.b, 'value')));
   const name =
     type?.name === 'OrganizationRequest'
       ? kidText(node, NS.a, 'RequestName')
       : (type?.name ?? node.name).replace(/Request$/, '');
+  const params = new Map();
+  for (const pair of kids(node, NS.a, 'Parameters')) {
+    const key = kidText(pair, NS.b, 'key');
+    const value = kid(pair, NS.b, 'value');
+    const declaredEntity = key === 'Target' && ENTITY_TARGET_MESSAGES.has(name);
+    params.set(key, declaredEntity ? decodeDeclaredEntity(value) : valueOf(value));
+  }
   return { name, params, requestId };
 }
 
@@ -161,7 +186,7 @@ function bodyRequest(name, node) {
   switch (name) {
     case 'Create':
     case 'Update':
-      params.set('Target', get('entity'));
+      params.set('Target', decodeDeclaredEntity(node.children.find((child) => child.name === 'entity')));
       break;
     case 'Retrieve':
       params.set('Target', reference(get('entityName'), get('id')));
@@ -422,6 +447,13 @@ function lookupNav(store, mapping, attribute) {
   );
 }
 
+// A decimal or Money lexeme is parsed as the Web API parses its JSON number: no digit goes through Number.
+function exactDecimal(text, name) {
+  if (text == null) return null;
+  if (!decimalParts(text)) throw invalid(`The value '${text}' is not a valid decimal for ${name}.`);
+  return parseNumericLiteral(text);
+}
+
 function jsonValue(v, name) {
   switch (v.type) {
     case 'string':
@@ -429,10 +461,11 @@ function jsonValue(v, name) {
     case 'boolean':
     case 'base64':
       return v.value;
-    case 'int':
     case 'decimal':
-    case 'double':
     case 'Money':
+      return exactDecimal(v.value, name);
+    case 'int':
+    case 'double':
     case 'OptionSetValue':
       return num(v.value);
     case 'long':
@@ -494,10 +527,11 @@ function typedNumber(value, kind) {
 function typedValue(s, logical, key, value) {
   if (value == null) return null;
   if (isExactNumeric(value)) {
+    // The lexeme keeps the scale the Web API JSON shows for the same value (Money's four digits).
     return {
       type:
         fieldKind(s.api.store.fieldDefinition(logical, key, s.api.metadataFields)) === 'money' ? 'Money' : 'decimal',
-      value: value.value,
+      value: value.lexeme ?? value.value,
     };
   }
   const kind = fieldKind(s.api.store.fieldDefinition(logical, key, s.api.metadataFields));
@@ -847,6 +881,47 @@ function validateRequestInputs(name, params, inputs, optional) {
         throw new DataError(`Unsupported SOAP ${name} request parameter: ${key}`, 501, 'LocalSoapInputUnsupported');
 }
 
+// The inputs each message cannot run without. A Retrieve without a ColumnSet reads every column.
+// A string entry is an input the message cannot run without; an array entry is one of several names it can use instead.
+// The metadata reads are listed because their handlers would otherwise answer a not-found fault for an empty name.
+const REQUIRED_INPUTS = {
+  Create: ['Target'],
+  Retrieve: ['Target'],
+  RetrieveMultiple: ['Query'],
+  Update: ['Target'],
+  Delete: ['Target'],
+  Associate: ['Target', 'Relationship', 'RelatedEntities'],
+  Disassociate: ['Target', 'Relationship', 'RelatedEntities'],
+  Upsert: ['Target'],
+  Assign: ['Target', 'Assignee'],
+  SetState: ['EntityMoniker', 'State'],
+  ExecuteMultiple: ['Requests'],
+  ExecuteTransaction: ['Requests'],
+  RetrieveEntity: [['LogicalName', 'MetadataId']],
+  RetrieveAttribute: ['EntityLogicalName', ['LogicalName', 'MetadataId']],
+  RetrieveOptionSet: [['Name', 'MetadataId']],
+  RetrieveRelationship: [['Name', 'MetadataId']],
+};
+// The type a present required input must carry; another type is the same fault as a missing one.
+const REQUIRED_TYPES = {
+  Create: { Target: 'Entity' },
+  Retrieve: { Target: 'EntityReference' },
+  RetrieveMultiple: { Query: ['QueryExpression', 'QueryByAttribute', 'Fetch'] },
+};
+
+function validateRequiredInputs(name, params) {
+  for (const entry of REQUIRED_INPUTS[name] ?? []) {
+    const keys = Array.isArray(entry) ? entry : [entry];
+    if (!keys.some((key) => params.get(key) != null))
+      throw invalid(`The SOAP ${name} request requires the parameter ${keys.join(' or ')}.`);
+  }
+  for (const [key, types] of Object.entries(REQUIRED_TYPES[name] ?? {})) {
+    const allowed = [types].flat();
+    if (!allowed.includes(params.get(key)?.type))
+      throw invalid(`The SOAP ${name} request requires the parameter ${key} as ${allowed.join(' or ')}.`);
+  }
+}
+
 function validateSimpleSettings(params) {
   for (const key of ['partitionId', 'SessionToken'])
     if (params.get(key) != null && params.get(key).type !== 'string') throw invalid(`${key} requires a String value.`);
@@ -890,6 +965,7 @@ function prepareRequest(base, name, params) {
     ...(['Retrieve', 'RetrieveMultiple'].includes(name) ? ['UnMaskedData'] : []),
   ]);
   validateRequestInputs(name, params, inputs, optional);
+  validateRequiredInputs(name, params);
   validateSimpleSettings(params);
   const suppression = params.get('SuppressDuplicateDetection');
   validateSuppression(name, params, suppression);

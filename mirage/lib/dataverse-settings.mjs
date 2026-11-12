@@ -57,6 +57,7 @@ const APPLICATION_KEYS = [
   'roles',
   'publicClient',
   'redirectUris',
+  'spaRedirectUris',
   'allowedGrants',
   'federatedCredentials',
 ];
@@ -146,6 +147,22 @@ function httpUrl(value, label) {
   throw new Error(`${label} must be an http(s) URL`);
 }
 
+// Single-page application redirect URIs: http(s) URLs without a fragment or a wildcard. Only a public client has them,
+// since a single-page application holds no secret. The administration routes validate with this function too.
+export function spaRedirectUris(value, publicClient, label = 'spaRedirectUris') {
+  const uris = value === undefined ? [] : value;
+  if (!Array.isArray(uris)) throw new Error(`${label} must be an array of http(s) URLs`);
+  uris.forEach((uri, index) => {
+    const item = `${label}[${index}]`;
+    if (typeof uri !== 'string') throw new Error(`${item} must be an http(s) URL`);
+    httpUrl(uri, item);
+    if (uri.includes('#')) throw new Error(`${item} must not contain a fragment`);
+    if (uri.includes('*')) throw new Error(`${item} must not contain a wildcard`);
+  });
+  if (uris.length && !publicClient) throw new Error(`${label} requires publicClient: true`);
+  return [...uris];
+}
+
 function application(value, label) {
   plainObject(value, label);
   for (const key of ['secret', 'clientSecret'])
@@ -164,6 +181,8 @@ function application(value, label) {
     if (!['http:', 'https:'].includes(url.protocol))
       throw new Error(`${label}.redirectUris[${index}] must be an http(s) URL`);
   });
+  const publicClient = boolean(value.publicClient, `${label}.publicClient`, false);
+  const spaRedirects = spaRedirectUris(value.spaRedirectUris, publicClient, `${label}.spaRedirectUris`);
   const allowedGrants = value.allowedGrants === undefined ? [...GRANTS] : value.allowedGrants;
   if (!Array.isArray(allowedGrants) || allowedGrants.some((grant) => grantName(grant) === null))
     throw new Error(`${label}.allowedGrants must be a subset of ${GRANTS.join(', ')}`);
@@ -180,8 +199,9 @@ function application(value, label) {
     secretEnvironmentVariable,
     // Entra application users hold no roles until they are assigned, so an application without roles has none.
     roles: textList(value.roles, `${label}.roles`, []),
-    publicClient: boolean(value.publicClient, `${label}.publicClient`, false),
+    publicClient,
     redirectUris: [...redirectUris],
+    spaRedirectUris: spaRedirects,
     allowedGrants: [...new Set(allowedGrants.map(grantName))],
     federatedCredentials: federated.map((item, index) =>
       federatedCredential(item, `${label}.federatedCredentials[${index}]`),

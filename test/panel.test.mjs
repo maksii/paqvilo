@@ -462,42 +462,35 @@ test('a paused override shows the online file until it is switched back on', asy
 });
 
 // @test-kind contract: a panel request waits for the actual browser answer while script-source inspection is held
-test(
-  'a panel request waits for the actual browser answer while script-source inspection is held',
-  { timeout: 60_000 },
-  async (t) => {
-    const { b, tab, session, request } = await setup();
-    t.mock.timers.enable({ apis: ['setTimeout'] });
-    const held = Promise.withResolvers();
-    const entered = Promise.withResolvers();
-    t.after(() => held.resolve());
-    const sourceIndexFor = session.sourceInspector.sourceIndexFor.bind(session.sourceInspector);
-    t.mock.method(session.sourceInspector, 'sourceIndexFor', async (...args) => {
-      entered.resolve();
-      await held.promise;
-      return sourceIndexFor(...args);
-    });
-    let completed = false;
-    const answer = request(tab, 'held-script', `${ORIGIN}/scripts/app.js`, { type: 'Script' }).then((answers) => {
-      completed = true;
-      return answers;
-    });
-    await entered.promise;
-    // Reproduce the old fixed wait without allowing the asynchronous proof to finish.
-    t.mock.timers.tick(30);
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(completed, false, 'starting asynchronous source inspection is not a browser answer');
-    assert.deepEqual(b.answers('held-script'), []);
-    held.resolve();
-    const answers = await answer;
-    assert.equal(answers.length, 1);
-    assert.equal(answers[0].method, 'Fetch.fulfillRequest');
-    assert.equal(
-      Buffer.from(answers[0].body, 'base64').toString(),
-      fs.readFileSync(fx.file('web-files/app.js'), 'utf8'),
-    );
-  },
-);
+test('a panel request waits for the actual browser answer while script-source inspection is held', async (t) => {
+  const { b, tab, session, request } = await setup();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const held = Promise.withResolvers();
+  const entered = Promise.withResolvers();
+  t.after(() => held.resolve());
+  const sourceIndexFor = session.sourceInspector.sourceIndexFor.bind(session.sourceInspector);
+  t.mock.method(session.sourceInspector, 'sourceIndexFor', async (...args) => {
+    entered.resolve();
+    await held.promise;
+    return sourceIndexFor(...args);
+  });
+  let completed = false;
+  const answer = request(tab, 'held-script', `${ORIGIN}/scripts/app.js`, { type: 'Script' }).then((answers) => {
+    completed = true;
+    return answers;
+  });
+  await entered.promise;
+  // Reproduce the old fixed wait without allowing the asynchronous proof to finish.
+  t.mock.timers.tick(30);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(completed, false, 'starting asynchronous source inspection is not a browser answer');
+  assert.deepEqual(b.answers('held-script'), []);
+  held.resolve();
+  const answers = await answer;
+  assert.equal(answers.length, 1);
+  assert.equal(answers[0].method, 'Fetch.fulfillRequest');
+  assert.equal(Buffer.from(answers[0].body, 'base64').toString(), fs.readFileSync(fx.file('web-files/app.js'), 'utf8'));
+});
 
 // @test-kind contract: online mode overrides nothing, and the panel still answers
 test('online mode overrides nothing, and the panel still answers', async () => {
@@ -847,6 +840,32 @@ test('Mirage inspections of one tab coalesce while a request is running', async 
     'one running request plus one rerun',
   );
   assert.equal(panel.stateFor(tab.page).mirage.active, true);
+});
+
+// @test-kind contract: a runtime read that fails every immediate attempt must be read again by the next navigation, not stay inactive
+test('a Mirage runtime read that fails every immediate attempt is read again by the next navigation', async () => {
+  const { b, tab, session } = await setup();
+  session.cfg.mirage = true;
+  fakeMirage(b, { report: { path: '/scripts', page: null } });
+  const get = b.context.request.get;
+  let failing = true;
+  let statusReads = 0;
+  b.context.request.get = async (url, options) => {
+    if (failing && String(url).includes('/status')) {
+      statusReads += 1;
+      throw new Error('socket hang up');
+    }
+    return get(url, options);
+  };
+  const stored = drawn(tab.page, (state) => state.mirage?.active === false);
+  session.emit('hit', { page: tab.page, navigation: true });
+  await stored;
+  assert.equal(statusReads, 3, 'the immediate attempts all failed and stored an inactive runtime');
+  failing = false;
+  const recovered = drawn(tab.page, (state) => state.mirage?.active === true);
+  session.emit('hit', { page: tab.page, navigation: true });
+  await recovered;
+  assert.equal(statusReads, 3, 'the next navigation reached the status read without another failure');
 });
 
 // @test-kind contract: inspection summaries expose cold loading and clear progress after a failed metadata read

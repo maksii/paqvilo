@@ -13,6 +13,7 @@ import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { parseToolArgs } from './tool-options.mjs';
 import { fileURLToPath } from 'node:url';
 import { validateLivePath, decodePagingCookie } from './lib/live.mjs';
+import { fetchLocalState } from './lib/local-state-fetch.mjs';
 import {
   normalizeSemicolonWhitespace,
   replaceEmails,
@@ -262,13 +263,20 @@ function validateNotObservableRules(plan) {
 }
 
 function validateClassificationRules(plan) {
-  for (const rule of plan.classifications ?? [])
+  for (const rule of plan.classifications ?? []) {
     if (
       !DELTA_CLASSES.includes(rule.class) ||
       (rule.class === 'runtime-gap' && !rule.owner) ||
       typeof rule.note !== 'string'
     )
       throw new Error('Each classification needs a known class, a note, and an owner for runtime gaps.');
+    validateRuleKind(rule.kind);
+  }
+}
+
+function validateRuleKind(kind) {
+  if (kind === undefined || ruleRegex(kind) || DELTA_KINDS.includes(kind)) return;
+  throw new Error(`Classification kind ${String(kind)} is not a known delta kind.`);
 }
 
 function validateScenario(scenario, ids, denied) {
@@ -555,6 +563,23 @@ export function createRedactor({ corpus = null, key = randomBytes(32), revealSho
   };
 }
 
+const WORD_CHARACTER = /[\p{L}\p{N}_]/u;
+
+/** Whether the match at [start, end) has no letter, digit or underscore on either side. */
+function atTokenBoundary(haystack, start, end) {
+  const before = [...haystack.slice(Math.max(0, start - 2), start)].at(-1) ?? '';
+  const after = [...haystack.slice(end, end + 2)][0] ?? '';
+  return !WORD_CHARACTER.test(before) && !WORD_CHARACTER.test(after);
+}
+
+/** The first occurrence of needle at token boundaries, or -1. */
+function indexAtTokenBoundary(haystack, needle) {
+  for (let index = haystack.indexOf(needle); index !== -1; index = haystack.indexOf(needle, index + 1)) {
+    if (atTokenBoundary(haystack, index, index + needle.length)) return index;
+  }
+  return -1;
+}
+
 /** Exported source text index used by the reveal policy. */
 export async function loadSourceCorpus(sourceDir, { maxFileBytes = 4 * 1024 * 1024 } = {}) {
   const parts = [];
@@ -595,13 +620,18 @@ export async function loadSourceCorpus(sourceDir, { maxFileBytes = 4 * 1024 * 10
     );
   const corpus = decode(parts.join('\n')).replace(/\s+/g, ' ');
   const lower = corpus.toLowerCase();
+  const found = new Map();
   return {
     size: corpus.length,
     files: parts.length,
     has(text) {
       const needle = String(text).replace(/\s+/g, ' ').trim();
       if (!needle) return false;
-      return corpus.includes(needle) || lower.includes(needle.toLowerCase());
+      if (!found.has(needle)) {
+        const exact = indexAtTokenBoundary(corpus, needle) !== -1;
+        found.set(needle, exact || indexAtTokenBoundary(lower, needle.toLowerCase()) !== -1);
+      }
+      return found.get(needle);
     },
   };
 }
@@ -880,6 +910,118 @@ function dynamicAlign(a, b, same) {
   }
   return pairs;
 }
+
+/** Every delta kind compareJson returns. compareNetwork emits each one under a `network-` prefix. */
+export const COMPARE_JSON_KINDS = Object.freeze([
+  'json-kind',
+  'error-keys',
+  'error-body-keys',
+  'error-code-shape',
+  'error-code',
+  'error-innererror',
+  'top-key-missing',
+  'top-key-extra',
+  'next-link',
+  'next-link-shape',
+  'paging-cookie',
+  'more-records',
+  'count',
+  'odata-count',
+  'total-record-count',
+  'emptiness',
+  'field-missing',
+  'field-type',
+  'field-extra',
+  'annotations',
+  'values',
+  'value-order',
+]);
+
+const COMPARER_DELTA_KINDS = [
+  'tag',
+  'repeat-count',
+  'node-type',
+  'text',
+  'visibility',
+  'class',
+  'control-state',
+  'opaque',
+  'attribute-missing',
+  'attribute-extra',
+  'attribute-value',
+  'missing',
+  'extra',
+  'text-missing',
+  'text-extra',
+  'json-kind',
+  'error-keys',
+  'error-body-keys',
+  'error-code-shape',
+  'error-code',
+  'error-innererror',
+  'top-key-missing',
+  'top-key-extra',
+  'next-link',
+  'next-link-shape',
+  'paging-cookie',
+  'more-records',
+  'count',
+  'odata-count',
+  'total-record-count',
+  'emptiness',
+  'field-missing',
+  'field-type',
+  'field-extra',
+  'annotations',
+  'values',
+  'value-order',
+  'csp-directive-missing',
+  'csp-directive-extra',
+  'csp-sources',
+  'header',
+  'status',
+  'client-object-missing',
+  'client-key-missing',
+  'client-key-extra',
+  'client-key-order',
+  'client-key-type',
+  'client-value-empty',
+  'body-title',
+  'bundle-order',
+  'hosted-resource-missing',
+  'hosted-resource-extra',
+  'bundle-missing',
+  'bundle-extra',
+  'network-missing',
+  'network-status',
+  'network-extra',
+  'page-unresponsive',
+  'expected-live-status',
+  'fact',
+  'probe-text',
+  'root-count',
+  'shell-unavailable',
+  'client-object-unavailable',
+  'webfile-drift',
+  'webfile-local-status',
+  'contract',
+  'conditional-status',
+  'redirect',
+  'probe-classification',
+  'probe-mask',
+  'probe-case',
+  'probe-limit',
+  'probe-class',
+  'probe-shape',
+  'probe-format',
+  'probe-roles',
+];
+
+/** Every delta kind the comparers below emit. A classification rule may name only these kinds or a /regex/. */
+export const DELTA_KINDS = Object.freeze([
+  ...COMPARER_DELTA_KINDS,
+  ...COMPARE_JSON_KINDS.map((kind) => `network-${kind}`),
+]);
 
 /** Structural deltas between a live (reference) tree and a local tree. */
 export function compareTrees(live, local, { maxDeltas = 250, ignoreText = false } = {}) {
@@ -1560,27 +1702,38 @@ export function checkPersonaAccess(roles, observations) {
 
 // ---- Delta classification
 
-const ruleText = (pattern, value) => {
+/** "/source/flags" is a regular expression; any other string is not. */
+function ruleRegex(pattern) {
+  if (typeof pattern !== 'string' || !/^\/.+\/[dgimsuy]*$/.test(pattern)) return null;
+  if (/^\/[\w.-]+\/[\w.-]+$/.test(pattern)) return null;
+  const end = pattern.lastIndexOf('/');
+  return new RegExp(pattern.slice(1, end), pattern.slice(end + 1));
+}
+
+/** Criterion check: a regex matches by pattern, any other string must satisfy `compare`. */
+function ruleMatches(pattern, value, compare) {
   if (pattern === undefined) return true;
   if (value === undefined || value === null) return false;
-  // "/source/flags" is a regular expression; any other string (including paths) is a substring.
-  if (typeof pattern === 'string' && /^\/.+\/[dgimsuy]*$/.test(pattern) && !/^\/[\w.-]+\/[\w.-]+$/.test(pattern)) {
-    const end = pattern.lastIndexOf('/');
-    return new RegExp(pattern.slice(1, end), pattern.slice(end + 1)).test(String(value));
-  }
-  return String(value).includes(pattern);
-};
+  const regex = ruleRegex(pattern);
+  if (regex) return regex.test(String(value));
+  return compare(String(value), pattern);
+}
+
+/** Scenario ids and delta kinds are identifiers: a plain string must equal them. */
+const exactRule = (pattern, value) => ruleMatches(pattern, value, (actual, expected) => actual === expected);
+/** Paths, attributes, fields and text are documented as substrings. */
+const substringRule = (pattern, value) => ruleMatches(pattern, value, (actual, expected) => actual.includes(expected));
 
 /** First matching rule wins. A rule matches when every supplied criterion matches. */
 export function classifyDelta(delta, scenarioId, rules = []) {
   for (const rule of rules) {
     if (
-      ruleText(rule.scenario, scenarioId) &&
-      ruleText(rule.kind, delta.kind) &&
-      ruleText(rule.path, delta.path) &&
-      ruleText(rule.attribute, delta.attribute) &&
-      ruleText(rule.field, delta.field) &&
-      ruleText(rule.text, typeof delta.text === 'string' ? delta.text : undefined) &&
+      exactRule(rule.scenario, scenarioId) &&
+      exactRule(rule.kind, delta.kind) &&
+      substringRule(rule.path, delta.path) &&
+      substringRule(rule.attribute, delta.attribute) &&
+      substringRule(rule.field, delta.field) &&
+      substringRule(rule.text, typeof delta.text === 'string' ? delta.text : undefined) &&
       (rule.dataDependent === undefined || Boolean(delta.dataDependent) === rule.dataDependent)
     )
       return { class: rule.class, owner: rule.owner ?? null, note: rule.note, rule: rule.id ?? null };
@@ -1719,6 +1872,8 @@ function pageFetch(options) {
   return (async () => {
     const headers = { accept: options.accept || '*/*' };
     if (options.prefer) headers.Prefer = options.prefer;
+    if (options.ifNoneMatch) headers['if-none-match'] = options.ifNoneMatch;
+    if (options.ifModifiedSince) headers['if-modified-since'] = options.ifModifiedSince;
     if (options.token) {
       const tokenResponse = await fetch('/_layout/tokenhtml', { cache: 'no-store', credentials: 'same-origin' });
       const html = await tokenResponse.text();
@@ -1979,6 +2134,10 @@ export function bodyShape(postData) {
   return { keys, guids };
 }
 
+// The default wait of the driver's remainingRoutes member. It is a diagnostic hook for tests and a hang guard: the wait
+// ends as soon as no popup route is held, and this bound only ends a wait that never sees that state.
+const REMAINING_ROUTES_HANG_GUARD_MS = 120_000;
+
 /**
  * Attached-browser driver over raw CDP. It creates and attaches only to its own tabs in the
  * browser's default context, so foreign tabs (including stalled ones) never block it.
@@ -2052,6 +2211,21 @@ export async function openCdpTabDriver({
   const owned = new Set();
   let browserContextId = null;
   const origins = [reference.origin];
+  // A popup attaches to the browser session, not to its opener's tab session, so the browser session auto-attaches
+  // new targets (waiting for a debugger first) while this driver has an open tab of its own. Popups opened by one of
+  // those tabs, transitively, are intercepted; every other target is resumed without interception.
+  const tabs = new Map();
+  const openTabs = new Set();
+  // Session id to { state, parent }: an owned popup has no parent, its frames and workers have the popup as parent.
+  const popupRoutes = new Map();
+  const setBrowserAutoAttach = (autoAttach) =>
+    send('Target.setAutoAttach', { autoAttach, waitForDebuggerOnStart: true, flatten: true });
+  listeners.add((message) => {
+    if (message.method === 'Target.attachedToTarget' && !message.sessionId)
+      attachBrowserTarget(message.params, { send, owned, tabs, popupRoutes });
+    else if (message.method === 'Target.detachedFromTarget') forgetPopupRoutes(popupRoutes, message.params.sessionId);
+    else if (popupRoutes.has(message.sessionId)) handlePopupMessage(message, { send, fulfil, origins, popupRoutes });
+  });
   async function openTab() {
     // An isolated context has its own cookie jar, but the toolkit's Playwright adopts its pages into
     // the toolkit's persistent context (pages of an unknown context fall back to the default one),
@@ -2085,10 +2259,26 @@ export async function openCdpTabDriver({
     const listener = (message) =>
       handleCdpMessage(message, { sessionId, state, send, fulfil, origins, referenceOrigin: reference.origin });
     listeners.add(listener);
+    // Cross-site frames and workers run their own requests, so they are intercepted too.
+    const popups = new Set();
+    tabs.set(targetId, { state, popups });
+    openTabs.add(targetId);
+    if (openTabs.size === 1) await setBrowserAutoAttach(true);
+    const childSessions = new Set();
+    const childListener = (message) => {
+      if (message.sessionId === sessionId && message.method === 'Target.attachedToTarget')
+        attachChildTarget(message.params, { send, onIntercepted: (child) => childSessions.add(child) });
+      else if (message.sessionId === sessionId && message.method === 'Target.detachedFromTarget')
+        childSessions.delete(message.params.sessionId);
+      else if (childSessions.has(message.sessionId) && message.method === 'Fetch.requestPaused')
+        handleCdpPausedRequest(message.params, { sessionId: message.sessionId, state, send, fulfil, origins });
+    };
+    listeners.add(childListener);
     await send('Page.enable', {}, sessionId);
     await send('Network.enable', {}, sessionId);
     await send('Runtime.enable', {}, sessionId);
     await send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] }, sessionId);
+    await send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, sessionId);
     // window.screen matches the viewport on both sides (portal scripts branch on screen.height).
     await send(
       'Emulation.setDeviceMetricsOverride',
@@ -2130,8 +2320,17 @@ export async function openCdpTabDriver({
     };
     const close = async () => {
       listeners.delete(listener);
+      listeners.delete(childListener);
+      for (const popup of popups) {
+        tabs.delete(popup);
+        owned.delete(popup);
+        await send('Target.closeTarget', { targetId: popup }).catch(() => {});
+      }
+      tabs.delete(targetId);
       await send('Target.closeTarget', { targetId }).catch(() => {});
       owned.delete(targetId);
+      openTabs.delete(targetId);
+      if (openTabs.size === 0) await setBrowserAutoAttach(false).catch(() => {});
     };
     const navigate = async (target) => {
       state.document = null;
@@ -2227,9 +2426,13 @@ export async function openCdpTabDriver({
   return {
     origin: reference.origin,
     identity: isolated ? 'anonymous' : 'signed-in',
-    async http(target, { prefer, accept, token = target.startsWith('/_api/'), redirect = 'manual' } = {}) {
+    async http(
+      target,
+      { prefer, accept, token = target.startsWith('/_api/'), redirect = 'manual', ifNoneMatch, ifModifiedSince } = {},
+    ) {
       assertReadOnlyPath(target, { allowDenied: false });
-      const expression = `(${pageFetch.toString()})(${JSON.stringify({ path: target, prefer, accept, token, redirect })})`;
+      const options = { path: target, prefer, accept, token, redirect, ifNoneMatch, ifModifiedSince };
+      const expression = `(${pageFetch.toString()})(${JSON.stringify(options)})`;
       const started = Date.now();
       let result;
       try {
@@ -2257,9 +2460,28 @@ export async function openCdpTabDriver({
         probeValue: options.probeExpression ? await tab.evaluate(options.probeExpression) : undefined,
       }));
     },
+    /** Routes still held for owned popups and their frames, once detach events already sent have been handled. */
+    async remainingRoutes(ms = REMAINING_ROUTES_HANG_GUARD_MS) {
+      await new Promise((resolve) => {
+        const done = () => {
+          if (popupRoutes.size > 0) return;
+          clearTimeout(timer);
+          listeners.delete(done);
+          resolve();
+        };
+        const timer = setTimeout(() => {
+          listeners.delete(done);
+          resolve();
+        }, ms);
+        listeners.add(done);
+        done();
+      });
+      return popupRoutes.size;
+    },
     async close() {
       if (apiTab) await apiTab.close();
       for (const targetId of owned) await send('Target.closeTarget', { targetId }).catch(() => {});
+      await setBrowserAutoAttach(false).catch(() => {});
       if (browserContextId) await send('Target.disposeBrowserContext', { browserContextId }).catch(() => {});
       socket.close();
     },
@@ -2285,6 +2507,85 @@ function handleCdpMessage(message, options) {
   } else if (method === 'Page.javascriptDialogOpening') {
     send('Page.handleJavaScriptDialog', { accept: false }, sessionId).catch(() => {});
   }
+}
+
+/** Enable request interception on a session; false when the target cannot be intercepted. */
+function enableInterception(child, send) {
+  return send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] }, child).then(
+    () => true,
+    () => false,
+  );
+}
+
+/**
+ * A frame or worker of a tab starts paused. Interception is enabled before it resumes, so its requests meet the
+ * same decision as the tab's own. Without interception it stays paused: resuming it would run it unintercepted.
+ */
+async function attachChildTarget(params, { send, onIntercepted }) {
+  const child = params.sessionId;
+  let intercepted = false;
+  try {
+    intercepted = await enableInterception(child, send);
+    if (intercepted) onIntercepted(child);
+  } finally {
+    if (intercepted) await send('Runtime.runIfWaitingForDebugger', {}, child).catch(() => {});
+  }
+}
+
+/**
+ * A popup opened by one of the driver's tabs, or by such a popup, is intercepted under that tab's state. Ownership
+ * follows the opener chain only, never the URL. Any other target runs unintercepted and is never inspected. An owned
+ * popup that cannot be intercepted is closed, so no target stays paused.
+ */
+async function attachBrowserTarget(params, { send, owned, tabs, popupRoutes }) {
+  const child = params.sessionId;
+  const { targetId, type, openerId } = params.targetInfo ?? {};
+  const owner = type === 'page' ? tabs.get(openerId) : undefined;
+  let mayRun = !owner;
+  try {
+    if (owner) {
+      // Registered first, so that a popup closed here is also removed from the tab's bookkeeping.
+      owner.popups.add(targetId);
+      tabs.set(targetId, owner);
+      owned.add(targetId);
+      mayRun = await interceptPopup(child, { send, popupRoutes, state: owner.state });
+    }
+  } finally {
+    // A released session is kept but sent nothing further: detaching it ended this driver's own tab session.
+    if (mayRun) await send('Runtime.runIfWaitingForDebugger', {}, child).catch(() => {});
+    else await send('Target.closeTarget', { targetId }).catch(() => {});
+  }
+}
+
+/**
+ * An owned popup's frames and workers start paused, as a tab's do, so that each meets the same decision. The popup
+ * runs only when it and its auto-attach are in place; otherwise it stays paused and is closed.
+ */
+async function interceptPopup(child, { send, popupRoutes, state }) {
+  if (!(await enableInterception(child, send))) return false;
+  popupRoutes.set(child, { state, parent: null });
+  return send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, child).then(
+    () => true,
+    () => false,
+  );
+}
+
+/** Frames and workers of an owned popup are attached and paused under the state of the tab that opened it. */
+function handlePopupMessage(message, { send, fulfil, origins, popupRoutes }) {
+  const { state } = popupRoutes.get(message.sessionId);
+  if (message.method === 'Target.attachedToTarget')
+    attachChildTarget(message.params, {
+      send,
+      onIntercepted: (child) => popupRoutes.set(child, { state, parent: message.sessionId }),
+    });
+  else if (message.method === 'Fetch.requestPaused')
+    handleCdpPausedRequest(message.params, { sessionId: message.sessionId, state, send, fulfil, origins });
+}
+
+/** Forgets a detached session and every route it parented, so no route outlives the popup or frame it served. */
+function forgetPopupRoutes(popupRoutes, sessionId) {
+  popupRoutes.delete(sessionId);
+  for (const [child, route] of popupRoutes) if (route.parent === sessionId) popupRoutes.delete(child);
 }
 
 function handleCdpPausedRequest(params, { sessionId, state, send, fulfil, origins }) {
@@ -2852,10 +3153,9 @@ function ownedPageResult(state, base, origins, status, navigationError, { settle
 // ---- Local runtime helpers
 
 async function localState(localUrl, { summary = true } = {}) {
-  const response = await fetch(new URL(`/__sim/api/state${summary ? '?summary=1' : ''}`, localUrl), {
+  const response = await fetchLocalState(new URL(`/__sim/api/state${summary ? '?summary=1' : ''}`, localUrl), {
     signal: AbortSignal.timeout(120000),
   });
-  if (!response.ok) throw new Error('Local runtime state is unavailable.');
   return response.json();
 }
 
@@ -3029,6 +3329,15 @@ const statusClass = (status) => {
   if (status === 0) return 'opaque-redirect';
   return `${String(status)[0]}xx`;
 };
+
+/** A manual redirect the reference cannot observe: the status is 0 and only the response type is known. */
+const isOpaqueRedirect = (response) => response.redirectObservable === false && response.type === 'opaqueredirect';
+
+/** An opaque reference redirect agrees with any local 3xx; every other reference status must equal the local one. */
+function statusAgrees(reference, local) {
+  if (isOpaqueRedirect(reference)) return statusClass(local.status) === '3xx';
+  return reference.status === local.status;
+}
 
 function pageDiagnostics(observation, reveal = (value) => value) {
   return {
@@ -3731,7 +4040,7 @@ export function compareNetwork(live = [], local = [], { maxDeltas = 60 } = {}) {
   }
   for (const [name, record] of b)
     if (!a.has(name)) deltas.push({ kind: 'network-extra', path: name, local: record.status });
-  return deltas.slice(0, maxDeltas);
+  return { deltas: deltas.slice(0, maxDeltas), total: deltas.length, truncated: deltas.length > maxDeltas };
 }
 
 function inventory(records = []) {
@@ -3751,7 +4060,7 @@ function inventory(records = []) {
   );
 }
 
-function summarizeNetwork(records = []) {
+export function summarizeNetwork(records = [], redactor = null) {
   return records.map((record) => ({
     method: record.method,
     url: record.url,
@@ -3760,7 +4069,7 @@ function summarizeNetwork(records = []) {
     contentType: record.contentType ?? null,
     ...(record.headers ? { headers: record.headers } : {}),
     ...(record.failed ? { failed: record.failed } : {}),
-    ...(record.projection ? { projection: summarizeProjection(record.projection, {}) } : {}),
+    ...(record.projection ? { projection: summarizeProjection(record.projection, {}, redactor) } : {}),
   }));
 }
 
@@ -3879,13 +4188,21 @@ function summarizeNetwork(records = []) {
       }
     }
     if (scenario.network !== false && (live.network?.length || local.network?.length)) {
-      observations.network = { live: summarizeNetwork(live.network), local: summarizeNetwork(local.network) };
+      observations.network = {
+        live: summarizeNetwork(live.network, redactor),
+        local: summarizeNetwork(local.network),
+      };
       context.inventory.push(...(live.network ?? []).map((record) => ({ ...record, scenario: scenario.id })));
     }
     for (const asset of live.assets ?? [])
       context.assets.set(asset, [...new Set([...(context.assets.get(asset) ?? []), scenario.id])]);
     if (scenario.network !== false && (live.network?.length || local.network?.length)) {
-      if (scenario.compareNetwork !== false) deltas.push(...compareNetwork(live.network, local.network));
+      if (scenario.compareNetwork !== false) {
+        const network = compareNetwork(live.network, local.network);
+        deltas.push(...network.deltas);
+        if (network.truncated)
+          result.truncatedDeltas = (result.truncatedDeltas ?? 0) + network.total - network.deltas.length;
+      }
     }
     const prepare = (observation) =>
       (observation.snapshot?.roots ?? []).map((root) => ({
@@ -4138,10 +4455,11 @@ function summarizeNetwork(records = []) {
     observations.live = view(live);
     observations.local = view(local);
     if (useSource) observations.live.via = 'navigation';
+    if (isOpaqueRedirect(live)) observations.live.redirect = 'opaque';
     const expected = scenario.expect ?? {};
     if (expected.liveStatus !== undefined && live.status !== expected.liveStatus)
       deltas.push({ kind: 'expected-live-status', live: live.status, local: expected.liveStatus });
-    if (kind !== 'anonymous' && live.status !== local.status)
+    if (kind !== 'anonymous' && !statusAgrees(live, local))
       deltas.push({ kind: 'status', live: live.status, local: local.status });
     if (scenario.headerNames) {
       const names = (headers) =>
@@ -4160,7 +4478,7 @@ function summarizeNetwork(records = []) {
         ? await localSide.http(localPath, { ...request, ifNoneMatch: local.headers.etag })
         : { status: null };
       observations.conditional = { live: liveAgain.status, local: localAgain.status };
-      if (liveAgain.status !== localAgain.status)
+      if (!statusAgrees(liveAgain, localAgain))
         deltas.push({ kind: 'conditional-status', live: liveAgain.status, local: localAgain.status });
     }
     if (kind === 'api-json') {
@@ -4452,11 +4770,17 @@ export function withFetchXmlPage(target, page, cookie) {
   return url.pathname + url.search;
 }
 
-function summarizeProjection(projection, scenario, _redactor) {
+/** Live messages pass the reveal policy, since a page's own requests can echo record values. */
+function summarizeErrorMessage(message, redactor) {
+  if (message === null) return null;
+  const text = normalizeText(message).slice(0, 300);
+  return redactor ? redactor.reveal(text) : text;
+}
+
+function summarizeProjection(projection, scenario, redactor = null) {
   if (!projection) return null;
   if (projection.kind === 'error') {
-    // Platform error messages describe the runner's own synthetic query (tables/columns), so they
-    // are kept after normalisation; identifiers and numbers are generalised.
+    // Error messages are normalised (identifiers and numbers generalised), then capped at 300 characters.
     return {
       kind: 'error',
       keys: projection.keys,
@@ -4465,7 +4789,7 @@ function summarizeProjection(projection, scenario, _redactor) {
         code: projection.error.code,
         codeShape: projection.error.codeShape,
         innerKeys: projection.error.innerKeys,
-        message: projection.error.message === null ? null : normalizeText(projection.error.message).slice(0, 300),
+        message: summarizeErrorMessage(projection.error.message, redactor),
       },
     };
   }
@@ -4520,6 +4844,15 @@ export async function derivePersona({ live, roleNames, probe = {}, accessChecks 
     : observations.map(({ path: checkPath, accessible, status }) => ({ path: checkPath, accessible, status }));
   evidence.consistent = Boolean(roles) && evidence.accessChecks.every((check) => check.consistent);
   return evidence;
+}
+
+/** Scenarios named by `only` (all when absent), then narrowed to those with a tag and without an excluded tag. */
+function selectScenarios(scenarios, { only, tags, excludeTags } = {}) {
+  let selected = only?.length ? scenarios.filter((scenario) => only.includes(scenario.id)) : scenarios;
+  if (tags?.length) selected = selected.filter((scenario) => (scenario.tags ?? []).some((tag) => tags.includes(tag)));
+  if (excludeTags?.length)
+    selected = selected.filter((scenario) => !(scenario.tags ?? []).some((tag) => excludeTags.includes(tag)));
+  return selected;
 }
 
 /** Execute a validated plan against prepared drivers and write report.json + summary.md. */
@@ -4593,10 +4926,7 @@ export async function runParitySuite({
     ...(portalFacts ? { portalDiscovery: portalFacts } : {}),
     scenarios: [],
   };
-  let selected = only?.length ? plan.scenarios.filter((scenario) => only.includes(scenario.id)) : plan.scenarios;
-  if (tags?.length) selected = selected.filter((scenario) => (scenario.tags ?? []).some((tag) => tags.includes(tag)));
-  if (excludeTags?.length)
-    selected = selected.filter((scenario) => !(scenario.tags ?? []).some((tag) => excludeTags.includes(tag)));
+  const selected = selectScenarios(plan.scenarios, { only, tags, excludeTags });
   // Signed-in scenarios first, then anonymous ones, to minimise local identity switches.
   // Web-file drift runs last so it can use every web file the compared pages loaded.
   const ordered = [
@@ -4960,6 +5290,33 @@ async function reclassifyMainReport(values, sourceOptions) {
   );
 }
 
+/** --only, --tags and --exclude-tags as lists; an absent or empty value is no filter. */
+function scenarioSelectionOptions(values) {
+  const list = (value) => {
+    const items = value
+      ? value
+          .split(',')
+          .map((item) => item.trim())
+          .filter(Boolean)
+      : [];
+    return items.length ? items : undefined;
+  };
+  return { only: list(values.only), tags: list(values.tags), excludeTags: list(values['exclude-tags']) };
+}
+
+/** A selection that names an unknown scenario, or leaves none, is refused before any browser or network work. */
+function assertScenarioSelection(plan, values) {
+  const options = scenarioSelectionOptions(values);
+  const known = new Set(plan.scenarios.map((scenario) => scenario.id));
+  const unknown = (options.only ?? []).filter((id) => !known.has(id));
+  if (unknown.length) throw selectionRefusal(`Unknown scenario ids: ${unknown.join(', ')}`);
+  if (!selectScenarios(plan.scenarios, options).length) throw selectionRefusal('No scenario selected.');
+}
+
+function selectionRefusal(message) {
+  return Object.assign(new Error(message), { exitCode: 2 });
+}
+
 function resolveMainTarget(values, site) {
   const origin = values.origin ?? site?.origin;
   const sourceDir = values.source ?? (values.local ? undefined : site?.sourceDir);
@@ -4999,6 +5356,7 @@ async function prepareMainRun({ values, site, explicit, sourceOptions, origin, s
   const { importPortal } = await import('./lib/importer.mjs');
   let portal = sourceDir ? await importPortal(path.resolve(sourceDir)) : null;
   let plan = portal ? await loadScenarioPlans(sourceOptions(portal, 'auto')) : null;
+  if (plan) assertScenarioSelection(plan, values);
   let catalogue = null;
   if (sourceDir) {
     const ownedRun = await startMainOwnedRuntime({ values, site, explicit, origin, sourceDir, plan });
@@ -5012,6 +5370,7 @@ async function prepareMainRun({ values, site, explicit, sourceOptions, origin, s
   if (!portal) {
     portal = await importPortal(state.status.sourceDir);
     plan = await loadScenarioPlans(sourceOptions(portal, 'auto'));
+    assertScenarioSelection(plan, values);
   }
   await activatePackDeniedRoutes(portal, { explicit });
   const delayMs = values['delay-ms'] ? Number(values['delay-ms']) : (plan.defaults?.delayMs ?? 400);
@@ -5164,9 +5523,7 @@ async function executeMainReport({ run, values, origin, sides, persona, resource
     sides,
     identity: resources.identity,
     outDir: path.resolve(values.out),
-    only: values.only ? values.only.split(',').map((item) => item.trim()) : undefined,
-    tags: values.tags ? values.tags.split(',').map((item) => item.trim()) : undefined,
-    excludeTags: values['exclude-tags'] ? values['exclude-tags'].split(',').map((item) => item.trim()) : undefined,
+    ...scenarioSelectionOptions(values),
     delayMs: run.delayMs,
     corpus: run.corpus,
     persona,
@@ -5223,7 +5580,7 @@ async function cleanupMainResources(identity, live, anonymousCdp, browser, owned
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   /* NOSONAR: module-level promise chain must not block evaluation */ main().catch((error) => {
     console.error(normalizeText(error.message));
-    process.exitCode = 1;
+    process.exitCode = error.exitCode ?? 1;
   });
 }
 

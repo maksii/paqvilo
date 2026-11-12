@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's browser-native date fallback is its own designed runtime behaviour (UserLocal storage)
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -72,5 +73,38 @@ test('browser date fallback builds the native picker group from the bound box an
   await display('owned-date').fill('0004-02-29');
   await display('owned-date').dispatchEvent('change');
   assert.equal(await page.locator('#owned-date').inputValue(), '0004-02-29T00:00:00.0000000Z');
+  assert.deepEqual(errors, []);
+});
+
+test('browser date fallback shows UserLocal values in the browser time zone and keeps the instant when the shown value is committed', async (t) => {
+  const server = http.createServer((_request, response) => {
+    response.setHeader('Content-Type', 'text/html');
+    response.end(`<!doctype html><html><head><link href="/dist/preform.BootstrapV5.bundle-x.css" rel="stylesheet"><script>window.setIsDirty=()=>{};</script></head><body>
+      <label for="owned-time" id="owned-time_label">When</label>
+      <input id="owned-time" type="text" value="2026-03-04T22:30:00.0000000Z" data-ui="datetimepicker" data-type="datetime" data-behavior="UserLocal">
+      <input id="owned-day" type="text" value="2026-03-04T23:00:00.0000000Z" data-ui="datetimepicker" data-type="date" data-behavior="UserLocal">
+      <input id="owned-readonly" type="text" value="2026-03-04T22:30:00.0000000Z" data-ui="datetimepicker" data-type="datetime" data-behavior="UserLocal" readonly="readonly">
+    </body></html>`);
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => closeServer(server));
+  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
+  t.after(() => browser.close());
+  const context = await browser.newContext({ timezoneId: 'Europe/Berlin' });
+  t.after(() => context.close());
+  const page = await context.newPage(),
+    errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto('http://127.0.0.1:' + server.address().port);
+  await page.addScriptTag({ content: clientDateControlsRuntime() });
+  const display = (id) => page.locator('#' + id + '_datepicker_description');
+  // The stored instant 22:30Z is 23:30 in Berlin; the date-only value 23:00Z is already the next day there.
+  assert.equal(await display('owned-time').inputValue(), '2026-03-04T23:30');
+  assert.equal(await display('owned-day').inputValue(), '2026-03-05');
+  assert.equal(await display('owned-readonly').inputValue(), '2026-03-04T23:30');
+  await display('owned-time').dispatchEvent('change');
+  assert.equal(await page.locator('#owned-time').inputValue(), '2026-03-04T22:30:00.0000000Z');
+  await display('owned-day').dispatchEvent('change');
+  assert.equal(await page.locator('#owned-day').inputValue(), '2026-03-04T23:00:00.0000000Z');
   assert.deepEqual(errors, []);
 });

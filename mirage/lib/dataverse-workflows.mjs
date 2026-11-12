@@ -492,7 +492,7 @@ function writeLog(store, api, run, { status, message = null, error = null, start
 
 // processsession row for a real-time failure whose workflow asks for its log on failure (syncworkflowlogonfailure).
 function writeProcessSession(store, api, run, error) {
-  rowsOf(store, 'processsession').push({
+  store.insertRow('processsession', rowsOf(store, 'processsession'), {
     processsessionid: (api.ids ?? systemIds).uuid(),
     name: run.row.name,
     stepname: 'Simulator',
@@ -500,7 +500,7 @@ function writeProcessSession(store, api, run, error) {
     regardingobjectid: run.regarding ? lookup(run.regarding.logicalName, run.regarding.id) : null,
     regardingobjecttypecode: run.regarding?.logicalName ?? null,
     errorcode: errorNumber(error),
-    errortext: error.message,
+    comments: error.message,
     startedon: new Date(api.clock()).toISOString(),
     completedon: new Date(api.clock()).toISOString(),
   });

@@ -2,7 +2,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { createConnectorRuntime, connectionSettings, CONNECTOR_PACK_EXPORTS } from '../lib/connector-runtime.mjs';
+import {
+  createConnectorRuntime,
+  connectionSettings,
+  CONNECTOR_PACK_EXPORTS,
+  DEFAULT_CONNECTOR_TIMEOUT_MS,
+} from '../lib/connector-runtime.mjs';
+import { MAX_TIMER_DELAY } from '../lib/runtime-clock.mjs';
+import { DataStore, emptyState } from '../lib/data.mjs';
 
 const USER = '77777777-7777-4777-8777-777777777777';
 const profile = {
@@ -292,6 +299,264 @@ test('http provider applies rewrites to loopback, refuses other hosts and refuse
   );
   assert.deepEqual(escaped, []);
   assert.deepEqual(hits, ['/api/echo?q=1', '/api/moved', '/api/local-moved'], 'neither redirect is followed');
+});
+
+// The mocked clock fires a deadline only on tick(), so a budget that is not clamped or defaulted cannot end a call before the
+// test ticks: the test ticks 1 ms (what a 1 ms budget would need) once the request has reached the server, and releases the
+// answer after that tick. A regression that arms a 1 ms deadline fails here deterministically.
+test('a loopback call with a budget above the timer limit or a non-finite budget is not aborted by a 1 ms deadline', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let requests = 0,
+    current = null;
+  const local = await listen(t, async (req, res) => {
+    requests++;
+    current.arrive();
+    await current.gate;
+    res.setHeader('content-type', 'application/json');
+    res.setHeader('connection', 'close');
+    res.end('{}');
+  });
+  const runtime = createConnectorRuntime({
+    connections: {
+      http: {
+        connector: 'http',
+        provider: 'http',
+        settings: { rewrites: { 'https://func.example.test/api/': local + '/api/' } },
+      },
+    },
+  });
+  const callTickedInFlight = async (timeoutMs) => {
+    let arrive, release;
+    const arrived = new Promise((resolve) => (arrive = resolve));
+    const gate = new Promise((resolve) => (release = resolve));
+    current = { arrive, gate };
+    const call = runtime
+      .invoke({
+        connectorId: 'http',
+        operationId: 'Http',
+        parameters: { method: 'GET', uri: 'https://func.example.test/api/echo' },
+        context: { timeoutMs },
+      })
+      .then(
+        (answer) => ({ answer }),
+        (error) => ({ error }),
+      );
+    await arrived;
+    t.mock.timers.tick(1);
+    release();
+    return call;
+  };
+  const clamped = await callTickedInFlight(3e9);
+  assert.equal(requests, 1, 'the request reached the server before the tick');
+  assert.equal(clamped.error, undefined, 'a 3e9 budget is not aborted by a 1 ms deadline');
+  assert.equal(clamped.answer.statusCode, 200);
+  const defaulted = await callTickedInFlight(Number.NaN);
+  assert.equal(requests, 2);
+  assert.equal(defaulted.error, undefined, 'a non-finite budget is not aborted by a 1 ms deadline');
+  assert.equal(defaulted.answer.statusCode, 200);
+});
+
+// An asynchronous (202 with Location) operation polls under a finite budget: a non-finite one takes the default, and a budget
+// above the timer limit is clamped to it. The poll is held until the test has read the budget it was given.
+test('an asynchronous operation polls under a finite budget for a non-finite or an oversized timeoutMs', async (t) => {
+  let current = null;
+  const budgets = [];
+  const provider = {
+    id: 'x-async',
+    connectors: ['x_async'],
+    operations: ['Go'],
+    capability: {},
+    async invoke() {
+      return { statusCode: 202, headers: { location: 'https://x-async.example.test/status/1', 'retry-after': '0' } };
+    },
+    async poll(url, request, ctx) {
+      budgets.push(ctx.timeoutMs);
+      current.arrive();
+      await current.gate;
+      return { statusCode: 200, body: {} };
+    },
+  };
+  const runtime = createConnectorRuntime({ providers: [provider] });
+  const polledUnder = async (timeoutMs) => {
+    let arrive, release;
+    const arrived = new Promise((resolve) => (arrive = resolve));
+    const gate = new Promise((resolve) => (release = resolve));
+    current = { arrive, gate };
+    t.after(() => release());
+    const call = runtime.invoke({ connectorId: 'x_async', operationId: 'Go', context: { timeoutMs } });
+    await arrived;
+    const budget = budgets.at(-1);
+    release();
+    await call;
+    return budget;
+  };
+  const defaulted = await polledUnder(Number.NaN);
+  assert.ok(Number.isFinite(defaulted), `a non-finite budget polls under a finite budget, got ${defaulted}`);
+  assert.ok(defaulted > 0 && defaulted <= DEFAULT_CONNECTOR_TIMEOUT_MS, `default budget ${defaulted}`);
+  const clamped = await polledUnder(3e9);
+  assert.ok(clamped <= MAX_TIMER_DELAY, `an oversized budget is clamped to the timer limit, got ${clamped}`);
+});
+
+// A budget longer than the timer limit: the deadline is armed in steps of at most MAX_TIMER_DELAY.
+const OVERSIZED_BUDGET = MAX_TIMER_DELAY + 5000;
+// Records the delays, armed handles and cleared handles of the timers a test uses (the mocked timers are enabled first).
+function recordTimers(t) {
+  const timers = { delays: [], armed: [], cleared: [] };
+  const { setTimeout: schedule, clearTimeout: cancel } = globalThis;
+  t.mock.method(globalThis, 'setTimeout', (callback, delay, ...rest) => {
+    timers.delays.push(delay);
+    const handle = schedule(callback, delay, ...rest);
+    timers.armed.push(handle);
+    return handle;
+  });
+  t.mock.method(globalThis, 'clearTimeout', (handle) => {
+    timers.cleared.push(handle);
+    return cancel(handle);
+  });
+  return timers;
+}
+// A loopback fetch that stays pending until the test answers it or its signal aborts; arrived resolves when it is called.
+function holdLoopbackFetch(t) {
+  const held = {};
+  let arrive;
+  held.arrived = new Promise((resolve) => (arrive = resolve));
+  t.mock.method(
+    globalThis,
+    'fetch',
+    (url, init) =>
+      new Promise((resolve, reject) => {
+        held.answer = () =>
+          resolve(new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }));
+        init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true });
+        arrive();
+      }),
+  );
+  return held;
+}
+const loopbackCall = (runtime, timeoutMs) =>
+  runtime.invoke({
+    connectorId: 'http',
+    operationId: 'Http',
+    parameters: { method: 'GET', uri: 'http://127.0.0.1:9/item' },
+    context: { timeoutMs },
+  });
+
+test('a loopback call with a budget above the timer limit times out only after the whole budget', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const timers = recordTimers(t);
+  const held = holdLoopbackFetch(t);
+  const call = loopbackCall(createConnectorRuntime({}), OVERSIZED_BUDGET).then(
+    () => 'answered',
+    (error) => error.code,
+  );
+  await held.arrived;
+  assert.deepEqual(timers.delays, [MAX_TIMER_DELAY], 'the first step of the deadline is the timer limit');
+  t.mock.timers.tick(MAX_TIMER_DELAY);
+  await new Promise((resolve) => setImmediate(resolve));
+  const settled = await Promise.race([call, 'still pending']);
+  assert.equal(settled, 'still pending', 'the call is not cut at the timer limit');
+  assert.deepEqual(timers.delays, [MAX_TIMER_DELAY, 5000], 'the remainder of the budget is armed under the limit');
+  t.mock.timers.tick(5000);
+  assert.equal(await call, 'ProviderTimeout');
+});
+
+test('answering a loopback call with a budget above the timer limit clears the re-armed deadline', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const timers = recordTimers(t);
+  const held = holdLoopbackFetch(t);
+  const call = loopbackCall(createConnectorRuntime({}), OVERSIZED_BUDGET);
+  await held.arrived;
+  t.mock.timers.tick(MAX_TIMER_DELAY);
+  assert.equal(timers.armed.length, 2, 'the first step fired and armed the remainder');
+  held.answer();
+  assert.equal((await call).statusCode, 200);
+  assert.ok(timers.cleared.includes(timers.armed.at(-1)), 'the pending remainder is cleared when the call answers');
+});
+
+// @test-kind security: a name that is an Object.prototype member is not found, as an unknown name is, and never resolves to a function
+test('connector, operation, connection and trigger names that are Object.prototype members are not found', async () => {
+  const store = await new DataStore({ state: { ...emptyState(), simulator: { connectionTokens: {} } } }).init();
+  const pack = {
+    id: 'x-pack',
+    connectors: { x_widgets: { operations: { List: () => ({ statusCode: 200, body: {} }) } } },
+  };
+  const runtime = createConnectorRuntime({ store, packs: [pack] });
+  // The error code and status of an attempt, or 'answered' when it succeeds.
+  const attempt = (fn) =>
+    Promise.resolve()
+      .then(fn)
+      .then(
+        () => 'answered',
+        (error) => `${error.code}/${error.status}`,
+      );
+  const unknown = {
+    connector: await attempt(() => runtime.invoke({ connectorId: 'x_unknown', operationId: 'List' })),
+    operation: await attempt(() => runtime.invoke({ connectorId: 'x_widgets', operationId: 'x_unknown' })),
+    authorize: await attempt(() => runtime.oauth.authorize('x_unknown')),
+    bound: await attempt(() => runtime.resolve({ connectorId: 'x_widgets', connectionId: 'x_unknown' })),
+  };
+  for (const name of ['constructor', '__proto__', 'toString']) {
+    assert.equal(
+      await attempt(() => runtime.invoke({ connectorId: name, operationId: 'List' })),
+      unknown.connector,
+      name,
+    );
+    assert.equal(
+      await attempt(() => runtime.invoke({ connectorId: 'x_widgets', operationId: name })),
+      unknown.operation,
+    );
+    assert.equal(await attempt(() => runtime.oauth.authorize(name)), unknown.authorize, name);
+    assert.equal(await attempt(() => runtime.resolve({ connectorId: 'x_widgets', connectionId: name })), unknown.bound);
+    // An operation named like an Object member, on a connector named like one: both answer null, not a function.
+    assert.equal(runtime.flowTriggers(name, 'toString'), null, name);
+    assert.equal(runtime.flowTriggers(name, name), null, name);
+    assert.equal(runtime.flowTriggers('x_widgets', name), null, name);
+    assert.equal(runtime.oauth.status(name).signedIn, false, name);
+  }
+});
+
+// @test-kind security: a Dataverse column named __proto__ is refused as an invalid name and sets no prototype
+test('a Dataverse column named __proto__ is refused as an invalid name, as constructor is, and sets no prototype', async () => {
+  const profile = {
+    userId: '77777777-7777-4777-8777-000000000100',
+    evidence: 'Invented flow owner',
+    grants: [{ entity: 'x_parent', operations: ['create', 'read'] }],
+  };
+  const store = await new DataStore({
+    state: {
+      version: 1,
+      mappings: {
+        x_parent: { entitySet: 'x_parents', idColumn: 'x_parentid', fields: { x_name: { type: 'string' } } },
+      },
+      tables: { x_parent: [] },
+      permissions: [],
+      plugins: [],
+      settings: { permissionMode: 'enforce' },
+    },
+  }).init();
+  const runtime = createConnectorRuntime({ store });
+  const createWith = async (column) => {
+    try {
+      const answer = await runtime.invoke({
+        connectorId: 'shared_commondataserviceforapps',
+        operationId: 'CreateRecord',
+        parameters: { entityName: 'x_parents', 'item/x_name': 'row', [`item/${column}`]: 'invented' },
+        context: { principal: profile },
+      });
+      return {
+        statusCode: answer.statusCode,
+        ownColumn: Object.hasOwn(answer.body, column),
+        prototypeIntact: Object.getPrototypeOf(answer.body) === Object.prototype,
+      };
+    } catch (error) {
+      return { error: `${error.code}/${error.status}` };
+    }
+  };
+  const refused = { error: 'InvalidRequest/400' };
+  assert.deepEqual(await createWith('constructor'), refused);
+  assert.deepEqual(await createWith('__proto__'), refused);
+  assert.deepEqual(store.snapshot().tables.x_parent, [], 'a refused column writes no row');
+  assert.equal({}.invented, undefined);
 });
 
 test('fixture provider answers deterministically from pack httpFixtures without network', async () => {

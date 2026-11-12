@@ -1,6 +1,7 @@
 // Dataverse value semantics shared by the FetchXML and OData evaluators.
 // Evidence for each rule is recorded in docs/dataverse-parity.md.
 import { DataError } from './data-error.mjs';
+import { isDateOnlyFormat } from './date-only-format.mjs';
 import {
   isExactNumeric,
   numericPair,
@@ -133,7 +134,7 @@ export function isDateOnlyField(definition) {
   const behavior = dateTimeBehavior(definition);
   // Format controls presentation, not storage. Keep the legacy format-only
   // schema usable when no behavior metadata was supplied.
-  return behavior === 'dateonly' || (!behavior && String(definition?.format ?? '').toLowerCase() === 'dateonly');
+  return behavior === 'dateonly' || (!behavior && isDateOnlyFormat(definition?.format));
 }
 
 const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;

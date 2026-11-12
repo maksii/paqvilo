@@ -1,5 +1,6 @@
 // Virtual table writes that roll back: an asynchronous provider in a synchronous SDK write,
 // upsert-create keys, changeset rollback without a transaction contract and a nested standard parent.
+// @test-kind contract: the rollback notes of a provider without a transaction contract describe the Dataverse write path this file drives
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EXTENSION } from '../lib/dataverse-virtual-providers.mjs';
@@ -225,6 +226,20 @@ test('a changeset whose second provider call fails leaves the first write of a p
   assert.deepEqual(
     diagnostics.filter((d) => d.code === 'VIRTUAL_PROVIDER_EFFECT_UNCOMPENSATED').map((d) => [d.id, d.operation]),
     [[A, 'update']],
+  );
+});
+
+test('an async update that rejects is reported as a failed provider call, not as an uncompensated effect', async (t) => {
+  const { request, diagnostics } = await setup(t, {
+    update: () => async () => {
+      throw new Error('invented backend refusal');
+    },
+  });
+  const response = await request('PATCH', `/x_exts(${A})`, { x_name: 'Rejected' });
+  assert.equal(response.status, 400);
+  assert.deepEqual(
+    diagnostics.map((d) => d.code).filter((code) => code.startsWith('VIRTUAL_PROVIDER_')),
+    ['VIRTUAL_PROVIDER_FAILED'],
   );
 });
 

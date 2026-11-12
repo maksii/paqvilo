@@ -135,6 +135,9 @@ async function startPortals(t) {
     args: ['--disable-background-networking', '--disable-component-update'],
   });
   const context = await browser.newContext({ serviceWorkers: 'block', viewport: { width: 1400, height: 1000 } });
+  // Hang guard for a starved machine only: every wait below awaits its real state.
+  context.setDefaultTimeout(120_000);
+  context.setDefaultNavigationTimeout(120_000);
   const allowed = new Set([classicApp.url, enhancedApp.url, live.origin]);
   await context.route('**/*', (route) =>
     allowed.has(new URL(route.request().url()).origin) ? route.fallback() : route.abort(),
@@ -229,8 +232,9 @@ async function signInOnEnhanced(env) {
 }
 
 // Returns to the classic Mirage through the portal selector while its panel is held detached.
-// The panel is released once the destination document is committed; `afterRelease` runs then.
-async function returnToClassic(env, afterRelease) {
+// The panel is released once the destination document is committed. `beforeRelease` is awaited
+// while the panel is still held; `afterRelease` runs right after the release.
+async function returnToClassic(env, { beforeRelease, afterRelease } = {}) {
   const { page, choose, classicApp } = env;
   await page.evaluate(() => {
     window.name = 'paqvilo-hold-classic-panel';
@@ -247,6 +251,7 @@ async function returnToClassic(env, afterRelease) {
   await originObserved;
   assert.equal(new URL(page.url()).origin, classicApp.url);
   assert.equal(settled, false, 'target selection waits for the connected destination panel');
+  await beforeRelease?.();
   await page.evaluate(() => globalThis.__releaseClassicPanel());
   afterRelease?.();
   await returned;
@@ -254,132 +259,174 @@ async function returnToClassic(env, afterRelease) {
 
 // Answers the first status read after `gate.armed` is set by destroying its socket, the way a
 // keep-alive connection closed by the server looks to the client. Later reads are served normally.
+// `gate.dropped` resolves when that socket is destroyed; `gate.statusServed` resolves when the first
+// status read made while `gate.recording` is set has been answered.
 function dropFirstStatusRead(server, gate) {
   const listeners = server.listeners('request');
   server.removeAllListeners('request');
+  let markDropped;
+  let markServed;
+  gate.dropped = new Promise((resolve) => {
+    markDropped = resolve;
+  });
+  gate.statusServed = new Promise((resolve) => {
+    markServed = resolve;
+  });
   server.on('request', (request, response) => {
     const pathname = new URL(request.url, 'http://127.0.0.1').pathname;
+    const statusRead = /^\/_{1,2}sim\/api\/status$/.test(pathname);
     if (gate.recording) gate.paths.push(pathname);
-    if (gate.armed && gate.destroyed === 0 && /^\/_{1,2}sim\/api\/status$/.test(pathname)) {
+    if (gate.armed && gate.destroyed === 0 && statusRead) {
       gate.destroyed += 1;
+      gate.droppedAt = gate.paths.length;
       request.socket.destroy();
+      markDropped();
       return;
     }
-    if (gate.destroyed > 0 && /^\/_{1,2}sim\/api\/status$/.test(pathname)) {
+    if (gate.destroyed > 0 && statusRead) {
       response.on('finish', () => {
         if (response.statusCode === 200) gate.served += 1;
+      });
+    }
+    if (gate.recording && statusRead) {
+      response.on('finish', () => {
+        if (response.statusCode === 200) markServed();
       });
     }
     for (const listener of listeners) listener.call(server, request, response);
   });
 }
 
-test(
-  'local Mirage portals and live targets share one browser: the selector switches between them, each keeping its own sign-in session',
-  { timeout: 240_000 },
-  async (t) => {
-    const env = await startPortals(t);
-    const { context, page, panel, label, openTab, choose, signedIn, errors, live, classicApp, enhancedApp } = env;
-    await openTab('runtime');
-    await panel('.card').filter({ hasText: 'Current persona' }).getByText('allowed', { exact: true }).waitFor();
-    const options = await page.getByLabel('Portal / environment', { exact: true }).locator('option').allInnerTexts();
-    assert.equal(options.length, 3);
-    assert.ok(
-      options[0].includes('classic Mirage @ local') &&
-        options[1].includes('enhanced Mirage @ local') &&
-        options[2].includes('classic @ dev'),
-      options.join(' | '),
-    );
-
-    // Switch to the enhanced Mirage without restarting: its own Inspect report and sign-in.
-    await signInOnEnhanced(env);
-
-    // Back on the classic Mirage: sign in there too; both sessions now coexist (one cookie per port).
-    await returnToClassic(env);
-    await openTab('tweaks');
-    try {
-      await panel('.card').filter({ hasText: 'Browser session' }).getByText('Anonymous', { exact: true }).waitFor();
-    } catch (error) {
-      const tab = await page
-        .locator('#paqvilo-panel')
-        .evaluate((host) => host.shadowRoot?.querySelector('#paqvilo-tab-content')?.textContent ?? '');
-      t.diagnostic(JSON.stringify({ tab: tab.slice(0, 600), url: page.url() }));
-      throw error;
-    }
-    await panel('[data-act="choosepersona"][data-contact="alex"]').first().click();
-    await Promise.all([page.waitForNavigation({ waitUntil: 'load' }), panel('[data-act="signin"]').click()]);
-    assert.deepEqual([await signedIn(classicApp), await signedIn(enhancedApp)], [true, true]);
-    const names = (await context.cookies())
-      .map((cookie) => cookie.name)
-      .filter((name) => name.startsWith('paqvilo-mirage-auth'))
-      .sort();
-    assert.deepEqual(
-      names,
-      [
-        `paqvilo-mirage-auth-${new URL(classicApp.url).port}`,
-        `paqvilo-mirage-auth-${new URL(enhancedApp.url).port}`,
-      ].sort(),
-    );
-    await choose(1, enhancedApp.url);
-    await page.locator('#who').getByText('Alex Local', { exact: true }).waitFor();
-
-    // And out to the live target: Inspect keeps source navigation, while Mirage Tweaks stay local.
-    await choose(2, live.origin);
-    await page.locator('#live').waitFor();
-    await page.waitForFunction(() => document.getElementById('paqvilo-panel')?.dataset.label === 'classic @ dev');
-    await openTab('runtime');
-    assert.equal(
-      await panel('.tabs [data-act="tab"][data-v="runtime"]').count(),
-      1,
-      'live targets retain source inspection',
-    );
-    assert.equal(
-      await panel('.tabs [data-act="tab"][data-v="tweaks"]').count(),
-      0,
-      'live targets cannot change Mirage personas or scenarios',
-    );
-    await panel('.card').getByText('Live portal · local source inspection', { exact: true }).waitFor();
-    await panel('[data-group="runtime-page-sources"] .row')
-      .filter({ hasText: 'Home.en-US.webpage.custom_css.css' })
-      .waitFor();
-    assert.equal(await panel('.card').getByText('Live access', { exact: true }).count(), 1);
-    assert.equal(
-      await panel('.card').getByText('allowed', { exact: true }).count(),
-      0,
-      'source inspection cannot infer effective live access',
-    );
-    assert.equal(
-      live.requests.some((route) => /^\/(?:_sim|__sim)\//.test(route)),
-      false,
-      'live Inspect never probes Mirage administration on the portal',
-    );
-    await choose(0, classicApp.url);
-    assert.equal(await label(), 'classic Mirage @ local');
-    assert.deepEqual(errors, []);
-  },
-);
-
-test(
-  'the Tweaks card recovers when the first Mirage status read after returning to a portal is dropped',
-  { timeout: 240_000 },
-  async (t) => {
-    const env = await startPortals(t);
-    const { panel, errors, classicApp } = env;
-    const gate = { recording: false, armed: false, destroyed: 0, served: 0, paths: [] };
-    dropFirstStatusRead(classicApp.server, gate);
-    await signInOnEnhanced(env);
-    gate.recording = true;
-    await returnToClassic(env, () => {
-      gate.armed = true;
-    });
-    await env.openTab('tweaks');
+// Waits for the Tweaks tab to show the anonymous browser session; a miss records the tab text as a diagnostic.
+async function expectAnonymousTweaks(t, page, panel) {
+  try {
     await panel('.card').filter({ hasText: 'Browser session' }).getByText('Anonymous', { exact: true }).waitFor();
-    assert.equal(gate.destroyed, 1, 'the first status read after the return was dropped');
-    assert.ok(gate.served >= 1, 'a later status read reached the Mirage');
-    assert.ok(
-      gate.paths.some((pathname) => pathname.includes('/page-resources')),
-      `the return re-inspected the page; classic requests: ${JSON.stringify(gate.paths)}`,
-    );
-    assert.deepEqual(errors, []);
-  },
-);
+  } catch (error) {
+    const tab = await page
+      .locator('#paqvilo-panel')
+      .evaluate((host) => host.shadowRoot?.querySelector('#paqvilo-tab-content')?.textContent ?? '');
+    t.diagnostic(JSON.stringify({ tab: tab.slice(0, 600), url: page.url() }));
+    throw error;
+  }
+}
+
+test('local Mirage portals and live targets share one browser: the selector switches between them, each keeping its own sign-in session', async (t) => {
+  const env = await startPortals(t);
+  const { context, page, panel, label, openTab, choose, signedIn, errors, live, classicApp, enhancedApp } = env;
+  await openTab('runtime');
+  await panel('.card').filter({ hasText: 'Current persona' }).getByText('allowed', { exact: true }).waitFor();
+  const options = await page.getByLabel('Portal / environment', { exact: true }).locator('option').allInnerTexts();
+  assert.equal(options.length, 3);
+  assert.ok(
+    options[0].includes('classic Mirage @ local') &&
+      options[1].includes('enhanced Mirage @ local') &&
+      options[2].includes('classic @ dev'),
+    options.join(' | '),
+  );
+
+  // Switch to the enhanced Mirage without restarting: its own Inspect report and sign-in.
+  await signInOnEnhanced(env);
+
+  // Back on the classic Mirage: sign in there too; both sessions now coexist (one cookie per port).
+  await returnToClassic(env);
+  await openTab('tweaks');
+  await expectAnonymousTweaks(t, page, panel);
+  await panel('[data-act="choosepersona"][data-contact="alex"]').first().click();
+  await Promise.all([page.waitForNavigation({ waitUntil: 'load' }), panel('[data-act="signin"]').click()]);
+  assert.deepEqual([await signedIn(classicApp), await signedIn(enhancedApp)], [true, true]);
+  const names = (await context.cookies())
+    .map((cookie) => cookie.name)
+    .filter((name) => name.startsWith('paqvilo-mirage-auth'))
+    .sort();
+  assert.deepEqual(
+    names,
+    [
+      `paqvilo-mirage-auth-${new URL(classicApp.url).port}`,
+      `paqvilo-mirage-auth-${new URL(enhancedApp.url).port}`,
+    ].sort(),
+  );
+  await choose(1, enhancedApp.url);
+  await page.locator('#who').getByText('Alex Local', { exact: true }).waitFor();
+
+  // And out to the live target: Inspect keeps source navigation, while Mirage Tweaks stay local.
+  await choose(2, live.origin);
+  await page.locator('#live').waitFor();
+  await page.waitForFunction(() => document.getElementById('paqvilo-panel')?.dataset.label === 'classic @ dev');
+  await openTab('runtime');
+  assert.equal(
+    await panel('.tabs [data-act="tab"][data-v="runtime"]').count(),
+    1,
+    'live targets retain source inspection',
+  );
+  assert.equal(
+    await panel('.tabs [data-act="tab"][data-v="tweaks"]').count(),
+    0,
+    'live targets cannot change Mirage personas or scenarios',
+  );
+  await panel('.card').getByText('Live portal · local source inspection', { exact: true }).waitFor();
+  await panel('[data-group="runtime-page-sources"] .row')
+    .filter({ hasText: 'Home.en-US.webpage.custom_css.css' })
+    .waitFor();
+  assert.equal(await panel('.card').getByText('Live access', { exact: true }).count(), 1);
+  assert.equal(
+    await panel('.card').getByText('allowed', { exact: true }).count(),
+    0,
+    'source inspection cannot infer effective live access',
+  );
+  assert.equal(
+    live.requests.some((route) => /^\/(?:_sim|__sim)\//.test(route)),
+    false,
+    'live Inspect never probes Mirage administration on the portal',
+  );
+  await choose(0, classicApp.url);
+  assert.equal(await label(), 'classic Mirage @ local');
+  assert.deepEqual(errors, []);
+});
+
+test('the Tweaks card recovers when the first Mirage status read after returning to a portal is dropped', async (t) => {
+  const env = await startPortals(t);
+  const { page, panel, errors, classicApp } = env;
+  const gate = { recording: false, armed: false, destroyed: 0, served: 0, paths: [] };
+  dropFirstStatusRead(classicApp.server, gate);
+  await signInOnEnhanced(env);
+  gate.recording = true;
+  // The re-inspection's status read is answered before the gate arms, so the drop lands on the Tweaks read.
+  await returnToClassic(env, {
+    beforeRelease: () => gate.statusServed,
+    afterRelease: () => {
+      gate.armed = true;
+    },
+  });
+  await env.openTab('tweaks');
+  await expectAnonymousTweaks(t, page, panel);
+  assert.equal(gate.destroyed, 1, 'the first status read after the return was dropped');
+  assert.ok(gate.served >= 1, 'a later status read reached the Mirage');
+  assert.ok(
+    gate.paths.some((pathname) => pathname.includes('/page-resources')),
+    `the return re-inspected the page; classic requests: ${JSON.stringify(gate.paths)}`,
+  );
+  assert.deepEqual(errors, []);
+});
+
+// @test-kind contract: The return's re-inspection must retry a dropped status read, not store an inactive runtime.
+test('the Tweaks card recovers when the runtime re-inspection after returning to a portal is dropped', async (t) => {
+  const env = await startPortals(t);
+  const { page, panel, errors, classicApp } = env;
+  const gate = { recording: false, armed: false, destroyed: 0, served: 0, paths: [] };
+  dropFirstStatusRead(classicApp.server, gate);
+  await signInOnEnhanced(env);
+  // Armed before the return: the first status read after it is the re-inspection's, and the panel stays
+  // held until that read has been dropped, so the Tweaks read cannot start first.
+  gate.recording = true;
+  gate.armed = true;
+  await returnToClassic(env, { beforeRelease: () => gate.dropped });
+  await env.openTab('tweaks');
+  await expectAnonymousTweaks(t, page, panel);
+  assert.equal(gate.destroyed, 1, 'the re-inspection status read after the return was dropped');
+  assert.ok(gate.served >= 1, 'a later status read reached the Mirage');
+  assert.ok(
+    gate.paths.slice(gate.droppedAt).some((pathname) => pathname.includes('/page-resources')),
+    `the re-inspection read the page again after the drop; classic requests: ${JSON.stringify(gate.paths)}`,
+  );
+  assert.deepEqual(errors, []);
+});

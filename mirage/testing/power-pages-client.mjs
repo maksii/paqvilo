@@ -3,9 +3,13 @@
 export async function capturePowerPagesClientContract(input) {
   const ready = globalThis.Microsoft?.PowerPages?.onPagesClientApiReady;
   if (typeof ready !== 'function') throw new Error('The native Power Pages readiness API is unavailable.');
+  const deadline = input.readyTimeoutMs;
+  if (deadline !== undefined && !(Number.isInteger(deadline) && deadline > 0))
+    throw new Error('readyTimeoutMs must be a positive integer.');
   let timer;
   const pages = await new Promise((resolve, reject) => {
-    timer = setTimeout(() => reject(new Error('Power Pages API readiness deadline exceeded.')), 5000);
+    if (deadline !== undefined)
+      timer = setTimeout(() => reject(new Error('Power Pages API readiness deadline exceeded.')), deadline);
     try {
       const pending = ready.call(globalThis.Microsoft.PowerPages, resolve);
       if (pending?.then) pending.then(resolve, reject);

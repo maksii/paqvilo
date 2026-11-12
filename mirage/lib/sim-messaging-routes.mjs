@@ -4,6 +4,7 @@
 // be a serviceendpoint row).
 import { DEAD_LETTER_SUFFIX, QUEUE_MESSAGE_TABLE } from './message-bus.mjs';
 import { messagingOf } from './dataverse-webhooks.mjs';
+import { auditText } from './audit-log.mjs';
 
 const PREFIX = /^\/(?:_sim|__sim)\/api\/(messages|outbox)(?:\/(.*))?$/;
 /** The /_sim/api prefixes this router answers (status `routes`). */
@@ -11,7 +12,7 @@ export const routes = Object.freeze(['/messages', '/outbox']);
 // Credential names match by suffix after lower-casing and dropping separators, so client-secret and x-functions-key match
 // too. The bare pair field `key` and `sharedaccesskeyname` never match.
 const SECRET_NAME =
-  /(?:authvalue|connectionstring|password|secret|client(?:secret|password)|(?:sas|sharedaccess|account|primary|secondary|function)key|(?:access|sas)?token|sharedaccesssignature|apikey|authorization|signature|cookie)$|functionskey/; // NOSONAR: regex kept: a rewrite would change matches or captures
+  /(?:authvalue|connectionstring|password|secret|client(?:secret|password)|(?:sas|sharedaccess|account|primary|secondary|function|subscription)key|(?:access|sas)?token|sharedaccesssignature|apikey|authorization|signature|cookie|pwd)$|functionskey/; // NOSONAR: regex kept: a rewrite would change matches or captures
 const isSecretName = (name) =>
   SECRET_NAME.test(
     String(name)
@@ -19,8 +20,28 @@ const isSecretName = (name) =>
       .replace(/[^a-z0-9]/g, ''),
   );
 const REDACTED = '[redacted]';
+// Free-text fields (message bodies, outbox bodies and subjects, error messages, wait comments and run reasons) may embed a
+// connection string or a credential header, so their strings also pass through auditText. Names match in any letter case.
+// Other strings are returned as they are: a URL or token the API hands to its caller (a callback URL's sig, for example)
+// is not free text.
+const FREE_TEXT_NAMES = new Set([
+  'body',
+  'subject',
+  'message',
+  'text',
+  'payload',
+  'description',
+  'detail',
+  'details',
+  'errormessage',
+  'comments',
+  'reason',
+]);
 
-/** A deep copy with every credential-named value replaced, including DataContract `{ key, value }` pairs. */
+/**
+ * A deep copy with every credential-named value replaced, including DataContract `{ key, value }` pairs. Free-text
+ * fields are also masked by auditText. No text is cut, because a redacted text can be longer than the original.
+ */
 export function redactSecrets(value) {
   if (Array.isArray(value)) return value.map(redactSecrets);
   if (value === null || typeof value !== 'object') return value;
@@ -31,7 +52,9 @@ export function redactSecrets(value) {
       if ((pair && key === 'value') || isSecretName(key)) {
         if (item == null) redacted = item;
         else redacted = REDACTED;
-      } else redacted = redactSecrets(item);
+      } else if (typeof item === 'string' && FREE_TEXT_NAMES.has(key.toLowerCase()))
+        redacted = auditText(item, Number.POSITIVE_INFINITY);
+      else redacted = redactSecrets(item);
       return [key, redacted];
     }),
   );

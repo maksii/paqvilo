@@ -1,12 +1,17 @@
 // Reload guard (solution-schema.mjs assertReloadableScan): a reload whose scan carries an error diagnostic the last accepted scan did
 // not have (a Solution root renamed mid-checkout) is rejected before any state changes, on both hosts.
+// @test-kind contract: a reused Solution scan carries the fingerprint of the side files this load read, as the designed reload contract.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
+import { createMirageContext } from '../lib/mirage-context.mjs';
+import { importSolutionData } from '../lib/solution-data.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { modelDrivenFixture } from './model-driven-fixture.mjs';
+import { settleFileTimes } from './support/file-times.mjs';
 
 const SOLUTION = {
   'Other/Solution.xml':
@@ -91,3 +96,31 @@ test('a reload with a renamed Solution root is rejected and keeps registrations 
   renameBetweenReloads(t, false));
 test('a reload with a renamed Solution root is rejected and keeps registrations (Power Pages host)', (t) =>
   renameBetweenReloads(t, true));
+
+test('a reload that reuses the unchanged scan stamps this load fingerprint on its solution data after a side-file edit', async (t) => {
+  // The reused scan is judged as an unchanged tree once the racy window has passed; the shifted clock stays in place
+  // for the whole test, so the second load reuses the scan and only the side file has changed.
+  settleFileTimes(t);
+  const fixture = await modelDrivenFixture(t, { defer: true });
+  const script = path.join(fixture.solutionDir, 'WebResources/x_/script.js');
+  await fs.mkdir(path.dirname(script), { recursive: true });
+  await fs.writeFile(script, 'invented();');
+  const config = path.join(fixture.root, 'catalogue.json');
+  const settings = {
+    source: fixture.sourceDir,
+    environments: { local: 'http://127.0.0.1:8787' },
+    mirage: { solutionRoots: [fixture.solutionDir] },
+  };
+  await fs.writeFile(config, JSON.stringify({ sites: { invented: settings } }));
+  const context = await createMirageContext({ config, site: 'invented', env: 'local' });
+  const first = await context.createSimulator({ stateFile: null, watch: false });
+  const firstFingerprint = first.store.state.simulator.solutionData.contentFingerprint;
+  await first.close();
+  await fs.writeFile(script, 'invented(); // edited');
+  const second = await context.createSimulator({ stateFile: null, watch: false });
+  ownedFixture(t).add(() => second.close());
+  assert.equal(second.state({ summary: true }).status.bootstrap.timings.solutionReuse.scan, true, 'the scan is reused');
+  const fresh = (await importSolutionData([fixture.solutionDir])).contentFingerprint;
+  assert.notEqual(fresh, firstFingerprint, 'the side-file edit changes the fingerprint of a fresh load');
+  assert.equal(second.store.state.simulator.solutionData.contentFingerprint, fresh);
+});

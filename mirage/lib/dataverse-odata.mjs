@@ -17,7 +17,8 @@ const DATA_PATH = /^\/api\/data\/(v[\d.]+)(?:\/(.*))?$/;
 const KEY = "((?:'(?:[^']|'')*'|[^()'/])*)";
 const SEGMENT = new RegExp(String.raw`^([^()]+)(?:\(${KEY}\))?$`);
 const IDENT = /^[A-Za-z_]\w*$/;
-const FUNCTION_NAME = /^(?:Microsoft\.Dynamics\.CRM\.)?[A-Z][A-Za-z]+$/;
+// Built-in names are capitalised; publisher-prefixed custom names (Pub_Fn) may contain underscores.
+const FUNCTION_NAME = /^(?:Microsoft\.Dynamics\.CRM\.)?[A-Z]\w*$/;
 const CRM_NAME = /^Microsoft\.Dynamics\.CRM\.([A-Za-z_]\w*)$/;
 const RELATIONSHIP_CAST = /^Microsoft\.Dynamics\.CRM\.((?:OneToMany|ManyToMany)RelationshipMetadata)$/;
 const OPTION_SET_SEGMENTS = new Set(['OptionSet', 'GlobalOptionSet']);
@@ -277,10 +278,10 @@ function resource(rest, path) {
   // One segment may also name an operation: the router resolves `candidate` against the registry before treating it as a set.
   if (head.args === '') return unknown;
   const key = head.args;
-  if (key) {
-    const problem = keyProblem(key);
-    if (problem) return invalid(problem);
-  }
+  const problem = key ? keyProblem(key) : null;
+  // A single segment may name an operation: the route keeps its candidate, and the router runs that operation if one is registered.
+  if (problem && count === 1) return withCandidate(invalid(problem), head.name, key);
+  if (problem) return invalid(problem);
   if (count === 1) return singleResource(head);
   if (count === 2) return twoSegmentResource(head, second, unknown);
   if (count === 3) return threeSegmentResource(head, second, third, unknown);

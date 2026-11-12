@@ -13,7 +13,7 @@ const run = (cwd, command, config, ...args) =>
     execFile(
       process.execPath,
       [cli, 'lense', command, '--config', config, ...args],
-      { cwd, env, encoding: 'utf8', windowsHide: true, timeout: 30000 },
+      { cwd, env, encoding: 'utf8', windowsHide: true },
       (error, stdout, stderr) => resolve({ status: error?.code ?? 0, stdout, stderr }),
     ),
   );
@@ -119,6 +119,55 @@ test('all sites report separately and incomplete syntax fails the analysis gate'
   assert.doesNotMatch(answer.stdout, /PRIVATE-PARSER-CANARY|Before|After/);
 });
 
+test('analyze refuses each selector it would ignore, named for the standalone mode in use', async (t) => {
+  const fx = createFixture();
+  t.after(fx.cleanup);
+  const config = catalogue(fx, 'http://127.0.0.1:1', { sample: {}, second: {} });
+  fx.write('solution/Other/Solution.xml', '<SolutionManifest><Version>1.0.0.0</Version></SolutionManifest>');
+  fx.write(
+    'project.json',
+    JSON.stringify({ version: 2, runtime: { kind: 'dataverse-api' }, solutions: [{ id: 'schema', path: 'solution' }] }),
+  );
+  const project = fx.file('project.json');
+  const listing = () => fs.readdirSync(fx.dir).sort();
+  const before = listing();
+  const cliRun = (args) =>
+    new Promise((resolve) =>
+      execFile(
+        process.execPath,
+        [cli, 'analyze', ...args, '--json'],
+        { cwd: fx.dir, env, encoding: 'utf8', windowsHide: true },
+        (error, stdout, stderr) => resolve({ status: error?.code ?? 0, stdout, stderr }),
+      ),
+    );
+  for (const [mode, base] of [
+    ['--source', ['--source', fx.dir]],
+    ['--project', ['--project', project]],
+  ])
+    for (const [selector, message] of [
+      [['--env', 'local'], `--env selects a catalogue environment and cannot be combined with ${mode}.`],
+      [['--repo', fx.dir], `--repo selects catalogue sources and cannot be combined with ${mode}.`],
+    ]) {
+      const refusal = await cliRun([...base, ...selector]);
+      assert.equal(refusal.status, 1, [...base, ...selector].join(' '));
+      assert.deepEqual(JSON.parse(refusal.stdout).error, { code: 'invalid_argument', message }, message);
+    }
+  for (const [flag, value] of [
+    ['--url', 'http://127.0.0.1:1'],
+    ['--scope', 'changed'],
+    ['--baseline', 'HEAD'],
+  ]) {
+    const unsupported = await run(fx.dir, 'analyze', config, flag, value, '--json');
+    assert.equal(unsupported.status, 1, flag);
+    assert.deepEqual(
+      JSON.parse(unsupported.stdout).error,
+      { code: 'unsupported_option', message: `${flag} is not supported by analyze` },
+      flag,
+    );
+  }
+  assert.deepEqual(listing(), before);
+});
+
 test('text analysis prints the skipped Dataverse file and reason for an incomplete inspection', async (t) => {
   const fx = createFixture();
   t.after(fx.cleanup);
@@ -128,10 +177,63 @@ test('text analysis prints the skipped Dataverse file and reason for an incomple
     execFile(
       process.execPath,
       [cli, 'analyze', '--source', fx.file('solution')],
-      { env, encoding: 'utf8', windowsHide: true, timeout: 30000 },
+      { env, encoding: 'utf8', windowsHide: true },
       (error, stdout, stderr) => resolve({ status: error?.code ?? 0, stdout, stderr }),
     ),
   );
   assert.equal(answer.status, 1);
   assert.match(answer.stdout, /SKIPPED: .*Unknown\.xml: unsupported-dataverse-metadata/);
+});
+
+test('analyze --source overrides the selected site portal source with --config and --site, and --all applies it to every site', async (t) => {
+  const fx = createFixture();
+  t.after(fx.cleanup);
+  fx.write('configured/web-files/.keep', '');
+  const config = catalogue(fx, 'http://127.0.0.1:1', {
+    sample: { source: 'configured' },
+    second: { source: 'configured' },
+  });
+  fx.write('override/web-files/.keep', '');
+  fx.write(
+    'override/sitesetting.yml',
+    '- adx_name: Webapi/sample_record/enabled\n  adx_value: true\n- adx_name: Webapi/sample_record/fields\n  adx_value: "*"\n',
+  );
+  const override = fx.file('override');
+  const findingIds = (site) => site.analysis.findings.map((finding) => finding.ruleId);
+  const configured = await run(fx.dir, 'analyze', config, '--site', 'sample', '--json');
+  const configuredSite = JSON.parse(configured.stdout).reports[0];
+  assert.ok(!findingIds(configuredSite).includes('PP-API-001'));
+  const overridden = await run(fx.dir, 'analyze', config, '--site', 'sample', '--source', override, '--json');
+  assert.equal(overridden.status, 1, overridden.stdout + overridden.stderr);
+  const overriddenSite = JSON.parse(overridden.stdout).reports[0];
+  assert.ok(findingIds(overriddenSite).includes('PP-API-001'));
+  assert.notEqual(overriddenSite.analysis.sourceDigest, configuredSite.analysis.sourceDigest);
+  const everySite = await run(fx.dir, 'analyze', config, '--all', '--source', override, '--json');
+  assert.deepEqual(
+    JSON.parse(everySite.stdout).reports.map((item) => [item.site, findingIds(item).includes('PP-API-001')]),
+    [
+      ['sample', true],
+      ['second', true],
+    ],
+  );
+});
+
+test('analyze --source without --config reads the folder as a standalone source', async () => {
+  const project = fileURLToPath(new URL('../examples/project', import.meta.url));
+  const standalone = await new Promise((resolve) =>
+    execFile(
+      process.execPath,
+      [cli, 'analyze', '--source', project, '--json'],
+      { cwd: project, env, encoding: 'utf8', windowsHide: true },
+      (error, stdout, stderr) => resolve({ status: error?.code ?? 0, stdout, stderr }),
+    ),
+  );
+  assert.equal(standalone.status, 0, standalone.stderr);
+  const answer = JSON.parse(standalone.stdout);
+  assert.equal(answer.ok, true);
+  assert.deepEqual(
+    answer.reports.map((item) => item.site),
+    ['local-project'],
+  );
+  assert.deepEqual(answer.errors, []);
 });

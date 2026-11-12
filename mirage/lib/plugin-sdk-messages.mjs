@@ -126,8 +126,8 @@ function metadataResponse(api, name, parameters) {
 }
 
 // Each request of an ExecuteMultiple a plug-in issues is a new root operation two levels below the caller, with its own
-// correlation and without the request tag or FromSandbox (native and native-r2 bulkRequests). The caller's savepoint
-// keeps its writes: rollback follows the caller until the native fault matrix is captured.
+// correlation and without the request tag or FromSandbox (native and native-r2 bulkRequests). The parent context
+// and the request tag are restored when run() returns; the transaction and its savepoints are not changed here.
 function asRootOperation(store, run) {
   const previous = store.pluginParentContext,
     previousTag = store.pluginSdkTag;
@@ -201,7 +201,15 @@ function executeMultipleResponse(name, store, parameters, dispatch) {
   onlyParameters(name, parameters, ['Requests', 'Settings']);
   const requests = requestsOf(parameters.Requests, name);
   if (requests.length > MAX_BATCH)
-    invalid(`The ExecuteMultiple request has ${requests.length} requests; the maximum is ${MAX_BATCH}.`);
+    fail(
+      `The ExecuteMultiple request has ${requests.length} requests; the maximum is ${MAX_BATCH}.`,
+      'InvalidArgument',
+      400,
+      {
+        innerCode: '0x80040203',
+        sourceException: { exceptionDetails: { MaxBatchSize: MAX_BATCH } },
+      },
+    );
   const settings = parameters.Settings;
   const continueOnError = flag(memberOf(settings, 'ContinueOnError'), 'ContinueOnError');
   const returnResponses = flag(memberOf(settings, 'ReturnResponses'), 'ReturnResponses');

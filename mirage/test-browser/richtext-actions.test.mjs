@@ -1,3 +1,4 @@
+// @test-kind contract: rich text edit and assert actions on native managed frames and local adapter editors, including mode resolution and modal focus handoff
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';

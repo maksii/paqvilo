@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's portal services (sign-in tokens, ads, polls) are designed simulator runtime behaviour; the per-test kinds below override it.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createVerify } from 'node:crypto';
@@ -125,6 +126,28 @@ test('the implicit grant flow can be turned off by site setting', async (t) => {
   const response = await fetch(`${app.url}/_services/auth/token`, { method: 'POST', headers: session });
   assert.equal(response.status, 405, 'the token route falls through to page routing, which refuses the POST');
   assert.equal((await fetch(`${app.url}/_services/auth/publickey`)).status, 404);
+});
+
+// @test-kind security: a state that is not a valid header value gets Mirage's own error document, and the form body read is bounded.
+test('the implicit grant token refuses a state that is not a header value and bounds the form body', async (t) => {
+  const { app, session } = await servicesFixture(t, [['ImplicitGrantFlow/RegisteredClientId', 'local-api']]);
+  const post = (query) => fetch(`${app.url}/_services/auth/token?${query}`, { method: 'POST', headers: session });
+  const refused = await post('client_id=local-api&state=a%0D%0Ab');
+  assert.equal(refused.status, 400);
+  assert.match(refused.headers.get('content-type'), /^application\/json/);
+  assert.equal(refused.headers.get('state'), null);
+  assert.equal((await refused.json()).ErrorId, 'PortalSTS0002');
+  const echoed = await post('client_id=local-api&state=abc');
+  assert.equal(echoed.status, 200);
+  assert.equal(echoed.headers.get('state'), 'abc');
+  await echoed.text();
+  const oversized = await fetch(`${app.url}/_services/auth/token`, {
+    method: 'POST',
+    headers: { ...session, 'content-type': 'application/x-www-form-urlencoded' },
+    body: `client_id=local-api&pad=${'x'.repeat(70 * 1024)}`,
+  });
+  assert.equal(oversized.status, 413);
+  await oversized.text();
 });
 
 test("ad and poll placement services render the portal's ad and poll markup", async (t) => {
@@ -328,8 +351,182 @@ test('entity list OData feeds publish the list view with the legacy property mod
     ' '.repeat(100000) + '!',
   ])
     assert.equal((await call('/_odata/OrgContactSet?$filter=' + encodeURIComponent(filter))).status, 400);
+  // Parentheses or `not` nested beyond 100 levels are refused as a bad $filter, not a stack exhaustion.
+  const nestedParentheses = '('.repeat(1000) + "name eq 'x'" + ')'.repeat(1000);
+  assert.equal((await call('/_odata/OrgContactSet?$filter=' + encodeURIComponent(nestedParentheses))).status, 400);
+  const deepParentheses = '('.repeat(10000) + "name eq 'x'" + ')'.repeat(10000);
+  assert.equal((await call('/_odata/OrgContactSet?$filter=' + encodeURIComponent(deepParentheses))).status, 400);
+  const nestedNot = 'not '.repeat(1000) + "name eq 'x'";
+  assert.equal((await call('/_odata/OrgContactSet?$filter=' + encodeURIComponent(nestedNot))).status, 400);
   assert.equal((await call('/_odata/OrgContactSet', { accept: 'application/atom+xml' })).status, 406);
   assert.equal((await call('/other')).handled, false);
+});
+
+test('OData feeds keep the exact digits of decimal values and $filter literals beyond double precision', async () => {
+  const exact = (value) => ({ $type: 'DataverseNumeric', numericType: 'Decimal', value });
+  const store = await new DataStore({
+    state: {
+      mappings: { priceitem: { entitySet: 'priceitems', idColumn: 'priceitemid', nameColumn: 'name' } },
+      tables: {
+        priceitem: [
+          {
+            priceitemid: '0d000000-0000-4000-8000-000000000001',
+            name: 'Exact A',
+            amount: exact('12345678901234567890.1'),
+          },
+          {
+            priceitemid: '0d000000-0000-4000-8000-000000000002',
+            name: 'Exact B',
+            amount: exact('12345678901234567890.2'),
+          },
+          { priceitemid: '0d000000-0000-4000-8000-000000000003', name: 'Ordinary', amount: 12.5 },
+        ],
+      },
+      permissions: [],
+      settings: { permissionMode: 'permissive' },
+    },
+  }).init();
+  const portal = {
+    lists: [
+      {
+        id: '1d000000-0000-4000-8000-000000000002',
+        name: 'Price Items',
+        entityName: 'priceitem',
+        metadata: {
+          adx_odata_enabled: true,
+          adx_odata_entitysetname: 'PriceItemSet',
+          adx_odata_entitytypename: 'priceitem',
+          adx_odata_view: '{2E000000-0000-4000-8000-000000000002}',
+        },
+      },
+    ],
+    website: { id: SITE },
+    observed: { listODataFeeds: 'served' },
+  };
+  const metadata = {
+    views: [
+      {
+        id: '2e000000-0000-4000-8000-000000000002',
+        entity: 'priceitem',
+        fetchXml:
+          '<fetch><entity name="priceitem"><attribute name="priceitemid"/><attribute name="name"/><attribute name="amount"/></entity></fetch>',
+        fields: [{ name: 'name' }, { name: 'amount' }],
+      },
+    ],
+    entities: { priceitem: { fields: { name: { dataverseType: 'nvarchar' }, amount: { dataverseType: 'money' } } } },
+  };
+  const context = { portal, metadata, store, readProvider: store, identity: {}, origin: 'http://localhost:3000' };
+  const call = async (pathAndQuery) => {
+    const res = fakeResponse();
+    await handleODataFeed(
+      { method: 'GET', headers: { accept: 'application/json' } },
+      res,
+      new URL(pathAndQuery, 'http://localhost:3000'),
+      context,
+    );
+    return res.response;
+  };
+  const names = async (filter) => {
+    const response = await call(`/_odata/PriceItemSet?$filter=${encodeURIComponent(filter)}&$orderby=name`);
+    assert.equal(response.status, 200, response.body);
+    return JSON.parse(response.body).value.map((entry) => entry.name);
+  };
+  const all = await call('/_odata/PriceItemSet?$orderby=name');
+  // Ordinary decimals keep the JSON number form.
+  assert.match(all.body, /"name":"Ordinary","amount":12\.5[,}]/);
+  assert.match(all.body, /"name":"Exact A","amount":12345678901234567890\.1[,}]/);
+  assert.match(all.body, /"name":"Exact B","amount":12345678901234567890\.2[,}]/);
+  assert.deepEqual(await names('amount eq 12345678901234567890.1'), ['Exact A']);
+  assert.deepEqual(await names('amount eq 12345678901234567890.2'), ['Exact B']);
+  assert.deepEqual(await names('amount gt 12345678901234567890.15'), ['Exact B']);
+  assert.deepEqual(await names('amount eq 12.5'), ['Ordinary']);
+  const ordered = JSON.parse((await call('/_odata/PriceItemSet?$orderby=amount desc')).body).value.map(
+    (entry) => entry.name,
+  );
+  assert.deepEqual(ordered, ['Exact B', 'Exact A', 'Ordinary']);
+});
+
+// @test-kind security: a long flat $filter chain must not exhaust the stack, and nesting past the limit must stay a 400 feed error.
+test('OData $filter evaluates 20,000-term flat chains, allows nesting at the limit and refuses deeper nesting as odata.error', async () => {
+  const store = await new DataStore({
+    state: {
+      mappings: { orgcontact: { entitySet: 'orgcontacts', idColumn: 'orgcontactid', nameColumn: 'name' } },
+      tables: {
+        orgcontact: [
+          { orgcontactid: '0c000000-0000-4000-8000-000000000001', name: 'Link A', role: 1 },
+          { orgcontactid: '0c000000-0000-4000-8000-000000000002', name: 'Link B', role: 2 },
+        ],
+      },
+      permissions: [],
+      settings: { permissionMode: 'permissive' },
+    },
+  }).init();
+  const portal = {
+    lists: [
+      {
+        id: '1d000000-0000-4000-8000-000000000001',
+        name: 'Organisation Contacts',
+        entityName: 'orgcontact',
+        metadata: {
+          adx_odata_enabled: true,
+          adx_odata_entitysetname: 'OrgContactSet',
+          adx_odata_entitytypename: 'orgcontact',
+          adx_odata_view: '{2E000000-0000-4000-8000-000000000001}',
+        },
+      },
+    ],
+    website: { id: '5e000000-0000-4000-8000-000000000001' },
+    observed: { listODataFeeds: 'served' },
+  };
+  const metadata = {
+    views: [
+      {
+        id: '2e000000-0000-4000-8000-000000000001',
+        entity: 'orgcontact',
+        name: 'Organisation Contacts',
+        fetchXml:
+          '<fetch><entity name="orgcontact"><attribute name="orgcontactid"/><attribute name="name"/><attribute name="role"/></entity></fetch>',
+        fields: [{ name: 'name' }, { name: 'role' }],
+      },
+    ],
+    entities: {
+      orgcontact: {
+        fields: {
+          name: { dataverseType: 'nvarchar' },
+          role: {
+            dataverseType: 'picklist',
+            options: [
+              { value: 1, label: 'Primary' },
+              { value: 2, label: 'Deputy' },
+            ],
+          },
+        },
+      },
+    },
+  };
+  const context = { portal, metadata, store, readProvider: store, identity: {}, origin: 'http://localhost:3000' };
+  const call = async (filter) => {
+    const res = fakeResponse();
+    await handleODataFeed(
+      { method: 'GET', headers: { accept: 'application/json' } },
+      res,
+      new URL(`/_odata/OrgContactSet?$filter=${encodeURIComponent(filter)}`, 'http://localhost:3000'),
+      context,
+    );
+    return { status: res.response.status, json: () => JSON.parse(res.response.body) };
+  };
+  const names = async (filter) => (await call(filter)).json().value.map((entry) => entry.name);
+  const absent = Array.from({ length: 19999 }, (_, i) => `name eq 'absent ${i}'`);
+  assert.deepEqual(await names([...absent, "name eq 'Link B'"].join(' or ')), ['Link B']);
+  assert.deepEqual(await names(Array.from({ length: 20000 }, () => "name ne 'absent'").join(' and ')), [
+    'Link A',
+    'Link B',
+  ]);
+  const atLimit = `${'('.repeat(100)}name eq 'Link A'${')'.repeat(100)}`;
+  assert.deepEqual(await names(atLimit), ['Link A']);
+  const beyondLimit = await call(`${'('.repeat(101)}name eq 'Link A'${')'.repeat(101)}`);
+  assert.equal(beyondLimit.status, 400);
+  assert.equal(beyondLimit.json()['odata.error'].message.value, 'The $filter expression is nested too deeply.');
 });
 
 test('native grid actions activate, deactivate, associate, disassociate and download the view as CSV', async (t) => {
@@ -374,10 +571,9 @@ test('native grid actions activate, deactivate, associate, disassociate and down
   );
 
   const columns = [{ LogicalName: 'name', Name: 'Child name', Type: 0 }];
-  for (const [action, format] of [
-    ['download-as-csv', null],
-    ['download-as-excel', 'csv'],
-  ]) {
+  {
+    const action = 'download-as-csv';
+    const format = null;
     const response = await call(action, { base64SecureConfiguration: secure, columns, viewName: 'Children' });
     assert.equal(response.status, 200, action);
     assert.equal(response.headers.get('x-sim-download-format'), format);

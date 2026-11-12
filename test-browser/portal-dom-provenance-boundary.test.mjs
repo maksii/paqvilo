@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own portal provenance boundary, including the origin gate's refusal of page-script administration requests.
 import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -116,6 +117,7 @@ for (const [name, source, relationship, call] of [
     'append',
   ],
 ])
+  // @test-kind security: an authored script cannot obtain parser-original proof for a node it created
   test('actual composite response never grants parser proof to ' + name, async (t) => {
     const fx = await fixture(t, source);
     const dom = await fx.domProof();
@@ -163,6 +165,7 @@ test('actual inert parser original keeps its literal identity when moved into th
   assert.deepEqual(fx.errors, []);
 });
 
+// @test-kind security: a script that writes a valid marker cannot forge literal proof
 test('native document.write cannot grant literal proof even with the valid future raw HTML and marker', async (t) => {
   const source =
     '<!doctype html><html><body><p id="earlier">Earlier</p><script src="/write.js"></script><button id="claimed">Future literal</button></body></html>';
@@ -196,6 +199,7 @@ test('native document.write cannot grant literal proof even with the valid futur
   assert.deepEqual(fx.errors, []);
 });
 
+// @test-kind security: an authored script cannot read response descriptors even with a valid proof ID
 test('actual Mirage keeps response descriptors private from authored scripts that know a public proof ID', async (t) => {
   const fx = inspectionFixture();
   let app, context, detach;
@@ -238,7 +242,7 @@ attackStatus.status=request.status;attackStatus.descriptorExposed=request.respon
   await page.goto(app.url);
   assert.deepEqual(await page.evaluate(() => window.attackStatus), {
     earlyFacts: 1,
-    status: 404,
+    status: 403,
     descriptorExposed: false,
   });
   await page.waitForFunction(

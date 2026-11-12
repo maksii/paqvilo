@@ -83,7 +83,7 @@ function interpolationEnd(value, start) {
   return value.length;
 }
 
-function expressionSegments(value) {
+export function expressionSegments(value) {
   if (value.startsWith('@') && !value.startsWith('@{') && !value.startsWith('@@')) return [value.slice(1)];
   if (!value.includes('@{')) return [];
   const segments = [];

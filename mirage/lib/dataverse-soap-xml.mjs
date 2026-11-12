@@ -82,7 +82,8 @@ const declareScope = (scope, attributes) => {
   for (const [name, uri] of declarations) next.set(name === 'xmlns' ? '' : name.slice(6), canonical(uri));
   return next;
 };
-// xmlDecode throws a RangeError for an out-of-range character reference; the client needs a 400.
+// xmlDecode refuses an out-of-range character reference with a 400 InvalidRequest (fetchxml-engine.mjs); the SOAP
+// request gets its own 400 InvalidRequest, so any error from the decode is answered the same way.
 const decodeText = (text) => {
   try {
     return xmlDecode(text);
@@ -305,6 +306,25 @@ export function decodeColumnSet(node) {
     allColumns: ['true', '1'].includes(kidText(node, NS.a, 'AllColumns')),
     columns: (kid(node, NS.a, 'Columns')?.children ?? []).map((c) => c.text),
   };
+}
+
+// Members an Entity element carries in the DataContract. An untyped declared Entity member with one of them is an Entity.
+const ENTITY_MEMBERS = new Set([
+  'Attributes',
+  'EntityState',
+  'FormattedValues',
+  'Id',
+  'KeyAttributes',
+  'LogicalName',
+  'RelatedEntities',
+  'RowVersion',
+]);
+/** The declared Entity member of Create or Update: untyped content with the Entity shape decodes as an Entity. */
+export function decodeDeclaredEntity(node) {
+  const untyped = Boolean(node) && !isNil(node) && !typeOf(node);
+  return untyped && node.children.some((c) => c.ns === NS.a && ENTITY_MEMBERS.has(c.name))
+    ? decodeEntity(node)
+    : decodeValue(node);
 }
 
 const DECODERS = new Map([

@@ -4,7 +4,15 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { codeAppSettings, readCodeAppConfig, loadCodeApps, codeAppInventoryRecord } from '../lib/code-apps-config.mjs';
+import { EventEmitter } from 'node:events';
+import http from 'node:http';
+import {
+  codeAppSettings,
+  readCodeAppConfig,
+  loadCodeApps,
+  codeAppInventoryRecord,
+  pinnedLocalFetch,
+} from '../lib/code-apps-config.mjs';
 
 const APP = '77777777-7777-4777-8777-777777777777';
 
@@ -282,6 +290,211 @@ test('dev server settings validate explicit argv, cwd, environment and bounded t
     { command: ['node'], timeoutMs: 300001 },
   ])
     assert.throws(() => codeAppSettings([{ name: 'local', dir: 'a', devServer }]));
+});
+
+// @test-kind security: a line break or NUL in a command element would be split or truncated by the launcher
+test('dev server commands refuse NUL and line breaks in any element and keep ordinary arguments', () => {
+  const settings = (command) => codeAppSettings([{ name: 'local', dir: 'a', devServer: { command } }]);
+  for (const command of [
+    ['node', 'x\0y'],
+    ['node', 'x\ny'],
+    ['node', 'x\ry'],
+    ['node', 'x\r\ny'],
+    ['node\n', 'server.js'],
+  ])
+    assert.throws(() => settings(command), /codeApps\[0\]\.devServer\.command must be/);
+  const ordinary = ['node', '--title=Q "a" & b%c', 'two  spaces', "it's"];
+  assert.deepEqual(settings(ordinary)[0].devServer.command, ordinary);
+});
+
+// The refusal names the directory a relative path is resolved against: the app directory for cwd and config.
+test('relative path refusals name the app directory for devServer.cwd and config', () => {
+  assert.throws(
+    () => codeAppSettings([{ name: 'a', dir: 'apps/a', devServer: { command: ['node'], cwd: '../shared' } }]),
+    /codeApps\[0\]\.devServer\.cwd must be a path relative to the app directory/,
+  );
+  assert.throws(
+    () => codeAppSettings([{ name: 'a', dir: 'apps/a', config: '../power.config.json' }]),
+    /codeApps\[0\]\.config must be a path relative to the app directory/,
+  );
+  assert.throws(
+    () => codeAppSettings([{ name: 'a', dir: '../outside' }]),
+    /codeApps\[0\]\.dir must be a path relative to the project root/,
+  );
+});
+
+// @test-kind security: a local app URL with a username or password is refused, and its credential never reaches a diagnostic.
+test('localAppUrl with credentials is refused at both configuration entry points without echoing them', async (t) => {
+  const secret = 'invented-secret-marker';
+  const localAppUrl = `http://invented-user:${secret}@127.0.0.1:5199/`;
+  assert.throws(
+    () => codeAppSettings([{ name: 'a', dir: 'a', localAppUrl }]),
+    (error) => /loopback http\(s\) URL without credentials/.test(error.message) && !error.message.includes(secret),
+  );
+  const root = await tempDir(t);
+  await fs.writeFile(path.join(root, 'power.config.json'), JSON.stringify({ localAppUrl }));
+  const config = readCodeAppConfig(root);
+  assert.equal(config.localAppUrl, null);
+  assert.deepEqual(
+    config.diagnostics.map((d) => d.code),
+    ['CODEAPP_CONFIG_INVALID'],
+  );
+  assert.doesNotMatch(JSON.stringify(config.diagnostics), new RegExp(secret));
+});
+
+// @test-kind security: a probe connects to the one address its name resolved to, and a later answer never redirects the connection.
+test('a loopback probe connects to the first checked address even when the name resolves elsewhere later', async () => {
+  const answers = [[{ address: '127.0.0.1', family: 4 }], [{ address: '203.0.113.7', family: 4 }]];
+  const lookups = [];
+  const lookup = async (host) => {
+    lookups.push(host);
+    return answers.shift();
+  };
+  const connected = [];
+  const connect = (options, onResponse) => {
+    connected.push(options);
+    const request = new EventEmitter();
+    request.end = () => onResponse({ statusCode: 302, destroy() {} });
+    return request;
+  };
+  const response = await pinnedLocalFetch('http://app.localhost:5399/mounted', { method: 'HEAD' }, { lookup, connect });
+  assert.equal(response.status, 302, 'a redirect is reported, not followed');
+  assert.deepEqual(lookups, ['app.localhost']);
+  assert.equal(connected.length, 1);
+  assert.equal(connected[0].hostname, '127.0.0.1');
+  assert.equal(connected[0].headers.host, 'app.localhost:5399');
+  assert.equal(connected[0].path, '/mounted');
+  await assert.rejects(
+    pinnedLocalFetch(
+      'http://app.localhost:5399/',
+      {},
+      { lookup: async () => [{ address: '203.0.113.7', family: 4 }], connect },
+    ),
+    /does not resolve only to loopback/,
+  );
+  assert.equal(connected.length, 1, 'a name with a non-loopback answer is never connected');
+});
+
+test('a pinned https probe passes an SNI name for a host name and no SNI name for an IP literal', async () => {
+  const servernames = [];
+  const connect = (options, onResponse) => {
+    servernames.push(options.servername);
+    const request = new EventEmitter();
+    request.end = () => onResponse({ statusCode: 302, destroy() {} });
+    return request;
+  };
+  await pinnedLocalFetch('https://127.0.0.1:8443/', {}, { connect });
+  await pinnedLocalFetch(
+    'https://localhost:8443/',
+    {},
+    { lookup: async () => [{ address: '127.0.0.1', family: 4 }], connect },
+  );
+  assert.deepEqual(servernames, [undefined, 'localhost']);
+});
+
+async function loopbackServer(t, handler) {
+  const server = http.createServer(handler);
+  let connections = 0;
+  server.on('connection', () => {
+    connections += 1;
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(
+    () =>
+      new Promise((resolve) => {
+        server.closeAllConnections();
+        server.close(resolve);
+      }),
+  );
+  return { port: server.address().port, connections: () => connections };
+}
+
+test('a loopback name reaches a server listening only on the address family of its later answer', async (t) => {
+  const server = await loopbackServer(t, (req, res) => res.end('ok'));
+  const lookup = async () => [
+    { address: '::1', family: 6 },
+    { address: '127.0.0.1', family: 4 },
+  ];
+  const response = await pinnedLocalFetch(`http://localhost:${server.port}/`, {}, { lookup });
+  assert.equal(response.status, 200);
+  assert.equal(server.connections(), 1);
+});
+
+test('a loopback probe makes one attempt at the first validated answer, with the requested Host and SNI name', async (t) => {
+  const server = await loopbackServer(t, (req, res) => res.end('ok'));
+  const attempts = [];
+  const connect = (options, onResponse) => {
+    attempts.push(options);
+    return http.request(options, onResponse);
+  };
+  const lookup = async () => [
+    { address: '127.0.0.1', family: 4 },
+    { address: '::1', family: 6 },
+  ];
+  const response = await pinnedLocalFetch(`http://localhost:${server.port}/`, {}, { lookup, connect });
+  assert.equal(response.status, 200);
+  assert.deepEqual(
+    attempts.map((options) => options.hostname),
+    ['127.0.0.1'],
+  );
+  assert.equal(attempts[0].headers.host, `localhost:${server.port}`);
+  assert.equal(attempts[0].servername, 'localhost');
+});
+
+// @test-kind security: a name with any answer outside loopback is refused before any connection is made, to any answer.
+test('a loopback probe refuses a name with any non-loopback answer before connecting to a loopback answer', async (t) => {
+  const server = await loopbackServer(t, (req, res) => res.end('ok'));
+  const lookup = async () => [
+    { address: '127.0.0.1', family: 4 },
+    { address: '10.0.0.1', family: 4 },
+  ];
+  await assert.rejects(
+    pinnedLocalFetch(`http://localhost:${server.port}/`, {}, { lookup }),
+    /does not resolve only to loopback/,
+  );
+  assert.equal(server.connections(), 0);
+});
+
+test('a loopback probe rejects with the last connect error when every validated answer refuses', async () => {
+  const codes = { '::1': 'EADDRNOTAVAIL', '127.0.0.1': 'ECONNREFUSED' };
+  const attempts = [];
+  const connect = (options) => {
+    attempts.push(options.hostname);
+    const request = new EventEmitter();
+    request.end = () => {
+      const code = codes[options.hostname];
+      request.emit('error', Object.assign(new Error(`connect ${code}`), { code }));
+    };
+    return request;
+  };
+  const lookup = async () => [
+    { address: '::1', family: 6 },
+    { address: '127.0.0.1', family: 4 },
+  ];
+  await assert.rejects(pinnedLocalFetch('http://localhost:5399/', {}, { lookup, connect }), { code: 'ECONNREFUSED' });
+  assert.deepEqual(attempts, ['::1', '127.0.0.1']);
+});
+
+test('a loopback probe returns the HTTP status of its first validated answer without trying the next answer', async () => {
+  const attempts = [];
+  const connect = (options, onResponse) => {
+    attempts.push(options.hostname);
+    const request = new EventEmitter();
+    request.end = () => onResponse({ statusCode: 500, destroy() {} });
+    return request;
+  };
+  const lookup = async () => [
+    { address: '127.0.0.1', family: 4 },
+    { address: '::1', family: 6 },
+  ];
+  const response = await pinnedLocalFetch('http://localhost:5399/', {}, { lookup, connect });
+  assert.equal(response.status, 500);
+  assert.deepEqual(attempts, ['127.0.0.1']);
+});
+
+test('localAppUrl accepts every loopback spelling the dev server treats as local', () => {
+  for (const localAppUrl of ['http://127.0.0.2:5199/', 'http://app.localhost:5199/', 'http://[::1]:5199/'])
+    assert.equal(codeAppSettings([{ name: 'a', dir: 'a', localAppUrl }])[0].localAppUrl, localAppUrl);
 });
 
 // The toolkit derives its local source-name map, refuses an ambiguous alias and carries the configured dev-server command unchanged.

@@ -4,11 +4,12 @@ import { FORMATTED, LOOKUP_LOGICAL } from './webapi-format.mjs';
 import { DataError } from './data-error.mjs';
 import { relationshipsOf } from './dataverse-standard.mjs';
 
-// ponytail: fixed lengths for the synthesized name columns; the endpoint's real lengths are not documented.
-const TEXT_LENGTH = 100;
-const LOOKUP_NAME_LENGTH = 160;
+// ponytail: fixed lengths for text and the synthesized name columns; the endpoint's real lengths are not documented.
+// Text without a maxLength and the name columns are nvarchar(4000); a longer result value widens its column.
+const TEXT_LENGTH = 4000;
+const LOOKUP_NAME_LENGTH = 4000;
 const TYPE_LENGTH = 64;
-const CHOICE_NAME_LENGTH = 100;
+const CHOICE_NAME_LENGTH = 4000;
 const MAX = -1; // nvarchar(max): multi-line text.
 const TEXT_TYPES = new Set(['nvarchar', 'string', 'text', 'textarea', 'email', 'entityname']);
 const MEMO_TYPES = new Set(['memo', 'ntext']);

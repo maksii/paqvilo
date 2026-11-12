@@ -12,6 +12,9 @@ export const SYSTEM_ADMINISTRATOR_PROFILE_ID = '572329c1-a042-4e22-be47-367c6374
 // field_security_permission_type: 0 Not Allowed, 4 Allowed.
 const ALLOWED = 4;
 const ADMIN_ROLE = 'System Administrator';
+// Administrator-only columns: read null for every caller but a System Administrator (Learn: Tracing and logging, access to
+// sensitive columns). Hidden from the other callers' reads exactly as a secured column is.
+export const ADMIN_READ_COLUMNS = { plugintracelog: ['messageblock', 'configuration', 'secureconfiguration'] };
 /**
  * A principal not yet created that will hold System Administrator (the portal's local application user, created on first
  * use): column security evaluates it as an administrator. Matched by reference only, so no data can claim it.
@@ -152,6 +155,24 @@ export function maskedOperand() {
     { innerCode: '0x80041155' },
   );
 }
+/** A column no read returns (validForRead false) used as an operand: the unknown-property refusal an unknown column gets. */
+export function unknownPropertyError(logical, name) {
+  return new DataError(
+    `Could not find a property named '${name}' on type 'Microsoft.Dynamics.CRM.${logical}'.`,
+    400,
+    'InvalidRequest',
+    { innerCode: '0x80060888' },
+  );
+}
+
+/** The System Administrator rule: the stand-in, or a user holding the System Administrator role. Every column check shares it. */
+export function isSystemAdministrator(principals, user) {
+  return (
+    user === SYSTEM_ADMINISTRATOR_STAND_IN ||
+    (Boolean(user) && principals.roles(user).some((r) => r.name === ADMIN_ROLE))
+  );
+}
+
 // Aggregates that read only whether a value is present: masking keeps null as null, so they observe nothing of the clear value.
 const PRESENCE_AGGREGATES = new Set(['count', 'countcolumn', '$count']);
 
@@ -170,22 +191,47 @@ function createFieldSecurity({
   const reporter = onceReporter(diagnostic);
   const report = (entry) => reporter.report(entry, `${entry.code}\u0000${entry.table}\u0000${entry.column}`);
   const rows = (logical) => store.tableRows(logical);
-  const isAdmin = (user) =>
-    user === SYSTEM_ADMINISTRATOR_STAND_IN || principals.roles(user).some((r) => r.name === ADMIN_ROLE);
+  const isAdmin = (user) => isSystemAdministrator(principals, user);
   const mappingField = (mapping, name, source = metadataFields(mapping?.logicalName)) => ({
     ...source?.[name],
     ...mapping?.fieldMetadata?.[name],
     ...mapping?.fields?.[name],
   });
+  const namedFields = (mapping, source) => [
+    ...new Set([
+      ...Object.keys(source ?? {}),
+      ...Object.keys(mapping?.fieldMetadata ?? {}),
+      ...Object.keys(mapping?.fields ?? {}),
+    ]),
+  ];
   const securedNames = (mapping) => {
     const source = metadataFields(mapping?.logicalName) ?? null;
-    return [
-      ...new Set([
-        ...Object.keys(source ?? {}),
-        ...Object.keys(mapping?.fieldMetadata ?? {}),
-        ...Object.keys(mapping?.fields ?? {}),
-      ]),
-    ].filter((name) => isSecuredField(mappingField(mapping, name, source)));
+    return namedFields(mapping, source).filter((name) => isSecuredField(mappingField(mapping, name, source)));
+  };
+  // A column no read of this caller returns: validForRead false (Learn: IsValidForRead False) hides it from every caller, the
+  // administrator included, because only the platform reads its stored value (webhook dispatch, trace writer, import, export
+  // read the store directly). An administrator-only column (ADMIN_READ_COLUMNS) hides from every caller but a System Administrator.
+  // Returns 'unreadable', 'administrator' or null.
+  function hiddenKind(user, logical, column) {
+    const mapping = mappingOf(logical);
+    if (!mapping) return null;
+    const source = metadataFields(mapping.logicalName) ?? null;
+    if (mappingField(mapping, column, source).validForRead === false) return 'unreadable';
+    const administratorOnly = ADMIN_READ_COLUMNS[mapping.logicalName]?.includes(column) === true;
+    return administratorOnly && !isAdmin(user) ? 'administrator' : null;
+  }
+  const hiddenNames = (user, mapping) =>
+    namedFields(mapping, metadataFields(mapping.logicalName) ?? null).filter(
+      (name) => hiddenKind(user, mapping.logicalName, name) !== null,
+    );
+  // The column names a projection masks, resolved once per projection and shared by every row of it.
+  const fieldNames = (user, mapping) => ({ hidden: hiddenNames(user, mapping), secured: securedNames(mapping) });
+  // The refusal a hidden column answers as an operand: the unknown-property refusal for validForRead false, 0x80041155 for an
+  // administrator-only column the caller may not read. Null when the column is not hidden from the caller.
+  const hiddenError = (user, logical, column) => {
+    const kind = hiddenKind(user, logical, column);
+    if (kind === null) return null;
+    return kind === 'unreadable' ? unknownPropertyError(logical, column) : maskedOperand();
   };
   // A stored mapping keyed by its logical name may omit logicalName (a project-declared table); the masking rule, grant and
   // metadata lookups key on it, so it is always set here.
@@ -383,9 +429,16 @@ function createFieldSecurity({
   // unless the read asked UnMaskedData and CanReadUnmasked allows it (All Records, or One Record on a single-record read).
   // Without view (filter evaluation) a readable column keeps its stored value.
   // The aliased lookup form `prefix_name_value` is assumed.
+  // Nulls a column under its plain name and its lookup form (_name_value), with its annotations.
+  function nullColumn(row, prefix, name) {
+    for (const form of [`${prefix}${name}`, `${prefix}_${name}_value`]) {
+      if (!Object.hasOwn(row, form)) continue;
+      row[form] = null;
+      dropAnnotations(row, form);
+    }
+  }
   function maskColumn(user, mapping, row, prefix, view, recordId, name) {
-    const forms = [`${prefix}${name}`, `${prefix}_${name}_value`].filter((form) => Object.hasOwn(row, form));
-    if (!forms.length) return;
+    if (![`${prefix}${name}`, `${prefix}_${name}_value`].some((form) => Object.hasOwn(row, form))) return;
     const access = accessOf(user, mapping.logicalName, name, recordId);
     if (access.read) {
       const plain = `${prefix}${name}`;
@@ -398,30 +451,38 @@ function createFieldSecurity({
       }
       return;
     }
-    for (const form of forms) {
-      row[form] = null;
-      dropAnnotations(row, form);
-    }
+    nullColumn(row, prefix, name);
   }
-  function maskRow(user, mapping, row, prefix = '', view = null) {
+  // names: the fieldNames of the caller and mapping, passed in so a projection resolves them once for all its rows.
+  function maskRow(user, mapping, row, prefix = '', view = null, names = fieldNames(user, mapping)) {
     const recordId = idOf(mapping, row, prefix);
-    for (const name of securedNames(mapping)) maskColumn(user, mapping, row, prefix, view, recordId, name);
+    for (const name of names.hidden) nullColumn(row, prefix, name);
+    for (const name of names.secured) maskColumn(user, mapping, row, prefix, view, recordId, name);
     return row;
   }
-
+  // A column the caller may not use as an operand: a hidden one (hiddenKind), or a readable secured column with a masking rule
+  // that the view does not unmask.
+  const maskedFor = (user, logical, column, view = defaultMaskView()) => {
+    if (hiddenKind(user, logical, column) !== null) return true;
+    if (!isSecuredField(fieldOf(logical, column))) return false;
+    const access = accessOf(user, logical, column);
+    return access.read && maskOf(logical, column) !== null && !unmaskable(access, view);
+  };
   return {
     capabilities,
     assertSecurable,
+    maskedFor,
     /**
      * Projection hook: a secured column the caller may not read becomes null and loses its annotations; a readable one with a
      * masking rule answers its masked value unless c.unmasked (UnMaskedData=true) and CanReadUnmasked allow the clear value.
      * single: a single-record read (Retrieve), which CanReadUnmasked One Record unmasks.
      */
     project(c, mapping, formatted, { prefix = '', single = false } = {}) {
-      if (!securedNames(mapping).length) return;
+      const names = fieldNames(c.user, mapping);
+      if (!names.secured.length && !names.hidden.length) return;
       const view = { unmask: c.unmasked === true, single: single === true };
       for (const row of [].concat(formatted) /* NOSONAR: preserve concat spreadability semantics */)
-        maskRow(c.user, mapping, row, prefix, view);
+        maskRow(c.user, mapping, row, prefix, view, names);
     },
 
     /**
@@ -435,25 +496,28 @@ function createFieldSecurity({
       return mapping ? maskRow(user, mapping, copy, prefix, view) : copy;
     },
 
+    /**
+     * mask over the rows of one table for one caller with the same options: the names resolve once for the batch (fieldNames, as
+     * project does), and each returned row is what mask returns for that row. The rows keep their order.
+     */
+    maskAll(user, logical, rows, { prefix = '', view = null } = {}) {
+      const mapping = mappingOf(logical);
+      const names = mapping ? fieldNames(user, mapping) : null;
+      return rows.map((row) => {
+        const copy = { ...row };
+        return mapping ? maskRow(user, mapping, copy, prefix, view, names) : copy;
+      });
+    },
+
     /** The value a caller receives for one readable column (masking rule applied per view); unreadable columns read null. */
     maskValue(user, logical, column, value, view, recordId) {
+      if (hiddenKind(user, logical, column) !== null) return null;
       if (!isSecuredField(fieldOf(logical, column))) return value;
       const access = accessOf(user, logical, column, recordId);
       return access.read ? maskedValue(logical, column, value, access, view) : null;
     },
 
     diagnostics: () => [...reporter.diagnostics],
-
-    /**
-     * True when the caller reads this column masked for this view ({ unmask, single }): a secured column it may read, with
-     * a masking rule, that UnMaskedData plus CanReadUnmasked does not unmask. Such a column is never a filter or order
-     * operand (dataverse-records.mjs answers 0x80041155).
-     */
-    maskedFor(user, logical, column, view = defaultMaskView()) {
-      if (!isSecuredField(fieldOf(logical, column))) return false;
-      const access = accessOf(user, logical, column);
-      return access.read && maskOf(logical, column) !== null && !unmaskable(access, view);
-    },
 
     canRead(user, logical, column, recordId) {
       return !isSecuredField(fieldOf(logical, column)) || accessOf(user, logical, column, recordId).read;
@@ -475,6 +539,8 @@ function createFieldSecurity({
       const view = { unmask: c.unmasked === true, single: false };
       for (const item of columns) {
         const { logical = mapping.logicalName, column, method } = typeof item === 'string' ? { column: item } : item;
+        const hidden = hiddenError(c.user, logical, column);
+        if (hidden) throw hidden;
         const field = mappingField(logical === mapping.logicalName ? mapping : mappingOf(logical), column);
         if (!isSecuredField(field)) continue;
         const access = accessOf(c.user, logical, column);
@@ -493,14 +559,19 @@ function createFieldSecurity({
      */
     rowMask(user, logical) {
       const mapping = mappingOf(logical);
-      if (!mapping || isAdmin(user)) return null;
+      if (!mapping) return null;
       const source = metadataFields(mapping.logicalName) ?? null;
-      const names = securedNames(mapping).filter((name) => fieldKind(mappingField(mapping, name, source)) !== 'lookup');
+      const secured = isAdmin(user)
+        ? []
+        : securedNames(mapping).filter((name) => fieldKind(mappingField(mapping, name, source)) !== 'lookup');
+      const hidden = new Set(hiddenNames(user, mapping));
+      const names = [...new Set([...secured, ...hidden])];
       if (!names.length) return null;
       return (row) => {
         let copy = row;
         for (const name of names) {
-          if (row[name] == null || accessOf(user, logical, name, idOf(mapping, row)).read) continue;
+          if (row[name] == null || (!hidden.has(name) && accessOf(user, logical, name, idOf(mapping, row)).read))
+            continue;
           if (copy === row) copy = { ...row };
           copy[name] = null;
         }
@@ -549,6 +620,7 @@ export const fieldSecurity = {
     (api.readMetadata ?? ((fn) => fn()))(() => fls.assertSecurable());
     api.fieldSecurity = {
       mask: fls.mask,
+      maskAll: fls.maskAll,
       maskValue: fls.maskValue,
       maskedFor: fls.maskedFor,
       canRead: fls.canRead,

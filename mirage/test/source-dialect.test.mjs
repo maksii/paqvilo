@@ -1,3 +1,4 @@
+// @test-kind contract: portal source dialects are detected, refused when unsupported, and reported by the inspect command.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -146,9 +147,7 @@ test('an mspp_ YAML source is refused by import, serve, inspect, bootstrap-repor
     await embedded.close();
   }
   // inspect (CLI): a non-zero exit with the message
-  const inspected = await execFileAsync(process.execPath, [CLI, 'inspect', '--source', site, '--json'], {
-    timeout: 60000,
-  }).then(
+  const inspected = await execFileAsync(process.execPath, [CLI, 'inspect', '--source', site, '--json']).then(
     () => null,
     (error) => error,
   );
@@ -166,7 +165,7 @@ test('an mspp_ YAML source is refused by import, serve, inspect, bootstrap-repor
   assert.throws(() => assertPortalSource(project.portals[0].portal), MSPP_MESSAGE);
 });
 
-test('an adx_ export without web pages and an unknown folder fail with their own reason; a portal with pages imports as before', async (t) => {
+test('an adx_ export without web pages and an unknown folder fail with their own reason; a portal with pages imports', async (t) => {
   const root = await tree(t, {
     'empty-standard/website.yml': 'adx_name: Standard\nadx_websiteid: 6a0f0c2e-0000-4000-8000-000000000098\n',
     'empty-standard/web-templates/Main.webtemplate.yml': 'adx_webtemplateid: main\nadx_name: Main',

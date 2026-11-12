@@ -183,6 +183,18 @@ function printMapping(cfg, mapping, base, writesFiles, exitCode) {
   printMappingSummary(mapping, base, writesFiles, exitCode);
 }
 
+// One coded error per URL the online check could not confirm (404 is a local-only file, not a failure).
+function onlineCheckErrors(mapping) {
+  if (!mapping.checked) return [];
+  return mapping.webFiles
+    .filter((w) => w.url && ![200, 404].includes(w.onlineStatus))
+    .map((w) => ({
+      code: 'ONLINE_CHECK_FAILED',
+      message: w.onlineError ? `${w.online}: ${w.onlineError}` : w.online,
+      path: w.url,
+    }));
+}
+
 export default async function map(cfg, args) {
   const session = await OverlaySession.create(cfg);
   const mapping = buildMapping(session);
@@ -194,13 +206,13 @@ export default async function map(cfg, args) {
     fs.writeFileSync(writesFiles[0], JSON.stringify(mapping, null, 2));
     fs.writeFileSync(writesFiles[1], toMarkdown(mapping));
   }
-  const exitCode =
-    mapping.checked && mapping.webFiles.some((w) => w.url && ![200, 404].includes(w.onlineStatus)) ? 1 : 0;
+  const errors = onlineCheckErrors(mapping);
+  const exitCode = errors.length ? 1 : 0;
 
   if (args.json) {
     console.log(
       JSON.stringify(
-        { ...mapping, schemaVersion: 1, command: 'map', ok: !exitCode, offline: !args.check, writesFiles, errors: [] },
+        { ...mapping, schemaVersion: 1, command: 'map', ok: !exitCode, offline: !args.check, writesFiles, errors },
         null,
         2,
       ),

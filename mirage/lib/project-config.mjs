@@ -9,6 +9,7 @@ import { importPortal } from './importer.mjs';
 import { importSolutionMetadata } from './solution-metadata.mjs';
 import { importSolutionData } from './solution-data.mjs';
 import { scanSolutionSources, buildSolutionSchema } from './solution-schema.mjs';
+import { solutionSideFileHashes } from './solution-content-fingerprint.mjs';
 import { SolutionFileCache } from './solution-cache.mjs';
 import { applyObserved } from './redirects.mjs';
 import { isTenantAuthority } from './external-login.mjs';
@@ -999,7 +1000,8 @@ export async function bootstrapProject(project, { lcid = project.lcid ?? 1033, c
     const key = JSON.stringify(roots);
     if (!scans.has(key)) {
       const scan = await scanSolutionSources(roots, { cache, order: project.solutionOrder ?? 'derived' });
-      scans.set(key, { scan, schema: buildSolutionSchema(scan, { lcid }) });
+      const sideHashes = solutionSideFileHashes(scan.layers, scan.cache);
+      scans.set(key, { scan, sideHashes, schema: buildSolutionSchema(scan, { lcid, sideHashes }) });
     }
     return scans.get(key);
   };
@@ -1021,9 +1023,16 @@ export async function bootstrapProject(project, { lcid = project.lcid ?? 1033, c
       source.observed,
     );
     const roots = source.solutionRoots ?? project.solutionRoots;
-    const { scan, schema } = await loadLayers(roots);
-    const metadata = await importSolutionMetadata(roots, { portal, lcid, scan, schema, observed: source.observed });
-    const solutionData = await importSolutionData(roots, { scan, schema, lcid });
+    const { scan, schema, sideHashes } = await loadLayers(roots);
+    const metadata = await importSolutionMetadata(roots, {
+      portal,
+      lcid,
+      scan,
+      schema,
+      sideHashes,
+      observed: source.observed,
+    });
+    const solutionData = await importSolutionData(roots, { scan, schema, sideHashes, lcid });
     portals.push({ ...source, portal, metadata, solutionData, activeProfiles });
   }
   const shared = await loadLayers(project.solutionRoots);

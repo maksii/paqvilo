@@ -112,6 +112,25 @@ function report(options = {}) {
 }
 const row = (result, id) => result.requirements.find((item) => item.id === id);
 
+test('a provider row carries its reason code into the report, and a row without one has reason null', () => {
+  const result = report({
+    providers: [
+      {
+        id: 'provider:messaging/relay',
+        reachable: false,
+        status: 'unknown',
+        reason: 'PROVIDER_PREFLIGHT_TIMEOUT',
+        message: "Messaging provider 'relay' did not answer its readiness probe.",
+      },
+      { id: 'provider:storage/blob', reachable: true, message: 'Azurite answered 200.' },
+    ],
+  });
+  assert.equal(row(result, 'provider:messaging/relay').status, 'unknown');
+  assert.equal(row(result, 'provider:messaging/relay').reason, 'PROVIDER_PREFLIGHT_TIMEOUT');
+  assert.equal(row(result, 'provider:storage/blob').status, 'satisfied');
+  assert.equal(row(result, 'provider:storage/blob').reason, null);
+});
+
 test('requirement statuses come from the graph, operations, local services and providers', () => {
   const result = report();
   assert.equal(result.schemaVersion, 1);

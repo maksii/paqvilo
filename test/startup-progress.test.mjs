@@ -1,3 +1,4 @@
+// @test-kind contract: start-up page waits are Paqvilo CLI runtime behaviour, with hang guards and observed progress.
 import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import { EventEmitter } from 'node:events';
@@ -9,6 +10,9 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { trackArmedTimers } from './helpers/startup-page.mjs';
+
+const HANG_GUARD_MS = 120_000; // hang guard only: this step is expected to succeed
 
 test('native model-driven dev emits startup before project configuration fails', async () => {
   const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
@@ -214,6 +218,18 @@ async function elapse(t, ms) {
     await new Promise((resolve) => setImmediate(resolve));
   }
 }
+// A browser context of a persistent profile: `browser()` is null. Once `gone` is set, requests to the context fail, as
+// they do after the browser has closed; the test emits the context's close event itself.
+function contextFixture(p) {
+  const fixture = { gone: false, context: new EventEmitter() };
+  fixture.context.browser = () => null;
+  fixture.context.cookies = async () => {
+    if (fixture.gone) throw new Error('Target page, context or browser has been closed');
+    return [];
+  };
+  p.context = () => fixture.context;
+  return fixture;
+}
 function startupRequestFixture() {
   const frame = {},
     child = {},
@@ -224,6 +240,7 @@ function startupRequestFixture() {
   p.goto = async () => {};
   const request = (type, f = frame, nav = false) => ({
     resourceType: () => type,
+    url: () => 'http://127.0.0.1:9/portal/fixture?token=invented-value',
     frame: () => {
       if (f === null) throw Error('Unknown worker frame');
       return f;
@@ -328,7 +345,10 @@ test('native model-driven navigation completes at load without mistaking a worke
     f.begin(f.request('script'));
     f.begin(f.request('fetch'));
   };
-  assert.equal(await waitForStartupPage(f.p, f.p.url(), { nativeModelDriven: true, timeout: 180, progress }), true);
+  assert.equal(
+    await waitForStartupPage(f.p, f.p.url(), { nativeModelDriven: true, timeout: HANG_GUARD_MS, progress }),
+    true,
+  );
   assert.match(
     progress.events.at(-1).detail,
     /background resources, sign-in and native application readiness remain unverified/,
@@ -356,4 +376,319 @@ test('outer startup deadline cancels nested resource settling and retires all pa
   );
   deadline.close();
   progress.close();
+});
+
+const PAGE_EVENTS = ['request', 'requestfinished', 'requestfailed', 'framenavigated', 'framedetached'];
+const pageListeners = (page) => PAGE_EVENTS.reduce((count, name) => count + page.listenerCount(name), 0);
+test('initial requests that keep making progress settle after more than two minutes in total', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const f = startupRequestFixture();
+  let current;
+  f.p.goto = async () => {
+    current = f.begin(f.request('fetch'));
+  };
+  let settled = false;
+  const loading = waitForStartupPage(f.p, f.p.url()).then((value) => {
+    settled = true;
+    return value;
+  });
+  // Every request starts or finishes within each 60 s window, so 400 s pass with progress throughout.
+  for (let minute = 0; minute < 6; minute++) {
+    await elapse(t, 60_000);
+    const next = f.begin(f.request('fetch'));
+    f.finish(current);
+    current = next;
+  }
+  await elapse(t, 40_000);
+  f.finish(current);
+  await elapse(t, 150);
+  assert.equal(settled, true, 'progress every 60 s must not trip the 120 s silence guard');
+  assert.equal(await loading, true);
+});
+
+test('pending requests without progress fail with the silence guard, their count and hosts only', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const f = startupRequestFixture();
+  f.p.goto = async () => {
+    f.begin(f.request('fetch'));
+    f.begin(f.request('script'));
+  };
+  const rejected = assert.rejects(waitForStartupPage(f.p, f.p.url()), (error) => {
+    assert.match(error.message, /120000 ms silence guard/);
+    assert.match(error.message, /2 pending requests on 127\.0\.0\.1:9/);
+    assert.match(error.message, /hang guard/);
+    assert.doesNotMatch(error.message, /invented-value/, 'query values must not reach the message');
+    return true;
+  });
+  // The silence window starts once the settle wait begins, so the guard fires just after 120 s of mocked time.
+  await elapse(t, 121_000);
+  await rejected;
+});
+
+test('progress that never ends fails with the cap guard at the total cap', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const f = startupRequestFixture();
+  let current;
+  f.p.goto = async () => {
+    current = f.begin(f.request('fetch'));
+  };
+  const rejected = assert.rejects(waitForStartupPage(f.p, f.p.url(), { capMs: 300_000 }), (error) => {
+    assert.match(error.message, /did not settle/);
+    assert.match(error.message, /300000 ms cap guard/);
+    assert.match(error.message, /1 pending request on 127\.0\.0\.1:9/);
+    return true;
+  });
+  // Six 60 s windows each start a request and finish the previous one: progress never stops, the cap ends it.
+  for (let minute = 0; minute < 6; minute++) {
+    await elapse(t, 60_000);
+    const next = f.begin(f.request('fetch'));
+    f.finish(current);
+    current = next;
+  }
+  await rejected;
+});
+
+test('a caller-supplied silence limit replaces the default', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const f = startupRequestFixture();
+  f.p.goto = async () => {
+    f.begin(f.request('fetch'));
+  };
+  let outcome = null;
+  const loading = waitForStartupPage(f.p, f.p.url(), { silenceMs: 1000 }).catch((error) => {
+    outcome = error;
+  });
+  await elapse(t, 950);
+  assert.equal(outcome, null, 'silence shorter than the caller limit must not fail the wait');
+  await elapse(t, 150);
+  assert.match(String(outcome?.message), /1000 ms silence guard/);
+  await loading;
+});
+
+test('a completed start-up wait leaves no page listener and no armed timer', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const timers = trackArmedTimers();
+  try {
+    const f = startupRequestFixture();
+    const progress = startupProgress({ write() {} });
+    let request;
+    f.p.goto = async () => {
+      request = f.begin(f.request('fetch'));
+    };
+    const loading = waitForStartupPage(f.p, f.p.url(), { progress });
+    await elapse(t, 500);
+    f.finish(request);
+    await elapse(t, 150);
+    assert.equal(await loading, true);
+    progress.close();
+    assert.equal(pageListeners(f.p), 0);
+    assert.equal(timers.armed.size, 0);
+  } finally {
+    timers.restore();
+  }
+});
+
+test('the silence guard retires its page listeners and timers', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const timers = trackArmedTimers();
+  try {
+    const f = startupRequestFixture();
+    f.p.goto = async () => {
+      f.begin(f.request('fetch'));
+    };
+    const loading = waitForStartupPage(f.p, f.p.url()).catch((error) => error);
+    await elapse(t, 121_000);
+    assert.match(String((await loading).message), /120000 ms silence guard/);
+    assert.equal(pageListeners(f.p), 0);
+    assert.equal(timers.armed.size, 0);
+  } finally {
+    timers.restore();
+  }
+});
+
+test('the cap guard retires its page listeners and timers', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const timers = trackArmedTimers();
+  try {
+    const f = startupRequestFixture();
+    f.p.goto = async () => {
+      f.begin(f.request('fetch'));
+    };
+    const loading = waitForStartupPage(f.p, f.p.url(), { capMs: 1000, silenceMs: 600_000 }).catch((error) => error);
+    await elapse(t, 1100);
+    assert.match(String((await loading).message), /1000 ms cap guard/);
+    assert.equal(pageListeners(f.p), 0);
+    assert.equal(timers.armed.size, 0);
+  } finally {
+    timers.restore();
+  }
+});
+
+test('a page closed during the settle wait resolves false while its context still answers, without an error or leftovers', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const timers = trackArmedTimers();
+  try {
+    const f = startupRequestFixture();
+    let closed = false;
+    f.p.isClosed = () => closed;
+    // The page closes while its browser context stays open: a tab closed by a script, or by the user before the browser.
+    contextFixture(f.p);
+    f.p.goto = async () => {
+      f.begin(f.request('fetch'));
+    };
+    const loading = waitForStartupPage(f.p, f.p.url()).catch((error) => error);
+    await elapse(t, 500);
+    closed = true;
+    await elapse(t, 100);
+    assert.equal(await loading, false);
+    assert.equal(pageListeners(f.p), 0);
+    assert.equal(timers.armed.size, 0);
+  } finally {
+    timers.restore();
+  }
+});
+
+test('closing the browser during the wait is a stop: resolves false without the closed-page error', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const timers = trackArmedTimers();
+  try {
+    const f = startupRequestFixture();
+    const browser = contextFixture(f.p);
+    let closed = false;
+    f.p.isClosed = () => closed;
+    f.p.goto = async () => {
+      f.begin(f.request('fetch'));
+    };
+    const loading = waitForStartupPage(f.p, f.p.url()).catch((error) => error);
+    await elapse(t, 500);
+    // The browser closes: its requests fail at once, and its close event follows on a later turn.
+    closed = true;
+    browser.gone = true;
+    setImmediate(() => browser.context.emit('close'));
+    await elapse(t, 100);
+    assert.equal(await loading, false);
+    assert.equal(pageListeners(f.p), 0);
+    assert.equal(browser.context.listenerCount('close'), 0);
+    assert.equal(timers.armed.size, 0);
+  } finally {
+    timers.restore();
+  }
+});
+
+test('a page closed under an in-flight application wait is a stop while its context still answers', async () => {
+  const f = startupRequestFixture();
+  const browser = contextFixture(f.p);
+  const url = 'http://127.0.0.1/main.aspx';
+  f.p.url = () => url;
+  let closed = false;
+  f.p.isClosed = () => closed;
+  let waiting, fail;
+  const started = new Promise((resolve) => {
+    waiting = resolve;
+  });
+  f.p.waitForFunction = () => {
+    waiting();
+    return new Promise((_, reject) => {
+      fail = reject;
+    });
+  };
+  const loading = waitForStartupPage(f.p, url, { modelDriven: true }).catch((error) => error);
+  await started;
+  // Playwright rejects the wait when the page closes, possibly before its context has answered or reported its close.
+  closed = true;
+  fail(new Error('page.waitForFunction: Target page, context or browser has been closed'));
+  assert.equal(await loading, false);
+  assert.equal(pageListeners(f.p), 0);
+  assert.equal(browser.context.listenerCount('close'), 0);
+});
+
+test('a page closed after the start-up wait was cancelled resolves false', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const timers = trackArmedTimers();
+  try {
+    const f = startupRequestFixture();
+    let closed = false;
+    f.p.isClosed = () => closed;
+    const controller = new AbortController();
+    f.p.goto = async () => {
+      f.begin(f.request('fetch'));
+    };
+    const loading = waitForStartupPage(f.p, f.p.url(), { signal: controller.signal });
+    await elapse(t, 500);
+    controller.abort();
+    closed = true;
+    await elapse(t, 100);
+    assert.equal(await loading, false);
+    assert.equal(pageListeners(f.p), 0);
+    assert.equal(timers.armed.size, 0);
+  } finally {
+    timers.restore();
+  }
+});
+
+test('a guard that is not a positive duration is refused before the page is touched', async () => {
+  const cases = [
+    { guards: { silenceMs: Number.NaN }, message: 'silenceMs must be a positive number of milliseconds.' },
+    { guards: { silenceMs: 0 }, message: 'silenceMs must be a positive number of milliseconds.' },
+    { guards: { silenceMs: -1 }, message: 'silenceMs must be a positive number of milliseconds.' },
+    { guards: { capMs: 0 }, message: 'capMs must be a positive number of milliseconds.' },
+    { guards: { capMs: Number.NaN }, message: 'capMs must be a positive number of milliseconds.' },
+  ];
+  for (const { guards, message } of cases) {
+    const f = startupRequestFixture();
+    let navigated = false;
+    f.p.goto = async () => {
+      navigated = true;
+    };
+    await assert.rejects(waitForStartupPage(f.p, f.p.url(), guards), { message });
+    assert.equal(navigated, false, `${message} must be refused before navigation`);
+    assert.deepEqual(f.p.eventNames(), [], `${message} must be refused before any listener is attached`);
+  }
+});
+
+test('the start-up wait takes --startup-timeout as its silence guard, and keeps the default without it', async () => {
+  const { startupWaitOptions } = await import('../lense/startup-progress.mjs');
+  const stopped = new Promise(() => {});
+  assert.equal(startupWaitOptions({ 'startup-timeout': '1000' }, { stopped }).silenceMs, 1000);
+  assert.equal(startupWaitOptions({}, { stopped }).silenceMs, undefined);
+  assert.equal(startupWaitOptions({ 'startup-timeout': '1000' }, { stopped }).stopped, stopped);
+  for (const file of [
+    '../lense/commands/dev.mjs',
+    '../lense/standalone-mirage.mjs',
+    '../lense/commands/model-driven.mjs',
+  ]) {
+    assert.match(await fs.readFile(new URL(file, import.meta.url), 'utf8'), /startupWaitOptions\(args, \{/, file);
+  }
+});
+
+test('the load wait gets only the cap left after the document navigation', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const f = startupRequestFixture();
+  const capMs = 300_000;
+  let loadTimeout;
+  f.p.goto = async () => {
+    // A document that arrives after 60 % of the cap leaves 40 % for the load wait.
+    t.mock.timers.tick((capMs * 6) / 10);
+  };
+  f.p.waitForLoadState = async (state, options) => {
+    loadTimeout = options.timeout;
+  };
+  assert.equal(await waitForStartupPage(f.p, f.p.url(), { capMs }), true);
+  assert.ok(loadTimeout <= (capMs * 4) / 10, `the load wait was given ${loadTimeout} ms`);
+});
+
+test('a load wait that times out reports the cap guard and names the load step', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const f = startupRequestFixture();
+  f.p.waitForLoadState = async () => {
+    const timeout = new Error('page.waitForLoadState: Timeout 300000ms exceeded.');
+    timeout.name = 'TimeoutError';
+    throw timeout;
+  };
+  await assert.rejects(waitForStartupPage(f.p, f.p.url(), { capMs: 300_000 }), (error) => {
+    assert.match(error.message, /Initial page load did not finish/);
+    assert.match(error.message, /300000 ms cap guard/);
+    assert.doesNotMatch(error.message, /exceeded/);
+    return true;
+  });
 });

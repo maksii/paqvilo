@@ -40,6 +40,7 @@ import {
   resolvePersonaCatalog,
   personaContactId,
   personaStartPath,
+  publicPersonaReport,
 } from './lib/persona-catalog.mjs';
 import { identityProviderSettings, identityProviderAssets } from './lib/identity-provider-settings.mjs';
 import { closestPersonaKeys } from './lib/persona-search.mjs';
@@ -59,7 +60,7 @@ import {
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { readLocalFile } from '../lense/local-file.mjs';
-import { randomBytes, randomUUID, createHash } from 'node:crypto';
+import { randomBytes, randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { AuditLog, auditQuery } from './lib/audit-log.mjs';
@@ -78,7 +79,7 @@ import {
   normalizeMockLiquidFetchXml,
 } from './lib/data.mjs';
 import { DATA_MODELS, importPortal, normalizePortalPath } from './lib/importer.mjs';
-import { createPortalRenderer, renderShellResource } from './lib/liquid.mjs';
+import { choiceColumnsOf, choiceTextRow, createPortalRenderer, renderShellResource } from './lib/liquid.mjs';
 import { formContentStyles } from './lib/form-head.mjs';
 import { emptyUnmappedLiquidFetchXml, observedLiquidEntityRead } from './lib/liquid-missing-data.mjs';
 import { observedPageQueryValidation } from './lib/page-query-validation.mjs';
@@ -156,11 +157,12 @@ import { modelDrivenSettings } from './lib/model-driven-settings.mjs';
 import { importModelDrivenResources, clientExtensionCatalogue } from './lib/model-driven-resources.mjs';
 import { powerPagesTables, managementOverlay } from './lib/model-driven/power-pages.mjs';
 import { createModelDrivenStorage } from './lib/model-driven-storage.mjs';
-import { createSolutionMetadataOverlay } from './lib/dataverse-solution-metadata.mjs';
+import { createMappedTables, createSolutionMetadataOverlay } from './lib/dataverse-solution-metadata.mjs';
 import { writeJsonChunks } from './lib/json-response.mjs';
 import { createSourceSolutionComponentStorage } from './lib/dataverse-source-components.mjs';
 import { importSolutionData, applySolutionData } from './lib/solution-data.mjs';
 import { scanSolutionSources, buildSolutionSchema, assertReloadableScan } from './lib/solution-schema.mjs';
+import { solutionContentFingerprint, solutionSideFileHashes } from './lib/solution-content-fingerprint.mjs';
 import { SolutionFileCache, sourceDirectoryDigest } from './lib/solution-cache.mjs';
 import {
   resolveUnmatchedRoute,
@@ -179,6 +181,7 @@ import {
   authCookieName,
   createAuthSessions,
   authRoute,
+  parseCookies,
   safeReturnUrl,
   returnUrlParameter,
   signInContent,
@@ -200,7 +203,7 @@ import {
 } from './lib/organization-host.mjs';
 import { createCanvasHandler } from './lib/canvas-http.mjs';
 import { createCanvasRuntime } from './lib/canvas-runtime.mjs';
-import { canvasPcfApps } from './lib/canvas-pcf.mjs';
+import { canvasPcfApps, PORTAL_PCF, servePcfResource } from './lib/canvas-pcf.mjs';
 import { createCodeAppsHandler, authorityTokenIssuer } from './lib/code-apps-http.mjs';
 import { codeAppSettings, loadCodeApps } from './lib/code-apps-config.mjs';
 import { createRequestContext, currentRequest, runWithRequest, correlationOf } from './lib/request-context.mjs';
@@ -333,7 +336,7 @@ import {
   nativeViewStateKey,
 } from './lib/native-postback.mjs';
 import { readVisitor, newVisitor, visitorCookieName } from './lib/visitor-session.mjs';
-import { handleNativeService, antiForgeryCookie } from './lib/native-services.mjs';
+import { handleNativeService, antiForgeryCookie, portalNotes } from './lib/native-services.mjs';
 import {
   antiForgeryHolder,
   isAspNetScript,
@@ -352,6 +355,19 @@ import {
 } from './lib/permissions.mjs';
 import { handleWebApi } from './lib/webapi-handler.mjs';
 import { buildSiteTables } from './lib/site-tables.mjs';
+import {
+  adminServes,
+  answerVerdict,
+  appsPath,
+  browserRequest,
+  documentNavigation,
+  hostRefusal,
+  listenerVerdict,
+  normalizeTokenHeaders,
+  PORTAL_ROUTES,
+  portalVerdict,
+  sameToken,
+} from './lib/admin-origin.mjs';
 
 // Organization.BlockedAttachments default ("Block files by extension":
 // https://learn.microsoft.com/power-apps/developer/data-platform/files-images-overview).
@@ -443,6 +459,37 @@ const mime = (file) =>
     '.pdf': 'application/pdf',
   })[path.extname(file).toLowerCase()] || 'application/octet-stream';
 const error = (message, status = 400, code = 'INVALID_REQUEST') => Object.assign(new Error(message), { status, code });
+// A persona whose context is in the catalogue launches that context's runtime, so the picker links it to the administration.
+const personaNeedsAdministration = (persona, contexts = []) =>
+  Boolean(persona.context) && contexts.some((context) => context.id === persona.context);
+// The attach-file shim percent-encodes a name outside printable ASCII and sends the uri-component marker; without the marker
+// the header is the name as sent. The stored name is the base name: a control character, a dot name or a name over 255
+// UTF-16 code units is refused, and a directory part before the last slash or backslash is removed.
+function uploadedFileName(headers) {
+  const raw = String(headers['x-ms-file-name'] ?? '');
+  const name = (headers['x-ms-file-name-encoding'] === 'uri-component' ? decodeFileName(raw) : raw).trim();
+  if ([...name].some(isControlCharacter)) throw error('The file name contains a control character.', 400);
+  const base = name.split(/[\\/]/).at(-1).trim();
+  if (!base || base === '.' || base === '..' || base.length > 255)
+    throw error('The file name is not a valid base name.', 400);
+  return base;
+}
+function decodeFileName(raw) {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    throw error('The file name is not a valid percent-encoded value.', 400);
+  }
+}
+const isControlCharacter = (character) => {
+  const code = character.codePointAt(0);
+  return code <= 0x1f || code === 0x7f;
+};
+// Thrown values are not always errors: a non-string code or status must never reach string or status-code operations.
+const requestErrorCode = (err) => (typeof err?.code === 'string' ? err.code : undefined);
+const requestErrorMessage = (err) => (typeof err?.message === 'string' ? err.message : 'Simulator request failed.');
+const requestErrorStatus = (err) =>
+  [err?.status, err?.statusCode].find((value) => Number.isInteger(value) && value >= 100 && value <= 999) ?? 500;
 const decodeAdminIdentifier = (value) => {
   try {
     return decodeURIComponent(value);
@@ -486,6 +533,29 @@ function validateEndpoint(value) {
     throw error('Endpoint status must be an integer from 200 to 599.');
   if (value.entity !== undefined && (typeof value.entity !== 'string' || !/^\w+$/.test(value.entity)))
     throw error('Endpoint entity must be a logical name or entity set.');
+}
+// Shutdown guard for a request whose body stopped arriving: the request is destroyed after idleMs without bytes on its
+// socket. Bytes re-arm the timer, so a client that keeps sending is drained. The listener is on the socket, not the
+// request, so reading the request body (for await) is never changed. Returns the function that removes the guard.
+function guardStalledBody(req, idleMs) {
+  const socket = req.socket;
+  let timer = null;
+  const expire = () => {
+    if (!req.complete) req.destroy();
+  };
+  const arm = () => {
+    clearTimeout(timer);
+    timer = req.complete ? null : setTimeout(expire, idleMs);
+  };
+  const stop = () => {
+    clearTimeout(timer);
+    socket.off('data', arm);
+    req.off('close', stop);
+  };
+  socket.on('data', arm);
+  req.once('close', stop);
+  arm();
+  return stop;
 }
 async function rawBody(req) {
   const chunks = [];
@@ -561,6 +631,10 @@ function dataverseInputSettings(option) {
 const RECORD_OWNERS = Symbol('owned record storage');
 // A persona runtime records into its parent's trace store (D-R2-18): one #trace view, one set of run-time settings.
 const SHARED_TRACES = Symbol('shared trace store');
+// Shutdown hang guard for a client that stopped sending a request body; the runtime option shutdownBodyIdleMs overrides it.
+const SHUTDOWN_BODY_IDLE_MS = 30_000;
+// The anti-forgery cookie the platform issues with each token refresh (lib/native-services.mjs antiForgeryCookie).
+const ANTI_FORGERY_COOKIE = '__RequestVerificationToken';
 export async function createSimulator(options = {}) {
   const runtime = runtimeSettings(options.runtime);
   if (runtime.kind !== 'power-pages') {
@@ -571,18 +645,19 @@ export async function createSimulator(options = {}) {
   try {
     return await createPowerPagesSimulator({ ...options, runtime, [RECORD_OWNERS]: owners });
   } catch (error) {
-    // Close every owner; a close failure never hides the startup failure.
-    const errors = [];
-    for (const owner of owners)
+    // The composed host closes first, then the record storage. A close failure never replaces the startup error: it is
+    // listed on error.cleanupErrors.
+    const cleanupErrors = [];
+    const attempt = async (close) => {
       try {
-        owner.closeRecordStorage?.();
+        await close();
       } catch (closeError) {
-        errors.push(closeError);
+        cleanupErrors.push(closeError);
       }
-    if (errors.length)
-      throw new AggregateError([error, ...errors], 'Simulator startup failed and record storage failed to close', {
-        cause: error,
-      });
+    };
+    for (const owner of owners) await attempt(() => owner.closeHost?.());
+    for (const owner of owners) await attempt(() => owner.closeRecordStorage?.());
+    if (cleanupErrors.length && error && typeof error === 'object') error.cleanupErrors = cleanupErrors;
     throw error;
   }
 }
@@ -607,6 +682,8 @@ export async function createSimulator(options = {}) {
   host = '127.0.0.1',
   origin,
   watch = true,
+  // Test seam: the source watcher factory (lib/source-watcher.mjs); not a documented option.
+  sourceWatcher = watchSources,
   sourceMaps = true,
   initial,
   liveBridge,
@@ -639,6 +716,8 @@ export async function createSimulator(options = {}) {
   // Whether this runtime may send any write to the live environment (CLI --allow-live-writes).
   // Without it every live create, update and delete is refused, whatever the /_sim switch says.
   allowLiveWrites = false,
+  // Idle time without body bytes after which close() ends a request whose body stopped arriving (SHUTDOWN_BODY_IDLE_MS).
+  shutdownBodyIdleMs = SHUTDOWN_BODY_IDLE_MS,
   // The site's data model for a YAML source ("standard" or "enhanced"; lib/importer.mjs): a
   // .powerpages-site export does not record it and defaults to enhanced.
   dataModel,
@@ -843,25 +922,32 @@ export async function createSimulator(options = {}) {
     // a rejected scan never becomes the baseline.
     if (solutionScan) assertReloadableScan(solutionScan, scan);
     const lcid = project?.lcid ?? dataverseOption?.localeId ?? 1033;
-    const schema =
-      scan === previous && importedSources?.solutionSchema?.lcid === lcid
-        ? importedSources.solutionSchema
-        : buildSolutionSchema(scan, { lcid });
-    bootstrapTimings.solutionReuse = { scan: scan === previous, schema: schema === importedSources?.solutionSchema };
+    const sideHashes = solutionSideFileHashes(scan.layers, scan.cache);
+    // An unchanged scan reuses the parsed schema and data. Side files sit outside the scan, so each reused object is copied
+    // with this load's content fingerprint; the imported objects are never changed in place.
+    const reuse = scan === previous && importedSources?.solutionSchema?.lcid === lcid;
+    const schema = reuse
+      ? {
+          ...importedSources.solutionSchema,
+          contentFingerprint: solutionContentFingerprint(scan.layers, { lcid, sideHashes }),
+        }
+      : buildSolutionSchema(scan, { lcid, sideHashes });
+    bootstrapTimings.solutionReuse = { scan: scan === previous, schema: reuse };
     operationWorkflows = await importOperationWorkflows(scan.layers);
     solutionOperations = await importSolutionOperationSources(scan.layers, portal.website);
-    codeComponents = await importCodeComponents(scan.layers);
+    codeComponents = await importCodeComponents(scan.layers, { retainBytes: true });
     [solutionMetadata, solutionData] = await Promise.all([
       importSolutionMetadata(solutionRoots, {
         portal,
         entities: [...new Set([...Object.keys(schema.tables), ...portalMetadataEntities(portal)])],
         scan,
         schema,
+        sideHashes,
         observed,
         lcid,
       }),
-      scan === previous && schema === importedSources?.solutionSchema
-        ? importedSources.solutionData
+      reuse
+        ? { ...importedSources.solutionData, schema, contentFingerprint: schema.contentFingerprint }
         : importSolutionData(solutionRoots, { scan, schema, lcid }),
     ]);
     solutionMetadata.modelDrivenApps = solutionApps(scan, { lcid, projectRoot });
@@ -1011,7 +1097,8 @@ export async function createSimulator(options = {}) {
     return state;
   };
   const solutionMetadataOverlay = createSolutionMetadataOverlay({ appsOf: solutionApps });
-  const modelMetadata = () => solutionMetadataOverlay(solutionMetadata, store.state);
+  const mappedTables = createMappedTables();
+  const modelMetadata = () => mappedTables(solutionMetadataOverlay(solutionMetadata, store.state), store.state);
   const storageAdapter = await createSimulationPersistence({
     settings: simulation,
     packs: projectPacks ?? [],
@@ -1080,6 +1167,8 @@ export async function createSimulator(options = {}) {
     trace: settingOptionsRest.trace,
     traces: sharedTraces,
   });
+  // A startup that fails after composition closes the host (createSimulator), with the same close order as close().
+  recordOwners?.add({ closeHost: () => organizationHost.close() });
   const {
     handlers: { operations: registeredOperations },
     operations,
@@ -1295,6 +1384,11 @@ export async function createSimulator(options = {}) {
   const evidenceDir = stateFile ? path.join(path.dirname(path.resolve(stateFile)), 'evidence/latest') : null;
   let evidence = null;
   const csrf = randomBytes(32).toString('hex');
+  // The administration listener's token (32 random bytes, hex); the portal's page token is csrf.
+  const adminToken = randomBytes(32).toString('hex');
+  // The apps listener's token (32 random bytes, hex): the app pages send it; the administration token is normalized to it.
+  const appsToken = randomBytes(32).toString('hex');
+  const pageToken = (value) => sameToken(value, csrf) || sameToken(value, adminToken);
   // Attach-file uploads (/_api/file/*/note): the platform's file API stages each file under an
   // annotation id before the form posts the ids (live: InitializeFileUpload, UploadFileBlock,
   // then the postback's AttachFile_HiddenField_AnnotationIds). Staged files live in memory until
@@ -1409,10 +1503,18 @@ export async function createSimulator(options = {}) {
     closeModelDriven = null;
   // GET observers may commit SDK writes too. Drain every accepted handler
   // before stopping its services; event-stream handlers finish on registration.
-  const activeRequests = new Set();
+  const activeRequests = new Map();
   const close = () => {
     if (closePromise) return closePromise;
     closing = true;
+    // The listener stays open until the end so new requests still get SIMULATOR_CLOSING. A body still arriving is
+    // drained while it progresses; guardStalledBody ends one that stops.
+    server.closeIdleConnections();
+    for (const [invocation, req] of activeRequests)
+      if (!req.complete) {
+        const stop = guardStalledBody(req, shutdownBodyIdleMs);
+        invocation.then(stop, stop);
+      }
     clearTimeout(watcherTimer);
     watcherTimer = null;
     watcherReadyRelease?.();
@@ -1430,7 +1532,7 @@ export async function createSimulator(options = {}) {
       await attempt(() => personaRuntimes.close());
       await attempt(() => watcher?.close());
       await reloadPromise?.catch(() => {});
-      while (activeRequests.size) await Promise.all(activeRequests);
+      while (activeRequests.size) await Promise.all(activeRequests.keys());
       await attempt(() => mutation);
       await attempt(() => store.queue);
       await attempt(() => closeModelDriven?.());
@@ -1443,6 +1545,8 @@ export async function createSimulator(options = {}) {
       await attempt(() => externalSignIn?.close());
       managementStorage?.close();
       sourceComponentStorage?.close();
+      await attempt(closeAdminListener);
+      await attempt(closeAppsListener);
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
       if (failures.length) throw new AggregateError(failures, 'Runtime shutdown completed with cleanup failures.');
@@ -1655,6 +1759,8 @@ export async function createSimulator(options = {}) {
   earlySourceDiagnostics.splice(0).forEach(recordDiagnostic);
   await organizationHost.createBackend();
 
+  // Column types come from the Solution's metadata first, then from the mapping's own fields, so a table that only
+  // a mapping declares answers with the types it declares there.
   const liveMapping = (entity) => {
     const mapping = store.resolveMapping(entity);
     return {
@@ -1998,6 +2104,7 @@ export async function createSimulator(options = {}) {
       portal,
       store,
       identity: formIdentity,
+      now: () => new Date(store.clock.now()),
       // FileStorage/CloudStorageAccount: attachment bytes go to storage route portalCloudAttachments (lib/form-service.mjs).
       cloudAttachments: () => organizationHost.providers.storage.forRoute('portalCloudAttachments'),
       diagnostic: recordDiagnostic,
@@ -2005,7 +2112,7 @@ export async function createSimulator(options = {}) {
         ...solutionMetadata.componentSchemas,
         ...config().componentSchemas,
       },
-      metadata: solutionMetadata,
+      metadata: modelMetadata(),
       readProvider,
       writeProvider: {
         create: (entity, values, identity) => writeFormRecord(entity, null, values, identity),
@@ -2067,11 +2174,98 @@ export async function createSimulator(options = {}) {
       },
     };
   };
+  // Entity members that are not attributes (Learn, liquid-objects#entities). Each read runs with the visitor's identity through
+  // the permission-checked read provider, so the table and column permissions of the entity read apply to them too.
+  const memberRows = async (xml) => {
+    const result = await readProvider.fetchXml(xml, currentIdentity());
+    return result.entities ?? result.value ?? [];
+  };
+  const entityNotes = async (id) =>
+    portalNotes(
+      await memberRows(
+        `<fetch><entity name="annotation"><all-attributes/><filter type="and"><condition attribute="objectid" operator="eq" value="${escaped(id)}"/></filter><order attribute="createdon"/></entity></fetch>`,
+      ),
+      currentIdentity(),
+    );
+  const storedRow = async (table, id, identity) => {
+    try {
+      return (await store.readOperation(() => store.get(table, id, identity, { portalRequest: true }))) ?? null;
+    } catch {
+      // A row the visitor cannot read has no stored copy to test the scoped grants on; the id alone decides them.
+      return null;
+    }
+  };
+  const entityPermissions = async (table, id) => {
+    const identity = currentIdentity();
+    // Live: the site's own permission answer is not local, so the read that reached this member is the only grant known.
+    if (config().mode === 'live')
+      return {
+        can_read: true,
+        can_write: false,
+        can_create: false,
+        can_delete: false,
+        can_append: false,
+        can_append_to: false,
+        rules_exist: true,
+      };
+    const row = (await storedRow(table, id, identity)) ?? { [store.resolveMapping(table).idColumn]: id };
+    const allowed = (operation) => {
+      try {
+        return store.allowed(table, operation, row, identity);
+      } catch {
+        return false;
+      }
+    };
+    return {
+      can_read: allowed('read'),
+      can_write: allowed('update'),
+      can_create: allowed('create'),
+      can_delete: allowed('delete'),
+      can_append: allowed('append'),
+      can_append_to: allowed('appendTo'),
+      rules_exist: store.rules(table, 'read', identity).length > 0,
+    };
+  };
+  // A lookup value in a portal read is an entity reference; its key is the id.
+  const referenceValue = (value) => (value && typeof value === 'object' ? value.id : value);
+  // The rows a relationship leads to from a source value: target[to] equals the value, or the intersect table links them.
+  const relationshipXml = (relationship, value) => {
+    const match = escaped(value);
+    if (!relationship.intersect)
+      return `<fetch><entity name="${relationship.entity}"><all-attributes/><filter type="and"><condition attribute="${relationship.to}" operator="eq" value="${match}"/></filter></entity></fetch>`;
+    const { entity, from, to } = relationship.intersect;
+    return `<fetch><entity name="${relationship.entity}"><all-attributes/><link-entity name="${entity}" from="${to}" to="${relationship.to}"><filter type="and"><condition attribute="${from}" operator="eq" value="${match}"/></filter></link-entity></entity></fetch>`;
+  };
+  // The related rows read as Liquid entity records do: a multi-select column reads as its string-stored text.
+  const relatedRows = async (relationship, value) => {
+    if (value == null) return [];
+    const multiSelect = choiceColumnsOf(modelMetadata(), relationship.entity);
+    return (await memberRows(relationshipXml(relationship, value))).map((row) => choiceTextRow(row, multiSelect));
+  };
+  const entityRelated = async (table, id, name) => {
+    const relationships = store.resolveMapping(table).relationships ?? {};
+    if (!Object.hasOwn(relationships, name)) return null;
+    const relationship = relationships[name];
+    const source = await readProvider.get(table, id, currentIdentity());
+    const rows = await relatedRows(relationship, referenceValue(source?.[relationship.from]));
+    if (relationship.entity !== table || relationship.intersect)
+      return relationship.many === false ? (rows[0] ?? null) : rows;
+    // A reflexive relationship answers both directions: the rows that reference this one and the row it references.
+    const reverse = { ...relationship, from: relationship.to, to: relationship.from };
+    const referenced = await relatedRows(reverse, referenceValue(source?.[relationship.to]));
+    return { is_reflexive: true, referenced: referenced[0] ?? null, referencing: rows };
+  };
+  const entityMembers = {
+    notes: async (_table, id) => entityNotes(id),
+    permissions: entityPermissions,
+    related: entityRelated,
+  };
   const buildRenderer = (source = portal) =>
     createPortalRenderer(source, {
+      clock: store.clock,
       provenance: false,
       traces,
-      metadata: solutionMetadata,
+      metadata: modelMetadata(),
       codeCatalogue: codeComponents,
       render,
       observed: config().observed ?? source.observed,
@@ -2118,6 +2312,7 @@ export async function createSimulator(options = {}) {
           );
         return store.previewPermissionFetchXml(xml, currentIdentity(), fetchOptions);
       },
+      entityMembers,
       entity: async (entity, id) =>
         observedLiquidEntityRead(
           () => readProvider.get(entity, id, currentIdentity()),
@@ -2131,7 +2326,7 @@ export async function createSimulator(options = {}) {
             args,
             portal,
             catalog: codeComponents,
-            metadata: solutionMetadata,
+            metadata: modelMetadata(),
             language: context?.__language ?? portal.language,
             identity: currentIdentity(),
             mappings: store.snapshot({ sections: ['mappings'] }).mappings,
@@ -2158,13 +2353,13 @@ export async function createSimulator(options = {}) {
             readProvider,
             args: typeof args === 'string' ? { name: args } : (args ?? {}),
             serviceFixtures: organizationHost.providers.serviceFixtures,
-            metadata: solutionMetadata,
+            metadata: modelMetadata(),
             codeComponent: (spec) =>
               renderCodeComponent({
                 ...spec,
                 portal,
                 catalog: codeComponents,
-                metadata: solutionMetadata,
+                metadata: modelMetadata(),
                 language: context?.__language ?? portal.language,
                 identity: currentIdentity(),
                 mappings: store.snapshot({ sections: ['mappings'] }).mappings,
@@ -2210,6 +2405,8 @@ export async function createSimulator(options = {}) {
     });
   renderer = buildRenderer();
   let localOrigin;
+  let adminOrigin;
+  let appsOrigin;
   const recordCapabilitiesSummary = createRecordCapabilitiesSummary(store);
   const runtimeState = ({ reuseCapabilities = false } = {}) => ({
     runtime: runtimeOption,
@@ -2221,7 +2418,7 @@ export async function createSimulator(options = {}) {
     links: {
       administration: '/_sim/',
       setup: '/_setup/',
-      modelDriven: modelDrivenSettingsValue.enabled === false ? null : '/main.aspx',
+      modelDriven: modelDrivenSettingsValue.enabled === false ? null : `${appsOrigin}/main.aspx`,
       powerPages: '/',
       dataverseApi: dataverse?.origin ?? null,
     },
@@ -2284,7 +2481,7 @@ export async function createSimulator(options = {}) {
       }
     }
     return {
-      csrf,
+      csrf: adminToken,
       ...runtimeState(),
       dataverse: dataverseSummary(),
       docs: DOCS,
@@ -2353,7 +2550,7 @@ export async function createSimulator(options = {}) {
           name: p.name,
           url: p.url,
           path: p.url,
-          access: pageAccess(portal, p, effectiveIdentity),
+          access: pageAccess(portal, p, effectiveIdentity, { now: store.clock.now() }),
         })),
         pageCount: portal.pages.length,
         webRoles: portal.records
@@ -2665,7 +2862,10 @@ export async function createSimulator(options = {}) {
       permissionMode: state.settings?.permissionMode ?? 'enforce',
       permissionSource: state.simulator?.permissionSource ?? 'configured',
       contactMapped: Boolean(state.mappings?.contact),
-      personas: catalog.enabled ? catalog.personas : model.personas,
+      personas: (catalog.enabled ? catalog.personas : model.personas).map((persona) => ({
+        ...persona,
+        needsAdministration: personaNeedsAdministration(persona, catalog.contexts),
+      })),
       webRoles: model.webRoles,
       memberships: model.memberships,
       contacts,
@@ -2691,12 +2891,18 @@ export async function createSimulator(options = {}) {
     personaCache = { key, portal, value };
     return value;
   };
+  // The administration's persona view; a context persona is opened there with its contact preselected.
+  const personaAdministrationUrl = () => `${adminOrigin}/_sim/#access`;
   const personasPayload = () => ({
     ...personaReport(),
     identity: identitySummary(),
     session: describeSession(trace.getStore()?.auth?.session),
     runtimes: personaRuntimes.list(),
   });
+  // A browser-shaped request on the portal listener gets the context names without their values; the administration
+  // and header-less clients get the full catalogue.
+  const personasFor = (req) =>
+    browserRequest(req) && !onAdmin(req) ? publicPersonaReport(personasPayload()) : personasPayload();
   const findPersona = (key) => {
     const report = personaReport(),
       persona = report.personas.find((entry) => entry.key === key);
@@ -2866,6 +3072,12 @@ export async function createSimulator(options = {}) {
       identity: describeSession(session),
     };
   };
+  // A browser-shaped launch of a persona with a context opens its runtime or applies its preset: only the administration does that.
+  const refuseBrowserContextLaunch = (req, personaKey) => {
+    if (!browserRequest(req)) return;
+    const { definition, preset } = resolvePersonaLaunch({ personaKey });
+    if (definition || preset) throw error('Open the administration on its own address.', 403, 'AdminOriginRequired');
+  };
   const PERMISSION_OPERATIONS = ['read', 'create', 'update', 'delete', 'append', 'appendTo'];
   /** Why the current persona may or may not use a table, from the applied grant ledger. */
   const tablePermissionSummary = (entity, identity, permissionMode) => {
@@ -2950,7 +3162,7 @@ export async function createSimulator(options = {}) {
       sourcePortal,
       overrides: config().portalOverrides ?? {},
       identity,
-      access: (page) => pageAccess(portal, page, identity),
+      access: (page) => pageAccess(portal, page, identity, { now: store.clock.now() }),
       mapping: (entity) => mappings[entity] ?? null,
       tablePermissions: (entity) => tablePermissionSummary(entity, identity, permissionMode),
     });
@@ -2998,7 +3210,7 @@ export async function createSimulator(options = {}) {
     const cfg = config(state.simulator);
     const all = allDiagnostics(cfg);
     return {
-      csrf,
+      csrf: adminToken,
       ...runtimeState({ reuseCapabilities: true }),
       dataverse: dataverseSummary(),
       site: portal.website?.name ?? portal.website?.adx_name ?? null,
@@ -3054,7 +3266,8 @@ export async function createSimulator(options = {}) {
       // "disabled" unless the runtime was started with --allow-live-writes; then "off" or "enabled".
       liveWrites: live.status().liveWrites,
       localOrigin,
-      adminUrl: `${localOrigin}/_sim/`,
+      adminUrl: `${adminOrigin}/_sim/`,
+      appsUrl: `${appsOrigin}/`,
       docs: DOCS,
       // Imported model-driven apps and the /_sim/api route prefixes this host mounts (the admin app reads them instead of probing).
       modelDrivenApps: modelDrivenAppsOf(solutionMetadata),
@@ -3184,7 +3397,7 @@ export async function createSimulator(options = {}) {
 
   const staffSession = createStaffSessionHandler({
     sessions: staffSessions,
-    csrf: () => csrf,
+    csrf: () => appsToken,
     json,
     readBody: jsonObjectBody,
   });
@@ -3521,7 +3734,7 @@ export async function createSimulator(options = {}) {
     portal: () => sourcePortal ?? portal ?? null,
   });
   // /_sim/api/trace (sim-trace-routes.mjs): the trace store's queries, settings and clear.
-  const traceRoutes = createTraceRoutes({ traces, csrf: () => csrf, json });
+  const traceRoutes = createTraceRoutes({ traces, csrf: () => adminToken, json });
   const messaging = async (req, res, url) => {
     const dashboard = await dashboardRoutes(req, res, url);
     if (dashboard) return dashboard;
@@ -3530,12 +3743,12 @@ export async function createSimulator(options = {}) {
     const pack = await packRoutes(req, res, url);
     if (pack) return pack;
     if (!organization) return false;
-    messagingRoutes ??= createMessagingRoutes({ api: organization.api, csrf: () => csrf });
+    messagingRoutes ??= createMessagingRoutes({ api: organization.api, csrf: () => adminToken });
     const messagingResult = await messagingRoutes(req, res, url);
     if (messagingResult) return messagingResult;
     flowRoutes ??= createFlowRoutes({
       api: organization.api,
-      csrf: () => csrf,
+      csrf: () => adminToken,
       // Flow HTTP roots name the serving host (D-R3-28).
       origin: () => ({
         host: 'power-pages',
@@ -3548,7 +3761,7 @@ export async function createSimulator(options = {}) {
   const dashboardChoice = (condition, whenTrue, whenFalse) => (condition ? whenTrue : whenFalse);
   // /_sim/api/environment (sim-environment-routes.mjs): variables, local overrides and the deployment profile pin.
   const environmentRoutes = createEnvironmentRoutes({
-    csrf: () => csrf,
+    csrf: () => adminToken,
     change,
     json,
     jsonObjectBody,
@@ -3621,7 +3834,7 @@ export async function createSimulator(options = {}) {
     json,
     jsonObjectBody,
     change,
-    csrf: () => csrf,
+    csrf: () => adminToken,
     status: statusPayload,
     statusChunks: (value) => statusResponseChunks(value, recordCapabilitiesSummary),
     dataverseAdmin,
@@ -3809,7 +4022,7 @@ export async function createSimulator(options = {}) {
     }
     if (method === 'GET' && relative === '/operations') return json(res, 200, { items: operations() });
     if (method === 'GET' && relative === '/persona-runtimes') return json(res, 200, personaRuntimes.list());
-    if (method === 'GET' && relative === '/personas') return json(res, 200, personasPayload());
+    if (method === 'GET' && relative === '/personas') return json(res, 200, personasFor(req));
     if (method === 'GET' && relative === '/scenarios')
       return json(res, 200, {
         scenarios: Array.isArray(config().scenarios) ? config().scenarios : [],
@@ -3877,7 +4090,8 @@ export async function createSimulator(options = {}) {
       return json(res, 200, audit.export(url.searchParams), {
         'content-disposition': 'attachment; filename="simulator-audit.json"',
       });
-    if (isWrite(method) && req.headers['x-sim-csrf'] !== csrf) throw error('Missing simulator CSRF token.', 403);
+    if (isWrite(method) && !sameToken(req.headers['x-sim-csrf'], adminToken))
+      throw error('Missing simulator CSRF token.', 403);
     const operationRoute = /^\/operations\/([^/]+)$/.exec(relative);
     if (operationRoute && ['PATCH', 'DELETE'].includes(method))
       /* NOSONAR: single-pass routine, splitting it would change shared state */ return change(async () => {
@@ -4480,6 +4694,7 @@ export async function createSimulator(options = {}) {
       });
     if (relative === '/assets/capture-shell' && method === 'POST')
       return change(async () => {
+        if (!cache) throw error('Asset capture requires a persisted simulator state directory.', 409);
         const body = await jsonObjectBody(req);
         if (typeof body.path !== 'string') throw error('Provide the portal page path to capture.');
         if (body.managedControlPath !== undefined && typeof body.managedControlPath !== 'string')
@@ -4705,6 +4920,9 @@ export async function createSimulator(options = {}) {
       portal: {
         ...portal,
         webApiViews: solutionMetadata.views,
+        // The public Web API types columns from the Solution's own metadata (webApiPolicy's Solution-only rule).
+        // A table that only a user mapping declares contributes no column types here, unlike modelMetadata()
+        // which serves layouts and Liquid.
         webApiEntities: solutionMetadata.entities,
         webApiIdentity: identity,
       },
@@ -4713,6 +4931,7 @@ export async function createSimulator(options = {}) {
       origin: url.origin,
       // Portal scripts address @odata.id targets on the live portal origin.
       origins: [url.origin, live.origin].filter(Boolean),
+      // Same Solution-only column types as webApiEntities above.
       metadata: (logical) => solutionMetadata.entities?.[logical]?.fields,
       json,
       jsonBody,
@@ -4831,13 +5050,14 @@ export async function createSimulator(options = {}) {
     }
     // External identities in the local data, with how each was recorded (lib/sign-in-flow.mjs).
     if (req.method === 'GET' && relative === '/identities') return json(res, 200, externalSignIn.identities());
-    if (req.method !== 'POST' || !['/sign-in', '/sign-out', '/roles'].includes(relative))
+    if (req.method !== 'POST' || !['/sign-in', '/sign-out', '/roles', '/portal-ticket'].includes(relative))
       throw error('Unknown session endpoint.', 404);
-    if (req.headers['x-sim-csrf'] !== csrf) throw error('Missing simulator CSRF token.', 403);
+    if (!sameToken(req.headers['x-sim-csrf'], adminToken)) throw error('Missing simulator CSRF token.', 403);
     const body = await jsonBody(req);
     // A manual web-role override for this browser's signed-in session ({ roles: null } clears
     // it); it never creates a session.
     if (relative === '/roles') return sessionRolesResponse(res, auth, body);
+    if (relative === '/portal-ticket') return mintPortalTicket(res, body);
     const returnUrl = safeReturnUrl(body?.returnUrl);
     const session =
       relative === '/sign-in' ? signInSession(body?.contactId, { roles: body?.roles }) : { contactId: null };
@@ -4845,6 +5065,122 @@ export async function createSimulator(options = {}) {
       'set-cookie': authSessions.cookie(session),
     });
   }
+  // Sign-in tickets for the administration console (design section 4): a single-use navigation from the administration
+  // to the portal, in memory only, at most TICKET_LIMIT at a time, each valid for TICKET_LIFETIME_MS on the store clock.
+  const portalTickets = new Map();
+  const TICKET_LIMIT = 16;
+  const TICKET_LIFETIME_MS = 60_000;
+  const TICKET_FORMAT = /^[A-Za-z0-9_-]{43}$/;
+  const RETURN_FRAGMENT = /^#[\w/?=&%.:,-]{0,512}$/;
+  const TICKET_REFUSED = 'The sign-in link is no longer valid. Start again from the administration.';
+  const ticketDigest = (value) => createHash('sha256').update(value).digest();
+  const ticketBindingName = () => `paqvilo-mirage-ticket-${new URL(localOrigin).port}`;
+
+  // POST /__sim/api/session/portal-ticket: the console's sign-in or sign-out, answered as a ticket URL on the portal.
+  function mintPortalTicket(res, body) {
+    const request = portalTicketRequest(body);
+    const ticket = randomBytes(32).toString('base64url');
+    const binding = randomBytes(32).toString('base64url');
+    const expiresAt = store.clock.now() + TICKET_LIFETIME_MS;
+    if (portalTickets.size >= TICKET_LIMIT) portalTickets.delete(portalTickets.keys().next().value);
+    portalTickets.set(ticketDigest(ticket).toString('hex'), { ...request, expiresAt, binding: ticketDigest(binding) });
+    const cookie = `${ticketBindingName()}=${binding}; Path=/__sim/session-token; HttpOnly; SameSite=Strict; Max-Age=60`;
+    return json(res, 200, { url: `${localOrigin}/__sim/session-token/${ticket}`, expiresAt }, { 'set-cookie': cookie });
+  }
+  // The console's fields, checked as the sign-in form checks them: an active local contact, a provider the site offers
+  // (or local sign-in) and a return fragment.
+  function portalTicketRequest(body) {
+    const action = body?.action;
+    if (action !== 'sign-in' && action !== 'sign-out')
+      throw error('action must be sign-in or sign-out.', 400, 'InvalidTicketRequest');
+    const returnHash = body.returnHash ?? '#access';
+    if (typeof returnHash !== 'string' || !RETURN_FRAGMENT.test(returnHash))
+      throw error('returnHash must be a URL fragment.', 400, 'InvalidTicketRequest');
+    if (action === 'sign-out') return { action, contactId: null, provider: null, returnHash };
+    return {
+      action,
+      contactId: signInSession(body.contactId).contactId,
+      provider: ticketProvider(body.provider ?? null),
+      returnHash,
+    };
+  }
+  // A provider the site offers, or null for local sign-in, which the site refuses while it has providers and local sign-in is off.
+  function ticketProvider(provider) {
+    const offered = externalSignIn?.signInProviders() ?? [];
+    if (provider !== null) {
+      if (!offered.some((item) => item.id === provider))
+        throw error('provider must be an identity provider of this site.', 400, 'InvalidTicketRequest');
+      return provider;
+    }
+    if (!authenticationSettings(portal).localLogin && offered.length)
+      throw error('Local sign-in is turned off for this site.', 409, 'LocalSignInDisabled');
+    return null;
+  }
+
+  // GET or HEAD /__sim/session-token/<ticket> on the portal: the navigation that spends a ticket. The first answer is final.
+  function consumePortalTicket(req, res, ticket) {
+    res.setHeader('cache-control', 'no-store');
+    res.setHeader('referrer-policy', 'no-referrer');
+    // A script's request is refused before the ticket is looked up, so the navigation that follows still succeeds.
+    if (browserRequest(req) && !documentNavigation(req)) return refuseTicket(res, []);
+    const cleared = [`${ticketBindingName()}=; Path=/__sim/session-token; HttpOnly; SameSite=Strict; Max-Age=0`];
+    const entry = takePortalTicket(ticket, req.headers.cookie);
+    if (!entry) return refuseTicket(res, cleared);
+    return answerPortalTicket(res, entry, cleared);
+  }
+  // The one answer for every refused ticket, so that no failure tells a guessed value from a spent or expired one.
+  function refuseTicket(res, cookies) {
+    res.writeHead(403, {
+      'content-type': 'application/json; charset=utf-8',
+      ...(cookies.length ? { 'set-cookie': cookies } : {}),
+    });
+    return res.end(JSON.stringify({ error: { code: 'TicketInvalid', message: TICKET_REFUSED } }));
+  }
+  // The entry of a ticket that passes every check, or null. The entry is removed by its first lookup, so no later attempt finds it.
+  function takePortalTicket(ticket, cookieHeader) {
+    if (!TICKET_FORMAT.test(ticket)) return null;
+    const key = ticketDigest(ticket).toString('hex');
+    const entry = portalTickets.get(key);
+    portalTickets.delete(key);
+    if (!entry || store.clock.now() > entry.expiresAt) return null;
+    const binding = parseCookies(cookieHeader)[ticketBindingName()];
+    return binding && timingSafeEqual(ticketDigest(binding), entry.binding) ? entry : null;
+  }
+  // The action a valid ticket names: a sign-out, a sign-in through a provider, or a local sign-in.
+  async function answerPortalTicket(res, entry, cleared) {
+    const adminPath = `/_sim/${entry.returnHash}`;
+    if (entry.action === 'sign-out') return signOutTicket(res, adminPath, cleared);
+    if (entry.provider)
+      return externalSignIn.begin(res, {
+        provider: entry.provider,
+        loginHint: entry.contactId,
+        returnUrl: adminPath,
+        cookies: [authSessions.cookie({ contactId: null }), ...cleared],
+      });
+    const active = signInPersonas().some((item) => personaKey(item.contactId) === personaKey(entry.contactId));
+    if (!active) return refuseTicket(res, cleared);
+    return localSignInResponse(res, entry.contactId, `${adminOrigin}${adminPath}`, cleared);
+  }
+  // Signed in, the session is ended through the portal's log-off; anonymous, the console is opened again.
+  function signOutTicket(res, adminPath, cleared) {
+    const location = currentIdentity().contactId
+      ? `/Account/Login/LogOff?returnUrl=${encodeURIComponent(adminPath)}`
+      : `${adminOrigin}${adminPath}`;
+    res.writeHead(302, { location, 'set-cookie': cleared, 'cache-control': 'no-store', 'x-sim-route': 'sign-out' });
+    return res.end();
+  }
+  // The local sign-in's answer: the persona's session cookie and a redirect, for the sign-in form and for a console ticket.
+  function localSignInResponse(res, contactId, location, cookies = []) {
+    traceSignIn(contactId, 'local');
+    res.writeHead(302, {
+      location,
+      'set-cookie': [authSessions.cookie({ contactId }), ...cookies],
+      'cache-control': 'no-store',
+      'x-sim-route': 'sign-in',
+    });
+    return res.end();
+  }
+
   // A session for a contact (an active local contact) or, with roles, a manual role
   // override; shared by POST /_sim/api/session/sign-in and simulator.signIn().
   function signInSession(contactId, { roles } = {}) {
@@ -4894,7 +5230,7 @@ export async function createSimulator(options = {}) {
   const anonymousCanRead = (target) => {
     const page = exportedPageFor(portal, new URL(target, localOrigin).pathname);
     if (!page || page.id === servicePages(portal).profile?.id) return false;
-    return pageAccess(portal, page, identityFor({ contactId: null })).allowed;
+    return pageAccess(portal, page, identityFor({ contactId: null }), { now: store.clock.now() }).allowed;
   };
   const applyAccountPageContent = (html, content) => {
     const marker = html.indexOf(SIGN_IN_MARKER);
@@ -4931,7 +5267,7 @@ export async function createSimulator(options = {}) {
     const identity = currentIdentity();
     const rendered = await shell.value.renderPage(shell.page.url, {
       user: identity,
-      request: { url: url.href, path: url.pathname, params: Object.fromEntries(url.searchParams), method: req.method },
+      request: { url: url.href, path: url.pathname, params: requestParams(req, url, {}), method: req.method },
     });
     for (const diagnostic of rendered.diagnostics ?? []) recordDiagnostic({ ...diagnostic, path: url.pathname });
     let html = String(rendered.html ?? '');
@@ -4977,7 +5313,7 @@ export async function createSimulator(options = {}) {
         registerTab: flags.registration && flags.openRegistration,
         redeemTab: flags.registration && flags.invitation && !invitationCode,
         personas: showPersonas ? signInPersonas() : [],
-        personaCatalog: showPersonas ? personaReport() : null,
+        personaCatalog: showPersonas ? { ...personaReport(), administrationUrl: personaAdministrationUrl() } : null,
         personaReturnUrl: returnUrlParameter(url.searchParams) || status >= 400 ? returnUrl : null,
         providers,
         showPersonas,
@@ -5021,7 +5357,8 @@ export async function createSimulator(options = {}) {
           'Local sign-in is turned off for this site (Authentication/Registration/LocalLoginEnabled is false): sign in with an external provider.',
       });
     if (form.personaKey) {
-      if (form.__RequestVerificationToken !== csrf) throw error('Missing simulator CSRF token.', 403);
+      if (!pageToken(form.__RequestVerificationToken)) throw error('Missing simulator CSRF token.', 403);
+      refuseBrowserContextLaunch(req, form.personaKey);
       const result = await launchPersona({
         personaKey: form.personaKey,
         returnUrl: form.ReturnUrl ? personaStartPath(form.ReturnUrl, 'returnUrl') : undefined,
@@ -5034,7 +5371,7 @@ export async function createSimulator(options = {}) {
       });
       return res.end();
     }
-    if (personaReport().enabled && form.__RequestVerificationToken !== csrf)
+    if (personaReport().enabled && !pageToken(form.__RequestVerificationToken))
       throw error('Missing simulator CSRF token.', 403);
     const contactId = typeof form.contactId === 'string' ? form.contactId.trim() : '';
     const persona = personaKey(contactId)
@@ -5046,14 +5383,7 @@ export async function createSimulator(options = {}) {
         returnUrl,
         error: 'Choose an active local persona to sign in.',
       });
-    traceSignIn(persona.contactId, 'local');
-    res.writeHead(302, {
-      location: returnUrl,
-      'set-cookie': authSessions.cookie({ contactId: persona.contactId }),
-      'cache-control': 'no-store',
-      'x-sim-route': 'sign-in',
-    });
-    return res.end();
+    return localSignInResponse(res, persona.contactId, returnUrl);
   };
   async function authenticate(req, res, url, route) {
     const requested = returnUrlParameter(url.searchParams);
@@ -5069,6 +5399,7 @@ export async function createSimulator(options = {}) {
     portal: () => portal,
     origin: () => localOrigin,
     csrf,
+    adminToken: () => adminToken,
     sessions: authSessions,
     store,
     personas: signInPersonas,
@@ -5134,7 +5465,9 @@ export async function createSimulator(options = {}) {
       modelDrivenSettingsValue.trustedExtensions
         ? clientResources.assets
         : new Map([...clientResources.assets].filter(([, asset]) => asset.passive === true)),
-    csrf: () => csrf,
+    csrf: () => appsToken,
+    portalUrl: () => `${localOrigin}/`,
+    listenerOrigin: (req) => ownListenerOrigin(req),
     json,
     readBody: jsonObjectBody,
     change,
@@ -5189,7 +5522,9 @@ export async function createSimulator(options = {}) {
     diagnostic: recordDiagnostic,
     runtime: canvasRuntime,
     principal: canvasPrincipal,
-    csrf: () => csrf,
+    csrf: () => appsToken,
+    adminToken: () => adminToken,
+    pcfAssets: () => codeComponents.assets,
     traces: organizationHost.traces,
     // A portal principal answers null: the root keeps its contact actor.
     traceActor: (principal) => staffActor(organization, principal),
@@ -5231,21 +5566,32 @@ export async function createSimulator(options = {}) {
     dataverse: (input) =>
       codeAppDataverse({ organization, change, origin: () => dataverse?.origin ?? localOrigin })(input),
     connectors: codeAppConnectors(organizationHost.connectors, settingOptionsRest.connections ?? {}),
-    csrf: () => csrf,
+    csrf: () => appsToken,
     diagnostic: recordDiagnostic,
   });
   /* NOSONAR: single-pass routine, splitting it would change shared state */ async function handle(req, res) {
     // Normalize the admin alias before security checks so rejected requests
     // keep the same JSON error contract for both spellings.
     if (/^\/_sim(?:\/|\?|$)/.test(req.url)) req.url = req.url.replace(/^\/_sim/, '/__sim');
-    if (req.headers.host !== new URL(localOrigin).host) throw error('Invalid Host header.', 403);
+    // The listener that received the request names its own origin: the portal's, the administration's or the apps'.
+    const ownOrigin = ownListenerOrigin(req);
     // The one cross-origin request a portal accepts: the identity provider's form post to
     // the reply URL (the local identity provider's origin only).
-    if (req.headers.origin && req.headers.origin !== localOrigin && !externalSignIn?.acceptsOrigin(req))
+    // The portal also accepts the administration's origin for the paths the console reaches across ports; the portal
+    // listener's gate has already refused every browser-shaped administration request outside the allow-list.
+    const adminOriginAccepted = !onAdmin(req) && !onApps(req) && req.headers.origin === adminOrigin;
+    if (
+      req.headers.origin &&
+      req.headers.origin !== ownOrigin &&
+      !adminOriginAccepted &&
+      !externalSignIn?.acceptsOrigin(req)
+    )
       throw error('Cross-origin requests are not allowed.', 403);
     if (req.headers['sec-fetch-site'] === 'cross-site' && isWrite(req.method))
       throw error('Cross-site writes are not allowed.', 403);
     const url = requestTargetUrl(req.url, localOrigin);
+    // The admin token is accepted wherever a page or apps token is: it is replaced by that token before the routes see it.
+    normalizeTokenHeaders(req, url.pathname, { adminToken, pageToken: csrf, appsToken });
     if (
       managementStorage &&
       !isDeepStrictEqual(store.state.simulator?.modelDriven?.records ?? {}, appliedManagementRecords)
@@ -5324,7 +5670,8 @@ export async function createSimulator(options = {}) {
         if (!local()) throw error('Pack writes require local providers.', 409, 'LocalRuntimeRequired');
         if (!(identity.contactId ?? identity.id))
           throw error('Pack writes require sign-in.', 401, 'AuthenticationRequired');
-        if (req.headers.__requestverificationtoken !== csrf) throw error('Missing portal verification token.', 403);
+        if (!sameToken(req.headers.__requestverificationtoken, csrf))
+          throw error('Missing portal verification token.', 403);
         const body = await jsonObjectBody(req);
         const result = await invokePackMutation({
           endpoint,
@@ -5341,7 +5688,8 @@ export async function createSimulator(options = {}) {
     const formRoute = /^\/__sim\/forms\/(entityform|webform)\/([\w-]+)\/submit$/.exec(url.pathname);
     if (formRoute) {
       if (req.method !== 'POST') throw error('Native form submission requires POST.', 405);
-      if (req.headers.__requestverificationtoken !== csrf) throw error('Missing portal verification token.', 403);
+      if (!sameToken(req.headers.__requestverificationtoken, csrf))
+        throw error('Missing portal verification token.', 403);
       const body = await jsonBody(req);
       const formIdentity = currentIdentity();
       // An anonymous visitor's advanced form session belongs to its browser session: the
@@ -5402,10 +5750,14 @@ export async function createSimulator(options = {}) {
       if (channels.has('trace')) traceChannel(res, url);
       return;
     }
+    // The console's ticket navigation spends a sign-in or sign-out ticket (mintPortalTicket).
+    if (url.pathname.startsWith('/__sim/session-token/') && ['GET', 'HEAD'].includes(req.method))
+      return consumePortalTicket(req, res, url.pathname.slice('/__sim/session-token/'.length));
     if (url.pathname === '/__sim/sign-in') {
       if (req.method === 'POST') {
         const body = await signInForm(req);
-        if (body.__RequestVerificationToken !== csrf) throw error('Missing simulator CSRF token.', 403);
+        if (!pageToken(body.__RequestVerificationToken)) throw error('Missing simulator CSRF token.', 403);
+        refuseBrowserContextLaunch(req, body.personaKey);
         const result = await launchPersona({ personaKey: body.personaKey, returnUrl: body.ReturnUrl });
         res.writeHead(302, {
           location: result.url,
@@ -5443,7 +5795,7 @@ export async function createSimulator(options = {}) {
               .filter((group) => group.id === persona.group)
               .map((group) => ({ ...group, count: 1 })),
           },
-          { mode: 'signin' },
+          { mode: 'signin', adminUrl: personaAdministrationUrl() },
         ) +
         '</form>';
       return renderAccountPage(req, res, url, { status: 200, content, route: 'persona-shortcut' });
@@ -5500,7 +5852,7 @@ export async function createSimulator(options = {}) {
     );
     if (endpoint) {
       if (endpoint.mode === 'live') return forward(req, res, url);
-      if (isWrite(req.method) && req.headers.__requestverificationtoken !== csrf)
+      if (isWrite(req.method) && !sameToken(req.headers.__requestverificationtoken, csrf))
         throw error('Missing portal verification token.', 403);
       if (endpoint.entity) {
         const shadow = new URL(url);
@@ -5520,21 +5872,12 @@ export async function createSimulator(options = {}) {
           : await fs.readFile(new URL('./lib/code-components-client.js', import.meta.url)),
       );
     }
-    if (url.pathname.startsWith('/__sim-static/pcf/')) {
-      if (!['GET', 'HEAD'].includes(req.method)) throw error('PCF resources require GET or HEAD.', 405);
-      const asset = codeComponents.assets.get(url.pathname);
-      if (!asset) throw error('This PCF resource is not declared in a selected manifest.', 404);
-      const real = await fs.realpath(asset.file);
-      if (real !== asset.file || (await fs.stat(real)).size > 8 * 1024 * 1024)
-        throw error('The declared PCF resource changed outside its source boundary.', 404);
-      let type = 'application/octet-stream';
-      if (asset.kind === 'code') type = 'text/javascript; charset=utf-8';
-      else if (asset.kind === 'css') type = 'text/css; charset=utf-8';
-      else if (asset.kind === 'resx') type = 'application/xml; charset=utf-8';
-      res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
-      return res.end(
-        req.method === 'HEAD' ? undefined : await readLocalFile(real, { root: asset.root, maxBytes: 8 * 1024 * 1024 }),
-      );
+    if (url.pathname.startsWith(PORTAL_PCF)) {
+      return await servePcfResource(req, res, {
+        assets: codeComponents.assets,
+        key: url.pathname,
+        fail: (status, message) => error(message, status),
+      });
     }
     const serverLogic = serverLogicName(url.pathname);
     if (serverLogic !== null) {
@@ -5545,7 +5888,7 @@ export async function createSimulator(options = {}) {
         try {
           if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method))
             throw error('This method cannot execute server logic.', 405);
-          if (isWrite(req.method) && req.headers.__requestverificationtoken !== csrf)
+          if (isWrite(req.method) && !sameToken(req.headers.__requestverificationtoken, csrf))
             throw error('Missing portal verification token.', 403, 'Forbidden');
           const raw = await executeServerLogic({
             name: serverLogic,
@@ -5595,7 +5938,7 @@ export async function createSimulator(options = {}) {
         portal,
         store,
         readProvider,
-        metadata: solutionMetadata,
+        metadata: modelMetadata(),
         config: config(),
         identity: currentIdentity(),
         params: url.searchParams,
@@ -5616,7 +5959,8 @@ export async function createSimulator(options = {}) {
     );
     if (flow && config().mode !== 'live') {
       if (req.method !== 'POST') throw error('Cloud-flow triggers require POST.', 405);
-      if (req.headers.__requestverificationtoken !== csrf) throw error('Missing portal verification token.', 403);
+      if (!sameToken(req.headers.__requestverificationtoken, csrf))
+        throw error('Missing portal verification token.', 403);
       const identity = currentIdentity();
       assertOperationRole(flow, identity);
       const bytes = (await rawBody(req)).toString('utf8');
@@ -5712,10 +6056,19 @@ export async function createSimulator(options = {}) {
           readProvider,
           identity: quickIdentity,
           params: Object.fromEntries(url.searchParams),
-          metadata: solutionMetadata,
+          metadata: modelMetadata(),
           schemas: { ...solutionMetadata.componentSchemas, ...config().componentSchemas },
         });
-        const layout = await renderer.serviceLayout(url.pathname + url.search, { user: quickIdentity });
+        const quickRequest = {
+          url: url.href,
+          path: url.pathname,
+          params: requestParams(req, url, {}),
+          method: req.method,
+        };
+        const layout = await renderer.serviceLayout(url.pathname + url.search, {
+          user: quickIdentity,
+          request: quickRequest,
+        });
         const resource = (entry) => renderShellResource(entry, 'css', { localOnly: true });
         const bootstrapFile = portal.webFiles.find((f) => /\/bootstrap\.min\.css$/i.test(f.url ?? ''));
         const home = servicePages(portal).home ?? { id: null, url: '/', name: '', metadata: {} };
@@ -5771,11 +6124,14 @@ export async function createSimulator(options = {}) {
         store,
         readProvider,
         identity: currentIdentity(),
+        // The browser's visitor id, resolved for this request (lib/visitor-session.mjs); null without a visitor cookie.
+        visitor: trace.getStore()?.visitor ?? null,
         csrf,
+        adminToken,
         attachmentBody: noteAttachmentBody,
         config: config(),
         schemas: { ...solutionMetadata.componentSchemas, ...config().componentSchemas },
-        metadata: solutionMetadata,
+        metadata: modelMetadata(),
         compat: localOverrides.compat,
         live,
         liveMapping,
@@ -5815,13 +6171,14 @@ export async function createSimulator(options = {}) {
         });
         return res.end(body === undefined ? undefined : JSON.stringify(body));
       };
-      if (req.headers.__requestverificationtoken !== csrf) throw error('Missing portal verification token.', 403);
+      if (!sameToken(req.headers.__requestverificationtoken, csrf))
+        throw error('Missing portal verification token.', 403);
       const now = Date.now();
       for (const [id, entry] of stagedUploads) if (now - entry.created > 3600000) dropStaged(id);
       if (/^InitializeFileUpload$/i.test(fileApi[1])) {
         if (req.method !== 'POST') throw error('File upload initialisation requires POST.', 405);
         await rawBody(req);
-        const name = String(req.headers['x-ms-file-name'] ?? '').trim();
+        const name = uploadedFileName(req.headers);
         const size = Number(req.headers['x-ms-file-size']);
         if (!name || !Number.isSafeInteger(size) || size < 0 || size > 8 * 1024 * 1024)
           throw error('The file name and size are required (at most 8 MiB).', 400);
@@ -5970,8 +6327,8 @@ export async function createSimulator(options = {}) {
           // a body token, when sent, must match too.
           const tokens = controls.getAll('__RequestVerificationToken');
           const verified = tokens.length
-            ? tokens.length === 1 && tokens[0] === csrf
-            : nativeViewStateKey(controls.get('__VIEWSTATE')) === csrf;
+            ? tokens.length === 1 && pageToken(tokens[0])
+            : pageToken(nativeViewStateKey(controls.get('__VIEWSTATE')));
           if (!verified) throw error('Missing portal verification token.', 403);
           // The captcha refresh is an ASP.NET AJAX partial postback answered with the update panel delta.
           const captchaTarget = /^(.+\$captcha)\$CaptchaLinkButton$/.exec(controls.get('__EVENTTARGET') ?? '');
@@ -6033,8 +6390,8 @@ export async function createSimulator(options = {}) {
       // The same rule as a page postback: a body token, or the document's own __VIEWSTATE key.
       const tokens = controls.getAll('__RequestVerificationToken');
       const verified = tokens.length
-        ? tokens.length === 1 && tokens[0] === csrf
-        : nativeViewStateKey(controls.get('__VIEWSTATE')) === csrf;
+        ? tokens.length === 1 && pageToken(tokens[0])
+        : pageToken(nativeViewStateKey(controls.get('__VIEWSTATE')));
       if (!verified) throw error('Missing portal verification token.', 403);
       nativeEntries = [...controls];
     } else if (!['GET', 'HEAD'].includes(req.method)) throw error('Use the local Web API for writes.', 405);
@@ -6066,7 +6423,7 @@ export async function createSimulator(options = {}) {
       if (requestedPage && !explicitPage) throw error('The modal parent page is not exported.', 404);
       const formIdentity = currentIdentity();
       if (explicitPage) {
-        const access = pageAccess(portal, explicitPage, formIdentity);
+        const access = pageAccess(portal, explicitPage, formIdentity, { now: store.clock.now() });
         if (!access.allowed)
           throw error(access.diagnostics?.[0]?.message || 'Page access denied.', access.status ?? 403, access.code);
       }
@@ -6098,7 +6455,7 @@ export async function createSimulator(options = {}) {
           store,
           readProvider,
           args: { id: definition.id },
-          metadata: solutionMetadata,
+          metadata: modelMetadata(),
           config: config(),
           modal: true,
           observed: config().observed ?? portal.observed,
@@ -6109,7 +6466,7 @@ export async function createSimulator(options = {}) {
               ...spec,
               portal,
               catalog: codeComponents,
-              metadata: solutionMetadata,
+              metadata: modelMetadata(),
               language: context?.__language ?? portal.language,
               identity: formIdentity,
               mappings: store.snapshot({ sections: ['mappings'] }).mappings,
@@ -6288,15 +6645,18 @@ export async function createSimulator(options = {}) {
       });
       return res.end(req.method === 'HEAD' ? undefined : body);
     }
-    // Absolute sign-in redirects use the local origin (handle() admits only its Host).
+    // Absolute sign-in redirects use the local origin (listenerVerdictOf admits only the listener's Host).
     const routeOptions = { origin: localOrigin };
     const key = normalizePortalPath(url.pathname);
     // A path ending with "/" is looked up as a page first (legacy slash rule); a web file
     // answers only when no page has that URL.
     const pageFirst = url.pathname.endsWith('/') && portal.pages.some((p) => normalizePortalPath(p.url) === key);
-    const asset = pageFirst ? null : portal.webFiles.find((f) => normalizePortalPath(f.url) === key);
+    const webFile = pageFirst ? null : portal.webFiles.find((f) => normalizePortalPath(f.url) === key);
+    const webFileAccess = webFile ? pageAccess(portal, webFile, currentIdentity(), { now: store.clock.now() }) : null;
+    // A web file outside its release or expiration dates is not visible (Learn, web files): it is absent, as an unknown path is.
+    const asset = webFileAccess?.code === 'WEB_FILE_NOT_RELEASED' ? null : webFile;
     // Routing : a denied web file follows the denied-page outcome below.
-    const assetAccess = asset ? pageAccess(portal, asset, currentIdentity()) : null;
+    const assetAccess = asset ? webFileAccess : null;
     const deniedRoute =
       assetAccess && !assetAccess.allowed
         ? deniedPageRoute(portal, url, currentIdentity(), assetAccess, routeOptions)
@@ -6488,7 +6848,7 @@ export async function createSimulator(options = {}) {
       : portal.pages.find((p) => normalizePortalPath(p.url) === key && (url.pathname.endsWith('/') || key === '/'));
     const markerRoute = exportedPage || deniedRoute ? null : siteMarkerRoute(portal, url);
     const routedPage = exportedPage ?? markerRoute?.page ?? null;
-    const access = routedPage ? pageAccess(portal, routedPage, pageIdentity) : null;
+    const access = routedPage ? pageAccess(portal, routedPage, pageIdentity, { now: store.clock.now() }) : null;
     // The Profile site-marker page requires a signed-in user (platform profile page).
     const profile = servicePages(portal).profile;
     const signInRequired = Boolean(
@@ -6497,7 +6857,7 @@ export async function createSimulator(options = {}) {
     const pageRouteOf = () => {
       if (!routedPage)
         return resolveUnmatchedRoute(portal, url, {
-          readable: (page) => pageAccess(portal, page, pageIdentity).allowed,
+          readable: (page) => pageAccess(portal, page, pageIdentity, { now: store.clock.now() }).allowed,
           urlHistory: store.state.settings?.urlHistoryRedirects === true,
         });
       if (!access.allowed) return deniedPageRoute(portal, url, pageIdentity, access, routeOptions);
@@ -6548,7 +6908,7 @@ export async function createSimulator(options = {}) {
         request: {
           url: url.href,
           path: url.pathname,
-          params: { ...formParams, ...Object.fromEntries(url.searchParams) },
+          params: requestParams(req, url, formParams),
           method: req.method,
         },
       });
@@ -6684,17 +7044,18 @@ export async function createSimulator(options = {}) {
       recordDiagnostic(
         context.traceSpan ? { ...d, traceId: context.traceSpan.traceId, spanId: context.traceSpan.spanId } : d,
       );
-    if (err.code?.startsWith('PACK_CONFIGURATION_PRESET_'))
+    const code = requestErrorCode(err);
+    if (code?.startsWith('PACK_CONFIGURATION_PRESET_'))
       requestDiagnostic(
-        err.details?.configurationPresetDiagnostic ?? { code: err.code, severity: 'error', message: err.message },
+        err.details?.configurationPresetDiagnostic ?? { code, severity: 'error', message: requestErrorMessage(err) },
       );
-    if (err.details?.permissionDiagnostic)
+    if (err?.details?.permissionDiagnostic)
       requestDiagnostic({ ...err.details.permissionDiagnostic, path: req.url?.split('?')[0] });
     // Administration API errors are answered to their caller; they are not portal runtime observations.
-    if (!req.url?.startsWith('/__sim/api') && !err.details?.permissionDiagnostic)
+    if (!req.url?.startsWith('/__sim/api') && !err?.details?.permissionDiagnostic)
       requestDiagnostic({
-        code: err.code ?? 'RUNTIME_ERROR',
-        message: err.message,
+        code: code ?? 'RUNTIME_ERROR',
+        message: requestErrorMessage(err),
         path: req.url?.split('?')[0],
       });
   };
@@ -6727,12 +7088,12 @@ export async function createSimulator(options = {}) {
     );
   };
   const writeRequestError = (err, req, res) => {
-    const status = err.status ?? err.statusCode ?? 500;
+    const status = requestErrorStatus(err);
     if (req.url.startsWith('/_api/') || req.url.startsWith('/__sim/api') || req.url.startsWith('/__sim/forms/'))
       return void json(res, status, {
         error: {
-          code: err.code ?? 'SIMULATOR_ERROR',
-          message: err.message,
+          code: requestErrorCode(err) ?? 'SIMULATOR_ERROR',
+          message: requestErrorMessage(err),
           ...(req.url.startsWith('/__sim/forms/') && Array.isArray(err.details?.validationErrors)
             ? { validationErrors: err.details.validationErrors }
             : {}),
@@ -6743,7 +7104,19 @@ export async function createSimulator(options = {}) {
       });
     return writePageRequestError(err, req, res, status);
   };
-  const classifyPortalRequest = (url, cfg) => {
+  // A failure while answering a failed request must not reject the request: the caller still gets a 500.
+  const answerRequestFailure = (err, req, res, context) => {
+    try {
+      recordRequestErrorDiagnostics(err, req, context);
+      if (res.headersSent) return void res.end();
+      writeRequestError(err, req, res);
+    } catch {
+      // The failure is answered with the generic 500 below; its details are not sent to the caller.
+      if (res.headersSent) return void res.end();
+      json(res, 500, { error: { code: 'SIMULATOR_ERROR', message: 'Simulator request failed.' } });
+    }
+  };
+  const classifyPortalRequest = (method, url, cfg) => {
     const endpoint = (cfg.endpoints ?? []).find((item) => item.enabled !== false && item.path === url.pathname);
     let kind = 'page';
     if (url.pathname.startsWith('/__sim/forms/')) kind = 'form';
@@ -6754,7 +7127,10 @@ export async function createSimulator(options = {}) {
       packEndpointList.some((item) => matchPackEndpoint(item, url.pathname))
     )
       kind = 'api';
-    const tracked = !url.pathname.startsWith('/__sim/') || kind === 'form' || kind === 'api';
+    // The Canvas player polls its app revision every second: that probe is not a portal request and opens no trace root.
+    const revisionProbe =
+      method === 'GET' && url.pathname.startsWith('/_apps/canvas/api/') && url.searchParams.has('revision');
+    const tracked = !revisionProbe && (!url.pathname.startsWith('/__sim/') || kind === 'form' || kind === 'api');
     // A file suffix marks a static asset, except on the portal's own service routes (a document download named
     // report.pdf, a note attachment): those are requests like any other.
     const staticPath =
@@ -6763,7 +7139,14 @@ export async function createSimulator(options = {}) {
       /^\/(?:resource|_pcfwebresource|webresources|_webresource)\//.test(url.pathname);
     return { endpoint, kind, tracked, staticPath };
   };
-  /* NOSONAR */ const server = http.createServer((req, res) => {
+  // request.params in ASP.NET order: the request's cookies, then form values, then query values, so the later source wins.
+  // The runtime's own session, visitor and anti-forgery cookies are never a parameter.
+  const requestParams = (req, url, form) => {
+    const own = new Set([authSessions.name, visitorName(), ANTI_FORGERY_COOKIE]);
+    const cookies = Object.entries(parseCookies(req.headers.cookie)).filter(([name]) => !own.has(name));
+    return { ...Object.fromEntries(cookies), ...form, ...Object.fromEntries(url.searchParams) };
+  };
+  /* NOSONAR */ const onRequest = (req, res) => {
     if (closing)
       return json(
         res,
@@ -6771,6 +7154,9 @@ export async function createSimulator(options = {}) {
         { error: { code: 'SIMULATOR_CLOSING', message: 'The local runtime is shutting down.' } },
         { connection: 'close' },
       );
+    // The listener's gate (admin-origin.mjs) answers before any route, /_setup included.
+    const verdict = listenerVerdictOf(req);
+    if (verdict) return answerVerdict(res, verdict);
     if (/^\/_setup(?:\/|$)/.test(req.url?.split('?')[0] ?? '')) {
       setupHandler(req, res).catch(() => {
         if (!res.headersSent)
@@ -6794,7 +7180,7 @@ export async function createSimulator(options = {}) {
     // Only synchronous audit classification reads this private configuration.
     // The handler snapshots its own response before any asynchronous writes.
     const cfg = config(store.state.simulator);
-    const { endpoint, kind, tracked, staticPath } = classifyPortalRequest(url, cfg);
+    const { endpoint, kind, tracked, staticPath } = classifyPortalRequest(req.method, url, cfg);
     // The parent header names an audit entry (the page's audit id the browser runtime forwards) or a trace span
     // (loopback callers forward traces.headers()); an audit parent joins the trace of its root span.
     const parent = audit.byId(req.headers['x-sim-parent-trace']);
@@ -6858,7 +7244,7 @@ export async function createSimulator(options = {}) {
     else if (
       traces.enabled &&
       !['GET', 'HEAD', 'OPTIONS'].includes(req.method) &&
-      /^\/__sim\/api\/(?!trace(?:\/|$)|flow-runs$|flow-triggers\/[^/]+$|flow-triggers\/[^/]+\/triggers\/[^/]+\/paths\/invoke$)/.test(
+      /^\/__sim\/api\/(?!trace(?:\/|$)|flow-runs$|session\/portal-ticket$|flow-triggers\/[^/]+$|flow-triggers\/[^/]+\/triggers\/[^/]+\/paths\/invoke$)/.test(
         url.pathname,
       )
     )
@@ -7012,16 +7398,64 @@ export async function createSimulator(options = {}) {
       .catch((err) => {
         context.error = err;
         // This handler runs after the request's span stack: its findings name the request's root explicitly (D-M-4).
-        recordRequestErrorDiagnostics(err, req, context);
-        if (res.headersSent) {
-          res.end();
-          return;
-        }
-        writeRequestError(err, req, res);
+        answerRequestFailure(err, req, res, context);
       })
       .finally(() => activeRequests.delete(invocation));
-    activeRequests.add(invocation);
-  });
+    activeRequests.set(invocation, req);
+  };
+  const server = http.createServer(onRequest);
+  const adminServer = http.createServer(onRequest);
+  const appsServer = http.createServer(onRequest);
+  const onAdmin = (req) => adminServer.listening && req.socket.localPort === adminServer.address().port;
+  const onApps = (req) => appsServer.listening && req.socket.localPort === appsServer.address().port;
+  // The origin of the listener that received the request: the administration's, the apps' or the portal's.
+  const ownListenerOrigin = (req) => {
+    if (onAdmin(req)) return adminOrigin;
+    return onApps(req) ? appsOrigin : localOrigin;
+  };
+  // The verdict of the listener that received the request (admin-origin.mjs); null when the request is served on it.
+  const listenerVerdictOf = (req) => {
+    if (req.headers.host !== new URL(ownListenerOrigin(req)).host) return hostRefusal();
+    if (onAdmin(req))
+      return sideListenerVerdict(req, {
+        origin: adminOrigin,
+        serves: (pathname) => adminServes(pathname, isPackEndpoint),
+        kind: 'Admin',
+      });
+    if (onApps(req)) return sideListenerVerdict(req, { origin: appsOrigin, serves: appsPath, kind: 'Apps' });
+    return portalListenerVerdict(req);
+  };
+  // The verdict of the administration or apps listener (admin-origin.mjs); null when the request is served on it.
+  const sideListenerVerdict = (req, { origin, serves, kind }) => {
+    let url;
+    try {
+      url = requestTargetUrl(req.url, 'http://local.invalid'); // NOSONAR: reserved or loopback placeholder host, not a real transport
+    } catch {
+      return { status: 400, code: 'INVALID_REQUEST', message: 'Malformed request URL.' };
+    }
+    return listenerVerdict(req, url, { origin, fallbackOrigin: localOrigin, serves, kind });
+  };
+  // The portal listener's verdict (admin-origin.mjs); null when the request is served on it.
+  const portalListenerVerdict = (req) => {
+    let url;
+    try {
+      url = requestTargetUrl(req.url, localOrigin);
+    } catch {
+      return null;
+    }
+    return portalVerdict(req, url, { adminOrigin, appsOrigin, routes: PORTAL_ROUTES, isPackEndpoint });
+  };
+  const isPackEndpoint = (pathname) => packEndpointList.some((endpoint) => matchPackEndpoint(endpoint, pathname));
+  const closeListener = async (listener) => {
+    if (!listener.listening) return;
+    listener.closeAllConnections();
+    await new Promise((resolve) => listener.close(resolve));
+  };
+  const closeAdminListener = () => closeListener(adminServer);
+  const closeAppsListener = () => closeListener(appsServer);
+  // A startup that fails after composition closes the administration listener with the host (createSimulator).
+  recordOwners?.add({ closeHost: closeAdminListener });
+  recordOwners?.add({ closeHost: closeAppsListener });
   bootstrapStageAt = performance.now();
   startupPhase('preset');
   if (startupPreset.applied)
@@ -7054,6 +7488,11 @@ export async function createSimulator(options = {}) {
     state.simulator.live = { enabled: false };
     await saveState(state);
   }
+  // Closes everything the startup opened so far, then rethrows the startup error.
+  const closeAfterStartupFailure = async (cause) => {
+    await close().catch((error_) => recordDiagnostic({ code: 'STARTUP_CLEANUP_FAILED', message: error_.message }));
+    throw cause;
+  };
   try {
     bootstrapStageAt = performance.now();
     startupPhase('organization');
@@ -7125,14 +7564,25 @@ export async function createSimulator(options = {}) {
       server.listen({ host, port }, resolve);
     });
     localOrigin = `http://${host === '::1' ? '[::1]' : host}:${server.address().port}`;
+    // The administration listens on its own ephemeral port of the same host; its origin is announced once it listens.
+    await new Promise((resolve, reject) => {
+      adminServer.once('error', reject);
+      adminServer.listen({ host, port: 0 }, resolve);
+    });
+    adminOrigin = `http://${host === '::1' ? '[::1]' : host}:${adminServer.address().port}`;
+    // The apps listen on their own ephemeral port of the same host, as the administration does.
+    await new Promise((resolve, reject) => {
+      appsServer.once('error', reject);
+      appsServer.listen({ host, port: 0 }, resolve);
+    });
+    appsOrigin = `http://${host === '::1' ? '[::1]' : host}:${appsServer.address().port}`;
     // The local identity provider: its own loopback port on the runtime's host, started with
     // the runtime and closed by close() (Ctrl+C, mirage stop, POST /_sim/api/shutdown).
     await externalSignIn.start({ host });
     bootstrapTimings.listenerMs = Math.round(performance.now() - startedAt);
     bootstrapTimings.memory = { rss: process.memoryUsage().rss, heapUsed: process.memoryUsage().heapUsed };
   } catch (cause) {
-    await close().catch((error_) => recordDiagnostic({ code: 'STARTUP_CLEANUP_FAILED', message: error_.message }));
-    throw cause;
+    await closeAfterStartupFailure(cause);
   }
   let reloadRequested = false;
   const changedPaths = new Set();
@@ -7280,7 +7730,7 @@ export async function createSimulator(options = {}) {
       ],
       exclude: stateFile ? [path.dirname(path.resolve(stateFile))] : [],
     });
-    watcher = watchSources([sourceDir, ...solutionRoots, ...clientSources, ...pluginSources, ...canvasSources], {
+    watcher = sourceWatcher([sourceDir, ...solutionRoots, ...clientSources, ...pluginSources, ...canvasSources], {
       ignoreInitial: true,
       ignored: (file, stats) =>
         pluginSourceKeys.has(path.resolve(file).toLowerCase()) || isCanvasSource(file)
@@ -7316,7 +7766,8 @@ export async function createSimulator(options = {}) {
         : { backend: 'chokidar', directories: Object.keys(watched.getWatched?.() ?? {}).length };
     await previousWatcher?.close();
   }
-  if (watch) await restartWatcher();
+  // The watcher starts after the listeners and shares the startup cleanup: a failure closes what the startup opened.
+  if (watch) await restartWatcher().catch(closeAfterStartupFailure);
   bootstrapTimings.startupMs = bootstrapTimings.listenerMs = Math.round(performance.now() - startedAt);
   startupPhase('listener-ready');
   return {
@@ -7327,8 +7778,12 @@ export async function createSimulator(options = {}) {
       return portal;
     },
     url: localOrigin,
-    adminUrl: `${localOrigin}/__sim/`,
-    setupUrl: `${localOrigin}/_setup/`,
+    adminOrigin,
+    adminUrl: `${adminOrigin}/__sim/`,
+    setupUrl: `${adminOrigin}/_setup/`,
+    appsOrigin,
+    appsUrl: `${appsOrigin}/`,
+    appsToken,
     // The local identity provider of external sign-in: { available, origin, port, providers, ... }.
     get identityProvider() {
       return externalSignIn.status();
@@ -7348,8 +7803,9 @@ export async function createSimulator(options = {}) {
         : null;
     },
     state: exposedState,
-    // The /_sim write token (x-sim-csrf); constant for the life of the server.
-    csrf,
+    // The administration token (x-sim-csrf on /_sim); constant for the life of the server. The portal's page token is portalToken.
+    csrf: adminToken,
+    portalToken: csrf,
     // The preflight report of this running simulator (GET /_sim/api/preflight): { scenario, strict }.
     preflight,
     // Resolves once every committed-event job (asynchronous plug-in steps, web hooks, row-triggered flows, due scheduled

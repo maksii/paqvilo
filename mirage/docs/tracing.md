@@ -349,7 +349,7 @@ persistence. With no `_sim` view or CLI watching, a trace costs its records and 
 
 ## Reading a trace
 
-Open `/_sim/#activity` (**Activity**, in the **Monitor** group). There a trace is an **activity** and a span a
+Open `/_sim/#activity` on the administration address (**Activity**, in the **Monitor** group). There a trace is an **activity** and a span a
 **step**; [`_sim` administration](sim-administration.md#activity) describes the whole workspace, its tabs and the
 addresses it replaced (`#trace`, `#audit`, `#logs` and `#evidence` redirect to it). Its toolbar row holds the tabs,
 the tab's quick filter, **Live**, **Refresh**, **Export**, **⚙** (tracing settings), the search box (`/` focuses it)
@@ -518,7 +518,7 @@ present, and keeps that `parent-request` link. At level `off` roots read no trac
 ## API
 
 Both hosts serve these routes under `/_sim/api` and list `/trace` in `status.routes`. Reads are `GET`; `PUT` and `POST`
-need the `x-sim-csrf` header with the administration token.
+need the administration token in `x-sim-csrf` (`csrf` of `/_sim/api/status`, or `simulator.csrf`).
 
 | Route                     | Answer                                                                                                                                                                                                                                                                                                |
 | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

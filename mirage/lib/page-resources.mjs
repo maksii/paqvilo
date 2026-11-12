@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { recordedStamp } from '../../lense/file-cache.mjs';
 import { normalizePortalPath, portalField, pageTemplateKind, effectiveSnippetRecords } from './importer.mjs';
 import { stripLiquidLiteralBlocks } from './liquid-source.mjs';
+import { pageRuleMatcher } from './page-access.mjs';
 
 const id = (value) =>
   String(value?.id ?? value ?? '')
@@ -922,8 +923,7 @@ export function pageAccessRules(portal, page, identity = {}, overrides = {}) {
       .filter((record) => record.kind === 'webrole' && Number(field(record, 'statecode', 0)) !== 1)
       .map((record) => [id(record.id), record.name]),
   );
-  const identityRoleIds = new Set((identity?.roleIds ?? []).map(id));
-  const identityRoles = new Set(identity?.roles ?? []);
+  const matchesRoles = pageRuleMatcher(portal, identity);
   return (portal.records ?? [])
     .filter((record) => record.kind === 'webpageaccesscontrolrule' && Number(field(record, 'statecode', 0)) !== 1)
     .map((record) => {
@@ -948,13 +948,7 @@ export function pageAccessRules(portal, page, identity = {}, overrides = {}) {
         roles: roleIds.map((roleId) => ({ id: roleId, name: roles.get(roleId) ?? null, resolved: roles.has(roleId) })),
         page: { id: owner.id, name: owner.name, url: owner.url },
         inherited: id(owner.id) !== id(page.id),
-        matches: roleIds.some(
-          (roleId) =>
-            roles.has(roleId) &&
-            (identity?.roleSource === 'memberships'
-              ? identityRoleIds.has(roleId)
-              : identityRoleIds.has(roleId) || identityRoles.has(roles.get(roleId))),
-        ),
+        matches: matchesRoles(roleIds),
         overridden: Object.hasOwn(overrides.accessRules ?? {}, record.id),
         sourceFile: record._file ?? null,
       };

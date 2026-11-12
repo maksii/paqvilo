@@ -1,3 +1,4 @@
+// @test-kind contract: standalone Mirage projects and catalogues start, reuse and stop only the profile they select.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -11,9 +12,6 @@ import { tempDir } from './fixture.mjs';
 
 const execute = promisify(execFile),
   cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
-// A start may use the whole default Mirage startup budget (120 s, lense/commands/mirage.mjs); the guard only ends a
-// hung command. The tests have no overall deadline: every command they wait for is bounded by this guard.
-const COMMAND_TIMEOUT = 150_000;
 // A developer's or runner's PAQVILO_REPO, PAQVILO_URL and similar settings would change the commands' selections.
 const env = Object.fromEntries(
   Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_') && !key.startsWith('GIT_')),
@@ -26,7 +24,6 @@ const toolkit = async (args, options = {}) =>
         execute(process.execPath, [cli, ...args], {
           windowsHide: true,
           env,
-          timeout: COMMAND_TIMEOUT,
           maxBuffer: 8 * 1024 * 1024,
           ...options,
         }),
@@ -227,7 +224,6 @@ test('projectless stop hints retain runtime, Solution and state selectors withou
         cwd: directory,
         windowsHide: true,
         windowsVerbatimArguments: shell === 'cmd.exe',
-        timeout: COMMAND_TIMEOUT,
       });
       await assert.rejects(fetch(active.url + '/_sim/api/status'), /fetch failed/);
       running.delete(active.pid);

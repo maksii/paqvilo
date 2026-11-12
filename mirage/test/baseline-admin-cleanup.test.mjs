@@ -1,3 +1,4 @@
+// @test-kind contract: the live capture CLI runs the admin cache-clear cycle and the cache refresh with the run's own write permission.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -5,17 +6,13 @@ import path from 'node:path';
 import os from 'node:os';
 import { runBaselineCapture } from './support/baseline-capture-cli.mjs';
 import { makeTemporaryDirectory, assertTemporaryDirectory } from '../testing/owned-fixture.mjs';
-// A run takes one to two seconds; this bound only reports a hang (and its abort stops the child), whatever the runner's
-// --test-timeout. It is not a speed requirement.
-const RUN_TIMEOUT_MS = 60_000;
-
 async function fakeBridge() {
   const fs = await import('node:fs');
   const readline = await import('node:readline');
   const marker = process.argv[2],
     mode = process.argv[3];
   let cleared = false;
-  // Only ends an orphan whose parent never closes stdin; it is longer than RUN_TIMEOUT_MS, so it never decides a result.
+  // Only ends an orphan whose parent never closes stdin; it is longer than any run, so it never decides a result.
   const timer = setTimeout(() => process.exit(99), 300_000);
   const send = (message) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
   readline
@@ -70,7 +67,7 @@ async function fakeBridge() {
       process.exit(0);
     });
 }
-async function run(mode, signal) {
+async function run(mode, signal, { refresh = false, allowWrites = true, selection = ['--only', 'fixture/read'] } = {}) {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'baseline admin cleanup '));
   try {
     const marker = path.join(directory, 'bridge-closed.txt');
@@ -93,6 +90,7 @@ async function run(mode, signal) {
           command: process.execPath,
           args: [server, marker, mode],
           clearCache: { attempts: 1, delay: 0, steps: [{ goto: '/clear' }] },
+          ...(refresh ? { refresh: { steps: [{ goto: '/refresh' }] } } : {}),
         },
         hooks: { liveAdminAdd: hookCommand('add'), liveAdminRemove: hookCommand('remove') },
         personas: { editor: { verify: { attempts: 1, delay: 0, steps: [{ goto: '/probe' }] } } },
@@ -100,48 +98,75 @@ async function run(mode, signal) {
       }),
     );
     const { code, output } = await runBaselineCapture(
-      ['--matrix', matrix, '--out', path.join(directory, 'out'), '--side', 'live'],
+      [
+        '--matrix',
+        matrix,
+        '--out',
+        path.join(directory, 'out'),
+        '--side',
+        'live',
+        ...selection,
+        ...(allowWrites ? ['--allow-writes'] : []),
+      ],
       signal,
     );
-    assert.equal(await fs.readFile(marker, 'utf8'), 'closed', `owned bridge closed\n${output}`);
-    const events = (await fs.readFile(hookMarker, 'utf8')).trim().split('\n');
-    return { code, events, output };
+    // A set-up refused for missing write permission never starts the bridge, so it leaves no close marker.
+    if (allowWrites) assert.equal(await fs.readFile(marker, 'utf8'), 'closed', `owned bridge closed\n${output}`);
+    const events = await fs.readFile(hookMarker, 'utf8').then(
+      (text) => text.trim().split('\n'),
+      (error) => {
+        if (error.code === 'ENOENT') return [];
+        throw error;
+      },
+    );
+    const record = await fs.readFile(path.join(directory, 'out', 'run-live.json'), 'utf8').then(JSON.parse, () => null);
+    return { code, events, output, record };
   } finally {
     const physical = await assertTemporaryDirectory(directory);
     await fs.rm(physical, { recursive: true, force: true });
   }
 }
 
-test('baseline removes temporary admin after bridge cache failure', { timeout: RUN_TIMEOUT_MS }, async (t) => {
+test('baseline removes temporary admin after bridge cache failure', async (t) => {
   const result = await run('clear-error', t.signal);
   assert.equal(result.code, 2);
   assert.deepEqual(result.events, ['add', 'remove']);
   assert.match(result.output, /Invented cache bridge failure/);
 });
-test('baseline does not blindly remove membership after a failed add hook', { timeout: RUN_TIMEOUT_MS }, async (t) => {
+test('baseline does not blindly remove membership after a failed add hook', async (t) => {
   const result = await run('add-error', t.signal);
   assert.equal(result.code, 2);
   assert.deepEqual(result.events, ['add']);
   assert.match(result.output, /Hook failed \(7\)/);
 });
-test(
-  'baseline retains primary cache error and explicit cleanup-hook failure',
-  { timeout: RUN_TIMEOUT_MS },
-  async (t) => {
-    const result = await run('cleanup-error', t.signal);
-    assert.equal(result.code, 2);
-    assert.deepEqual(result.events, ['add', 'remove']);
-    assert.match(result.output, /Invented cache bridge failure/);
-    assert.match(result.output, /admin role cleanup also failed/);
-    assert.match(result.output, /Hook failed \(9\)/);
-  },
-);
-test(
-  'baseline successful cache cycle removes admin before capture and closes owned bridge',
-  { timeout: RUN_TIMEOUT_MS },
-  async (t) => {
-    const result = await run('success', t.signal);
-    assert.equal(result.code, 0, result.output);
-    assert.deepEqual(result.events, ['add', 'remove']);
-  },
-);
+test('baseline retains primary cache error and explicit cleanup-hook failure', async (t) => {
+  const result = await run('cleanup-error', t.signal);
+  assert.equal(result.code, 2);
+  assert.deepEqual(result.events, ['add', 'remove']);
+  assert.match(result.output, /Invented cache bridge failure/);
+  assert.match(result.output, /admin role cleanup also failed/);
+  assert.match(result.output, /Hook failed \(9\)/);
+});
+test('baseline live capture with --all-scenarios runs every scenario and records the choice', async (t) => {
+  const result = await run('success', t.signal, { selection: ['--all-scenarios'] });
+  assert.equal(result.code, 0, result.output);
+  assert.equal(result.record.allScenarios, true);
+  assert.equal(result.record.allowWrites, true);
+  assert.deepEqual(
+    result.record.scenarios.map((scenario) => scenario.id),
+    ['fixture/read'],
+  );
+});
+// @test-kind security: a refresh step writes to the live portal, so a run without --allow-writes must refuse it.
+test('baseline refuses a live refresh step in a run without --allow-writes', async (t) => {
+  const result = await run('success', t.signal, { refresh: true, allowWrites: false });
+  assert.equal(result.code, 1);
+  assert.deepEqual(result.events, []);
+  assert.match(result.output, /matrix\.live\.refresh/);
+  assert.match(result.output, /rerun with --allow-writes/);
+});
+test('baseline successful cache cycle removes admin before capture and closes owned bridge', async (t) => {
+  const result = await run('success', t.signal);
+  assert.equal(result.code, 0, result.output);
+  assert.deepEqual(result.events, ['add', 'remove']);
+});

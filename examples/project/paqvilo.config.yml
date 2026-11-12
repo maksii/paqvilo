@@ -20,6 +20,7 @@ sites:
       dataPacks:
         - { id: example, module: ./pack/pack.mjs }
       preset: example-demo
+      presetMode: bootstrap
       observed:
         codeComponents:
           b4700000-0000-4000-8000-85a64d82e04f: exa_ExamplePages.ExampleAccountFields

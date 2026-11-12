@@ -1,6 +1,10 @@
+// @test-kind contract: a model-driven fixture closes its simulator before a locked Solution file is removed on Windows.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+
+// hang guard only: a blocked synchronous child cannot be ended by the test runner
+const CLI_HANG_GUARD_MS = 170_000;
 
 test(
   'model-driven fixture closes its simulator before retrying a locked Solution file',
@@ -57,7 +61,7 @@ test(
     const result = spawnSync(process.execPath, ['--input-type=module', '-e', program], {
       encoding: 'utf8',
       windowsHide: true,
-      timeout: 150_000,
+      timeout: CLI_HANG_GUARD_MS,
     });
     assert.equal(result.status, 0, result.error?.message ?? result.stderr);
   },

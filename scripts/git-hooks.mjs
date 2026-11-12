@@ -5,14 +5,17 @@ import { spawnSync } from 'node:child_process';
 import { dependencyReadiness } from './ensure-dependencies.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-function git(args, { raw = false } = {}) {
+function git(args, { raw = false, allowFailure = false } = {}) {
   /* NOSONAR */ const result = spawnSync('git', ['--no-optional-locks', ...args], {
     cwd: root,
     encoding: 'utf8',
     windowsHide: true,
     timeout: 30_000,
   });
-  if (result.status !== 0) throw new Error(result.error?.message ?? result.stderr.trim());
+  if (result.status !== 0) {
+    if (allowFailure) return null;
+    throw new Error(result.error?.message ?? result.stderr.trim());
+  }
   return raw ? result.stdout : result.stdout.trim();
 }
 
@@ -84,9 +87,10 @@ function linkFixtureDependencies(snapshot) {
     linkFixtureProject(snapshot, project);
 }
 
-function checkStagedTags() {
-  const tags = spawnSync(process.execPath, [path.join(root, 'scripts', 'check-test-tags.mjs'), '--staged'], {
-    cwd: root,
+// The checker runs from the staged snapshot, so an unstaged edit to the checker cannot change the staged result.
+function checkStagedTags(snapshot) {
+  const tags = spawnSync(process.execPath, [path.join(snapshot, 'scripts', 'check-test-tags.mjs'), '--staged'], {
+    cwd: snapshot,
     stdio: 'inherit',
     windowsHide: true,
   });
@@ -141,7 +145,7 @@ async function preCommit() {
     const scripts = preCommitScripts(files);
     console.log(`Staged validation: ${scripts.join(', ') || 'no applicable checks'}.`);
     // Changed test files declare their kind; parity assertions change only with recorded proof (docs/test-kinds.md).
-    checkStagedTags();
+    checkStagedTags(snapshot);
     if (scripts.includes('quality')) prepareQualitySnapshot(snapshot);
     const npmCli = process.env.npm_execpath;
     if (scripts.length && (!npmCli || !fs.existsSync(npmCli)))
@@ -159,12 +163,23 @@ async function preCommit() {
   }
 }
 
+// An annotated tag names a tag object, so the commit it qualifies is the one the tag object peels to.
+function pushedCommit(oid) {
+  return git(['rev-parse', '--verify', '--quiet', `${oid}^{commit}`], { allowFailure: true });
+}
+
 function prePush() {
   const head = git(['rev-parse', 'HEAD']);
   const updates = fs.readFileSync(0, 'utf8').trim().split('\n').filter(Boolean);
   for (const line of updates) {
     const [, localOid] = line.split(' ');
-    if (!/^0+$/.test(localOid) && localOid !== head)
+    if (/^0+$/.test(localOid)) continue;
+    const commit = pushedCommit(localOid);
+    if (commit === null)
+      throw new Error(
+        `Pre-push validation can only qualify the checked-out commit. ${localOid} does not peel to a commit.`,
+      );
+    if (commit !== head)
       throw new Error(
         'Pre-push validation can only qualify the checked-out commit. Check out each branch before pushing it.',
       );

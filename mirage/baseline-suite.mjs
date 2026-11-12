@@ -4,6 +4,7 @@ import {
   boundedScenarioDirectory,
   ensureCaptureDestination,
 } from './baseline-paths.mjs';
+import { assertToolOptions, mirageToolHelp } from './tool-registry.mjs';
 /**
  * Baseline suite: capture every scenario of a matrix on one side into deterministic evidence
  * folders, then compare sides with the allowlist.
@@ -14,7 +15,7 @@ import {
  * toolkit code. Live writes are refused unless `--allow-writes` names the run as authorised and
  * the request falls inside the matrix `writeScope`; every other non-GET is aborted and recorded.
  *
- * node mirage/baseline-suite.mjs capture --matrix FILE --out DIR --side live [--allow-writes] [--label live|live-2] [--ids FILE] [--only IDS|@FILE]
+ * node mirage/baseline-suite.mjs capture --matrix FILE --out DIR --side live [--allow-writes] [--label live|live-2] [--ids FILE] (--only IDS|@FILE | --all-scenarios)
  * node mirage/baseline-suite.mjs capture --matrix FILE --out DIR --side mirage --config FILE --site ID [--source DIR] [--state FILE] [--label mirage] [--ids FILE] [--only IDS|@FILE] [--headed]
  * node mirage/baseline-suite.mjs compare --matrix FILE --out DIR [--live live] [--mirage mirage] [--second-live live-2] [--allowlist FILE] [--evidence-changes FILE] [--only IDS|@FILE]
  */
@@ -175,12 +176,19 @@ export async function startSaver() {
   };
 }
 
+/** The refresh and clear-cache steps write to the live portal: a run without --allow-writes refuses them before any bridge starts. */
+function refuseWriteStepsWithoutPermission(bridge, allowWrites) {
+  const step = ['refresh', 'clearCache'].find((name) => bridge[name] && !allowWrites);
+  if (step) throw new Error(`matrix.live.${step} writes to the live portal; rerun with --allow-writes.`);
+}
+
 async function liveSide({ matrix, allowWrites, cwd, outputRoot, signInOut = null }) {
   const bridge = matrix.live;
   if (!bridge?.command)
     throw new Error(
       'matrix.live.command is required for the live side (a browser bridge that exposes a Playwright page, such as @playwright/mcp --extension).',
     );
+  refuseWriteStepsWithoutPermission(bridge, allowWrites);
   const stderr = [];
   const client = startMcpServer({
     command: bridge.command === 'node' ? process.execPath : bridge.command,
@@ -305,7 +313,7 @@ async function liveSide({ matrix, allowWrites, cwd, outputRoot, signInOut = null
     if (!bridge.refresh) return;
     const result = await runInBridge(
       { id: 'refresh', steps: bridge.refresh.steps, expect: bridge.refresh.expect ?? {} },
-      { allowWrites: true },
+      { allowWrites },
     );
     if (result.summary.status !== 'captured')
       await fail(`Portal cache refresh did not complete (${result.summary.problems.join('; ')}).`, result, 'refresh');
@@ -325,7 +333,7 @@ async function liveSide({ matrix, allowWrites, cwd, outputRoot, signInOut = null
       for (let attempt = 1; attempt <= (clear.attempts ?? 12); attempt++) {
         result = await runInBridge(
           { id: 'clear-cache', steps: clear.steps, expect: clear.expect ?? {} },
-          { allowWrites: true },
+          { allowWrites },
         );
         if (result.summary.status === 'captured') break;
         await sleep(clear.delay ?? 10000);
@@ -721,15 +729,35 @@ function uncertainMutatingHook(error) {
   return results;
 }
 
+/** A capture names its side. The live side also names its scenarios: an explicit --only selection or --all-scenarios. */
+function assertCaptureSelection(values) {
+  if (!['live', 'mirage'].includes(values.side))
+    throw new Error(`--side must be live or mirage.\n${mirageToolHelp('baseline-suite')}`.trimEnd());
+  if (values.side === 'live' && !values.only && !values['all-scenarios'])
+    throw new Error(
+      'A live capture needs --only IDS|@FILE to name its scenarios, or --all-scenarios to capture every scenario of the matrix.',
+    );
+}
+
+/** A selection that names an unknown scenario is refused before anything is written. */
+function assertKnownScenarioIds(matrix, only) {
+  const known = new Set(matrix.scenarios.map((scenario) => scenario.id));
+  const unknown = (only ?? []).filter((id) => !known.has(id));
+  if (unknown.length) throw new Error(`Unknown scenario ids: ${unknown.join(', ')}`);
+}
+
 async function main() {
   const { values, positionals } = parseToolCommand('baseline-suite', process.argv.slice(2), { allowPositionals: true });
   const action = positionals[0];
-  if (positionals.length !== 1 || !['capture', 'compare'].includes(action) || !values.matrix || !values.out)
-    throw new Error('Usage: suite.mjs capture|compare --matrix FILE --out DIR ...');
+  if (positionals.length !== 1 || !['capture', 'compare'].includes(action))
+    throw new Error(mirageToolHelp('baseline-suite').trimEnd());
+  assertToolOptions('baseline-suite', values);
+  if (action === 'capture') assertCaptureSelection(values);
   const matrixFile = path.resolve(values.matrix);
   const matrix = validateMatrix(JSON.parse(await fs.readFile(matrixFile, 'utf8')));
   const outDir = path.resolve(values.out);
   const only = list(values.only);
+  assertKnownScenarioIds(matrix, only);
   if (action === 'capture') return runCaptureAction({ action, values, matrix, matrixFile, outDir, only });
   return runCompareAction({ action, values, matrix, outDir, only });
 }
@@ -788,6 +816,7 @@ async function runCaptureAction({ action, values, matrix, matrixFile, outDir, on
     startedAt,
     finishedAt: new Date().toISOString(),
     allowWrites: Boolean(values['allow-writes']),
+    allScenarios: Boolean(values['all-scenarios']),
     scenarios: results,
     totals: {
       captured: results.filter((r) => r.status === 'captured').length,

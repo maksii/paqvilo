@@ -1,3 +1,4 @@
+// @test-kind tooling: the security alert gate checks findings with read-only permissions and rejects unavailable or malformed responses.
 import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -6,6 +7,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import YAML from 'yaml';
+
+const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
 
 const workflow = YAML.parse(fs.readFileSync(new URL('../.github/workflows/security.yml', import.meta.url), 'utf8'));
 const step = workflow.jobs.gate.steps.find((row) => row.name === 'Require no open CodeQL findings');
@@ -58,7 +61,7 @@ test('alert gate rejects findings, unavailable/malformed responses and missing r
       env,
       encoding: 'utf8',
       windowsHide: true,
-      timeout: 150_000,
+      timeout: CLI_HANG_GUARD_MS,
     });
   };
   const clear = run('0');

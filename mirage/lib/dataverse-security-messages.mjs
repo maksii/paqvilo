@@ -178,6 +178,48 @@ function revokeGrants(store, roleId, privilegeId) {
   );
 }
 
+// RoleUpdateValidationFailure (0x80048d3c): a role update may add, raise, lower or remove a privilege only at a depth the caller holds.
+function roleUpdateDenied(name) {
+  return new DataError(
+    `The caller does not hold the privilege ${name} at the depth this role update needs.`,
+    403,
+    'PrivilegeDenied',
+    {
+      innerCode: '0x80048d3c',
+    },
+  );
+}
+
+// The depth mask a role holds for one privilege, 0 when it holds none.
+function roleDepthOf(store, roleId, privilegeId) {
+  const grant = tableOf(store, 'roleprivileges').find(
+    (g) => sameId(refId(g.roleid), roleId) && sameId(refId(g.privilegeid), privilegeId),
+  );
+  return Number(grant?.privilegedepthmask ?? 0);
+}
+
+// The changes a Replace makes: its new grants, plus each privilege the role holds now that the new set drops (mask 0).
+function replaceChanges(store, roleId, grants) {
+  const kept = new Set(grants.map((g) => key(g.privilege.privilegeid)));
+  const dropped = tableOf(store, 'roleprivileges')
+    .filter((g) => sameId(refId(g.roleid), roleId) && !kept.has(key(refId(g.privilegeid))))
+    .map((g) => tableOf(store, 'privilege').find((p) => sameId(p.privilegeid, refId(g.privilegeid))))
+    .filter(Boolean)
+    .map((privilege) => ({ privilege, mask: 0 }));
+  return [...grants, ...dropped];
+}
+
+// Each change needs the caller to hold the privilege at the greater of the role's current depth and the depth it ends with.
+// A grant the role already has at the same depth needs nothing.
+function assertCallerHoldsChanges(store, principals, c, roleId, changes) {
+  const held = principals.privileges(c.user);
+  for (const { privilege, mask } of changes) {
+    const current = roleDepthOf(store, roleId, privilege.privilegeid);
+    if (current === mask) continue;
+    if ((held.get(privilege.name) ?? 0) < Math.max(current, mask)) throw roleUpdateDenied(privilege.name);
+  }
+}
+
 // Access origin for RetrieveAccessOrigin, in the documented order (security-sharing-assigning#determine-why-a-user-has-access).
 function accessOriginOf(store, { principal, teams, logical, objectId, row }) {
   const owner = refId(row.ownerid);
@@ -299,13 +341,29 @@ const accessTeamOf = (store, teamTemplateId, recordId) =>
       sameId(refId(t.regardingobjectid), recordId),
   ) ?? null;
 
-// Owned records of a user move to `toId` (a systemuser or team): the owner trio is set as for any owner assignment.
-function reassignOwned(store, fromId, toLogical, toId) {
+// The store write options of a row the caller changes: the caller is stamped as modifiedby, and the row version advances.
+export const callerWriteOptions = (api, c) => ({
+  systemColumns: (mapping) =>
+    api.principals.systemColumns({ user: c.user, caller: c.onBehalfOf ?? c.caller, mapping, create: false }),
+});
+
+// Owned records of a user move to `to` (a systemuser or team reference). The caller needs Assign on each row, and each row is
+// written through the store, which advances its version and stamps the caller.
+function reassignOwned(api, c, fromId, to) {
+  const { store } = api;
   for (const [logical, mapping] of Object.entries(store.state.mappings)) {
     if (ownershipOf(logical, null, mapping) !== 'user') continue;
-    for (const row of tableOf(store, logical))
-      if (sameId(refId(row.ownerid), fromId))
-        Object.assign(row, ownerColumns(store, { id: toId, logical_name: toLogical }));
+    for (const row of tableOf(store, logical)) {
+      if (!sameId(refId(row.ownerid), fromId)) continue;
+      api.principals.authorize({ user: c.user, entity: logical, operation: 'assign', row, mapping });
+      store.updateRecord(
+        logical,
+        row[mapping.idColumn],
+        ownerColumns(store, to),
+        c.identity,
+        callerWriteOptions(api, c),
+      );
+    }
   }
 }
 
@@ -390,6 +448,7 @@ function operations(api) {
         need(c, 'prvWriteRole', 'role');
         const roleId = c.target.id,
           grants = grantsOf(store, body(c).Privileges);
+        assertCallerHoldsChanges(store, api.principals, c, roleId, grants);
         await write(async () => {
           for (const grant of grants) upsertGrant(store, roleId, grant);
           await writeAudit(api, {
@@ -411,6 +470,7 @@ function operations(api) {
         need(c, 'prvWriteRole', 'role');
         const roleId = c.target.id,
           privilege = privilegeRow(store, privilegeIdOf(api, body(c).Privilege));
+        assertCallerHoldsChanges(store, api.principals, c, roleId, [{ privilege, mask: 0 }]);
         await write(async () => {
           revokeGrants(store, roleId, privilege.privilegeid);
           await writeAudit(api, {
@@ -433,6 +493,7 @@ function operations(api) {
         need(c, 'prvWriteRole', 'role');
         const roleId = c.target.id,
           grants = grantsOf(store, body(c).Privileges);
+        assertCallerHoldsChanges(store, api.principals, c, roleId, replaceChanges(store, roleId, grants));
         await write(async () => {
           revokeGrants(store, roleId);
           for (const grant of grants) upsertGrant(store, roleId, grant);
@@ -690,12 +751,17 @@ function operations(api) {
           const moved = systemuserOf(store, userId),
             previousParent = refId(moved.parentsystemuserid) ?? null;
           // Awaited: an unknown or disabled business unit throws here and the whole message rolls back.
+          // The moved rows are stamped with the caller as modifiedby, as a write the caller makes is.
           await setBusinessUnit(store, {
             userId,
             businessUnitId: unit.id,
             doNotMoveAllRecords: args.DoNotMoveAllRecords === true,
+            ...callerWriteOptions(api, c),
           });
-          reassignOwned(store, userId, principal.mapping.logicalName, principal.id);
+          // A user reassigned to itself keeps the owner of its records. Their business unit still moves with the user
+          // unless DoNotMoveAllRecords is set (setBusinessUnit above).
+          if (!sameId(principal.id, userId))
+            reassignOwned(api, c, userId, { id: principal.id, logical_name: principal.mapping.logicalName });
           // Direct reports outside the new hierarchy report to the user's previous manager; the user leaves a manager
           // whose business unit hierarchy no longer holds the new unit.
           const chain = api.principals.businessUnitChain(unit.id);

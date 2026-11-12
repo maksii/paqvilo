@@ -178,11 +178,106 @@ function privateStatePath(file) {
     throw new Error('Connection and registration state must be under an ignored .paqvilo directory.');
 }
 
+function originOf(value) {
+  try {
+    return new URL(value).origin.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+// Every *.json file directly in the folder is read. Only the environment and application name are kept; a file
+// without an environment, or one that is malformed or unreadable, is not a registration and cannot block a new one.
+async function registrationRecords(directory) {
+  let names;
+  try {
+    names = await fs.readdir(directory);
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  }
+  const records = [];
+  for (const name of names.filter((entry) => entry.endsWith('.json'))) {
+    const file = path.join(directory, name);
+    try {
+      const record = JSON.parse(await fs.readFile(file, 'utf8'));
+      if (typeof record?.environmentUrl === 'string')
+        records.push({ file, environmentUrl: record.environmentUrl, applicationName: record.applicationName });
+    } catch {
+      /* A record that cannot be read is not a registration, so it cannot block a new one. */
+    }
+  }
+  return records;
+}
+
+function registrationExists(message) {
+  return Object.assign(new Error(message), { code: 'REGISTRATION_EXISTS' });
+}
+
+async function refuseExistingRegistration({ connectionFile, environmentUrl, applicationName, allowAdditional }) {
+  if (allowAdditional) return;
+  const origin = environmentUrl ? originOf(environmentUrl) : null;
+  const existing = (await registrationRecords(path.dirname(path.resolve(connectionFile)))).find(
+    (record) =>
+      (origin !== null && originOf(record.environmentUrl) === origin) || record.applicationName === applicationName,
+  );
+  if (!existing) return;
+  throw registrationExists(
+    `An application is already registered for this environment or name in ${existing.file}. ` +
+      `Reuse it with 'paqvilo dataverse inspect' or 'verify' using --connection ${existing.file}. ` +
+      'Pass --allow-additional-application to create another.',
+  );
+}
+
+function applicationsUnchecked() {
+  return new Error(
+    'Existing applications could not be checked with PAC, so no application was created. ' +
+      'Pass --allow-additional-application to register without this check.',
+  );
+}
+
+// Output is split into cells on tabs and runs of two or more spaces, so a longer name that only starts with the
+// requested one is a different application. Output is parsed here and never copied into a message.
+async function listedApplicationNames(applicationName) {
+  let result;
+  try {
+    result = await runProcess(pacExecutable(), [
+      'admin',
+      'list-service-principal',
+      '--filter',
+      applicationName,
+      '--max',
+      '50',
+    ]);
+  } catch {
+    throw applicationsUnchecked();
+  }
+  if (result.code !== 0 || result.timedOut) throw applicationsUnchecked();
+  return result.stdout
+    .split(/\r?\n/)
+    .flatMap((line) => line.split(/\t| {2,}/))
+    .map((cell) => cell.trim().toLowerCase());
+}
+
+// The tenant listing is the registry: an application it already lists under the requested name is not created again.
+async function refuseListedApplication({ applicationName, allowAdditional }) {
+  if (allowAdditional) return;
+  const wanted = applicationName.trim().toLowerCase();
+  if ((await listedApplicationNames(applicationName)).includes(wanted))
+    throw registrationExists(
+      `An application named ${applicationName.trim()} is already registered in this tenant, ` +
+        'and the check matches by application name. ' +
+        'Reuse its existing connection file with paqvilo dataverse inspect or verify --connection FILE, ' +
+        'or pass --allow-additional-application to create another.',
+    );
+}
+
 export async function registerApplication({
   connectionFile,
   environment,
   applicationName,
   role = 'System Customizer',
+  allowAdditionalApplication = false,
 }) {
   if (!connectionFile || !applicationName) throw new Error('Registration requires --connection and --name.');
   privateStatePath(connectionFile);
@@ -190,10 +285,24 @@ export async function registerApplication({
     throw new Error(
       'Connection already exists; registration will not create a duplicate app. Inspect or use another connection path.',
     );
+  const requested = environment ? environmentOrigin(environment) : null;
+  await refuseExistingRegistration({
+    connectionFile,
+    environmentUrl: requested,
+    applicationName,
+    allowAdditional: allowAdditionalApplication,
+  });
   const active = await activeEnvironment();
-  const environmentUrl = environment ? environmentOrigin(environment) : active.environmentUrl;
+  const environmentUrl = requested ?? active.environmentUrl;
   if (environmentUrl !== active.environmentUrl)
     throw new Error('Select the intended environment in PAC first; registration must match its active environment.');
+  await refuseExistingRegistration({
+    connectionFile,
+    environmentUrl,
+    applicationName,
+    allowAdditional: allowAdditionalApplication,
+  });
+  await refuseListedApplication({ applicationName, allowAdditional: allowAdditionalApplication });
   await protectSecret('encryption-preflight');
   const pending = `${connectionFile}.registration.json`;
   await privateJson(

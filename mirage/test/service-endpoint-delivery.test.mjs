@@ -203,7 +203,7 @@ test('an unmapped sync step fails the operation and rolls it back', async (t) =>
 });
 
 // @test-kind contract: Paqvilo does not simulate a contract 2 job without a messaging provider
-test('without a messaging provider a contract 2 job is Canceled as before', async (t) => {
+test('without a messaging provider a contract 2 job is Canceled', async (t) => {
   const { store, runner, diagnostics, job } = await world(t, { bus: false });
   await create(store);
   await runner.drain();

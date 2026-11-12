@@ -18,6 +18,7 @@ import { pluralizeEntitySetName } from './solution-standard.mjs';
 import { relationshipsOf, standardGlobalOptionSets } from './dataverse-standard.mjs';
 import { assertElasticManyToMany, assertElasticOneToMany, isElastic, partitionColumnOf } from './dataverse-elastic.mjs';
 import { metadataComponentId } from './dataverse-metadata.mjs';
+import { SCHEMA_NAME, schemaNameError } from './dataverse-metadata-tables.mjs';
 
 const ROUTE = /^\/api\/data\/v[\d.]+\/(RelationshipDefinitions|GlobalOptionSetDefinitions)(?:\(([^()]*)\))?\/?$/i;
 const FIRST_VALUE = 100000000; // option values start from a publisher prefix base; the base is not modelled
@@ -375,9 +376,26 @@ function guardHits(api, schema, hits) {
   for (const { rel } of hits) if (rel.intersect) writable(mappings(api)[rel.intersect.entity], rel.intersect.entity);
 }
 
+// A relationship or lookup SchemaName carries the customization prefix, as tables do.
+function prefixedName(name, type) {
+  if (!SCHEMA_NAME.test(name)) throw schemaNameError(name, type);
+  return name;
+}
+
+// A navigation property, lookup or intersect name is a plain identifier. Every name Object.prototype defines (and
+// `prototype`) is refused, so a stored entry can never replace or shadow a member of the map it is written into.
+const IDENTIFIER = /^[A-Za-z_]\w*$/;
+const isPrototypeKey = (value) => value === 'prototype' || value in Object.prototype;
+function identifierOf(value, what) {
+  if (typeof value !== 'string' || !IDENTIFIER.test(value) || isPrototypeKey(value))
+    throw bad(`${what} ${String(value)} is not a valid name.`);
+  return value;
+}
+
 function lookupNameOf(lookup) {
   // Assumed: a missing LogicalName is derived from SchemaName, lowercased.
-  return lower(requiredText(lookup?.LogicalName ?? lookup?.SchemaName, 'Lookup.LogicalName'));
+  if (lookup?.SchemaName != null) prefixedName(requiredText(lookup.SchemaName, 'SchemaName'), 'Attribute');
+  return identifierOf(lower(requiredText(lookup?.LogicalName ?? lookup?.SchemaName, 'Lookup.LogicalName')), 'Lookup');
 }
 
 function lookupField(lookup, targets, dataverseType) {
@@ -399,9 +417,10 @@ function planOneToMany(api, body, { lookupName, referencingNav }) {
   const referenced = tableOf(api, referencedLogical);
   const referencing = tableOf(api, referencingLogical);
   writable(referencing, referencingLogical);
+  prefixedName(schemaName, 'Relationship');
   const cascade = assertElasticOneToMany({ referencing, referenced, cascade: body.CascadeConfiguration }); // elastic rules (dataverse-elastic.mjs)
   const referencedAttribute = lower(body.ReferencedAttribute ?? referenced.idColumn); // assumed default: the key
-  const referencedNav = body.ReferencedEntityNavigationPropertyName ?? schemaName;
+  const referencedNav = identifierOf(body.ReferencedEntityNavigationPropertyName ?? schemaName, 'Navigation property');
   if (entriesOf(api, schemaName).length) throw bad(`A relationship named ${schemaName} already exists.`);
   if (!hasField(referenced, referencedAttribute))
     throw missing(`Attribute ${referencedLogical}.${referencedAttribute}`);
@@ -491,7 +510,7 @@ export function createOneToMany(api, body) {
   const lookupName = lookupNameOf(body.Lookup);
   const plan = planOneToMany(api, body, {
     lookupName,
-    referencingNav: body.ReferencingEntityNavigationPropertyName ?? lookupName,
+    referencingNav: identifierOf(body.ReferencingEntityNavigationPropertyName ?? lookupName, 'Navigation property'),
   });
   writeOneToMany(api, plan, lookupField(body.Lookup, [plan.referencedLogical], 'lookup'));
   return plan.schemaName;
@@ -507,7 +526,10 @@ function createPolymorphic(api, body) {
     planOneToMany(api, rel, {
       lookupName,
       // Assumed default: each navigation is named per target so the relationships do not collide.
-      referencingNav: rel.ReferencingEntityNavigationPropertyName ?? `${lookupName}_${lower(rel.ReferencedEntity)}`,
+      referencingNav: identifierOf(
+        rel.ReferencingEntityNavigationPropertyName ?? `${lookupName}_${lower(rel.ReferencedEntity)}`,
+        'Navigation property',
+      ),
     }),
   );
   const [first] = plans;
@@ -537,15 +559,19 @@ export function createManyToMany(api, body) {
   const schemaName = requiredText(body.SchemaName, 'SchemaName');
   const l1 = lower(requiredText(body.Entity1LogicalName, 'Entity1LogicalName'));
   const l2 = lower(requiredText(body.Entity2LogicalName, 'Entity2LogicalName'));
-  const intersect = lower(requiredText(body.IntersectEntityName, 'IntersectEntityName'));
+  const intersect = identifierOf(
+    lower(requiredText(body.IntersectEntityName, 'IntersectEntityName')),
+    'Intersect table',
+  );
   const e1 = tableOf(api, l1);
   const e2 = tableOf(api, l2);
   assertElasticManyToMany(e1, e2); // no N:N with an elastic table (dataverse-elastic.mjs)
+  prefixedName(schemaName, 'Relationship');
   if (entriesOf(api, schemaName).length || mappings(api)[intersect]) throw bad(`${schemaName} already exists.`);
-  const attr1 = lower(body.Entity1IntersectAttribute ?? e1.idColumn);
-  const attr2 = lower(body.Entity2IntersectAttribute ?? e2.idColumn);
-  const nav1 = body.Entity1NavigationPropertyName ?? schemaName;
-  const nav2 = body.Entity2NavigationPropertyName ?? schemaName;
+  const attr1 = identifierOf(lower(body.Entity1IntersectAttribute ?? e1.idColumn), 'Intersect attribute');
+  const attr2 = identifierOf(lower(body.Entity2IntersectAttribute ?? e2.idColumn), 'Intersect attribute');
+  const nav1 = identifierOf(body.Entity1NavigationPropertyName ?? schemaName, 'Navigation property');
+  const nav2 = identifierOf(body.Entity2NavigationPropertyName ?? schemaName, 'Navigation property');
   // A self-referencing relationship has both sides on one table: its intersect columns and navigation names must differ.
   if (
     l1 === l2 &&

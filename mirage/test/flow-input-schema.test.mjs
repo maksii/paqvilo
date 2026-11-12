@@ -1,6 +1,7 @@
+// @test-kind contract: Paqvilo's designed runtime input validation for flow triggers, on invented schemas and bodies.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { executeFlowDefinition, validateFlowInput } from '../lib/flow-runtime.mjs';
+import { executeFlowDefinition, inspectFlowTrigger, validateFlowInput } from '../lib/flow-runtime.mjs';
 import { parseExactJson } from '../lib/exact-numeric.mjs';
 
 const rejected = (value, schema) =>
@@ -225,6 +226,30 @@ test('a failing composed Request schema prevents every action from executing', (
   };
   assert.throws(
     () => executeFlowDefinition({ definition, input: 1 }),
+    (error) => error.code === 'InvalidRequest',
+  );
+});
+
+// @test-kind compatibility: Microsoft Learn, "Add a request trigger" (connectors-native-reqres): the body is checked against the schema only when Schema Validation is set to On, and only then a mismatch answers HTTP 400.
+test('an Http request trigger checks its body against the schema only with EnableSchemaValidation', async () => {
+  const schema = { type: 'object', properties: { n: { type: 'string' } } };
+  const flow = (trigger) => ({
+    triggers: { manual: trigger },
+    actions: { Echo: { type: 'Compose', inputs: "@triggerBody()?['n']", runAfter: {} } },
+  });
+  const http = (extra = {}) => flow({ type: 'Request', kind: 'Http', inputs: { schema }, ...extra });
+  const enabled = { operationOptions: 'EnableSchemaValidation' };
+  const run = (definition) => executeFlowDefinition({ definition, input: { n: 5 }, context: { background: true } });
+
+  assert.equal((await run(http())).status, 'Succeeded');
+  assert.equal(inspectFlowTrigger(http(enabled)).supported, true);
+  assert.equal(inspectFlowTrigger(http({ operationOptions: 'Sequential' })).supported, false);
+  await assert.rejects(
+    async () => run(http(enabled)),
+    (error) => error.status === 400 && error.code === 'InvalidRequest',
+  );
+  await assert.rejects(
+    async () => run(flow({ type: 'Request', kind: 'Button', inputs: { schema } })),
     (error) => error.code === 'InvalidRequest',
   );
 });

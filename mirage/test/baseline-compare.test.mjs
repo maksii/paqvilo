@@ -1,3 +1,4 @@
+// @test-kind contract: baseline compare and capture behaviour designed for Paqvilo's runtime and CLI
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -578,6 +579,35 @@ test('compareScenario verdicts, allowlist classification, second-live variance a
   assert.match(md, /\| dom \| text \|/);
 });
 
+test('JSON that differs below the nesting limit yields one delta for the subtree, identical subtrees none', () => {
+  const nest = (leaf, depth) => (depth === 0 ? leaf : { a: nest(leaf, depth - 1) });
+  const exchange = (leaf) => [
+    req(1, 'https://p.invalid/deep', {
+      response: { status: 200, headers: { 'content-type': 'application/json' }, body: JSON.stringify(nest(leaf, 14)) },
+    }),
+  ];
+  const out = compareRequests(exchange('live'), exchange('mirage'));
+  assert.equal(out.length, 1);
+  assert.equal(out[0].field, 'body' + '.a'.repeat(13));
+  assert.equal(out[0].truncated, true);
+  assert.equal(out[0].live, JSON.stringify(nest('live', 1)));
+  assert.deepEqual(compareRequests(exchange('same'), exchange('same')), []);
+});
+
+test('elements that share a selector are compared pairwise in document order', () => {
+  const el = (value) => ({ selector: 'input#dup', tag: 'input', classes: [], attributes: {}, visible: true, value });
+  const changed = compareElements([el('LIVE-FIRST'), el('same')], [el('MIRAGE-FIRST'), el('same')]);
+  assert.deepEqual(
+    changed.map((d) => `${d.location}:${d.field}`),
+    ['input#dup:value'],
+  );
+  const extra = compareElements([el('a'), el('b')], [el('a')]);
+  assert.deepEqual(
+    extra.map((d) => `${d.location}:${d.field}`),
+    ['input#dup #2:presence'],
+  );
+});
+
 test('validateMatrix accepts a good matrix and rejects invalid ones', () => {
   const good = () => ({
     version: 1,
@@ -861,6 +891,7 @@ test('multipart postbacks compare their parts, not the random boundary', () => {
   );
 });
 
+// @test-kind security: state and token fields in multipart capture bodies are redacted
 test('the capture redacts server state fields in multipart bodies as in urlencoded ones', async () => {
   const { redactTokens } = await import('../baseline-capture.mjs');
   const body = [

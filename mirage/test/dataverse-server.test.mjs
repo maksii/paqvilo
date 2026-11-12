@@ -1,3 +1,4 @@
+// @test-kind contract: the administration routes register, list and edit Dataverse applications with the settings rules.
 // Simulated Dataverse API wired into the Mirage server: admin endpoints under /_sim/api/dataverse,
 // the token round trip and WhoAmI on the Dataverse origin, and isolation from the portal origin.
 import test from 'node:test';
@@ -84,6 +85,7 @@ test('enabled runtime serves Dataverse on its own origin, lists the seeded secur
   assert.equal((await portal.text()).includes('UserId'), false);
 });
 
+// @test-kind security: authorization material never appears in the request log
 test('a client-credentials token authenticates WhoAmI as the created application user, logged without authorization material', async (t) => {
   const { app, admin } = await start(t, { dataverse: { enabled: true } });
   const created = await createApplication(admin);
@@ -209,6 +211,7 @@ test('enabling Dataverse leaves the portal Web API answers for an unrelated tabl
   assert.deepEqual(answers[1], answers[0]);
 });
 
+// @test-kind security: Dataverse tables are exposed only as the portal's site settings and table permissions allow
 test("Dataverse tables follow the portal's site settings and table permissions", async (t) => {
   const ME = '00000000-0000-0000-0000-0000000000aa';
   const initial = (permissions) => ({
@@ -347,6 +350,7 @@ test('the https listener serves discovery, token and WhoAmI with the certificate
   await assert.rejects(fetch(`${app.dataverse.origin}/api/data/v9.2/WhoAmI`), TypeError);
 });
 
+// @test-kind security: secrets are hashed, never echoed and absent from the state export
 test("passwords are hashed, reported as passwordSet and never echoed; the state export keeps only each secret's hint and expiry", async (t) => {
   const { admin } = await start(t, { dataverse: { enabled: true } });
   await createApplication(admin);
@@ -615,6 +619,65 @@ test('registration keeps grants, the client type and redirect URIs; PATCH edits 
   assert.deepEqual((await entryOf()).allowedGrants, ['client_credentials', GRANT_TYPES.on_behalf_of]);
 });
 
+test('single-page redirect URIs are listed, registered, edited and refused with the settings rules', async (t) => {
+  const SINGLE_PAGE = ['http://localhost:5173/callback'];
+  const { admin } = await start(t, { dataverse: { enabled: true } });
+  // A single-page registration needs a public client, and its URIs have no fragment and no wildcard.
+  for (const extra of [
+    { spaRedirectUris: SINGLE_PAGE },
+    { publicClient: true, spaRedirectUris: ['http://localhost:5173/callback#token'] },
+    { publicClient: true, spaRedirectUris: ['http://*.localhost:5173/callback'] },
+  ]) {
+    const refused = await admin('/dataverse/applications', {
+      method: 'POST',
+      body: { appId: APP_ID, displayName: 'Single page', ...extra },
+    });
+    assert.equal(refused.status, 400, JSON.stringify(extra));
+  }
+  const created = await admin('/dataverse/applications', {
+    method: 'POST',
+    body: { appId: APP_ID, displayName: 'Single page', publicClient: true, spaRedirectUris: SINGLE_PAGE },
+  });
+  assert.equal(created.status, 201);
+  const entryOf = async () => (await admin('/dataverse')).body.applications.find((item) => item.appId === APP_ID);
+  assert.deepEqual((await entryOf()).spaRedirectUris, SINGLE_PAGE);
+
+  const badUri = await admin(`/dataverse/applications/${APP_ID}`, {
+    method: 'PATCH',
+    body: { spaRedirectUris: ['ftp://localhost:5173/callback'] },
+  });
+  assert.equal(badUri.status, 400);
+  assert.equal(badUri.body.error.message, 'spaRedirectUris[0] must be an http(s) URL.');
+  // Dropping the public client while single-page URIs remain is refused; clearing them in the same request is allowed.
+  const keptPublic = await admin(`/dataverse/applications/${APP_ID}`, {
+    method: 'PATCH',
+    body: { publicClient: false },
+  });
+  assert.equal(keptPublic.status, 400);
+  assert.equal(keptPublic.body.error.message, 'spaRedirectUris requires publicClient: true.');
+  const cleared = await admin(`/dataverse/applications/${APP_ID}`, {
+    method: 'PATCH',
+    body: { publicClient: false, spaRedirectUris: [] },
+  });
+  assert.equal(cleared.status, 200);
+  assert.deepEqual((await entryOf()).spaRedirectUris, []);
+});
+
+test('an application declared in settings carries its single-page redirect URIs into the administration view', async (t) => {
+  const SINGLE_PAGE = ['http://localhost:5173/callback'];
+  const { admin } = await start(t, {
+    dataverse: {
+      enabled: true,
+      applications: [
+        { appId: APP_ID, displayName: 'Settings client', publicClient: true, spaRedirectUris: SINGLE_PAGE },
+      ],
+    },
+  });
+  const entry = (await admin('/dataverse')).body.applications.find((item) => item.appId === APP_ID);
+  assert.deepEqual(entry.spaRedirectUris, SINGLE_PAGE);
+});
+
+// @test-kind security: the admin payload never exposes a secret hash or salt
 test('the admin payload lists grant names, federated credentials and the Connect values, never a secret hash or salt', async (t) => {
   const { app, admin } = await start(t, { dataverse: { enabled: true } });
   const created = await createApplication(admin);

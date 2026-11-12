@@ -8,7 +8,8 @@ import { urlKey } from '../portal-model.mjs';
 import { compareWebFile } from '../online.mjs';
 import { gitDirectories } from '../git.mjs';
 import { panelVisibilityNotice } from '../panel.mjs';
-import { startupProgress, waitForStartupPage } from '../startup-progress.mjs';
+import { guardShutdownSignals } from '../signal-forwarding.mjs';
+import { startupProgress, startupWaitOptions, waitForStartupPage } from '../startup-progress.mjs';
 
 const time = () => new Date().toLocaleTimeString('en-GB');
 /** Lines of every activated portal share one terminal: say which one they belong to. */
@@ -290,6 +291,9 @@ export function printSummary(session, log = console.log) {
   printSummaryDiagnostics(session, cfg, model, rewriter, log);
 }
 
+// A source refresh is waited for until it has gone this long without progress (a hang guard, not a deadline).
+export const SOURCE_REFRESH_SILENCE_MS = 60_000;
+
 /**
  * Watches the sources and keeps session + open tabs up to date. Returns the watcher.
  * `baselinePollMs`: fallback interval for Git ref checks (default 15 s with the repository
@@ -334,10 +338,11 @@ export function watchSources(
   let lastActivity = Date.now();
   const idleWaiters = new Set();
   // Verification must not start a no-reload probe while a previous save still has a browser
-  // refresh queued. Wait for completed work and a short quiet period, with a bounded deadline.
-  watcher.whenIdle = (timeoutMs = 30_000) =>
+  // refresh queued. Wait for completed work and a short quiet period. Progress (a refresh completing,
+  // a change queued or processed) restarts the silence guard, which is a hang guard only.
+  watcher.whenIdle = ({ silenceMs = SOURCE_REFRESH_SILENCE_MS } = {}) =>
     new Promise((resolve, reject) => {
-      const deadline = Date.now() + timeoutMs;
+      const startedAt = Date.now();
       const waiter = {
         timer: null,
         finish: (error) => {
@@ -351,8 +356,8 @@ export function watchSources(
         if (closed) return waiter.finish();
         if (!busy && !timer && !pending.size && !baselineChanged && Date.now() - lastActivity >= 200)
           return waiter.finish();
-        if (Date.now() >= deadline)
-          return waiter.finish(new Error('Source refresh did not settle before the deadline'));
+        const silentMs = Date.now() - Math.max(lastActivity, startedAt);
+        if (silentMs >= silenceMs) return waiter.finish(sourceRefreshSilenceError(silentMs, silenceMs));
         waiter.timer = setTimeout(check, 50);
       };
       idleWaiters.add(waiter);
@@ -365,6 +370,7 @@ export function watchSources(
     // save all). What arrives meanwhile stays in `pending` and goes out as one reload afterwards.
     if (closed || busy || (!pending.size && !baselineChanged)) return;
     busy = true;
+    lastActivity = Date.now();
     const files = [...pending];
     pending = new Set();
     const force = baselineChanged;
@@ -602,6 +608,12 @@ function trackedRefreshDecision(force, tracked, canRefresh) {
   return { force: true, refresh: canRefresh() };
 }
 
+function sourceRefreshSilenceError(silentMs, silenceMs) {
+  return new Error(
+    `Source refresh made no progress for ${silentMs} ms: no refresh completed and no change was queued or processed within the ${silenceMs} ms silence guard. This is a hang guard, not a limit on a refresh that keeps progressing.`,
+  );
+}
+
 function refreshIsPending(isClosed, pendingSize, baselineChanged, hasTimer) {
   if (isClosed()) return false;
   if (pendingSize() || baselineChanged()) return !hasTimer();
@@ -665,6 +677,11 @@ async function runSourceRefresh(
   }
 }
 
+/** The address the development start opens: the start URL the Mirage command computed, else the origin and start path. */
+export function devStartUrl(config) {
+  return config.startUrl ?? config.origin + (config.site.startPath ?? '/');
+}
+
 async function develop(args, setup) {
   // `mirage dev` hands over a prepared selection (local Mirage origins plus live targets).
   const selection =
@@ -690,12 +707,21 @@ async function develop(args, setup) {
     args.startup?.phase('source discovery and interception');
     runtime = await startDevSessions(context, selection, { args, attached, stop, debugPort });
     logDevPanel(runtime, config);
-    const startUrl = config.origin + (config.site.startPath ?? '/');
+    const startUrl = devStartUrl(config);
     const page = attached ? await context.newPage() : (context.pages()[0] ?? (await context.newPage()));
     console.log(`\nopening ${startUrl}`);
     try {
-      const loaded = await waitForStartupPage(page, startUrl, { progress: args.startup, stopped });
+      const loaded = await waitForStartupPage(
+        page,
+        startUrl,
+        startupWaitOptions(args, { progress: args.startup, stopped }),
+      );
       logStartupReady(loaded);
+      // A closed page ends the session, whatever the browser still shows; say why it ended.
+      if (!loaded && page.isClosed()) {
+        console.log('browser closed before start-up finished');
+        stop();
+      }
     } catch (error) {
       reportStartupFailure(error, startUrl, args);
     }
@@ -707,11 +733,13 @@ async function develop(args, setup) {
     process.off('SIGINT', stop);
     process.off('SIGTERM', stop);
     args.codeAppSignal?.removeEventListener('abort', stop);
-    try {
-      await runtime?.close();
-    } finally {
-      await close().catch(() => {});
-    }
+    await guardShutdownSignals(async () => {
+      try {
+        await runtime?.close();
+      } finally {
+        await close().catch(() => {});
+      }
+    });
   }
   return devExitCode(runtime, args);
 }

@@ -1,3 +1,4 @@
+// @test-kind contract: portal import, bootstrap and runtime routing over invented exports, including path normalisation.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -643,6 +644,35 @@ test('same-name web link sets stay reachable by ID; the name lookup takes the fi
   );
 });
 
+test('a malformed percent escape keeps the raw path and does not stop the import', async (t) => {
+  assert.equal(normalizePortalPath('/100%-cotton/'), '/100%-cotton');
+  assert.equal(normalizePortalPath('/%E0%A4%A'), '/%e0%a4%a');
+  const dir = await temp(t, 'pp-import-percent-');
+  await write(dir, {
+    ...portalFiles,
+    'web-pages/cotton/Cotton.webpage.yml':
+      '- adx_webpageid: cotton\n  adx_name: Cotton\n  adx_partialurl: 50%-off\n  adx_parentpageid: home\n  adx_pagetemplateid: main',
+  });
+  const portal = await importPortal(dir);
+  assert.ok(portal.pages.some((page) => normalizePortalPath(page.url) === '/50%-off'));
+});
+
+test('a page path with a malformed percent escape answers below 500', async (t) => {
+  const dir = await temp(t, 'pp-percent-runtime-');
+  await write(dir, portalFiles);
+  const stateDir = await temp(t, 'pp-percent-state-');
+  const app = await createSimulator({
+    sourceDir: dir,
+    stateFile: path.join(stateDir, 'state.json'),
+    port: 0,
+    environmentVariables: {},
+  });
+  ownedFixture(t).add(() => app.close());
+  const response = await fetch(app.url + '/%E0%A4%A');
+  await response.text();
+  assert.ok(response.status < 500, `status ${response.status}`);
+});
+
 test('one URL claimed by several pages or web files is reported; parentless web files keep their partial URL', async (t) => {
   const dir = await temp(t, 'pp-import-claims-');
   await write(dir, {
@@ -879,4 +909,17 @@ test('duplicate-copy commit lookups are cached by file and content, asked again 
   head = null;
   assert.equal((await resolve()).reason, 'its file was modified most recently');
   assert.deepEqual(asked, []);
+});
+
+test('a portal content JSON wrapped in CDATA keeps its entity text literal when the importer parses it', async (t) => {
+  // Real exports write <content> as escaped text without CDATA; a CDATA body is XML text and is not entity-decoded.
+  const dir = await temp(t, 'pp-cdata-content-');
+  await write(dir, {
+    'Assets/powerpagesites.xml': `<powerpagesites><powerpagesite powerpagesiteid="site"><content><![CDATA[{"defaultlanguage":"lang-en","website_language":1033,"description":"Tom &amp; Jerry"}]]></content><name>Enhanced</name><statecode>0</statecode></powerpagesite></powerpagesites>`,
+    'powerpagecomponents/home/powerpagecomponent.xml': `<powerpagecomponent powerpagecomponentid="home"><content>{&quot;partialurl&quot;:&quot;/&quot;}</content><name>Home</name><powerpagecomponenttype>2</powerpagecomponenttype><statecode>0</statecode></powerpagecomponent>`,
+  });
+  const portal = await importPortal(dir);
+  assert.equal(portal.format, 'enhanced');
+  assert.equal(portal.website.description, 'Tom &amp; Jerry');
+  assert.equal(portal.website.name, 'Enhanced');
 });

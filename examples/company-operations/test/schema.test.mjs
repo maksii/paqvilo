@@ -1,3 +1,4 @@
+// @test-kind tooling: the schema preparation script reproduces the committed reviewed cohort from its inputs.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readManifest, compileManifest } from 'paqvilo/dataverse';
@@ -8,13 +9,15 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { makeTemporaryDirectorySync } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 
+// hang guard only: a blocked synchronous child cannot be ended by the test runner
+const CLI_HANG_GUARD_MS = 170_000;
 const project = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const prepare = (args) =>
   spawnSync(process.execPath, [path.join(project, 'prepare-schema.mjs'), ...args], {
     cwd: project,
     encoding: 'utf8',
     windowsHide: true,
-    timeout: 150_000,
+    timeout: CLI_HANG_GUARD_MS,
   });
 
 test('default schema preparation reproduces the committed reviewed cohort', (t) => {

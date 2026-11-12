@@ -36,7 +36,7 @@ const RESERVED_NAMES = new Set(['constructor', 'prototype', '__proto__']);
 function validateGraphReference(key, value, values, { store, localIdentity, authorize }) {
   const target = store.resolveMapping(value.logical_name);
   const partition = value.partitionid ?? values[`${key}pid`];
-  const reference = sdkRecordKey(store, value.logical_name, value, partition);
+  const reference = storeKeyOf(store, value.logical_name, value, partition);
   const found = store.get(value.logical_name, reference, localIdentity, { skipPluginRead: true });
   if (found) {
     authorize(value.logical_name, 'read', found);
@@ -182,6 +182,16 @@ function runAssociationRecords({
   );
 }
 
+/** One part of an SDK alternate key: a scalar, or a lookup (the referenced row's id, as an EntityReference converts to). */
+function sdkKeyPart(name, value) {
+  if (!/^[a-z]\w*$/i.test(name) || RESERVED_NAMES.has(name)) fail('Invalid SDK key attribute.', 'InvalidKey', 400);
+  if (typeof value === 'string') return `${name}=${uuid.test(value) ? value : "'" + value.replaceAll("'", "''") + "'"}`;
+  if ((typeof value === 'number' && Number.isFinite(value)) || typeof value === 'boolean') return `${name}=${value}`;
+  if (value && typeof value === 'object' && uuid.test(value.id ?? '') && typeof value.logical_name === 'string')
+    return `${name}=${value.id}`;
+  return fail('SDK key attributes require scalar values.', 'InvalidKey', 400);
+}
+
 /** Preserve typed SDK alternate keys; an elastic primary key is scoped by its opaque partition. */
 export function sdkRecordKey(store, entity, target, partitionId) {
   const mapping = store.resolveMapping(entity);
@@ -191,20 +201,24 @@ export function sdkRecordKey(store, entity, target, partitionId) {
     if (isElastic(mapping) && !own(values, mapping.idColumn) && uuid.test(target.id ?? ''))
       values[mapping.idColumn] = target.id;
     return Object.entries(values)
-      .map(([name, value]) => {
-        if (!/^[a-z]\w*$/i.test(name) || RESERVED_NAMES.has(name)) fail('Invalid SDK key attribute.');
-        if (typeof value === 'string')
-          return `${name}=${uuid.test(value) ? value : "'" + value.replaceAll("'", "''") + "'"}`;
-        if ((typeof value === 'number' && Number.isFinite(value)) || typeof value === 'boolean')
-          return `${name}=${value}`;
-        fail('SDK key attributes require scalar values.');
-      })
+      .map(([name, value]) => sdkKeyPart(name, value))
       .join(',');
   }
   const id = target && typeof target === 'object' ? (target.id ?? target.value) : target;
   return isElastic(mapping) && partitionId != null
     ? recordKey(mapping, { [mapping.idColumn]: id, partitionid: partitionId })
     : id;
+}
+
+/** The store key of a service target. A KeyAttributes target names its row through a declared alternate key (store.findByKey);
+ * that row's primary key then takes the primary-key path, so authorisation and errors match the primary key. */
+function storeKeyOf(store, entity, target, partitionId) {
+  const key = sdkRecordKey(store, entity, target, partitionId);
+  if (!Object.keys(target?.keyAttributes ?? {}).length) return key;
+  const mapping = store.resolveMapping(entity);
+  const row = store.findByKey(mapping, key);
+  if (!row) notFound(store, entity, key);
+  return sdkRecordKey(store, entity, row[mapping.idColumn], row.partitionid);
 }
 
 // assign and share are the SDK Assign and sharing privileges (prvAssign, prvShare); principals.authorize maps them by name.
@@ -429,7 +443,7 @@ export function localOrganizationService(store, profile, records, { diagnostic =
     return row;
   };
   const get = (entity, id, columns, { responseToken, partitionId, unmask = false } = {}) => {
-    const key = sdkRecordKey(store, entity, id, partitionId);
+    const key = storeKeyOf(store, entity, id, partitionId);
     const options = {
       sdkColumns: columns,
       sdkResponseToken: responseToken,
@@ -478,7 +492,7 @@ export function localOrganizationService(store, profile, records, { diagnostic =
     writeGraph(values, entity);
   };
   const prepareUpdate = (entity, id, values) => {
-    const key = sdkRecordKey(store, entity, id, values.partitionid);
+    const key = storeKeyOf(store, entity, id, values.partitionid);
     const previous = store.get(entity, key, localIdentity, { skipPluginRead: true });
     if (!previous) notFound(store, entity, id);
     beforeWrite(() => {
@@ -489,7 +503,7 @@ export function localOrganizationService(store, profile, records, { diagnostic =
     return key;
   };
   const prepareRemove = (entity, id, partitionId) => {
-    const key = sdkRecordKey(store, entity, id, partitionId);
+    const key = storeKeyOf(store, entity, id, partitionId);
     const previous = store.get(entity, key, localIdentity, { skipPluginRead: true });
     if (!previous) notFound(store, entity, id);
     beforeWrite(() => authorize(entity, 'delete', previous));

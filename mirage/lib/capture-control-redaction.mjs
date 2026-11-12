@@ -196,12 +196,15 @@ function /* NOSONAR */ redactQueryControlFields(text) {
   let candidate = 0,
     nameStart = 0,
     copied = 0,
+    queryStarted = false,
     result = '';
   let match;
   while ((match = delimiter.exec(text)) !== null) {
     const index = match.index,
       char = match[0][0];
-    if (char === '&' || (char === '?' && candidate < 0)) {
+    // The first '?' opens the query, even at the start of a leading URL; later '?' only after a finished field.
+    if (char === '&' || (char === '?' && (candidate < 0 || !queryStarted))) {
+      queryStarted ||= char === '?';
       candidate = index;
       nameStart = index + 1;
     } else if (/\s/.test(char)) candidate = -1;

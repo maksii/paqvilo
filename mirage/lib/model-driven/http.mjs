@@ -8,6 +8,7 @@ import { metadataWorkerResponseChunks, createMetadataWorkers, indexFields } from
 import { acceptsGzip } from '../http-content-encoding.mjs';
 import { currentRequest, runWithRequest } from '../request-context.mjs';
 import { recordHttpError, statusFromHttp } from '../trace-store.mjs';
+import { sameToken } from '../admin-origin.mjs';
 
 const assets = {
   'app.mjs': 'text/javascript; charset=utf-8',
@@ -28,13 +29,28 @@ const assets = {
   'style.css': 'text/css; charset=utf-8',
   'controls.css': 'text/css; charset=utf-8',
 };
+export const modelDrivenAssetNames = Object.keys(assets);
+// Shared lib modules that the browser modules import relatively: from /_apps/assets/ the path `../x.mjs` names these.
+const sharedModules = new Map([['/_apps/date-only-format.mjs', new URL('../date-only-format.mjs', import.meta.url)]]);
 const fail = (message, status) => Object.assign(new Error(message), { status, code: 'ModelDrivenRequestInvalid' });
+const decodeRecordId = (encodedId) => {
+  try {
+    return decodeURIComponent(encodedId);
+  } catch {
+    throw fail('Invalid record ID.', 400);
+  }
+};
 const cancelled = () => fail('Catalogue request was cancelled.', 499);
 // One trace header of the root (the host set it on the response before routing), as page text; empty without one.
 const traceHeader = (res, name) => {
   const value = res.getHeader?.(name);
   return typeof value === 'string' && /^[0-9a-f-]{36}$/i.test(value) ? value : '';
 };
+const escapeHtml = (value) =>
+  String(value).replace(
+    /[&<>"']/g,
+    (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char],
+  );
 // The request root's error for a thrown error answered with status: a plug-in fault keeps the identity its spans carry
 // (the non-enumerable traceError, D-R3-19: type, code, pluginType, step, stage, depth); any other error the answer's code.
 const recordRootError = (span, status, error, answer) => {
@@ -156,6 +172,10 @@ export function createModelDrivenHandler({
     ['staff', 'local-admin'].includes(principal?.kind)
       ? { kind: 'staff', id: principal.principalId, name: null }
       : null,
+  // The portal the shell links to ("Open portal"); null means the host has none and the link is hidden.
+  portalUrl = () => '/',
+  // The origin of the listener that received the request (req → origin or null): a table read names it in its continuation.
+  listenerOrigin = () => null,
 }) {
   const mapLimits = { assetBytes: 16 * 1024 * 1024, totalBytes: 64 * 1024 * 1024 };
   for (const [key, value] of Object.entries(sourceMapLimits)) {
@@ -270,6 +290,13 @@ export function createModelDrivenHandler({
           res.end(req.method === 'HEAD' ? undefined : debugBody(resource));
           return true;
         }
+        const shared = sharedModules.get(url.pathname);
+        if (shared) {
+          if (!['GET', 'HEAD'].includes(req.method)) throw fail('This resource requires GET.', 405);
+          res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' });
+          res.end(req.method === 'HEAD' ? undefined : await fs.readFile(shared));
+          return true;
+        }
         if (shell || asset) {
           if (!['GET', 'HEAD'].includes(req.method)) throw fail('This resource requires GET.', 405);
           if (asset && !assets[asset[1]]) throw fail('Asset not found.', 404);
@@ -278,9 +305,11 @@ export function createModelDrivenHandler({
           // The shell names its root (its response's trace headers) so the app's calls join the page trace.
           if (shell)
             content = content
-              .replace('__MIRAGE_CSRF__', csrf())
-              .replace('__MIRAGE_TRACE_ID__', traceHeader(res, 'x-trace-id'))
-              .replace('__MIRAGE_TRACE_PARENT__', traceHeader(res, 'x-sim-span-id'));
+              // Function replacements: a string replacement would read $&, $' and $` in a value as replacement patterns.
+              .replace('__MIRAGE_CSRF__', () => escapeHtml(csrf()))
+              .replace('__MIRAGE_TRACE_ID__', () => traceHeader(res, 'x-trace-id'))
+              .replace('__MIRAGE_TRACE_PARENT__', () => traceHeader(res, 'x-sim-span-id'))
+              .replace('__MIRAGE_PORTAL__', () => escapeHtml(portalUrl() ?? ''));
           // Only explicitly trusted local Solution scripts are served by the resource allowlist.
           res.setHeader(
             'content-security-policy',
@@ -328,7 +357,8 @@ export function createModelDrivenHandler({
         if (!api) throw fail('Model-driven resource not found.', 404);
         const method = req.method;
         if (!['GET', 'POST', 'PATCH', 'DELETE'].includes(method)) throw fail('Method not allowed.', 405);
-        if (method !== 'GET' && req.headers['x-sim-csrf'] !== csrf()) throw fail('Missing simulator CSRF token.', 403);
+        if (method !== 'GET' && !sameToken(req.headers['x-sim-csrf'], csrf()))
+          throw fail('Missing simulator CSRF token.', 403);
         const actor = principal(req);
         if (api[1] === 'offline') {
           if (!['staff', 'local-admin'].includes(actor?.kind))
@@ -467,7 +497,7 @@ export function createModelDrivenHandler({
         const route = /^tables\/([a-z]\w*)(?:\/([^/]+))?$/i.exec(api[1]);
         if (!route) throw fail('Model-driven endpoint not found.', 404);
         const [, entity, encodedId] = route,
-          id = encodedId ? decodeURIComponent(encodedId) : null;
+          id = encodedId ? decodeRecordId(encodedId) : null;
         if (id && !/^[\w{}-]{1,128}$/.test(id)) throw fail('Invalid record ID.', 400);
         // The root names its table and record (a create's once saved) and a grid read's view, page and search.
         const root = traces?.enabled ? traces.current() : null;
@@ -495,8 +525,9 @@ export function createModelDrivenHandler({
                   .map((key) => [key, query[key]]),
               ),
             );
-          if (id) json(res, 200, await data.get(entity, id, reader, query));
-          else json(res, 200, await data.list(entity, query, reader));
+          const readerAt = { ...reader, origin: listenerOrigin(req) };
+          if (id) json(res, 200, await data.get(entity, id, readerAt, query));
+          else json(res, 200, await data.list(entity, query, readerAt));
         } else {
           if ((method === 'POST' && id) || (method !== 'POST' && !id)) throw fail('Invalid record operation.', 405);
           const values = method === 'DELETE' ? {} : await readBody(req);

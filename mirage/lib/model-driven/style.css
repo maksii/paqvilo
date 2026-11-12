@@ -698,6 +698,12 @@ td .empty {
   position: absolute;
   right: 0;
 }
+.field > .field-message {
+  grid-column: 2;
+  margin: 0;
+  font-size: 12px;
+  color: #a4262c;
+}
 .field input:not(:where(.model-driven-pcf *)):disabled,
 .field select:not(:where(.model-driven-pcf *)):disabled,
 .field textarea:not(:where(.model-driven-pcf *)):disabled {

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import { sharedBrowser, loopbackServer } from './shared-browser.mjs';
+import { sharedBrowser, loopbackServer, moduleGraph } from './shared-browser.mjs';
 
 const browser = sharedBrowser();
 const bundle = `ComponentFramework.registerControl('Invented.ResponsiveGrid', class {
@@ -23,19 +23,21 @@ const bundle = `ComponentFramework.registerControl('Invented.ResponsiveGrid', cl
 });`;
 
 async function fixture(t, { controlled = false, failure, repeatTracking = false } = {}) {
-  const runtime = await fs.readFile(new URL('../lib/model-driven/pcf-runtime.mjs', import.meta.url));
-  const { origin } = await loopbackServer(t, (req, res) => {
-    res.setHeader(
-      'Content-Type',
-      req.url.endsWith('.mjs') || req.url.endsWith('.js') ? 'text/javascript' : 'text/html',
-    );
-    res.end(
-      req.url === '/runtime.mjs'
-        ? runtime
-        : req.url === '/bundle.js'
-          ? bundle
-          : '<!doctype html><main style="width:300px"></main>',
-    );
+  const modules = await moduleGraph(new URL('../lib/model-driven/pcf-runtime.mjs', import.meta.url), '/runtime.mjs');
+  const { origin } = await loopbackServer(t, async (req, res) => {
+    if (req.url === '/') {
+      res.setHeader('Content-Type', 'text/html');
+      res.end('<!doctype html><main style="width:300px"></main>');
+    } else if (req.url === '/bundle.js') {
+      res.setHeader('Content-Type', 'text/javascript');
+      res.end(bundle);
+    } else if (modules.has(req.url)) {
+      res.setHeader('Content-Type', 'text/javascript');
+      res.end(await fs.readFile(modules.get(req.url)));
+    } else {
+      res.statusCode = 404;
+      res.end();
+    }
   });
   const page = await browser.page(t);
   const errors = [];

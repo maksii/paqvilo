@@ -12,6 +12,7 @@
 // Poll submissions are runtime data, so has_user_voted is false and user_selected_option nil.
 import { LiquidDrop, LIQUID_PROPERTIES } from './liquid-engine.mjs';
 import { NetDecimal, decimalDivide, decimalMultiply, parseNetDate } from './liquid-dotnet.mjs';
+import { systemClock } from './runtime-clock.mjs';
 
 const GUID_KEY = /^\{?[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}\}?$/i;
 const IMPORTER_KEYS = new Set(['kind', 'id', 'name', 'statecode']);
@@ -27,7 +28,9 @@ const displayOrder = (record) => {
   const value = Number(fieldOf(record, 'displayorder'));
   return fieldOf(record, 'displayorder') == null || Number.isNaN(value) ? Number.MAX_SAFE_INTEGER : value;
 };
-const dateOf = (value) => (value == null || value === '' ? null : (parseNetDate(value) ?? null));
+// A time-only value is the day of the render's time (the clock that gave now), not the wall clock's day.
+const dateOf = (value, time) =>
+  value == null || value === '' ? null : (parseNetDate(value, { clock: { now: () => time } }) ?? null);
 const idList = (value) => {
   let list = [value];
   if (Array.isArray(value)) list = value;
@@ -85,7 +88,7 @@ class KeyedDrop extends LiquidDrop {
 }
 
 /** Build the `polls` object for a render (now is the render's UTC time). */
-export function createPollsDrop(portal, { now = new Date() } = {}) {
+export function createPollsDrop(portal, { now = new Date(systemClock.now()) } = {}) {
   const records = portal.records ?? [];
   const website = guidOf(portal.website?.id);
   const polls = records.filter((record) => record.kind === 'poll');
@@ -93,8 +96,8 @@ export function createPollsDrop(portal, { now = new Date() } = {}) {
   const options = records.filter((record) => record.kind === 'polloption');
   const time = now instanceof Date ? now.getTime() : Date.parse(now);
   const inWindow = (record) => {
-    const release = dateOf(fieldOf(record, 'releasedate'))?.getTime() ?? time;
-    const expiration = dateOf(fieldOf(record, 'expirationdate'))?.getTime() ?? time;
+    const release = dateOf(fieldOf(record, 'releasedate'), time)?.getTime() ?? time;
+    const expiration = dateOf(fieldOf(record, 'expirationdate'), time)?.getTime() ?? time;
     return release <= time + 86_400_000 && expiration >= time;
   };
   const pollAccepted = (record) => isActive(record) && inWindow(record);
@@ -154,7 +157,7 @@ export function createPollsDrop(portal, { now = new Date() } = {}) {
 }
 
 /** Build the `ads` object for a render. */
-export function createAdsDrop(portal, { now = new Date(), previewUnpublished = false } = {}) {
+export function createAdsDrop(portal, { now = new Date(systemClock.now()), previewUnpublished = false } = {}) {
   const records = portal.records ?? [];
   const website = guidOf(portal.website?.id);
   const ads = records.filter((record) => record.kind === 'ad');
@@ -167,7 +170,7 @@ export function createAdsDrop(portal, { now = new Date(), previewUnpublished = f
     return !state || state.isVisible || previewUnpublished;
   };
   const adActive = (record) => {
-    const expiration = dateOf(fieldOf(record, 'expirationdate'))?.getTime();
+    const expiration = dateOf(fieldOf(record, 'expirationdate'), time)?.getTime();
     return isActive(record) && (expiration == null || expiration > time);
   };
   const adAccepted = (record) => adActive(record) && published(record);

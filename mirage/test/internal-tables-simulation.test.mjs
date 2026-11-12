@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
 import { INTERNAL_TABLES } from '../lib/dataverse-organization.mjs';
-import { QUEUE_MESSAGE_TABLE } from '../lib/message-bus.mjs';
+import { QUEUE_MESSAGE_TABLE, QUEUE_SEQUENCE_TABLE } from '../lib/message-bus.mjs';
 import { OUTBOX_TABLE } from '../lib/outbox.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
@@ -45,9 +45,18 @@ test('a standalone runtime at level simulation sends one message and captures on
     diagnostic: (entry) => diagnostics.push(entry),
   });
   ownedFixture(t).add(() => sim.close());
-  for (const name of [QUEUE_MESSAGE_TABLE, OUTBOX_TABLE]) {
+  for (const name of [QUEUE_MESSAGE_TABLE, QUEUE_SEQUENCE_TABLE, OUTBOX_TABLE]) {
     assert.ok(INTERNAL_TABLES.includes(name), `${name} is registered as an internal table`);
     assert.ok(sim.store.state.mappings[name], `${name} is composed at startup`);
+  }
+  for (const name of [QUEUE_MESSAGE_TABLE, QUEUE_SEQUENCE_TABLE]) {
+    assert.equal(sim.store.state.mappings[name].entitySet, undefined, `${name} has no entity set`);
+    assert.equal(
+      sim.store.resolveMapping(name).entitySet,
+      name,
+      `${name} resolves with its logical name as entity set`,
+    );
+    assert.equal(sim.store.resolveMapping(name).dataverseOnly, true, `${name} resolves as a dataverse-only table`);
   }
   const { messaging, outbox } = sim.organization.api.providers;
   await messaging.bus.send('x-invented-queue', { hello: 'invented' });
@@ -98,6 +107,7 @@ test('a standalone runtime at level simulation sends one message and captures on
   const xml = await csdl.text();
   for (const [logical, set] of [
     [QUEUE_MESSAGE_TABLE, 'paqvilo_queuemessages'],
+    [QUEUE_SEQUENCE_TABLE, 'paqvilo_queuesequences'],
     [OUTBOX_TABLE, 'paqvilo_outboxentries'],
   ]) {
     assert.ok(!catalogue.includes(set), `${logical} is absent from the service catalogue`);

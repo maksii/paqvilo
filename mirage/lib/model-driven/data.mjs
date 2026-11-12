@@ -1,4 +1,5 @@
 import { DataStore } from '../data.mjs';
+import { likeMatcher } from '../dataverse-values.mjs';
 import { pagedRecordsOf } from '../record-tables.mjs';
 import { parseSolutionXml, child, serializeXml } from '../solution-xml.mjs';
 import { managementOverlay } from './power-pages.mjs';
@@ -179,6 +180,48 @@ export function storeCatalogue({ store, metadata, options, source = () => null }
 /** The shell consumes this interface, not HTTP OData or the live bridge. The
  * Dataverse HTTP host can use the same DataStore without coupling either UI to it. */
 const escapeLikeText = (text) => text.replace(/[[%_]/g, (char) => `[${char}]`);
+
+// A lookup find column joins each target table on the column and matches the target's primary name, as its
+// cells show it.
+function lookupFindParts(name, field, { value, tables, prefix }) {
+  const links = [];
+  const conditions = [];
+  (field.targets ?? []).forEach((entity, index) => {
+    const target = Object.hasOwn(tables, entity) ? tables[entity] : null;
+    if (!target?.nameColumn) return;
+    const alias = `${prefix}${index}`;
+    links.push(node('link-entity', { name: entity, from: target.idColumn, to: name, 'link-type': 'outer', alias }));
+    conditions.push(node('condition', { entityname: alias, attribute: target.nameColumn, operator: 'like', value }));
+  });
+  return { links, conditions };
+}
+
+// A choice find column matches the labels of its options, which the cells show, by the option values the store holds.
+function choiceFindParts(name, field, matches) {
+  return field.options
+    .filter((option) => matches(option.label))
+    .map((option) => node('condition', { attribute: name, operator: 'eq', value: String(option.value) }));
+}
+
+// The Quick Find joins and conditions of the find columns. Other columns match their stored text from its beginning.
+function quickFindParts(table, tables, columns, value) {
+  const matches = likeMatcher(value);
+  const links = [];
+  const conditions = [];
+  columns.forEach((name, index) => {
+    const field = table.fields[name];
+    let part = { links: [], conditions: [node('condition', { attribute: name, operator: 'like', value })] };
+    if (field?.type === 'lookup') part = lookupFindParts(name, field, { value, tables, prefix: `qf${index}t` });
+    else if (field?.options?.length) part = { links: [], conditions: choiceFindParts(name, field, matches) };
+    links.push(...part.links);
+    conditions.push(...part.conditions);
+  });
+  // When no find column can match, the search matches nothing: the primary id is never null.
+  return {
+    links,
+    conditions: conditions.length ? conditions : [node('condition', { attribute: table.idColumn, operator: 'null' })],
+  };
+}
 // The form in which lookup ids and stored keys are compared: surrounding whitespace, braces and letter case are ignored.
 const looseKey = (value) => String(value).trim().replace(/[{}]/g, '').toLowerCase();
 function lookupTargetRow(entity, target, id, byId, store) {
@@ -288,7 +331,7 @@ export function createModelDrivenData({
           !Array.isArray(fields) ||
           !fields.length ||
           fields.length > 100 ||
-          fields.some((name) => !table.fields[name] && !view.fields.some((field) => field.name === name))
+          fields.some((name) => !Object.hasOwn(table.fields, name) && !view.fields.some((field) => field.name === name))
         )
           throw invalid('Select known columns.');
         const root = view.fetchXml
@@ -316,13 +359,14 @@ export function createModelDrivenData({
           const linkedTable = Object.hasOwn(catalogue().tables ?? {}, link?.name) ? tableFor(link.name) : null,
             columns = link?.columns ?? [];
           if (
-            !linkedTable?.fields[link.from] ||
-            !table.fields[link.to] ||
+            !linkedTable ||
+            !Object.hasOwn(linkedTable.fields, link.from) ||
+            !Object.hasOwn(table.fields, link.to) ||
             !/^[a-z_][a-z\d_]*$/i.test(link.alias ?? '') ||
             !['inner', 'outer'].includes(link.linkType ?? 'inner') ||
             !Array.isArray(columns) ||
             columns.length > 50 ||
-            columns.some((name) => !linkedTable.fields[name])
+            columns.some((name) => !Object.hasOwn(linkedTable.fields, name))
           )
             throw invalid(
               'Linked tables need imported tables, known from/to columns, an alias and an inner or outer link type.',
@@ -349,29 +393,29 @@ export function createModelDrivenData({
         if (input.search) {
           if (typeof input.search !== 'string' || input.search.length > 500)
             throw invalid('Search is limited to 500 characters.');
-          const columns = Object.keys(table.fields).filter(
-            (name) => ['text', 'textarea'].includes(table.fields[name].type) && !table.fields[name].isPrimaryId,
-          );
-          if (columns.length)
-            filter.children.push(
-              node(
-                'filter',
-                { type: 'or' },
-                columns.map((name) =>
-                  node('condition', {
-                    attribute: name,
-                    operator: 'like',
-                    value: `%${escapeLikeText(input.search)}%`,
-                  }),
-                ),
-              ),
+          // Begins-with match on the Quick Find find columns, or on the text columns when no Quick Find view was imported.
+          const columns =
+            table.quickFindColumns ??
+            Object.keys(table.fields).filter(
+              (name) => ['text', 'textarea'].includes(table.fields[name].type) && !table.fields[name].isPrimaryId,
             );
+          // A leading asterisk asks for a contains match, as the platform grid search does.
+          const contains = input.search.startsWith('*');
+          const value = `${contains ? '%' : ''}${escapeLikeText(contains ? input.search.slice(1) : input.search)}%`;
+          if (columns.length) {
+            const current = catalogue();
+            const quickFind = quickFindParts(table, current.tableIndex ?? current.tables, columns, value);
+            target.children.push(...quickFind.links);
+            filter.children.push(node('filter', { type: 'or' }, quickFind.conditions));
+          }
         }
         if (input.filters !== undefined && (!Array.isArray(input.filters) || input.filters.length > 30))
           throw invalid('Provide at most 30 filter conditions.');
         for (const condition of input.filters ?? []) {
           if (
-            !table.fields[condition.field] ||
+            condition === null ||
+            typeof condition !== 'object' ||
+            !Object.hasOwn(table.fields, condition.field) ||
             ![
               'eq',
               'ne',
@@ -412,7 +456,7 @@ export function createModelDrivenData({
         }
         if (filter.children.length) target.children.push(filter);
         if (input.sort) {
-          if (!table.fields[input.sort] || !['asc', 'desc'].includes(input.direction ?? 'asc'))
+          if (!Object.hasOwn(table.fields, input.sort) || !['asc', 'desc'].includes(input.direction ?? 'asc'))
             throw invalid('Unsupported sort.');
           target.children = target.children.filter((item) => item.name !== 'order');
           target.children.push(

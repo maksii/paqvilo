@@ -1,7 +1,14 @@
 // @test-kind contract: App diagnostics inspect invented bounded source entries without compiling, executing, or accessing a host.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { tempDirSync } from './fixture.mjs';
 import { analyzeApps, appRules } from '../lense/analysis/app-rules.mjs';
+import { analyzeProject } from '../lense/analysis/index.mjs';
+import { canvasTopLevelKeys } from '../lense/analysis/app-canvas.mjs';
+import { readCanvasSource } from '../mirage/lib/canvas-source.mjs';
+import { CANVAS_APP_FILES, msappOf } from '../mirage/test/canvas-runtime-fixture.mjs';
 
 const source = (file, text, rootId = 'invented') => ({ file, relativeFile: file, text, rootId });
 const json = (file, value, rootId) => source(file, JSON.stringify(value), rootId);
@@ -259,6 +266,39 @@ test('Canvas aliases remain an explicit incomplete analysis boundary', () => {
   assert.ok(has(result, 'APP-CANVAS-008'));
   assert.equal(domain(result, 'canvas').complete, false);
 });
+test('Canvas runtime fixture sources analyse without the unknown top-level key finding', () => {
+  for (const [file, text] of Object.entries(CANVAS_APP_FILES)) {
+    assert.equal(has(canvas(text, file), 'APP-CANVAS-008'), false, file);
+  }
+  const mixed = canvas('App:\n  Properties: {}\nDataSources: {}\nFutureCanvasObject: {}\n');
+  assert.ok(has(mixed, 'APP-CANVAS-008'));
+  assert.equal(domain(mixed, 'canvas').complete, false);
+});
+const canvasKeyProbes = [
+  ...canvasTopLevelKeys,
+  'Theme',
+  'Libraries',
+  'Permissions',
+  'Connections',
+  'Formulas',
+  'CanvasManifest',
+  'Properties',
+  'FutureCanvasObject',
+];
+const canvasKeyDocument = (key) => `App:\n  Properties: {}\n${key === 'App' ? '' : `${key}: {}\n`}`;
+async function runtimeAcceptsTopLevel(key) {
+  const { diagnostics } = await readCanvasSource({
+    msapp: msappOf({ 'Src/App.pa.yaml': canvasKeyDocument(key) }),
+    name: 'fx_keyprobe',
+  });
+  return !diagnostics.some((diagnostic) => diagnostic.code === 'CANVAS_SOURCE_SCHEMA_UNKNOWN');
+}
+test('Canvas analyzer top-level keys match the keys the local runtime accepts', async () => {
+  for (const key of canvasKeyProbes) {
+    const analyzerAccepts = !has(canvas(canvasKeyDocument(key)), 'APP-CANVAS-008');
+    assert.equal(analyzerAccepts, await runtimeAcceptsTopLevel(key), key);
+  }
+});
 
 const packageValue = () => ({
   dependencies: { '@microsoft/power-apps': '1.0.0' },
@@ -362,6 +402,24 @@ test('app lockfile presence, npm declarations and non-npm managers remain distin
   assert.equal(has(analyze(yarn), 'APP-DEPS-001'), false);
   assert.equal(has(analyze(yarn), 'APP-DEPS-002'), false);
 });
+test('a Bun project whose only lockfile is bun.lockb is inventoried as pinned', (t) => {
+  const packageJson = JSON.stringify({
+    name: 'invented',
+    dependencies: { 'pcf-scripts': '1.0.0' },
+    scripts: { build: 'pcf-scripts build' },
+  });
+  const findingsFor = (lock) => {
+    const root = tempDirSync('paq-bun-lock-');
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    fs.mkdirSync(path.join(root, 'app'));
+    fs.writeFileSync(path.join(root, 'app', 'package.json'), packageJson);
+    if (lock) fs.writeFileSync(path.join(root, 'app', 'bun.lockb'), Buffer.from([0, 1, 2, 3]));
+    return analyzeProject(root, { failOn: 'none' }).findings.map(({ ruleId }) => ruleId);
+  };
+  assert.ok(findingsFor(false).includes('APP-DEPS-001'));
+  assert.equal(findingsFor(true).includes('APP-DEPS-001'), false);
+});
+
 test('npm workspace locks cover only the actual package in the same source root', () => {
   const files = codeFiles({ lock: false, prefix: 'apps/one/' });
   const pkg = packageValue();

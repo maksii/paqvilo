@@ -1,3 +1,4 @@
+// @test-kind tooling: check:pr qualification of GitHub's effective PR head, merge state and gate results.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { qualifyPullRequest } from '../scripts/pr-readiness.mjs';
@@ -127,4 +128,175 @@ test('successful required gates cannot hide another failed or cancelled check on
       true,
       conclusion,
     );
+});
+
+const timedRun = (name, conclusion, startedAt, workflowName = 'CI') => ({
+  __typename: 'CheckRun',
+  name,
+  status: 'COMPLETED',
+  conclusion,
+  startedAt,
+  workflowName,
+});
+
+test('a newer run of the same check on the same head supersedes its cancelled or failed earlier runs', () => {
+  const superseded = {
+    ...ready,
+    statusCheckRollup: [
+      timedRun('Unit tests', 'CANCELLED', '2026-11-01T10:00:00Z'),
+      timedRun('CI gate', 'FAILURE', '2026-11-01T10:01:00Z'),
+      timedRun('Unit tests', 'SUCCESS', '2026-11-01T10:01:00Z'),
+      timedRun('CI gate', 'SUCCESS', '2026-11-01T10:20:00Z'),
+      timedRun('Security gate', 'SUCCESS', '2026-11-01T10:05:00Z', 'Security'),
+    ],
+  };
+  assert.equal(qualifyPullRequest(superseded, head).ok, true);
+  const newerStatusContext = {
+    ...ready,
+    statusCheckRollup: [
+      ...ready.statusCheckRollup,
+      {
+        __typename: 'StatusContext',
+        context: 'External validation',
+        state: 'FAILURE',
+        createdAt: '2026-11-01T10:00:00Z',
+      },
+      {
+        __typename: 'StatusContext',
+        context: 'External validation',
+        state: 'SUCCESS',
+        createdAt: '2026-11-01T10:30:00Z',
+      },
+    ],
+  };
+  assert.equal(qualifyPullRequest(newerStatusContext, head).ok, true);
+});
+
+test('an older success cannot hide a newer failure of a required gate on the same head', () => {
+  const reversed = {
+    ...ready,
+    statusCheckRollup: [
+      timedRun('CI gate', 'SUCCESS', '2026-11-01T10:01:00Z'),
+      timedRun('CI gate', 'FAILURE', '2026-11-01T10:20:00Z'),
+      timedRun('Security gate', 'SUCCESS', '2026-11-01T10:05:00Z', 'Security'),
+    ],
+  };
+  const result = qualifyPullRequest(reversed, head);
+  assert.equal(result.ok, false);
+  assert.ok(result.reasons.some((reason) => reason.includes('CI gate')));
+});
+
+test('a newer run still in progress keeps the check pending instead of trusting its older success', () => {
+  const rerunning = {
+    ...ready,
+    statusCheckRollup: [
+      timedRun('CI gate', 'SUCCESS', '2026-11-01T10:01:00Z'),
+      {
+        __typename: 'CheckRun',
+        name: 'CI gate',
+        status: 'IN_PROGRESS',
+        conclusion: null,
+        startedAt: '2026-11-01T10:30:00Z',
+        workflowName: 'CI',
+      },
+      timedRun('Security gate', 'SUCCESS', '2026-11-01T10:05:00Z', 'Security'),
+    ],
+  };
+  const result = qualifyPullRequest(rerunning, head);
+  assert.equal(result.ok, false);
+  assert.ok(result.reasons.some((reason) => reason.includes('CI gate')));
+});
+
+test('a same-named check from another workflow is not superseded and its failure still blocks', () => {
+  const otherWorkflow = {
+    ...ready,
+    statusCheckRollup: [
+      ...ready.statusCheckRollup,
+      timedRun('Build', 'FAILURE', '2026-11-01T10:00:00Z', 'CI'),
+      timedRun('Build', 'SUCCESS', '2026-11-01T10:05:00Z', 'Release'),
+    ],
+  };
+  const result = qualifyPullRequest(otherWorkflow, head);
+  assert.equal(result.ok, false);
+  assert.ok(result.reasons.some((reason) => reason.includes('Build')));
+});
+
+test('a queued rerun with the placeholder start time cannot be hidden by an older success', () => {
+  const queued = {
+    ...ready,
+    statusCheckRollup: [
+      timedRun('CI gate', 'SUCCESS', '2026-11-01T10:01:00Z'),
+      {
+        __typename: 'CheckRun',
+        name: 'CI gate',
+        status: 'QUEUED',
+        conclusion: null,
+        startedAt: '0001-01-01T00:00:00Z',
+        workflowName: 'CI',
+      },
+      timedRun('Security gate', 'SUCCESS', '2026-11-01T10:05:00Z', 'Security'),
+    ],
+  };
+  const result = qualifyPullRequest(queued, head);
+  assert.equal(result.ok, false);
+  assert.ok(result.reasons.some((reason) => reason.includes('CI gate')));
+});
+
+test('an in-progress rerun keeps the check pending whatever its start time relative to an older success', () => {
+  const rerunning = {
+    ...ready,
+    statusCheckRollup: [
+      timedRun('CI gate', 'SUCCESS', '2026-11-01T10:20:00Z'),
+      {
+        __typename: 'CheckRun',
+        name: 'CI gate',
+        status: 'IN_PROGRESS',
+        conclusion: null,
+        startedAt: '2026-11-01T09:00:00Z',
+        workflowName: 'CI',
+      },
+      timedRun('Security gate', 'SUCCESS', '2026-11-01T10:05:00Z', 'Security'),
+    ],
+  };
+  const result = qualifyPullRequest(rerunning, head);
+  assert.equal(result.ok, false);
+  assert.ok(result.reasons.some((reason) => reason.includes('CI gate')));
+});
+
+test('a pending status context keeps its check blocked whatever its creation time relative to a success', () => {
+  const pendingContext = {
+    ...ready,
+    statusCheckRollup: [
+      ...ready.statusCheckRollup,
+      {
+        __typename: 'StatusContext',
+        context: 'External validation',
+        state: 'SUCCESS',
+        createdAt: '2026-11-01T10:30:00Z',
+      },
+      {
+        __typename: 'StatusContext',
+        context: 'External validation',
+        state: 'PENDING',
+        createdAt: '2026-11-01T10:00:00Z',
+      },
+    ],
+  };
+  const result = qualifyPullRequest(pendingContext, head);
+  assert.equal(result.ok, false);
+  assert.ok(result.reasons.some((reason) => reason.includes('checks have not completed')));
+});
+
+test('a completed run with a timestamp before 2000 counts as newest and its failure still blocks', () => {
+  const implausibleTime = {
+    ...ready,
+    statusCheckRollup: [
+      ...ready.statusCheckRollup,
+      timedRun('Build', 'SUCCESS', '2026-11-01T10:05:00Z', 'CI'),
+      timedRun('Build', 'FAILURE', '1999-12-31T23:59:59Z', 'CI'),
+    ],
+  };
+  const result = qualifyPullRequest(implausibleTime, head);
+  assert.equal(result.ok, false);
+  assert.ok(result.reasons.some((reason) => reason.includes('Build')));
 });

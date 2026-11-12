@@ -81,17 +81,54 @@
 
   // ---- Ajax: CSRF token, credentials and x-requested-with on every request (Learn, client-api/ajax).
   let tokenRequest = null;
-  const token = () =>
-    (tokenRequest ??= fetch('/_layout/tokenhtml', {
+  const tokenFailure = (error) =>
+    error?.name === 'AbortError'
+      ? canceled(error)
+      : ajaxError('Network request to /_layout/tokenhtml failed.', 0, null, undefined);
+  // The shared token fetch carries no caller's signal, so one caller's abort cannot fail it for the others.
+  async function fetchToken() {
+    const response = await fetch('/_layout/tokenhtml', {
       credentials: 'same-origin',
       headers: { 'x-requested-with': 'XMLHttpRequest' },
-    })
-      .then((response) => response.text())
-      .then((html) => /value="([^"]+)"/.exec(html)?.[1] ?? '')
-      .catch((error) => {
+    }).catch((error) => {
+      throw tokenFailure(error);
+    });
+    const text = await response.text().catch((error) => {
+      throw tokenFailure(error);
+    });
+    const value = /value="([^"]+)"/.exec(text)?.[1];
+    if (!response.ok || !value)
+      throw ajaxError(
+        'Anti-forgery token request failed.',
+        response.status,
+        null,
+        response.headers.get('x-ms-request-id') ?? undefined,
+      );
+    return value;
+  }
+  // The caller's own abort rejects only that caller's wait; the shared request keeps running for the others.
+  function untilCallerAborts(shared, signal) {
+    if (!signal) return shared;
+    return new Promise((resolve, reject) => {
+      const abort = () => reject(canceled(undefined, signal));
+      const settle = (done) => (value) => {
+        signal.removeEventListener('abort', abort);
+        done(value);
+      };
+      shared.then(settle(resolve), settle(reject));
+      if (signal.aborted) abort();
+      else signal.addEventListener('abort', abort, { once: true });
+    });
+  }
+  // A failed fetch is not cached: the next request asks for a token again. Concurrent callers share this promise.
+  const token = (signal) =>
+    untilCallerAborts(
+      (tokenRequest ??= fetchToken().catch((error) => {
         tokenRequest = null;
         throw error;
-      }));
+      })),
+      signal,
+    );
   const parse = async (response) => {
     const text = await response.text();
     if (!text) return null;
@@ -112,6 +149,9 @@
     Object.assign(new Error(message), { name: 'AjaxError', status, body, requestId });
   const canceled = (error, signal) =>
     Object.assign(new Error('The request was canceled.'), { name: 'CanceledError', cause: signal?.reason ?? error });
+  // An abort that lands while the body streams is a cancellation; any other body error is rethrown unchanged.
+  const bodyFailure = (error, signal) =>
+    error?.name === 'AbortError' || signal?.aborted ? canceled(error, signal) : error;
   function validateRequestUrl(options) {
     if (!options || typeof options.url !== 'string' || !options.url)
       throw new TypeError('$pages.ajax.request needs options.url.');
@@ -135,7 +175,7 @@
     const sendBody = hasBody && method !== 'GET';
     if (sendBody && !Object.keys(headers).some((name) => name.toLowerCase() === 'content-type'))
       headers['content-type'] = 'application/json';
-    if (url.origin === location.origin) headers.__RequestVerificationToken = await token();
+    if (url.origin === location.origin) headers.__RequestVerificationToken = await token(options.signal);
     headers['x-requested-with'] = 'XMLHttpRequest';
     let response;
     try {
@@ -150,7 +190,12 @@
       if (error?.name === 'AbortError' || options.signal?.aborted) throw canceled(error, options.signal);
       throw ajaxError(`Network request to ${url.pathname} failed.`, 0, null, undefined);
     }
-    const data = await parse(response);
+    let data;
+    try {
+      data = await parse(response);
+    } catch (error) {
+      throw bodyFailure(error, options.signal);
+    }
     const requestId = response.headers.get('x-ms-request-id') ?? undefined;
     if (!response.ok)
       throw ajaxError(`Request failed with status ${response.status}.`, response.status, data, requestId);
@@ -216,7 +261,10 @@
       const size = options?.size === 'thumbnail' ? 'thumbnail' : 'full';
       // The route answers application/octet-stream; the stored type comes in the mimetype header and types the Blob.
       const response = await binary('GET', `${entitySetName}(${key(id)})/${columnName}/$value?size=${size}`);
-      return new Blob([await response.arrayBuffer()], {
+      const bytes = await response.arrayBuffer().catch((error) => {
+        throw bodyFailure(error);
+      });
+      return new Blob([bytes], {
         type: response.headers.get('mimetype') ?? response.headers.get('content-type') ?? '',
       });
     },
@@ -244,11 +292,20 @@
   const lists = new WeakMap();
   const base64Json = (value) =>
     JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(value || 'W10='), (char) => char.codePointAt(0))));
+  // The grid service sends a DateTime as its wire form, "/Date(ms)/" with an optional +hhmm or -hhmm offset.
+  const WIRE_DATE = /^\/Date\((-?\d+)(?:[+-]\d{4})?\)\/$/;
+  const wireDate = (value) => {
+    const match = WIRE_DATE.exec(value);
+    if (!match) return value;
+    const date = new Date(Number(match[1]));
+    return Number.isFinite(date.getTime()) ? date : null;
+  };
   const rawValue = (attribute) => {
     const value = attribute?.Value;
     if (value == null) return null;
     if (Array.isArray(value)) return null;
     if (typeof value === 'object') return typeof value.Value === 'number' ? value.Value : null;
+    if (typeof value === 'string') return wireDate(value);
     return value;
   };
   const styleOnto = (element, style) => {
@@ -373,6 +430,8 @@
       } else if (link.Type === 8) {
         const response = await post('download-as-csv', {
           base64SecureConfiguration: layout.Base64SecureConfiguration,
+          columns: layout.Columns,
+          viewName: layout.ViewName,
           sortExpression,
           search: search || null,
           filter: null,
@@ -541,8 +600,18 @@
       byElement.set(tr, row);
       return { tr, row };
     }
+    // A handler error belongs to the page: it is reported as uncaught and does not stop the list or the other handlers.
     const emit = (event, payload) => {
-      for (const handler of [...handlers[event]]) handler(payload); // NOSONAR: snapshot copy guards against mutation while iterating
+      for (const handler of [...handlers[event]]) {
+        // NOSONAR: snapshot copy guards against mutation while iterating
+        try {
+          handler(payload);
+        } catch (error) {
+          queueMicrotask(() => {
+            throw error;
+          });
+        }
+      }
     };
     async function load() {
       if (loading || !more) return loading;
@@ -606,7 +675,8 @@
         if (sentinel) sentinel.hidden = !more;
         emit('loaded', { rows: [...rows] });
       })()
-        .catch(() => {
+        .catch((error) => {
+          console.error(error);
           if (current === generation) {
             more = false;
             show('.view-error');
@@ -1384,6 +1454,7 @@
       status.hidden = !text;
       status.textContent = text || '';
     };
+    const requestFailed = 'Error completing request.';
     const url = portalNavigationUrl(element.getAttribute('data-documents-url') ?? null); // NOSONAR: actual attributes exclude inherited dataset values
     if (!url) {
       element.removeAttribute('aria-busy');
@@ -1410,6 +1481,7 @@
       });
     // The open subfolder (names from the record folder down) and the route for it: ?folder=a/b.
     let path = [];
+    let generation = 0;
     const at = (suffix = '', params = {}, folder = path) => {
       const query = new URLSearchParams(params);
       if (folder.length) query.set('folder', folder.join('/'));
@@ -1424,9 +1496,13 @@
       return control;
     };
     const act = async (method, target, init) => {
-      const answer = await write(method, target, init);
-      if (!answer.ok) say(await failureText(answer));
-      else void load();
+      try {
+        const answer = await write(method, target, init);
+        if (!answer.ok) say(await failureText(answer));
+        else void load();
+      } catch {
+        say(requestFailed);
+      }
     };
     const open = (next) => {
       path = next;
@@ -1503,44 +1579,63 @@
         input.dataset.ppDocumentsUpload = '';
         input.setAttribute('aria-label', 'Add files');
         input.addEventListener('change', async () => {
-          for (const file of input.files) {
-            const answer = await write('POST', at('', { name: file.name }), {
-              body: file,
-              headers: { 'content-type': file.type || 'application/octet-stream' },
-            });
-            if (!answer.ok) {
-              say(await failureText(answer));
-              return;
+          input.disabled = true;
+          try {
+            for (const file of input.files) {
+              const answer = await write('POST', at('', { name: file.name }), {
+                body: file,
+                headers: { 'content-type': file.type || 'application/octet-stream' },
+              });
+              if (!answer.ok) {
+                say(await failureText(answer));
+                return;
+              }
             }
+            void load();
+          } catch {
+            say(requestFailed);
+          } finally {
+            input.disabled = false;
           }
-          void load();
         });
         element.append(input);
       }
     }
+    // Each load takes a generation; one that is no longer the latest never touches the DOM, its status or aria-busy.
+    // A failed load reports in the status line rather than as a rejection.
     async function load() {
+      const current = ++generation;
       element.setAttribute('aria-busy', 'true');
-      const response = await fetch(at(), {
-        credentials: 'same-origin',
-        headers: { 'x-requested-with': 'XMLHttpRequest' },
-      });
-      element.removeAttribute('aria-busy');
-      body.replaceChildren();
-      for (const control of element.querySelectorAll(
-        '[data-pp-documents-upload], [data-pp-documents-new-folder], [data-pp-documents-path]',
-      ))
-        control.remove();
-      if (!response.ok) {
-        say(await failureText(response));
-        return;
+      try {
+        const response = await fetch(at(), {
+          credentials: 'same-origin',
+          headers: { 'x-requested-with': 'XMLHttpRequest' },
+        });
+        if (current !== generation) return;
+        element.removeAttribute('aria-busy');
+        if (!response.ok) {
+          const message = await failureText(response);
+          if (current === generation) say(message);
+          return;
+        }
+        const data = await response.json();
+        if (current !== generation) return;
+        body.replaceChildren();
+        for (const control of element.querySelectorAll(
+          '[data-pp-documents-upload], [data-pp-documents-new-folder], [data-pp-documents-path]',
+        ))
+          control.remove();
+        renderBreadcrumb();
+        renderFolders(data);
+        renderDocuments(data);
+        renderActions(data);
+      } catch {
+        if (current === generation) say(requestFailed);
+      } finally {
+        if (current === generation) element.removeAttribute('aria-busy');
       }
-      const data = await response.json();
-      renderBreadcrumb();
-      renderFolders(data);
-      renderDocuments(data);
-      renderActions(data);
     }
-    return load().catch(() => say('Error completing request.'));
+    return load();
   }
   whenParsed(() => {
     for (const element of document.querySelectorAll('[data-pp-modern-list]')) listFor(element).__start();

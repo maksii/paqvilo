@@ -952,3 +952,12 @@ test('function calls nested beyond the parser limit are an unsupported query, an
   });
   assert.doesNotThrow(() => parseODataExpression(calls(3), { dialect: 'extended' }));
 });
+
+// @test-kind compatibility: OData v4 URL conventions define parameter aliases (@name) for function parameters, which the built-in functions here already accept.
+test('a single-segment name with an alias is an operation candidate, and a publisher prefix with an underscore is a function name', () => {
+  assert.equal(route('new_fn(Count=@c)').kind, 'invalid');
+  assert.equal(route('new_fn(Count=@c)').candidate.name, 'new_fn');
+  assert.equal(route('new_fn(Count=@c)').candidate.params, 'Count=@c');
+  assert.equal(route('accounts(accountid=@p1)').kind, 'invalid');
+  assert.deepEqual(route('Pub_Fn(Count=5)'), { version: 'v9.2', kind: 'function', name: 'Pub_Fn', params: 'Count=5' });
+});

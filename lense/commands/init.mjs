@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseArgs } from 'node:util';
+import { parseOptions } from '../cli-options.mjs';
 import { prepareProject } from '../project-scaffold.mjs';
 import { checkProject, readyProject } from '../project-check.mjs';
 import { refreshEditor } from '../project-editor.mjs';
@@ -149,7 +149,7 @@ async function generateInitProject(directory, values) {
 }
 
 export async function runInit(args = process.argv.slice(2)) {
-  const { values, positionals } = parseArgs({
+  const { values, positionals } = parseOptions({
     args,
     allowPositionals: true,
     options: {

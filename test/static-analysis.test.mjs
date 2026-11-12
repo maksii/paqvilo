@@ -504,3 +504,61 @@ test('entry, directory and finding budgets cap work and disclose truncation', (t
   assert.equal(findings.complete, false);
   assert.equal(findings.ready, false);
 });
+
+test('a UTF-8 byte order mark does not change findings for YAML, settings, flow, package and tool metadata', (t) => {
+  const flow = JSON.stringify({
+    properties: {
+      connectionReferences: { shared_commondataserviceforapps: { runtimeSource: 'embedded' } },
+      definition: {
+        triggers: { manual: { type: 'Request', kind: 'Http', inputs: { schema: {} } } },
+        actions: {
+          List: { type: 'OpenApiConnection', inputs: { parameters: { entityName: 'accounts' } }, runAfter: {} },
+        },
+      },
+    },
+    schemaVersion: '1.0.0.0',
+  });
+  const files = {
+    'list.sitesetting.yml': '- adx_name: Webapi/error/innererror\n  adx_value: true\n',
+    'deploymentSettings.json': JSON.stringify({
+      EnvironmentVariables: [{ SchemaName: 'contoso_ApiKey', Value: 'abc' }],
+      ConnectionReferences: [],
+    }),
+    'environmentvariabledefinitions/contoso_ApiKey/environmentvariabledefinition.xml':
+      '<?xml version="1.0" encoding="utf-8"?>\n<environmentvariabledefinition schemaname="contoso_ApiKey"><type>100000000</type><isrequired>1</isrequired></environmentvariabledefinition>\n',
+    'Workflows/F-33333333-3333-3333-3333-333333333333.json': flow,
+    'app/package.json': JSON.stringify({ name: 'a', dependencies: { 'pcf-scripts': '1.0.0' } }),
+    'app/package-lock.json': JSON.stringify({
+      lockfileVersion: 3,
+      packages: { '': { name: 'a', dependencies: { 'pcf-scripts': '1.0.0' } } },
+    }),
+    'mcp/example.tool.json': '{"name":"invented"}',
+  };
+  const withBom = project(t, Object.fromEntries(Object.entries(files).map(([file, text]) => [file, `\uFEFF${text}`])));
+  const plain = project(t, files);
+  const bomReport = analyzeProject(withBom, { failOn: 'none' });
+  const plainReport = analyzeProject(plain, { failOn: 'none' });
+  assert.deepEqual(bomReport.findings, plainReport.findings);
+  assert.equal(bomReport.complete, plainReport.complete);
+  assert.deepEqual(bomReport.coverage.skipped, plainReport.coverage.skipped);
+  assert.equal(
+    bomReport.findings.some(({ ruleId }) => ruleId.endsWith('-SOURCE-001')),
+    false,
+  );
+  // The digest covers the original bytes, so a BOM changes it even though findings are identical.
+  assert.notEqual(bomReport.sourceDigest, plainReport.sourceDigest);
+});
+
+test('a BOM-prefixed YAML list setting reports the same line and column as its BOM-less twin', (t) => {
+  const located = (root) =>
+    analyzeProject(root, { failOn: 'none' }).findings.map(({ ruleId, line, column }) => ({ ruleId, line, column }));
+  const onFirstLine = '- {adx_name: Webapi/error/innererror, adx_value: true}\n';
+  const expected = located(project(t, { 'list.sitesetting.yml': onFirstLine }));
+  assert.deepEqual(located(project(t, { 'list.sitesetting.yml': `\uFEFF${onFirstLine}` })), expected);
+  assert.deepEqual(expected, [{ ruleId: 'PP-SEC-001', line: 1, column: 39 }]);
+  const block = '- adx_name: Webapi/error/innererror\n  adx_value: true\n';
+  assert.deepEqual(
+    located(project(t, { 'list.sitesetting.yml': `\uFEFF${block}` })),
+    located(project(t, { 'list.sitesetting.yml': block })),
+  );
+});

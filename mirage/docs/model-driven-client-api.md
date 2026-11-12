@@ -17,14 +17,22 @@ organization. No online library resolution or expression evaluation is performed
 Form libraries load in exported order. Enabled OnLoad, attribute OnChange and
 OnSave handlers receive the exported execution-context argument when configured.
 Promise-returning handlers are awaited. OnLoad runs once per loaded form, rather
-than on every tab switch. `setValue` marks the field dirty without implicitly
-firing OnChange; `fireOnChange` triggers it explicitly. OnSave `preventDefault`
-cancels the local record save, including Save & Close.
+than on every tab switch. A save or `data.refresh` reloads the open form in place:
+the script context keeps working, and only the handlers added from script run
+again, with the reload's load state. `setValue` marks the field dirty without
+implicitly firing OnChange; `fireOnChange` triggers it explicitly. OnSave
+`preventDefault` cancels the local record save, including Save & Close.
 
 The supported execution context exposes `getFormContext`, `getEventSource`,
-`getEventArgs` and `getDepth`. Save arguments expose `getSaveMode`,
-`preventDefault` and `isDefaultPrevented`. Exported handler parameters must be
-primitive constants; JavaScript expressions are rejected.
+`getEventArgs` and `getDepth`. OnLoad arguments expose `getDataLoadState` (1 for
+the initial load, 2 after a save, 3 after `data.refresh`). OnSave arguments expose
+`getSaveMode`, `preventDefault`, `isDefaultPrevented`, `preventDefaultOnError`,
+`shouldPreventDefaultOnError`, `disableAsyncTimeout` and `shouldDisableAsyncTimeout`;
+the save mode is the
+`saveMode` passed to `data.save(saveOptions)`, 2 for `entity.save('saveandclose')`,
+and 1 otherwise. OnChange `getEventArgs()` returns `undefined`; its `getEventSource()`
+is the changed attribute. Exported handler parameters
+must be primitive constants; JavaScript expressions are rejected.
 
 Classic ribbon JavaScript actions support PrimaryControl, selected record IDs,
 selected entity name and primitive parameters. The supported rules are
@@ -137,15 +145,32 @@ Multiselect form attributes expose numeric arrays and label arrays through
 writes accept the native comma-separated choice representation; the shell
 normalizes selections before the shared Dataverse pipeline validates them.
 
-Saving recursively from an active form lifecycle handler is rejected; finish the
-event before saving. Ribbon commands may call `PrimaryControl.data.save()`.
+Saving from an active form lifecycle handler rejects the returned promise; finish the
+event before saving. A script save resolves with `savedEntityReference` (`entityType`,
+`id` and `name`); `id` is braced, the same format `data.entity.getId()` returns. A refused save rejects with a plain object holding `errorCode`,
+`code`, `message` and `title`: 2200000005 when OnSave prevents the save, 2200000007
+when a required column is empty, and 2200000003 when a save starts while another is in
+flight; the first save still resolves. The form stays dirty in each case. A save the
+staff cannot make, or one whose changed columns cannot be carried locally, rejects with
+an Error whose `code` is `SaveDenied` or `SaveUnsupported`, since no native shape is
+documented for them. A failed server write rejects. This follows a native
+observation of a main form on a developer environment.
+
+`entity.save('saveandnew')` returns no promise and runs OnSave with save mode 59. The
+record is saved, then the open form becomes a blank create form with a new context for
+`Xrm.Page`. The saved context keeps answering with its record id, form type 2 and saved
+values. Every call on it that would change the form, including control, notification,
+requirement, tab and close calls, data writes, saves and refreshes, is refused with the
+same error. Web API calls stay available. A host that cannot open a new record refuses the mode
+with the unsupported-API error. Ribbon commands may call `PrimaryControl.data.save()`.
 Quick-create forms, separate form windows, unsupported client APIs and unsupported
 event parameter expressions fail visibly. Xrm, PCF, modern-command and client
 scripting APIs not listed here are not supported.
 
 Client methods cannot enable writes denied by metadata, source ownership or staff
 field security. Held form contexts are revoked when their form is disposed or the
-staff identity changes. Portal contact sessions remain separate from staff
+staff identity changes, and not by a save; after revocation, promise-returning members reject and
+synchronous members throw. Portal contact sessions remain separate from staff
 identities and this shell does not inject its client API into Power Pages.
 
 Form XML control disabling defines the initial presentation. Explicit client

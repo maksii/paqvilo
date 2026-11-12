@@ -21,12 +21,24 @@ const runWithEnv = (cwd, overrides, ...args) =>
         execFile(
           process.execPath,
           [cli, 'lense', ...args],
-          { cwd, env: { ...env, ...overrides }, encoding: 'utf8', windowsHide: true, timeout: 30000 },
+          { cwd, env: { ...env, ...overrides }, encoding: 'utf8', windowsHide: true },
           (error, stdout, stderr) => resolve({ status: error?.code ?? 0, stdout, stderr }),
         );
       }),
   );
 const run = (cwd, ...args) => runWithEnv(cwd, {}, ...args);
+const runBin = (cwd, ...args) =>
+  withProcessSlot(
+    () =>
+      new Promise((resolve) => {
+        execFile(
+          process.execPath,
+          [cli, ...args],
+          { cwd, env, encoding: 'utf8', windowsHide: true },
+          (error, stdout, stderr) => resolve({ status: error?.code ?? 0, stdout, stderr }),
+        );
+      }),
+  );
 
 test('invalid action arguments return structured errors without reported writes', async (t) => {
   const cwd = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo cli \u00fc '));
@@ -337,4 +349,63 @@ test('command-specific options without a command fail instead of silently printi
     assert.equal(help.status, 0, args.join(' '));
     assert.match(help.stdout, /Usage:/);
   }
+});
+
+test('analyze names an unknown --env in the catalogue instead of a generic source error', async (t) => {
+  const cwd = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-analyze-env-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const config = path.join(cwd, 'paqvilo.config.yml');
+  fs.writeFileSync(config, 'sites:\n  example:\n    source: .\n    environments:\n      local: http://127.0.0.1:9\n');
+  const result = await run(cwd, 'analyze', '--config', config, '--env', 'nope', '--json');
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.ok, false);
+  assert.equal(report.errors[0].code, 'invalid_argument');
+  assert.match(report.errors[0].message, /Unknown environment "nope"/);
+});
+
+test('a single-value option given twice is refused with invalid_argument in every parser', async (t) => {
+  const cwd = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-repeat-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const cases = [
+    [['lense', 'list', '--env', 'a', '--env', 'b', '--json'], '--env'],
+    [['lense', 'list', '--env', 'a', '--env', 'b'], '--env'],
+    [['dataverse', 'plan', '--manifest', 'a.json', '--manifest', 'b.json'], '--manifest'],
+    [['setup', '--config', 'a.yml', '--config', 'b.yml'], '--config'],
+    [['doctor', '--setup', '--config', 'a.yml', '--config', 'b.yml', '--json'], '--config'],
+    [['init', '--name', 'a', '--name', 'b', '--json'], '--name'],
+    [['analyze', '--env', 'a', '--env', 'b', '--help', '--json'], '--env'],
+  ];
+  for (const [args, option] of cases) {
+    const result = await runBin(cwd, ...args);
+    assert.equal(result.status, 1, args.join(' '));
+    assert.match(result.stdout + result.stderr, new RegExp(`${option} may be given only once`), args.join(' '));
+    if (args.includes('--json')) assert.equal(JSON.parse(result.stdout).error.code, 'invalid_argument', args.join(' '));
+  }
+});
+
+test('options the help marks repeatable still take every value', async () => {
+  const { parseOptions } = await import('../lense/cli-options.mjs');
+  const { values } = parseOptions({
+    args: ['--kind', 'page', '--kind', 'form', '--env', 'a'],
+    options: { kind: { type: 'string', multiple: true }, env: { type: 'string' } },
+  });
+  assert.deepEqual(values.kind, ['page', 'form']);
+  assert.equal(values.env, 'a');
+});
+
+test('analyze reports a --source override that is not a portal extract with the configuration code', async (t) => {
+  const cwd = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-analyze-source-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const config = path.join(cwd, 'paqvilo.config.yml');
+  fs.writeFileSync(config, 'sites:\n  example:\n    source: .\n    environments:\n      local: http://127.0.0.1:9\n');
+  const plainFolder = path.join(cwd, 'plain-folder');
+  fs.mkdirSync(plainFolder);
+  const result = await run(cwd, 'analyze', '--config', config, '--source', plainFolder, '--json');
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.reports[0].errors[0].code, 'source_not_portal_extract');
+  assert.equal(report.errors[0].code, 'source_not_portal_extract');
+  assert.match(report.errors[0].message, /does not look like a portal extract/);
+  assert.doesNotMatch(result.stdout, /analysis_unavailable/);
 });

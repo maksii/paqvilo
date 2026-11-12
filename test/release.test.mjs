@@ -329,3 +329,44 @@ test('CI collects only synthetic outputs and ignores profile/token/live files an
   assert.equal(fs.readFileSync(path.join(result.output, result.files[0]), 'utf8'), '{"synthetic":true}');
   assert.equal(JSON.parse(fs.readFileSync(path.join(result.output, 'manifest.json'), 'utf8')).synthetic, true);
 });
+
+// Manifests declare the project's own AGPL licence, which LICENSE covers; they are not third-party data.
+const projectManifests = new Set(['package.json', 'package-lock.json', 'npm-shrinkwrap.json', 'mirage/package.json']);
+
+// Directory names that .npmignore excludes at any depth: local state and build output are never shipped.
+const unshippedDirectories = new Set(['node_modules', '.paqvilo', '.git', 'obj', 'out', 'coverage']);
+
+// JSON files the package ships, found by walking the package.json "files" entries under the .npmignore directory rules.
+function shippedJsonFiles(root) {
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  const found = [];
+  const visit = (relative) => {
+    const absolute = path.join(root, relative);
+    if (fs.statSync(absolute).isDirectory()) {
+      for (const entry of fs.readdirSync(absolute))
+        if (!unshippedDirectories.has(entry)) visit(path.posix.join(relative, entry));
+    } else if (relative.endsWith('.json') && !projectManifests.has(relative)) found.push(relative);
+  };
+  for (const entry of pkg.files) if (!entry.includes('*')) visit(entry.replace(/\/$/, ''));
+  return found;
+}
+
+test('every shipped JSON data file that declares a licence is named in NOTICE with its licence text', () => {
+  const root = path.resolve(import.meta.dirname, '..');
+  const notice = fs.readFileSync(path.join(root, 'NOTICE'), 'utf8');
+  const declared = shippedJsonFiles(root).flatMap((relative) => {
+    const data = JSON.parse(fs.readFileSync(path.join(root, relative), 'utf8'));
+    const licence = data.licence ?? data.license;
+    return licence === undefined ? [] : [{ relative, licence }];
+  });
+  assert.ok(
+    declared.some((entry) => entry.relative === 'mirage/lib/dataverse-standard-tables.json'),
+    'the walk reaches the shipped Dataverse reference data',
+  );
+  for (const { relative, licence } of declared) {
+    const text = `licenses/${licence.toLowerCase()}.txt`;
+    assert.ok(notice.includes(relative), `NOTICE names ${relative}`);
+    assert.ok(notice.includes(text), `NOTICE points to ${text} for ${relative}`);
+    assert.ok(fs.existsSync(path.join(root, text)), `${text} exists`);
+  }
+});

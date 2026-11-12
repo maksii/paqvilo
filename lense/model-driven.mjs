@@ -426,7 +426,7 @@ export function createModelDrivenOverlay({
       unmatched.set(key, (unmatched.get(key) ?? 0) + 1);
   };
   const isNativeComparisonRead = (nativeRead, asset, request) =>
-    nativeRead && nativeRead.name === asset.name && nativeRead.expires > Date.now() && request.method() === 'GET';
+    nativeRead && nativeRead.name === asset.name && request.method() === 'GET';
   const shouldFallbackForOverlayState = (asset) =>
     online || paused.has(asset.name) || (scope === 'changed' && !editedSources.has(asset.name));
   function registerOverlayRoutes(next, nextMappings, assets, nextRoutes, nextPaths) {
@@ -496,9 +496,8 @@ export function createModelDrivenOverlay({
       if (!paths?.size || !/(?:javascript|ecmascript|text\/css)/i.test(resources.get(name)?.mime ?? ''))
         throw new Error('Select a declared text resource.');
       if (nativeReads.size >= 2) throw new Error('Two native comparisons are already in progress.');
-      const token = randomUUID(),
-        entry = { name, expires: Date.now() + 15000 };
-      nativeReads.set(token, entry);
+      const token = randomUUID();
+      nativeReads.set(token, { name });
       return {
         path: [...paths].at(-1),
         token,

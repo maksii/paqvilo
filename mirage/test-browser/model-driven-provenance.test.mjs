@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { sharedBrowser, fileScope } from './shared-browser.mjs';
+import { sharedBrowser, fileScope, appsOrigin } from './shared-browser.mjs';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
 import { importSolutionMetadata } from '../lib/solution-metadata.mjs';
 import { createModelDrivenMetadataIndex } from '../../lense/model-driven-metadata.mjs';
@@ -177,7 +177,7 @@ test('actual Mirage nodes retain exact owners, honest OOB context and render-tim
   );
   await sim.reload();
   const page = await chrome.page(t);
-  await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
+  await page.goto(appsOrigin(sim, origin) + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
   await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
   const metadata = await importSolutionMetadata([solutionDir]);
   const index = createModelDrivenMetadataIndex({ metadata }, { sourceRevision: '1' });
@@ -186,7 +186,7 @@ test('actual Mirage nodes retain exact owners, honest OOB context and render-tim
     budget: { items: 128, bytes: 256 * 1024 },
   });
   await install(page, {
-    origin,
+    origin: appsOrigin(sim, origin),
     localSimulation: true,
     ...details,
     sourceRefs: [...details.sourceRefs, ...index.sourceRefsFor(['column:x_item:x_name'])],
@@ -241,7 +241,7 @@ test('actual Mirage nodes retain exact owners, honest OOB context and render-tim
     active: { entity: 'x_item', formId: 'item-form' },
   });
   await install(page, {
-    origin,
+    origin: appsOrigin(sim, origin),
     localSimulation: true,
     ...updated,
     validatedScope: { ...scope, sourceRevision: '2' },
@@ -644,7 +644,8 @@ test('exported commands and navigation resolve their actual definition and gener
   );
   const page = await chrome.page(t, { viewport: { width: 1920, height: 1080 } });
   await page.goto(
-    origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    appsOrigin(sim, origin) +
+      '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
   );
   const command = page.getByRole('button', { name: 'Fixture exported command', exact: true });
   await command.waitFor({ state: 'attached' });
@@ -657,7 +658,7 @@ test('exported commands and navigation resolve their actual definition and gener
       original: imported.apps[0].navigation,
     }),
   );
-  await install(page, { origin, localSimulation: true, ...details });
+  await install(page, { origin: appsOrigin(sim, origin), localSimulation: true, ...details });
   const exported = await inspect(command);
   assert.equal(exported.evidence.owner.component.key, commandKey);
   assert.equal(exported.evidence.source.status, 'exact', JSON.stringify(exported.packet));
@@ -681,7 +682,7 @@ test('exported commands and navigation resolve their actual definition and gener
   await page.reload();
   const changedNavigation = page.getByRole('button', { name: 'Changed fixture navigation', exact: true });
   await changedNavigation.waitFor();
-  await install(page, { origin, localSimulation: true, ...details });
+  await install(page, { origin: appsOrigin(sim, origin), localSimulation: true, ...details });
   const changed = await inspect(changedNavigation);
   assert.equal(changed.evidence.owner.status, 'exact');
   assert.equal(changed.evidence.owner.component.key, navigationKey);
@@ -696,9 +697,9 @@ test('exported commands and navigation resolve their actual definition and gener
   await fs.rm(path.join(solutionDir, 'Entities/x_item/FormXml/main/item.xml'));
   await fs.rm(path.join(solutionDir, 'Entities/x_item/SavedQueries/items.xml'));
   await sim.reload();
-  await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
+  await page.goto(appsOrigin(sim, origin) + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
   await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
-  await install(page, { origin, localSimulation: true, ...details });
+  await install(page, { origin: appsOrigin(sim, origin), localSimulation: true, ...details });
   const grid = await inspect(page.locator('#content'));
   assert.equal(grid.evidence.owner.status, 'exact');
   assert.match(grid.evidence.owner.component.key, /^view:x_item:/);
@@ -747,7 +748,8 @@ test('a mounted dataset PCF reports the runtime dataset view and implementation 
   const details = index.query({ active: { formId: 'item-form' }, componentKeys: ['pcf:fixture.dataset'] });
   const page = await chrome.page(t);
   await page.goto(
-    origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    appsOrigin(sim, origin) +
+      '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
   );
   await page.getByRole('tab', { name: 'Related items', exact: true }).click();
   const mounted = page.getByTestId('fixture-dataset');
@@ -757,7 +759,7 @@ test('a mounted dataset PCF reports the runtime dataset view and implementation 
       document.querySelector('[data-testid="fixture-dataset"]')?.closest('.model-driven-pcf')?.dataset.pcfState ===
       'ready',
   );
-  await install(page, { origin, localSimulation: true, ...details });
+  await install(page, { origin: appsOrigin(sim, origin), localSimulation: true, ...details });
   const result = await inspect(mounted);
   assert.equal(result.evidence.owner.component.key, 'pcf:fixture.dataset');
   assert.equal(result.evidence.owner.component.constructorName, 'Fixture.Dataset');
@@ -801,14 +803,15 @@ test('dashboard grids bind their actual placement after leaving a record and nev
   const details = index.query({ componentKeys: [key] });
   const page = await chrome.page(t);
   await page.goto(
-    origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    appsOrigin(sim, origin) +
+      '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
   );
   await page.getByRole('heading', { name: 'Copper', exact: true }).waitFor();
   await page.getByRole('button', { name: 'Fixture board', exact: true }).click();
   await page.getByRole('heading', { name: 'Fixture board', exact: true }).waitFor();
   const panel = page.locator('.related-grid');
   await panel.getByRole('table').waitFor();
-  await install(page, { origin, localSimulation: true, ...details });
+  await install(page, { origin: appsOrigin(sim, origin), localSimulation: true, ...details });
   const placement = await inspect(panel);
   assert.equal(placement.evidence.owner.status, 'exact');
   assert.equal(placement.evidence.owner.component.key, key);
@@ -873,13 +876,13 @@ test('real PCF mounts and failures report the actual implementation; late comple
     await gate;
     await route.continue();
   });
-  await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
+  await page.goto(appsOrigin(sim, origin) + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
   await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
   await page.getByRole('button', { name: 'New', exact: true }).click();
   await loading;
   const pending = page.locator('.model-driven-pcf');
   await pending.waitFor({ state: 'attached' });
-  await install(page, { origin, localSimulation: true, ...details });
+  await install(page, { origin: appsOrigin(sim, origin), localSimulation: true, ...details });
   const before = await inspect(pending);
   assert.equal(before.evidence.owner.component.kind, 'platform-control');
   assert.equal(before.evidence.source.status, 'unavailable');
@@ -915,7 +918,7 @@ test('real PCF mounts and failures report the actual implementation; late comple
   await sim.reload();
   await page.reload();
   await page.locator('.model-driven-pcf[data-pcf-state="unsupported"]').waitFor();
-  await install(page, { origin, localSimulation: true, ...details });
+  await install(page, { origin: appsOrigin(sim, origin), localSimulation: true, ...details });
   const failed = await inspect(page.locator('.model-driven-pcf'));
   assert.equal(failed.evidence.owner.component.kind, 'platform-control');
   assert.equal(failed.evidence.source.status, 'unavailable');

@@ -7,9 +7,10 @@ import {
 // RelationshipDefinitions and GlobalOptionSetDefinitions. A Solution schema table wins over the
 // store mapping of the same name; virtual tables are read-only fallbacks.
 import { isDateOnlyField } from './dataverse-values.mjs';
+import { isDateOnlyFormat } from './date-only-format.mjs';
 import { createHash } from 'node:crypto';
 import { mappedODataPropertyOrder } from './odata-property-order.mjs';
-import { attributeMetadata } from './attribute-metadata.mjs';
+import { ATTRIBUTE_TYPE_NAMES, attributeMetadata } from './attribute-metadata.mjs';
 import { tableFields } from './solution-schema.mjs';
 import { pluralizeEntitySetName, standardTable } from './solution-standard.mjs';
 import {
@@ -58,40 +59,9 @@ const OBJECT_TYPE_CODES = {
   systemform: 1030,
   solution: 7100,
 };
-// dataverseType -> [AttributeType, @odata.type stem, AttributeTypeName]. Multi-select reports AttributeType Virtual.
-const TYPES = {
-  nvarchar: ['String', 'String', 'StringType'],
-  string: ['String', 'String', 'StringType'],
-  memo: ['Memo', 'Memo', 'MemoType'],
-  ntext: ['Memo', 'Memo', 'MemoType'],
-  int: ['Integer', 'Integer', 'IntegerType'],
-  integer: ['Integer', 'Integer', 'IntegerType'],
-  bigint: ['BigInt', 'BigInt', 'BigIntType'],
-  decimal: ['Decimal', 'Decimal', 'DecimalType'],
-  float: ['Double', 'Double', 'DoubleType'],
-  double: ['Double', 'Double', 'DoubleType'],
-  money: ['Money', 'Money', 'MoneyType'],
-  bit: ['Boolean', 'Boolean', 'BooleanType'],
-  boolean: ['Boolean', 'Boolean', 'BooleanType'],
-  datetime: ['DateTime', 'DateTime', 'DateTimeType'],
-  // Owner and customer are LookupAttributeMetadata with their own AttributeType and AttributeTypeName.
-  lookup: ['Lookup', 'Lookup', 'LookupType'],
-  customer: ['Customer', 'Lookup', 'CustomerType'],
-  owner: ['Owner', 'Lookup', 'OwnerType'],
-  picklist: ['Picklist', 'Picklist', 'PicklistType'],
-  state: ['State', 'State', 'StateType'],
-  status: ['Status', 'Status', 'StatusType'],
-  multiselectpicklist: ['Virtual', 'MultiSelectPicklist', 'MultiSelectPicklistType'],
-  primarykey: ['Uniqueidentifier', 'UniqueIdentifier', 'UniqueidentifierType'],
-  uniqueidentifier: ['Uniqueidentifier', 'UniqueIdentifier', 'UniqueidentifierType'],
-  entityname: ['EntityName', 'EntityName', 'EntityNameType'],
-  // File and image columns: FileAttributeMetadata / ImageAttributeMetadata. attribute-metadata.mjs is portal-visible, so they live here.
-  file: ['Virtual', 'File', 'FileType'],
-  image: ['Virtual', 'Image', 'ImageType'],
-  virtual: ['Virtual', '', 'VirtualType'],
-  partylist: ['PartyList', 'Lookup', 'PartyListType'],
-  managedproperty: ['ManagedProperty', 'ManagedProperty', 'ManagedPropertyType'],
-};
+// dataverseType -> [AttributeType, @odata.type stem, AttributeTypeName], shared with attribute-metadata.mjs.
+// Multi-select, file, image and virtual columns report AttributeType Virtual.
+const TYPES = ATTRIBUTE_TYPE_NAMES;
 // Columns built from the compact shape even when exported (no file/image branch in attribute-metadata.mjs).
 const COMPACT_TYPES = new Set(['file', 'image', 'virtual', 'partylist', 'managedproperty']);
 // EntityFilters flags (RetrieveEntity): Default and Entity are 1, All is 15.
@@ -460,9 +430,18 @@ function tokenize(text) {
   return tokens;
 }
 
+// Each open parenthesis is one level. The limit lives in the parser, so every caller of it is protected.
+const MAX_FILTER_NESTING = 100;
+const filterNestingError = () =>
+  new DataError('Bad Request - Error in query syntax.', 400, 'InvalidRequest', {
+    innerCode: '0x80060888',
+    route: true,
+  });
+
 function parseFilter(text) {
   const tokens = tokenize(text);
   let i = 0;
+  let depth = 0;
   const fail = () => {
     throw unsupported(`Unsupported $filter expression: ${text}`);
   };
@@ -483,17 +462,28 @@ function parseFilter(text) {
     }
     return node;
   };
+  // A run of `not` is consumed in a loop: an even run cancels out and an odd run is one negation, whatever its length.
   const notExpr = () => {
-    if (word('not')) {
+    let negations = 0;
+    while (word('not')) {
       i++;
-      return { op: 'not', a: notExpr() };
+      negations++;
     }
-    return comparison();
+    const node = comparison();
+    return negations % 2 === 1 ? { op: 'not', a: node } : node;
+  };
+  const nestedOrExpr = () => {
+    if (++depth > MAX_FILTER_NESTING) throw filterNestingError();
+    try {
+      return orExpr();
+    } finally {
+      depth -= 1;
+    }
   };
   const comparison = () => {
     if (tokens[i]?.t === '(') {
       i++;
-      const node = orExpr();
+      const node = nestedOrExpr();
       if (tokens[i]?.t !== ')') fail();
       i++;
       return node;
@@ -521,11 +511,14 @@ function equal(a, b) {
   return a === b;
 }
 
+// Property names address own properties only: an inherited Object member is never a metadata value.
+const ownProperty = (current, key) => (current == null || !Object.hasOwn(current, key) ? undefined : current[key]);
+
 function evaluate(node, item) {
   if (node.op === 'and') return evaluate(node.a, item) && evaluate(node.b, item);
   if (node.op === 'or') return evaluate(node.a, item) || evaluate(node.b, item);
   if (node.op === 'not') return !evaluate(node.a, item);
-  const value = node.path.reduce((current, key) => (current == null ? undefined : current[key]), item);
+  const value = node.path.reduce(ownProperty, item);
   const same = equal(value, node.value);
   return node.op === 'eq' ? same : !same;
 }
@@ -1710,10 +1703,10 @@ export function createMetadataService({
     const names = listOf(select);
     if (!names.length) return item;
     const out = {};
-    for (const key of ['@odata.type', 'MetadataId']) if (key in item) out[key] = item[key];
+    for (const key of ['@odata.type', 'MetadataId']) if (Object.hasOwn(item, key)) out[key] = item[key];
     for (const name of names) {
       const top = name.split('/')[0];
-      if (top in item) out[top] = item[top];
+      if (Object.hasOwn(item, top)) out[top] = item[top];
     }
     // Entity() materializes these navigation arrays only for an explicit $expand. A sibling scalar $select
     // must not discard them; this also covers expanded empty collections without inventing missing metadata.
@@ -1751,7 +1744,7 @@ export function createMetadataService({
     );
     const navs = buildCsdlNavigationMap({ names, known, tables, oneToMany, manyToMany, lookupOf, singleNav });
     const edm = (a) =>
-      a.Format === 'DateOnly' && stemOf(a) === 'DateTime' ? 'Edm.Date' : (EDM[stemOf(a)] ?? 'Edm.String');
+      isDateOnlyFormat(a.Format) && stemOf(a) === 'DateTime' ? 'Edm.Date' : (EDM[stemOf(a)] ?? 'Edm.String');
     const alternateKeys = (src) => {
       const keys = keysOf(src);
       if (!keys.length) return [];

@@ -15,6 +15,8 @@ import { DEV_READY, DEV_BACKGROUND } from '../lense/dev-messages.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 import { tempDir } from './fixture.mjs';
 
+const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
+
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_')));
 async function project(t) {
@@ -33,7 +35,7 @@ const node = (args, options = {}) =>
         execFile(
           process.execPath,
           args,
-          { env, encoding: 'utf8', windowsHide: true, timeout: 30000, ...options },
+          { env, encoding: 'utf8', windowsHide: true, ...options },
           (error, stdout, stderr) =>
             resolve({ status: error ? (typeof error.code === 'number' ? error.code : null) : 0, stdout, stderr }),
         ),
@@ -359,7 +361,7 @@ test('generated browser runner ignores empty pack folders and propagates real te
       env,
       encoding: 'utf8',
       windowsHide: true,
-      timeout: 150_000,
+      timeout: CLI_HANG_GUARD_MS,
     });
   assert.equal(execute().status, 0, 'all-empty directories are allowed');
   await fs.writeFile(
@@ -546,4 +548,20 @@ test('editor refresh follows catalogue/.env/worktree paths and preserves edited 
   const before = await read(directory, '.vscode/tasks.json');
   await refreshEditor(directory, { workspaceOnly: true, processEnv: { PAQVILO_REPO: worktree } });
   assert.equal(await read(directory, '.vscode/tasks.json'), before);
+});
+
+test('every generated development task parses with the CLI option parser for each browser choice', async (t) => {
+  for (const browser of [undefined, 'msedge', 'chrome', 'chromium']) {
+    const directory = await project(t);
+    await prepareProject(directory, { name: 'guarded', noPack: true, browser });
+    const processTasks = (await readJson(directory, '.vscode/tasks.json')).tasks.filter(
+      (task) => task.type === 'process',
+    );
+    assert.ok(processTasks.length >= 8, 'the lense and mirage development workflows are generated as tasks');
+    for (const task of processTasks) {
+      const args = task.args.slice(1).map((arg) => arg.replace('${workspaceFolder}', directory));
+      const result = await node([cli, ...args, '--help'], { cwd: directory });
+      assert.equal(result.status, 0, `${task.label} (${browser ?? 'default browser'}): ${result.stderr.trim()}`);
+    }
+  }
 });

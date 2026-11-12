@@ -1,3 +1,4 @@
+// @test-kind contract: offline CLI JSON envelopes disclose their writes, support no-write runs and diagnose lost settings in doctor.
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -25,7 +26,7 @@ const run = (...args) =>
         execFile(
           process.execPath,
           [cli, ...args],
-          { cwd, encoding: 'utf8', windowsHide: true, timeout: 30000, env, maxBuffer: 64 << 20 },
+          { cwd, encoding: 'utf8', windowsHide: true, env, maxBuffer: 64 << 20 },
           (error, stdout, stderr) =>
             resolve({ status: error ? (typeof error.code === 'number' ? error.code : null) : 0, stdout, stderr }),
         ),

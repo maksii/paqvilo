@@ -1,3 +1,4 @@
+// @test-kind contract: catalogue start applies a linked configuration only with the explicit flag and rejects unknown options.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -9,9 +10,6 @@ import { loadConfig } from '../lense/config.mjs';
 import { catalogueArgs, cliArgs } from '../lense/commands/mirage.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
-// A start may use the whole default Mirage startup budget (120 s, lense/commands/mirage.mjs); the guard only ends a
-// hung command. The test has no overall deadline: every command it waits for is bounded by this guard.
-const COMMAND_TIMEOUT = 150_000;
 
 test('catalogue start applies a linked configuration only with --apply-configuration, keeps the flag over a data-only catalogue and rejects an unknown link', async () => {
   const fixture = createFixture(),
@@ -30,7 +28,7 @@ test('catalogue start applies a linked configuration only with --apply-configura
           execFile(
             process.execPath,
             [cli, ...args, '--config', config],
-            { cwd: root, env, encoding: 'utf8', windowsHide: true, timeout: COMMAND_TIMEOUT },
+            { cwd: root, env, encoding: 'utf8', windowsHide: true },
             (error, stdout, stderr) => resolve({ status: error ? error.code : 0, stdout, stderr }),
           ),
         ),

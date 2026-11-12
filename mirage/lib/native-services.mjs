@@ -1,15 +1,17 @@
 import { stripMarkupTags } from './strip-markup-tags.mjs';
 import { parseGridSortExpression } from './grid-sort-expression.mjs';
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { DataError } from './data.mjs';
 import { csvCell } from './csv.mjs';
+import { isExactNumeric } from './exact-numeric.mjs';
 import { xmlAttributes, xmlStartTag, xmlTokens } from './xml-text.mjs';
 import { parseDateValue } from './dataverse-values.mjs';
 import { normalizePortalPath, portalField } from './importer.mjs';
+import { metaFilterGroups } from './metafilters.mjs';
 import { siteSetting } from './redirects.mjs';
 import { notesFilter, portalRecordWrites } from './form-service.mjs';
 import {
@@ -22,10 +24,11 @@ import {
 import { contextualViewFetchXml } from './platform.mjs';
 import { nativeActionStateValues } from './native-form-actions.mjs';
 import { handleImplicitGrant } from './auth-token.mjs';
+import { sameToken } from './admin-origin.mjs';
 import { handleODataFeed } from './odata-feeds.mjs';
 import { platformBundleFor, localAspNetScript } from './platform-manifest.mjs';
 import { adapterEnabled } from './local-overrides.mjs';
-import { attributeMetadata } from './attribute-metadata.mjs';
+import { attributeMetadata, attributeTypeDisplayName, attributeTypeNumber } from './attribute-metadata.mjs';
 import {
   calendarSettings,
   calendarLanguageScript,
@@ -41,6 +44,7 @@ import {
   deletePortalSubgridRecord,
 } from './subgrid-actions.mjs';
 import { statusFromHttp } from './trace-store.mjs';
+import { decimalCell, xlsxWorkbook } from './xlsx-writer.mjs';
 
 /*
  * Local equivalents of the native Power Pages grid, lookup, subgrid, notes and
@@ -256,39 +260,13 @@ function columnMetadata(metadata, entity, fetch, name) {
   return { table, attribute, field };
 }
 
-const ATTRIBUTE_TYPES = {
-  nvarchar: 14,
-  string: 14,
-  memo: 7,
-  ntext: 7,
-  int: 5,
-  integer: 5,
-  bigint: 18,
-  decimal: 3,
-  float: 4,
-  double: 4,
-  money: 8,
-  bit: 0,
-  boolean: 0,
-  datetime: 2,
-  lookup: 6,
-  customer: 1,
-  owner: 9,
-  picklist: 11,
-  state: 12,
-  status: 13,
-  uniqueidentifier: 15,
-  primarykey: 15,
-  multiselectpicklist: 16,
-};
-
 function compactAttributeMetadata(entity, attribute, field, primaryName) {
   const dataverseType = String(field?.dataverseType ?? 'nvarchar').toLowerCase();
   return {
     LogicalName: attribute,
     EntityLogicalName: entity,
-    AttributeType: ATTRIBUTE_TYPES[dataverseType] ?? 14,
-    AttributeTypeName: { Value: `${dataverseType[0]?.toUpperCase() ?? 'S'}${dataverseType.slice(1)}Type` },
+    AttributeType: attributeTypeNumber(dataverseType),
+    AttributeTypeName: { Value: attributeTypeDisplayName(dataverseType) },
     IsPrimaryName: attribute === primaryName,
     IsPrimaryId: dataverseType === 'primarykey',
     Format: /email/i.test(field?.format ?? '') ? 0 : null,
@@ -1031,25 +1009,8 @@ function searchCondition(fetch, column, metadata, entity, masked, pattern) {
   return conditionNode({ attribute, operator: 'like', value: pattern, ...(alias ? { entityname: alias } : {}) });
 }
 
-/** Metadata filter definition (adx_filter_definition) applied from the serialized "mf" query. */
-export function metaFilterGroups(definition) {
-  const parsed = settingsJson(definition || '{}', 'filter definition');
-  const entity = parsed.entity ?? {};
-  const groups = [];
-  for (const filter of entity.filters ?? []) groups.push({ kind: 'filter', node: filter });
-  for (const link of entity.links ?? []) groups.push({ kind: 'link', node: link });
-  return groups
-    .map(({ kind, node }) => ({
-      kind,
-      node,
-      id: String(node['adx.id'] ?? ''),
-      label: node['adx.uiname'] ?? node['adx.attribute'] ?? '',
-      order: Number(node['adx.uiorder'] ?? 0),
-      type: node['adx.filtertype'] ?? '',
-      selectionMode: node['adx.uiselectionmode'] ?? (node['adx.filtertype'] === 'textfilter' ? 'Text' : 'Multiple'),
-    }))
-    .sort((a, b) => a.order - b.order);
-}
+// The metadata filter groups of a definition live in metafilters.mjs; the list grid applies them from the mf query.
+export { metaFilterGroups };
 
 function applyMetaFilter(fetch, metaFilter, definition) {
   if (!metaFilter || !definition) return;
@@ -1144,7 +1105,9 @@ function applyUserFilters(fetch, model, request, identity, website) {
   const contactId = identity?.contactId ?? identity?.id;
   const accountId = identity?.accountId;
   const { portalUser, account, website: websiteAttribute } = model.userFilters;
-  let filter = request.filter === 'account' || request.filter === 'user' ? request.filter : null;
+  // The request names a choice only when the list configures both attributes; otherwise the configured one applies.
+  const choosable = [portalUser, account].every((name) => name && safeName(name));
+  let filter = choosable && (request.filter === 'account' || request.filter === 'user') ? request.filter : null;
   if (!filter)
     filter = chooseLazily(
       () => portalUser,
@@ -1351,7 +1314,7 @@ export function userLocalDate(date, { timeZone, timezoneOffset = 0 } = {}) {
 const CULTURE_DATE = 'M/d/yyyy';
 const CULTURE_DATETIME = 'M/d/yyyy h:mm tt';
 
-function attributeEntry(
+export function attributeEntry(
   name,
   value,
   { field, settings: _settings, entity, primaryName, timezoneOffset = 0, timeZone = null, currency = () => null },
@@ -1797,6 +1760,56 @@ const downloadText = (attribute) =>
       ),
   );
 
+// Numeric download columns by the metadata AttributeType the grid's layout sends: whole number, decimal,
+// floating point and currency.
+const NUMERIC_ATTRIBUTE_TYPES = new Set(
+  ['int', 'bigint', 'decimal', 'float', 'money'].map((dataverseType) => attributeTypeNumber(dataverseType)),
+);
+const isNumericColumn = (column) => NUMERIC_ATTRIBUTE_TYPES.has(Number(column?.Metadata?.AttributeType));
+
+// A numeric cell value: a finite number, or the decimal text of an exact numeric or numeric text; null when
+// the value is not numeric.
+function numericValue(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (isExactNumeric(value)) return decimalCell(value.value);
+  return typeof value === 'string' ? decimalCell(value.trim()) : null;
+}
+
+// The Excel cell of a numeric column: the stored value when the stored record was read, else the view's value
+// (currency keeps its number in Value.Value).
+function numericCell(attribute, stored) {
+  const value = stored === undefined ? (attribute?.Value?.Value ?? attribute?.Value) : stored;
+  if (value === null || value === undefined || value === '') return null;
+  return numericValue(value) ?? downloadText(attribute);
+}
+
+const attributeOf = (record, column) => record.Attributes.find((attribute) => attribute.Name === column.LogicalName);
+
+/** The Excel cell of a download column: numeric columns as numbers, every other column as its display text. */
+function excelCell(record, column, stored) {
+  if (!isNumericColumn(column)) return downloadText(attributeOf(record, column));
+  const value = stored && column.LogicalName in stored ? stored[column.LogicalName] : undefined;
+  return numericCell(attributeOf(record, column), value);
+}
+
+// The stored record of a download row, read for its numeric columns: it keeps an exact numeric's digits, which
+// the view's float does not.
+function storedRecordOf(context, model, record) {
+  if (context.config?.mode === 'live' || typeof context.store?.get !== 'function') return null;
+  return context.store.get(model.entity, record.Id, context.identity) ?? null;
+}
+
+/** A download's table: the header of column names, then one row per record; CSV cells are display text. */
+function downloadTable(records, columns, { format, context, model }) {
+  const header = columns.map((column) => stripMarkupTags(String(column.Name ?? column.LogicalName)));
+  const rows = records.map((record) => {
+    if (format !== 'excel') return columns.map((column) => downloadText(attributeOf(record, column)));
+    const stored = columns.some(isNumericColumn) ? storedRecordOf(context, model, record) : null;
+    return columns.map((column) => excelCell(record, column, stored));
+  });
+  return [header, ...rows];
+}
+
 // ---- Request handling.
 
 const SERVICE = /^\/_services\/([a-z-]+(?:\.json)?)\/([0-9a-f-]{36}|[\w-]+)\/?$/i;
@@ -2157,6 +2170,9 @@ function reportPlaceholder(context, placeholder, pathname) {
   });
 }
 
+// The page token, or the admin token when the context names one (an empty or missing admin token matches nothing).
+const bodyTokenAccepted = (token, context) => sameToken(token, context.csrf) || sameToken(token, context.adminToken);
+
 /** A note form body: JSON, urlencoded fields or multipart (the file part becomes {name, type, content}). */
 /* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ async function readNoteBody(req) {
   const type = String(req.headers['content-type'] ?? '')
@@ -2280,8 +2296,7 @@ function sendError(res, error) {
 }
 
 function verifyToken(req, csrf) {
-  const header = req.headers.__requestverificationtoken;
-  if (header !== csrf)
+  if (!sameToken(req.headers.__requestverificationtoken, csrf))
     fail('The anti-forgery token is missing or invalid.', 403, 'MissingPortalRequestVerificationToken');
 }
 
@@ -2610,7 +2625,7 @@ const fileSizeDisplay = (bytes) =>
   if (
     native &&
     req.headers.__requestverificationtoken === undefined &&
-    body.__RequestVerificationToken !== context.csrf
+    !bodyTokenAccepted(body.__RequestVerificationToken, context)
   )
     fail('The anti-forgery token is missing or invalid.', 403, 'MissingPortalRequestVerificationToken');
   const contact = canonical(context.identity?.contactId ?? context.identity?.id);
@@ -2650,7 +2665,7 @@ const fileSizeDisplay = (bytes) =>
     };
     if (body.file?.name) {
       values.filename = String(body.file.name).slice(0, 255);
-      values.mimetype = String(body.file.type || 'application/octet-stream').slice(0, 255);
+      values.mimetype = noteMediaType(body.file.type).slice(0, 255);
       values.documentbody = String(body.file.content ?? '');
       values.filesize = Buffer.from(values.documentbody, 'base64').length;
       noteFileTrace(context, values, 'upload');
@@ -2675,10 +2690,10 @@ const fileSizeDisplay = (bytes) =>
   if (action === 'entity-form-updatenote') {
     const text = String(body.text ?? '').trim();
     if (!text) fail('Note is a required field.', 417, 'NoteRequired');
-    const values = { notetext: `*WEB*${text}` };
+    const values = { notetext: `${notesFilter(context.portal)}${text}` };
     if (body.file?.name) {
       values.filename = String(body.file.name).slice(0, 255);
-      values.mimetype = String(body.file.type || 'application/octet-stream').slice(0, 255);
+      values.mimetype = noteMediaType(body.file.type).slice(0, 255);
       values.documentbody = String(body.file.content ?? '');
       values.filesize = Buffer.from(values.documentbody, 'base64').length;
       noteFileTrace(context, values, 'upload');
@@ -2707,6 +2722,14 @@ function noteFileTrace(context, { filename, mimetype, filesize }, transfer, id =
   });
 }
 
+const MEDIA_TYPE = /^[\w!#$&^.+-]+\/[\w!#$&^.+-]+(?:\s*;.*)?$/;
+
+/** A note file's media type when it is a valid one without control characters, else application/octet-stream. */
+function noteMediaType(value) {
+  const text = String(value || '');
+  return MEDIA_TYPE.test(text) && !/\p{Cc}/u.test(text) ? text : 'application/octet-stream';
+}
+
 async function handleAnnotation(req, res, id, context) {
   if (!['GET', 'HEAD'].includes(req.method)) fail('Annotation downloads require GET or HEAD.', 405);
   let note = null;
@@ -2725,7 +2748,7 @@ async function handleAnnotation(req, res, id, context) {
     return res.end();
   }
   noteFileTrace(context, { filename: note.filename, mimetype: note.mimetype, filesize: bytes.length }, 'download', id);
-  const type = note.mimetype || 'application/octet-stream';
+  const type = noteMediaType(note.mimetype);
   const inline = /^image\/(gif|jpeg|png|tiff|bmp|x-icon)$/i.test(type);
   const name = encodeURIComponent(note.filename || 'attachment').replaceAll('%20', '+');
   res.writeHead(200, {
@@ -2738,7 +2761,57 @@ async function handleAnnotation(req, res, id, context) {
   res.end(req.method === 'HEAD' ? undefined : bytes);
 }
 
-const downloads = new Map();
+// The grid exports of each runtime, by random key. An export is bound to the identity that started it.
+const downloadsByStore = new WeakMap();
+
+function downloadsOf(context) {
+  if (!downloadsByStore.has(context.store)) downloadsByStore.set(context.store, new Map());
+  return downloadsByStore.get(context.store);
+}
+
+/** The identity that owns a request's export: the signed-in contact, else the browser's visitor, else null. */
+function exportOwner(_req, context) {
+  const contact = canonical(context.identity?.contactId ?? context.identity?.id);
+  if (contact) return `contact:${contact}`;
+  const visitor = context.visitor;
+  return visitor ? `visitor:${visitor}` : null;
+}
+
+/** A grid export: the table's rows (the first is the header) as a CSV file, or as an Excel workbook. */
+function exportFile(table, { format, viewName, owner }) {
+  const name = String(viewName ?? 'export').replace(/[\\/:*?"<>|]/g, '_');
+  if (format === 'excel')
+    return {
+      owner,
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      name: `${name}.xlsx`,
+      body: xlsxWorkbook(table, { sheetName: name }),
+    };
+  const csv = table.map((cells) => cells.map((cell) => csvCell(cell)).join(',')).join('\r\n');
+  return { owner, type: 'text/csv; charset=utf-8', name: `${name}.csv`, body: Buffer.from(`\uFEFF${csv}`) };
+}
+
+/** Serves an export once, to the identity that started it. Any other request gets 204, as for an unknown key. */
+function serveExport(req, res, url, context) {
+  const key = url.searchParams.get('key');
+  const owner = exportOwner(req, context);
+  const downloads = downloadsOf(context);
+  const file = key && owner ? downloads.get(key) : null;
+  if (!file || file.owner !== owner) {
+    res.writeHead(204);
+    res.end();
+    return true;
+  }
+  downloads.delete(key);
+  res.writeHead(200, {
+    'content-type': file.type,
+    'content-disposition': contentDisposition('attachment', file.name),
+    'content-length': file.body.length,
+    'cache-control': 'no-store',
+  });
+  res.end(file.body);
+  return true;
+}
 
 /** The signed-in contact's row (token claims read it regardless of table permissions). */
 function contactRow(context) {
@@ -2928,24 +3001,8 @@ export function antiForgeryCookie(csrf) {
 ) {
   try {
     const normalized = action.toLowerCase();
-    if (/^download-as-(csv|excel)$/.test(normalized) && req.method === 'GET') {
-      const key = url.searchParams.get('key');
-      const file = key ? downloads.get(key) : null;
-      if (!file) {
-        res.writeHead(204);
-        res.end();
-        return true;
-      }
-      downloads.delete(key);
-      res.writeHead(200, {
-        'content-type': file.type,
-        'content-disposition': contentDisposition('attachment', file.name),
-        'content-length': file.body.length,
-        'cache-control': 'no-store',
-      });
-      res.end(file.body);
-      return true;
-    }
+    if (/^download-as-(csv|excel)$/.test(normalized) && req.method === 'GET')
+      return serveExport(req, res, url, context);
     if (req.method !== 'POST') fail('Native portal services require POST.', 405, 'MethodNotAllowed');
     if (/^entity-(notes|form-addnote|form-updatenote|form-deletenote)$/.test(normalized)) {
       // The native notes form posts its token as a field; JSON callers send the header.
@@ -3140,33 +3197,13 @@ export function antiForgeryCookie(csrf) {
       const columns = (Array.isArray(body.columns) ? body.columns : []).filter(
         (column) => column?.LogicalName && column.Type !== 1 && column.Type !== 2,
       );
-      const header = columns
-        .map((column) => csvCell(stripMarkupTags(String(column.Name ?? column.LogicalName))))
-        .join(',');
-      const lines = records
-        .slice(0, maximum)
-        .map((record) =>
-          columns
-            .map((column) =>
-              csvCell(downloadText(record.Attributes.find((attribute) => attribute.Name === column.LogicalName))),
-            )
-            .join(','),
-        );
-      // Excel downloads are served as CSV with an explicit diagnostic header:
-      // the local runtime does not generate Office Open XML workbooks.
-      const key = `${new Date().toISOString().slice(0, 19)}|${String(body.viewName ?? 'export').replace(/[\\/:*?"<>|]/g, '_')}.csv`;
-      downloads.set(key, {
-        type: 'text/csv; charset=utf-8',
-        name: key.split('|')[1],
-        body: Buffer.from('﻿' + [header, ...lines].join('\r\n')),
-      });
+      const format = normalized === 'download-as-excel' ? 'excel' : 'csv';
+      const table = downloadTable(records.slice(0, maximum), columns, { format, context, model });
+      const key = randomUUID();
+      const downloads = downloadsOf(context);
+      downloads.set(key, exportFile(table, { format, viewName: body.viewName, owner: exportOwner(req, context) }));
       if (downloads.size > 50) downloads.delete(downloads.keys().next().value);
-      sendJson(
-        res,
-        200,
-        { success: true, sessionKey: key },
-        normalized === 'download-as-excel' ? { 'x-sim-download-format': 'csv' } : {},
-      );
+      sendJson(res, 200, { success: true, sessionKey: key });
       return true;
     }
     if (normalized === 'execute-workflow')

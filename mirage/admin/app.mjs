@@ -315,8 +315,20 @@ document.addEventListener('click', async (event) => {
     setButtonPending(button, false);
   }
 });
+// Model-driven apps, Canvas apps and Code Apps all act as the staff session. The dashboard reports Canvas and Code Apps
+// as `ready` only when the runtime has apps of that kind, so the selector follows the apps the runtime serves.
+const STAFF_APP_SURFACES = ['app:canvas', 'app:code'];
+let appSurfaceNodes = [];
+async function loadAppSurfaceNodes() {
+  const payload = await request('/dashboard').catch(() => null);
+  appSurfaceNodes = payload?.nodes ?? [];
+}
+function usesStaffSession() {
+  if (capabilities().modelDriven !== false) return true;
+  return appSurfaceNodes.some((surface) => STAFF_APP_SURFACES.includes(surface.id) && surface.status === 'ready');
+}
 function staffSessionPanel() {
-  if (capabilities().modelDriven === false) return '';
+  if (!usesStaffSession()) return '';
   const current = staffSession?.current;
   let currentLabel = 'Session unavailable';
   if (current?.kind === 'staff') currentLabel = 'Staff user';
@@ -913,7 +925,8 @@ const moduleLoads = new Map();
   if (activeView === 'portal') await loadAccessRules();
   if (activeView === 'environment') await loadEnvironment();
   if (activeView === 'dataverse') {
-    if (capabilities().modelDriven !== false) await loadStaffSession();
+    await loadAppSurfaceNodes();
+    if (usesStaffSession()) await loadStaffSession();
     await loadDataverse();
   }
   await followRoute();
@@ -1394,49 +1407,30 @@ function signInRoute() {
     ['Local identity provider', localIdp],
   ];
 }
-const returnHere = () => `/_sim/${location.hash || '#access'}`;
 /**
- * The portal's own sign-in for this browser, as a person runs it: the identity provider's
- * external login with a login_hint (the local identity provider answers it without a click), or
- * the local persona sign-in page when the site has no external provider. A signed-in browser
- * signs out first, because an external login made while signed in links to that account. The
- * page navigates and comes back to this view; it never sets the session cookie itself.
+ * The portal's own sign-in for this browser, as a person runs it: the administration mints a single-use ticket
+ * (the identity provider's login with a login_hint when the site has one, otherwise the local persona sign-in) and
+ * navigates to it. The portal spends the ticket and comes back to this view; the session cookie is set by the portal.
  */
 async function signInThroughPortal(contactId) {
-  const provider = signInProvider();
-  if (browserSession?.signedIn)
-    await fetch('/Account/Login/LogOff?returnUrl=%2F', {
-      credentials: 'same-origin',
-      redirect: 'manual',
-      cache: 'no-store',
-    });
-  const response = await fetch('/_layout/tokenhtml', { credentials: 'same-origin', cache: 'no-store' });
-  const html = response.ok ? await response.text() : '';
-  const token = new DOMParser()
-    .parseFromString(html, 'text/html')
-    .querySelector('input[name="__RequestVerificationToken"]')?.value;
-  if (!token)
-    throw new Error(`The portal returned no antiforgery token at /_layout/tokenhtml (HTTP ${response.status}).`);
-  const form = document.createElement('form');
-  form.method = 'post';
-  form.action = provider
-    ? `/Account/Login/ExternalLogin?returnUrl=${encodeURIComponent(returnHere())}`
-    : `/SignIn?ReturnUrl=${encodeURIComponent(returnHere())}`;
-  form.hidden = true;
-  const fields = provider ? { provider: provider.id, login_hint: contactId } : { contactId };
-  for (const [name, value] of Object.entries({ ...fields, __RequestVerificationToken: token })) {
-    const input = document.createElement('input');
-    input.type = 'hidden';
-    input.name = name;
-    input.value = value;
-    form.append(input);
-  }
-  document.body.append(form);
-  HTMLFormElement.prototype.submit.call(form);
+  const { url } = await request('/session/portal-ticket', {
+    method: 'POST',
+    body: JSON.stringify({
+      action: 'sign-in',
+      contactId,
+      provider: signInProvider()?.id ?? null,
+      returnHash: location.hash || '#access',
+    }),
+  });
+  location.assign(url);
 }
-/** The portal's sign-out (through the provider's end-session); it comes back to this view. */
-function signOutThroughPortal() {
-  location.assign(`/Account/Login/LogOff?returnUrl=${encodeURIComponent(returnHere())}`);
+/** The portal's sign-out through a ticket: the portal ends the session (through the provider's end-session) and comes back. */
+async function signOutThroughPortal() {
+  const { url } = await request('/session/portal-ticket', {
+    method: 'POST',
+    body: JSON.stringify({ action: 'sign-out', returnHash: location.hash || '#access' }),
+  });
+  location.assign(url);
 }
 /** The simulation override: explicit web roles for this browser's signed-in session; null clears it. */
 async function setSessionRoles(roles) {
@@ -3964,7 +3958,7 @@ const dvLines = (value) =>
     .filter(Boolean);
 async function dataverseWrite(path, options, done) {
   const result = await request(path, options);
-  if (capabilities().modelDriven !== false) await loadStaffSession();
+  if (usesStaffSession()) await loadStaffSession();
   await loadDataverse();
   if (done) notify(done);
   return result;
@@ -4699,7 +4693,7 @@ async function saveConfig(patch, { form } = {}) {
             `Scenario applied. ${contactId ? 'Signing this browser in as its persona' : 'Signing this browser out'} through the portal ...`,
           );
           if (contactId) await signInThroughPortal(contactId);
-          else signOutThroughPortal();
+          else signOutThroughPortal().catch((error) => notify(error.message, true));
           return;
         }
         notify(persona ? `Scenario applied. ${sessionSummary()}.` : 'Scenario applied.');
@@ -4806,7 +4800,7 @@ async function saveConfig(patch, { form } = {}) {
         : 'the local sign-in page';
       notify(signIn ? `Signing in through ${providerLabel} ...` : 'Signing out through the portal ...');
       if (signIn) await signInThroughPortal(contactId);
-      else signOutThroughPortal();
+      else signOutThroughPortal().catch((error) => notify(error.message, true));
     } catch (error) {
       notify(error.message, true);
     }
@@ -5802,7 +5796,23 @@ function dashboardModule() {
       if (history.length > 12) history.shift();
     }
   }
-  async function fetchPayload() {
+  // One round at a time (ADM-7): a request made during a pending round shares one follow-up round, run when it settles.
+  let pendingRound = null;
+  let followUp = false;
+  function fetchPayload() {
+    if (pendingRound) {
+      followUp = true;
+      return pendingRound;
+    }
+    pendingRound = fetchRound().finally(() => {
+      pendingRound = null;
+      const again = followUp && active();
+      followUp = false;
+      if (again) void fetchPayload();
+    });
+    return pendingRound;
+  }
+  async function fetchRound() {
     const mine = ++generation;
     try {
       const response = await fetch(`${API}/dashboard`, { cache: 'no-store', headers: { accept: 'application/json' } });

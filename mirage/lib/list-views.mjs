@@ -239,11 +239,15 @@ const icsDate = (ms) =>
     .toISOString()
     .replace(/[-:]/g, '')
     .replace(/\.\d{3}Z$/, 'Z');
+// Carriage returns become line breaks before the escape, so no bare CR reaches the output; other control
+// characters are dropped except the tab, which RFC 5545 allows in TEXT.
 const icsText = (value) =>
   String(value ?? '')
+    .replace(/\r\n?/g, '\n')
     .replaceAll('\\', '\\\\')
     .replaceAll('\n', String.raw`\n`)
-    .replace(/[,;]/g, (c) => `\\${c}`);
+    .replace(/[,;]/g, (c) => `\\${c}`)
+    .replace(/\p{Cc}/gu, (c) => (c === '\t' ? c : ''));
 /** iCalendar download of the calendar events. */
 export function calendarIcs(events) {
   const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Paqvilo Mirage//Calendar//EN'];

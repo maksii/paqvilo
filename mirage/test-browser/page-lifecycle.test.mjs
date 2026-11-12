@@ -6,6 +6,8 @@ import { chromium } from 'playwright-core';
 import { drainFixture } from '../testing/owned-fixture.mjs';
 import { browserLaunchOptions, observePageLifecycle, observeContextLifecycle } from '../acceptance-api.mjs';
 
+const HANG_GUARD_MS = 120_000; // hang guard only: these settles are expected to succeed
+
 // The stateless fixture server and the browser are shared; every test observes its own context.
 let server, browser, origin;
 // Reads of /held-read stay open until releaseHeldReads().
@@ -101,7 +103,7 @@ test('a detached iframe read needs lifecycle evidence at failure time', async (t
   // The observer records the child read on the same request event, before this waiter resolves.
   await childRead;
   await page.evaluate(() => document.querySelector('iframe').remove());
-  const result = await observer.settle({ timeout: 30_000 });
+  const result = await observer.settle({ timeout: HANG_GUARD_MS });
   assert.equal(result.settled, true, JSON.stringify(result));
   assert.equal(result.failures.length + result.supersededReads.length, 1);
   // Chromium versions may deliver the failure before the detach notification.
@@ -131,7 +133,7 @@ test('a replaced postback document separates still-pending reads without claimin
     form.submit();
   });
   await page.waitForURL(origin + '/done');
-  const result = await observer.settle({ timeout: 30_000 });
+  const result = await observer.settle({ timeout: HANG_GUARD_MS });
   assert.equal(result.passed, true, JSON.stringify(result));
   assert.ok(result.supersededReads.some((row) => row.lifecycle.reason === 'document-replaced'));
   assert.ok(result.supersededReads.every((row) => row.browserCompletionObserved === false));
@@ -175,7 +177,7 @@ test('failed live reads and authored aborts stay failed after unrelated navigati
   await page.evaluate(() => window.authoredAbort.abort());
   await Promise.all(failed);
   await page.goto(origin + '/other');
-  const result = await observer.settle({ timeout: 30_000 });
+  const result = await observer.settle({ timeout: HANG_GUARD_MS });
   assert.equal(result.settled, true);
   assert.equal(result.passed, false);
   assert.equal(result.failures.length, 2);
@@ -200,7 +202,7 @@ test('cancelled and failed writes remain failures, including owned-background lo
   });
   await Promise.all(observed);
   await page.goto(origin + '/other');
-  const result = await observer.settle({ timeout: 30_000 });
+  const result = await observer.settle({ timeout: HANG_GUARD_MS });
   assert.equal(result.passed, false);
   assert.equal(result.failures.length, 3, JSON.stringify(result));
   assert.ok(result.failures.every((row) => !row.ownedBackground));
@@ -217,7 +219,7 @@ test('context observer attaches new pages, excludes only owned reads and dispose
   await second.evaluate(() => {
     fetch('/__sim/events').catch(() => {});
   });
-  const result = await observer.settle({ timeout: 30_000 });
+  const result = await observer.settle({ timeout: HANG_GUARD_MS });
   assert.equal(result.passed, true, JSON.stringify(result));
   assert.equal(result.pages.length, 2);
   assert.ok(result.pages.some((row) => row.requests.some((request) => request.ownedBackground)));
@@ -250,7 +252,7 @@ test('a streaming HTTP error stays failed when its document is replaced', async 
     await fetch('/stream-error').catch(() => {});
   });
   await page.goto(origin + '/other');
-  const result = await observer.settle({ timeout: 30_000 });
+  const result = await observer.settle({ timeout: HANG_GUARD_MS });
   assert.equal(result.passed, false);
   assert.equal(result.failures.length, 1, JSON.stringify(result));
   assert.equal(result.failures[0].status, 500);

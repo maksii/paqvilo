@@ -173,7 +173,7 @@ export function createLocalDiskStorage({
           size,
           etag: `"${digest.slice(0, 16)}-${sequence}"`,
           version: sequence,
-          contentType: options.contentType ?? current?.contentType ?? 'application/octet-stream',
+          contentType: options.contentType ?? 'application/octet-stream',
           metadata: { ...options.metadata },
           lastModified: new Date(clock()).toISOString(),
         };

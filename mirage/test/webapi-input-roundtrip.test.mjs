@@ -1,3 +1,4 @@
+// @test-kind contract: Web API input round-trips of Paqvilo's own runtime behaviour on invented probe tables
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -190,6 +191,22 @@ test('malformed JSON and non-object Web API bodies reject create/update/property
   }
 });
 
+// @test-kind security: a refused reference must answer the client error of a malformed bind, never an unexpected 500
+test('a malformed percent escape in an absolute bind is refused like any other malformed reference', async () => {
+  const { app, call } = await shared;
+  const origin = new URL(app.url).origin;
+  const before = probeState(app);
+  const bind = (value) =>
+    call(COLLECTION, { method: 'POST', body: { 'referenceid@odata.bind': value, title: 'Escape probe' } });
+  const unclosed = await bind(`${origin}${COLLECTION}(`);
+  const escaped = await bind(`${origin}${COLLECTION}(%E0%A4%A)`);
+  assert.equal(unclosed.status, 400);
+  assert.equal(escaped.status, 400, `malformed escape answers ${escaped.status}: ${escaped.text}`);
+  assert.deepEqual(escaped.json.error, unclosed.json.error);
+  assert.deepEqual(probeState(app), before, 'a refused bind must not mutate rows or versions');
+});
+
+// @test-kind security: a Web API write with a missing or wrong CSRF token changes nothing
 test('missing and wrong CSRF tokens reject each Web API write before any mutation', async () => {
   const { app, call } = await shared;
   const writes = [

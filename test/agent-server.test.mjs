@@ -1,3 +1,4 @@
+// @test-kind contract: agent API routes, limits, deadlines and redaction designed by Paqvilo
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -126,6 +127,7 @@ async function fixture(t, options = {}) {
   };
 }
 
+// @test-kind security: the agent API is loopback and bearer-authenticated and refuses browser origins and forged hosts
 test('agent discovery is local and authenticated; browser origins and forged hosts are rejected', async (t) => {
   const fx = await fixture(t);
   assert.match(fx.endpoint, /^http:\/\/127\.0\.0\.1:\d+$/);
@@ -161,6 +163,7 @@ test('agent discovery is local and authenticated; browser origins and forged hos
   assert.equal((await fx.call('/v1/evaluate', { expression: 'fetch("/write")' })).status, 404);
 });
 
+// @test-kind security: event history redacts URL values and secrets and captures only portal tabs
 test('bounded event history redacts URL values and secrets and captures external assets only from portal tabs', async (t) => {
   const fx = await fixture(t, { maxEvents: 6, panel: false });
   const request = {
@@ -205,6 +208,7 @@ test('bounded event history redacts URL values and secrets and captures external
   assert.equal((await fx.call('/v1/events?limit=501')).status, 400);
 });
 
+// @test-kind security: DOM output is redacted and navigation outside the portal origin is refused
 test('DOM inspection redacts content and resolves links against the document; page actions validate inputs', async (t) => {
   const fx = await fixture(t);
   const dom = await (await fx.call('/v1/pages/1/dom', { selector: 'table tr', limit: 10 })).json();
@@ -238,6 +242,7 @@ test('DOM inspection redacts content and resolves links against the document; pa
   assert.equal(fx.calls.length, beforeMalformed, 'null dimensions never reach the browser');
 });
 
+// @test-kind security: oversized requests are refused and a page that left the portal origin is no longer reachable
 test('oversized and malformed requests fail without retaining browser work; operations are serialized per page', async (t) => {
   const fx = await fixture(t);
   assert.equal((await fx.call('/v1/pages/1/dom', { selector: 'x'.repeat(33 * 1024) })).status, 413);
@@ -334,6 +339,7 @@ test('attached and explicitly disabled sessions never expose an agent server', a
   assert.equal(await startAgentServer({ session: { cfg: { agent: { enabled: false } } } }), null);
 });
 
+// @test-kind security: dialog events from a foreign origin are not reported and secrets in them are redacted
 test('dismissed dialog events are origin-confined and never answer browser dialogs', async (t) => {
   const fx = await fixture(t);
   fx.session.emit('dialog', {
@@ -362,6 +368,7 @@ test('dismissed dialog events are origin-confined and never answer browser dialo
   assert.equal(events[1].text, '');
 });
 
+// @test-kind security: URL and text redaction removes query values, fragments, credentials and token formats
 test('redaction strips query values, fragments, credentials and common credential formats', () => {
   assert.equal(
     redactUrl('https://name:password@example.com/a?token=secret#private'),
@@ -379,6 +386,7 @@ test('redaction strips query values, fragments, credentials and common credentia
   }
 });
 
+// @test-kind security: URL redaction of a hostile query stays bounded and retains no value
 test('query-heavy URL redaction stays bounded and collapses duplicate keys without retaining values', (t) => {
   const address =
     'https://name:private@portal.example/asset?' +
@@ -466,4 +474,32 @@ test('current document state excludes late failures from prior documents while p
     (await (await fx.call('/v1/events?after=' + cursor)).json()).events.map((entry) => entry.type),
     ['page-closed'],
   );
+});
+
+test('screenshot waits for the caller budget, not a fixed page deadline, and reports only that budget as a timeout', async (t) => {
+  const fx = await fixture(t);
+  // Timers are mocked, so a deadline fires only when the test ticks the clock; the screenshot itself is gated.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const reached = new EventEmitter();
+  fx.page.screenshot = () => new Promise((resolve) => reached.emit('entered', resolve));
+  const nextEntry = () => new Promise((resolve) => reached.once('entered', resolve));
+
+  const enteredFirst = nextEntry();
+  const first = fx.call('/v1/pages/1/screenshot', {});
+  const releaseFirst = await enteredFirst;
+  t.mock.timers.tick(16_000);
+  releaseFirst(Buffer.from('fake PNG'));
+  const response = await first;
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.equal(await response.text(), 'fake PNG');
+
+  const enteredSecond = nextEntry();
+  const second = fx.call('/v1/pages/1/screenshot', { timeoutMs: 200 });
+  const entry = await Promise.race([enteredSecond, second]);
+  assert.equal(typeof entry, 'function', `screenshot did not start; HTTP ${entry.status}`);
+  t.mock.timers.tick(201);
+  const timedOut = await second;
+  assert.equal(timedOut.status, 504);
+  assert.equal((await timedOut.json()).error.code, 'action_timeout');
+  entry(Buffer.from('late PNG'));
 });

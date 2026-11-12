@@ -2,6 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { npmCliPath } from './npm-cli.mjs';
+
+export { npmCliPath };
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const projects = [
@@ -92,7 +95,7 @@ function auditProject(project, cli) {
 }
 
 function main() {
-  const cli = process.env.npm_execpath || path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js');
+  const cli = npmCliPath();
   if (!fs.existsSync(cli)) throw new Error('Run npm run audit:dependencies.');
   let failed = false;
   for (const project of projects) {

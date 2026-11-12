@@ -1,6 +1,6 @@
 // Source diagnostics only: no provider, workflow, project module or external reference is executed.
 import YAML from 'yaml';
-import { inspectFlowExpressions } from './flow-source-expressions.mjs';
+import { expressionSegments, inspectFlowExpressions } from './flow-source-expressions.mjs';
 import { inspectConnectorSource } from './flow-source-connectors.mjs';
 import { inspectMcpTools } from './flow-source-mcp.mjs';
 import { unencryptedTarget } from './flow-source-common.mjs';
@@ -509,7 +509,8 @@ function credentialMember(action, key, member, source, emit) {
     !nonempty(member)
   )
     return;
-  if (!member.startsWith('@')) {
+  // A value with any expression segment, including interpolation inside a larger string, is dynamic.
+  if (!expressionSegments(member).length) {
     emit('FLOW-SEC-002', source, 'inputs');
     return;
   }
@@ -547,12 +548,17 @@ function inspectAction(action, references, source, emit) {
   return true;
 }
 
+// Solution exports use runtimeSource; older exports use source.
+function invokerReference(value) {
+  return String(value?.runtimeSource ?? value?.source).toLowerCase() === 'invoker';
+}
+
 function inspectTriggers(definition, references, source, emit) {
   for (const trigger of Object.values(definition.triggers)) {
     inspectAction(trigger, references, source, emit);
     if (trigger?.type !== 'Request' || trigger.kind !== 'Http') continue;
     emit('FLOW-SEC-004', source, 'triggers');
-    if (object(references) && Object.values(references).some((value) => value?.source === 'Invoker'))
+    if (object(references) && Object.values(references).some(invokerReference))
       emit('FLOW-CONNECTION-003', source, 'connectionReferences');
   }
 }

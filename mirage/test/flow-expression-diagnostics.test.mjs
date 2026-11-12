@@ -1,6 +1,8 @@
+// @test-kind contract: Paqvilo's own flow expression diagnostics (400 for bad data, 501 for unimplemented functions)
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  inspectFlowDefinition,
   inspectFlowExpression,
   resolveFlowValue,
   executeFlowDefinition,
@@ -180,3 +182,61 @@ test('Power Pages condition false remains a valid HTTP acknowledgement with and 
     assert.equal(runs?.list().length ?? 0, 0);
   }
 });
+
+test('argument type errors answer 400 LocalFlowExpression, and unimplemented or empty-delimiter cases stay 501', () => {
+  for (const source of [
+    'and(1,true)',
+    'not(1)',
+    'if(1,1,2)',
+    "length(json('{}'))",
+    "contains(1,'a')",
+    'toLower(null)',
+    "replace(1,'a','b')",
+  ])
+    assert.throws(
+      () => resolveFlowValue('@' + source, state()),
+      (error) => error.status === 400 && error.code === 'LocalFlowExpression',
+      source,
+    );
+  assert.throws(
+    () => resolveFlowValue("@split('a','')", state()),
+    (error) => error.status === 501 && error.code === 'LocalFlowUnsupported',
+  );
+});
+
+test('the flow contract reports an unsupported function in any expression of an unmocked action', () => {
+  const unsupported = {
+    inputs: { type: 'Compose', inputs: "@dataUriToBinary('yyyy-MM-dd')" },
+    interpolated: { type: 'Compose', inputs: "Stamp @{dataUriToBinary('yyyy')}" },
+    conditionObject: {
+      type: 'If',
+      expression: { equals: ["@dataUriToBinary('yyyy')", '2026'] },
+      actions: { Reply: { type: 'Response', inputs: { body: 'ok' } } },
+    },
+    foreach: { type: 'Foreach', foreach: "@dataUriToBinary('yyyy')", actions: {} },
+    select: {
+      type: 'Select',
+      inputs: { from: '@createArray(1)', select: { value: "@dataUriToBinary('yyyy')" } },
+    },
+  };
+  for (const [name, action] of Object.entries(unsupported)) {
+    const d = flowWithAction(name, action);
+    const inspected = inspectFlowDefinition(d);
+    assert.equal(inspected.supported, false, name);
+    assert.match(inspected.errors.join('\n'), new RegExp(`Unsupported expression in ${name}: .*dataUriToBinary`), name);
+    assert.equal(inspectFlowDefinition(d, { [name]: { mode: 'mock' } }).supported, true, name);
+    assert.equal(inspectFlowDefinition(d, { [name]: { mode: 'disabled' } }).supported, true, name);
+  }
+  const escaped = flowWithAction('escaped', {
+    type: 'Compose',
+    inputs: "Use @@{formatDateTime(utcNow(),'yyyy')} as text",
+  });
+  assert.equal(inspectFlowDefinition(escaped).supported, true);
+});
+
+function flowWithAction(name, action) {
+  return {
+    triggers: { manual: { type: 'Request', kind: 'Button', inputs: { schema: { type: 'object', properties: {} } } } },
+    actions: { [name]: action },
+  };
+}

@@ -1,8 +1,10 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
+import { pacExecutable } from './connection.mjs';
 
 const execute = promisify(execFile);
+const ACCEPTED_EXECUTABLES = new Set(['pac', 'pac.exe', 'pac.launcher.exe']);
 const guid = (value) => typeof value === 'string' && /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(value);
 function environmentArgument(value) {
   if (guid(value)) return value;
@@ -16,15 +18,32 @@ function environmentArgument(value) {
     throw new Error('Power Pages management requires an explicit environment GUID or HTTPS origin.');
   return url.origin;
 }
+// pacExecutable() throws only when no PAC executable is found on PATH or in PAQVILO_PAC_EXECUTABLE.
+function discoveredExecutable() {
+  try {
+    return pacExecutable();
+  } catch (error) {
+    throw executableMissing(error);
+  }
+}
 function configuration(options) {
-  const executable = options.executable ?? 'pac',
+  const environment = environmentArgument(options.environment);
+  const executable = options.executable ?? discoveredExecutable(),
     base = path.basename(executable.replaceAll('\\', '/')).toLowerCase();
-  if (!['pac', 'pac.exe'].includes(base) || executable.includes('\0'))
+  if (!ACCEPTED_EXECUTABLES.has(base) || executable.includes('\0'))
     throw new Error('Power Pages management requires the PAC executable, without a command shell.');
   const timeout = options.timeout ?? 120000;
   if (!Number.isSafeInteger(timeout) || timeout < 1000 || timeout > 120000)
     throw new Error('Power Pages management timeout must be bounded to 1..120 seconds.');
-  return { executable, timeout, environment: environmentArgument(options.environment) };
+  return { executable, timeout, environment };
+}
+function executableMissing(cause) {
+  return Object.assign(
+    new Error('PAC executable not found; pass executable or set PAQVILO_PAC_EXECUTABLE', { cause }),
+    {
+      code: 'POWER_PAGES_PAC_MISSING',
+    },
+  );
 }
 function managementFailure(result) {
   const output = String(result?.stdout ?? '') + '\n' + String(result?.stderr ?? ''),
@@ -65,7 +84,7 @@ async function command(name, args, options) {
           maxBuffer: 4 * 1024 * 1024,
         });
   } catch (error) {
-    throw managementFailure(error);
+    throw error?.code === 'ENOENT' ? executableMissing() : managementFailure(error);
   }
   if (result.exitCode !== undefined && result.exitCode !== 0) throw managementFailure(result);
   return typeof result.stdout === 'string' ? result.stdout : String(result.stdout ?? '');
@@ -119,7 +138,15 @@ function siteRecord(row) {
     name: row.name ?? null,
     type: row.type ?? null,
     status: row.status ?? null,
+    trialExpiringInDays: trialDays(row.trialExpiringInDays),
+    dataModel: dataModelName(row.dataModel),
   };
+}
+function trialDays(value) {
+  return Number.isSafeInteger(value) && value >= 0 && value < 100000 ? value : null;
+}
+function dataModelName(value) {
+  return typeof value === 'string' && value.length <= 64 ? value : null;
 }
 /** Read the management-plane inventory, separately from Dataverse site rows. */
 export async function readPowerPagesSites(options) {

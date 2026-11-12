@@ -103,7 +103,7 @@ const cli = (...args) =>
     execFile(
       process.execPath,
       [path.join(root, 'bin/paqvilo.mjs'), 'mirage', 'trace', ...args],
-      { cwd: root, encoding: 'utf8', windowsHide: true, timeout: 30000 },
+      { cwd: root, encoding: 'utf8', windowsHide: true },
       (error, stdout, stderr) =>
         resolve({ status: error ? (typeof error.code === 'number' ? error.code : null) : 0, stdout, stderr }),
     ),

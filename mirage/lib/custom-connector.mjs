@@ -72,7 +72,7 @@ export function compileOpenApi(document) {
       code: 'CONNECTOR_AUTH_UNSUPPORTED',
       message: `Security definition type ${auth.kind} is not compiled.`,
     });
-  const operations = compileOperations(document);
+  const operations = compileOperations(document, diagnostics);
   return { version: '2.0', title: document.info?.title ?? null, baseUrl, auth, operations, diagnostics };
 }
 
@@ -92,21 +92,23 @@ function compileAuth(security) {
   return { type: 'unsupported', kind: String(security.type) };
 }
 
-function compileOperations(document) {
+function compileOperations(document, diagnostics) {
   const shared = document.parameters ?? {};
   const operations = {};
   for (const [path, item] of Object.entries(document.paths ?? {})) {
     if (!isMap(item)) continue;
-    compilePathOperations(operations, path, item, document, shared);
+    compilePathOperations(operations, path, item, document, shared, diagnostics);
   }
   return operations;
 }
 
-function compilePathOperations(operations, path, item, document, shared) {
+function compilePathOperations(operations, path, item, document, shared, diagnostics) {
+  const pathParameters = listOf(item.parameters, `Path ${path} parameters`, diagnostics);
   for (const method of METHODS) {
     const operation = item[method];
     if (!isMap(operation) || !operation.operationId) continue;
-    const parameters = [...(item.parameters ?? []), ...(operation.parameters ?? [])]
+    const ownParameters = listOf(operation.parameters, `Operation ${operation.operationId} parameters`, diagnostics);
+    const parameters = [...pathParameters, ...ownParameters]
       .map((p) => (isMap(p) && typeof p.$ref === 'string' ? shared[p.$ref.split('/').pop()] : p))
       .filter(isMap)
       .map((p) => ({
@@ -120,10 +122,28 @@ function compilePathOperations(operations, path, item, document, shared) {
       method: method.toUpperCase(),
       pathTemplate: path,
       parameters,
-      consumes: operation.consumes ?? document.consumes ?? ['application/json'],
+      consumes: consumesOf(operation, document, diagnostics),
       responses: Object.keys(operation.responses ?? {}),
     };
   }
+}
+
+// A declared value that is not a list is read as empty, and its diagnostic blocks the connector.
+function listOf(value, where, diagnostics) {
+  if (Array.isArray(value)) return value;
+  if (value !== undefined && value !== null)
+    diagnostics.push({
+      code: 'CONNECTOR_OPENAPI_INVALID',
+      message: `${where} must be a list, so the connector is not compiled.`,
+    });
+  return [];
+}
+
+// The media types of an operation: its own, else the document's, else JSON.
+function consumesOf(operation, document, diagnostics) {
+  const declared = operation.consumes ?? document.consumes;
+  if (declared === undefined) return ['application/json'];
+  return listOf(declared, `Operation ${operation.operationId} consumes`, diagnostics).map(String);
 }
 
 /** Policy template instances, in order, as [{ templateId, supported, section, operations, parameters, reason? }]. */
@@ -208,6 +228,7 @@ export function compileConnector(record) {
   const name = String(record.name ?? '');
   const blocking = new Set([
     'CONNECTOR_OPENAPI_VERSION_UNSUPPORTED',
+    'CONNECTOR_OPENAPI_INVALID',
     'CONNECTOR_AUTH_UNSUPPORTED',
     'CONNECTOR_POLICY_UNSUPPORTED',
     'CONNECTOR_SCRIPT_MISSING',

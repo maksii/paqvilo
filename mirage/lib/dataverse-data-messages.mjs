@@ -7,12 +7,14 @@ import { DataError } from './data-error.mjs';
 import { contextUrl, parseDataverseRoute, parsePrefer } from './dataverse-odata.mjs';
 import { guidKey } from './dataverse-values.mjs';
 import { privilegeDeniedError } from './dataverse-security.mjs';
+import { denied } from './dataverse-fls.mjs';
 import { parseEntityReference } from './data.mjs';
 import { parseXmlDocument, xmlEscapeAttribute } from './fetchxml-engine.mjs';
 import { registerInternalMessage } from './dataverse-addon-common.mjs';
 import { requireMetadataPrivilege } from './dataverse-metadata-relationships.mjs';
 
 const CRM = 'Microsoft.Dynamics.CRM.';
+const BIND = '@odata.bind';
 const nowIso = () => new Date().toISOString();
 const invalid = (message, innerCode = '0x80040203') => new DataError(message, 400, 'InvalidRequest', { innerCode });
 const bodyOf = (c) => {
@@ -180,12 +182,55 @@ function validateRestoreField(store, mapping, row, column, definition) {
     );
 }
 
+// The Target columns pass the store's create reader: normalizeRecord resolves @odata.bind keys to lookups and refuses
+// undeclared ones, coerceRecord converts values and refuses mistyped ones. The reader keeps a column the table does not
+// declare, so that case is refused here with the create path's unknown-property error.
+const unknownColumn = (mapping, name) =>
+  new DataError(
+    `Error identified in Payload provided by the user for Entity :'${mapping.entitySet}', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.Crm.CrmException: Invalid property '${name}' was found in entity '${CRM}${mapping.logicalName}'.`,
+    400,
+    'InvalidRequest',
+    { innerCode: '0x80048d19' },
+  );
+function overrideRow(api, c, mapping, target) {
+  const { store } = api;
+  const data = {};
+  for (const [name, value] of Object.entries(target)) {
+    if (name.startsWith('@odata.')) continue;
+    if (
+      name !== mapping.idColumn &&
+      !name.endsWith(BIND) &&
+      !store.fieldDefinition(mapping.logicalName, name, api.metadataFields)
+    )
+      throw unknownColumn(mapping, name);
+    data[name] = value;
+  }
+  const row = store.normalizeRecord(mapping, data, c.identity);
+  store.coerceRecord(mapping, row, {
+    coerce: true,
+    metadata: api.metadataFields,
+    dataverseWebApi: true,
+    dataverseHttpReader: c.dataverseHttpReader,
+  });
+  return row;
+}
+
+// The Target columns are written as a create. Each one needs that column's create permission (api.fieldSecurity, the check
+// a create runs), and the lookups bound in Target need the create's lookup authorisation (api.records).
+function authorizeOverride(api, c, mapping, recordId, override) {
+  const fls = api.fieldSecurity;
+  for (const column of Object.keys(override))
+    if (fls && !fls.canWrite(c.user, mapping.logicalName, column, 'create', recordId))
+      throw denied('create', c.user, column, mapping.logicalName);
+  api.records.authorizeLookupValues(c, mapping, override);
+}
+
 function restoreEntry(api, c, entry, root, snapshot) {
   const { store } = api;
   const row = entry === root ? snapshot : entry.row,
     mapping = store.resolveMapping(entry.logicalName),
     rows = (store.state.tables[mapping.logicalName] ??= []);
-  api.principals.authorize({ user: c.user, entity: mapping.logicalName, operation: 'create', mapping });
+  api.principals.authorize({ user: c.user, entity: mapping.logicalName, operation: 'create', row, mapping });
   if (rows.some((item) => guidKey(item[mapping.idColumn]) === guidKey(row[mapping.idColumn])))
     throw invalid(
       `Please delete the existing conflicting record '${mapping.logicalName}' with primary key '${mapping.idColumn}' and primary key value '${row[mapping.idColumn]}' before attempting restore.`,
@@ -230,15 +275,12 @@ function restore(api) {
     const root = entries.at(-1),
       logical = root.logicalName,
       mapping = store.resolveMapping(logical);
-    const snapshot = {
-      ...root.row,
-      ...Object.fromEntries(
-        Object.entries(input.Target ?? {}).filter(
-          ([name]) => !name.startsWith('@odata.') && target.mapping.logicalName !== REFERENCE,
-        ),
-      ),
-    };
-    api.principals.authorize({ user: c.user, entity: logical, operation: 'create', mapping });
+    // The snapshot row decides whether the caller may create it, before any Target value is read.
+    api.principals.authorize({ user: c.user, entity: logical, operation: 'create', row: root.row, mapping });
+    const override = target.mapping.logicalName === REFERENCE ? {} : overrideRow(api, c, mapping, input.Target ?? {});
+    authorizeOverride(api, c, mapping, root.row[mapping.idColumn], override);
+    const snapshot = { ...root.row, ...override };
+    store.assertStateStatus(mapping, snapshot, { metadata: api.metadataFields });
     const id = snapshot[mapping.idColumn];
     await api.change(() =>
       store.transact(
@@ -959,9 +1001,8 @@ function installRetentionMessages(api) {
       const secured = api.store.recordPipeline?.secureInternal?.(c, logical, { fetchXml: xml }) ?? {};
       const view = { unmask: false, single: false };
       const result = api.store.fetchXml(xml, c.identity, secured);
-      const rows = (result.entities ?? []).map(
-        (row) => api.fieldSecurity?.mask?.(c.user, logical, row, { view }) ?? row,
-      );
+      const entities = result.entities ?? [];
+      const rows = api.fieldSecurity?.maskAll?.(c.user, logical, entities, { view }) ?? entities;
       const columns = [...new Set(rows.flatMap((row) => Object.keys(row)))];
       const cell = (text) => `<Cell><Data ss:Type="String">${xmlEscapeAttribute(text)}</Data></Cell>`;
       const headerRow = `<Row>${columns.map((name) => cell(name)).join('')}</Row>`;
@@ -1013,7 +1054,8 @@ export function install(api) {
         ? api.principals.effectivePrincipal(caller, target)
         : target;
     const filter = api.principals.readFilter({ user, entity: logical });
-    return (filter ? rows.filter(filter) : rows).map((row) => api.fieldSecurity?.mask?.(user, logical, row) ?? row);
+    const visible = filter ? rows.filter(filter) : rows;
+    return api.fieldSecurity?.maskAll?.(user, logical, visible) ?? visible;
   };
   registry.register({
     name: 'GetEntitiesEligibleForRecycleBin',

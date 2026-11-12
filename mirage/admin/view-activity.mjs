@@ -685,21 +685,54 @@ async function reload(ctx, parts = []) {
   return d.reloading;
 }
 const get = (ctx, path) => ctx.request(path).catch(failureOf);
-/** The audit entries of `traceIds` (one request, ids as a comma list), grouped by trace id. */
-async function auditOf(ctx, items) {
+/** One page of the audit for `traceId` (ids as a comma list); page 1 is the first request, later pages name theirs. */
+const auditPage = (traceId, page) =>
+  new URLSearchParams({ traceId, pageSize: '100', ...(page > 1 ? { page: String(page) } : {}) });
+/** The most audit pages one read of a trace list or a Request tab asks for; a longer audit is incomplete. */
+const AUDIT_PAGE_LIMIT = 20;
+/**
+ * Every audit entry of `traceId`, page by page (ADM-4): the answer of the first page with the entries of the pages read
+ * and `complete`. A first page that cannot be read is the error answer. A later page that cannot be read, a page past
+ * AUDIT_PAGE_LIMIT, or a read that `current` reports superseded keeps the entries of the pages before it, with complete
+ * false.
+ */
+async function auditEntries(ctx, traceId, current = () => true) {
+  const first = await get(ctx, `/audit?${auditPage(traceId, 1)}`);
+  if (first.error) return first;
+  const entries = [...(first.items ?? [])];
+  const pageCount = first.pageCount ?? 1;
+  for (let page = 2; page <= Math.min(pageCount, AUDIT_PAGE_LIMIT); page++) {
+    if (!current()) return { ...first, items: entries, complete: false };
+    const answer = await get(ctx, `/audit?${auditPage(traceId, page)}`);
+    if (answer.error) return { ...first, items: entries, complete: false };
+    entries.push(...(answer.items ?? []));
+  }
+  return { ...first, items: entries, complete: pageCount <= AUDIT_PAGE_LIMIT };
+}
+/**
+ * Whether the load of `part` that starts now is still the one the view shows: a newer load of the part, a moved address
+ * or a view that is no longer active supersedes it (the tests keepLoadAnswer applies to the answer).
+ */
+function loadCurrent(ctx, d, part) {
+  const stamp = d.generations[part];
+  const key = wanted(ctx, d).get(part);
+  return () => d.generations[part] === stamp && wanted(ctx, d).get(part) === key && (ctx.view?.() ?? ID) === ID;
+}
+/** The audit entries of the listed traces, grouped by trace id: { byTrace, complete }, or null when no page was read. */
+async function auditOf(ctx, items, current) {
   if (!items.length || !auditServed(ctx)) return null;
-  const traceId = items.map((item) => item.traceId).join(',');
-  const answer = await get(ctx, `/audit?${new URLSearchParams({ traceId, pageSize: '100' })}`);
+  const answer = await auditEntries(ctx, items.map((item) => item.traceId).join(','), current);
   if (answer.error) return null;
   const byTrace = {};
-  for (const entry of answer.items ?? []) {
+  for (const entry of answer.items) {
     byTrace[entry.traceId] ??= [];
     byTrace[entry.traceId].push(entry);
   }
-  for (const entries of Object.values(byTrace)) entries.sort((a, b) => a.sequence - b.sequence);
-  return byTrace;
+  for (const group of Object.values(byTrace)) group.sort((a, b) => a.sequence - b.sequence);
+  return { byTrace, complete: answer.complete };
 }
 async function fetchList(ctx, d, now) {
+  const current = loadCurrent(ctx, d, 'list');
   const pager = ctx.pager('activity-list');
   const paging = { page: String(pager.page || 1), pageSize: String(pager.size || kit.PAGE_SIZES[0]) };
   if (auditMode(ctx, d)) {
@@ -713,7 +746,8 @@ async function fetchList(ctx, d, now) {
   for (const [name, value] of Object.entries(paging)) query.set(name, value);
   const answer = await get(ctx, `/trace?${query}`);
   if (answer.error || !Array.isArray(answer.items)) return { mode: 'trace', ...answer };
-  return { mode: 'trace', ...answer, audit: await auditOf(ctx, answer.items) };
+  const audit = await auditOf(ctx, answer.items, current);
+  return { mode: 'trace', ...answer, audit: audit?.byTrace ?? null, auditComplete: audit?.complete ?? true };
 }
 /** The audit page as rows: more than one result, or a time range, narrow the page the audit answered. */
 function auditRows(d, items = []) {
@@ -778,7 +812,7 @@ const FETCHERS = {
     ]);
     return { logs, findings };
   },
-  request: (ctx, d) => get(ctx, `/audit?${new URLSearchParams({ traceId: d.traceId, pageSize: '100' })}`),
+  request: (ctx, d) => auditEntries(ctx, d.traceId, loadCurrent(ctx, d, 'request')),
   sources: (ctx, d) => fetchSources(ctx, d.tree),
   compare: async (ctx, d) =>
     Object.fromEntries(
@@ -1269,6 +1303,14 @@ function activitiesPanel(ctx, d) {
   if (!list.total && !filtered(d)) return emptyGuide(ctx, d);
   return activityListTable(ctx, d, list);
 }
+/** The notice that some audit facts of the list are missing: a later audit page could not be read (ADM-4). */
+const auditIncompleteNotice = (complete) =>
+  complete === false
+    ? kit.notice(
+        'Some audit facts are missing: a later page of the request audit could not be read, so the provider, rows and reads shown may be incomplete.',
+        'warn',
+      )
+    : '';
 function activityListTable(ctx, d, list) {
   // Compare carries its own (i) right after it; the tab's (i) follows Show reads, so no two bare (i) sit side by side.
   const pickTools =
@@ -1283,102 +1325,105 @@ function activityListTable(ctx, d, list) {
   const rows = activityRows(d, list);
   const paging = { total: list.total, pages: list.pageCount, page: list.page, size: list.pageSize, search: '' };
   // The table starts right under the toolbar (D-M-7); its tools, count and pager follow it.
-  return kit.dataTable({
-    id: 'activity-list',
-    caption,
-    items: rows,
-    result: { ...paging, items: rows },
-    sort: { key: d.sort.by, order: d.sort.order },
-    footActions: footOf(ctx, d, pickTools),
-    // One line; an id or table filter says how it matches (the runtime takes 8+ character id prefixes and set names).
-    emptyText:
-      d.filters.who || d.filters.session || d.filters.recordId || d.filters.table
-        ? 'No activity matches. Ids match by a prefix of 8 or more characters, tables by logical or entity set name; select Who in a row to filter by exactly that caller.'
-        : 'No activity matches these filters. Clear a filter, or widen the time range.',
-    rowAttrs: (item) =>
-      chooseLazy(
-        item.read,
-        () => ({ class: 'is-read' }),
-        () => ({ 'data-activity-row': item.traceId, class: item.traceId === d.traceId ? 'is-selected' : undefined }),
-      ),
-    columns: [
-      sortColumn(d, 'start', { render: (item) => (item.read ? '' : when(item.startedAt)) }),
-      {
-        label: 'Result',
-        info: RESULT_HELP,
-        render: (item) =>
-          item.read
-            ? resultBadge(OUTCOME_RESULT[item.read.outcome] ?? item.read.outcome)
-            : `${resultBadge(item.status)}${httpBadge(item.root?.attributes?.statusCode ?? item.facts.root?.status)}`,
-      },
-      {
-        label: 'Activity',
-        render: (item) => {
-          if (item.read)
-            return (
-              `<a class="ui-activity-read" href="${e(openHref(d, item.traceId, item.read.spanId))}">${kit.badge(item.read.kind, 'neutral')} ${e(item.read.entity ?? item.read.path ?? '')}</a>` +
-              `<span class="ui-help ui-trace-origin">${e(factsText(item.read, []).join(' · ') || '—')}</span>`
-            );
-          const name = item.root?.name ?? item.traceId;
-          return (
-            `<button type="button" class="ui-link-button ui-trace-root" id="activity-open-${e(item.traceId)}" data-activity-open="${e(item.traceId)}" aria-keyshortcuts="ArrowUp ArrowDown" title="${e(name)}" aria-label="Open activity ${e(name)}">${kit.badge(item.root?.kind ?? '—', 'info')} <span class="ui-trace-name">${e(name)}</span></button>` +
-            `<span class="ui-help ui-trace-origin">${whoLink(d, item.root?.actor, item.root?.session)}${item.root?.origin?.host ? ' · ' + e(item.root.origin.host) : ''}</span>` +
-            rowError(item, item.facts.root)
-          );
+  return (
+    auditIncompleteNotice(list.auditComplete) +
+    kit.dataTable({
+      id: 'activity-list',
+      caption,
+      items: rows,
+      result: { ...paging, items: rows },
+      sort: { key: d.sort.by, order: d.sort.order },
+      footActions: footOf(ctx, d, pickTools),
+      // One line; an id or table filter says how it matches (the runtime takes 8+ character id prefixes and set names).
+      emptyText:
+        d.filters.who || d.filters.session || d.filters.recordId || d.filters.table
+          ? 'No activity matches. Ids match by a prefix of 8 or more characters, tables by logical or entity set name; select Who in a row to filter by exactly that caller.'
+          : 'No activity matches these filters. Clear a filter, or widen the time range.',
+      rowAttrs: (item) =>
+        chooseLazy(
+          item.read,
+          () => ({ class: 'is-read' }),
+          () => ({ 'data-activity-row': item.traceId, class: item.traceId === d.traceId ? 'is-selected' : undefined }),
+        ),
+      columns: [
+        sortColumn(d, 'start', { render: (item) => (item.read ? '' : when(item.startedAt)) }),
+        {
+          label: 'Result',
+          info: RESULT_HELP,
+          render: (item) =>
+            item.read
+              ? resultBadge(OUTCOME_RESULT[item.read.outcome] ?? item.read.outcome)
+              : `${resultBadge(item.status)}${httpBadge(item.root?.attributes?.statusCode ?? item.facts.root?.status)}`,
         },
-      },
-      sortColumn(d, 'duration', {
-        className: 'ui-trace-extra',
-        render: (item) =>
-          chooseLazy(
-            item.read,
-            () => e(duration(item.read.durationMs)),
-            () =>
-              `${e(duration(item.durationMs))}${item.totalDurationMs !== item.durationMs ? '<span class="ui-help ui-trace-origin">total ' + e(duration(item.totalDurationMs)) + '</span>' : ''}`,
-          ),
-      }),
-      sortColumn(d, 'spans', {
-        className: 'ui-trace-extra',
-        render: (item) =>
-          chooseLazy(
-            item.read,
-            () => '',
-            () =>
-              `${e(item.spanCount ?? 0)}${item.droppedSpans ? ' ' + kit.badge('+' + item.droppedSpans + ' refused', 'warn') : ''}`,
-          ),
-      }),
-      sortColumn(d, 'errors', {
-        className: 'ui-trace-extra',
-        render: (item) =>
-          chooseLazy(
-            item.read,
-            () =>
-              chooseLazy(
-                item.read.error,
-                () => `<span class="ui-help ui-trace-error">${e(errorText(item.read.error))}</span>`,
-                () => '',
-              ),
-            () => errorBadges(item, ''),
-          ),
-      }),
-      {
-        label: 'Audit',
-        className: 'ui-trace-extra',
-        render: (item) => (item.read ? '' : e(factsText(item.facts.root, item.facts.reads).join(' · ') || '—')),
-      },
-      {
-        label: 'Compare',
-        className: 'ui-trace-extra',
-        render: (item) =>
-          chooseLazy(
-            item.read,
-            () => '',
-            () =>
-              `<input type="checkbox" id="activity-pick-${e(item.traceId)}" data-activity-pick="${e(item.traceId)}"${d.picked.includes(item.traceId) ? ' checked' : ''} aria-label="Compare activity ${e(item.root?.name ?? item.traceId)}" aria-describedby="activity-pick-help">`,
-          ),
-      },
-    ].filter((column) => column.label !== 'Audit' || auditServed(ctx)),
-  });
+        {
+          label: 'Activity',
+          render: (item) => {
+            if (item.read)
+              return (
+                `<a class="ui-activity-read" href="${e(openHref(d, item.traceId, item.read.spanId))}">${kit.badge(item.read.kind, 'neutral')} ${e(item.read.entity ?? item.read.path ?? '')}</a>` +
+                `<span class="ui-help ui-trace-origin">${e(factsText(item.read, []).join(' · ') || '—')}</span>`
+              );
+            const name = item.root?.name ?? item.traceId;
+            return (
+              `<button type="button" class="ui-link-button ui-trace-root" id="activity-open-${e(item.traceId)}" data-activity-open="${e(item.traceId)}" aria-keyshortcuts="ArrowUp ArrowDown" title="${e(name)}" aria-label="Open activity ${e(name)}">${kit.badge(item.root?.kind ?? '—', 'info')} <span class="ui-trace-name">${e(name)}</span></button>` +
+              `<span class="ui-help ui-trace-origin">${whoLink(d, item.root?.actor, item.root?.session)}${item.root?.origin?.host ? ' · ' + e(item.root.origin.host) : ''}</span>` +
+              rowError(item, item.facts.root)
+            );
+          },
+        },
+        sortColumn(d, 'duration', {
+          className: 'ui-trace-extra',
+          render: (item) =>
+            chooseLazy(
+              item.read,
+              () => e(duration(item.read.durationMs)),
+              () =>
+                `${e(duration(item.durationMs))}${item.totalDurationMs !== item.durationMs ? '<span class="ui-help ui-trace-origin">total ' + e(duration(item.totalDurationMs)) + '</span>' : ''}`,
+            ),
+        }),
+        sortColumn(d, 'spans', {
+          className: 'ui-trace-extra',
+          render: (item) =>
+            chooseLazy(
+              item.read,
+              () => '',
+              () =>
+                `${e(item.spanCount ?? 0)}${item.droppedSpans ? ' ' + kit.badge('+' + item.droppedSpans + ' refused', 'warn') : ''}`,
+            ),
+        }),
+        sortColumn(d, 'errors', {
+          className: 'ui-trace-extra',
+          render: (item) =>
+            chooseLazy(
+              item.read,
+              () =>
+                chooseLazy(
+                  item.read.error,
+                  () => `<span class="ui-help ui-trace-error">${e(errorText(item.read.error))}</span>`,
+                  () => '',
+                ),
+              () => errorBadges(item, ''),
+            ),
+        }),
+        {
+          label: 'Audit',
+          className: 'ui-trace-extra',
+          render: (item) => (item.read ? '' : e(factsText(item.facts.root, item.facts.reads).join(' · ') || '—')),
+        },
+        {
+          label: 'Compare',
+          className: 'ui-trace-extra',
+          render: (item) =>
+            chooseLazy(
+              item.read,
+              () => '',
+              () =>
+                `<input type="checkbox" id="activity-pick-${e(item.traceId)}" data-activity-pick="${e(item.traceId)}"${d.picked.includes(item.traceId) ? ' checked' : ''} aria-label="Compare activity ${e(item.root?.name ?? item.traceId)}" aria-describedby="activity-pick-help">`,
+            ),
+        },
+      ].filter((column) => column.label !== 'Audit' || auditServed(ctx)),
+    })
+  );
 }
 /** The request audit as the list (tracing off, or an audit-only filter): one row per entry, each to its activity. */
 function auditList(ctx, d, list) {
@@ -2081,7 +2126,8 @@ function requestPanel(ctx, d, tree) {
     ],
   });
   return (
-    card(
+    auditIncompleteNotice(answer.complete) +
+    (card(
       'Audit entry',
       kit.kv([
         ['Request', `${kit.badge(entry.kind, 'neutral')} <code>${e(entry.method + ' ' + entry.path)}</code>`],
@@ -2114,9 +2160,9 @@ function requestPanel(ctx, d, tree) {
         ['Preset', e(entry.activeConfigurationPreset?.id ?? '—')],
       ]),
     ) +
-    card('Reads', readsTable) +
-    card('Root step', facts) +
-    body
+      card('Reads', readsTable) +
+      card('Root step', facts) +
+      body)
   );
 }
 /** Related: other activities of the same session, who and record; the flow run and job this activity touched. */

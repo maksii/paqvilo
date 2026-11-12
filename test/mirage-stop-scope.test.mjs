@@ -10,88 +10,84 @@ import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { listenerPort } from '../lense/stop-command.mjs';
+import mirage, { miragePaths, updateOwnedSessions } from '../lense/commands/mirage.mjs';
 import { standaloneMirageConfiguration } from '../lense/standalone-mirage.mjs';
 import { workspace, fixtureStatusURL, alive, stopped, portalProject } from './mirage-stop-workspace.mjs';
 
 const execute = promisify(execFile);
 
 // @test-kind contract: plain project stop hints stay readable and stop only the advertised runtime from other directories and shells
-test(
-  'plain project stop hints stay readable and stop only the advertised runtime from other directories and shells',
-  { timeout: 120000 },
-  async (t) => {
-    const work = await workspace(t);
-    const project = path.join(work.directory, 'plain project', 'organization.json');
-    await fs.mkdir(path.dirname(project));
-    await fs.writeFile(
-      project,
-      JSON.stringify({
-        version: 2,
-        runtime: { kind: 'model-driven' },
-        solutions: [],
-        simulation: { level: 'dry-run' },
-      }),
-    );
-    const elsewhere = path.join(work.directory, 'empty replay directory');
-    await fs.mkdir(elsewhere);
-    const literalProject = path.join(
-      work.directory,
-      'literal $([char]65) ` %PAQ_HINT% !PAQ_HINT! & ^',
-      'organization.json',
-    );
-    await fs.mkdir(path.dirname(literalProject));
-    await fs.copyFile(project, literalProject);
-    const nativeShells = process.platform === 'win32' ? ['cmd.exe', 'powershell.exe'] : ['/bin/sh'];
-    if (process.platform === 'win32') {
-      try {
-        await execute('pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command', '$PSVersionTable.PSVersion.Major'], {
-          windowsHide: true,
-          timeout: 60_000,
-        });
-        nativeShells.push('pwsh.exe');
-      } catch (error) {
-        if (error.code !== 'ENOENT') throw error;
-      }
+test('plain project stop hints stay readable and stop only the advertised runtime from other directories and shells', async (t) => {
+  const work = await workspace(t);
+  const project = path.join(work.directory, 'plain project', 'organization.json');
+  await fs.mkdir(path.dirname(project));
+  await fs.writeFile(
+    project,
+    JSON.stringify({
+      version: 2,
+      runtime: { kind: 'model-driven' },
+      solutions: [],
+      simulation: { level: 'dry-run' },
+    }),
+  );
+  const elsewhere = path.join(work.directory, 'empty replay directory');
+  await fs.mkdir(elsewhere);
+  const literalProject = path.join(
+    work.directory,
+    'literal $([char]65) ` %PAQ_HINT% !PAQ_HINT! & ^',
+    'organization.json',
+  );
+  await fs.mkdir(path.dirname(literalProject));
+  await fs.copyFile(project, literalProject);
+  const nativeShells = process.platform === 'win32' ? ['cmd.exe', 'powershell.exe'] : ['/bin/sh'];
+  if (process.platform === 'win32') {
+    try {
+      await execute('pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command', '$PSVersionTable.PSVersion.Major'], {
+        windowsHide: true,
+      });
+      nativeShells.push('pwsh.exe');
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
     }
-    const started = (file, state) => work.start(['--project', file, '--state', state, '--port', '0']);
-    // Every runtime starts up front and concurrently. Each replay must then stop exactly its own
-    // runtime while the sibling and every runtime not replayed yet keep answering.
-    const [sibling, ...sessions] = await Promise.all([
-      started(project, path.join(work.directory, 'sibling.json')),
-      ...nativeShells.flatMap((_, index) => [
-        started(project, path.join(work.directory, 'selected-' + index + '.json')),
-        started(literalProject, path.join(work.directory, 'literal-' + index + '.json')),
-      ]),
-    ]);
-    const running = new Set(sessions);
-    const replayStops = async (session, shell) => {
-      await work.replay(session.stop, false, elsewhere, shell);
-      await stopped(session);
-      running.delete(session);
-      await Promise.all([sibling, ...running].map(alive));
-    };
-    for (const [index, shell] of nativeShells.entries()) {
-      const [session, literal] = sessions.slice(index * 2, index * 2 + 2);
-      assert.match(
-        session.stop,
-        /^npx paqvilo mirage stop --project /,
-        'plain absolute project anchors ownership without an encoded cwd wrapper',
+  }
+  const started = (file, state) => work.start(['--project', file, '--state', state, '--port', '0']);
+  // Every runtime starts up front and concurrently. Each replay must then stop exactly its own
+  // runtime while the sibling and every runtime not replayed yet keep answering.
+  const [sibling, ...sessions] = await Promise.all([
+    started(project, path.join(work.directory, 'sibling.json')),
+    ...nativeShells.flatMap((_, index) => [
+      started(project, path.join(work.directory, 'selected-' + index + '.json')),
+      started(literalProject, path.join(work.directory, 'literal-' + index + '.json')),
+    ]),
+  ]);
+  const running = new Set(sessions);
+  const replayStops = async (session, shell) => {
+    await work.replay(session.stop, false, elsewhere, shell);
+    await stopped(session);
+    running.delete(session);
+    await Promise.all([sibling, ...running].map(alive));
+  };
+  for (const [index, shell] of nativeShells.entries()) {
+    const [session, literal] = sessions.slice(index * 2, index * 2 + 2);
+    assert.match(
+      session.stop,
+      /^npx paqvilo mirage stop --project /,
+      'plain absolute project anchors ownership without an encoded cwd wrapper',
+    );
+    assert.ok(session.stop.includes(project), 'the selected project is directly reviewable');
+    await replayStops(session, shell);
+    if (process.platform === 'win32')
+      assert.match(literal.stop, /^node -e /, 'Windows shell-active project paths retain fixed encoded argv');
+    else {
+      assert.match(literal.stop, /^npx paqvilo mirage stop --project '/, 'POSIX literal quoting remains readable');
+      assert.ok(
+        literal.stop.includes("'" + literalProject + "'"),
+        'the complete project path is one literal POSIX argument',
       );
-      assert.ok(session.stop.includes(project), 'the selected project is directly reviewable');
-      await replayStops(session, shell);
-      if (process.platform === 'win32')
-        assert.match(literal.stop, /^node -e /, 'Windows shell-active project paths retain fixed encoded argv');
-      else {
-        assert.match(literal.stop, /^npx paqvilo mirage stop --project '/, 'POSIX literal quoting remains readable');
-        assert.ok(
-          literal.stop.includes("'" + literalProject + "'"),
-          'the complete project path is one literal POSIX argument',
-        );
-      }
-      await replayStops(literal, shell);
     }
-  },
-);
+    await replayStops(literal, shell);
+  }
+});
 
 // @test-kind security+contract: owned status probes admit only a numeric port on the fixed HTTP loopback endpoint
 test('owned status probes admit only a numeric port on the fixed HTTP loopback endpoint', () => {
@@ -149,129 +145,133 @@ test('standalone settings-only catalogues keep editor settings without claiming 
 });
 
 // @test-kind security+contract: project stop hints survive valid path remaps, portal renames and removals without selecting a same-source sibling
-test(
-  'project stop hints survive valid path remaps, portal renames and removals without selecting a same-source sibling',
-  { timeout: 120000 },
-  async (t) => {
-    const work = await workspace(t);
-    const config = path.join(work.directory, 'catalogue controls', 'selected.json');
-    const other = path.join(path.dirname(config), 'unrelated.json');
-    const project = path.join(work.directory, 'external projects', 'editable.json');
-    const elsewhere = path.join(work.directory, 'replay edited project here');
-    await fs.mkdir(path.dirname(project), { recursive: true });
-    await fs.mkdir(elsewhere);
-    await work.writeCatalogue(config);
-    await work.writeCatalogue(other);
-    const before = portalProject(path.join(work.alternate, 'portal'));
+test('project stop hints survive valid path remaps, portal renames and removals without selecting a same-source sibling', async (t) => {
+  const work = await workspace(t);
+  const config = path.join(work.directory, 'catalogue controls', 'selected.json');
+  const other = path.join(path.dirname(config), 'unrelated.json');
+  const project = path.join(work.directory, 'external projects', 'editable.json');
+  const elsewhere = path.join(work.directory, 'replay edited project here');
+  await fs.mkdir(path.dirname(project), { recursive: true });
+  await fs.mkdir(elsewhere);
+  await work.writeCatalogue(config);
+  await work.writeCatalogue(other);
+  const before = portalProject(path.join(work.alternate, 'portal'));
+  await fs.writeFile(project, JSON.stringify(before));
+  const sibling = await work.start([
+    '--config',
+    other,
+    '--project',
+    project,
+    '--portal',
+    'first',
+    '--state',
+    path.join(work.directory, 'unrelated state.json'),
+    '--port',
+    '0',
+  ]);
+  for (const edit of ['path-remap', 'portal-rename', 'portal-remove']) {
     await fs.writeFile(project, JSON.stringify(before));
-    const sibling = await work.start([
+    const selected = await work.start([
       '--config',
-      other,
+      config,
       '--project',
       project,
       '--portal',
       'first',
       '--state',
-      path.join(work.directory, 'unrelated state.json'),
+      path.join(work.directory, edit + '.json'),
       '--port',
       '0',
     ]);
-    for (const edit of ['path-remap', 'portal-rename', 'portal-remove']) {
-      await fs.writeFile(project, JSON.stringify(before));
-      const selected = await work.start([
+    const after = structuredClone(before);
+    if (edit === 'path-remap') after.portals[0].path = path.join(work.defaults, 'portal');
+    else if (edit === 'portal-rename') {
+      after.portals[0].id = 'renamed';
+      after.defaultPortal = 'renamed';
+    } else {
+      after.portals.shift();
+      after.defaultPortal = 'second';
+    }
+    await fs.writeFile(project, JSON.stringify(after));
+    await work.replay(selected.stop, false, elsewhere);
+    await stopped(selected);
+    await alive(sibling);
+  }
+  // The project now lacks portal 'first': every action refuses it. They read the same files
+  // and start nothing, so they run together.
+  await Promise.all(
+    ['start', 'dev', 'inspect'].map(async (action) => {
+      const refused = await work.run([
+        'mirage',
+        action,
         '--config',
         config,
         '--project',
         project,
         '--portal',
         'first',
-        '--state',
-        path.join(work.directory, edit + '.json'),
-        '--port',
-        '0',
+        ...(action === 'inspect' ? [] : ['--port', '0']),
+        ...(action === 'dev' ? [] : ['--json']),
       ]);
-      const after = structuredClone(before);
-      if (edit === 'path-remap') after.portals[0].path = path.join(work.defaults, 'portal');
-      else if (edit === 'portal-rename') {
-        after.portals[0].id = 'renamed';
-        after.defaultPortal = 'renamed';
-      } else {
-        after.portals.shift();
-        after.defaultPortal = 'second';
-      }
-      await fs.writeFile(project, JSON.stringify(after));
-      await work.replay(selected.stop, false, elsewhere);
-      await stopped(selected);
-      await alive(sibling);
-    }
-    // The project now lacks portal 'first': every action refuses it. They read the same files
-    // and start nothing, so they run together.
-    await Promise.all(
-      ['start', 'dev', 'inspect'].map(async (action) => {
-        const refused = await work.run([
-          'mirage',
-          action,
-          '--config',
-          config,
-          '--project',
-          project,
-          '--portal',
-          'first',
-          ...(action === 'inspect' ? [] : ['--port', '0']),
-          ...(action === 'dev' ? [] : ['--json']),
-        ]);
-        assert.equal(refused.status, 1, refused.stdout + refused.stderr);
-        assert.match(
-          refused.stdout + refused.stderr,
-          /Unknown Mirage portal \\?"first\\?"|Portal 'first' is not configured/,
-        );
-      }),
-    );
-  },
-);
+      assert.equal(refused.status, 1, refused.stdout + refused.stderr);
+      assert.match(
+        refused.stdout + refused.stderr,
+        /Unknown Mirage portal \\?"first\\?"|Portal 'first' is not configured/,
+      );
+    }),
+  );
+});
 
 // @test-kind contract: a project stop without a portal selector includes recorded portals absent from current multi- and single-portal mappings
-test(
-  'unqualified project stop includes recorded portals absent from current multi- and single-portal mappings',
-  { timeout: 90000 },
-  async (t) => {
-    const work = await workspace(t);
-    const config = path.join(work.directory, 'catalogue controls', 'selected.json');
-    const other = path.join(path.dirname(config), 'unrelated.json');
-    const project = path.join(work.directory, 'external projects', 'editable.json');
-    await fs.mkdir(path.dirname(project), { recursive: true });
-    await work.writeCatalogue(config);
-    await work.writeCatalogue(other);
-    const before = portalProject(path.join(work.alternate, 'portal'));
+test('unqualified project stop includes recorded portals absent from current multi- and single-portal mappings', async (t) => {
+  const work = await workspace(t);
+  const config = path.join(work.directory, 'catalogue controls', 'selected.json');
+  const other = path.join(path.dirname(config), 'unrelated.json');
+  const project = path.join(work.directory, 'external projects', 'editable.json');
+  await fs.mkdir(path.dirname(project), { recursive: true });
+  await work.writeCatalogue(config);
+  await work.writeCatalogue(other);
+  const before = portalProject(path.join(work.alternate, 'portal'));
+  await fs.writeFile(project, JSON.stringify(before));
+  // The sibling keeps its own state file: the project portal's default state file belongs to the group below.
+  const sibling = await work.start([
+    '--config',
+    other,
+    '--project',
+    project,
+    '--portal',
+    'first',
+    '--state',
+    path.join(work.directory, 'unrelated state.json'),
+    '--port',
+    '0',
+  ]);
+  for (const count of [2, 1]) {
     await fs.writeFile(project, JSON.stringify(before));
-    const sibling = await work.start(['--config', other, '--project', project, '--portal', 'first', '--port', '0']);
-    for (const count of [2, 1]) {
-      await fs.writeFile(project, JSON.stringify(before));
-      const group = await work.start(['--config', config, '--project', project, '--port', '0']);
-      await fs.writeFile(
-        project,
-        JSON.stringify({
-          ...before,
-          defaultPortal: 'replacement',
-          portals: Array.from({ length: count }, (_, index) => ({
-            id: index ? 'another' : 'replacement',
-            path: path.join(work.defaults, 'portal'),
-          })),
-        }),
-      );
-      const report = await work.run(['mirage', 'stop', '--config', config, '--project', project, '--json']);
-      assert.equal(report.status, 0, report.stdout + report.stderr);
-      assert.deepEqual(
-        JSON.parse(report.stdout)
-          .stopped.map(({ pid }) => pid)
-          .sort(),
-        group.portals.map(({ pid }) => pid).sort(),
-      );
-      for (const session of group.portals) await stopped(session);
-      await alive(sibling);
-    }
-  },
-);
+    const group = await work.start(['--config', config, '--project', project, '--port', '0']);
+    await fs.writeFile(
+      project,
+      JSON.stringify({
+        ...before,
+        defaultPortal: 'replacement',
+        portals: Array.from({ length: count }, (_, index) => ({
+          id: index ? 'another' : 'replacement',
+          path: path.join(work.defaults, 'portal'),
+        })),
+      }),
+    );
+    const report = await work.run(['mirage', 'stop', '--config', config, '--project', project, '--json']);
+    assert.equal(report.status, 0, report.stdout + report.stderr);
+    assert.deepEqual(
+      JSON.parse(report.stdout)
+        .stopped.map(({ pid }) => pid)
+        .sort(),
+      group.portals.map(({ pid }) => pid).sort(),
+    );
+    for (const session of group.portals) await stopped(session);
+    await alive(sibling);
+  }
+});
 
 // @test-kind contract: listener selectors normalize default ports without binding privileged listeners
 test('listener selectors normalize default ports without binding privileged listeners', () => {
@@ -279,4 +279,24 @@ test('listener selectors normalize default ports without binding privileged list
   assert.equal(listenerPort('https://localhost:443'), '443');
   assert.equal(listenerPort('http://127.0.0.1:1234'), '1234');
   assert.equal(listenerPort(null), undefined);
+});
+
+// @test-kind contract: a stop whose selection names a live session it could not verify keeps it, reports it and exits non-zero
+test('a stop whose selection names a live session it could not verify keeps it, reports it and exits non-zero', async (t) => {
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-stop-unverified-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const cfg = { stateDir: directory, runtime: { kind: 'model-driven' }, siteName: 'invented' };
+  const stateFile = path.join(directory, 'state.json');
+  // A record without a start identity: its live process is kept and never signalled.
+  await updateOwnedSessions(miragePaths(cfg), () => [
+    { pid: process.pid, stateFile, identity: { stateFile, runtime: { kind: 'model-driven' } } },
+  ]);
+  const output = [];
+  t.mock.method(console, 'log', (value) => output.push(value));
+  assert.equal(await mirage(cfg, { json: true }, ['stop']), 2);
+  const report = JSON.parse(output[0]);
+  assert.equal(report.unverified.length, 1);
+  assert.equal(report.unverified[0].pid, process.pid);
+  assert.deepEqual(report.stopped, []);
+  assert.deepEqual(report.remaining, []);
 });

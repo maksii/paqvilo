@@ -4,14 +4,20 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import http from 'node:http';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import mirage, {
+  codeAppStartupInterrupted,
   discoveries,
   miragePaths,
+  start,
   updateOwnedSessions,
   processIdentityAsync,
 } from '../lense/commands/mirage.mjs';
+import { startCodeAppDevServers, CODE_APP_STARTUP_CANCELLED } from '../lense/code-app-dev-servers.mjs';
 import { tempDir } from './fixture.mjs';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { readyRuntime } from './helpers/mirage-session-doubles.mjs';
 
 // A released operation settles within event-loop latency. The bound stays below the 2.5 s status probe timeout and the
 // 30 s ownership lock deadline, so an operation that ignores its signal fails here instead of settling later on its own.
@@ -241,20 +247,9 @@ for (const ownedMismatch of [false, true])
 test('startup probes and reuses a runtime whose ownership, launch settings and process identity match', async (t) => {
   const { root, paths } = await fixture(t);
   let requests = 0;
-  const server = http.createServer((_req, res) => {
+  const url = await readyRuntime(t, () => {
     requests++;
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ runtime: { kind: 'model-driven' } }));
   });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  ownedFixture(t).add(
-    () =>
-      new Promise((resolve) => {
-        server.closeAllConnections();
-        server.close(resolve);
-      }),
-  );
-  const url = `http://127.0.0.1:${server.address().port}`;
   await ownRuntime(paths, await processIdentityAsync(process.pid), url);
   const output = [],
     phases = [];
@@ -273,4 +268,130 @@ test('startup probes and reuses a runtime whose ownership, launch settings and p
   assert.equal(result.url, url);
   assert.equal(requests, 1);
   assert.equal(phases.includes('process launch'), false);
+});
+
+// A stand-in runtime reports a progress record every 200 ms, then publishes its discovery record.
+const PROGRESS_CHILD = String.raw`
+  const fs = require('node:fs');
+  const path = require('node:path');
+  let records = 0;
+  const timer = setInterval(() => {
+    records++;
+    process.stdout.write(JSON.stringify({ type: 'runtime-startup', phase: 'configuration', elapsedMs: records * 200 }) + '\n');
+    if (records < 12) return;
+    clearInterval(timer);
+    fs.writeFileSync(path.join(process.env.FAKE_DISCOVERY_ROOT, 'session-' + process.pid + '.json'), JSON.stringify({ pid: process.pid, url: process.env.FAKE_URL }));
+  }, 200);
+  setInterval(() => {}, 1000);
+`;
+const SILENT_CHILD = 'setInterval(() => {}, 1000);';
+const stopChild = async (child) => {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  const exited = once(child, 'exit');
+  child.kill('SIGTERM');
+  await exited;
+};
+const startWithChild = (cfg, args, paths, t, { script, env = {} }) => {
+  const identityOf = async () => 'invented identity';
+  return start(cfg, args, {
+    paths,
+    identityOf,
+    spawnRuntime(command, _args, options) {
+      const child = spawn(command, ['-e', script], { ...options, env: { ...options.env, ...env } });
+      ownedFixture(t).add(() => stopChild(child));
+      return child;
+    },
+  });
+};
+
+// @test-kind contract: start-up is bounded by silence, so a runtime that keeps reporting progress is not abandoned
+test('start-up stays alive while the runtime keeps reporting progress within the silence bound', async (t) => {
+  const { root, paths } = await fixture(t);
+  const url = await readyRuntime(t, () => {});
+  const session = await startWithChild(
+    { stateDir: root, runtime: { kind: 'model-driven' }, siteName: 'invented' },
+    { port: '0', 'startup-timeout': '1000' },
+    paths,
+    t,
+    { script: PROGRESS_CHILD, env: { FAKE_DISCOVERY_ROOT: paths.discoveryRoot, FAKE_URL: url } },
+  );
+  assert.equal(session.started, true);
+  assert.equal(session.url, url);
+});
+
+// @test-kind contract: start-up fails once the runtime is silent for the bound, and the failure names the silence and the log
+test('start-up fails after the silence bound and names the silence and the start-up log', async (t) => {
+  const { root, paths } = await fixture(t);
+  await assert.rejects(
+    startWithChild(
+      { stateDir: root, runtime: { kind: 'model-driven' }, siteName: 'invented' },
+      { port: '0', 'startup-timeout': '1000' },
+      paths,
+      t,
+      { script: SILENT_CHILD },
+    ),
+    (error) => {
+      assert.match(error.message, /no start-up progress for \d+ ms/);
+      assert.match(error.message, /See startup log: .*startup-\d+-[0-9a-f]+\.log$/);
+      assert.ok(error.writesFiles.some((file) => file.endsWith('.log')));
+      return true;
+    },
+  );
+});
+
+// A Code App whose dev server is a configured command on a loopback port that nothing listens on.
+async function codeAppAt(t, script) {
+  const root = await tempDir('paq-code-app-start-');
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+  const probe = http.createServer();
+  await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
+  const port = probe.address().port;
+  await new Promise((resolve) => probe.close(resolve));
+  return [
+    {
+      name: 'invented-app',
+      dir: root,
+      localAppUrl: `http://127.0.0.1:${port}/`,
+      devServer: { command: [process.execPath, '-e', script] },
+    },
+  ];
+}
+
+// @test-kind contract: a Code App dev server that exits during start-up is a failure that keeps its exit detail
+test('a Code App dev server that exits during start-up is a failure with its exit detail, not an interrupt', async (t) => {
+  const apps = await codeAppAt(t, 'console.error("invented exit detail"); process.exit(3)');
+  const error = await startCodeAppDevServers(apps, { output: () => {} }).then(
+    () => assert.fail('the dev server must not become ready'),
+    (failure) => failure,
+  );
+  const lines = [];
+  assert.equal(
+    codeAppStartupInterrupted(error, (line) => lines.push(line)),
+    false,
+  );
+  assert.deepEqual(lines, []);
+  assert.match(error.message, /dev server exited \(3\)/);
+  assert.match(error.message, /Command: .*-e console\.error\("invented exit detail"\)/);
+  assert.match(error.message, /invented exit detail/);
+  assert.doesNotMatch(error.message, /aborted/);
+});
+
+// @test-kind contract: a Ctrl+C during Code App start-up is an interrupt that prints one cancellation line, never an abort message
+test('a Ctrl+C during Code App start-up is an interrupt with one cancellation line', async (t) => {
+  const apps = await codeAppAt(t, 'setInterval(() => {}, 1000)');
+  const controller = new AbortController();
+  controller.abort(new Error('Code App development stopped.'));
+  const error = await startCodeAppDevServers(apps, { signal: controller.signal, output: () => {} }).then(
+    () => assert.fail('a cancelled start-up must not become ready'),
+    (failure) => failure,
+  );
+  assert.equal(error.code, CODE_APP_STARTUP_CANCELLED);
+  const lines = [];
+  assert.equal(
+    codeAppStartupInterrupted(error, (line) => lines.push(line)),
+    true,
+  );
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /Code App start-up was interrupted/);
+  assert.doesNotMatch(lines[0], /aborted/);
 });

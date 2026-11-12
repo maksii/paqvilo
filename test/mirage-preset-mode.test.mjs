@@ -1,3 +1,4 @@
+// @test-kind contract: catalogue bootstrap presets preserve Mirage state and print the startup decision they make.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -9,7 +10,7 @@ import { loadCatalogue, loadConfig } from '../lense/config.mjs';
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 // A start may use the whole default Mirage startup budget (120 s, lense/commands/mirage.mjs); the guard only ends a hung
 // command. The test has no overall deadline: its commands run in sequence, each bounded by this guard.
-const COMMAND_TIMEOUT = 150_000;
+const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
 
 test('catalogue bootstrap presets preserve state and print their startup decision', async (t) => {
   withoutToolkitEnvironment(t);
@@ -27,7 +28,7 @@ test('catalogue bootstrap presets preserve state and print their startup decisio
       ),
       encoding: 'utf8',
       windowsHide: true,
-      timeout: COMMAND_TIMEOUT,
+      timeout: CLI_HANG_GUARD_MS,
     });
   const catalog = {
     defaults: { mirage: { presetMode: 'bootstrap', presetConfiguration: 'apply' } },

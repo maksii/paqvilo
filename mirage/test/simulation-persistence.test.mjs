@@ -1,3 +1,4 @@
+// @test-kind contract: pack DATA persistence round-trips declared records and schema through the simulation level policy.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -217,6 +218,36 @@ test('deep simulation stores normalized schema and new-table records in declared
   assert.equal(JSON.parse(await fs.readFile(dataFile, 'utf8')).newTables.extra, undefined);
 });
 
+test('valid pack schema mappings merge over the boot mappings', async (t) => {
+  const { dataFile, open } = await workspace(t, 'deep');
+  const document = JSON.parse(await fs.readFile(dataFile, 'utf8'));
+  document.schema = { mappings: { extra: { entitySet: 'extras', idColumn: 'extraid', fields: {} } } };
+  await fs.writeFile(dataFile, JSON.stringify(document));
+  const restarted = await open();
+  assert.equal(restarted.state.mappings.extra.idColumn, 'extraid');
+  assert.equal(restarted.state.mappings.item.idColumn, 'itemid');
+  assert.equal(Object.getPrototypeOf(restarted.state.mappings), Object.prototype);
+});
+
+// @test-kind security: a pack schema naming a prototype key or a non-identifier table must never change the runtime mappings.
+test('unsafe pack schema table names are refused before any mapping or record loads', async (t) => {
+  const { dataFile, open } = await workspace(t, 'deep');
+  const entry = '{"entitySet":"ghosts","idColumn":"ghostid"}';
+  const unsafeSchemas = [
+    `{"mappings":{"__proto__":${entry}}}`,
+    `{"mappings":{"constructor":${entry}}}`,
+    `{"mappings":{"prototype":${entry}}}`,
+    `{"mappings":{"not-simple":${entry}}}`,
+    '{"schemaRecords":{"__proto__":[]}}',
+  ];
+  const document = JSON.parse(await fs.readFile(dataFile, 'utf8'));
+  for (const text of unsafeSchemas) {
+    document.schema = JSON.parse(text);
+    await fs.writeFile(dataFile, JSON.stringify(document));
+    await assert.rejects(open(), { code: 'InvalidPackData' });
+  }
+});
+
 test('external edits fail CAS and preserve the external file, runtime memory and committed events', async (t) => {
   const { store, dataFile } = await workspace(t, 'simulation');
   let events = 0;
@@ -300,6 +331,7 @@ test('late publication failure rolls back every pack file and memory, and a retr
   assert.ok(!(await fs.readdir(directory)).some((name) => /\.paqvilo-.*\.(bak|tmp)$/.test(name)));
 });
 
+// @test-kind security: credentials persist only in private state, never in the business data target
 test('credentials and organization control-plane rows persist privately without a business DATA target', async (t) => {
   const seed = initial();
   seed.mappings.systemuser = { idColumn: 'systemuserid', entitySet: 'systemusers' };
@@ -376,6 +408,7 @@ test('failed persistence never retains elastic writes or independent plug-in wri
   assert.deepEqual(store.snapshot(), before);
 });
 
+// @test-kind security: a pack data manifest cannot name executable locations or paths outside its root
 test('pack DATA manifest rejects executable locations, path escapes, overlap and duplicate ownership', async (t) => {
   const base = {
     id: 'invented',

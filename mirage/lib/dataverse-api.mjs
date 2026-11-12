@@ -82,6 +82,10 @@ const CORS = {
 };
 // The SOAP endpoint with or without /web (SDKClientVersion is a query parameter and never part of the pathname).
 const SOAP_ROUTE = /^\/XRMServices\/2011\/Organization\.svc(?:\/web)?\/?$/i;
+// Paths whose replies carry no CORS headers, so a page on another origin cannot read them: the managed identity token
+// endpoints and the sign-in pages (the account pickers list the directory).
+const NO_CORS_PATH =
+  /^\/(?:msi\/token|metadata\/identity\/oauth2\/token|common\/oauth2\/deviceauth|[^/]+\/oauth2(?:\/v2\.0)?\/authorize)$/i;
 // Global Discovery Instances and $metadata under any vN.N (the service document is matched before this).
 const DISCOVERY_ROUTE = /^\/api\/discovery\/v\d+\.\d+\/(?:\$metadata|Instances(?:\(.*\))?)\/?$/;
 const METHODS = new Set(['GET', 'HEAD', 'POST', 'PATCH', 'PUT', 'DELETE']);
@@ -320,6 +324,8 @@ const wantsCors = (req, origin) =>
   req.headers.origin !== undefined &&
   (String(req.headers.origin).toLowerCase() !== origin.toLowerCase() ||
     (req.method === 'OPTIONS' && req.headers['access-control-request-method'] !== undefined));
+// A path in NO_CORS_PATH gets no CORS headers whatever the Origin.
+const noCors = (c) => NO_CORS_PATH.test(c.url?.pathname ?? '');
 
 // Every write to res happens here; a throw (for example ERR_INVALID_CHAR from a header value) is the caller's to answer.
 // The fallback answer passes no options: no CORS and no gzip.
@@ -356,13 +362,23 @@ function prepareResponsePayload(body, headers, status, gzip) {
   if (status === 200 && gzip && payload !== undefined && headers['content-type'] !== 'application/octet-stream') {
     payload = gzipSync(payload);
     headers['content-encoding'] = 'gzip';
-    headers.vary = 'Accept-Encoding';
+    headers.vary = withVaryToken(headers.vary, 'Accept-Encoding');
   }
   // Every native success carries nosniff; errors get it from dataverseError, which knows the engine-versus-route split.
   if (status < 400) headers['x-content-type-options'] ??= 'nosniff';
   // Every native 204 (image and file ones included) is answered as an empty text/html response.
   if (status === 204) headers['content-type'] ??= 'text/html; charset=utf-8';
   return payload;
+}
+
+// Adds a token to a Vary value that may already name others; a token already present is not repeated (case-insensitive).
+function withVaryToken(vary, token) {
+  const tokens = String(vary ?? '')
+    .split(',')
+    .map((existing) => existing.trim())
+    .filter(Boolean);
+  if (!tokens.some((existing) => existing.toLowerCase() === token.toLowerCase())) tokens.push(token);
+  return tokens.join(', ');
 }
 
 function organizationDetail(d, origin) {
@@ -398,12 +414,35 @@ const stsReply = (result) =>
     ? { ...result, headers: { 'content-type': 'text/html; charset=utf-8', ...result.headers } }
     : asJson(result);
 
+// A picker POST (account choice or device approval) is answered only for a program (no Origin and no Sec-Fetch-Site)
+// or for the listener's own page. Origin: null (an opaque frame) is refused.
+const pickerPostRefused = (req, origin) =>
+  req.method === 'POST' &&
+  !(
+    (req.headers.origin === undefined && req.headers['sec-fetch-site'] === undefined) ||
+    String(req.headers.origin).toLowerCase() === origin.toLowerCase()
+  );
+// The Origin of a request from a browser page on another origin than this listener; null for a program or the listener's own page.
+const browserOriginOf = (req, origin) => {
+  const sent = req.headers.origin;
+  if (sent === undefined || String(sent).toLowerCase() === origin.toLowerCase()) return null;
+  return String(sent);
+};
+// Answered without calling the authority, so a refused POST issues no code and approves no device.
+const pickerRefused = () =>
+  stsReply({
+    status: 403,
+    headers: { 'cache-control': 'no-store' },
+    body: `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Sign-in error</title></head><body><h1>Sign-in error</h1><p>The account choice must be submitted from this sign-in page.</p></body></html>`,
+  });
+
 async function stsRoute(d, c) {
   const { req, url, origin, meta } = c;
   const path = url.pathname;
   if (/^\/common\/discovery\/instance$/i.test(path))
     return asJson({ status: 200, body: d.authority.instanceDiscovery(origin) });
   if (/^\/common\/oauth2\/deviceauth$/i.test(path)) {
+    if (pickerPostRefused(req, origin)) return pickerRefused();
     const verification = {
       origin,
       url,
@@ -429,11 +468,15 @@ async function stsRoute(d, c) {
     const form = await readForm(req);
     meta.grant = typeof form.grant_type === 'string' ? form.grant_type : null;
     const version = lower.includes('v2.0') ? 'v2.0' : 'v1.0';
-    return asJson(await d.authority.handleToken({ origin, tenantSegment, form, headers: req.headers, version }));
+    const browserOrigin = browserOriginOf(req, origin);
+    return asJson(
+      await d.authority.handleToken({ origin, tenantSegment, form, headers: req.headers, version, browserOrigin }),
+    );
   }
   if (lower.endsWith('devicecode'))
     return d.authority.handleDeviceCode({ origin, tenantSegment, form: await readForm(req) });
   if (lower.endsWith('authorize')) {
+    if (pickerPostRefused(req, origin)) return pickerRefused();
     const request = {
       origin,
       tenantSegment,
@@ -820,24 +863,145 @@ async function shareAction(d, c, route, common) {
   return { status: 204 };
 }
 
-// $expand names without their nested options: "OptionSet($select=Options)" becomes "OptionSet".
-function expandNames(text) {
-  let flat = String(text ?? '');
-  for (let previous = null; previous !== flat;) {
-    previous = flat;
-    flat = flat.replace(/\([^()]*\)/g, '');
+// The navigations EntityMetadata answers under $expand, and the nesting depth a metadata $filter may reach
+// (its parser recurses once per level, so a deeper filter is refused before it is parsed).
+const EXPANDABLE_METADATA = new Set([
+  'Attributes',
+  'Keys',
+  'OneToManyRelationships',
+  'ManyToOneRelationships',
+  'ManyToManyRelationships',
+]);
+const NESTED_OPTIONS = new Map([
+  ['$select', 'select'],
+  ['$filter', 'filter'],
+  ['$top', 'top'],
+]);
+const MAX_METADATA_FILTER_DEPTH = 100;
+
+const metadataQueryError = () =>
+  new DataError('Bad Request - Error in query syntax.', 400, 'InvalidRequest', {
+    innerCode: '0x80060888',
+    route: true,
+  });
+
+// Splits on a separator outside parentheses and single quotes, trimming and dropping empty parts.
+function splitOutside(text, separator) {
+  const parts = [];
+  let depth = 0;
+  let quoted = false;
+  let start = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === "'") quoted = !quoted;
+    else if (quoted) continue;
+    else if (ch === '(') depth += 1;
+    else if (ch === ')') depth -= 1;
+    else if (ch === separator && depth === 0) {
+      parts.push(text.slice(start, i));
+      start = i + 1;
+    }
   }
-  return flat
-    .split(',')
-    .map((name) => name.trim())
-    .filter(Boolean);
+  parts.push(text.slice(start));
+  return parts.map((part) => part.trim()).filter(Boolean);
+}
+
+function applyNestedOption(item, option) {
+  const equals = option.indexOf('=');
+  const field = equals < 0 ? undefined : NESTED_OPTIONS.get(option.slice(0, equals).trim());
+  if (!field) throw metadataQueryError();
+  const value = option.slice(equals + 1).trim();
+  if (field !== 'top') item[field] = value;
+  else if (/^\d+$/.test(value)) item.top = Number(value);
+  else throw metadataQueryError();
+}
+
+// "Attributes($select=LogicalName;$filter=...)" becomes { name, select, filter, top }.
+function expandItem(text) {
+  const open = text.indexOf('(');
+  const item = { name: (open < 0 ? text : text.slice(0, open)).trim(), select: '', filter: '', top: undefined };
+  if (open >= 0) {
+    if (!text.endsWith(')')) throw metadataQueryError();
+    for (const option of splitOutside(text.slice(open + 1, -1), ';')) applyNestedOption(item, option);
+  }
+  return item;
+}
+
+function expandItems(text) {
+  return splitOutside(String(text ?? ''), ',').map(expandItem);
+}
+
+// An entity's $expand may name only EntityMetadata's navigations; any other name answers 400 0x80060888.
+function entityExpandItems(text) {
+  const items = expandItems(text);
+  const unknown = items.find((item) => !EXPANDABLE_METADATA.has(item.name));
+  if (unknown)
+    throw new DataError(
+      `Could not find a property named '${unknown.name}' on type 'Microsoft.Dynamics.CRM.EntityMetadata'.`,
+      400,
+      'InvalidRequest',
+      { innerCode: '0x80060888', route: true },
+    );
+  return items;
+}
+
+// Nested options shape one expanded collection in OData order: $filter, then $top, then $select.
+function shapeExpanded(metadata, list, option) {
+  const filtered = filterItems(metadata, list, option.filter);
+  const limited = option.top === undefined ? filtered : filtered.slice(0, option.top);
+  return option.select ? limited.map((item) => metadata.selectMetadata(item, option.select)) : limited;
+}
+
+// A copy of one EntityMetadata item with each expanded navigation shaped by its nested options (the metadata is shared).
+function expandedEntity(metadata, entity, items) {
+  if (!entity) return entity;
+  const out = { ...entity };
+  for (const option of items)
+    if (Array.isArray(out[option.name])) out[option.name] = shapeExpanded(metadata, out[option.name], option);
+  return out;
+}
+
+function nestingDepth(text) {
+  let depth = 0;
+  let deepest = 0;
+  let quoted = false;
+  for (const ch of text) {
+    if (ch === "'") quoted = !quoted;
+    else if (quoted) continue;
+    else if (ch === '(') {
+      depth += 1;
+      deepest = Math.max(deepest, depth);
+    } else if (ch === ')') depth -= 1;
+  }
+  return deepest;
+}
+
+function filterItems(metadata, items, filterText) {
+  if (nestingDepth(String(filterText ?? '')) > MAX_METADATA_FILTER_DEPTH) throw metadataQueryError();
+  return metadata.filterMetadata(items, filterText);
+}
+
+const KEY_PROPERTIES = { logicalname: 'LogicalName', schemaname: 'SchemaName', metadataid: 'MetadataId' };
+
+// A keyed metadata segment, Keys(<key>) or a relationship collection's key, names one item by LogicalName, SchemaName or MetadataId.
+function keyedItem(items, segmentKey) {
+  const named = /^(LogicalName|SchemaName|MetadataId)=(.*)$/i.exec(segmentKey);
+  const value = (named ? named[2] : segmentKey).replace(/^'(.*)'$/, '$1').toLowerCase();
+  const properties = named ? [KEY_PROPERTIES[named[1].toLowerCase()]] : Object.values(KEY_PROPERTIES);
+  return items.find((item) => properties.some((name) => String(item[name] ?? '').toLowerCase() === value)) ?? null;
 }
 
 // Read-only metadata: EntityDefinitions, RelationshipDefinitions and GlobalOptionSetDefinitions.
 export function metadataRead(c, metadata, route) {
   const select = c.url.searchParams.get('$select') ?? '';
   const filter = c.url.searchParams.get('$filter') ?? '';
-  const expand = expandNames(c.url.searchParams.get('$expand'));
+  // Attribute navigations on a segment (OptionSet under Attributes) are not EntityMetadata navigations, so only an entity's $expand is checked.
+  const expandText = c.url.searchParams.get('$expand');
+  const parsedExpand =
+    route.set === 'EntityDefinitions' && route.segment == null
+      ? entityExpandItems(expandText)
+      : expandItems(expandText);
+  const expand = parsedExpand.map((item) => item.name);
   const { set, key } = route;
   const context = (suffix) => contextUrl(c.origin, route.version, suffix);
   const collection = (items, suffix) => ({ status: 200, body: { '@odata.context': context(suffix), value: items } });
@@ -848,8 +1012,7 @@ export function metadataRead(c, metadata, route) {
       route: true,
     });
   };
-  const shape = (items) => metadata.filterMetadata(items, filter).map((item) => metadata.selectMetadata(item, select));
-  const listed = (items, segmentName) => shape(items ?? missing(segmentName));
+  const shape = (items) => filterItems(metadata, items, filter).map((item) => metadata.selectMetadata(item, select));
   // Native writes the key as requested without its LogicalName= name, and the $select inside the set's parentheses.
   const keyedContext = (path, key) => `${path}(${key.replace(/^LogicalName=/i, '')})`;
   const selectContext = (select) => (select ? `(${select})` : '');
@@ -858,12 +1021,12 @@ export function metadataRead(c, metadata, route) {
     select,
     filter,
     expand,
+    expandItems: parsedExpand,
     metadata,
     collection,
     single,
     missing,
     shape,
-    listed,
     keyedContext,
     selectContext,
   };
@@ -872,7 +1035,10 @@ export function metadataRead(c, metadata, route) {
   if (set === 'RelationshipDefinitions') return relationshipMetadata(contextState);
   if (key == null) {
     let entities = metadata.entities();
-    if (expand.length) entities = entities.map((entity) => metadata.entity(entity.LogicalName, { expand, http: true }));
+    if (expand.length)
+      entities = entities.map((entity) =>
+        expandedEntity(metadata, metadata.entity(entity.LogicalName, { expand, http: true }), parsedExpand),
+      );
     return collection(shape(entities), select ? `${set}(${select})` : set);
   }
   return entityMetadata(contextState);
@@ -901,7 +1067,7 @@ function relationshipMetadata({ set, key, cast, select, metadata, collection, si
 }
 
 function entityMetadata(state) {
-  const { set, key, segment, select, expand, metadata, single, missing } = state;
+  const { set, key, segment, select, expand, expandItems, metadata, single, missing } = state;
   const entity = metadata.entity(key, { expand, http: true });
   if (!entity && set === 'EntityDefinitions' && !segment) {
     // Native names the metadata id it looked for, under 0x80060888 (not the segment error).
@@ -915,11 +1081,13 @@ function entityMetadata(state) {
     // The context URL writes $expand navigations as name().
     const names = [...(select ? [select] : []), ...expand.map((name) => `${name}()`)];
     const setContext = names.length ? `${set}(${names.join(',')})` : set;
-    return single(metadata.selectMetadata(entity, select), `${setContext}/$entity`);
+    const shaped = metadata.selectMetadata(expandedEntity(metadata, entity, expandItems), select);
+    return single(shaped, `${setContext}/$entity`);
   }
   return entityMetadataSegment({ ...state, entity });
 }
 
+// Attributes and Keys filter the whole item and then select from it (DV1-8): a $select that drops the filtered property cannot filter.
 function entityMetadataSegment({
   set,
   key,
@@ -934,7 +1102,6 @@ function entityMetadataSegment({
   single,
   collection,
   missing,
-  listed,
   keyedContext,
   selectContext,
   subSegment,
@@ -947,27 +1114,46 @@ function entityMetadataSegment({
     });
     return option ? single(option, `${set}/Attributes/${subSegment}/$entity`) : missing(subSegment);
   }
+  const projected = (item) => metadata.selectMetadata(item, select);
+  const relationships = (items) => {
+    const list = items ?? missing(segment);
+    if (segmentKey == null) return collection(filterItems(metadata, list, filter).map(projected), `${set}/${segment}`);
+    const found = keyedItem(list, segmentKey);
+    return found ? single(projected(found), `${set}/${segment}/$entity`) : missing(segment);
+  };
   switch (segment) {
     case 'Attributes': {
-      const list = metadata.attributes(key, { cast, key: segmentKey, select, expand, http: true }) ?? missing(set);
-      if (segmentKey != null) return list[0] ? single(list[0], `${set}/Attributes/$entity`) : missing('Attributes');
+      const list = metadata.attributes(key, { cast, key: segmentKey, http: true }) ?? missing(set);
+      // The $select keeps the expanded navigations as attributes always do; with no $select the attribute is whole.
+      const shape = (item) => (select ? metadata.selectMetadata(item, [select, ...expand].join(',')) : item);
+      if (segmentKey != null)
+        return list[0] ? single(shape(list[0]), `${set}/Attributes/$entity`) : missing('Attributes');
       const castContext = cast ? `/Microsoft.Dynamics.CRM.${cast}` : '';
       return collection(
-        metadata.filterMetadata(list, filter),
+        filterItems(metadata, list, filter).map(shape),
         keyedContext(set, key) + `/Attributes${castContext}${selectContext(select)}`,
       );
     }
-    case 'Keys':
+    case 'Keys': {
+      const keys = metadata.keys(key) ?? missing('Keys');
+      // A key under $select has no @odata.type, as native omits it.
+      const shape = (item) =>
+        select ? Object.fromEntries(Object.entries(projected(item)).filter(([name]) => name !== '@odata.type')) : item;
+      if (segmentKey != null) {
+        const found = keyedItem(keys, segmentKey);
+        return found ? single(shape(found), `${set}/Keys/$entity`) : missing('Keys');
+      }
       return collection(
-        listed(metadata.keys(key, { select }), 'Keys'),
+        filterItems(metadata, keys, filter).map(shape),
         keyedContext(set, key) + `/Keys${selectContext(select)}`,
       );
+    }
     case 'OneToManyRelationships':
-      return collection(listed(metadata.oneToMany(logical), segment), `${set}/${segment}`);
+      return relationships(metadata.oneToMany(logical));
     case 'ManyToOneRelationships':
-      return collection(listed(metadata.manyToOne(logical), segment), `${set}/${segment}`);
+      return relationships(metadata.manyToOne(logical));
     case 'ManyToManyRelationships':
-      return collection(listed(metadata.manyToMany(logical), segment), `${set}/${segment}`);
+      return relationships(metadata.manyToMany(logical));
     default:
       return missing(segment);
   }
@@ -1093,7 +1279,8 @@ const limitedEnvelope = (error, requestId) => {
 async function dataApi(d, c, route) {
   const { req, origin, requestId } = c;
   if (route.kind === 'unknown') return envelope(404, '', route.message, requestId);
-  if (route.kind === 'invalid') {
+  // An invalid single segment with a candidate may still name an operation; operationCall refuses it when none is registered.
+  if (route.kind === 'invalid' && !route.candidate) {
     // An over-long key segment answers as plain text; other malformed URIs use the JSON envelope.
     if (route.message === PLAIN_INVALID_URL)
       return { status: 400, headers: { 'Content-Type': 'text/plain; charset=utf-8' }, body: PLAIN_INVALID_URL };
@@ -1453,8 +1640,12 @@ export async function operationCall(d, route, common) {
   const kind = common.method === 'GET' ? 'function' : 'action';
   // One segment that names a registered unbound operation (route.candidate) is that operation before it is read as a set.
   // A wrong verb there falls through to the set, which may be a real entity; a registered bound name does not.
-  if (route.candidate && route.kind !== 'function' && ops.has(route.candidate.name))
-    return candidateOperation(d, route, common, kind);
+  if (route.candidate && route.kind !== 'function' && ops.has(route.candidate.name)) {
+    const operated = candidateOperation(d, route, common, kind);
+    if (operated) return operated;
+  }
+  // A key predicate with a parameter alias is refused when the segment names no operation (the router defers it, see dataverse-odata).
+  if (route.kind === 'invalid' && route.candidate) return envelope(400, '0x80060888', route.message, common.requestId);
   if (!['function', 'boundFunction', 'boundAction'].includes(route.kind) || !ops.has(route.name)) return null;
   // The name is registered, so a bound route the operation cannot serve (unknown set, alternate key) is a 404, not a built-in.
   const unroutable = () => notFound({ url: common.url, requestId: common.requestId });
@@ -1585,7 +1776,7 @@ async function batchCall(d, c, common) {
         `No HTTP resource was found that matches the request URI '${target.href}'.`,
         c.requestId,
       );
-    if (route.kind === 'invalid') throw new DataError(route.message, 400, 'InvalidRequest');
+    if (route.kind === 'invalid' && !route.candidate) throw new DataError(route.message, 400, 'InvalidRequest');
     if (route.kind === 'discovery' || route.kind === 'soap' || route.kind === 'batch') {
       return envelope(400, '', `The request URI '${target.href}' is not supported inside a batch.`, c.requestId);
     }
@@ -1895,7 +2086,7 @@ export function createDataverseHandler(deps) {
         encodeDataverseText(c.url ? parseDataverseRoute(c.url.pathname) : null, result),
         requestId,
         clientRequestId,
-        { cors: wantsCors(req, origin), gzip: acceptsGzip(req) },
+        { cors: wantsCors(req, origin) && !noCors(c), gzip: acceptsGzip(req) },
       );
     let result;
     try {

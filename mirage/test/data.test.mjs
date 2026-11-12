@@ -1,13 +1,26 @@
+// @test-kind contract: the store's own record writes, lookup validation and read naming on invented tables
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DataStore, DataError, compileFilter, parseFetchXml } from '../lib/data.mjs';
+import {
+  DataStore,
+  DataError,
+  compileFilter,
+  emptyState,
+  formatMockRecord,
+  normalizeMockLiquidFetchXml,
+  normalizeMockLiquidRecord,
+  parseEntityReference,
+  parseFetchXml,
+} from '../lib/data.mjs';
 import { initialState } from '../lib/bootstrap.mjs';
+import { FetchRenderCache } from '../lib/fetch-render-cache.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const user = { contactId: 'c1', accountId: 'a1', roles: ['Member'] };
+// @test-kind security: a cached permission decision cannot grant access to a different row that shares an identifier
 test('permission memoization cannot grant another row with a duplicate identifier', () => {
   for (const reversed of [false, true]) {
     const rows = [
@@ -158,6 +171,7 @@ test('Authored cache-refresh FetchXML parenthesized GUIDs identify the same perm
     (error) => error.status === 403,
   );
 });
+// @test-kind security: a join exposes only rows the calling identity may read, including after permissions change
 test('Query-local readable joins respect different identities and immediately changed permission/record state', async () => {
   const store = await new DataStore({
     state: {
@@ -229,6 +243,7 @@ test('FetchXML preserves quoted greater-than delimiters and escaped native pagin
   assert.equal(parsed.attrs['paging-cookie'], "<cookie page='1'><id last='1'/></cookie>");
   assert.equal(parsed.children[0].children[0].children[0].attrs.value, 'a > b');
 });
+// @test-kind security: backend lookups copy only rows the caller may read and refuse unbounded expansion
 test('Backend findMany copies only readable matching rows, rejects unbounded expansion and rolls back', async () => {
   const initial = {
     mappings: {
@@ -296,6 +311,7 @@ test('Backend findMany copies only readable matching rows, rejects unbounded exp
   await assert.rejects(store.create('request', {}, user), (error) => error.code === 'InvalidPlugin');
   assert.deepEqual(store.snapshot(), before);
 });
+// @test-kind security: a many-to-many traversal cannot reveal rows that permission trimming hides at either endpoint
 test('FetchXML traverses only declared structural many-to-many edges while both endpoints remain trimmed', async () => {
   const state = {
     mappings: {
@@ -398,6 +414,7 @@ test('FetchXML traverses only declared structural many-to-many edges while both 
   await store.replaceState(denied);
   assert.equal(store.fetchXml(xml, user).entities.length, 0);
 });
+// @test-kind security: a create outside the caller's parent scope or permission gate is refused and rolled back
 test('Parent-scoped create stages trusted backend links and rolls back gate, scope and lookup rejection atomically', async () => {
   const initial = {
     mappings: {
@@ -799,6 +816,8 @@ test('OData nested filters, projection, ordering, count, paging and mapped expan
   );
 });
 
+// @test-kind security: permission trimming applies to every query dialect and a caller cannot reassign
+// ownership beyond their access
 test('permission trimming applies equally to FetchXML and OData and prevents ownership reassignment', async () => {
   const initial = state();
   initial.permissions = [
@@ -855,6 +874,113 @@ test('FetchXML inner and outer joins, alias filters, distinct, paging and aggreg
     user,
   );
   assert.deepEqual(grouped.entities, [{ org: 'a1', total: 36 }, { org: 'a2', total: 85 }, { total: 41 }]);
+});
+
+test('a repeated FetchXML text does not inherit the total or the diagnostics of an earlier execution', () => {
+  const xml =
+    '<fetch count="1"><entity name="contact"><attribute name="firstname"/><attribute name="nosuch"/></entity></fetch>';
+  const webApi = { profile: 'webapi' };
+  const fresh = new DataStore({ state: state() }).fetchXml(xml, user, webApi);
+  const plain = new DataStore({ state: state() });
+  assert.equal(plain.fetchXml(xml, user, { ...webApi, returnTotal: true }).total_record_count, 3);
+  const withoutTotal = plain.fetchXml(xml, user, webApi);
+  assert.equal(withoutTotal.total_record_count, -1);
+  assert.deepEqual(withoutTotal.diagnostics, fresh.diagnostics);
+  const cached = new DataStore({ state: state() });
+  const fetchCache = new FetchRenderCache();
+  assert.equal(cached.fetchXml(xml, user, { ...webApi, returnTotal: true, fetchCache }).total_record_count, 3);
+  const cachedWithoutTotal = cached.fetchXml(xml, user, { ...webApi, fetchCache });
+  assert.equal(cachedWithoutTotal.total_record_count, -1);
+  assert.deepEqual(cachedWithoutTotal.diagnostics, fresh.diagnostics);
+  assert.deepEqual(
+    cachedWithoutTotal.diagnostics.map((item) => item.code),
+    ['FETCHXML_COLUMN_UNVERIFIED'],
+  );
+});
+
+test('an absolute entity reference with a malformed percent escape is not a reference', () => {
+  assert.equal(parseEntityReference('http://127.0.0.1/_api/accounts(%E0%A4%A)'), null);
+});
+
+test('an alternate-key reference whose quoted value contains parentheses is a reference', () => {
+  const reference = parseEntityReference("/accounts(name='a(b)')");
+  assert.ok(reference, 'a quoted alternate-key value may contain parentheses');
+  assert.equal(reference.set, 'accounts');
+  assert.equal(reference.id, "name='a(b)'");
+  assert.equal(parseEntityReference("/accounts(name='a(b)'"), null);
+  assert.equal(parseEntityReference('/accounts(a(b))'), null);
+});
+
+// Plugin fixtures use one invented table with a money column and a text column.
+const pluginFixtureState = (plugins) => ({
+  mappings: {
+    contact: {
+      entitySet: 'contacts',
+      idColumn: 'contactid',
+      fields: { revenue: { dataverseType: 'money', precision: 2 }, firstname: { dataverseType: 'nvarchar' } },
+    },
+  },
+  tables: { contact: [] },
+  permissions: [
+    { entity: 'contact', operations: ['read', 'create', 'update', 'delete'], roles: ['Member'], scope: 'global' },
+  ],
+  plugins,
+});
+const pluginAdmin = { admin: true };
+const exactNumeric = (value) => ({ $type: 'DataverseNumeric', numericType: 'Literal', value });
+
+test('plugin min and max compare exact numerics, and an absent value passes the bound', async () => {
+  const store = new DataStore({
+    state: pluginFixtureState([{ id: 'm', entity: 'contact', validate: [{ field: 'revenue', min: 0, max: 100 }] }]),
+  });
+  await store.create('contacts', { revenue: exactNumeric('10.50') }, pluginAdmin);
+  await assert.rejects(
+    store.create('contacts', { revenue: exactNumeric('-1') }, pluginAdmin),
+    (error) => error.code === 'PluginValidation',
+  );
+  await store.create('contacts', { firstname: 'No revenue' }, pluginAdmin);
+  assert.equal(store.snapshot().tables.contact.length, 2);
+});
+
+test('plugin unique skips empty values and checks non-empty values through the entity-set name', async () => {
+  const store = new DataStore({
+    state: pluginFixtureState([{ id: 'u', entity: 'contact', validate: [{ field: 'firstname', unique: true }] }]),
+  });
+  await store.create('contacts', { lastname: 'x' }, pluginAdmin);
+  await store.create('contacts', { lastname: 'y' }, pluginAdmin);
+  await store.create('contacts', { firstname: 'Ada' }, pluginAdmin);
+  await assert.rejects(
+    store.create('contacts', { firstname: 'ada' }, pluginAdmin),
+    (error) => error.code === 'PluginValidation',
+  );
+  assert.equal(store.snapshot().tables.contact.length, 3);
+});
+
+test('plugin rule definitions the write path cannot evaluate are refused when the state loads', () => {
+  const load = (plugin) => () =>
+    new DataStore({ state: pluginFixtureState([{ id: 'd', entity: 'contact', ...plugin }]) });
+  assert.throws(load({ validate: [{ field: 'firstname', oneOf: 'x' }] }), DataError);
+  assert.throws(load({ validate: [{ field: 'revenue', min: 'abc' }] }), DataError);
+  assert.throws(load({ set: { q: '$toString' } }), DataError);
+  assert.throws(load({ set: { p: '$record.constructor.name' } }), DataError);
+  assert.throws(load({ set: { p: '$record.__defineGetter__' } }), DataError);
+  assert.throws(load({ set: { p: '$record.bad-segment' } }), DataError);
+});
+
+test('an unknown root loads and evaluates to undefined', async () => {
+  const store = new DataStore({
+    state: pluginFixtureState([{ id: 'd', entity: 'contact', set: { p: '$unknownroot.firstname' } }]),
+  });
+  assert.equal(store.evaluate('$unknownroot.firstname', { record: { firstname: 'Ada' } }), undefined);
+  await store.create('contacts', { firstname: 'Ada' }, pluginAdmin);
+  assert.equal(store.snapshot().tables.contact.length, 1);
+});
+
+test('a plugin path reads own members of its context only', () => {
+  const store = new DataStore({ state: pluginFixtureState([]) });
+  assert.equal(store.evaluate('$record.firstname', { record: { firstname: 'Ada' } }), 'Ada');
+  assert.equal(store.evaluate('$record.constructor', { record: {} }), undefined);
+  assert.equal(store.evaluate('$toString', { record: {} }), undefined);
 });
 
 test('FetchXML nested links and existential link types preserve multiplicity correctly', () => {
@@ -1081,4 +1207,158 @@ test('rows the portal creates carry the observed portal application user as crea
     name: '# Portals-Sample',
   });
   assert.equal(store.createRecord('task', { title: 'Explicit', createdby: null }, { admin: true }).createdby, null);
+});
+
+// One polymorphic lookup (ownerid) with a relationship per target table; 'shared' is held by both targets.
+const polymorphicStore = () => {
+  const state = emptyState();
+  state.mappings = {
+    item: {
+      entitySet: 'items',
+      idColumn: 'itemid',
+      relationships: {
+        owner_account: { entity: 'account', from: 'ownerid', to: 'accountid', many: false },
+        owner_team: { entity: 'team', from: 'ownerid', to: 'teamid', many: false },
+      },
+    },
+    account: { entitySet: 'accounts', idColumn: 'accountid' },
+    team: { entitySet: 'teams', idColumn: 'teamid' },
+  };
+  state.tables = {
+    item: [],
+    account: [{ accountid: 'a1' }, { accountid: 'shared' }],
+    team: [{ teamid: 't1' }, { teamid: 'shared' }],
+  };
+  return new DataStore({ state });
+};
+test('a bare id in a polymorphic lookup is checked against the target table that holds it', async () => {
+  const store = polymorphicStore();
+  const admin = { admin: true };
+  await store.create('items', { ownerid: 'a1' }, admin);
+  await store.create('items', { ownerid: 't1' }, admin);
+  const [byAccount, byTeam] = store.state.tables.item;
+  assert.equal(byTeam.ownerid, 't1');
+  assert.equal(store.namedReferences(store.resolveMapping('item'), byTeam).ownerid.logical_name, 'team');
+  assert.equal(store.namedReferences(store.resolveMapping('item'), byAccount).ownerid.logical_name, 'account');
+  await assert.rejects(store.create('items', { ownerid: 'nobody' }, admin), { code: 'InvalidLookup', status: 400 });
+  await assert.rejects(store.create('items', { ownerid: 'shared' }, admin), { code: 'InvalidLookup', status: 400 });
+  assert.equal(store.state.tables.item.length, 2);
+});
+
+// Record data names the logical table of a lookup. A name an object inherits is not a mapped table: each formatter path reads
+// it as the unmapped name does and never reads an inherited member of the mappings or tables.
+const INHERITED_TABLE_NAMES = ['constructor', 'toString', '__proto__'];
+const UNMAPPED_TABLE_NAME = 'invented_unmapped_table';
+const LOOKUP_ID = 'a2000000-0000-4000-8000-000000000001';
+
+// A lookup source that records each read of a name it inherits.
+function recordInheritedReads(source, reads) {
+  return new Proxy(source, {
+    get(target, key, receiver) {
+      if (typeof key === 'string' && !Object.hasOwn(target, key) && key in target) reads.push(key);
+      return Reflect.get(target, key, receiver);
+    },
+  });
+}
+
+// The unmapped result with its table name replaced by `name`: the result a table that is not mapped gives, under `name`.
+function unmappedResultAs(name, format) {
+  const unmapped = format(UNMAPPED_TABLE_NAME);
+  return Object.fromEntries(
+    Object.entries(unmapped).map(([key, value]) => [key, value === UNMAPPED_TABLE_NAME ? name : value]),
+  );
+}
+
+test('formatMockRecord reads an inherited table name as an unmapped relationship target', () => {
+  for (const name of INHERITED_TABLE_NAMES) {
+    const reads = [];
+    const mappings = recordInheritedReads({}, reads);
+    const tables = recordInheritedReads({}, reads);
+    const format = (table) =>
+      formatMockRecord(
+        { child: { name: 'Invented child' } },
+        { relationships: { child: { entity: table, from: 'child', to: 'childid', many: false } } },
+        mappings,
+        tables,
+      );
+    assert.deepEqual(format(name), unmappedResultAs(name, format), name);
+    assert.deepEqual(reads, [], name);
+  }
+});
+
+test('normalizeMockLiquidRecord reads an inherited table name as an unmapped relationship target', () => {
+  for (const name of INHERITED_TABLE_NAMES) {
+    const reads = [];
+    const mappings = recordInheritedReads({}, reads);
+    const normalize = (table) =>
+      normalizeMockLiquidRecord(
+        { child: { name: 'Invented child' } },
+        { relationships: { child: { entity: table, from: 'child', to: 'childid', many: false } } },
+        { mappings },
+      );
+    assert.deepEqual(normalize(name), normalize(UNMAPPED_TABLE_NAME), name);
+    assert.deepEqual(reads, [], name);
+  }
+});
+
+test('formatMockRecord reads an inherited table name of a lookup value as an unmapped table', () => {
+  for (const name of INHERITED_TABLE_NAMES) {
+    const reads = [];
+    const mappings = recordInheritedReads({}, reads);
+    const tables = recordInheritedReads({}, reads);
+    const format = (table) => formatMockRecord({ owner: { id: LOOKUP_ID, logical_name: table } }, {}, mappings, tables);
+    assert.deepEqual(format(name), unmappedResultAs(name, format), name);
+    assert.deepEqual(reads, [], name);
+  }
+});
+
+test('formatMockRecord reads an inherited table name of a single-valued relationship as an unmapped table', () => {
+  for (const name of INHERITED_TABLE_NAMES) {
+    const reads = [];
+    const mappings = recordInheritedReads({}, reads);
+    const tables = recordInheritedReads({}, reads);
+    const format = (table) =>
+      formatMockRecord(
+        { owner: LOOKUP_ID },
+        { relationships: { owner: { entity: table, from: 'owner', to: 'ownerid', many: false } } },
+        mappings,
+        tables,
+      );
+    assert.deepEqual(format(name), unmappedResultAs(name, format), name);
+    assert.deepEqual(reads, [], name);
+  }
+});
+
+test('normalizeMockLiquidFetchXml reads an inherited FetchXML entity name as an unmapped entity', () => {
+  for (const name of INHERITED_TABLE_NAMES) {
+    const reads = [];
+    const mappings = recordInheritedReads({}, reads);
+    const normalize = (entity) =>
+      normalizeMockLiquidFetchXml(
+        { entities: [{ name: 'Invented row' }] },
+        `<fetch><entity name="${entity}"><attribute name="name" /></entity></fetch>`,
+        mappings,
+      );
+    assert.deepEqual(normalize(name), normalize(UNMAPPED_TABLE_NAME), name);
+    assert.deepEqual(reads, [], name);
+  }
+});
+
+// A record column named by an inherited member is a column without metadata: the same result as a column with no metadata
+// at all, and no read of the metadata or the alias fields reaches the inherited member.
+test('a record column named by an inherited member has no metadata', () => {
+  for (const name of INHERITED_TABLE_NAMES) {
+    const reads = [];
+    const fields = recordInheritedReads({}, reads);
+    const aliasFields = recordInheritedReads({}, reads);
+    const record = { [name]: 'Invented value' };
+    const withoutMetadata = { fields: {} };
+    assert.deepEqual(formatMockRecord(record, { fields }), formatMockRecord(record, withoutMetadata), name);
+    assert.deepEqual(
+      normalizeMockLiquidRecord(record, { fields }, { aliasFields }),
+      normalizeMockLiquidRecord(record, withoutMetadata),
+      name,
+    );
+    assert.deepEqual(reads, [], name);
+  }
 });

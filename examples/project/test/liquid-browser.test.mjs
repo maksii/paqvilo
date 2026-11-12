@@ -1,99 +1,96 @@
+// @test-kind contract: Liquid pages of the example project, their previews, exported views and permission-scoped results in a browser
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openDemo } from './demo-browser.mjs';
 import { signInContext } from 'paqvilo/mirage/testing/session.mjs';
 
-test(
-  'Liquid pages compose bounded previews, exported view columns and permission-scoped results',
-  { timeout: 90_000 },
-  async (t) => {
-    const { sim, context } = await openDemo(t);
-    const page = await context.newPage(),
-      errors = [];
-    page.on('pageerror', (error) => errors.push(error.message));
-    await page.goto(sim.url + '/liquid/');
-    await page.getByRole('heading', { name: 'Compose pages with Liquid.' }).waitFor();
-    assert.equal(await page.locator('[data-liquid-guidance]').count(), 1);
-    await page.goto(sim.url + '/liquid/views/');
-    await page.getByRole('heading', { name: 'Sign in to compare account views' }).waitFor();
-    assert.equal(await page.locator('[data-liquid-row]').count(), 0);
-    await signInContext(context, sim, 'a4300000-0000-4000-8000-000000002001');
-    await page.goto(sim.url + '/liquid/partials/');
-    const previews = page.locator('[data-liquid-preview]');
-    assert.equal(await previews.count(), 2);
-    assert.equal(await previews.nth(0).locator('[data-liquid-card]').count(), 2);
-    assert.equal(await previews.nth(1).locator('[data-liquid-card]').count(), 4);
-    assert.equal(
-      await page.locator('body').getByText('Functional', { exact: true }).count(),
-      0,
-      'component manifest must not render as page text',
+test('Liquid pages compose bounded previews, exported view columns and permission-scoped results', async (t) => {
+  const { sim, context } = await openDemo(t);
+  const page = await context.newPage(),
+    errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto(sim.url + '/liquid/');
+  await page.getByRole('heading', { name: 'Compose pages with Liquid.' }).waitFor();
+  assert.equal(await page.locator('[data-liquid-guidance]').count(), 1);
+  await page.goto(sim.url + '/liquid/views/');
+  await page.getByRole('heading', { name: 'Sign in to compare account views' }).waitFor();
+  assert.equal(await page.locator('[data-liquid-row]').count(), 0);
+  await signInContext(context, sim, 'a4300000-0000-4000-8000-000000002001');
+  await page.goto(sim.url + '/liquid/partials/');
+  const previews = page.locator('[data-liquid-preview]');
+  assert.equal(await previews.count(), 2);
+  assert.equal(await previews.nth(0).locator('[data-liquid-card]').count(), 2);
+  assert.equal(await previews.nth(1).locator('[data-liquid-card]').count(), 4);
+  assert.equal(
+    await page.locator('body').getByText('Functional', { exact: true }).count(),
+    0,
+    'component manifest must not render as page text',
+  );
+  const manifest = await context.request.get(sim.url + '/liquid-account-preview.manifest.json');
+  assert.equal(manifest.status(), 200);
+  assert.deepEqual(
+    (await manifest.json()).params.map((param) => param.id),
+    ['title', 'count'],
+  );
+  await page.goto(sim.url + '/liquid/views/');
+  const custom = page.locator('[data-liquid-custom-view]');
+  assert.equal(await custom.locator('[data-liquid-row]').count(), 4);
+  assert.ok((await custom.locator('[data-liquid-column]').count()) >= 3);
+  assert.equal(await custom.locator('select[name=view] option').count(), 3);
+  assert.ok((await page.locator('.entity-grid').count()) > 0, 'native rendering remains alongside the custom view');
+  const first = await custom.locator('[data-liquid-row]').first().innerText();
+  await Promise.all([
+    page.waitForURL((url) => url.searchParams.get('p') === '2', { waitUntil: 'domcontentloaded' }),
+    custom.getByRole('link', { name: 'Next', exact: true }).click(),
+  ]);
+  assert.equal(await custom.locator('[data-liquid-row]').count(), 4);
+  assert.notEqual(await custom.locator('[data-liquid-row]').first().innerText(), first);
+  await custom.locator('select[name=view]').selectOption('a4200000-0000-4000-8000-000000000503');
+  await Promise.all([
+    page.waitForURL((url) => url.searchParams.get('view') === 'a4200000-0000-4000-8000-000000000503'),
+    custom.getByRole('button', { name: 'Apply view' }).click(),
+  ]);
+  assert.equal(await custom.locator('[data-liquid-row]').count(), 2);
+  await custom.locator('select[name=view]').selectOption('a4200000-0000-4000-8000-000000000502');
+  await custom.locator('[name=q]').fill('Arcwell');
+  await Promise.all([
+    page.waitForURL((url) => url.searchParams.get('q') === 'Arcwell'),
+    custom.getByRole('button', { name: 'Apply view' }).click(),
+  ]);
+  assert.equal(await custom.locator('[data-liquid-row]').count(), 1);
+  // A click only starts the navigation; wait for the account URL instead of reading the previous one.
+  await Promise.all([
+    page.waitForURL((url) => url.pathname.startsWith('/approach/web-api/account/')),
+    custom.getByRole('link', { name: 'Arcwell Services' }).click(),
+  ]);
+  await page.goto(sim.url + '/liquid/data/?status=inactive');
+  assert.equal(await page.locator('[data-liquid-card]').count(), 2);
+  assert.match(await page.locator('[data-liquid-summary]').innerText(), /2 inactive accounts/);
+  await page.goto(sim.url + '/liquid/data/?status=unsupported');
+  assert.equal(await page.locator('[data-liquid-card]').count(), 6);
+  assert.match(await page.locator('[data-liquid-summary]').innerText(), /6 active accounts/);
+  await signInContext(context, sim, 'a4300000-0000-4000-8000-000000002002');
+  await page.goto(sim.url + '/liquid/views/');
+  assert.equal(await custom.locator('[data-liquid-row]').count(), 4, 'reader retains read access');
+  await page.goto('about:blank');
+  await sim.applyPreset('example-empty');
+  await page.goto(sim.url + '/liquid/partials/');
+  assert.equal(await page.locator('[data-liquid-card]').count(), 0);
+  assert.equal(await page.getByText('No accounts are available for this persona.', { exact: true }).count(), 2);
+  await page.goto(sim.url + '/liquid/views/');
+  assert.equal(await page.locator('[data-liquid-row]').count(), 0);
+  await custom.getByText('No matching accounts. Change the view or search.').waitFor();
+  await page.goto('about:blank');
+  await sim.applyPreset('example-demo');
+  await page.setViewportSize({ width: 390, height: 844 });
+  for (const route of ['/liquid/', '/liquid/partials/', '/liquid/views/', '/liquid/data/']) {
+    await page.goto(sim.url + route);
+    await page.mouse.move(0, 0);
+    assert.ok(
+      await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+      route + ' does not overflow on mobile',
     );
-    const manifest = await context.request.get(sim.url + '/liquid-account-preview.manifest.json');
-    assert.equal(manifest.status(), 200);
-    assert.deepEqual(
-      (await manifest.json()).params.map((param) => param.id),
-      ['title', 'count'],
-    );
-    await page.goto(sim.url + '/liquid/views/');
-    const custom = page.locator('[data-liquid-custom-view]');
-    assert.equal(await custom.locator('[data-liquid-row]').count(), 4);
-    assert.ok((await custom.locator('[data-liquid-column]').count()) >= 3);
-    assert.equal(await custom.locator('select[name=view] option').count(), 3);
-    assert.ok((await page.locator('.entity-grid').count()) > 0, 'native rendering remains alongside the custom view');
-    const first = await custom.locator('[data-liquid-row]').first().innerText();
-    await Promise.all([
-      page.waitForURL((url) => url.searchParams.get('p') === '2', { waitUntil: 'domcontentloaded' }),
-      custom.getByRole('link', { name: 'Next', exact: true }).click(),
-    ]);
-    assert.equal(await custom.locator('[data-liquid-row]').count(), 4);
-    assert.notEqual(await custom.locator('[data-liquid-row]').first().innerText(), first);
-    await custom.locator('select[name=view]').selectOption('a4200000-0000-4000-8000-000000000503');
-    await Promise.all([
-      page.waitForURL((url) => url.searchParams.get('view') === 'a4200000-0000-4000-8000-000000000503'),
-      custom.getByRole('button', { name: 'Apply view' }).click(),
-    ]);
-    assert.equal(await custom.locator('[data-liquid-row]').count(), 2);
-    await custom.locator('select[name=view]').selectOption('a4200000-0000-4000-8000-000000000502');
-    await custom.locator('[name=q]').fill('Arcwell');
-    await Promise.all([
-      page.waitForURL((url) => url.searchParams.get('q') === 'Arcwell'),
-      custom.getByRole('button', { name: 'Apply view' }).click(),
-    ]);
-    assert.equal(await custom.locator('[data-liquid-row]').count(), 1);
-    // A click only starts the navigation; wait for the account URL instead of reading the previous one.
-    await Promise.all([
-      page.waitForURL((url) => url.pathname.startsWith('/approach/web-api/account/')),
-      custom.getByRole('link', { name: 'Arcwell Services' }).click(),
-    ]);
-    await page.goto(sim.url + '/liquid/data/?status=inactive');
-    assert.equal(await page.locator('[data-liquid-card]').count(), 2);
-    assert.match(await page.locator('[data-liquid-summary]').innerText(), /2 inactive accounts/);
-    await page.goto(sim.url + '/liquid/data/?status=unsupported');
-    assert.equal(await page.locator('[data-liquid-card]').count(), 6);
-    assert.match(await page.locator('[data-liquid-summary]').innerText(), /6 active accounts/);
-    await signInContext(context, sim, 'a4300000-0000-4000-8000-000000002002');
-    await page.goto(sim.url + '/liquid/views/');
-    assert.equal(await custom.locator('[data-liquid-row]').count(), 4, 'reader retains read access');
-    await page.goto('about:blank');
-    await sim.applyPreset('example-empty');
-    await page.goto(sim.url + '/liquid/partials/');
-    assert.equal(await page.locator('[data-liquid-card]').count(), 0);
-    assert.equal(await page.getByText('No accounts are available for this persona.', { exact: true }).count(), 2);
-    await page.goto(sim.url + '/liquid/views/');
-    assert.equal(await page.locator('[data-liquid-row]').count(), 0);
-    await custom.getByText('No matching accounts. Change the view or search.').waitFor();
-    await page.goto('about:blank');
-    await sim.applyPreset('example-demo');
-    await page.setViewportSize({ width: 390, height: 844 });
-    for (const route of ['/liquid/', '/liquid/partials/', '/liquid/views/', '/liquid/data/']) {
-      await page.goto(sim.url + route);
-      await page.mouse.move(0, 0);
-      assert.ok(
-        await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
-        route + ' does not overflow on mobile',
-      );
-      assert.doesNotMatch(await page.locator('body').innerText(), /Liquid error|Portal rendering failed|Syntax Error/);
-    }
-    assert.deepEqual(errors, []);
-  },
-);
+    assert.doesNotMatch(await page.locator('body').innerText(), /Liquid error|Portal rendering failed|Syntax Error/);
+  }
+  assert.deepEqual(errors, []);
+});

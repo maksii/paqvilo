@@ -1,3 +1,4 @@
+// @test-kind contract: the scaffold CLI handles spaced Unicode paths, reports filesystem errors as JSON and rejects invalid ports.
 import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -8,9 +9,11 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 
+const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
+
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const run = (cwd, ...args) =>
-  spawnSync(process.execPath, [cli, ...args], { cwd, encoding: 'utf8', timeout: 30000, windowsHide: true });
+  spawnSync(process.execPath, [cli, ...args], { cwd, encoding: 'utf8', timeout: CLI_HANG_GUARD_MS, windowsHide: true });
 
 test('init handles spaced Unicode paths and reports filesystem errors as JSON', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-cli-'));

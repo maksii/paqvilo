@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own solution lifecycle and retained asset layers; the archive layout follows the Solution reader
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -108,6 +109,21 @@ async function importInto(host, bytes, extra = {}) {
   });
   assert.equal(result.status, 204, JSON.stringify(result.json));
 }
+
+// @test-kind unproven: the owner and row-version stamps are a local model of how a platform import writes rows; no capture backs them
+test('an imported workflow row is owned by the importing user and carries a row version and timestamps', async (t) => {
+  const source = await server();
+  t.after(() => source.close());
+  await importInto(source, archive());
+  const workflow = source.store.state.tables.workflow.find((row) => row.workflowid === workflowId);
+  assert.equal(workflow.xaml, 'opaque workflow');
+  assert.equal(workflow.ownerid?.logical_name, 'systemuser');
+  const importer = source.store.state.tables.systemuser.find((user) => user.applicationid === appId);
+  assert.ok(importer, 'the importing application user is a system user row');
+  assert.equal(workflow.ownerid?.id, importer.systemuserid, 'the owner is the importing user');
+  assert.notEqual(workflow.versionnumber, undefined, 'a row version');
+  assert.ok(workflow.createdon && workflow.modifiedon, 'creation and modification times');
+});
 
 test('solution API retains app/form/view/workflow and opaque assets across restart, export and fresh import', async (t) => {
   const source = await server();

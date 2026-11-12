@@ -2,11 +2,11 @@
 import path from 'node:path';
 import YAML from 'yaml';
 import { readLocalFileSync } from '../local-file.mjs';
-import { ANALYSIS_LIMITS } from './inventory.mjs';
+import { ANALYSIS_LIMITS, stripByteOrderMark } from './inventory.mjs';
 
 function localProject(file) {
   try {
-    const text = readLocalFileSync(file, { maxBytes: ANALYSIS_LIMITS.fileBytes, encoding: 'utf8' });
+    const text = stripByteOrderMark(readLocalFileSync(file, { maxBytes: ANALYSIS_LIMITS.fileBytes, encoding: 'utf8' }));
     const document = /\.json$/i.test(file) ? null : YAML.parseDocument(text, { uniqueKeys: true });
     if (document?.errors.length) throw new Error('Invalid project metadata');
     const value = document ? document.toJS({ maxAliasCount: 0 }) : JSON.parse(text);

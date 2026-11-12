@@ -30,6 +30,20 @@ import {
 import { resolveCatalogueSettings } from '../mirage/lib/config-keys.mjs';
 import '../mirage/lib/provider-modules.mjs';
 
+/** A deliberate configuration error with a stable `code`; scripts match on it and analyze reports it. */
+const configurationError = (message, code = 'configuration_error') => Object.assign(new Error(message), { code });
+
+/** The codes of the errors above and of the existing ones that analyze reports with their own message. */
+export const CONFIGURATION_ERROR_CODES = new Set([
+  'CONFIG_NOT_FOUND',
+  'configuration_error',
+  'invalid_argument',
+  'mirage_only_site',
+  'source_not_configured',
+  'source_unsupported_layout',
+  'source_not_portal_extract',
+]);
+
 /**
  * @typedef {object} RouteRule
  * @property {string} url glob on the URL path (`*` = one segment, `**` = any depth)
@@ -128,7 +142,8 @@ export function deepMerge(base, over) {
   if (!isPlainObject(base) || !isPlainObject(over)) return over === undefined ? base : over;
   const out = { ...base };
   for (const [k, v] of Object.entries(over)) {
-    if (['__proto__', 'prototype', 'constructor'].includes(k)) throw new Error(`Invalid configuration key: ${k}`);
+    if (['__proto__', 'prototype', 'constructor'].includes(k))
+      throw configurationError(`Invalid configuration key: ${k}`);
     out[k] = deepMerge(Object.hasOwn(base, k) ? base[k] : undefined, v);
   }
   return out;
@@ -139,10 +154,28 @@ function readYamlFile(file) {
   try {
     return YAML.parse(fs.readFileSync(file, 'utf8')) ?? {};
   } catch (err) {
-    // eslint-disable-next-line preserve-caught-error -- YAML errors can contain private values; expose only the bounded first line.
-    throw new Error(`${path.basename(file)} is not valid YAML: ${err.message.split('\n')[0]}`);
+    // YAML errors can contain private values, so only the bounded first line is exposed and the cause is not chained.
+    throw configurationError(`${path.basename(file)} is not valid YAML: ${err.message.split('\n')[0]}`);
   }
 }
+
+// Read directly by tools, scripts, Mirage and Code Apps, so they are not catalogue settings.
+const TOOL_VARIABLES = new Set([
+  'PAQVILO_DEBUG',
+  'PAQVILO_KEEP_TEMP',
+  'PAQVILO_XRM_SDK',
+  'PAQVILO_PAC_EXECUTABLE',
+  'PAQVILO_GIT_EXECUTABLE',
+  'PAQVILO_TOOL_CACHE',
+  'PAQVILO_MIRAGE_URL',
+  'PAQVILO_CODE_APP',
+  'PAQVILO_ACTIVITY_SCREENSHOTS',
+  'PAQVILO_EVIDENCE_DIR',
+  'PAQVILO_MIRAGE_ADMIN_EVIDENCE',
+  'PAQVILO_MIRAGE_EVIDENCE_DIR',
+  'PAQVILO_REVIEW_SCOPE',
+  'PAQVILO_UI_SCREENSHOTS',
+]);
 
 /** The .env next to the config file, with the shell's PAQVILO_* variables laid over it. */
 export function readEnvSettings(configDir, processEnv = process.env) {
@@ -156,7 +189,7 @@ export function readEnvSettings(configDir, processEnv = process.env) {
   ]) {
     for (const [key, value] of Object.entries(vars)) {
       if (!key.startsWith('PAQVILO_') || value === undefined || String(value).trim() === '') continue;
-      if (key === 'PAQVILO_DEBUG' || key === 'PAQVILO_KEEP_TEMP') continue; // diagnostics switches, not settings
+      if (TOOL_VARIABLES.has(key)) continue;
       // Profile identity/path spelling is significant. In particular, trimming a quoted
       // directory ending in a space could silently select a different existing profile.
       out[key] = ['PAQVILO_PROFILE', 'PAQVILO_USER_DATA_DIR', 'PAQVILO_PROFILE_DIRECTORY'].includes(key)
@@ -171,7 +204,7 @@ export function readEnvSettings(configDir, processEnv = process.env) {
 function bool(value, name) {
   if (/^(?:1|true|yes|on)$/i.test(value)) return true;
   if (/^(?:0|false|no|off)$/i.test(value)) return false;
-  throw new Error(`${name} must be true or false, not "${value}"`);
+  throw configurationError(`${name} must be true or false, not "${value}"`);
 }
 
 function siteFromSettings(sites, siteName) {
@@ -183,39 +216,54 @@ function siteFromSettings(sites, siteName) {
   return site;
 }
 
-function addEnvironmentSetting(sites, key, value) {
-  const match = /^PAQVILO_([A-Z0-9]+)_ENV_([A-Z0-9_]+)$/.exec(key);
-  if (!match) return false;
-  const siteName = match[1].toLowerCase(),
-    site = siteFromSettings(sites, siteName);
-  if (site.environments == null) site.environments = {};
-  site.environments[match[2].toLowerCase().replaceAll('_', '-')] = { url: value };
-  return true;
+/** How a site name is written in its variables: upper case, with "-" written as "_". */
+const envSegment = (siteName) => siteName.toUpperCase().replaceAll('-', '_');
+
+/** The segment and environment (null for a source) of PAQVILO_<SEGMENT>_SOURCE or PAQVILO_<SEGMENT>_ENV_<NAME>. */
+function parseSiteVariable(key) {
+  const source = /^PAQVILO_([A-Z0-9_]+)_SOURCE$/.exec(key);
+  if (source) return { segment: source[1], environment: null };
+  const environment = /^PAQVILO_([A-Z0-9_]+?)_ENV_([A-Z0-9_]+)$/.exec(key);
+  return environment ? { segment: environment[1], environment: environment[2] } : null;
 }
 
-function addSourceSetting(sites, key, value) {
-  const match = /^PAQVILO_([A-Z0-9]+)_SOURCE$/.exec(key);
-  if (!match) return false;
-  const siteName = match[1].toLowerCase(),
-    site = siteFromSettings(sites, siteName);
-  site.source = value;
-  return true;
+/** The declared site a segment names; only a segment that names no declared site names a new one. */
+function siteForSegment(segment, declared) {
+  const matches = declared.filter((name) => envSegment(name) === segment);
+  if (matches.length > 1)
+    throw configurationError(
+      `${segment} matches more than one site (${matches.join(', ')}), so PAQVILO_${segment}_* is ambiguous`,
+    );
+  return matches[0] ?? segment.toLowerCase();
+}
+
+function addSiteVariable(sites, siteName, variable, value) {
+  const site = siteFromSettings(sites, siteName);
+  if (variable.environment === null) {
+    site.source = value;
+    return;
+  }
+  if (site.environments == null) site.environments = {};
+  site.environments[variable.environment.toLowerCase().replaceAll('_', '-')] = { url: value };
 }
 
 /**
  * Sites and environments declared through variables, so a developer can add a sandbox or point a
  * site at another checkout without touching the shared catalogue:
  *   PAQVILO_<SITE>_SOURCE=<folder>        PAQVILO_<SITE>_ENV_<NAME>=<url>
+ * <SITE> is a declared site's name in upper case with "_" for "-"; only an unmatched name adds a site.
  */
-function sitesFromEnv(values) {
+function sitesFromEnv(values, declared) {
   const sites = Object.create(null);
   const known = new Set(Object.keys(ENV_SETTINGS));
   for (const [key, value] of Object.entries(values)) {
     if (known.has(key)) continue;
-    if (addEnvironmentSetting(sites, key, value) || addSourceSetting(sites, key, value)) continue;
-    throw new Error(
-      `Unknown setting ${key}. Known: ${[...known].join(', ')}, PAQVILO_<SITE>_SOURCE, PAQVILO_<SITE>_ENV_<NAME>`,
-    );
+    const variable = parseSiteVariable(key);
+    if (!variable)
+      throw configurationError(
+        `Unknown setting ${key}. Known: ${[...known].join(', ')}, PAQVILO_<SITE>_SOURCE, PAQVILO_<SITE>_ENV_<NAME>`,
+      );
+    addSiteVariable(sites, siteForSegment(variable.segment, declared), variable, value);
   }
   return sites;
 }
@@ -230,7 +278,7 @@ function resolvedCatalogueSite(name, raw, root, settings, sourceRoot, configDir)
       .filter(([, value]) => isPlainObject(value) && value.url),
   );
   // Named personal overrides retain their existing catalogue-relative path semantics.
-  const personalSource = settings.values[`PAQVILO_${name.toUpperCase()}_SOURCE`];
+  const personalSource = settings.values[`PAQVILO_${envSegment(name)}_SOURCE`];
   if (site.source) {
     const sourceBase = personalSource ? configDir : sourceRoot;
     site.sourceDir = path.resolve(sourceBase, site.source);
@@ -245,8 +293,8 @@ function catalogueFieldOrigin(name, field, local) {
 }
 
 function catalogueSiteSourceOrigin(name, settings, local) {
-  if (settings.values[`PAQVILO_${name.toUpperCase()}_SOURCE`])
-    return settings.origin[`PAQVILO_${name.toUpperCase()}_SOURCE`];
+  if (settings.values[`PAQVILO_${envSegment(name)}_SOURCE`])
+    return settings.origin[`PAQVILO_${envSegment(name)}_SOURCE`];
   if (local?.sites?.[name]?.source !== undefined) return 'local config';
   return 'catalogue';
 }
@@ -292,7 +340,7 @@ export function loadCatalogue(opts = {}, processEnv = process.env) {
   const sourceRootSetting = opts.repo ?? settings.values.PAQVILO_REPO ?? root.sourceRoot ?? '.';
   // eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
   if (typeof sourceRootSetting !== 'string' || !sourceRootSetting.trim() || /[\x00-\x1f\x7f]/.test(sourceRootSetting))
-    throw new Error('Portal repository root must be a non-empty path without control characters');
+    throw configurationError('Portal repository root must be a non-empty path without control characters');
   const sourceRoot = path.resolve(opts.repo !== undefined ? process.cwd() : configDir, sourceRootSetting);
 
   const sites = {};
@@ -310,7 +358,7 @@ export function catalogueRoot(base, local = {}, settings = {}) {
     deepMerge(ROOT_DEFAULTS, normalizeCatalogue(base, 'catalogue')),
     normalizeCatalogue(local, 'personal config'),
   );
-  root = deepMerge(root, { sites: sitesFromEnv(settings) });
+  root = deepMerge(root, { sites: sitesFromEnv(settings, Object.keys(root.sites ?? {})) });
   validateCatalogue(root);
   return root;
 }
@@ -339,9 +387,9 @@ export function isExtract(dir) {
 export function resolveMirageConfig(raw, { configDir, sourceRoot, sourceDir = sourceRoot }) {
   const value = isPlainObject(raw) ? raw : {};
   if (value.presetConfiguration !== undefined && !['data-only', 'apply'].includes(value.presetConfiguration))
-    throw new Error('mirage.presetConfiguration must be data-only or apply');
+    throw configurationError('mirage.presetConfiguration must be data-only or apply');
   if (value.presetMode !== undefined && !['bootstrap', 'always'].includes(value.presetMode))
-    throw new Error('mirage.presetMode must be bootstrap or always');
+    throw configurationError('mirage.presetMode must be bootstrap or always');
   if (value.identityProvider !== undefined)
     identityProviderAssets(identityProviderSettings(value.identityProvider), configDir);
   // Every key resolves through its row in mirage/lib/config-keys.mjs; compat and head become localOverrides.
@@ -366,9 +414,10 @@ function selectedConfigSite(catalogue, opts, initial) {
   const { configFile, root, sites, settings } = catalogue,
     s = settings.values;
   const portals = opts.portals ?? s.PAQVILO_PORTALS ?? root.portals;
-  if (!['selected', 'all'].includes(portals)) throw new Error(`portals must be 'selected' or 'all', not "${portals}"`);
+  if (!['selected', 'all'].includes(portals))
+    throw configurationError(`portals must be 'selected' or 'all', not "${portals}"`);
   const names = Object.keys(sites);
-  if (!names.length) throw new Error(`No sites in ${path.basename(configFile)}. Add one under "sites:".`);
+  if (!names.length) throw configurationError(`No sites in ${path.basename(configFile)}. Add one under "sites:".`);
   const siteName = opts.site ?? s.PAQVILO_SITE ?? root.defaultSite ?? names[0];
   const site = Object.hasOwn(sites, siteName) ? sites[siteName] : null;
   if (!site)
@@ -458,16 +507,19 @@ function selectedConfigSource(siteName, site, opts, settings, configDir, { valid
     configuredSourceDir = path.resolve(baseDirectory, sourceSetting);
   } else configuredSourceDir = site.sourceDir;
   const sourceDir = portalSourceDir(configuredSourceDir);
-  if (!sourceDir) throw new Error(`Site "${siteName}" has no "source" folder configured`);
+  if (!sourceDir)
+    throw configurationError(`Site "${siteName}" has no "source" folder configured`, 'source_not_configured');
   if (checkSource && !validSources.has(sourceDir) && !isExtract(sourceDir)) {
     // A layout the toolkit cannot read is named, so it is never treated as an empty portal.
     const layout = unsupportedSourceLayout(sourceDir);
     if (layout)
-      throw new Error(
+      throw configurationError(
         `"${sourceDir}" (source of site "${siteName}") is ${layout.label}, which the toolkit does not treat as a portal: use a PAC YAML export with adx_ keys, a .powerpages-site export or the site's unpacked Solution (powerpagecomponents/)`,
+        'source_unsupported_layout',
       );
-    throw new Error(
+    throw configurationError(
       `"${sourceDir}" (source of site "${siteName}") does not look like a portal extract: it has no web-files/, web-pages/ or powerpagecomponents/ folder`,
+      'source_not_portal_extract',
     );
   }
   if (checkSource) validSources.add(sourceDir);
@@ -477,7 +529,7 @@ function selectedConfigSource(siteName, site, opts, settings, configDir, { valid
 function resolvedConfigSite(site, opts, settings, env, initial) {
   const s = settings.values,
     scope = opts.scope ?? s.PAQVILO_SCOPE ?? env.scope ?? site.scope;
-  if (!['all', 'changed'].includes(scope)) throw new Error(`scope must be 'all' or 'changed', not "${scope}"`);
+  if (!['all', 'changed'].includes(scope)) throw configurationError(`scope must be 'all' or 'changed', not "${scope}"`);
   const resolvedSite = {
     ...structuredClone(site),
     scope,
@@ -491,7 +543,7 @@ function resolvedConfigSite(site, opts, settings, env, initial) {
     // eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
     /[\x00-\x1f]/.test(resolvedSite.markup.baseline)
   )
-    throw new Error('baseline must be a non-empty git ref');
+    throw configurationError('baseline must be a non-empty git ref');
   return resolvedSite;
 }
 
@@ -555,7 +607,7 @@ function validatePortalsAllOptions(opts, catalogue) {
     s.PAQVILO_SOURCE && 'PAQVILO_SOURCE',
   ].filter(Boolean);
   if (conflicts.length)
-    throw new Error(
+    throw configurationError(
       `portals=all cannot be combined with ${conflicts.join(', ')}. Configure each portal with sites or PAQVILO_<SITE>_SOURCE / PAQVILO_<SITE>_ENV_<NAME>, or use --portals selected.`,
     );
 }
@@ -584,7 +636,7 @@ function addEnvironmentTarget(catalogue, opts, initial, validSources, targets, b
   if (target !== initial) target.chosen = { site: 'configured portal coverage', env: 'configured portal coverage' };
   const previous = byOrigin.get(target.origin);
   if (previous)
-    throw new Error(
+    throw configurationError(
       `Duplicate portal origin ${target.origin}: "${previous.siteName} @ ${previous.envName}" and "${site} @ ${env}". Each origin must identify exactly one portal/environment in portals=all.`,
     );
   byOrigin.set(target.origin, target);
@@ -597,7 +649,7 @@ function collectAllDevTargets(catalogue, opts, initial, validSources) {
   for (const [site, entry] of Object.entries(catalogue.sites)) {
     if (mirageOnlySite(entry)) continue;
     const environments = Object.keys(entry.environments);
-    if (!environments.length) throw new Error(`Site "${site}" has no environments configured for portals=all`);
+    if (!environments.length) throw configurationError(`Site "${site}" has no environments configured for portals=all`);
     for (const env of environments)
       addEnvironmentTarget(catalogue, opts, initial, validSources, targets, byOrigin, { site, env });
   }
@@ -618,7 +670,7 @@ function chooseAllDevInitial(catalogue, initial, targets) {
       { code: 'mirage_only_site' },
     );
   if (!initial)
-    throw new Error(
+    throw configurationError(
       'No non-caution targets are configured; select an environment explicitly or set includeCaution: true.',
     );
   return initial;
@@ -654,30 +706,30 @@ function resolveBrowserProfilePaths(browser, opts, configDir) {
 function setBrowserChannel(browser, opts, settings) {
   browser.channel = opts.browser ?? settings.PAQVILO_BROWSER ?? browser.channel;
   if (!['msedge', 'chrome', 'chromium'].includes(browser.channel))
-    throw new Error(`browser must be 'msedge', 'chrome' or 'chromium', not "${browser.channel}"`);
+    throw configurationError(`browser must be 'msedge', 'chrome' or 'chromium', not "${browser.channel}"`);
 }
 
 function setBrowserMode(browser, opts, settings) {
   if (settings.PAQVILO_HEADLESS) browser.headless = bool(settings.PAQVILO_HEADLESS, 'PAQVILO_HEADLESS');
   if (opts.headless) browser.headless = true;
   if (opts.headed) browser.headless = false;
-  if (opts.headless && opts.headed) throw new Error('--headless and --headed cannot be used together');
+  if (opts.headless && opts.headed) throw configurationError('--headless and --headed cannot be used together');
 }
 
 function validateBrowserProfileCombination(browser) {
   if (browser.profile !== null && browser.userDataDir !== null)
-    throw new Error(
+    throw configurationError(
       'browser.profile (--profile / PAQVILO_PROFILE) cannot be combined with browser.userDataDir (--user-data-dir / PAQVILO_USER_DATA_DIR); choose a named toolkit profile or an existing browser root',
     );
   if (browser.profileDirectory !== null && browser.userDataDir === null)
-    throw new Error(
+    throw configurationError(
       'browser.profileDirectory (--profile-directory / PAQVILO_PROFILE_DIRECTORY) requires browser.userDataDir (--user-data-dir / PAQVILO_USER_DATA_DIR)',
     );
   if (
     browser.cdpUrl &&
     [browser.profile, browser.userDataDir, browser.profileDirectory].some((value) => value !== null)
   )
-    throw new Error(
+    throw configurationError(
       'browser.cdpUrl (--cdp-url / PAQVILO_CDP_URL) cannot be combined with browser.profile, browser.userDataDir or browser.profileDirectory; an attached browser already owns its profile',
     );
 }
@@ -685,7 +737,7 @@ function validateBrowserProfileCombination(browser) {
 function resolveBrowserDebugPort(browser, opts, settings) {
   const port = opts['debug-port'] ?? settings.PAQVILO_DEBUG_PORT;
   if (port != null) {
-    if (!/^\d+$/.test(String(port))) throw new Error(`debug port must be a number, not "${port}"`);
+    if (!/^\d+$/.test(String(port))) throw configurationError(`debug port must be a number, not "${port}"`);
     browser.debugPort = Number(port) || null;
   }
   browser.debugPort = debugPort(browser.debugPort);

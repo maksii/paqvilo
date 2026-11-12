@@ -3,6 +3,7 @@
 // only (checked at config time and again before each probe); probes refuse redirects and never print a connection string.
 import { isLoopbackUrl, loopbackFetch } from './dataverse-webhooks.mjs';
 import { serviceBusEmulatorPreflight } from './message-bus.mjs';
+import { requestBound } from './storage-provider.mjs';
 import { registerSettingParser } from './config-keys.mjs';
 
 const ID = /^[a-z][a-z0-9-]{0,63}$/i;
@@ -78,8 +79,9 @@ export function localServiceSettings(value, label = 'localServices') {
 async function probeHttp(href, { fetch, timeoutMs }) {
   if (!isLoopbackUrl(href))
     return { reachable: false, status: null, message: `${shown(href)} is not loopback; it is never contacted.` };
+  const bound = requestBound(timeoutMs);
   try {
-    const response = await fetch(href, { method: 'GET', redirect: 'error', signal: AbortSignal.timeout(timeoutMs) });
+    const response = await fetch(href, { method: 'GET', redirect: 'error', signal: bound.signal });
     await response.body?.cancel();
     if (response.status >= 300 && response.status < 400)
       return {
@@ -92,21 +94,23 @@ async function probeHttp(href, { fetch, timeoutMs }) {
     const cause = String(error?.cause?.message ?? error?.message ?? '');
     let reason;
     if (/redirect/i.test(cause)) reason = 'a redirect, which is refused';
-    else if (error?.name === 'TimeoutError') reason = `no answer within ${timeoutMs} ms`;
+    else if (error?.name === 'TimeoutError') reason = `no answer within ${bound.limitMs} ms`;
     else reason = error?.cause?.code ?? error?.code ?? 'connection failed';
     return {
       reachable: false,
       status: null,
       message: `${shown(href)} is not reachable (${reason}). Start it outside Paqvilo.`,
     };
+  } finally {
+    bound.done();
   }
 }
 
-/** Probes every declared service. Never throws, never follows redirects and never reports a connection string. */
-export async function preflightLocalServices(
-  settings,
-  { fetch = loopbackFetch, timeoutMs = 2000, env = process.env } = {},
-) {
+/**
+ * Probes every declared service. Never throws, never follows redirects and never reports a connection string. A probe ends
+ * at the caller's timeoutMs when given, else when the shared idle window passes without an answer (requestBound).
+ */
+export async function preflightLocalServices(settings, { fetch = loopbackFetch, timeoutMs, env = process.env } = {}) {
   let services;
   try {
     services = localServiceSettings(settings);

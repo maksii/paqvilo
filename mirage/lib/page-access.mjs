@@ -11,7 +11,10 @@ const list = (value) => {
 };
 const SERVICE_MARKERS = new Set(['Access Denied', 'Page Not Found']);
 
-function appendPageRule(record, { asset, scopePages, ancestors, roles, anonymousRoles, hasRole, diagnostics, rules }) {
+function appendPageRule(
+  record,
+  { asset, scopePages, ancestors, roles, anonymousRoles, matchesRoles, diagnostics, rules },
+) {
   const root = normalize(field(record, 'webpageid'));
   if (!scopePages.includes(root)) {
     if (asset && ancestors.includes(root) && Number(field(record, 'right')) === 2)
@@ -68,16 +71,16 @@ function appendPageRule(record, { asset, scopePages, ancestors, roles, anonymous
     publishingStates: list(field(record, 'accesscontrolrule_publishingstate', []))
       .map(normalize)
       .filter(Boolean),
-    matches: knownRoleIds.some((roleId) => hasRole(roleId)),
+    matches: matchesRoles(knownRoleIds),
   });
 }
 
-function collectPageRules(portal, { asset, scopePages, ancestors, roles, anonymousRoles, hasRole, diagnostics }) {
+function collectPageRules(portal, { asset, scopePages, ancestors, roles, anonymousRoles, matchesRoles, diagnostics }) {
   const rules = [];
-  for (const record of portal.records.filter(
+  for (const record of (portal.records ?? []).filter(
     (r) => r.kind === 'webpageaccesscontrolrule' && Number(field(r, 'statecode', 0)) !== 1,
   ))
-    appendPageRule(record, { asset, scopePages, ancestors, roles, anonymousRoles, hasRole, diagnostics, rules });
+    appendPageRule(record, { asset, scopePages, ancestors, roles, anonymousRoles, matchesRoles, diagnostics, rules });
   return rules;
 }
 
@@ -148,7 +151,9 @@ function resolvePageTarget(portal, target) {
 }
 
 function pageRoleContext(portal, identity) {
-  const roleRecords = portal.records.filter((r) => r.kind === 'webrole' && Number(field(r, 'statecode', 0)) !== 1);
+  const roleRecords = (portal.records ?? []).filter(
+    (r) => r.kind === 'webrole' && Number(field(r, 'statecode', 0)) !== 1,
+  );
   const roles = new Map(roleRecords.map((r) => [normalize(r.id), r.name]));
   const authenticated = Boolean(identity?.id ?? identity?.contactId ?? identity?.authenticated);
   const memberships = identity.roleSource === 'memberships';
@@ -162,6 +167,18 @@ function pageRoleContext(portal, identity) {
     roleRecords.filter((r) => flag(field(r, 'anonymoususersrole', false))).map((r) => normalize(r.id)),
   );
   return { roles, hasRole, anonymousRoles };
+}
+
+// A rule matches when one of its resolved role ids is held by the persona. The enforced decision and the page
+// inspector (pageRuleMatcher) both use this function, so they cannot disagree.
+const roleMatcher =
+  ({ roles, hasRole }) =>
+  (roleIds) =>
+    roleIds.some((roleId) => roles.has(roleId) && hasRole(roleId));
+
+/** Role match for page access rules, for a persona (identity), as pageAccess evaluates it. */
+export function pageRuleMatcher(portal, identity = {}) {
+  return roleMatcher(pageRoleContext(portal, identity ?? {}));
 }
 
 function addProvidedRoles(identity, roleRecords, authenticated, memberships, provided) {
@@ -256,6 +273,7 @@ export function pageAccess(portal, target, identity = {}, { previewCookie, now =
   // rules; its own publishing state and release dates still apply.
   if (identityDenial) return identityDenial;
   const { roles, hasRole, anonymousRoles } = pageRoleContext(portal, identity);
+  const matchesRoles = roleMatcher({ roles, hasRole });
   const diagnostics = [];
   const servicePageIds = new Set(
     (portal.siteMarkers ?? []).filter((marker) => SERVICE_MARKERS.has(marker.name)).map((marker) => marker.pageId),
@@ -289,7 +307,15 @@ export function pageAccess(portal, target, identity = {}, { previewCookie, now =
       code: 'PAGE_FILE_WITHOUT_PARENT',
       message: 'The web file has no parent page; no page access rules apply to it.',
     });
-  const rules = collectPageRules(portal, { asset, scopePages, ancestors, roles, anonymousRoles, hasRole, diagnostics });
+  const rules = collectPageRules(portal, {
+    asset,
+    scopePages,
+    ancestors,
+    roles,
+    anonymousRoles,
+    matchesRoles,
+    diagnostics,
+  });
   // Grant Change rules tied to the content's publishing state take precedence.
   const decision = pageRuleDecision(rules, scopePages, stateId, diagnostics);
   if (decision) return decision;

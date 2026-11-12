@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own shared host composition, close order and retry behaviour for the organization runtime.
 // Shared host composition (lib/organization-host.mjs): both hosts compose through it. A runtime switch of a plug-in step to
 // clr in the standalone host prepares the CLR runtime before the choice is stored, close runs in one order and
 // the operation catalogue is memoised while the store revision and the sources are unchanged.
@@ -159,6 +160,31 @@ test('close runs backend, organization, Dataverse API and managed identity in th
   spy('managed-identity', host.managedIdentity);
   await host.close();
   assert.deepEqual(order, ['backend', 'organization', 'api', 'managed-identity']);
+});
+
+test('a host close whose backend close rejects is retried by the next close, and a fulfilled close is not repeated', async (t) => {
+  const { host } = await composed(t);
+  await host.createBackend();
+  let backendCloses = 0;
+  host.backend.close = async () => {
+    backendCloses += 1;
+    if (backendCloses === 1) throw new Error('Invented backend close failure');
+  };
+  await assert.rejects(host.close(), AggregateError);
+  await host.close();
+  await host.close();
+  assert.equal(backendCloses, 2, 'the rejected close is retried once, and the fulfilled one is not run again');
+});
+
+test('concurrent host closes share one backend close', async (t) => {
+  const { host } = await composed(t);
+  await host.createBackend();
+  let backendCloses = 0;
+  host.backend.close = async () => {
+    backendCloses += 1;
+  };
+  await Promise.all([host.close(), host.close()]);
+  assert.equal(backendCloses, 1);
 });
 
 test('the operation catalogue is memoised on an unchanged store revision and rebuilt after a commit', async (t) => {

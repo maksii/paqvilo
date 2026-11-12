@@ -1,8 +1,15 @@
 // @test-kind contract: Paqvilo-owned offline content diagnostics, not native runtime parity.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { once } from 'node:events';
+import fs from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
+import { Worker } from 'node:worker_threads';
+import { tempDirSync } from './fixture.mjs';
 import { analyzeContent, contentRules } from '../lense/analysis/content-rules.mjs';
+
+const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
 
 function scan(text, kind = 'html') {
   const unit = {
@@ -82,6 +89,21 @@ test('FetchXML examples inside script, style and textarea bodies are not queries
   assert.deepEqual(scan(text), []);
 });
 
+test('Liquid FetchXML bodies inside script and HTML comments run on the server and are checked', () => {
+  const query =
+    '{% fetchxml query %}<fetch><entity name="invented"><all-attributes /></entity></fetch>{% endfetchxml %}';
+  const expected = ['content.fetchxml-all-attributes', 'content.fetchxml-unbounded'];
+  assert.deepEqual(
+    scan(`<script>${query}</script>`).map(({ id }) => id),
+    expected,
+  );
+  assert.deepEqual(
+    scan(`<!-- ${query} -->`).map(({ id }) => id),
+    expected,
+  );
+  assert.deepEqual(scan('<script>const example = "<fetch><entity /></fetch>";</script>'), []);
+});
+
 test('nested and unfinished Liquid literal blocks cannot create findings', () => {
   assert.deepEqual(scan('{% comment %}{% comment %}<img>{% endcomment %}<img>{% endcomment %}'), []);
   assert.deepEqual(scan('{% manifest %}<img>{% endmanifest %}{% raw %}<fetch><entity /></fetch>'), []);
@@ -110,7 +132,7 @@ test('malformed query tags and long attribute whitespace finish within a bounded
     analyzeContent([{ file: 'invented.html', text: malformed, kind: 'html' }], () => {});`;
   const result = spawnSync(process.execPath, ['--input-type=module', '--eval', script], {
     encoding: 'utf8',
-    timeout: 10000,
+    timeout: CLI_HANG_GUARD_MS,
     maxBuffer: 4096,
   });
   assert.equal(result.error, undefined, result.error?.message);
@@ -133,4 +155,41 @@ test('content diagnostics metadata contains no customer text and keeps advisory 
     assert.ok(['high', 'medium'].includes(rule.confidence));
     assert.ok(rule.references.every((reference) => reference.startsWith('https://')));
   }
+});
+
+const analysisModule = new URL('../lense/analysis/index.mjs', import.meta.url).href;
+const workerSource = `
+  const { parentPort, workerData } = require('node:worker_threads');
+  import(workerData.module).then(({ analyzeProject }) => {
+    const report = analyzeProject(workerData.root, { failOn: 'none' });
+    parentPort.postMessage({
+      complete: report.complete,
+      skipped: report.coverage.skipped,
+      webContent: report.coverage.domains.find(({ domain }) => domain === 'web-content'),
+    });
+  });`;
+
+// The worker keeps a pathological analysis out of the test process and is terminated in finally.
+async function analyzeInWorker(t, root) {
+  const worker = new Worker(workerSource, { eval: true, workerData: { module: analysisModule, root } });
+  try {
+    const [summary] = await once(worker, 'message', { signal: t.signal });
+    return summary;
+  } finally {
+    await worker.terminate();
+  }
+}
+
+test('markup with more than 1000 unmatched open elements is skipped with a budget reason and an incomplete web-content domain', async (t) => {
+  const root = tempDirSync('paq-html-budget-');
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(root, 'deep.html'), '<div>'.repeat(50000));
+  const summary = await analyzeInWorker(t, root);
+  assert.deepEqual(summary.skipped, [{ file: 'deep.html', reason: 'html-structure-budget' }]);
+  assert.equal(summary.webContent.complete, false);
+  assert.equal(summary.complete, false);
+  assert.deepEqual(
+    scan('<div>'.repeat(200) + '<img>').map(({ id }) => id),
+    ['content.image-alt'],
+  );
 });

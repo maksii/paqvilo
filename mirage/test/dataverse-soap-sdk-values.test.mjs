@@ -11,6 +11,9 @@ import { soapSdkResults } from '../lib/dataverse-soap-sdk-values.mjs';
 const soapSdkValue = (value) => soapSdkResults({ value }).get('value');
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 
+// hang guard only: a blocked synchronous child cannot be ended by the test runner
+const CLI_HANG_GUARD_MS = 170_000;
+
 const id = '11111111-1111-4111-8111-111111111111';
 
 // @test-kind observation: executed official Microsoft.CrmSdk.CoreAssemblies 9.0.2.60 (SHA-256 f696eaeb1145bce9f517d0b8fa5e925d0216176919af8d417dcd439acb1797f9); the two-direction Entity exchange is typed and compiled live in this test, while fixtures/dataverse-soap-sdk-values-20261109.json holds per-value interop records (one Relationship value among them) that do not replay that exchange; not a replay case.
@@ -63,7 +66,7 @@ var d=new XmlDocument();d.LoadXml(Console.In.ReadToEnd());var row=(Entity)new Da
     const declarations = Object.entries(NS)
       .map(([name, uri]) => `xmlns:${name}="${uri}"`)
       .join(' ');
-    const options = { encoding: 'utf8', windowsHide: true, timeout: 10000 };
+    const options = { encoding: 'utf8', windowsHide: true, timeout: CLI_HANG_GUARD_MS };
     const read = spawnSync(executable, [], {
       ...options,
       input: `<root ${declarations}>${encodeValue('a:Entity', entity)}</root>`,

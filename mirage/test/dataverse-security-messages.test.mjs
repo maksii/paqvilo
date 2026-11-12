@@ -1,12 +1,14 @@
 // Simulated Dataverse security messages (dataverse-security-messages.mjs and dataverse-security-messages2.mjs): role privileges,
 // team membership and conversion, shares and shared links, parent users, the business unit hierarchy, owner reassignment,
 // access-team templates, delegation, masked columns and Entra ID user lookups, through the registered operations.
+// @test-kind contract: the simulated messages are designed runtime behaviour; the privilege-escalation cases are tagged security.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { objectTypeCode } from '../lib/dataverse-metadata.mjs';
 import {
   ACCESS_RIGHTS,
+  DEPTH,
   createPrincipals,
   ensureSecurityModel,
   grantAccess,
@@ -192,6 +194,7 @@ async function makeTeam(store, name, { teamtype, isdefault = false, aad = null }
 
 const grantedNames = (result) => result.body.RolePrivileges.map((p) => `${p.PrivilegeName}:${p.Depth}`).sort();
 
+// @test-kind security: a basic user cannot change role privileges
 test('AddPrivilegesRole grants at a depth, RetrieveRolePrivilegesRole reads it back, and a basic user is refused', async () => {
   const { store, call } = await setup();
   const admin = userOf(store, ADMIN_OID),
@@ -248,6 +251,134 @@ test('RemovePrivilegeRole drops one grant by privilege reference and ReplacePriv
   assert.deepEqual(
     grantedNames(await call('RetrieveRolePrivilegesRole', { user: admin, params: { RoleId: target.id } })),
     ['prvDeleteWidget:Basic'],
+  );
+});
+
+// A roleprivileges row, as the seeding writes it: the grant a role reads for one privilege at one depth mask.
+async function grantTo(store, roleid, privilegeName, mask) {
+  await store.transact(() =>
+    store.state.tables.roleprivileges.push({
+      roleprivilegeid: uuidV5(roleid, privilegeName),
+      roleid: { id: roleid, logical_name: 'role', name: '' },
+      privilegeid: { id: pid(store, privilegeName), logical_name: 'privilege', name: '' },
+      privilegedepthmask: mask,
+    }),
+  );
+}
+
+// The Basic User role with prvWriteRole at Global: its holders can change roles but hold no privilege on widgets.
+async function roleWriter(store) {
+  const roleid = store.tableRows('role').find((r) => r.name === 'Basic User').roleid;
+  await grantTo(store, roleid, 'prvWriteRole', DEPTH.Global);
+  return roleid;
+}
+
+const grantsOfRole = (store, roleid) => store.tableRows('roleprivileges').filter((g) => same(idOf(g.roleid), roleid));
+const escalation = (e) => e.status === 403 && e.details?.innerCode === '0x80048d3c';
+
+// @test-kind security: a role update that grants or changes a privilege the caller does not hold is a privilege escalation.
+test('AddPrivilegesRole refuses a privilege the caller does not hold at that depth, with 0x80048d3c, and the role is unchanged', async () => {
+  const { store, call, principals } = await setup();
+  const admin = userOf(store, ADMIN_OID),
+    basic = userOf(store, BASIC_OID);
+  const ownRole = await roleWriter(store);
+  const adminWidget = await makeWidget(store, 'admin-owned', admin.systemuserid);
+  const before = JSON.stringify(grantsOfRole(store, ownRole));
+  const body = { Privileges: [{ Depth: 'Global', PrivilegeId: pid(store, 'prvReadWidget') }] };
+  await assert.rejects(
+    call('AddPrivilegesRole', { user: basic, target: on(store, 'role', 'roleid', ownRole), body }),
+    escalation,
+  );
+  assert.equal(JSON.stringify(grantsOfRole(store, ownRole)), before);
+  const row = store.tableRows('widget').find((w) => w.widgetid === adminWidget);
+  assert.throws(
+    () =>
+      principals.authorize({
+        user: basic,
+        entity: 'widget',
+        operation: 'read',
+        row,
+        mapping: store.state.mappings.widget,
+      }),
+    (e) => e.status === 403,
+  );
+});
+
+// @test-kind security: a role update that grants or changes a privilege the caller does not hold is a privilege escalation.
+test('ReplacePrivilegesRole and RemovePrivilegeRole refuse a privilege the caller does not hold and change nothing', async () => {
+  const { store, call } = await setup();
+  const admin = userOf(store, ADMIN_OID),
+    basic = userOf(store, BASIC_OID);
+  await roleWriter(store);
+  // A role outside the caller's own role: the caller holds no widget privilege, so nothing it holds lets it change the grant.
+  const editor = await makeRole(store, 'Editor');
+  const target = on(store, 'role', 'roleid', editor);
+  await call('AddPrivilegesRole', {
+    user: admin,
+    target,
+    body: { Privileges: [{ Depth: 'Local', PrivilegeId: pid(store, 'prvReadWidget') }] },
+  });
+  const before = JSON.stringify(grantsOfRole(store, editor));
+  await assert.rejects(
+    call('RemovePrivilegeRole', {
+      user: basic,
+      target,
+      body: { Privilege: { privilegeid: pid(store, 'prvReadWidget') } },
+    }),
+    escalation,
+  );
+  await assert.rejects(
+    call('ReplacePrivilegesRole', {
+      user: basic,
+      target,
+      body: { Privileges: [{ Depth: 'Basic', PrivilegeId: pid(store, 'prvReadWidget') }] },
+    }),
+    escalation,
+  );
+  assert.equal(JSON.stringify(grantsOfRole(store, editor)), before);
+});
+
+// @test-kind security: a caller cannot grant a privilege beyond the one the caller holds
+test('AddPrivilegesRole lets a caller add a privilege it holds at the same depth', async () => {
+  const { store, call } = await setup();
+  const basic = userOf(store, BASIC_OID);
+  const ownRole = await roleWriter(store);
+  await grantTo(store, ownRole, 'prvReadWidget', DEPTH.Local);
+  const reader = await makeRole(store, 'Reader');
+  const result = await call('AddPrivilegesRole', {
+    user: basic,
+    target: on(store, 'role', 'roleid', reader),
+    body: { Privileges: [{ Depth: 'Local', PrivilegeId: pid(store, 'prvReadWidget') }] },
+  });
+  assert.equal(result.status, 204);
+});
+
+// @test-kind security: the caller's held privileges are read by name whichever seeded spelling the caller's role was granted.
+test('AddPrivilegesRole counts a privilege the caller holds under the other spelling of its name', async () => {
+  const { store, call } = await setup({ standard: true });
+  const holder = noRoleOf(store);
+  // The holder's role holds prvWriteRole and the lower-case background-operation privileges (seeded spelling) at Global.
+  const holderRole = await makeRole(store, 'Background Holder');
+  await grantTo(store, holderRole, 'prvWriteRole', DEPTH.Global);
+  await grantTo(store, holderRole, 'prvReadbackgroundoperation', DEPTH.Global);
+  await grantTo(store, holderRole, 'prvWritebackgroundoperation', DEPTH.Global);
+  await store.transact(() =>
+    store.state.tables.systemuserroles.push({
+      systemuserroleid: uuidV5(holder.systemuserid, holderRole),
+      systemuserid: { id: holder.systemuserid, logical_name: 'systemuser', name: '' },
+      roleid: { id: holderRole, logical_name: 'role', name: '' },
+    }),
+  );
+  // The camel-case name the access check derives is granted to the editor role by the holder.
+  const editor = await makeRole(store, 'Editor');
+  const granted = await call('AddPrivilegesRole', {
+    user: holder,
+    target: on(store, 'role', 'roleid', editor),
+    body: { Privileges: [{ Depth: 'Global', PrivilegeId: pid(store, 'prvWriteBackgroundOperation') }] },
+  });
+  assert.equal(granted.status, 204);
+  assert.ok(
+    grantsOfRole(store, editor).some((g) => same(idOf(g.privilegeid), pid(store, 'prvWriteBackgroundOperation'))),
   );
 });
 
@@ -354,6 +485,7 @@ test('AddMembersTeam and RemoveMembersTeam take a systemuser reference keyed by 
   assert.equal(store.state.tables.teammembership.length, 0);
 });
 
+// @test-kind security: team membership changes require the team write privilege
 test('AddMembersTeam needs the @odata.type, refuses disabled users and needs prvWriteTeam', async () => {
   const { store, call } = await setup();
   const admin = userOf(store, ADMIN_OID),
@@ -744,6 +876,7 @@ for (const teamtype of [0, 1])
     );
   });
 
+// @test-kind security: a caller without Share, or a member without Read, cannot grant record access
 test('AddUserToRecordTeam refuses a member without Read on the table, a caller without Share, and a template for another table', async () => {
   const { store, call } = await setup();
   const admin = userOf(store, ADMIN_OID),
@@ -820,6 +953,114 @@ test('SetBusinessSystemUser moves the user, drops its roles, and reassigns owned
   }
 });
 
+// Adds a business unit under the root and returns its id, for a move of a user into it.
+async function childUnit(store, name) {
+  const childId = uuidV5(ORG, `businessunit:${name}`);
+  await store.transact(() =>
+    store.state.tables.businessunit.push({
+      businessunitid: childId,
+      name,
+      parentbusinessunitid: { id: ROOT, logical_name: 'businessunit', name: '' },
+    }),
+  );
+  return childId;
+}
+
+test('SetBusinessSystemUser with DoNotMoveAllRecords keeps owned records in their business unit when ReassignPrincipal is the moved user', async () => {
+  const { store, call } = await setup();
+  const admin = userOf(store, ADMIN_OID),
+    basic = userOf(store, BASIC_OID);
+  const childId = await childUnit(store, 'Keep');
+  const widgetId = await makeWidget(store, 'kept', basic.systemuserid);
+  await store.transact(() => {
+    store.tableRows('widget').find((w) => w.widgetid === widgetId).owningbusinessunit = {
+      id: ROOT,
+      logical_name: 'businessunit',
+      name: '',
+    };
+  });
+  const result = await call('SetBusinessSystemUser', {
+    user: admin,
+    target: on(store, 'systemuser', 'systemuserid', basic.systemuserid),
+    body: {
+      BusinessUnit: { '@odata.id': `businessunits(${childId})` },
+      ReassignPrincipal: { '@odata.id': `systemusers(${basic.systemuserid})` },
+      DoNotMoveAllRecords: true,
+    },
+  });
+  assert.equal(result.status, 204);
+  assert.equal(idOf(userOf(store, BASIC_OID).businessunitid), childId);
+  const widget = store.tableRows('widget').find((w) => w.widgetid === widgetId);
+  assert.equal(idOf(widget.ownerid), basic.systemuserid);
+  assert.equal(idOf(widget.owningbusinessunit), ROOT);
+});
+
+test('SetBusinessSystemUser with DoNotMoveAllRecords reassigns an owned row to another principal through the store, which advances its version', async () => {
+  const { store, call } = await setup();
+  const admin = userOf(store, ADMIN_OID),
+    basic = userOf(store, BASIC_OID);
+  const childId = await childUnit(store, 'Reassign');
+  const widgetId = await makeWidget(store, 'reassigned', basic.systemuserid);
+  await store.transact(() => {
+    store.tableRows('widget').find((w) => w.widgetid === widgetId).versionnumber = 7;
+  });
+  const result = await call('SetBusinessSystemUser', {
+    user: admin,
+    target: on(store, 'systemuser', 'systemuserid', basic.systemuserid),
+    body: {
+      BusinessUnit: { '@odata.id': `businessunits(${childId})` },
+      ReassignPrincipal: { '@odata.id': `systemusers(${admin.systemuserid})` },
+      DoNotMoveAllRecords: true,
+    },
+  });
+  assert.equal(result.status, 204);
+  const widget = store.tableRows('widget').find((w) => w.widgetid === widgetId);
+  assert.equal(idOf(widget.ownerid), admin.systemuserid);
+  assert.equal(idOf(widget.owningbusinessunit), ROOT);
+  assert.equal(Number(widget.versionnumber), 8);
+});
+
+test('SetBusinessSystemUser moves an owned row the caller cannot read, stamps the caller as modifiedby and advances the version', async () => {
+  const { store, call } = await setup();
+  const admin = userOf(store, ADMIN_OID),
+    basic = userOf(store, BASIC_OID),
+    norole = noRoleOf(store);
+  // The caller holds prvWriteUser at Basic depth only: it reads no widget, so it cannot write the basic user's widget.
+  const writer = await makeRole(store, 'UserWriter');
+  const grant = await call('AddPrivilegesRole', {
+    user: admin,
+    target: on(store, 'role', 'roleid', writer),
+    body: { Privileges: [{ Depth: 'Basic', PrivilegeId: pid(store, 'prvWriteUser') }] },
+  });
+  assert.equal(grant.status, 204);
+  await store.transact(() =>
+    store.state.tables.systemuserroles.push({
+      systemuserroleid: uuidV5(norole.systemuserid, writer),
+      systemuserid: { id: norole.systemuserid, logical_name: 'systemuser', name: '' },
+      roleid: { id: writer, logical_name: 'role', name: '' },
+    }),
+  );
+  const childId = await childUnit(store, 'Stamped');
+  const widgetId = await makeWidget(store, 'stamped', basic.systemuserid);
+  await store.transact(() => {
+    store.tableRows('widget').find((w) => w.widgetid === widgetId).versionnumber = 7;
+  });
+  const result = await call('SetBusinessSystemUser', {
+    user: norole,
+    target: on(store, 'systemuser', 'systemuserid', basic.systemuserid),
+    body: {
+      BusinessUnit: { '@odata.id': `businessunits(${childId})` },
+      ReassignPrincipal: { '@odata.id': `systemusers(${basic.systemuserid})` },
+      DoNotMoveAllRecords: false,
+    },
+  });
+  assert.equal(result.status, 204);
+  const widget = store.tableRows('widget').find((w) => w.widgetid === widgetId);
+  assert.equal(idOf(widget.owningbusinessunit), childId);
+  assert.equal(idOf(widget.modifiedby), norole.systemuserid);
+  assert.equal(Number(widget.versionnumber), 8);
+});
+
 test('RetrieveAadUserRoles and RetrieveAadUserPrivileges resolve a user by Entra object id, and an unknown id is not found', async () => {
   const { store, call } = await setup();
   const admin = userOf(store, ADMIN_OID);
@@ -887,6 +1128,7 @@ test('install registers each operation once per bound table, none of them a buil
   }
 });
 
+// @test-kind security: a membership change takes effect at the next privilege check
 test('a team membership write is visible to the next privilege check, and it moves the store revision', async () => {
   const { store, call, principals } = await setup();
   const admin = userOf(store, ADMIN_OID),
@@ -954,6 +1196,32 @@ test("a refused ReplacePrivilegesRole or AddPrivilegesRole leaves the role's gra
     grantedNames(await call('RetrieveRolePrivilegesRole', { user: admin, params: { RoleId: target.id } })),
     before,
   );
+});
+
+test('SetBusinessSystemUser stamps the caller as modifiedby on an owned row it reassigns, and advances the version', async () => {
+  const { store, call } = await setup();
+  const admin = userOf(store, ADMIN_OID),
+    basic = userOf(store, BASIC_OID),
+    norole = noRoleOf(store);
+  const childId = await childUnit(store, 'Reassigned stamp');
+  const widgetId = await makeWidget(store, 'reassigned stamped', basic.systemuserid);
+  await store.transact(() => {
+    store.tableRows('widget').find((w) => w.widgetid === widgetId).versionnumber = 7;
+  });
+  const result = await call('SetBusinessSystemUser', {
+    user: admin,
+    target: on(store, 'systemuser', 'systemuserid', basic.systemuserid),
+    body: {
+      BusinessUnit: { '@odata.id': `businessunits(${childId})` },
+      ReassignPrincipal: { '@odata.id': `systemusers(${norole.systemuserid})` },
+      DoNotMoveAllRecords: true,
+    },
+  });
+  assert.equal(result.status, 204);
+  const widget = store.tableRows('widget').find((w) => w.widgetid === widgetId);
+  assert.equal(idOf(widget.ownerid), norole.systemuserid);
+  assert.equal(idOf(widget.modifiedby), admin.systemuserid, 'the caller, not the new owner, is the modifier');
+  assert.equal(Number(widget.versionnumber), 8);
 });
 
 test('SetBusinessSystemUser refuses an unknown or a disabled business unit and changes nothing', async () => {

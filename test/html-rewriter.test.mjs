@@ -6,7 +6,9 @@ import { GitBaseline } from '../lense/git.mjs';
 import { pathToFileURL } from 'node:url';
 import { HtmlRewriter, pageKey, INLINE_PREFIX, inlineScriptUrl } from '../lense/html-rewriter.mjs';
 import { withFileSourceMap } from '../lense/source-map.mjs';
+import { buildPortalSourceIndex } from '../mirage/lib/portal-source-index.mjs';
 import { createFixture, SITE, ONLINE_HOME } from './fixture.mjs';
+import path from 'node:path';
 
 let fx;
 beforeEach(() => {
@@ -168,6 +170,68 @@ test('new page custom JS that is not online yet is injected into its page only',
   assert.ok(!off.rewrite(ONLINE_HOME, '/').html.includes('window.fresh'));
 });
 
+// @test-kind contract: an injected page script copies the CSP nonce of the page's inline scripts
+test('new page custom JS copies the nonce of the page inline scripts', () => {
+  fx.write(PAGE_JS, 'window.fresh = 1;\n');
+  const nonced = ONLINE_HOME.replaceAll(
+    '<script type="text/javascript">',
+    '<script type="text/javascript" nonce="abc">',
+  );
+  const home = rewriter().rewrite(nonced, '/');
+  assert.ok(home.html.includes('<script type="text/javascript" nonce="abc">\nwindow.fresh = 1;\n\n</script>\n</body>'));
+  assert.equal(home.applied[0].action, 'injected (not online yet)');
+  const result = rewriter().rewrite(nonced, '/', { sourceIndex: pageScriptIndex(), isDocument: true });
+  const text = result.html.indexOf('window.fresh');
+  const contentStart = result.html.indexOf('>', result.html.lastIndexOf('<script', text)) + 1;
+  assert.equal(result.provenance.scriptProofs.length, 1);
+  assert.equal(contentStart + result.provenance.scriptProofs[0].mappings[0].generatedStart, text);
+});
+
+// @test-kind contract: an injected script copies the source text of a double-quoted nonce and re-encodes only a foreign quote
+test('an injected page script copies the source text of the nonce attribute', () => {
+  fx.write(PAGE_JS, 'window.fresh = 1;\n');
+  const opening = '<script type="text/javascript">';
+  const doubleQuoted = ONLINE_HOME.replaceAll(opening, '<script type="text/javascript" nonce="a&amp;b+c/=">');
+  const copied = rewriter().rewrite(doubleQuoted, '/').html;
+  assert.ok(copied.includes('<script type="text/javascript" nonce="a&amp;b+c/=">\nwindow.fresh = 1;'));
+  const singleQuoted = ONLINE_HOME.replaceAll(opening, `<script type="text/javascript" nonce='x"y'>`);
+  const reencoded = rewriter().rewrite(singleQuoted, '/').html;
+  assert.ok(reencoded.includes('<script type="text/javascript" nonce="x&quot;y">\nwindow.fresh = 1;'));
+});
+
+// The index of the fixture's page JS, so that the injected script receives response provenance.
+function pageScriptIndex() {
+  const file = path.join(fx.dir, PAGE_JS);
+  const text = fx.read(PAGE_JS);
+  const home = {
+    id: '00000000-0000-0000-0000-00000000aaaa',
+    kind: 'webpage',
+    name: 'Home',
+    _file: path.join(fx.dir, 'web-pages/home/Home.webpage.yml'),
+    _fieldOrigins: { customjavascript: { value: text, file, sidecar: true } },
+  };
+  const portal = {
+    sourceDir: fx.dir,
+    website: {},
+    records: [],
+    templates: {},
+    snippets: {},
+    pages: [{ metadata: home, html: '', css: '', js: text, summary: '' }],
+  };
+  return buildPortalSourceIndex({ portal });
+}
+
+// @test-kind contract: an empty script comment returns the raw-text scanner to script data
+test('an empty comment inside a script does not hide the end of the script', () => {
+  fx.write(FORM_JS, fx.read(FORM_JS).replace('validate();', 'validate2();'));
+  for (const comment of ['<!-->', '<!--->']) {
+    const trap = `<script>var a = "${comment}"; var b = "<script>";</script>\n<p id="keep">KEEP ME</p>\n`;
+    const result = rewriter().rewrite(ONLINE_HOME.replace('<form>', `${trap}<form>`), '/');
+    assert.ok(result.html.includes(trap), comment);
+    assert.ok(result.html.includes('validate2();'), comment);
+  }
+});
+
 test('web template: a literal change is patched into the rendered page', () => {
   fx.write(
     HEADER,
@@ -217,6 +281,46 @@ test('web template: a change to Liquid tags is listed as needing a deployment', 
   assert.equal(r.rewrite(ONLINE_HOME, '/').html, ONLINE_HOME);
   assert.equal(r.unsupported.length, 1);
   assert.match(r.unsupported[0].reason, /Liquid tags/);
+});
+
+const SAVE = 'content-snippets/save/Save.en-US.contentsnippet.value.html';
+function commitSaveSnippet(base) {
+  fx.write('content-snippets/save/Save.en-US.contentsnippet.yml', 'adx_name: Buttons/Save\n');
+  fx.write(SAVE, base);
+  fx.commit();
+}
+function saveReason(r) {
+  return r.unsupported.find((item) => item.rel === SAVE)?.reason;
+}
+
+test('an edit to an empty online snippet says that no existing text locates it and deploying applies it', () => {
+  commitSaveSnippet('');
+  fx.write(SAVE, ' qa snippet edit');
+  const r = rewriter();
+  r.rewrite(ONLINE_HOME, '/');
+  assert.equal(
+    saveReason(r),
+    'line 1: the online value is empty, so no existing text can locate this change; deploy it to apply online',
+  );
+});
+
+test('an edit next to Liquid tags keeps the Liquid reason', () => {
+  commitSaveSnippet('{% if first %}\n{% endif %}');
+  fx.write(SAVE, '{% if first %}\nplain words added\n{% endif %}');
+  const r = rewriter();
+  r.rewrite(ONLINE_HOME, '/');
+  assert.equal(
+    saveReason(r),
+    'line 2: no literal text next to the change to locate it in the page (it sits between Liquid tags)',
+  );
+});
+
+test('an edit with no unique literal text and no Liquid tags next to it names only the missing text', () => {
+  commitSaveSnippet('ab');
+  fx.write(SAVE, 'ab cd');
+  const r = rewriter();
+  r.rewrite(ONLINE_HOME, '/');
+  assert.equal(saveReason(r), 'line 1: no unique literal text next to the change to locate it in the page');
 });
 
 // @test-kind contract: disabled markup and inline kinds still report changed sources as requiring deployment

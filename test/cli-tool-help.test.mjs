@@ -67,7 +67,7 @@ async function fixture(t) {
           execFile(
             process.execPath,
             ['--import', guard, bin, 'mirage', name, ...args],
-            { cwd, encoding: 'utf8', windowsHide: true, timeout: 30000 },
+            { cwd, encoding: 'utf8', windowsHide: true },
             (error, stdout, stderr) => resolve({ status: error?.code ?? 0, stdout, stderr }),
           ),
         ),
@@ -153,4 +153,35 @@ test('standalone help rejects malformed arguments with clean JSON errors before 
     }),
   );
   assert.deepEqual(fs.readdirSync(cwd), []);
+});
+
+// Built-ins that allow-listed modules import statically; the help guard refuses their side effects at run time.
+const GUARD_PERMITTED_BUILTINS = new Set(['node:child_process', 'node:fs', 'node:url', 'node:util']);
+
+function guardAllowedModules() {
+  const source = fs.readFileSync(new URL('./cli-help-guard.mjs', import.meta.url), 'utf8');
+  return [...source.matchAll(/'(\.\.\/[^']+\.mjs)'/g)].map((match) => new URL(match[1], guard).href);
+}
+
+function staticSpecifiers(source) {
+  return [...source.matchAll(/^(?:import|export)\b[^;]*?\bfrom\s+'([^']+)'|^import\s+'([^']+)'/gm)].map(
+    (match) => match[1] ?? match[2],
+  );
+}
+
+test('every module in the help guard allow-list imports only allow-listed modules and permitted built-ins', () => {
+  const allowed = guardAllowedModules();
+  const allowedSet = new Set(allowed);
+  assert.ok(
+    allowedSet.has(new URL('../bin/paqvilo.mjs', import.meta.url).href),
+    'guard list must name the entry point',
+  );
+  for (const href of allowed) {
+    for (const specifier of staticSpecifiers(fs.readFileSync(new URL(href), 'utf8'))) {
+      const permitted = specifier.startsWith('node:')
+        ? GUARD_PERMITTED_BUILTINS.has(specifier)
+        : allowedSet.has(new URL(specifier, href).href);
+      assert.ok(permitted, `${href} statically imports ${specifier}`);
+    }
+  }
 });

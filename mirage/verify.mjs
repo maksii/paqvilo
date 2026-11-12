@@ -88,6 +88,21 @@ function semanticDocument({ localOrigin, liveOrigin }) {
   return visit(document.body);
 }
 
+// The input name, CLI option and placeholder of each URL input, so a message names the option the caller must fix.
+const URL_INPUT_OPTIONS = Object.freeze([
+  ['localUrl', '--local', 'LOOPBACK_ORIGIN'],
+  ['origin', '--origin', 'HTTPS_ORIGIN'],
+  ['cdpUrl', '--cdp', 'LOOPBACK_URL'],
+]);
+
+function parseUrlInput(value, option, placeholder) {
+  try {
+    return new URL(value);
+  } catch {
+    throw new Error(`${option} must be an absolute URL (${placeholder}).`);
+  }
+}
+
 function validateParityInputs({
   localUrl,
   origin,
@@ -101,9 +116,13 @@ function validateParityInputs({
   requiredSelectors,
 }) {
   if (!validReadinessTimeout(readinessTimeout)) throw new Error('readinessTimeout must be a positive finite number.');
-  const local = new URL(localUrl);
-  const live = new URL(origin);
-  const cdp = new URL(cdpUrl);
+  const values = { localUrl, origin, cdpUrl };
+  // Presence of every URL input is checked before any of them is parsed.
+  const missing = URL_INPUT_OPTIONS.find(([name]) => typeof values[name] !== 'string' || values[name] === '');
+  if (missing) throw new Error(`${missing[1]} is required (${missing[2]}).`);
+  const [local, live, cdp] = URL_INPUT_OPTIONS.map(([name, option, placeholder]) =>
+    parseUrlInput(values[name], option, placeholder),
+  );
   if (!validLocalOrigin(local))
     throw new Error('Local simulator URL must be an HTTP loopback origin without credentials.');
   if (!validLiveOrigin(live, allowLoopbackLive))

@@ -21,9 +21,10 @@ test.before(() => {
     createHash('sha256').update(capturePowerPagesControlContract.toString()).digest('hex'),
     '3c2c3fb1447e7ac650005f4db0cf5b503717f2c9a12ef49ec39729978260814b',
   );
+  // The client probe source is the one recorded in fixtures/power-pages-client-native-refresh-2026-11-12.json.
   assert.equal(
     createHash('sha256').update(capturePowerPagesClientContract.toString()).digest('hex'),
-    'e7c6f5f00060bb4462c9793fc1b73c1e67e8c6c8f447653c49f73a82a170fc7a',
+    '7a77facc295d5313ec4ec7e1338d95b5d5574901bcf3a99e48b469683e727150',
   );
   controls = read(
     'power-pages-controls-expected.json',

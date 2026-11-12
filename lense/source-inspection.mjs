@@ -12,6 +12,10 @@ import { stripLiquidLiteralBlocks } from '../mirage/lib/liquid-source.mjs';
 import { buildPermissionModel } from '../mirage/lib/permissions.mjs';
 import { importCodeComponents } from '../mirage/lib/code-components.mjs';
 import { elementSourceHints, scriptSourceHints } from './element-provenance.mjs';
+
+// Web API roots that route to a server logic or a cloud flow instead of a table's entity set.
+const NON_TABLE_API_SEGMENTS = new Set(['cloudflow', 'serverlogics']);
+const isEntitySetSegment = (value) => /^[a-z]\w*$/i.test(value) && !NON_TABLE_API_SEGMENTS.has(value.toLowerCase());
 import { assetKind } from '../mirage/lib/asset-type.mjs';
 import { SolutionFileCache, fileStamp, mapLimit } from '../mirage/lib/solution-cache.mjs';
 import { resolvePluginSourcePath } from '../mirage/lib/exported-plugins.mjs';
@@ -617,6 +621,15 @@ export async function inspectionSources(cfg) {
         }),
     ),
   ];
+  const serverLogicPaths = [
+    ...new Set(
+      performance
+        .getEntriesByType('resource')
+        .slice(-300)
+        .map((entry) => pathname(entry.name))
+        .filter((route) => route && /^\/_api\/serverlogics\//i.test(route)),
+    ),
+  ];
   const attributes = [
     'for',
     'data-entityname',
@@ -744,6 +757,7 @@ export async function inspectionSources(cfg) {
     assets,
     controls,
     apiSets,
+    ...(serverLogicPaths.length ? { serverLogicPaths } : {}),
     ids,
     markupTokens: [...tokens],
     truncated: controlsSeen > 300 || shapeTruncated || tokenTruncated,
@@ -768,6 +782,24 @@ const pageSources = (portal, page) => {
     })),
   ];
 };
+
+// A server logic is referenced by its call route or its Liquid tag. The name must end at a word boundary
+// (route) or at its closing quote (tag), so a longer name that starts with it is a different logic.
+function serverLogicEvidence(name, { body, observedRoutes }) {
+  if (!name) return null;
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
+  const route = new RegExp(String.raw`/_api/serverlogics/${escaped}(?!\w)`, 'i');
+  if (route.test(observedRoutes)) return 'observed-request';
+  const tag = new RegExp(String.raw`\{%-?\s*serverlogic\s+name\s*:\s*['"]${escaped}['"]`, 'i');
+  return route.test(body) || tag.test(body) ? 'static-reference' : null;
+}
+
+function serverLogicReferences(serverLogics, context) {
+  return serverLogics.flatMap((row) => {
+    const evidence = serverLogicEvidence(row.name, context);
+    return evidence ? [{ ...row, sourceFile: row.file, kind: 'server-logic', evidence }] : [];
+  });
+}
 
 /** Follow only exported native component bindings, with provenance for conditional/modal sources. */
 function addConfiguredListActionForms(actions, list, addForm) {
@@ -1717,10 +1749,12 @@ function inspectCodeComponents(report, body, metadata, observed, catalogue) {
   };
   // Literal Web API entity sets resolve only through selected Solution definitions.
   // Dynamic expressions stay unknown rather than assuming an English plural table name.
-  const observedApiSets = new Set((rendered.apiSets ?? []).filter((value) => /^[a-z]\w*$/i.test(value)));
+  const observedApiSets = new Set((rendered.apiSets ?? []).filter(isEntitySetSegment));
   const apiSets = unique(
     [...body.matchAll(/\/_api\/([a-z]\w*)\b/gi)]
-      .map((match) => ({ name: match[1] }))
+      .map((match) => match[1])
+      .filter(isEntitySetSegment)
+      .map((name) => ({ name }))
       .concat([...observedApiSets].map((name) => ({ name }))),
     (row) => row.name,
   );
@@ -1860,9 +1894,10 @@ function inspectCodeComponents(report, body, metadata, observed, catalogue) {
     return `${step.entity} ${step.message ?? 'Unknown message'} · ${step.stageName} · rank ${step.rank ?? 'unknown'} · ${mode}${inputs} · ${step.enabled ? 'export enabled' : 'export disabled'} · live execution unknown`;
   };
   report.logic = [
-    ...(portal.serverLogics ?? [])
-      .filter((row) => body.includes(row.name))
-      .map((row) => ({ ...row, sourceFile: row.file, kind: 'server-logic', evidence: 'static-reference' })),
+    ...serverLogicReferences(portal.serverLogics ?? [], {
+      body,
+      observedRoutes: (rendered.serverLogicPaths ?? []).join('\n'),
+    }),
     ...(portal.cloudFlows ?? [])
       .filter(
         (row) =>

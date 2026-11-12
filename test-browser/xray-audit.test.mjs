@@ -1,3 +1,4 @@
+// @test-kind contract: X-ray case-by-case audit of overlay layout, overflow, shadow DOM and dependency diagnostics on invented fixtures
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -153,7 +154,7 @@ async function selectedGeometry(page, selector) {
 }
 
 // Each case uses its own browser context, so cases run concurrently in one browser.
-test('X-ray case-by-case adversarial browser audit', { timeout: 180_000, concurrency: 4 }, async (t) => {
+test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (t) => {
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
   t.after(() => browser.close());
   const results = [];

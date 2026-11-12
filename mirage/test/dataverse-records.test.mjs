@@ -1331,6 +1331,64 @@ test('deep insert authorizes each nested child as a create, append and appendto,
   assert.equal(t.store.state.tables.gadget.length, 1);
 });
 
+// A gadget child that can bind to a vault through its own navigation. The widget relationship is the parent link of a deep insert,
+// so a bind on it would be refused as a second supply of the same lookup; the vault link is independent of that parent link.
+async function deepBindSetup() {
+  const t = await setup();
+  const { mappings, tables } = t.store.state;
+  mappings.vault = {
+    logicalName: 'vault',
+    entitySet: 'vaults',
+    idColumn: 'vaultid',
+    nameColumn: 'name',
+    ownership: 'UserOwned',
+    fields: { name: text },
+  };
+  tables.vault = [];
+  mappings.gadget.fields.vaultref = lookup;
+  mappings.gadget.relationships.vaultref = { entity: 'vault', from: 'vaultref', to: 'vaultid', many: false };
+  await ensureSecurityModel(t.store, SETTINGS);
+  return t;
+}
+
+// @test-kind security: A bind nested in a deep insert is authorized as the same bind on its own request is, so a caller cannot attach a child to a row it may not append to.
+test('a bind nested in a deep insert is authorized like a direct bind, and a refused insert stores no parent', async () => {
+  const t = await deepBindSetup();
+  const adminVault = await create(t, 'vaults', { name: "Admin's" });
+  const direct = await failure(
+    t.send('POST', `/api/data/${VERSION}/gadgets`, {
+      body: { name: 'direct', 'vaultref@odata.bind': `/vaults(${adminVault})` },
+      user: t.basic,
+    }),
+  );
+  assert.equal(direct.details.innerCode, '0x80048306');
+  const refused = await failure(
+    t.send('POST', `/api/data/${VERSION}/widgets`, {
+      body: { name: 'Parent', widget_gadgets: [{ name: 'deep', 'vaultref@odata.bind': `/vaults(${adminVault})` }] },
+      user: t.basic,
+    }),
+  );
+  assert.equal(refused.status, 403);
+  assert.equal(refused.details.innerCode, '0x80048306');
+  assert.equal(t.store.state.tables.widget.length, 0, 'a refused deep insert stores no parent');
+  assert.equal(t.store.state.tables.gadget.length, 0);
+  const missing = await failure(
+    t.send('POST', `/api/data/${VERSION}/widgets`, {
+      body: { name: 'Parent', widget_gadgets: [{ name: 'lost', 'vaultref@odata.bind': `/vaults(${MISSING})` }] },
+      user: t.basic,
+    }),
+  );
+  assert.equal(missing.status, 404);
+  assert.equal(missing.details.innerCode, '0x80040217');
+  assert.equal(t.store.state.tables.widget.length, 0, 'a missing bound row stores no parent');
+  const allowed = await t.send('POST', `/api/data/${VERSION}/widgets`, {
+    body: { name: 'Parent', widget_gadgets: [{ name: 'kid', 'vaultref@odata.bind': `/vaults(${adminVault})` }] },
+  });
+  assert.equal(allowed.status, 204);
+  assert.equal(t.store.state.tables.gadget.length, 1);
+  assert.equal(lowerId(t.store.state.tables.gadget[0].vaultref), adminVault.toLowerCase());
+});
+
 test("deep-inserted children carry their own table's audit and owner columns, with the caller on behalf", async () => {
   const t = await setup();
   await t.send('POST', `/api/data/${VERSION}/widgets`, {
@@ -1946,6 +2004,48 @@ test('a row with a money value answers its base amount, the base currency and ex
   assert.match(stringifyExactJson(row), /"price_base":12\.5000[,}]/);
   assert.equal(row.exchangerate, 1);
   assert.equal(row[CURRENCY], baseCurrencyId(ORG));
+});
+
+// @test-kind contract: The count is of reads of stored id values, not of elapsed time; a scan of the table reads every row's id, so each returned row that scans the table adds a pass.
+test('a collection read with $select of exchangerate reads stored ids per row without growing with the page size', async () => {
+  const fields = {
+    widgetid: { dataverseType: 'primarykey' },
+    name: text,
+    price: { dataverseType: 'money' },
+    transactioncurrencyid: lookup,
+    exchangerate: { dataverseType: 'decimal' },
+  };
+  const base = baseCurrencyId(ORG);
+  const readPage = async (rowCount) => {
+    const runtime = await setup({ metadata: { recordFields: () => fields }, metadataFields: () => fields });
+    const ids = Array.from({ length: rowCount }, () => randomUUID());
+    let idReads = 0;
+    runtime.store.state.tables.widget = ids.map((id) =>
+      Object.defineProperty({ name: 'Invented', price: 12.5, transactioncurrencyid: base }, 'widgetid', {
+        enumerable: true,
+        configurable: true,
+        get: () => {
+          idReads++;
+          return id;
+        },
+      }),
+    );
+    idReads = 0;
+    const response = await runtime.send('GET', `/api/data/${VERSION}/widgets?$select=name,exchangerate`);
+    assert.equal(response.status, 200);
+    return { response, ids, passes: idReads / rowCount };
+  };
+  const small = await readPage(10);
+  const large = await readPage(50);
+  const row = { ...large.response.body.value[0] };
+  delete row['@odata.etag'];
+  assert.deepEqual(row, { widgetid: row.widgetid, name: 'Invented', exchangerate: 1 });
+  assert.ok(large.ids.includes(row.widgetid));
+  assert.equal(small.response.body.value[0].exchangerate, 1);
+  assert.ok(
+    large.passes <= small.passes + 1,
+    `stored id reads per row grew from ${small.passes} at 10 rows to ${large.passes} at 50 rows`,
+  );
 });
 
 test('a full-row read formats the base companion like its money column and the rate at 12 places', async () => {

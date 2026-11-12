@@ -203,7 +203,7 @@ test('a Solution-imported step keeps its unsecure configuration and is construct
 // @test-kind compatibility+security: Learn plug-in constructor (unsecure, secure) overload selection; secure text stays out of catalogue JSON
 test(
   'actual original constructors use source and current HTTP registration strings without mutating a reused runtime descriptor',
-  { skip: CLR_SKIP, timeout: 120000 },
+  { skip: CLR_SKIP },
   async (t) => {
     const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-constructor-config-'));
     let backend;

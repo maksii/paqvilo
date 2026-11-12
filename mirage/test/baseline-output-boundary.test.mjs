@@ -1,3 +1,4 @@
+// @test-kind contract: baseline output refuses labels and destinations outside the capture root and writes only the evidence the CLI reports.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -11,7 +12,8 @@ import { captureMatrix } from '../baseline-suite.mjs';
 import { makeTemporaryDirectory, assertTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // The CLI refuses within about a second; this bound only stops a hung child (a stopped child fails on its signal).
-const CLI_HANG_MS = 60_000;
+// hang guard only: a blocked synchronous child cannot be ended by the test runner
+const CLI_HANG_MS = 170_000;
 
 const result = () => ({
   summary: { id: 'invented/case', status: 'captured', problems: [] },
@@ -33,6 +35,7 @@ async function fixture(run) {
 const linkDir = (target, link) => fs.symlink(target, link, process.platform === 'win32' ? 'junction' : 'dir');
 
 for (const depth of ['ancestor', 'capture-leaf'])
+  // @test-kind security: a linked ancestor or leaf cannot redirect a capture write outside the capture root
   test('writeCapture refuses linked ' + depth + ' before any outside write', () =>
     fixture(async ({ root, outside }) => {
       const link = depth === 'ancestor' ? path.join(root, 'invented') : path.join(root, 'invented', 'case', 'native');
@@ -51,6 +54,7 @@ for (const depth of ['ancestor', 'capture-leaf'])
     }),
   );
 
+// @test-kind security: a linked destination is refused before any callback runs or anything is written outside the root
 test('all selected destinations are preflighted before persona/reset/capture callbacks', () =>
   fixture(async ({ root, outside }) => {
     await linkDir(outside, path.join(root, 'second'));
@@ -97,6 +101,7 @@ test('explicit authoritative output root may intentionally be a directory link',
     );
   }));
 
+// @test-kind security: a linked child directory is refused even when its target lies inside the root
 test('a linked child is refused even when it points inside the authoritative root', () =>
   fixture(async ({ root }) => {
     await fs.mkdir(path.join(root, 'real'));
@@ -119,6 +124,7 @@ test('ordinary existing capture directories support repeated evidence writes', (
     ]);
   }));
 
+// @test-kind security: a file ancestor or a destination outside the root is refused and nothing is created
 test('a file ancestor and lexical escape are refused without creating children', () =>
   fixture(async ({ root, outside }) => {
     await fs.writeFile(path.join(root, 'file'), 'kept');
@@ -128,6 +134,8 @@ test('a file ancestor and lexical escape are refused without creating children',
     assert.equal(await fs.readFile(path.join(root, 'file'), 'utf8'), 'kept');
   }));
 
+// @test-kind security: a label or scenario segment cannot name a reserved Windows device and so
+// cannot address a device path
 test('portable reserved Windows names are refused as labels and scenario segments', () => {
   for (const label of ['CONIN$', 'conout$.log', 'COM¹', 'com².log', 'COM³', 'LPT¹', 'lpt².txt', 'LPT³']) {
     assert.throws(() => validateCaptureLabel(label), /capture label must be one portable directory name/, label);
@@ -144,6 +152,7 @@ test('reserved-looking ordinary names remain valid', () => {
     assert.equal(validateCaptureLabel(value), value);
 });
 
+// @test-kind security: an evidence file that is a link is refused before evidence is written through it
 test('linked artifact refuses before persisting evidence through a directory alias', () =>
   fixture(async ({ root, outside }) => {
     const outDir = path.join(root, 'invented', 'case', 'native');
@@ -157,6 +166,8 @@ test('linked artifact refuses before persisting evidence through a directory ali
     assert.deepEqual(await fs.readdir(outDir), ['requests.json']);
   }));
 
+// @test-kind security: the CLI refuses a linked output directory before building the runtime or
+// writing evidence outside the root
 test('CLI preflights linked selected output before runtime construction or evidence persistence', () =>
   fixture(async ({ root, outside, base }) => {
     await linkDir(outside, path.join(root, 'invented'));

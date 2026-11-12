@@ -8,6 +8,8 @@ paqvilo mirage parity-suite --config <catalogue> --site <site> --env <env> --cdp
 
 Start the browser with a free debug port and confirm that port in the Lense agent status. Reference operations are read-only: plans and route guards reject writes and forbidden actions. You still need authorization to navigate and read the selected environment. Bearer tokens and credentials are never stored, and query values are redacted in reports.
 
+While the signed-in reference driver holds an open tab of its own, every new tab or popup in that browser starts under its control and waits until the driver releases it. Pages opened by its tabs, and popups opened by those pages in turn, are held read-only; every other tab or popup is released at once and is not inspected. Control ends when the driver closes or its last tab closes.
+
 ## Reading a report
 
 Reports separate passes, expected differences, skipped or incomplete observations, source or deployment differences and runtime gaps. Each records the persona and session, source baseline, runtime fingerprint, reference context and diagnostics. A deployed commit cannot be inferred from a run. A source inventory, a successful import, a sign-in page or a local screenshot is not parity coverage. Cite the project's retained comparison when you claim a specific behaviour matches live.

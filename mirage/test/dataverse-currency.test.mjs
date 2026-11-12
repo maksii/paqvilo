@@ -10,6 +10,21 @@ import { contractModuleFixture } from './contract-module-fixture.mjs';
 const EURO = '66666666-6666-4666-8666-666666666611';
 const BARE = '66666666-6666-4666-8666-666666666612';
 const UNKNOWN = '66666666-6666-4666-8666-666666666699';
+const BASE_LEDGER = '66666666-6666-4666-8666-666666666621';
+const NONE_LEDGER = '66666666-6666-4666-8666-666666666622';
+const ANNOTATE = { Prefer: 'odata.include-annotations="*"' };
+const PRICE_FORMATTED = 'x_price@OData.Community.Display.V1.FormattedValue';
+const CURRENCY_NAME = '_transactioncurrencyid_value@OData.Community.Display.V1.FormattedValue';
+// The base, euro and no-currency rows of a ledger, read with a money $select that omits the currency lookup.
+async function moneyRows(t) {
+  const fixture = await setup(t);
+  const base = fixture.store.state.tables.transactioncurrency[0].transactioncurrencyid;
+  fixture.store.state.tables.x_ledger.push(
+    { x_ledgerid: BASE_LEDGER, x_name: 'Base', x_price: 100, transactioncurrencyid: base, statecode: 0, statuscode: 1 },
+    { x_ledgerid: NONE_LEDGER, x_name: 'None', x_price: 40, statecode: 0, statuscode: 1 },
+  );
+  return fixture;
+}
 const HELD = '66666666-6666-4666-8666-666666666601';
 const HELD_LOST = '66666666-6666-4666-8666-666666666602';
 // The Web API names a lookup through its bind; a plain transactioncurrencyid key is refused before the write.
@@ -287,4 +302,66 @@ test('describe names the stamping and the reused exchange-rate function at behav
   assert.deepEqual(record.requires, ['table:transactioncurrency']);
   assert.ok(record.operations.includes('CurrencyStamp'));
   assert.ok(record.operations.includes('RetrieveExchangeRate'));
+});
+
+// @test-kind compatibility: a money value is stated in its row's transaction currency, with that currency's symbol and precision (Microsoft Learn, Dataverse Web API money columns)
+test('a money read without the currency lookup states each row in its own currency (single read)', async (t) => {
+  const { request, json } = await moneyRows(t);
+  const euro = await json(await request('GET', `/x_ledgers(${HELD})?$select=x_name,x_price`, undefined, ANNOTATE), 200);
+  assert.equal(euro._transactioncurrencyid_value, EURO);
+  assert.equal(euro[CURRENCY_NAME], 'Invented euro');
+  assert.equal(euro[PRICE_FORMATTED], 'E100.000');
+  const base = await json(
+    await request('GET', `/x_ledgers(${BASE_LEDGER})?$select=x_name,x_price`, undefined, ANNOTATE),
+    200,
+  );
+  assert.equal(base[PRICE_FORMATTED], '$100.00', 'a base-currency row keeps the base symbol and precision');
+  const none = await json(
+    await request('GET', `/x_ledgers(${NONE_LEDGER})?$select=x_name,x_price`, undefined, ANNOTATE),
+    200,
+  );
+  assert.equal(none[PRICE_FORMATTED], '$40.00', 'a row with no currency states its money in the base currency');
+});
+
+// @test-kind compatibility: a money value is stated in its row's transaction currency, with that currency's symbol and precision (Microsoft Learn, Dataverse Web API money columns)
+test('a money collection read without the currency lookup states each row in its own currency', async (t) => {
+  const { request, json } = await moneyRows(t);
+  const list = await json(await request('GET', '/x_ledgers?$select=x_name,x_price', undefined, ANNOTATE), 200);
+  const byName = Object.fromEntries(list.value.map((row) => [row.x_name, row]));
+  assert.equal(byName.Held[PRICE_FORMATTED], 'E100.000');
+  assert.equal(byName.Base[PRICE_FORMATTED], '$100.00', 'a base-currency row keeps the base symbol and precision');
+  assert.equal(byName.None[PRICE_FORMATTED], '$40.00', 'a row with no currency states its money in the base currency');
+});
+
+// @test-kind compatibility: a row's exchangerate is its currency's exchange rate, and each money _base value is the amount divided by that rate, in the base currency (Microsoft Learn, transaction currency behaviour)
+test('a euro row reads its stored exchange rate and base amount in the base currency, with no $select', async (t) => {
+  const { request, json, ledger } = await moneyRows(t);
+  await json(await request('POST', '/x_ledgers', { x_name: 'Euro 130', x_price: 130, ...currencyBind(EURO) }), 201);
+  const id = ledger('Euro 130').x_ledgerid;
+  const read = await json(await request('GET', `/x_ledgers(${id})`, undefined, ANNOTATE), 200);
+  assert.equal(read.exchangerate, 1.3);
+  assert.equal(read.x_price_base, 100);
+  assert.equal(read['x_price_base@OData.Community.Display.V1.FormattedValue'], '$100.00');
+  const selected = await json(await request('GET', `/x_ledgers(${id})?$select=x_price_base`), 200);
+  assert.equal(selected.x_price_base, 100);
+  const base = await json(await request('GET', `/x_ledgers(${BASE_LEDGER})`), 200);
+  assert.equal(base.exchangerate, 1);
+  assert.equal(base.x_price_base, 100);
+});
+
+// @test-kind compatibility: the exchange rate is captured when a row's money or currency is written, not restated when the currency's rate changes (Microsoft Learn, transaction currency behaviour)
+test('a later change of a currency rate leaves a stored row unchanged until its money or currency is written', async (t) => {
+  const { request, json, store, ledger } = await setup(t);
+  await json(await request('POST', '/x_ledgers', { x_name: 'Captured', x_price: 130, ...currencyBind(EURO) }), 201);
+  const id = ledger('Captured').x_ledgerid;
+  store.state.tables.transactioncurrency.find((row) => row.transactioncurrencyid === EURO).exchangerate = 2;
+  const read = await json(await request('GET', `/x_ledgers(${id})`), 200);
+  assert.equal(read.exchangerate, 1.3);
+  assert.equal(read.x_price_base, 100);
+  await json(await request('PATCH', `/x_ledgers(${id})`, { x_name: 'Renamed' }), 200);
+  assert.equal(ledger('Renamed').exchangerate, 1.3);
+  assert.equal(ledger('Renamed').x_price_base, 100);
+  await json(await request('PATCH', `/x_ledgers(${id})`, { x_price: 130 }), 200);
+  assert.equal(ledger('Renamed').exchangerate, 2);
+  assert.equal(ledger('Renamed').x_price_base, 65);
 });

@@ -45,6 +45,13 @@ function refOf(args, name) {
   return { logical, id: idOf(ref) };
 }
 
+// Every goal the rollup writes must be writable by the caller. The check runs before the first write, so a refusal changes no goal.
+function authorizeGoals(api, c, plan) {
+  const mapping = api.store.resolveMapping('goal');
+  for (const { node } of plan)
+    api.principals.authorize({ user: c.user, entity: 'goal', operation: 'write', row: node, mapping });
+}
+
 function operations(api) {
   const { store } = api;
   const rowsOf = (logical) => store.state.tables[logical] ?? [];
@@ -167,6 +174,7 @@ function operations(api) {
     };
     const root = rootOf(goal);
     await compute(root, new Set([key(root.goalid)]));
+    authorizeGoals(api, c, plan);
     const at = api.clock();
     await write(async () => {
       for (const { node, totals, suffix } of plan) {

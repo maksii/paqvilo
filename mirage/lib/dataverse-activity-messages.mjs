@@ -193,9 +193,17 @@ function fill(text, row, logical) {
   });
 }
 
+// A record a message reads on the caller's behalf: its row, once the caller is authorized to read that row.
+function readOf(api, ctx, ref) {
+  const row = rowOf(api, ctx, ref);
+  authorize(api, ctx, ref.mapping.logicalName, 'read', row);
+  return row;
+}
+
 // The template row, which must be for the record's table (templatetypecode names it).
 function templateOf(api, ctx, templateId, logical) {
   const template = rowOf(api, ctx, { mapping: api.store.resolveMapping('template'), id: templateId });
+  authorize(api, ctx, 'template', 'read', template);
   if (template.templatetypecode && logical && String(template.templatetypecode).toLowerCase() !== logical) {
     throw invalid(`The template is not for the ${logical} table.`);
   }
@@ -600,11 +608,8 @@ async function sendTemplate(api, ctx) {
   if (!Array.isArray(recipients) || recipients.length === 0)
     throw invalid('The Recipients parameter must be a non-empty collection.');
   const regarding = { ...regardingRef, row: rowOf(api, ctx, regardingRef) };
-  const targets = recipients.map((item) => {
-    const to = refOf(api, item, 'Recipients');
-    return { row: rowOf(api, ctx, to) };
-  });
-  const senderRow = rowOf(api, ctx, sender);
+  const targets = recipients.map((item) => ({ row: readOf(api, ctx, refOf(api, item, 'Recipients')) }));
+  const senderRow = readOf(api, ctx, sender);
   authorize(api, ctx, regarding.mapping.logicalName, 'read', regarding.row);
   const template = templateOf(api, ctx, templateId, regarding.mapping.logicalName);
   authorize(api, ctx, 'email', 'create');

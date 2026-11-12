@@ -1,3 +1,4 @@
+// @test-kind contract: day sessions ignore scratch saves and rebuild the page index for new code and asset payloads.
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -11,8 +12,10 @@ import { GitBaseline, gitHead, gitDirectories } from '../lense/git.mjs';
 import { watchSources, logHits } from '../lense/commands/dev.mjs';
 import { createFixture, SITE, tempDirSync } from './fixture.mjs';
 
+const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
+
 const git = (cwd, ...args) =>
-  execFileSync('git', args, { cwd, windowsHide: true, encoding: 'utf8', timeout: 30_000 }).trim();
+  execFileSync('git', args, { cwd, windowsHide: true, encoding: 'utf8', timeout: CLI_HANG_GUARD_MS }).trim();
 function fixture(t) {
   const fx = createFixture();
   ownedFixture(t).remove(() => fx.cleanup());
@@ -52,6 +55,7 @@ test('scratch saves are ignored while new page code and missing asset payloads r
   assert.ok(s.rewriter.blocks.some((block) => block.file === fx.file(rel)));
 });
 
+// @test-kind security: a cached path cannot reach outside after an ancestor is replaced by a junction
 test('path caching cannot retain a descendant after an ancestor is moved outside and replaced by a junction', (t) => {
   const fx = fixture(t);
   const outside = tempDirSync('pp-outside-ancestor-');

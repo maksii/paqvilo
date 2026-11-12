@@ -1,5 +1,6 @@
 // Formula columns (lib/dataverse-formula.mjs): SourceType 3 columns read through the Power Fx evaluator, pack override wins,
 // one diagnostic per column when the value is not available, writes refused.
+// @test-kind contract: Paqvilo's own formula column design; each column is computed once and a cycle reads null.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EXTENSION, validateFormulaColumns } from '../lib/dataverse-formula.mjs';
@@ -49,7 +50,7 @@ const stub = (calls = []) => ({
 });
 
 // The fixture returns the server handle, so the installed API (which carries api.formulaColumns) is captured here.
-async function setup(t, options = {}, providers = null) {
+async function setup(t, options = {}, providers = null, layout = { mappings, tables }) {
   const diagnostics = [];
   const captured = {};
   const extension = {
@@ -60,8 +61,8 @@ async function setup(t, options = {}, providers = null) {
     },
   };
   const fixture = await contractModuleFixture(t, {
-    mappings,
-    tables,
+    mappings: layout.mappings,
+    tables: layout.tables,
     extension,
     providers,
     options: { diagnostic: (entry) => diagnostics.push(entry), ...options },
@@ -221,4 +222,93 @@ test("validateFormulaColumns accepts '<table>.<column>' synchronous functions on
   assert.throws(() => validateFormulaColumns({ 'x_item.x_total': async () => 1 }), /synchronous/);
   assert.deepEqual(Object.keys(validateFormulaColumns({ 'X_Item.X_Total': () => 1 })), ['x_item.x_total']);
   assert.deepEqual(validateFormulaColumns(undefined), {});
+});
+
+// A table with a decimal amount and the given formula columns; the row's id is `id`.
+const layoutOf = (logicalName, formulas, id) => ({
+  mappings: {
+    [logicalName]: {
+      logicalName,
+      entitySet: `${logicalName}s`,
+      idColumn: `${logicalName}id`,
+      nameColumn: 'x_name',
+      fields: {
+        x_name: { dataverseType: 'nvarchar' },
+        x_amount: { dataverseType: 'decimal' },
+        ...Object.fromEntries(Object.entries(formulas).map(([name, text]) => [name, formula(text)])),
+      },
+    },
+  },
+  tables: { [logicalName]: [{ [`${logicalName}id`]: id, x_name: 'Invented row', x_amount: 4 }] },
+});
+// The core engine, with the formula text of each evaluation recorded.
+const counting = (expressions = []) => {
+  const engine = createPowerFxEvaluator();
+  return {
+    evaluateSync: (expression, options) => {
+      expressions.push(expression);
+      return engine.evaluateSync(expression, options);
+    },
+    describe: () => engine.describe(),
+  };
+};
+const CYCLE = '77777777-7777-4777-8777-7777777777d1';
+const CHAIN = '77777777-7777-4777-8777-7777777777d2';
+const DEEP = '77777777-7777-4777-8777-7777777777d3';
+// x_a and x_b reference each other `refs` times each, as a sum.
+const cycleLayout = (refs) =>
+  layoutOf(
+    'x_cycle',
+    {
+      x_a: Array.from({ length: refs }, () => 'x_b').join(' + '),
+      x_b: Array.from({ length: refs }, () => 'x_a').join(' + '),
+    },
+    CYCLE,
+  );
+
+// One top-level computation of a column of the table's first row, as the store's seam starts it for a read.
+const computeColumnOf = (store, logical, column) =>
+  store.computedProviders
+    .get('dataverse-formula')
+    .compute(logical, column, { row: { ...store.tableRows(logical)[0] } });
+
+test('a circular pair of formula columns reads null with one FORMULA_CIRCULAR_REFERENCE per column', async (t) => {
+  const { request, json, diagnostics } = await setup(t, { evaluator: counting() }, null, cycleLayout(2));
+  const row = await json(await request('GET', `/x_cycles(${CYCLE})?$select=x_a`), 200);
+  assert.equal(row.x_a, null);
+  const circular = diagnostics.filter((entry) => entry.code === 'FORMULA_CIRCULAR_REFERENCE');
+  assert.deepEqual(circular.map((entry) => entry.column).sort(), ['x_a', 'x_b']);
+  assert.ok(circular.every((entry) => entry.severity === 'warning'));
+});
+
+test('a circular pair of four references computes each column at most once and reads null', async (t) => {
+  const expressions = [];
+  const { store, diagnostics } = await setup(t, { evaluator: counting(expressions) }, null, cycleLayout(4));
+  assert.equal(computeColumnOf(store, 'x_cycle', 'x_a'), null);
+  assert.ok(diagnostics.some((entry) => entry.code === 'FORMULA_CIRCULAR_REFERENCE' && entry.column === 'x_a'));
+  assert.equal(new Set(expressions).size, expressions.length, 'each formula column is evaluated at most once');
+});
+
+test('a non-circular chain keeps its value and evaluates each formula column once per computation', async (t) => {
+  const expressions = [];
+  const layout = layoutOf('x_chain', { x_c: 'x_amount', x_b: 'x_c + x_c', x_a: 'x_b + x_b' }, CHAIN);
+  const { store, diagnostics } = await setup(t, { evaluator: counting(expressions) }, null, layout);
+  assert.equal(computeColumnOf(store, 'x_chain', 'x_a'), 16);
+  assert.equal(diagnostics.length, 0);
+  assert.equal(new Set(expressions).size, expressions.length, 'each formula column is evaluated at most once');
+});
+
+test('a chain of more than ten formula columns reads null with the depth diagnostic', async (t) => {
+  const formulas = Object.fromEntries(
+    Array.from({ length: 12 }, (_, k) => [`x_z${k}`, k === 11 ? 'x_amount' : `x_z${k + 1}`]),
+  );
+  const { request, json, diagnostics } = await setup(
+    t,
+    { evaluator: counting() },
+    null,
+    layoutOf('x_deep', formulas, DEEP),
+  );
+  const row = await json(await request('GET', `/x_deeps(${DEEP})?$select=x_z0`), 200);
+  assert.equal(row.x_z0, null);
+  assert.ok(diagnostics.some((entry) => /more than 10 chained/.test(entry.message)));
 });

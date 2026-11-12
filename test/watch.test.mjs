@@ -1,3 +1,4 @@
+// @test-kind contract: the source watcher and its reloads are Paqvilo CLI runtime behaviour, checked from their events.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -5,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter, once } from 'node:events';
 import { watchSources, trackOnlineState } from '../lense/commands/dev.mjs';
+import { trackArmedTimers } from './helpers/startup-page.mjs';
 
 // OS file-system events and watcher readiness have no latency bound on a loaded machine. This only reports a hung
 // watcher; ordering and counts are asserted from the events themselves.
@@ -192,44 +194,40 @@ test('closing the watcher cancels queued saves and prevents reload after shutdow
   }
 });
 
-test(
-  'watcher shutdown does not wait for a stalled browser navigation or emit a late refresh',
-  { timeout: 180_000 },
-  async (t) => {
-    const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'pp-stalled-refresh-')));
-    let reached;
-    const started = new Promise((resolve) => {
-      reached = resolve;
-    });
-    const session = Object.assign(new EventEmitter(), {
-      cfg: { sourceDir: dir, origin: 'https://portal.example.com', site: {} },
-      model: { webFiles: [] },
-      rewriter: { unsupported: [] },
-      refresh: () => {},
-      rel: (file) => path.relative(dir, file),
-    });
-    const page = {
-      isClosed: () => false,
-      url: () => session.cfg.origin,
-      goto: () => {
-        reached();
-        return new Promise(() => {});
-      },
-    };
-    const watcher = watchSources(session, { pages: () => [page] }, { log: () => {} });
-    t.after(async () => {
-      await watcher.close();
-      fs.rmSync(dir, { recursive: true, force: true });
-    });
-    session.on('refreshed', () => assert.fail('no refreshed event after shutdown'));
-    await watcher.ready;
-    watcher.emit('all', 'change', path.join(dir, 'script.js'));
-    await started;
-    const idle = watcher.whenIdle();
+test('watcher shutdown does not wait for a stalled browser navigation or emit a late refresh', async (t) => {
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'pp-stalled-refresh-')));
+  let reached;
+  const started = new Promise((resolve) => {
+    reached = resolve;
+  });
+  const session = Object.assign(new EventEmitter(), {
+    cfg: { sourceDir: dir, origin: 'https://portal.example.com', site: {} },
+    model: { webFiles: [] },
+    rewriter: { unsupported: [] },
+    refresh: () => {},
+    rel: (file) => path.relative(dir, file),
+  });
+  const page = {
+    isClosed: () => false,
+    url: () => session.cfg.origin,
+    goto: () => {
+      reached();
+      return new Promise(() => {});
+    },
+  };
+  const watcher = watchSources(session, { pages: () => [page] }, { log: () => {} });
+  t.after(async () => {
     await watcher.close();
-    await idle;
-  },
-);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  session.on('refreshed', () => assert.fail('no refreshed event after shutdown'));
+  await watcher.ready;
+  watcher.emit('all', 'change', path.join(dir, 'script.js'));
+  await started;
+  const idle = watcher.whenIdle();
+  await watcher.close();
+  await idle;
+});
 
 test('an explicit route file outside the source directory is watched', async () => {
   const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-watch-route-')));
@@ -568,5 +566,146 @@ test('save bursts keep one superseding comparison per resource and retry unreach
   } finally {
     stop();
     for (const job of jobs) job.resolve({ state: 'same' });
+  }
+});
+
+// Mock-clock steps: each 50 ms step lets the watcher's check timer and any reload continuation run.
+async function advanceMock(t, ms) {
+  for (let step = 0; step < ms; step += 50) {
+    t.mock.timers.tick(50);
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
+// A watcher whose reloads each wait until the test releases them; the fake page only exposes what a reload uses.
+function watcherWithHeldReloads(t) {
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-watch-held-')));
+  const file = path.join(dir, 'script.js');
+  fs.writeFileSync(file, '// 0\n');
+  const releases = [];
+  const page = {
+    isClosed: () => false,
+    url: () => 'https://portal.example.com/',
+    goto: () =>
+      new Promise((resolve) => {
+        releases.push(resolve);
+      }),
+  };
+  const session = Object.assign(new EventEmitter(), {
+    cfg: { sourceDir: dir, origin: 'https://portal.example.com', site: {} },
+    model: { webFiles: [] },
+    rewriter: { unsupported: [] },
+    refresh: () => {},
+    rel: (f) => path.relative(dir, f),
+  });
+  const watcher = watchSources(session, { pages: () => [page] }, { log: () => {} });
+  t.after(async () => {
+    releases.forEach((release) => release());
+    await watcher.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  return { dir, file, releases, watcher };
+}
+
+test('a refresh that outlasts the silence window resolves while changes keep arriving', async (t) => {
+  const { file, releases, watcher } = watcherWithHeldReloads(t);
+  await watcher.ready;
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  watcher.emit('all', 'change', file);
+  await advanceMock(t, 120);
+  assert.equal(releases.length, 1, 'the save starts one reload');
+  let settled = false,
+    failure = null;
+  const idle = watcher.whenIdle().then(
+    () => {
+      settled = true;
+    },
+    (error) => {
+      failure = error;
+    },
+  );
+  // 90 s pass with the reload in flight; a change queued at 45 s is the progress that keeps the wait alive.
+  await advanceMock(t, 45_000);
+  watcher.emit('all', 'change', file);
+  await advanceMock(t, 45_000);
+  assert.equal(failure, null, 'a 45 s silence is inside the default silence window');
+  releases[0]();
+  await advanceMock(t, 150);
+  assert.equal(releases.length, 2, 'the change queued during the reload follows it');
+  releases[1]();
+  await advanceMock(t, 500);
+  await idle;
+  assert.equal(failure, null);
+  assert.equal(settled, true);
+});
+
+test('a refresh with no progress for the silence window rejects with the guard message', async (t) => {
+  const { file, watcher } = watcherWithHeldReloads(t);
+  await watcher.ready;
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  watcher.emit('all', 'change', file);
+  await advanceMock(t, 120);
+  let failure = null;
+  const idle = watcher.whenIdle().catch((error) => {
+    failure = error;
+  });
+  await advanceMock(t, 60_100);
+  await idle;
+  assert.match(String(failure?.message), /60000 ms silence guard/);
+  assert.match(String(failure?.message), /hang guard, not a limit on a refresh that keeps progressing/);
+});
+
+test('the 200 ms quiet period after the last refresh still applies', async (t) => {
+  const { file, releases, watcher } = watcherWithHeldReloads(t);
+  await watcher.ready;
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  watcher.emit('all', 'change', file);
+  await advanceMock(t, 120);
+  let settled = false;
+  const idle = watcher.whenIdle().then(() => {
+    settled = true;
+  });
+  releases[0]();
+  await advanceMock(t, 150);
+  assert.equal(settled, false, 'a refresh that just completed is not idle before the quiet period');
+  await advanceMock(t, 100);
+  await idle;
+  assert.equal(settled, true);
+});
+
+test('whenIdle leaves no timer armed after it resolves, rejects, or the watcher closes', async (t) => {
+  const { file, releases, watcher } = watcherWithHeldReloads(t);
+  await watcher.ready;
+  const timers = trackArmedTimers();
+  try {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    watcher.emit('all', 'change', file);
+    await advanceMock(t, 120);
+    const resolved = watcher.whenIdle();
+    releases[0]();
+    await advanceMock(t, 300);
+    await resolved;
+    assert.equal(timers.armed.size, 0, 'resolve leaves no timer');
+
+    watcher.emit('all', 'change', file);
+    await advanceMock(t, 120);
+    let failure = null;
+    const rejected = watcher.whenIdle().catch((error) => {
+      failure = error;
+    });
+    await advanceMock(t, 60_100);
+    await rejected;
+    assert.ok(failure, 'the silence guard rejects');
+    assert.equal(timers.armed.size, 0, 'reject leaves no timer');
+
+    watcher.emit('all', 'change', file);
+    const closed = watcher.whenIdle();
+    // The reload in flight is released so shutdown can await it; closing marks the watcher before its continuation runs.
+    releases.at(-1)();
+    await watcher.close();
+    await closed;
+    assert.equal(timers.armed.size, 0, 'close leaves no timer');
+  } finally {
+    timers.restore();
   }
 });

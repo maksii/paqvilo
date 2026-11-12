@@ -2,6 +2,7 @@
 // It only stops loopback Mirage processes it started itself (recorded with their process start
 // identity), and it never contacts a portal environment.
 import fs from 'node:fs/promises';
+import { adminServes, appsPath } from '../../mirage/lib/admin-origin.mjs';
 import { renderSettings } from '../../mirage/lib/render-settings.mjs';
 import fsSync from 'node:fs';
 import net from 'node:net';
@@ -14,10 +15,12 @@ import YAML from 'yaml';
 import { loadCatalogue, loadConfig, loadDevTargets, mirageOnlySite } from '../config.mjs';
 import { runtimePort } from '../../mirage/lib/runtime-port.mjs';
 import { readStartupPhases } from '../startup-progress.mjs';
+import { CODE_APP_STARTUP_CANCELLED } from '../code-app-dev-servers.mjs';
 import { readLocalFile } from '../local-file.mjs';
 import { mirageStopCommand, mirageCommandHint, listenerPort } from '../stop-command.mjs';
 import { persistCommandPayload, pruneCommandPayloads } from '../command-payload.mjs';
 import { withMirageDebugOutput } from '../mirage-debug-output-scope.mjs';
+import { guardShutdownSignals } from '../signal-forwarding.mjs';
 
 const TOOL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const MIRAGE_ROOT = path.join(TOOL_ROOT, 'mirage');
@@ -38,6 +41,8 @@ export function miragePaths(cfg = null, args = {}) {
 export const DEFAULT_PATHS = Object.freeze(miragePaths());
 export const DEFAULT_PORT = 8787;
 const DEFAULT_STARTUP_TIMEOUT = 120_000;
+// Start-up progress extends the silence bound, but never past this absolute cap.
+const STARTUP_ABSOLUTE_CAP = 600_000;
 const STOP_DEADLINE = 5000;
 const ACTIONS = ['init', 'start', 'dev', 'status', 'inspect', 'stop'];
 export function validateMirageAction(action) {
@@ -126,6 +131,27 @@ export async function derivedSolutionOrder(roots, { diagnostics = [], cacheFile 
   }
   return [...ordered, ...resolved.filter((root) => !ordered.includes(root))];
 }
+// The app link of a runtime session: its apps origin when the runtime reports one, else the portal origin.
+function appLinkOf(session, kind) {
+  if (kind !== 'model-driven') return session.adminUrl ?? adminUrlOf(session.url);
+  return `${(session.appsUrl ?? session.url).replace(/\/$/, '')}/main.aspx`;
+}
+/** The address a Mirage development start opens: app and administration paths use the origin the runtime reports. */
+export function mirageStartUrl(session, startPath = '/') {
+  return reportedOriginOf(session, startPath) + startPath;
+}
+/** The address a Code App's dev server is given: the one that serves the Code Apps surface and the Dataverse Web API. */
+export function codeAppRuntimeOrigin(session) {
+  return new URL(session.appsUrl ?? session.url).origin;
+}
+// The origin that serves a start path when the runtime reports one for it; the portal origin otherwise.
+function reportedOriginOf(session, startPath) {
+  const pathname = startPath.split(/[?#]/, 1)[0];
+  if (appsPath(pathname) && session.appsUrl) return new URL(session.appsUrl).origin;
+  if (adminServes(pathname) && session.adminUrl) return new URL(session.adminUrl).origin;
+  return session.url;
+}
+// Fallback only: a record without the runtime-reported admin URL (the runtime itself reports `adminUrl`).
 const adminUrlOf = (url) => {
   try {
     return new URL('/_sim/', url).href;
@@ -575,6 +601,12 @@ async function requestShutdown(url) {
     );
     return retained;
   });
+  // A runtime that acknowledged its shutdown and was ready has no start-up diagnosis left to keep.
+  const cleanLogs = results
+    .filter(({ entry, graceful }) => graceful && entry.ready !== false && !remaining.includes(entry))
+    .map(({ entry }) => entry.log)
+    .filter((file) => file && isStartupLogIn(paths, file));
+  for (const file of cleanLogs) await removeStartupLog(file);
   const describe = (entry) => ({
     pid: entry.pid,
     url: entry.url ?? null,
@@ -665,7 +697,7 @@ export async function mirageStatus(paths = DEFAULT_PATHS) {
     );
     return {
       ...session,
-      adminUrl: session.url ? adminUrlOf(session.url) : (session.adminUrl ?? null),
+      adminUrl: session.adminUrl ?? (session.url ? adminUrlOf(session.url) : null),
       owned: isOwned,
       project: session.project ?? owner?.project ?? null,
       portal: session.id ?? owner?.portal ?? null,
@@ -681,7 +713,8 @@ export async function mirageStatus(paths = DEFAULT_PATHS) {
     sessions.push({
       pid: entry.pid,
       url: entry.url ?? null,
-      adminUrl: entry.url ? adminUrlOf(entry.url) : null,
+      adminUrl: entry.adminUrl ?? (entry.url ? adminUrlOf(entry.url) : null),
+      appsUrl: entry.appsUrl,
       sourceDir: entry.sourceDir ?? null,
       stateFile: entry.stateFile ?? null,
       project: entry.project ?? null,
@@ -703,6 +736,13 @@ async function loadProject(file) {
   return loadProjectConfig(path.resolve(file));
 }
 
+/** A Ctrl+C during Code App start-up is an interrupt: it prints one line and returns true. Other errors return false. */
+export function codeAppStartupInterrupted(error, write = (line) => console.log(line)) {
+  if (error?.code !== CODE_APP_STARTUP_CANCELLED) return false;
+  write('mirage   Code App start-up was interrupted.');
+  return true;
+}
+
 async function startProjectCodeApps(cfg, launch, session, controller) {
   const project = launch.project ? await loadProject(launch.project) : null;
   const entries = project?.codeApps ?? cfg.mirageConfig?.codeApps ?? [];
@@ -712,7 +752,7 @@ async function startProjectCodeApps(cfg, launch, session, controller) {
   const { startCodeAppDevServers } = await import('../code-app-dev-servers.mjs');
   const servers = await startCodeAppDevServers(apps, {
     signal: controller.signal,
-    mirageUrl: session.url,
+    mirageUrl: codeAppRuntimeOrigin(session),
     onFailure: (error) => controller.abort(error),
   });
   return { apps, servers };
@@ -962,6 +1002,14 @@ function stopSummary(report, scope, none) {
   return kept ? `${verdict} ${kept} owned session(s) could not be verified and were kept.` : verdict;
 }
 
+/**
+ * A selected session that could not be verified is still running, so the stop is not complete. The status is
+ * returned rather than thrown: the report has already been printed, and a thrown error would append a second JSON document.
+ */
+function stopExitStatus(report, pids) {
+  return report.unverified.some((item) => pids.includes(item.pid)) ? 2 : 0;
+}
+
 /** A nested observation, such as headers: "page name=value; webFile name=value, name=value". */
 function observedValue(value) {
   if (!value || typeof value !== 'object') return String(value);
@@ -1178,7 +1226,9 @@ export async function start(
   const port = String(runtimePort(args.port, DEFAULT_PORT));
   const timeout = args['startup-timeout'] === undefined ? DEFAULT_STARTUP_TIMEOUT : Number(args['startup-timeout']);
   if (!Number.isInteger(timeout) || timeout < 1000 || timeout > 600_000)
-    throw new Error('--startup-timeout must be an integer from 1000 to 600000 milliseconds');
+    throw new Error(
+      '--startup-timeout must be an integer from 1000 to 600000 milliseconds: the longest start-up silence allowed',
+    );
   let projectInfo = null;
   if (args.project) {
     projectInfo = await loadProject(args.project);
@@ -1235,6 +1285,7 @@ export async function start(
     }
   }
   if (existing) return { ...existing, owned: true, started: false, launch, writesFiles: [] };
+  await refuseStateFileOwner(owned, identity, startup.signal);
   if (Date.now() >= started + timeout)
     throw new Error(
       `Mirage startup exceeded ${timeout}ms during source discovery or ownership checks; no child was started.`,
@@ -1246,6 +1297,7 @@ export async function start(
   const { cli, values } = cliArgs(cfg, 'serve', { ...args, port, state: identity.stateFile }, projectInfo);
   let child;
   args.startup?.phase('process launch', identity.runtime?.kind ?? 'power-pages');
+  await pruneStartupLogs(paths, await ownedSessions(paths));
   await fs.mkdir(paths.logRoot, { recursive: true });
   const log = path.join(paths.logRoot, `startup-${Date.now()}-${Math.random().toString(16).slice(2)}.log`); // NOSONAR: pseudo-random value for simulation, not a secret
   const logHandle = await fs.open(log, 'a');
@@ -1298,7 +1350,7 @@ export async function start(
   await updateOwnedSessions(
     paths,
     (sessions) => [
-      ...sessions.filter((item) => item.pid !== child.pid),
+      ...otherSessionsForStart(sessions, identity, child.pid),
       {
         pid: child.pid,
         processIdentity: childIdentity,
@@ -1338,24 +1390,29 @@ export async function start(
       { signal: startup.signal },
     ).catch(() => {});
   };
-  const deadline = started + timeout;
+  const capAt = started + STARTUP_ABSOLUTE_CAP;
   args.startup?.phase('import, state restore and presets', identity.runtime?.kind ?? 'power-pages');
-  let progressCursor;
+  let progressCursor,
+    lastProgress = Date.now(),
+    discovered = false;
   try {
-    while (Date.now() < deadline && !startup.cancelled()) {
-      if (args.startup) {
-        const progress = await readStartupPhases(log, progressCursor).catch(() => null);
-        if (progress) {
-          progressCursor = progress.cursor;
-          for (const event of progress.events)
-            args.startup.phase(
-              event.phase.replaceAll('-', ' '),
-              `${cfg.siteName}; ${event.elapsedMs}ms runtime elapsed`,
-            );
-        }
+    while (Date.now() < Math.min(lastProgress + timeout, capAt) && !startup.cancelled()) {
+      const progress = await readStartupPhases(log, progressCursor).catch(() => null);
+      if (progress) {
+        progressCursor = progress.cursor;
+        if (progress.events.length) lastProgress = Date.now();
+        for (const event of progress.events)
+          args.startup?.phase(
+            event.phase.replaceAll('-', ' '),
+            `${cfg.siteName}; ${event.elapsedMs}ms runtime elapsed`,
+          );
       }
       try {
         const record = JSON.parse(await fs.readFile(discovery, 'utf8'));
+        if (!discovered) {
+          discovered = true;
+          lastProgress = Date.now();
+        }
         const portal = Array.isArray(record.portals)
           ? (record.portals.find((item) => item.id === (identity.portal ?? '')) ?? record.portals[0])
           : null;
@@ -1384,6 +1441,7 @@ export async function start(
                 portal: session.id ?? identity.portal,
                 discovery,
                 url: session.url,
+                appsUrl: session.appsUrl,
                 stateFile: session.stateFile,
                 identity,
                 log,
@@ -1417,7 +1475,13 @@ export async function start(
     await abandon();
     startup.check();
     const portMessage = port === '0' ? '' : ' on port ' + port;
-    throw new Error(`Mirage did not become ready within ${timeout}ms${portMessage}. See startup log: ${log}`);
+    if (Date.now() >= capAt)
+      throw new Error(
+        `Mirage did not become ready within the ${STARTUP_ABSOLUTE_CAP} ms start-up cap${portMessage}. See startup log: ${log}`,
+      );
+    throw new Error(
+      `Mirage reported no start-up progress for ${Date.now() - lastProgress} ms${portMessage} (--startup-timeout ${timeout} ms). See startup log: ${log}`,
+    );
   } catch (error) {
     error.writesFiles = [log, paths.ownershipFile].filter((file) => fsSync.existsSync(file));
     throw error;
@@ -1443,6 +1507,73 @@ function isReusableRuntimeCandidate(session, owned, identity) {
     (item) =>
       item.pid === session.pid && item.discovery === session.discovery && identityMatches(item.identity, identity),
   );
+}
+
+function sharesStateFile(entry, stateFile) {
+  return samePath(entry.stateFile ?? entry.identity?.stateFile, stateFile);
+}
+
+function stateFileConflict(entry, identity) {
+  const stop = mirageStopCommand(
+    ['--runtime', entry.identity?.runtime?.kind ?? identity.runtime.kind, '--state', identity.stateFile],
+    { cli: TOOLKIT_CLI },
+  );
+  return new Error(
+    `Mirage pid ${entry.pid} already uses state file ${identity.stateFile} with different settings; stop it with ${stop} or pass --state <other file>.`,
+  );
+}
+
+/** A live runtime with a verified start identity owns this state file with other settings: its saves would be overwritten. */
+async function refuseStateFileOwner(owned, identity, signal) {
+  for (const entry of owned) {
+    if (!entry.processIdentity || !isAlive(entry.pid) || !sharesStateFile(entry, identity.stateFile)) continue;
+    if (identityMatches(entry.identity, identity)) continue;
+    if ((await processIdentityAsync(entry.pid, { signal })) === entry.processIdentity)
+      throw stateFileConflict(entry, identity);
+  }
+}
+
+/**
+ * Runs under the ownership lock, where a concurrent start's record is visible: a live record on this state file
+ * refuses the start, whose child the caller then stops.
+ */
+function otherSessionsForStart(sessions, identity, startedPid) {
+  const rival = sessions.find(
+    (item) => item.pid !== startedPid && isAlive(item.pid) && sharesStateFile(item, identity.stateFile),
+  );
+  if (rival) throw stateFileConflict(rival, identity);
+  return sessions.filter((item) => item.pid !== startedPid);
+}
+
+// Startup logs of the newest 20 unreferenced starts are kept; a log named by an owned record is always kept.
+const STARTUP_LOG_RETENTION = 20;
+const STARTUP_LOG_NAME = /^startup-(\d+)-[0-9a-f]+\.log$/;
+
+export async function pruneStartupLogs(paths, owned) {
+  let names;
+  try {
+    names = await fs.readdir(paths.logRoot);
+  } catch {
+    return;
+  }
+  const referenced = new Set(owned.filter((entry) => entry.log).map((entry) => path.resolve(entry.log)));
+  const unreferenced = names
+    .filter((name) => STARTUP_LOG_NAME.test(name) && !referenced.has(path.resolve(paths.logRoot, name)))
+    .map((name) => ({ file: path.resolve(paths.logRoot, name), started: Number(STARTUP_LOG_NAME.exec(name)[1]) }))
+    .toSorted((a, b) => b.started - a.started);
+  for (const { file } of unreferenced.slice(STARTUP_LOG_RETENTION)) await removeStartupLog(file);
+}
+
+/** Only a start-up log directly in the log folder, so a damaged ownership record cannot name another file. */
+function isStartupLogIn(paths, file) {
+  return path.dirname(path.resolve(file)) === path.resolve(paths.logRoot) && STARTUP_LOG_NAME.test(path.basename(file));
+}
+
+/** A log still open by a stopping runtime is removed by a later prune. */
+async function removeStartupLog(file) {
+  await fs.rm(file, { force: true }).catch(() => {
+    /* still open by a process that is stopping; a later prune removes it */
+  });
 }
 
 // ---- init
@@ -2129,7 +2260,8 @@ export function mirageTarget(siteCfg, session) {
     ],
     mirageSession: {
       url: session.url,
-      adminUrl: adminUrlOf(session.url),
+      adminUrl: session.adminUrl ?? adminUrlOf(session.url),
+      appsUrl: session.appsUrl,
       stateFile,
       project: session.launch?.project ?? null,
       portal: session.launch?.portal ?? null,
@@ -2157,25 +2289,27 @@ export async function portalSelection(cfg, args, running) {
   return { selection: { mode: 'all', initial, targets: [...targets, ...live] }, live: live.length, note };
 }
 
-async function stopStarted(portals, paths) {
-  for (const portal of portals.filter((item) => item.session?.started)) {
-    const report = await stopOwnedSessions({ paths, pids: [portal.session.pid] }).catch((error) => ({
-      stopped: [],
-      error,
-    }));
-    if (report.stopped?.length)
-      console.log(`mirage   stopped ${portal.site} ${portal.session.url} (pid ${portal.session.pid})`);
-    else {
-      let retry;
-      try {
-        retry = `run: ${await sessionStopHint([portal], paths, { cleanupOnError: false })}`;
-      } catch (error) {
-        retry = `a retry command could not be prepared: ${error.message}`;
+export async function stopStarted(portals, paths, stop = stopOwnedSessions) {
+  await guardShutdownSignals(async () => {
+    for (const portal of portals.filter((item) => item.session?.started)) {
+      const report = await stop({ paths, pids: [portal.session.pid] }).catch((error) => ({
+        stopped: [],
+        error,
+      }));
+      if (report.stopped?.length)
+        console.log(`mirage   stopped ${portal.site} ${portal.session.url} (pid ${portal.session.pid})`);
+      else {
+        let retry;
+        try {
+          retry = `run: ${await sessionStopHint([portal], paths, { cleanupOnError: false })}`;
+        } catch (error) {
+          retry = `a retry command could not be prepared: ${error.message}`;
+        }
+        const errorMessage = report.error ? ': ' + report.error.message : '';
+        console.log(`mirage   could not stop ${portal.site} pid ${portal.session.pid}${errorMessage}; ${retry}`);
       }
-      const errorMessage = report.error ? ': ' + report.error.message : '';
-      console.log(`mirage   could not stop ${portal.site} pid ${portal.session.pid}${errorMessage}; ${retry}`);
     }
-  }
+  });
 }
 
 /** Starts the planned portals, then reports them (start) or opens them with the live targets (dev). */
@@ -2223,7 +2357,8 @@ function portalStartSummary(portal) {
     return {
       site: portal.site,
       url: portal.session.url,
-      adminUrl: adminUrlOf(portal.session.url),
+      adminUrl: portal.session.adminUrl ?? adminUrlOf(portal.session.url),
+      appsUrl: portal.session.appsUrl,
       stateFile: portal.session.stateFile ?? portal.session.launch?.stateFile ?? null,
       sourceDir: portal.session.sourceDir,
       pid: portal.session.pid,
@@ -2250,10 +2385,10 @@ function printPortalStartSummaries(summary) {
   }
 }
 
-function printStandalonePortalSessions(running, portalSessions) {
+export function printStandalonePortalSessions(running, portalSessions) {
   for (const item of running.filter((portal) => !portalSessions.includes(portal)))
     console.log(
-      `app         ${item.site.padEnd(8)} ${item.session.url}${item.cfg.runtime.kind === 'model-driven' ? '/main.aspx' : '/_sim/'} (${item.cfg.runtime.kind}; open it beside the portals)`,
+      `app         ${item.site.padEnd(8)} ${appLinkOf(item.session, item.cfg.runtime.kind)} (${item.cfg.runtime.kind}; open it beside the portals)`,
     );
 }
 
@@ -2800,7 +2935,9 @@ function validateStartupArguments(args) {
   if (args['startup-timeout'] === undefined) return;
   const timeout = Number(args['startup-timeout']);
   if (!/^\d+$/.test(args['startup-timeout']) || !Number.isSafeInteger(timeout) || timeout < 1000 || timeout > 600000)
-    throw new Error('--startup-timeout must be an integer from 1000 to 600000 milliseconds');
+    throw new Error(
+      '--startup-timeout must be an integer from 1000 to 600000 milliseconds: the longest start-up silence allowed',
+    );
 }
 
 function validateAllowedOptions(args, action, allowedOptions) {
@@ -2840,10 +2977,8 @@ function validateAllowedOptions(args, action, allowedOptions) {
     const runtimeKind = effective.runtime ?? selectedProject?.runtime?.kind ?? cfg.runtime?.kind;
     if (runtimeKind && runtimeKind !== 'power-pages') {
       const kind = runtimeKind;
-      const report = await stopOwnedSessions({
-        paths,
-        pids: await selectedSessionPids(paths, cfg, kind, selectedProject, args),
-      });
+      const pids = await selectedSessionPids(paths, cfg, kind, selectedProject, args);
+      const report = await stopOwnedSessions({ paths, pids });
       if (report.remaining.length) throw new Error('An owned standalone Mirage session did not stop.');
       print(
         {
@@ -2853,21 +2988,19 @@ function validateAllowedOptions(args, action, allowedOptions) {
         },
         args.json,
       );
-      return 0;
+      return stopExitStatus(report, pids);
     }
     // Stop joins the recorded project/portal identity; current mappings can
     // legitimately point elsewhere or no longer contain the launched portal.
     if (selectedProject) sourceDir = null;
-    const report = await stopOwnedSessions({
-      paths,
-      pids: await selectedSessionPids(paths, cfg, 'power-pages', selectedProject, args, sourceDir),
-    });
+    const pids = await selectedSessionPids(paths, cfg, 'power-pages', selectedProject, args, sourceDir);
+    const report = await stopOwnedSessions({ paths, pids });
     if (report.remaining.length)
       throw new Error(
         `Mirage process ${report.remaining.map((item) => item.pid).join(', ')} did not stop within ${(STOP_DEADLINE + 2000) / 1000} seconds`,
       );
     print({ action: 'stop', message: stopSummary(report, cfg.siteName, cfg.siteName), ...report }, args.json);
-    return 0;
+    return stopExitStatus(report, pids);
   }
   if (action === 'inspect') {
     let project = null;
@@ -2893,7 +3026,7 @@ function validateAllowedOptions(args, action, allowedOptions) {
     session.started ? 'listening; application readiness pending' : 'reused; application readiness pending',
   );
   const { launch } = session;
-  const adminUrl = adminUrlOf(session.url);
+  const adminUrl = session.adminUrl ?? adminUrlOf(session.url);
   const stateFile = session.stateFile ?? launch.stateFile;
   const stop = await sessionStopHint([{ cfg, args: effective, session }], paths);
   if (action === 'dev') {
@@ -2911,7 +3044,7 @@ function validateAllowedOptions(args, action, allowedOptions) {
           (await import('../standalone-mirage.mjs')).developStandalone(
             { ...cfg, runtime: launch.runtime },
             { ...effective, path: effective.path ?? (apps.length ? '/_apps/code/' : undefined) },
-            session,
+            { ...session, adminUrl },
             { signal: controller.signal },
           ),
         );
@@ -2922,11 +3055,13 @@ function validateAllowedOptions(args, action, allowedOptions) {
       } finally {
         process.off('SIGINT', interrupt);
         process.off('SIGTERM', interrupt);
-        try {
-          await servers?.close();
-        } finally {
-          if (session.started) await stopOwnedSessions({ paths, pids: [session.pid] });
-        }
+        await guardShutdownSignals(async () => {
+          try {
+            await servers?.close();
+          } finally {
+            if (session.started) await stopOwnedSessions({ paths, pids: [session.pid] });
+          }
+        });
       }
     }
     const controller = new AbortController();
@@ -2940,7 +3075,8 @@ function validateAllowedOptions(args, action, allowedOptions) {
     } catch (error) {
       process.off('SIGINT', interrupt);
       process.off('SIGTERM', interrupt);
-      if (session.started) await stopOwnedSessions({ paths, pids: [session.pid] });
+      if (session.started) await guardShutdownSignals(() => stopOwnedSessions({ paths, pids: [session.pid] }));
+      if (codeAppStartupInterrupted(error)) return 0;
       throw error;
     }
     const mirageSourceRoots = [
@@ -2949,6 +3085,7 @@ function validateAllowedOptions(args, action, allowedOptions) {
     const mirageSession = {
       url: session.url,
       adminUrl,
+      appsUrl: session.appsUrl,
       stateFile,
       project: launch.project,
       portal: launch.portal,
@@ -2974,9 +3111,11 @@ function validateAllowedOptions(args, action, allowedOptions) {
     console.log(
       `stop        ${session.started ? 'Ctrl+C here or close the browser: the browser and this Mirage stop' : 'Ctrl+C here or close the browser ends the browser session; the Mirage keeps running'}. Stop it any time with: ${stop}`,
     );
+    const codeAppStart = codeApps.length > 0 && !effective.path;
     const localCfg = {
       ...cfg,
-      ...(codeApps.length && !effective.path ? { site: { ...cfg.site, startPath: '/_apps/code/' } } : {}),
+      ...(codeAppStart ? { site: { ...cfg.site, startPath: '/_apps/code/' } } : {}),
+      startUrl: mirageStartUrl(session, codeAppStart ? '/_apps/code/' : (cfg.site.startPath ?? '/')),
       sourceDir: session.sourceDir,
       origin: session.url,
       envName: 'local',
@@ -2997,29 +3136,33 @@ function validateAllowedOptions(args, action, allowedOptions) {
     } finally {
       process.off('SIGINT', interrupt);
       process.off('SIGTERM', interrupt);
-      try {
-        await codeAppServers.close();
-      } finally {
-        if (session.started) {
-          const report = await stopOwnedSessions({ paths, pids: [session.pid] }).catch((error) => ({
-            stopped: [],
-            remaining: [{ pid: session.pid }],
-            error,
-          }));
-          let message;
-          if (report.stopped.length) message = `mirage   stopped ${session.url} (pid ${session.pid})`;
-          else {
-            const errorMessage = report.error ? ': ' + report.error.message : '';
-            message = `mirage   could not stop pid ${session.pid}${errorMessage}; run: ${stop}`;
-          }
-          console.log(message);
-        }
-      }
+      await guardShutdownSignals(() => stopDevelopmentSession(codeAppServers, session, paths, stop));
     }
   }
   print({ action: 'start', ...session, adminUrl, stateFile, stop }, args.json);
   args.startup?.complete('runtime listening; no browser application readiness was requested');
   return 0;
+}
+
+async function stopDevelopmentSession(codeAppServers, session, paths, stop) {
+  try {
+    await codeAppServers.close();
+  } finally {
+    if (session.started) {
+      const report = await stopOwnedSessions({ paths, pids: [session.pid] }).catch((error) => ({
+        stopped: [],
+        remaining: [{ pid: session.pid }],
+        error,
+      }));
+      let message;
+      if (report.stopped.length) message = `mirage   stopped ${session.url} (pid ${session.pid})`;
+      else {
+        const errorMessage = report.error ? ': ' + report.error.message : '';
+        message = `mirage   could not stop pid ${session.pid}${errorMessage}; run: ${stop}`;
+      }
+      console.log(message);
+    }
+  }
 }
 
 function assignCatalogueSites(sessions, sites) {

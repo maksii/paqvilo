@@ -29,11 +29,42 @@
   // Browser-local date formatting with the site's .NET date patterns (body data-dateformat,
   // data-datetimeformat), as the platform grid renders <time> cells.
   const pad = (value, length = 2) => String(value).padStart(length, '0');
+  const LANGUAGE_TAG = /^[a-z]{2,3}(-[a-z0-9]{1,8})*$/i;
+  const NAME_OPTIONS = {
+    MMMM: { month: 'long' },
+    MMM: { month: 'short' },
+    dddd: { weekday: 'long' },
+    ddd: { weekday: 'short' },
+  };
+  // One formatter per language and name token, so the cell loop does not rebuild it. The page has one language.
+  const nameFormatters = new Map();
+  // A tag the pattern accepts but Intl refuses (for example en-a) falls back to en-US.
+  function createNameFormatter(language, options) {
+    try {
+      return new Intl.DateTimeFormat(language, options);
+    } catch {
+      return new Intl.DateTimeFormat('en-US', options);
+    }
+  }
+  function nameFormatter(language, token) {
+    const key = `${language}|${token}`;
+    if (!nameFormatters.has(key)) nameFormatters.set(key, createNameFormatter(language, NAME_OPTIONS[token]));
+    return nameFormatters.get(key);
+  }
+  // Month and weekday names come from the page language; a missing or malformed tag falls back to en-US.
+  function localName(date, token) {
+    const language = globalThis.document?.documentElement?.lang ?? '';
+    return nameFormatter(LANGUAGE_TAG.test(language) ? language : 'en-US', token).format(date);
+  }
   function formatLocal(date, pattern) {
     const h = date.getHours();
+    const year = date.getFullYear();
+    const ms = date.getMilliseconds();
     const tokens = {
-      yyyy: date.getFullYear(),
-      yy: pad(date.getFullYear() % 100),
+      yyyy: year,
+      yyy: pad(year, 3),
+      yy: pad(year % 100),
+      y: year % 100,
       MM: pad(date.getMonth() + 1),
       M: date.getMonth() + 1,
       dd: pad(date.getDate()),
@@ -46,11 +77,22 @@
       m: date.getMinutes(),
       ss: pad(date.getSeconds()),
       s: date.getSeconds(),
+      fff: pad(ms, 3),
+      ff: pad(Math.floor(ms / 10)),
+      f: Math.floor(ms / 100),
       tt: h < 12 ? 'AM' : 'PM',
+      t: h < 12 ? 'A' : 'P',
     };
-    return String(pattern).replace(/'[^']*'|yyyy|yy|MM|M|dd|d|HH|H|hh|h|mm|m|ss|s|tt/g, (token) =>
-      token.startsWith("'") ? token.slice(1, -1) : String(tokens[token]),
+    return String(pattern).replace(
+      /'[^']*'|"[^"]*"|\\.|yyyy|yyy|yy|y|MMMM|MMM|MM|M|dddd|ddd|dd|d|HH|H|hh|h|mm|m|ss|s|fff|ff|f|tt|t/g,
+      (token) => formatToken(token, date, tokens),
     );
+  }
+  // Quoted text and backslash escapes are literal; name tokens are looked up only when used.
+  function formatToken(token, date, tokens) {
+    if (token.startsWith('\\')) return token.slice(1);
+    if (token.startsWith("'") || token.startsWith('"')) return token.slice(1, -1);
+    return NAME_OPTIONS[token] ? localName(date, token) : String(tokens[token]);
   }
   function isoLocal(date) {
     const offset = -date.getTimezoneOffset();
@@ -1924,6 +1966,14 @@
     const createButton = modal.querySelector('.modal-footer .new-value');
     const createModal = container.querySelector('.modal-lookup-create-form');
     if (createButton && createModal) {
+      // At most one success listener: the current create dialog's, removed on success, on a failed
+      // open and when the dialog is hidden without a save.
+      let createListener = null;
+      const detachCreateListener = () => {
+        if (createListener) window.removeEventListener('message', createListener);
+        createListener = null;
+      };
+      on(createModal, 'hidden.bs.modal', detachCreateListener);
       createButton.addEventListener('click', (event) => {
         event.preventDefault();
         const source = grid.formModalSource(createModal, {
@@ -1932,7 +1982,8 @@
           languagecode: container.getAttribute('data-languagecode') || 1033, // NOSONAR: actual attributes exclude inherited dataset values
         });
         if (!source) return;
-        const listener = (message) => {
+        detachCreateListener();
+        createListener = (message) => {
           if (message.origin !== location.origin) return;
           let data = message.data;
           try {
@@ -1941,13 +1992,13 @@
             return;
           }
           if (data?.type !== 'Success') return;
-          window.removeEventListener('message', listener);
+          detachCreateListener();
           hideModal(createModal);
           grid.state.selected = data.id;
           trigger(gridElement, 'refresh');
         };
-        window.addEventListener('message', listener);
-        if (!grid.openFormModal(createModal, source)) window.removeEventListener('message', listener);
+        window.addEventListener('message', createListener);
+        if (!grid.openFormModal(createModal, source)) detachCreateListener();
       });
     }
     sync();

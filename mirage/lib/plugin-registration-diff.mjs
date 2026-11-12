@@ -66,11 +66,13 @@ function facts(kind, row, charge) {
   const images = (row.images ?? []).map((image) => {
     charge(
       (typeof image.name === 'string' ? image.name.length : 0) +
-        (typeof image.alias === 'string' ? image.alias.length : 0),
+        (typeof image.alias === 'string' ? image.alias.length : 0) +
+        (typeof image.messagePropertyName === 'string' ? image.messagePropertyName.length : 0),
     );
     return {
       name: text(image.name),
       alias: text(image.alias),
+      messagePropertyName: text(image.messagePropertyName),
       type: scalar(image.type, charge),
       attributes: attributes(image.attributes, charge),
     };

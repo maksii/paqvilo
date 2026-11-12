@@ -305,12 +305,12 @@ export function withSolutionAppMembers(components, state, entityId) {
   return out;
 }
 
-/** Capture the prior row once, then maintain per-solution definitions for restore. */
+/** Capture the prior row once, then maintain per-solution definitions for restore. stamp(row, mapping, { existing }) stamps an active layer row. */
 export function applySolutionPayloads(
   state,
   solutionId,
   components,
-  { overwrite = false, definitionOf, entityId } = {},
+  { overwrite = false, definitionOf, entityId, stamp } = {},
 ) {
   state.dataverse ??= {};
   state.dataverse.solutionPayloads ??= {};
@@ -337,6 +337,7 @@ export function applySolutionPayloads(
     });
     const layer = record.layers.at(-1);
     if (layer.active) {
+      stamp?.(layer.row, mapping, { existing: Boolean(row) });
       if (row) Object.assign(row, layer.row);
       else rows.push(structuredClone(layer.row));
     }
