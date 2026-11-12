@@ -108,16 +108,21 @@ export async function executeBatch(
   for (const [i, batch] of batches.entries()) {
     for (let run = 0; run < batch.repeat; run += 1) {
       if (run > 0) await new Promise((resolve) => setImmediate(resolve));
-      tick(st);
-      st.vars = new Map();
-      for (const [name, value] of Object.entries(params)) {
-        const key = name.startsWith('@') ? name : `@${name}`;
-        st.vars.set(lower(key), { name: key, value });
-      }
-      for (const statement of groups[i]) await runStatementOperation(statement, st, resultSets, around);
+      await runBatchRepeat(st, params, groups[i], resultSets, around);
     }
   }
   return { resultSets, rowCount: st.session.rowCount };
+}
+
+// One run of a batch: fresh variables seeded with the parameters, then its statements in order.
+async function runBatchRepeat(st, params, statements, resultSets, around) {
+  tick(st);
+  st.vars = new Map();
+  for (const [name, value] of Object.entries(params)) {
+    const key = name.startsWith('@') ? name : `@${name}`;
+    st.vars.set(lower(key), { name: key, value });
+  }
+  for (const statement of statements) await runStatementOperation(statement, st, resultSets, around);
 }
 
 function groupStatements(statements, batches) {

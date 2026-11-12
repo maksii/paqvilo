@@ -54,9 +54,16 @@ const DAY = 86_400_000;
 const fail = (kind, message) => fxError(ErrorKind[kind], message);
 const notHosted = (name) => fail('NotSupported', `${name} is not available in this host.`);
 const firstError = (...values) => values.find((value) => value instanceof FxError);
-// An own field even when its name is __proto__, which a plain assignment would treat as the prototype setter.
-const setField = (record, name, value) =>
-  Object.defineProperty(record, name, { value, writable: true, enumerable: true, configurable: true });
+// Writes a user-named field. Assignment keeps host setters and proxies in the loop; only `__proto__` needs a data
+// property, because assigning it would replace the prototype.
+// Writes a user-named field. Assignment keeps host setters and proxies in the loop; only `__proto__` needs a data
+// property, because assigning it would replace the prototype.
+const setField = (record, name, value) => {
+  if (name === '__proto__')
+    Object.defineProperty(record, name, { value, writable: true, enumerable: true, configurable: true });
+  else record[name] = value;
+  return record;
+};
 
 // Infer only result types fixed by syntax, without evaluating an unselected formula or invoking host functions.
 // Dynamic names, connector calls and mixed-type arithmetic need a full Power Fx type checker and remain unknown.

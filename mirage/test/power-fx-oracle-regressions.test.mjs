@@ -84,6 +84,19 @@ test('UpdateContext with a __proto__ field writes an own context field, not the 
   assert.equal(Object.getPrototypeOf(context), Object.prototype);
   assert.equal(context.polluted, undefined);
   assert.ok(Object.hasOwn(context, '__proto__'));
+  const keys = [];
+  const proxied = new Proxy(
+    {},
+    {
+      set(target, key, value) {
+        keys.push(key);
+        target[key] = value;
+        return true;
+      },
+    },
+  );
+  powerFxEngine.evaluateSync('UpdateContext({a: 1})', { host: { context: proxied } });
+  assert.deepEqual(keys, ['a']);
 });
 
 test('Set on a variable named __proto__ writes an own variable, not the variables prototype', () => {

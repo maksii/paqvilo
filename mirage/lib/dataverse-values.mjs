@@ -583,76 +583,110 @@ const escapeLikeChar = (char) => char.replace(/[.*+?^${}()|[\]\\/-]/g, String.ra
  * with [^] matching any character). Returns null when the pattern can never match.
  */
 export function likeTokens(pattern, { escape = null, fold = identityFold, ignoreCase = false, brackets = 'sql' } = {}) {
+  const options = { escape, fold, ignoreCase, brackets };
   const tokens = [];
-  const literal = (text) => {
-    for (let k = 0; k < text.length; k++) {
-      const char = text[k];
-      tokens.push(ignoreCase ? { test: caseClassTest(escapeLikeChar(char), true) } : { char });
+  let i = 0;
+  while (i < pattern.length) {
+    const element = likeElementAt(pattern, i, options);
+    if (element === null) return null;
+    for (const token of element.tokens) {
+      if (token !== LIKE_ANY || tokens.at(-1) !== LIKE_ANY) tokens.push(token);
     }
-  };
-  for (let i = 0; i < pattern.length; i++) {
-    const c = pattern[i];
-    if (escape !== null && c === escape) {
-      if (i + 1 === pattern.length) return null;
-      literal(fold(pattern[++i]));
-    } else if (c === '%') {
-      if (tokens.at(-1) !== LIKE_ANY) tokens.push(LIKE_ANY);
-    } else if (c === '_') tokens.push(LIKE_ONE);
-    else if (c === '[') {
-      const set = likeSetAt(pattern, i, escape, fold, brackets);
-      if (set === LIKE_INVALID) return null;
-      if (set === LIKE_LITERAL) literal(fold(c));
-      else {
-        tokens.push({ test: caseClassTest(set.source, ignoreCase) });
-        i = set.end; // NOSONAR: loop cursor is advanced in the body on purpose
-      }
-    } else literal(fold(c));
+    i = element.next;
   }
   return tokens;
+}
+
+// The tokens of the pattern element at index i and the index after it, or null when the pattern is invalid there.
+function likeElementAt(pattern, i, options) {
+  const { escape, fold, ignoreCase } = options;
+  const c = pattern[i];
+  if (escape !== null && c === escape) {
+    if (i + 1 === pattern.length) return null;
+    return { tokens: literalTokens(fold(pattern[i + 1]), ignoreCase), next: i + 2 };
+  }
+  if (c === '%') return { tokens: [LIKE_ANY], next: i + 1 };
+  if (c === '_') return { tokens: [LIKE_ONE], next: i + 1 };
+  if (c === '[') return likeSetElementAt(pattern, i, options);
+  return { tokens: literalTokens(fold(c), ignoreCase), next: i + 1 };
+}
+
+function likeSetElementAt(pattern, i, options) {
+  const { escape, fold, ignoreCase, brackets } = options;
+  const set = likeSetAt(pattern, i, escape, fold, brackets);
+  if (set === LIKE_INVALID) return null;
+  if (set === LIKE_LITERAL) return { tokens: literalTokens(fold('['), ignoreCase), next: i + 1 };
+  return { tokens: [{ test: caseClassTest(set.source, ignoreCase) }], next: set.end + 1 };
+}
+
+// One token per UTF-16 unit of the folded text.
+function literalTokens(text, ignoreCase) {
+  return text.split('').map((char) => (ignoreCase ? { test: caseClassTest(escapeLikeChar(char), true) } : { char }));
 }
 
 // Ranges are read from escaped class text: an escape is one atom, an unescaped - between two atoms is a range.
 // A range whose start is above its end matches no character, so it is dropped and the other members still apply.
 // Every dash that is kept is written escaped, so dropping a range cannot turn a literal dash into a range operator.
 function withoutBackwardRanges(body) {
-  const atoms = [];
-  for (let k = 0; k < body.length; k++) {
-    const escaped = body[k] === '\\' && k + 1 < body.length;
-    atoms.push({
-      text: escaped ? body.slice(k, k + 2) : body[k],
-      code: (escaped ? body[k + 1] : body[k]).charCodeAt(0),
-    });
-    if (escaped) k++;
-  }
-  const kept = (atom) => (atom.text === '-' ? String.raw`\-` : atom.text);
+  const atoms = classAtoms(body);
   let out = '';
-  for (let k = 0; k < atoms.length; k++) {
-    if (k + 2 < atoms.length && atoms[k + 1].text === '-') {
-      if (atoms[k].code <= atoms[k + 2].code) out += `${kept(atoms[k])}-${kept(atoms[k + 2])}`;
-      k += 2;
-    } else out += kept(atoms[k]);
+  let k = 0;
+  while (k < atoms.length) {
+    const item = classItemAt(atoms, k);
+    out += item.text;
+    k = item.next;
   }
   return out;
 }
 
+// Atoms of class text: an escape with its character is one atom, every other character is one atom.
+function classAtoms(body) {
+  const atoms = [];
+  let k = 0;
+  while (k < body.length) {
+    const width = body[k] === '\\' && k + 1 < body.length ? 2 : 1;
+    atoms.push({ text: body.slice(k, k + width), code: body.charCodeAt(k + width - 1) });
+    k += width;
+  }
+  return atoms;
+}
+
+const keptClassText = (atom) => (atom.text === '-' ? String.raw`\-` : atom.text);
+
+// The class text of the member that starts at atom k, and the index of the atom after it.
+function classItemAt(atoms, k) {
+  if (k + 2 < atoms.length && atoms[k + 1].text === '-') {
+    const text = atoms[k].code <= atoms[k + 2].code ? `${keptClassText(atoms[k])}-${keptClassText(atoms[k + 2])}` : '';
+    return { text, next: k + 3 };
+  }
+  return { text: keptClassText(atoms[k]), next: k + 1 };
+}
+
+function classSource(negate, body) {
+  return `[${negate ? '^' : ''}${withoutBackwardRanges(body)}]`;
+}
+
 function likeSetAt(pattern, index, escape, fold, brackets) {
   const close = pattern.indexOf(']', index + 1);
-  if (brackets === 'matcher') {
-    if (close < 0) return LIKE_LITERAL;
-    let body = pattern.slice(index + 1, close);
-    if (!body || body === '^') return LIKE_INVALID;
-    const negate = body.length > 1 && body.startsWith('^');
-    if (negate) body = body.slice(1);
-    const escapedBody = body.replace(/[\\\]^]/g, String.raw`\$&`);
-    return { source: `[${negate ? '^' : ''}${withoutBackwardRanges(escapedBody)}]`, end: close };
-  }
+  if (brackets === 'matcher') return matcherSetAt(pattern, index, close);
   if (close <= index + 1) return LIKE_LITERAL;
-  if (brackets === 'pattern') {
-    const negate = pattern[index + 1] === '^';
-    const body = pattern.slice(index + 1 + (negate ? 1 : 0), close).replace(/[\\\][]/g, String.raw`\$&`);
-    return { source: `[${negate ? '^' : ''}${withoutBackwardRanges(body)}]`, end: close };
-  }
+  if (brackets === 'pattern') return patternSetAt(pattern, index, close);
   return sqlSetAt(pattern, index, escape, fold);
+}
+
+function matcherSetAt(pattern, index, close) {
+  if (close < 0) return LIKE_LITERAL;
+  let body = pattern.slice(index + 1, close);
+  if (!body || body === '^') return LIKE_INVALID;
+  const negate = body.length > 1 && body.startsWith('^');
+  if (negate) body = body.slice(1);
+  return { source: classSource(negate, body.replace(/[\\\]^]/g, String.raw`\$&`)), end: close };
+}
+
+function patternSetAt(pattern, index, close) {
+  const negate = pattern[index + 1] === '^';
+  const body = pattern.slice(index + 1 + (negate ? 1 : 0), close).replace(/[\\\][]/g, String.raw`\$&`);
+  return { source: classSource(negate, body), end: close };
 }
 
 function sqlSetAt(pattern, index, escape, fold) {
@@ -667,7 +701,7 @@ function sqlSetAt(pattern, index, escape, fold) {
     set += escaped ? member.replaceAll('-', String.raw`\-`) : member;
   }
   if (end === pattern.length || !set) return LIKE_INVALID;
-  return { source: `[${negate ? '^' : ''}${withoutBackwardRanges(set)}]`, end };
+  return { source: classSource(negate, set), end };
 }
 
 const caseClassTests = new Map();
@@ -720,16 +754,28 @@ export function likeTokensSuffixStart(tokens, text) {
   let best = new Array(last + 1).fill(Infinity);
   for (let t = 0; t <= text.length; t++) {
     best[0] = Math.min(best[0], t);
-    for (let p = 0; p < last; p++) if (tokens[p] === LIKE_ANY) best[p + 1] = Math.min(best[p + 1], best[p]);
+    closeOverAnyRuns(tokens, best);
     if (t === text.length) return best[last] === Infinity ? -1 : best[last];
-    const next = new Array(last + 1).fill(Infinity);
-    for (let p = 0; p < last; p++) {
-      if (tokens[p] === LIKE_ANY) next[p] = Math.min(next[p], best[p]);
-      else if (best[p] !== Infinity && likeConsumes(tokens[p], text[t])) next[p + 1] = Math.min(next[p + 1], best[p]);
-    }
-    best = next;
+    best = stepStarts(tokens, best, text[t]);
   }
   return -1;
+}
+
+// A run of % may match nothing, so a start at a % token also reaches the token after it.
+function closeOverAnyRuns(tokens, best) {
+  for (let p = 0; p < tokens.length; p++) {
+    if (tokens[p] === LIKE_ANY) best[p + 1] = Math.min(best[p + 1], best[p]);
+  }
+}
+
+// The smallest live start at each token position after the text consumes one character.
+function stepStarts(tokens, best, char) {
+  const next = new Array(tokens.length + 1).fill(Infinity);
+  for (let p = 0; p < tokens.length; p++) {
+    if (tokens[p] === LIKE_ANY) next[p] = Math.min(next[p], best[p]);
+    else if (best[p] !== Infinity && likeConsumes(tokens[p], char)) next[p + 1] = Math.min(next[p + 1], best[p]);
+  }
+  return next;
 }
 
 const DAY = 86400000;

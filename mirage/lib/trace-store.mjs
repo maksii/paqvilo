@@ -62,10 +62,17 @@ const BASE64_MIN = 1024;
 const ID = /^[A-Za-z0-9._:-]{1,128}$/;
 // Inbound trace headers name only UUID-shaped ids, so a client can never choose a route name or another reserved word.
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-// Credential-named keys, compared without separators (api_key, x-functions-key, client-secret); `sas`, `sig` and
-// `invitation` only as whole keys.
+// Credential-named keys, compared without separators (api_key, x-functions-key, client-secret); `sas` and `sig` only as
+// whole keys.
 const SECRET_KEY =
-  /password|passwd|secret|token|auth(?:orization|entication)|cookie|credential|apikey|signature|sharedaccesssignature|authvalue|connectionstring|saskey|sharedaccesskey|accountkey|function(?:s)?key|subscriptionkey|privatekey|invitationcode|^sas$|^sig$|^invitation$/i; // NOSONAR: regex kept: a rewrite would change matches or captures
+  /password|passwd|secret|token|auth(?:orization|entication)|cookie|credential|apikey|signature|sharedaccesssignature|authvalue|connectionstring|saskey|sharedaccesskey|accountkey|function(?:s)?key|subscriptionkey|privatekey|^sas$|^sig$/i; // NOSONAR: regex kept: a rewrite would change matches or captures
+// `invitation` matches as a whole key and `invitationcode` anywhere in the key, through isSecretKey.
+const SECRET_KEY_EXACT = new Set(['invitation']);
+const SECRET_KEY_PART = ['invitationcode'];
+const isSecretKey = (key) => {
+  const lower = key.toLowerCase();
+  return SECRET_KEY.test(key) || SECRET_KEY_EXACT.has(lower) || SECRET_KEY_PART.some((part) => lower.includes(part));
+};
 const MAX_EVENTS = 1000;
 const MAX_DEPTH = 16;
 const MAX_ITEMS = 1000;
@@ -88,7 +95,7 @@ const round = (value) => Math.round(value * 100) / 100;
 const validId = (value) => (typeof value === 'string' && ID.test(value) ? value : null);
 // secretName holds a Key Vault secret's name from a reference (secret spans), never its value, so it stays readable.
 const NAME_KEYS = new Set(['secretName']);
-const secretKey = (key) => !NAME_KEYS.has(String(key)) && SECRET_KEY.test(String(key).replace(/[^A-Za-z0-9]/g, ''));
+const secretKey = (key) => !NAME_KEYS.has(String(key)) && isSecretKey(String(key).replace(/[^A-Za-z0-9]/g, ''));
 const orNull = (value) => (value === undefined || value === null || value === '' ? null : String(value));
 const lower = (value) => String(value ?? '').toLowerCase();
 const actorKey = (value) =>

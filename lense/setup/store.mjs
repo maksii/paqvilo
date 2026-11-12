@@ -423,6 +423,9 @@ function assertSaveInput(input, linkedSite, localFile) {
 
 const SAVE_LOCK_STALE_MS = 30_000;
 
+// An age that cannot be computed (for example a lock record without a numeric `at`) counts as expired.
+const saveLockExpired = (ageMs) => Number.isNaN(ageMs) || ageMs > SAVE_LOCK_STALE_MS;
+
 const processAlive = (pid) => {
   try {
     process.kill(pid, 0);
@@ -444,7 +447,7 @@ async function removeStaleSaveLock(lockFile) {
   }
   const valid = Number.isInteger(record?.pid) && record.pid > 0;
   const stale = valid
-    ? !processAlive(record.pid) || !(Date.now() - record.at <= SAVE_LOCK_STALE_MS)
+    ? !processAlive(record.pid) || saveLockExpired(Date.now() - record.at)
     : await unrecordedSaveLockIsStale(lockFile);
   if (stale) await fs.rm(lockFile, { force: true });
   return stale;
@@ -453,7 +456,7 @@ async function removeStaleSaveLock(lockFile) {
 async function unrecordedSaveLockIsStale(lockFile) {
   try {
     const { mtimeMs } = await fs.stat(lockFile);
-    return !(Date.now() - mtimeMs <= SAVE_LOCK_STALE_MS);
+    return saveLockExpired(Date.now() - mtimeMs);
   } catch (error) {
     if (error.code === 'ENOENT') return true;
     throw error;

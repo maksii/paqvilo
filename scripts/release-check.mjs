@@ -574,62 +574,88 @@ function shippedPaths(packedFiles) {
   return { files, directories };
 }
 
-/* NOSONAR: single-pass routine, splitting it would change shared state */ export function checkDocumentation(
-  root,
-  packedFiles,
-) {
+// Markdown files under a directory, skipping hidden and generated directories.
+function markdownUnder(root, directory, found) {
+  if (!fs.existsSync(path.join(root, directory))) return found;
+  for (const entry of fs.readdirSync(path.join(root, directory), { withFileTypes: true })) {
+    if (entry.name.startsWith('.') || ['node_modules', 'bin', 'obj', 'out', 'coverage'].includes(entry.name)) continue;
+    const name = path.posix.join(directory, entry.name);
+    if (entry.isDirectory()) markdownUnder(root, name, found);
+    else if (entry.isFile() && name.endsWith('.md')) found.push(name);
+  }
+  return found;
+}
+
+// The guides, the documentation trees and, when the pack list is known, the shipped Markdown files.
+function documentationFiles(root, shipped) {
   const names = ['README.md', 'AGENTS.md', 'CONTRIBUTING.md', 'SECURITY.md', 'mirage/README.md'];
-  const shipped = packedFiles && shippedPaths(packedFiles);
-  const visit = (directory) => {
-    if (!fs.existsSync(path.join(root, directory))) return;
-    for (const entry of fs.readdirSync(path.join(root, directory), { withFileTypes: true })) {
-      if (entry.name.startsWith('.') || ['node_modules', 'bin', 'obj', 'out', 'coverage'].includes(entry.name))
-        continue;
-      const name = path.posix.join(directory, entry.name);
-      if (entry.isDirectory()) visit(name);
-      else if (entry.isFile() && name.endsWith('.md')) names.push(name);
-    }
-  };
-  for (const directory of ['docs', 'mirage/docs', 'examples/project', 'examples/company-operations']) visit(directory);
+  for (const directory of ['docs', 'mirage/docs', 'examples/project', 'examples/company-operations'])
+    markdownUnder(root, directory, names);
   // Template-relative links are checked after generation by installed-package smoke.
   if (shipped)
     for (const file of shipped.files) if (file.endsWith('.md') && !file.startsWith('templates/')) names.push(file);
-  for (const name of new Set(names)) {
-    const text = fs.readFileSync(path.join(root, name), 'utf8');
-    // Guides describe current behaviour. Evidence ledgers, benchmark results and
-    // test receipts belong in ignored storage or a private project.
-    if (
-      /-(?:feedback|receipts?|ledger|qualification)\.md$/.test(name) ||
-      /\b[0-9a-f]{40}\b/.test(text) ||
-      /\b(?:results?|verification|measurements?|receipts?|runs?)\b[^\n]{0,40}\bon 20\d\d-\d\d-\d\d\b/i.test(text)
-    )
-      throw new Error(`Evidence ledger or receipt in documentation: ${name}`);
-    let searchFrom = 0;
-    while (searchFrom < text.length) {
-      const open = text.indexOf('[', searchFrom);
-      if (open < 0) break;
-      const close = text.indexOf(']', open + 1);
-      if (close < 0) break;
-      if (close === open + 1 || text[close + 1] !== '(') {
-        searchFrom = close + 1;
-        continue;
-      }
-      const end = text.indexOf(')', close + 2);
-      if (end < 0) break;
-      if (end === close + 2) {
-        searchFrom = close + 1;
-        continue;
-      }
-      searchFrom = end + 1;
-      const target = text.slice(close + 2, end).split('#')[0];
-      if (!target || /^[a-z][a-z0-9+.-]*:/i.test(target)) continue;
-      const localPath = decodeURIComponent(target.replace(/^<|>$/g, ''));
-      if (!fs.existsSync(path.resolve(root, path.dirname(name), localPath)))
-        throw new Error(`Broken documentation link in ${name}: ${target}`);
-      const repoPath = path.posix.normalize(path.posix.join(path.posix.dirname(name), localPath)).replace(/\/+$/, '');
-      if (shipped?.files.has(name) && !shipped.files.has(repoPath) && !shipped.directories.has(repoPath))
-        throw new Error(`Documentation link in ${name} links to a file that is not shipped: ${target}`);
+  return names;
+}
+
+// Guides describe current behaviour. Evidence ledgers, benchmark results and
+// test receipts belong in ignored storage or a private project.
+function evidenceLedgerProblem(name, text) {
+  const ledger =
+    /-(?:feedback|receipts?|ledger|qualification)\.md$/.test(name) ||
+    /\b[0-9a-f]{40}\b/.test(text) ||
+    /\b(?:results?|verification|measurements?|receipts?|runs?)\b[^\n]{0,40}\bon 20\d\d-\d\d-\d\d\b/i.test(text);
+  return ledger ? `Evidence ledger or receipt in documentation: ${name}` : undefined;
+}
+
+// Removes trailing slashes with a bounded scan.
+function trimTrailingSlashes(value) {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === '/') end -= 1;
+  return value.slice(0, end);
+}
+
+// Yields the raw target of each inline Markdown link, `[text](target)`, found by an index-based scan.
+function* markdownLinkTargets(text) {
+  let searchFrom = 0;
+  while (searchFrom < text.length) {
+    const open = text.indexOf('[', searchFrom);
+    if (open < 0) break;
+    const close = text.indexOf(']', open + 1);
+    if (close < 0) break;
+    if (close === open + 1 || text[close + 1] !== '(') {
+      searchFrom = close + 1;
+      continue;
     }
+    const end = text.indexOf(')', close + 2);
+    if (end < 0) break;
+    if (end === close + 2) {
+      searchFrom = close + 1;
+      continue;
+    }
+    searchFrom = end + 1;
+    yield text.slice(close + 2, end);
+  }
+}
+
+// A local target must exist, and a shipped document may only link to shipped files.
+function checkLink(root, name, rawTarget, shipped) {
+  const target = rawTarget.split('#')[0];
+  if (!target || /^[a-z][a-z0-9+.-]*:/i.test(target)) return;
+  const localPath = decodeURIComponent(target.replace(/^<|>$/g, ''));
+  if (!fs.existsSync(path.resolve(root, path.dirname(name), localPath)))
+    throw new Error(`Broken documentation link in ${name}: ${target}`);
+  const repoPath = trimTrailingSlashes(path.posix.normalize(path.posix.join(path.posix.dirname(name), localPath)));
+  if (shipped?.files.has(name) && !shipped.files.has(repoPath) && !shipped.directories.has(repoPath))
+    throw new Error(`Documentation link in ${name} links to a file that is not shipped: ${target}`);
+}
+
+export function checkDocumentation(root, packedFiles) {
+  const shipped = packedFiles && shippedPaths(packedFiles);
+  for (const name of new Set(documentationFiles(root, shipped))) {
+    const text = fs.readFileSync(path.join(root, name), 'utf8');
+    const problem = evidenceLedgerProblem(name, text);
+    if (problem) throw new Error(problem);
+    for (const target of markdownLinkTargets(text)) checkLink(root, name, target, shipped);
   }
   for (const name of ['.env', 'paqvilo.config.local.yml']) {
     if (!fs.readFileSync(path.join(root, '.gitignore'), 'utf8').includes(name))
