@@ -251,11 +251,15 @@ export async function signedInSimulatorPage(t, browser, { dir, initial, contact 
 /** The port in a DevToolsActivePort file once Chromium has written both of its lines, otherwise null. */
 async function readDevToolsPort(file) {
   let text;
-  try {
-    text = await fs.readFile(file, 'utf8');
-  } catch (error) {
-    if (error.code === 'ENOENT') return null;
-    throw error;
+  while (text === undefined) {
+    try {
+      text = await fs.readFile(file, 'utf8');
+    } catch (error) {
+      if (error.code === 'ENOENT') return null;
+      // Windows refuses the read while the browser has the file open to write it: read again once it has closed it.
+      if (error.code !== 'EBUSY') throw error;
+      await new Promise((resolve) => setImmediate(resolve));
+    }
   }
   const [port, target] = text.split('\n');
   return port && target ? Number(port) : null;

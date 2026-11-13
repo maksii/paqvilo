@@ -69,8 +69,9 @@ export const ANY_DEBUG_PORT_ARGS = ['--remote-debugging-port=0', '--remote-debug
 export async function devToolsPort(userDataDir) {
   const file = path.join(userDataDir, 'DevToolsActivePort');
   for (;;) {
+    // ENOENT: not written yet. EBUSY: Windows refuses the read while the browser has the file open to write it.
     const text = await fs.readFile(file, 'utf8').catch((error) => {
-      if (error.code === 'ENOENT') return '';
+      if (error.code === 'ENOENT' || error.code === 'EBUSY') return '';
       throw error;
     });
     // The first line is complete once the second (the browser's WebSocket path) has started.
