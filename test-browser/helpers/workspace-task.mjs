@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { chromium } from 'playwright-core';
@@ -8,6 +9,7 @@ import { startOnFreePort } from './debug-port.mjs';
 import { PROFILE_RELEASE_RETRIES } from './profile-cleanup.mjs';
 import { drainFixture } from '../../mirage/testing/owned-fixture.mjs';
 import { browserChannel } from '../../mirage/lib/browser-launch.mjs';
+import { recordedRuntimeOwner } from '../../test/helpers/mirage-runtimes.mjs';
 
 /**
  * Stops an owned child and resolves once it has closed: its stdio drained, not merely exited. After a requested
@@ -72,9 +74,18 @@ export function runWorkspaceTask(t, { cli, args, cwd, env, task, stop, work, cle
     closed = once(child, 'close');
   };
   if (typeof args !== 'function') start(args);
+  // `mirage stop` keeps its records in the state folder next to the configuration or project it names, else in its
+  // working directory.
+  const flag = stop.findIndex((arg) => arg === '--config' || arg === '--project');
+  const stateRoot = flag === -1 ? work : path.dirname(path.resolve(work, stop[flag + 1]));
+  const ownershipFile = path.join(stateRoot, '.paqvilo', 'mirage', 'sessions.json');
+  const report = (line) => (t.diagnostic ? t.diagnostic(line) : process.emitWarning(line));
   t.after(async () => {
     let requestedBrowserClose = false;
+    const runtimes = recordedRuntimeOwner(ownershipFile, { report });
     await drainFixture([
+      // While the task still runs: a development command that ends removes its own record.
+      () => runtimes.note(),
       async () => {
         if (!browser) return;
         const session = await browser.newBrowserCDPSession().catch(() => null);
@@ -85,6 +96,7 @@ export function runWorkspaceTask(t, { cli, args, cwd, env, task, stop, work, cle
         await browser.close().catch(() => {});
       },
       () => child && stopOwnedChild(child, closed, { graceful: requestedBrowserClose }),
+      () => runtimes.note(),
       async () => {
         const stopping = spawn(process.execPath, [cli, 'mirage', 'stop', ...stop, '--json'], {
           cwd: work,
@@ -94,6 +106,8 @@ export function runWorkspaceTask(t, { cli, args, cwd, env, task, stop, work, cle
         });
         assert.deepEqual(await once(stopping, 'close'), [0, null], 'the project Mirage stops cleanly');
       },
+      // Whatever the task or the stop left running, although they may have removed its record.
+      () => runtimes.end(),
       cleanup,
     ]);
     await fs.rm(work, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });

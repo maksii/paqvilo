@@ -13,6 +13,7 @@ import { startOnFreePort } from './helpers/debug-port.mjs';
 import { childOutput } from './helpers/child-output.mjs';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
+import { recordedRuntimeOwner } from '../test/helpers/mirage-runtimes.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const listen = (server) => new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -23,6 +24,10 @@ test('standalone dev starts configured apps, opens the workbench and closes only
   const owner = ownedFixture(t);
   // The development browser's profile and the app's server processes release this directory after they exit.
   owner.remove(() => fs.rm(dir, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES }));
+  // Both projects keep their records here; a development command that ends removes its own record.
+  const runtimes = recordedRuntimeOwner(path.join(dir, '.paqvilo', 'mirage', 'sessions.json'), {
+    report: (line) => t.diagnostic(line),
+  });
   const external = http.createServer((_req, res) => res.end('external'));
   await listen(external);
   owner.add(() => {
@@ -105,6 +110,7 @@ test('standalone dev starts configured apps, opens the workbench and closes only
     const closed = once(child, 'close');
     const started = { port, debugPort, child, closed, browser: null };
     owner.add(async () => {
+      await runtimes.note();
       const { browser } = started;
       if (browser?.isConnected()) {
         const cdp = await browser.newBrowserCDPSession();
@@ -120,6 +126,9 @@ test('standalone dev starts configured apps, opens the workbench and closes only
         } else child.kill('SIGTERM');
       }
       await closed;
+      // A runtime the closed development command left running, whether or not it kept its record.
+      await runtimes.note();
+      await runtimes.end();
     });
     started.output = childOutput(child);
     started.match = await started.output.waitFor(/[Oo]pening (http:\/\/127\.0\.0\.1:\d+)(\/[^\s]*)/, {

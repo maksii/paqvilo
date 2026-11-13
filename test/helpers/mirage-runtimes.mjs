@@ -31,6 +31,64 @@ export async function endProcessTree(pid, { signal = 'SIGKILL', missingGroup = (
   }
 }
 
+/**
+ * The runtimes `ownershipFile` (`<stateDir>/mirage/sessions.json`) records now; a missing file records none. Take this
+ * snapshot before a product stop: the stop removes the records of what it reports as ended.
+ * @returns {Promise<{pid: number, processIdentity: string|undefined, url: string|undefined}[]>}
+ */
+export async function recordedRuntimes(ownershipFile) {
+  return (await ownedSessions({ ownershipFile })).map(({ pid, processIdentity, url }) => ({
+    pid,
+    processIdentity,
+    url,
+  }));
+}
+
+/**
+ * Ends every runtime of a `recordedRuntimes` snapshot that is still running with the start identity the snapshot
+ * names, whether or not its record is still in the file. A PID whose identity is missing or differs is reported and
+ * never signalled: it may have been reused by another program.
+ */
+export async function endRuntimes(runtimes, { identityOf = processIdentity, report }) {
+  for (const { pid, processIdentity: recorded, url } of runtimes) {
+    if (!isAlive(pid)) continue;
+    if (!recorded || identityOf(pid) !== recorded) {
+      report(
+        `Mirage runtime pid ${pid} (${url}) was not ended: the process holding that PID could not be confirmed to have the start identity its record names.`,
+      );
+      continue;
+    }
+    await endProcessTree(pid);
+    while (isAlive(pid) && identityOf(pid) === recorded) await delay(EXIT_POLL_MS);
+  }
+}
+
+/**
+ * Owner of the runtimes `ownershipFile` records during a test's teardown. `note()` adds what the file records now and
+ * never throws: a failed read is kept, so the teardown that called it continues. `end()` ends every noted runtime that
+ * is still running and then fails with the read failures, if any; a failure is reported once.
+ */
+export function recordedRuntimeOwner(ownershipFile, { identityOf = processIdentity, report }) {
+  const noted = [],
+    failures = [];
+  return {
+    async note() {
+      try {
+        noted.push(...(await recordedRuntimes(ownershipFile)));
+      } catch (error) {
+        failures.push(error);
+      }
+    },
+    async end() {
+      await endRuntimes(noted, { identityOf, report });
+      const failed = failures.splice(0);
+      if (failed.length === 1) throw failed[0];
+      if (failed.length)
+        throw new AggregateError(failed, `The Mirage ownership records ${ownershipFile} could not be read.`);
+    },
+  };
+}
+
 /** The runtimes a `mirage start --json` answer (text or parsed) reports as started by that command. */
 function startedRuntimes(answer) {
   let value = answer;

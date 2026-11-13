@@ -15,6 +15,7 @@ import { childOutput } from './helpers/child-output.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 import { startOnFreePort } from './helpers/debug-port.mjs';
 import { DEV_READY } from '../lense/dev-messages.mjs';
+import { recordedRuntimeOwner } from '../test/helpers/mirage-runtimes.mjs';
 
 test('demo command opens a populated browser, supports the walkthrough and stops its Mirage', async (t) => {
   const work = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-demo-browser-'));
@@ -32,6 +33,10 @@ test('demo command opens a populated browser, supports the walkthrough and stops
     await disconnected;
   };
   ownedFixture(t).add(async () => {
+    const ownershipFile = path.join(directory, '.paqvilo', 'mirage', 'sessions.json');
+    const runtimes = recordedRuntimeOwner(ownershipFile, { report: (line) => t.diagnostic(line) });
+    // While the demo still runs: a demo that ends removes its own record.
+    await runtimes.note();
     await releaseDemoRuntime?.();
     await closeOwnedBrowser().catch(() => {});
     await browser?.close().catch(() => {});
@@ -39,15 +44,33 @@ test('demo command opens a populated browser, supports the walkthrough and stops
     await exited;
     // A failed launch can leave a runtime below the wrapper that Windows terminated.
     // Stop only this test's project-owned runtime before removing its ownership records.
-    if (child && child.exitCode !== 0) {
-      const cleanup = spawn(
-        process.execPath,
-        [cli, 'mirage', 'stop', '--config', path.join(directory, 'paqvilo.config.yml'), '--site', 'example', '--json'],
-        { cwd: work, env, stdio: 'ignore', windowsHide: true },
-      );
-      await once(cleanup, 'exit');
+    await runtimes.note();
+    try {
+      if (child && child.exitCode !== 0) {
+        const cleanup = spawn(
+          process.execPath,
+          [
+            cli,
+            'mirage',
+            'stop',
+            '--config',
+            path.join(directory, 'paqvilo.config.yml'),
+            '--site',
+            'example',
+            '--json',
+          ],
+          { cwd: work, env, stdio: 'ignore', windowsHide: true },
+        );
+        await once(cleanup, 'exit');
+      }
+    } finally {
+      // Whatever the demo or the stop left running, although they may have removed its record.
+      try {
+        await runtimes.end();
+      } finally {
+        await fs.rm(work, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
+      }
     }
-    await fs.rm(work, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
   });
   const debugPort = await startOnFreePort(async (port) => {
     child = spawn(

@@ -12,6 +12,7 @@ import { chromium } from 'playwright-core';
 import { browserChannel } from '../mirage/lib/browser-launch.mjs';
 import { startOnFreePort } from './helpers/debug-port.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
+import { recordedRuntimeOwner } from '../test/helpers/mirage-runtimes.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url)),
   execute = promisify(execFile);
@@ -79,6 +80,10 @@ test('source-only public dev closes owned browser/runtime, preserves reused runt
     );
   const children = [],
     browsers = [];
+  // Both projects keep their records in the same state folder, next to them.
+  const runtimes = recordedRuntimeOwner(path.join(directory, '.paqvilo', 'mirage', 'sessions.json'), {
+    report: (line) => t.diagnostic(line),
+  });
   const closeBrowser = async (browser) => {
     const cdp = await browser.newBrowserCDPSession();
     await cdp.send('Browser.close').catch((error) => {
@@ -86,16 +91,23 @@ test('source-only public dev closes owned browser/runtime, preserves reused runt
     });
   };
   ownedFixture(t).add(async () => {
+    // While development still runs: a development command that ends removes its own record.
+    await runtimes.note();
     for (const browser of browsers) if (browser.isConnected()) await closeBrowser(browser).catch(() => {});
     for (const entry of children)
       if (entry.child.exitCode === null) {
         entry.child.kill('SIGTERM');
         await Promise.race([entry.exited, new Promise((resolve) => setTimeout(resolve, 10000))]);
       }
+    await runtimes.note();
     await commands(project, 'stop').catch(() => {});
     await commands(sibling, 'stop').catch(() => {});
-    // Windows can keep files of an exited browser profile busy for a few seconds.
-    await fs.rm(directory, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
+    try {
+      await runtimes.end();
+    } finally {
+      // Windows can keep files of an exited browser profile busy for a few seconds.
+      await fs.rm(directory, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
+    }
   });
   const siblingRuntime = await commands(sibling, 'start', '--port', '0');
   const develop = async () => {
@@ -156,6 +168,8 @@ test('source-only public dev closes owned browser/runtime, preserves reused runt
   await closeBrowser(reused.browser);
   assert.deepEqual(await reused.exited, { code: 0, signal: null });
   assert.equal((await fetch(background.url + '/_sim/api/status')).status, 200);
+  // The test's teardown ends what this stop leaves running, although it removes the records.
+  await runtimes.note();
   await commands(project, 'stop');
   assert.equal((await fetch(siblingRuntime.url + '/_sim/api/status')).status, 200);
   assert.equal(await fs.readFile(project, 'utf8'), configuration);

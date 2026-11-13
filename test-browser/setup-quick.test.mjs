@@ -15,6 +15,7 @@ import { chromium } from 'playwright-core';
 import YAML from 'yaml';
 import { startSetupServer } from '../lense/setup/server.mjs';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
+import { recordedRuntimeOwner } from '../test/helpers/mirage-runtimes.mjs';
 
 const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -62,13 +63,19 @@ async function setupFixture(t, prefix) {
   });
   const config = path.join(directory, 'paqvilo.config.yml');
   // Whatever the run leaves behind, the preview this test may have started is stopped.
-  ownedFixture(t).add(async () =>
+  ownedFixture(t).add(async () => {
+    const runtimes = recordedRuntimeOwner(path.join(directory, '.paqvilo', 'mirage', 'sessions.json'), {
+      report: (line) => t.diagnostic(line),
+    });
+    await runtimes.note();
     spawnSync(process.execPath, [path.join(root, 'bin/paqvilo.mjs'), 'mirage', 'stop', '--config', config, '--json'], {
       cwd: directory,
       windowsHide: true,
       timeout: CLI_HANG_GUARD_MS,
-    }),
-  );
+    });
+    // Whatever the stop left running, although it may have removed its record.
+    await runtimes.end();
+  });
   const server = await startSetupServer({ directory, processEnv: {} });
   ownedFixture(t).add(() => server.close());
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
