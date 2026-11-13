@@ -2080,11 +2080,13 @@ function panelBrowserImpl(data) {
     /* NOSONAR: single-pass routine, splitting it would change shared state */ const tweaksHtml = () => {
       const runtime = S.d.mirage;
       if (S.d.mirageMode && !runtime) return emptyState('Connecting to the Mirage ...', '');
-      if (!runtime?.active)
-        return emptyState(
-          'Mirage is not active',
-          runtime?.error ? esc(runtime.error) : 'Tweaks change the local Mirage runtime.',
+      // A failed read stays shown until a navigation or this control reads the runtime again.
+      if (runtime?.active === false && runtime.error)
+        return (
+          emptyState('Mirage is not active', esc(runtime.error)) +
+          '<button class="btn" data-act="inspect-refresh">Read again</button>'
         );
+      if (!runtime?.active) return emptyState('Mirage is not active', 'Tweaks change the local Mirage runtime.');
       const t = S.tweaks;
       // A refresh keeps the current Tweaks (the body is aria-busy meanwhile), so an open
       // confirmation and its keyboard focus survive a newer runtime version.

@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { EventEmitter, once } from 'node:events';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { startCodeAppDevServers, launchOf, CODE_APP_STARTUP_CANCELLED } from '../lense/code-app-dev-servers.mjs';
@@ -413,7 +413,8 @@ async function startWrappedFake(message) {
 test('a wrapped launch reports its exit as the startup failure and sends the command once', async () => {
   const { child, starting } = await startWrappedFake({ type: 'exit', code: 3 });
   await assert.rejects(starting, (error) => error.message.startsWith('Code app wrapped dev server exited (3)'));
-  const cwd = await fs.realpath(os.tmpdir());
+  // The product resolves the app directory with the same call, so a short 8.3 temp name stays as it is on both sides.
+  const cwd = realpathSync(os.tmpdir());
   assert.deepEqual(child.sent, [{ command: ['invented-code-app-tool', '--flag'], verbatim: false, cwd }]);
 });
 

@@ -272,8 +272,10 @@ browser debugging socket did not open.`).
 - Switching the model-driven target on a slow or loaded machine no longer ends the dev session and closes the
   browser: retiring a target waits for the browser to finish its cleanup.
 - The panel's Tweaks tab recovers when a read of the local runtime is slow or dropped: the dev panel waits up to 60 s
-  for a slow local Mirage before it shows the runtime as unavailable, a failed read is shown, and the next navigation
-  reads again. Returning to a portal that was visited before refreshes its runtime summary.
+  for a slow local Mirage before it shows the runtime as unavailable; a read that fails sooner, such as a dropped
+  connection, is read again at once, at most three reads in all, so the Tweaks tab recovers on its own. A failure that
+  remains is shown in the Tweaks tab with **Read again**, and the next navigation also reads again. Returning to a
+  portal that was visited before refreshes its runtime summary.
 - `lense verify` has no fixed pause after the start page loads. It reads the displayed document when the start page
   reloads itself or returns from a sign-in round trip on the same address. A start page that replaces its document
   before the edits are chosen is read again, at most three times; after that `verify` fails and names the redacted
@@ -307,6 +309,12 @@ browser debugging socket did not open.`).
   diagnostic (with `listener`) instead of ending the process.
 - A failed browser launch names the profile as in use only while the browser's lock file shows a live browser on this
   machine; a launch that times out or a browser that is not installed is reported as such.
+- Every step of opening the dev browser ends at the 120 s hang guard: the first window's set-up, the debugger endpoint
+  query, the restore of the portal session and the detach from an attached browser that exposes more than one context,
+  not only the launch. A step that fails or ends at the guard closes the browser it launched. A step that ends at the
+  guard is named, for example
+  `Setting up the browser window did not finish within 120000 ms. That is the browser hang guard, not a readiness deadline.`;
+  any other failure is reported as the step's own error.
 - Stopping Code App dev servers on Windows no longer needs System32 on PATH.
 - An interrupt while `verify` or `model-driven dev` waits for the source watcher no longer leaves the command hanging.
 - A start that cannot read the identity of a running Mirage keeps that runtime's ownership record instead of

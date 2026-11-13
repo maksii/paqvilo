@@ -423,6 +423,16 @@ export function baselineEntries(findings, baseline, reasonOf = reviewedReason) {
   return findings.map((item) => ({ ...item, reason: reviewed.get(item.key)?.shift() ?? reasonOf(item) }));
 }
 
+/** The findings of the current baseline; a baseline that does not exist yet has none. */
+export function currentBaselineFindings(file = baselineFile) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8')).findings;
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
 function reviewedCloneReason(item) {
   if (item.key.startsWith('tests:'))
     return 'Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite.';
@@ -518,10 +528,7 @@ async function main() {
           version: 1,
           policy:
             'Reviewed compatibility, declarative contracts, independent test assertions and standalone distribution copies. Baseline changes require human review; CI never fixes source or refreshes this file.',
-          findings: baselineEntries(
-            findings,
-            fs.existsSync(baselineFile) ? JSON.parse(fs.readFileSync(baselineFile, 'utf8')).findings : [],
-          ),
+          findings: baselineEntries(findings, currentBaselineFindings()),
         },
         null,
         2,

@@ -136,7 +136,7 @@ async function fixture(t, { resetDocument = false } = {}) {
   };
 }
 
-test('model-driven startup deadline disposes a late owned browser context and leaves its sibling usable', async (t) => {
+test('model-driven startup deadline disposes a late owned browser context before the run returns and leaves its sibling usable', async (t) => {
   const setup = await fixture(t);
   const browser = await chromium.launch({
     channel: setup.channel === 'chromium' ? undefined : setup.channel,
@@ -146,34 +146,55 @@ test('model-driven startup deadline disposes a late owned browser context and le
   const sibling = await browser.newContext(),
     siblingPage = await sibling.newPage();
   await siblingPage.setContent('<input value="sibling draft">');
-  let late, closed, finishLaunch;
-  const lateClosed = new Promise((resolve) => {
-    closed = resolve;
+  // The test, not the host's speed, decides when the silence guard fires: it captures the run's one deadline timer.
+  const nativeSetTimeout = globalThis.setTimeout;
+  const nativeClearTimeout = globalThis.clearTimeout;
+  const deadlines = [];
+  const timeoutMock = t.mock.method(globalThis, 'setTimeout', (callback, delay, ...args) => {
+    const handle = nativeSetTimeout(callback, delay, ...args);
+    if (delay > STALLED_STARTUP_DEADLINE_MS / 2 && delay <= STALLED_STARTUP_DEADLINE_MS)
+      deadlines.push({ callback, handle, args });
+    return handle;
   });
-  // The owned launch finishes only after the startup deadline has already failed the run.
-  const launchGate = new Promise((resolve) => {
-    finishLaunch = resolve;
-  });
+  const expireDeadline = () => {
+    const [deadline] = deadlines;
+    nativeClearTimeout(deadline.handle);
+    // The deadline callback re-checks the clock (a silence guard): present it a clock at the silence limit.
+    const expiredAt = Date.now() + STALLED_STARTUP_DEADLINE_MS;
+    const clock = t.mock.method(Date, 'now', () => expiredAt);
+    try {
+      deadline.callback(...deadline.args);
+    } finally {
+      clock.mock.restore();
+    }
+  };
+  let late,
+    lateClosed = false;
   t.mock.method(chromium, 'launchPersistentContext', async () => {
-    await launchGate;
+    // The silence guard ends the start while this owned launch is in flight; the launch then completes late.
+    expireDeadline();
     late = await browser.newContext();
-    late.once('close', closed);
+    late.once('close', () => {
+      lateClosed = true;
+    });
     return late;
   });
-  await assert.rejects(
-    run(null, {
+  let running;
+  try {
+    running = run(null, {
       project: setup.project,
       url: setup.origin,
       headless: true,
       browser: setup.channel,
-      'startup-timeout': '1000',
-    }),
-    (error) => error.code === 'startup_timeout' && error.phase === 'browser setup',
-  );
-  assert.equal(late, undefined, 'the deadline does not wait for the owned launch');
-  finishLaunch();
-  await lateClosed;
-  assert.ok(late);
+      'startup-timeout': String(STALLED_STARTUP_DEADLINE_MS),
+    });
+  } finally {
+    timeoutMock.mock.restore();
+  }
+  assert.equal(deadlines.length, 1, 'run must create exactly one configured startup deadline timer');
+  await assert.rejects(running, (error) => error.code === 'startup_timeout' && error.phase === 'browser setup');
+  assert.ok(late, 'the owned launch completed after the deadline ended the start');
+  assert.equal(lateClosed, true, 'the run returns only after its late owned context is closed');
   assert.equal(await siblingPage.locator('input').inputValue(), 'sibling draft');
   assert.equal(browser.isConnected(), true);
 });

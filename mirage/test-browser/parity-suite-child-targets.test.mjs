@@ -30,6 +30,9 @@ async function launchOwnedBrowser(profile) {
     browserLaunchOptions({
       headless: true,
       args: [
+        // Every site runs in its own process, so the cross-site frames of these tests are out-of-process frames on every
+        // browser: Edge isolates sites by default, Playwright's headless Chromium shell does not.
+        '--site-per-process',
         '--remote-debugging-port=0',
         '--remote-debugging-address=127.0.0.1',
         '--disable-background-networking',
@@ -97,9 +100,10 @@ fetch('/nested-save', { method: 'POST', body: 'x' }).catch(() => {}).finally(() 
 
 /**
  * The driver's WebSocket, unchanged except that it records the fate of each named write: the fate settles, naming the
- * session kind, when the driver fails a paused request whose path is that write's.
+ * session kind, when the driver fails a paused request whose path is that write's. The type of every attached target is
+ * added to `targetTypes`.
  */
-function recordFailedWrites(fates) {
+function recordFailedWrites(fates, targetTypes = new Set()) {
   const key = (sessionId, requestId) => `${sessionId ?? 'browser'}:${requestId}`;
   return class FailedWrites extends WebSocket {
     #pausedPaths = new Map();
@@ -108,6 +112,7 @@ function recordFailedWrites(fates) {
       // Registered before the driver's handler, so a paused request is recorded before the driver answers it.
       this.addEventListener('message', (event) => {
         const { method, params, sessionId } = JSON.parse(event.data);
+        if (method === 'Target.attachedToTarget') targetTypes.add(params.targetInfo.type);
         if (method === 'Fetch.requestPaused')
           this.#pausedPaths.set(key(sessionId, params.requestId), new URL(params.request.url).pathname);
       });
@@ -166,7 +171,10 @@ test('a cross-site frame and a popup opened by a reference page send no write th
   const reference = await listen(
     fateHandler({ writes: posts.reference, fates, reports }, (url) => pages[url] ?? referencePage(frameOrigin)),
   );
-  const driver = await openDriver(t, directory, reference, frame, { WebSocketImpl: recordFailedWrites(fates) });
+  const targetTypes = new Set();
+  const driver = await openDriver(t, directory, reference, frame, {
+    WebSocketImpl: recordFailedWrites(fates, targetTypes),
+  });
   // The probe's read is answered once all three children reported, each after its own write attempt settled.
   const observation = await driver.page('/', {
     roots: ['main'],
@@ -174,6 +182,7 @@ test('a cross-site frame and a popup opened by a reference page send no write th
     quietMs: 300,
     probeExpression: 'fetch("/all-reported").then((response) => response.text())',
   });
+  assert.ok(targetTypes.has('iframe'), 'the cross-site frame ran in its own process, under its own frame session');
   assert.equal(observation.probeValue, 'done', 'all three child documents reported after their write attempts settled');
   assert.deepEqual(
     await settledFates(fates),
@@ -310,13 +319,20 @@ test('a cross-site frame inside a popup of the driver sends no write, and no int
       url === '/popup-frame' ? framedPopupPage(frameOrigin) : openerFramePage,
     ),
   );
-  const driver = await openDriver(t, directory, reference, frame, { WebSocketImpl: recordFailedWrites(fates) });
+  const targetTypes = new Set();
+  const driver = await openDriver(t, directory, reference, frame, {
+    WebSocketImpl: recordFailedWrites(fates, targetTypes),
+  });
   const observation = await driver.page('/', {
     roots: ['main'],
     settleMs: 0,
     quietMs: 300,
     probeExpression: 'fetch("/all-reported").then((response) => response.text())',
   });
+  assert.ok(
+    targetTypes.has('iframe'),
+    'the frame inside the popup ran in its own process, under its own frame session',
+  );
   assert.equal(observation.probeValue, 'done', 'the frame inside the popup reported after its write attempt settled');
   assert.deepEqual(
     await settledFates(fates),
@@ -740,28 +756,34 @@ for (const where of ['cross-site frame', 'root page']) {
   });
 }
 
+// The popup is cross-site, so it runs in its own renderer process (--site-per-process). Playwright's Linux headless
+// Chromium shell, under CPU load, can leave a same-site popup's dedicated worker forever unstarted (its target exists
+// with no URL, no client is attached to it, and it never runs), with no driver involved; a popup in its own process
+// does not show this, and the test proves the same driver behaviour either way.
 const workerPopupPage = `<!doctype html><title>Popup</title><script>new Worker('/worker.js');</script>`;
-const workerOpenerPage = `<!doctype html><title>Portal</title><main>Reference page</main>
-<script>window.open('/popup', 'popup');</script>`;
+const workerOpenerPage = (popupOrigin) => `<!doctype html><title>Portal</title><main>Reference page</main>
+<script>window.open('${popupOrigin}/popup', 'popup');</script>`;
 
 // @test-kind contract: a dedicated worker of a popup opened by the page runs, and its write is refused
 test('a dedicated worker of a popup opened by the page runs, and its write is refused', async (t) => {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-mirage-popup-worker-'));
-  const posts = { reference: [] };
+  const posts = { reference: [], popup: [] };
   const fates = withResolvers(['/worker-save']);
   // The worker's read is its report: it is sent after the worker's write attempt has settled, whatever its outcome.
   const reports = withResolvers(['/worker-read']);
-  const reference = await listen((req, res) => {
+  const popupServer = await listen((req, res) => {
     if (req.url === '/worker.js') {
       res.setHeader('content-type', 'text/javascript');
       res.end(workerScript);
       return;
     }
-    const pages = { '/popup': workerPopupPage };
-    fateHandler({ writes: posts.reference, fates, reports }, (url) => pages[url] ?? workerOpenerPage)(req, res);
+    fateHandler({ writes: posts.popup, fates, reports }, () => workerPopupPage)(req, res);
   });
-  const frame = await listen((req, res) => res.writeHead(404).end());
-  const driver = await openDriver(t, directory, reference, frame, { WebSocketImpl: recordFailedWrites(fates) });
+  const popupOrigin = `http://localhost:${popupServer.address().port}`;
+  const reference = await listen(
+    fateHandler({ writes: posts.reference, fates, reports }, () => workerOpenerPage(popupOrigin)),
+  );
+  const driver = await openDriver(t, directory, reference, popupServer, { WebSocketImpl: recordFailedWrites(fates) });
   // The probe's read is answered once the popup's worker has reported.
   const observation = await driver.page('/', {
     roots: ['main'],
@@ -776,7 +798,7 @@ test('a dedicated worker of a popup opened by the page runs, and its write is re
     { '/worker-save': 'blocked by the page interception' },
     'the write of the popup worker was stopped by the driver',
   );
-  assert.deepEqual(posts, { reference: [] }, 'no worker write reached a fixture server');
+  assert.deepEqual(posts, { reference: [], popup: [] }, 'no worker write reached a fixture server');
   assert.ok(
     observation.blockedWrites.some((item) => /worker-save/.test(item.url)),
     'the worker write is named as blocked',

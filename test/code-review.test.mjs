@@ -10,6 +10,7 @@ import {
   inspectDeadCode,
   inspectClones,
   baselineEntries,
+  currentBaselineFindings,
   compareReview,
   reviewInventory,
   publicApiOrigins,
@@ -62,6 +63,20 @@ test('review tools detect an orphan module, unused export and copied logic witho
       await fs.readFile(path.join(root, 'logic.mjs'), 'utf8'),
       'export const used = () => 1; export const unused = () => 2;\n',
     );
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('the baseline reader returns no findings for a missing file and the stored findings otherwise', async () => {
+  const root = await tempDir('paqvilo-baseline-');
+  try {
+    const file = path.join(root, 'code-review-baseline.json');
+    assert.deepEqual(currentBaselineFindings(file), []);
+    await fs.writeFile(file, '{"version":1,"findings":[{"key":"a","reason":"r"}]}');
+    assert.deepEqual(currentBaselineFindings(file), [{ key: 'a', reason: 'r' }]);
+    await fs.writeFile(file, '{ not json');
+    assert.throws(() => currentBaselineFindings(file), SyntaxError);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

@@ -842,8 +842,8 @@ test('Mirage inspections of one tab coalesce while a request is running', async 
   assert.equal(panel.stateFor(tab.page).mirage.active, true);
 });
 
-// @test-kind contract: a failed runtime read is read again by the next navigation, with one read per navigation
-test('a Mirage runtime read that fails is read again by the next navigation', async () => {
+// @test-kind contract: a runtime read that fails every immediate attempt must be read again by the next navigation, not stay inactive
+test('a Mirage runtime read that fails every immediate attempt is read again by the next navigation', async () => {
   const { b, tab, session } = await setup();
   session.cfg.mirage = true;
   fakeMirage(b, { report: { path: '/scripts', page: null } });
@@ -860,12 +860,63 @@ test('a Mirage runtime read that fails is read again by the next navigation', as
   const stored = drawn(tab.page, (state) => state.mirage?.active === false);
   session.emit('hit', { page: tab.page, navigation: true });
   await stored;
-  assert.equal(statusReads, 1, 'the failed read stored an inactive runtime without an immediate retry');
+  assert.equal(statusReads, 3, 'the immediate attempts all failed and stored an inactive runtime');
   failing = false;
   const recovered = drawn(tab.page, (state) => state.mirage?.active === true);
   session.emit('hit', { page: tab.page, navigation: true });
   await recovered;
-  assert.equal(statusReads, 1, 'the next navigation reached the status read without another failure');
+  assert.equal(statusReads, 3, 'the next navigation reached the status read without another failure');
+});
+
+// @test-kind contract: a runtime read that fails once is read again at once, and no inactive runtime is ever drawn
+test('a Mirage runtime read that fails once is read again at once and stores the runtime', async () => {
+  const { b, tab, session } = await setup();
+  session.cfg.mirage = true;
+  fakeMirage(b, { report: { path: '/scripts', page: null } });
+  const get = b.context.request.get;
+  let statusReads = 0;
+  b.context.request.get = async (url, options) => {
+    if (String(url).includes('/status')) {
+      statusReads += 1;
+      if (statusReads === 1) throw new Error('socket hang up');
+    }
+    return get(url, options);
+  };
+  const shown = [];
+  const recovered = drawn(tab.page, (state) => {
+    shown.push(state.mirage?.active);
+    return state.mirage?.active === true;
+  });
+  session.emit('hit', { page: tab.page, navigation: true });
+  await recovered;
+  assert.deepEqual(
+    shown.filter((active) => active === false),
+    [],
+    'no drawn state showed the failed read as an inactive runtime',
+  );
+  assert.equal(statusReads, 2, 'the failed read was read again once');
+});
+
+// @test-kind contract: a runtime read that used up the read guard period is not read again but stored as the failure
+test('a Mirage runtime read that used up its guard is not read again', async (t) => {
+  const { b, tab, session } = await setup();
+  session.cfg.mirage = true;
+  t.mock.timers.enable({ apis: ['Date'] });
+  fakeMirage(b, { report: { path: '/scripts', page: null } });
+  const get = b.context.request.get;
+  let statusReads = 0;
+  b.context.request.get = async (url, options) => {
+    if (String(url).includes('/status')) {
+      statusReads += 1;
+      t.mock.timers.tick(60_000);
+      throw new Error('socket hang up');
+    }
+    return get(url, options);
+  };
+  const stored = drawn(tab.page, (state) => state.mirage?.active === false);
+  session.emit('hit', { page: tab.page, navigation: true });
+  await stored;
+  assert.equal(statusReads, 1, 'the read that used up the guard period was not read again');
 });
 
 // @test-kind contract: a pending Mirage status read stores no inactive runtime, and its answer stores the runtime

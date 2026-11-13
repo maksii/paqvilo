@@ -257,11 +257,11 @@ async function returnToClassic(env, { beforeRelease, afterRelease } = {}) {
   await returned;
 }
 
-// Answers the first status read after `gate.armed` is set by destroying its socket, the way a
+// Answers the first `count` status reads after `gate.armed` is set by destroying their sockets, the way a
 // keep-alive connection closed by the server looks to the client. Later reads are served normally.
-// `gate.dropped` resolves when that socket is destroyed; `gate.statusServed` resolves when the first
-// status read made while `gate.recording` is set has been answered.
-function dropFirstStatusRead(server, gate) {
+// `gate.dropped` resolves when the last of those sockets is destroyed; `gate.statusServed` resolves when the
+// first status read made while `gate.recording` is set has been answered.
+function dropFirstStatusRead(server, gate, count = 1) {
   const listeners = server.listeners('request');
   server.removeAllListeners('request');
   let markDropped;
@@ -276,11 +276,11 @@ function dropFirstStatusRead(server, gate) {
     const pathname = new URL(request.url, 'http://127.0.0.1').pathname;
     const statusRead = /^\/_{1,2}sim\/api\/status$/.test(pathname);
     if (gate.recording) gate.paths.push(pathname);
-    if (gate.armed && gate.destroyed === 0 && statusRead) {
+    if (gate.armed && gate.destroyed < count && statusRead) {
       gate.destroyed += 1;
       gate.droppedAt = gate.paths.length;
       request.socket.destroy();
-      markDropped();
+      if (gate.destroyed === count) markDropped();
       return;
     }
     if (gate.destroyed > 0 && statusRead) {
@@ -427,6 +427,36 @@ test('the Tweaks card recovers when the runtime re-inspection after returning to
   assert.ok(
     gate.paths.slice(gate.droppedAt).some((pathname) => pathname.includes('/page-resources')),
     `the re-inspection read the page again after the drop; classic requests: ${JSON.stringify(gate.paths)}`,
+  );
+  assert.deepEqual(errors, []);
+});
+
+// @test-kind contract: a runtime read that fails every immediate attempt is shown with Read again, and Read again reads the runtime again
+test('the Tweaks card shows a runtime read that keeps failing after returning to a portal, and Read again recovers it', async (t) => {
+  const env = await startPortals(t);
+  const { page, panel, errors, classicApp } = env;
+  const gate = { recording: false, armed: false, destroyed: 0, served: 0, paths: [] };
+  dropFirstStatusRead(classicApp.server, gate, 3);
+  await signInOnEnhanced(env);
+  // Armed before the return: the status reads after it are the re-inspection's immediate attempts, and the panel
+  // stays held until the last of them has been dropped, so the Tweaks read cannot start first.
+  gate.recording = true;
+  gate.armed = true;
+  await returnToClassic(env, { beforeRelease: () => gate.dropped });
+  await env.openTab('tweaks');
+  const readAgain = panel('[data-act="inspect-refresh"]').filter({ hasText: 'Read again' });
+  // The attempts are used up: the failure is stored and drawn with its control.
+  await readAgain.waitFor();
+  assert.equal(await panel('.empty').filter({ hasText: 'Mirage is not active' }).count(), 1);
+  assert.equal(gate.destroyed, 3, 'the immediate attempts after the return were all dropped');
+  assert.equal(gate.served, 0, 'no status read followed the failed attempts without a request');
+  const droppedPaths = gate.paths.length;
+  await readAgain.click();
+  await expectAnonymousTweaks(t, page, panel);
+  assert.ok(gate.served >= 1, 'Read again reached the Mirage status');
+  assert.ok(
+    gate.paths.slice(droppedPaths).some((pathname) => pathname.includes('/page-resources')),
+    `Read again inspected the page; classic requests: ${JSON.stringify(gate.paths)}`,
   );
   assert.deepEqual(errors, []);
 });

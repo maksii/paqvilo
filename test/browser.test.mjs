@@ -658,6 +658,39 @@ test('unchanged session cookies do not rewrite credentials and stopping is idemp
   }
 });
 
+test('a session restore the open gave up on keeps nothing', async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const dir = tempDirSync('paqvilo-cookie-abandon-');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'profile.session.json');
+  let answerRead;
+  const heldRead = new Promise((resolve) => {
+    answerRead = resolve;
+  });
+  let reads = 0;
+  const context = Object.assign(new EventEmitter(), {
+    addCookies: async () => {},
+    cookies: () => {
+      reads++;
+      return heldRead;
+    },
+  });
+  const controller = new AbortController();
+  const kept = keepSessionCookies(context, file, {
+    origins: ['https://portal.example.com'],
+    signal: controller.signal,
+  });
+  controller.abort();
+  answerRead([]);
+  const stop = await kept;
+  t.mock.timers.tick(5000);
+  assert.equal(context.listenerCount('close'), 0, 'no close listener is attached');
+  assert.equal(reads, 1, 'no periodic save reads the cookies again');
+  await stop();
+  assert.equal(fs.existsSync(file), false, 'no session file is written');
+  assert.equal(fs.existsSync(`${file}.tmp`), false, 'no temporary session file is written');
+});
+
 async function freeLoopbackPort() {
   const server = net.createServer();
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -936,6 +969,177 @@ test('a launch that Playwright times out is reported as the hang guard whatever 
       return true;
     },
   );
+});
+
+// Opens a browser with a 50 ms hang guard and the given close. Headed, its window set-up never settles. With `origin`,
+// its session steps read the given `cookies`; `context` is the fake context, which the test may hold.
+function openUnansweringWindow(t, close, { context = new EventEmitter(), headless = false, origin, cookies } = {}) {
+  const root = tempDirSync('paqvilo-window-guard-');
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  Object.assign(context, {
+    pages: () => [],
+    newPage: async () => ({}),
+    newCDPSession: async () => ({
+      send: () => new Promise(() => {}),
+      detach: async () => {},
+    }),
+    close,
+    cookies,
+    addCookies: async () => {},
+    clearCookies: async () => {},
+  });
+  t.mock.method(chromium, 'launchPersistentContext', async () => context);
+  const cfg = {
+    configDir: root,
+    siteName: 'test',
+    envName: 'dev',
+    origin,
+    browser: { channel: 'msedge', profileDir: 'profiles' },
+  };
+  return openBrowser(cfg, { headless, hangGuardMs: 50 });
+}
+
+test('a browser that stops answering during window set-up ends the open at the hang guard', async (t) => {
+  let closed = 0;
+  await assert.rejects(
+    openUnansweringWindow(t, async () => {
+      closed++;
+    }),
+    (error) => {
+      assert.match(error.message, /Setting up the browser window did not finish within 50 ms/);
+      assert.equal(error.cause?.code, 'PAQVILO_GUARD_TIMEOUT');
+      return true;
+    },
+  );
+  assert.equal(closed, 1, 'the launched browser is closed when its window set-up fails');
+});
+
+test('a browser that stops answering the debugger endpoint query ends the open at the hang guard', async (t) => {
+  const root = tempDirSync('paqvilo-debugger-guard-');
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const port = await freeLoopbackPort();
+  let closed = 0;
+  const context = Object.assign(new EventEmitter(), {
+    pages: () => [{}],
+    newCDPSession: async () => ({
+      send: () => new Promise(() => {}),
+      detach: async () => {},
+    }),
+    close: async () => {
+      closed++;
+    },
+  });
+  t.mock.method(chromium, 'launchPersistentContext', async () => context);
+  const cfg = {
+    configDir: root,
+    siteName: 'test',
+    envName: 'dev',
+    browser: { channel: 'chromium', headless: true },
+  };
+  await assert.rejects(
+    openBrowser(cfg, { profileDir: path.join(root, 'profile'), headless: true, debugPort: port, hangGuardMs: 50 }),
+    (error) => {
+      assert.match(error.message, /Querying the debugger endpoint did not finish within 50 ms/);
+      assert.equal(error.cause?.code, 'PAQVILO_GUARD_TIMEOUT');
+      return true;
+    },
+  );
+  assert.equal(closed, 1, 'the launched browser is closed when the debugger endpoint query fails');
+});
+
+test('a browser that stops answering its close after a failed set-up still ends the open at the hang guard', async (t) => {
+  let closed = 0;
+  await assert.rejects(
+    openUnansweringWindow(t, () => {
+      closed++;
+      return new Promise(() => {});
+    }),
+    (error) => {
+      assert.match(error.message, /Setting up the browser window did not finish within 50 ms/);
+      assert.equal(error.cause?.code, 'PAQVILO_GUARD_TIMEOUT');
+      return true;
+    },
+  );
+  assert.equal(closed, 1, 'the close is called once, and its own silence does not hold the set-up failure');
+});
+
+test('an attached browser that stops answering its close after two contexts ends the open at the hang guard', async (t) => {
+  let closed = 0;
+  t.mock.method(chromium, 'connectOverCDP', async () => ({
+    contexts: () => [{}, {}],
+    close: () => {
+      closed++;
+      return new Promise(() => {});
+    },
+  }));
+  t.mock.method(chromium, 'launchPersistentContext', async () => assert.fail('attachment must not launch'));
+  const cdpUrl = 'ws://127.0.0.1:9333/devtools/browser/invented';
+  await assert.rejects(openBrowser({ browser: { cdpUrl, debugPort: null } }, { hangGuardMs: 50 }), (error) => {
+    assert.match(error.message, /Expected one browser context at the CDP endpoint, found 2/);
+    return true;
+  });
+  assert.equal(closed, 1, 'the attached browser is detached once, and its silence does not hold the context error');
+});
+
+test('a browser that stops answering while its portal session is restored ends the open at the hang guard', async (t) => {
+  const context = new EventEmitter();
+  let closed = 0;
+  let reads = 0;
+  let answerRead;
+  const heldRead = new Promise((resolve) => {
+    answerRead = resolve;
+  });
+  const opened = openUnansweringWindow(
+    t,
+    async () => {
+      closed++;
+    },
+    {
+      context,
+      headless: true,
+      origin,
+      cookies: () => {
+        reads++;
+        return heldRead;
+      },
+    },
+  );
+  await assert.rejects(opened, (error) => {
+    assert.match(error.message, /Restoring the portal session did not finish within 50 ms/);
+    assert.equal(error.cause?.code, 'PAQVILO_GUARD_TIMEOUT');
+    return true;
+  });
+  assert.equal(closed, 1, 'the launched browser is closed when its portal session cannot be restored');
+  // The read the open gave up on answers late: it keeps nothing and attaches no close listener.
+  answerRead([]);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(context.listenerCount('close'), 0, 'the abandoned session restore arms no close listener');
+  assert.equal(reads, 1, 'the abandoned session restore reads the cookies once');
+});
+
+test('a session step that fails closes the browser it launched', async (t) => {
+  const failure = new Error('cookies unavailable');
+  let closed = 0;
+  await assert.rejects(
+    openUnansweringWindow(
+      t,
+      async () => {
+        closed++;
+      },
+      {
+        headless: true,
+        origin,
+        cookies: async () => {
+          throw failure;
+        },
+      },
+    ),
+    (error) => {
+      assert.equal(error, failure);
+      return true;
+    },
+  );
+  assert.equal(closed, 1, 'the launched browser is closed when its portal session cannot be restored');
 });
 
 test('a failed launch names the profile as in use only while its browser lock file is present', async (t) => {

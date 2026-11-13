@@ -37,7 +37,8 @@ export async function openBrowser(cfg, overrides = {}) {
     const contexts = browser.contexts();
     const context = contexts[0];
     if (contexts.length !== 1) {
-      await browser.close().catch(() => {});
+      // A browser that stopped answering cannot hold the failure: its close ends at the guard too.
+      await bounded(browser.close(), guardMs).catch(() => {});
       throw new Error(
         `Expected one browser context at the CDP endpoint, found ${contexts.length}. Attach to the debugging endpoint of the intended profile.`,
       );
@@ -69,25 +70,32 @@ export async function openBrowser(cfg, overrides = {}) {
   }
   if (initializePlacement) {
     try {
-      await initializeBrowserWindow(context, profileDir);
+      await initializeBrowserWindow(context, profileDir, guardMs);
     } catch (error) {
-      await context.close().catch(() => {});
-      throw error;
+      // A browser that stopped answering cannot hold the failure: its close ends at the guard too.
+      await bounded(context.close(), guardMs).catch(() => {});
+      throw stepHangGuardError(error, 'Setting up the browser window', guardMs);
     }
   }
   if (debugPort) {
     try {
       await awaitDebuggerEndpoint(context, debugPort, guardMs);
     } catch (error) {
-      await context.close().catch(() => {});
-      throw error;
+      // A browser that stopped answering cannot hold the failure: its close ends at the guard too.
+      await bounded(context.close(), guardMs).catch(() => {});
+      throw stepHangGuardError(error, 'Querying the debugger endpoint', guardMs);
     }
   }
   // External profiles stay entirely browser-managed; never export their session credentials.
   const stopKeeping =
     profile.kind === 'external'
       ? async () => {}
-      : await keepOwnedSession(context, profileDir, overrides.cookieOrigins ?? [cfg.origin].filter(Boolean));
+      : await restoreOwnedSession(
+          context,
+          profileDir,
+          overrides.cookieOrigins ?? [cfg.origin].filter(Boolean),
+          guardMs,
+        );
   keepHeadedDownloads(context, headless);
   return {
     context,
@@ -140,10 +148,24 @@ function keepHeadedDownloads(context, headless) {
 }
 
 // Without a portal origin nothing is kept, so no session file is read, written or removed.
-async function keepOwnedSession(context, profileDir, origins) {
+async function keepOwnedSession(context, profileDir, origins, signal) {
   if (!portalHosts(origins).size) return async () => {};
   removeLegacySessionFile(`${profileDir}.session.json`);
-  return keepSessionCookies(context, sessionFileFor(profileDir, origins), { origins });
+  return keepSessionCookies(context, sessionFileFor(profileDir, origins), { origins, signal });
+}
+
+// The session step of the open: it ends at the hang guard, and a step that failed or was given up on keeps nothing
+// and leaves no browser behind.
+async function restoreOwnedSession(context, profileDir, origins, guardMs) {
+  const abandon = new AbortController();
+  try {
+    return await bounded(keepOwnedSession(context, profileDir, origins, abandon.signal), guardMs);
+  } catch (error) {
+    abandon.abort();
+    // A browser that stopped answering cannot hold the failure: its close ends at the guard too.
+    await bounded(context.close(), guardMs).catch(() => {});
+    throw stepHangGuardError(error, 'Restoring the portal session', guardMs);
+  }
 }
 
 // Each portal scope has its own session file. The name carries a hash of the scope's hosts, so no host text appears in it.
@@ -316,16 +338,16 @@ async function restoreBrowserWindow(context, placement) {
 }
 
 /** Normalize old forced-maximized toolkit windows once; then retain the user's placement. */
-async function initializeBrowserWindow(context, profileDir) {
-  const page = context.pages()[0] ?? (await context.newPage());
-  const cdp = await context.newCDPSession(page);
+async function initializeBrowserWindow(context, profileDir, guardMs) {
+  const page = context.pages()[0] ?? (await bounded(context.newPage(), guardMs));
+  const cdp = await bounded(context.newCDPSession(page), guardMs);
   try {
-    const { windowId } = await cdp.send('Browser.getWindowForTarget');
-    await cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } });
-    await cdp.send('Browser.setWindowBounds', { windowId, bounds: { width: 1280, height: 900 } });
+    const { windowId } = await bounded(cdp.send('Browser.getWindowForTarget'), guardMs);
+    await bounded(cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } }), guardMs);
+    await bounded(cdp.send('Browser.setWindowBounds', { windowId, bounds: { width: 1280, height: 900 } }), guardMs);
     fs.writeFileSync(`${profileDir}.window.json`, '{"version":1}\n');
   } finally {
-    await cdp.detach();
+    await bounded(cdp.detach(), guardMs);
   }
 }
 
@@ -340,10 +362,20 @@ async function debuggerPortAvailable(port) {
 // Playwright's own 30 s deadline is replaced by the named hang guard; a timeout error names the guard and the wait.
 function hangGuardError(error, what, guardMs) {
   if (error?.name !== 'TimeoutError') return error;
+  return hangGuardMessage(what, guardMs, error);
+}
+
+// A set-up step that stops answering (its `bounded` guard expired) ends with the same message as a launch.
+function stepHangGuardError(error, what, guardMs) {
+  if (error?.code !== GUARD_TIMEOUT_CODE) return error;
+  return hangGuardMessage(what, guardMs, error);
+}
+
+function hangGuardMessage(what, guardMs, cause) {
   return new Error(
     `${what} did not finish within ${guardMs} ms. That is the browser hang guard, not a readiness deadline.`,
     {
-      cause: error,
+      cause,
     },
   );
 }
@@ -364,13 +396,13 @@ function debuggerWaitSignal(context, guardMs) {
 }
 
 async function awaitDebuggerEndpoint(context, debugPort, guardMs) {
-  const page = context.pages()[0] ?? (await context.newPage());
-  const cdp = await context.newCDPSession(page);
+  const page = context.pages()[0] ?? (await bounded(context.newPage(), guardMs));
+  const cdp = await bounded(context.newCDPSession(page), guardMs);
   let targetId;
   try {
-    targetId = (await cdp.send('Target.getTargetInfo')).targetInfo.targetId;
+    targetId = (await bounded(cdp.send('Target.getTargetInfo'), guardMs)).targetInfo.targetId;
   } finally {
-    await cdp.detach();
+    await bounded(cdp.detach(), guardMs);
   }
   if (!(await debuggerListening(debugPort, targetId, { signal: debuggerWaitSignal(context, guardMs) })))
     throw new Error(
@@ -505,9 +537,10 @@ function inPortalScope(cookie, hosts) {
  * portal itself expires it.
  * Only cookies that belong to the hosts of `origins` are written or restored; other sites' sessions stay in the
  * browser's own store. Without any origin nothing is restored and the stored file is left as it is.
+ * A `signal` aborted before the cookies have been read keeps nothing: no save is armed and nothing is written.
  * @returns {Promise<() => Promise<void>>} stops the periodic save after one last save
  */
-export async function keepSessionCookies(context, file, { origins = [] } = {}) {
+export async function keepSessionCookies(context, file, { origins = [], signal } = {}) {
   const hosts = portalHosts(origins);
   if (!hosts.size) return async () => {};
   const ports = new Set(
@@ -539,6 +572,8 @@ export async function keepSessionCookies(context, file, { origins = [] } = {}) {
   } catch {
     /* first run, or an unreadable file: start signed out */
   }
+  // The open that asked for this has given up: nothing is kept and nothing is saved.
+  if (signal?.aborted) return async () => {};
   let closed = false;
   let saving = null;
   const writeSession = async () => {
