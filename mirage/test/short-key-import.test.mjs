@@ -319,7 +319,7 @@ test('serve treats a code site like any export, and discovered server logic enfo
 
 test('inspect and project files carry the data model; --data-model is validated and refused with --project', async (t) => {
   const run = (args) =>
-    execFileAsync(process.execPath, [CLI, ...args]).then(
+    execFileAsync(process.execPath, [CLI, ...args], { signal: t.signal }).then(
       (result) => ({ code: 0, ...result }),
       (error) => error,
     );

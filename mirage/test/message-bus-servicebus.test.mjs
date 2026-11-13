@@ -16,7 +16,6 @@ import {
 } from '../lib/message-bus.mjs';
 import { providerRequirements } from '../lib/organization-host.mjs';
 import { startFakeBroker } from '../testing/amqp-fake-broker.mjs';
-import { silentEndpointPort } from './support/emulator-transport.mjs';
 
 const KEY = 'invented-key-7f3a9c';
 const env = (key = KEY, host = '127.0.0.1') => ({
@@ -218,7 +217,8 @@ test('preflight opens a connection and a link to each configured entity within t
   for (const result of [missing, unset, remote]) assert.doesNotMatch(JSON.stringify(result), new RegExp(KEY));
 });
 
-test('preflight against a silent port answers not ready at its 1.8 s connect bound', async (t) => {
+test('preflight against a silent port answers not ready when the shared idle window ends', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const silent = net.createServer((socket) => socket.resume()); // accepts TCP and never answers the protocol header
   await new Promise((resolve) => silent.listen(0, '127.0.0.1', resolve));
   t.after(
@@ -231,14 +231,42 @@ test('preflight against a silent port answers not ready at its 1.8 s connect bou
     settings: { connectionString: 'env:FX_SB', amqpPort: silent.address().port },
     env: env(),
   });
-  const started = Date.now();
-  const result = await bus.preflight();
-  assert.deepEqual(result, {
+  const accepted = once(silent, 'connection');
+  const probe = bus.preflight();
+  await accepted;
+  t.mock.timers.tick(30_000); // the shared idle window of a probe without a caller bound
+  assert.deepEqual(await probe, {
     ready: false,
-    reason: 'The Service Bus emulator did not answer within the 1800 ms bound.',
+    reason: 'The Service Bus emulator did not answer before the probe ended.',
   });
-  // The bound is the connect abort; the slack only absorbs a loaded runner's timer lag.
-  assert.ok(Date.now() - started < 4000);
+});
+
+test('closing the bus waits for a preflight probe that is still in flight', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const silent = net.createServer((socket) => socket.resume()); // accepts TCP and never answers the protocol header
+  await new Promise((resolve) => silent.listen(0, '127.0.0.1', resolve));
+  const bus = createServiceBusEmulatorBus({
+    settings: { connectionString: 'env:FX_SB', amqpPort: silent.address().port },
+    env: env(),
+  });
+  const accepted = once(silent, 'connection');
+  const order = [];
+  const probe = bus.preflight().then(() => order.push('probe'));
+  const [socket] = await accepted;
+  t.after(
+    () =>
+      new Promise((resolve) => {
+        socket.destroy();
+        silent.close(resolve);
+      }),
+  );
+  const closing = bus.close().then(() => order.push('closed'));
+  // only an event this test controls can settle it: one turn lets a version that does not wait run past its wait
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(order, [], 'close waits for the probe in flight');
+  t.mock.timers.tick(30_000); // the shared idle window of a probe without a caller bound
+  await Promise.all([probe, closing]);
+  assert.deepEqual(order, ['probe', 'closed']);
 });
 
 const STEP_MS = 20_000;
@@ -346,20 +374,27 @@ test('a broker that accepts the socket and never answers ends the probe at the i
 });
 
 test('the emulator health probe with the default is ended by the idle window at 30 s, not by a 2 s bound', async (t) => {
-  const healthPort = await silentEndpointPort(t);
   t.mock.timers.enable({ apis: ['setTimeout'] });
-  let settled = false;
-  const probe = serviceBusEmulatorPreflight({ connectionString: env().FX_SB, healthPort }).then((result) => {
-    settled = true;
-    return result;
+  const sockets = new Set();
+  const silent = net.createServer((socket) => sockets.add(socket)); // accepts, never answers
+  await new Promise((resolve) => silent.listen(0, '127.0.0.1', resolve));
+  t.after(async () => {
+    for (const socket of sockets) socket.destroy();
+    await new Promise((resolve) => silent.close(resolve));
   });
-  await new Promise((resolve) => setImmediate(resolve));
+  const requested = new Promise((resolve) => silent.once('connection', (socket) => socket.once('data', resolve)));
+  let settled = false;
+  const probe = serviceBusEmulatorPreflight({ connectionString: env().FX_SB, healthPort: silent.address().port }).then(
+    (result) => {
+      settled = true;
+      return result;
+    },
+  );
+  await requested;
   t.mock.timers.tick(29_999);
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(settled, false, 'the idle window has not ended one millisecond early');
   t.mock.timers.tick(1);
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(settled, true, 'the idle window ended the probe at 30 s');
   const result = await probe;
   assert.equal(result.reachable, false);
   assert.equal(result.diagnostics[0].code, 'SERVICEBUS_EMULATOR_UNREACHABLE');
@@ -527,9 +562,8 @@ test('a client frame larger than the broker max-frame-size is refused with frami
   await client.until('fake-broker');
   // An empty end performative padded to 1100 bytes, above the 1024 the broker announced in its open.
   const oversize = rawFrame(0, Buffer.concat([Buffer.from([0x00, 0x53, 0x17, 0x45]), Buffer.alloc(1088)]));
-  const replied = once(client.socket, 'data');
   client.socket.write(oversize);
-  await replied;
+  await client.until('amqp:connection:framing-error');
   assert.ok(
     client.received().includes('amqp:connection:framing-error'),
     'the broker answers the oversize frame with a close',

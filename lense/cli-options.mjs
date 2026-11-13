@@ -22,3 +22,6 @@ export function parseOptions(config) {
   refuseRepeatedOptions(parsed.tokens, config.options);
   return parsed;
 }
+
+/** The exit code of a finished command: its own non-zero code, else a failure that a cleanup step recorded, else 0. */
+export const commandExitCode = (code, recorded) => code || recorded || 0;

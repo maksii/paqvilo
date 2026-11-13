@@ -19,7 +19,7 @@ import { urlKey, sourceText } from './portal-model.mjs';
 import { portalResourceUrl } from './online.mjs';
 import { filesForPage } from './browser.mjs';
 import { browserProfileInfo } from './browser-profile.mjs';
-import { createSourceInspector, inspectRenderedPage } from './source-inspection.mjs';
+import { createApiRouteObserver, createSourceInspector, inspectRenderedPage } from './source-inspection.mjs';
 import { boundedJsonBody, observeHttpErrors } from './http-errors.mjs';
 import { consoleLocation } from './console-location.mjs';
 import { annotateRuntimeSources } from './runtime-sources.mjs';
@@ -68,6 +68,8 @@ const MAX_ACTIVITY = 100;
 const MAX_DIFF_LINES = 3000;
 const MAX_DIFF_BYTES = 3 * 1024 * 1024;
 const MAX_API_BYTES = 32 * 1024;
+// Hang guard for one read of the local Mirage: it ends a request that never answers. It is not an expected answer time.
+const MIRAGE_READ_GUARD_MS = 60_000;
 const BINARY_EXT = /\.(?:png|jpe?g|gif|ico|webp|woff2?|ttf|eot|otf|pdf|zip|mp4|mp3)$/i;
 
 const GROUP_OF = {
@@ -612,6 +614,8 @@ export function enablePanel(context, session, opts = {}) {
   /** @type {WeakMap<object, Array<object>>} errors and failed requests per tab since its last navigation */
   const problems = new WeakMap();
   const runtimeByPage = new WeakMap();
+  /** @type {WeakMap<object, object>} Web API routes each tab requested in its current document */
+  const apiRoutesByPage = new WeakMap();
   const personaNames = new Map();
   const runtimeFilesByPage = new WeakMap();
   const profileFilesByPage = new WeakMap();
@@ -860,8 +864,8 @@ export function enablePanel(context, session, opts = {}) {
   const readSession = async (page, origin = cfg.origin) => {
     const response =
       origin === cfg.origin
-        ? await mirageGet('/session', 4000, page.context().request)
-        : await page.context().request.get(origin + '/_sim/api/session', { timeout: 4000 });
+        ? await mirageGet('/session', MIRAGE_READ_GUARD_MS, page.context().request)
+        : await page.context().request.get(origin + '/_sim/api/session', { timeout: MIRAGE_READ_GUARD_MS });
     if (response.status() === 404) return { supported: false };
     if (!response.ok())
       return {
@@ -911,8 +915,8 @@ export function enablePanel(context, session, opts = {}) {
   };
   /** The current status shape, or the summary state of Mirages without /status. */
   const readMirageStatus = async () => {
-    let response = await mirageGet('/status', 2500);
-    if (response.status() === 404) response = await mirageGet('/state?summary=1', 4000);
+    let response = await mirageGet('/status', MIRAGE_READ_GUARD_MS);
+    if (response.status() === 404) response = await mirageGet('/state?summary=1', MIRAGE_READ_GUARD_MS);
     if (!response.ok()) return null;
     const data = await response.json();
     if (!data?.status) return data && typeof data === 'object' ? data : null;
@@ -1004,45 +1008,42 @@ export function enablePanel(context, session, opts = {}) {
       nextVersion: () => ++runtimeVersion,
     });
   };
-  /**
-   * Stores the runtime of one page. A failure before the final attempt returns 'retry' and stores nothing,
-   * so no redraw shows a transient inactive runtime; otherwise the outcome is stored and this returns 'done'.
-   */
-  const loadRuntime = async (page, requestedPath, finalAttempt) => {
-    if (!runtimePageUsable(page, cfg.origin, disposed, adminPage)) return 'done';
+  /** Stores the runtime of one page, unless the page has left the portal while it was read. */
+  const loadRuntime = async (page, requestedPath) => {
+    if (!runtimePageUsable(page, cfg.origin, disposed, adminPage)) return;
     profileFilesByPage.delete(page);
     // A navigation is reported before the tab commits it; its own path wins over page.url().
     const pathname =
       typeof requestedPath === 'string' && requestedPath.startsWith('/') ? requestedPath : (pathOf(page.url()) ?? '/');
-    if (adminPage(new URL(pathname, cfg.origin).href)) return 'done';
+    if (adminPage(new URL(pathname, cfg.origin).href)) return;
     try {
       if (!cfg.mirage) {
         await loadLiveSourceRuntime(page, pathname);
-        return 'done';
+        return;
       }
       // Every navigation asks for a small summary; the Inspect tab loads the full report on demand.
       // Page inspection and the session read carry this browser's session cookie.
       const [status, summaryResponse, session] = await Promise.all([
         readMirageStatus(),
-        mirageGet(`/page-resources?path=${encodeURIComponent(pathname)}&view=summary`, 8000, page.context().request),
+        mirageGet(
+          `/page-resources?path=${encodeURIComponent(pathname)}&view=summary`,
+          MIRAGE_READ_GUARD_MS,
+          page.context().request,
+        ),
         readSession(page).catch(() => null),
       ]);
-      if (!runtimePageStillOnPortal(page, cfg.origin, disposed)) return 'done';
+      if (!runtimePageStillOnPortal(page, cfg.origin, disposed)) return;
       if (!status) {
-        if (!finalAttempt) return 'retry';
         storeMissingMirageStatus(page, runtimeByPage, runtimeFilesByPage);
       } else {
         await storeMirageSummary(page, pathname, status, summaryResponse, session);
       }
     } catch (error) {
-      if (!finalAttempt) return 'retry';
       runtimeByPage.set(page, { active: false, error: error.message.split('\n')[0] });
       runtimeFilesByPage.delete(page);
     }
     schedule(page);
-    return 'done';
   };
-  const RUNTIME_ATTEMPTS = 3;
   /** One inspection per tab at a time; requests arriving meanwhile collapse into one rerun. */
   const refreshRuntime = (page, requestedPath) => {
     if (disposed || !page || page.isClosed()) return Promise.resolve();
@@ -1057,20 +1058,12 @@ export function enablePanel(context, session, opts = {}) {
       return job.running;
     }
     job.running = (async () => {
-      let attempts = 0;
       do {
         job.id = ++inspectionSequence;
         job.again = false;
         const path = job.path;
         job.path = undefined;
-        const outcome = await loadRuntime(page, path, attempts + 1 >= RUNTIME_ATTEMPTS);
-        if (outcome === 'retry') {
-          attempts += 1;
-          job.path ??= path;
-          job.again = true;
-        } else {
-          attempts = 0;
-        }
+        await loadRuntime(page, path);
         schedule(page);
       } while (job.again && !disposed && !page.isClosed()); // NOSONAR: loop flag is changed asynchronously
     })().finally(() => {
@@ -1246,8 +1239,8 @@ export function enablePanel(context, session, opts = {}) {
       try {
         const response =
           origin === cfg.origin
-            ? await mirageGet('/personas', 4000)
-            : await page.context().request.get(origin + '/_sim/api/personas', { timeout: 4000 });
+            ? await mirageGet('/personas', MIRAGE_READ_GUARD_MS)
+            : await page.context().request.get(origin + '/_sim/api/personas', { timeout: MIRAGE_READ_GUARD_MS });
         if (response.ok()) {
           const report = await response.json();
           const person = [...(report.personas ?? []), ...(report.other ?? report.contacts ?? [])].find(
@@ -1463,6 +1456,18 @@ export function enablePanel(context, session, opts = {}) {
   const watch = (page) => {
     const removers = [];
     const listen = (event, handler) => removers.push(on(page, event, handler));
+    const apiRoutes = createApiRouteObserver();
+    apiRoutesByPage.set(page, apiRoutes);
+    // Routes are cleared only when the main frame commits the navigation it requested. A same-document navigation,
+    // a download or a 204 keeps them.
+    listen('request', (request) => {
+      if (request.frame() !== page.mainFrame()) return;
+      if (request.isNavigationRequest()) apiRoutes.navigationRequested(request.url());
+      else apiRoutes.record(request.url(), page.url());
+    });
+    listen('framenavigated', (frame) => {
+      if (frame === page.mainFrame()) apiRoutes.committed(frame.url());
+    });
     // A failed same-origin response becomes one Issues row whose detail is its JSON error message and inner message
     // (redacted). The row belongs to the document that received the response.
     const httpProblem = (entry) => {
@@ -1843,15 +1848,16 @@ export function enablePanel(context, session, opts = {}) {
         progress.phase = 'Matching rendered elements to local sources';
         schedule(page);
         const rendered = await page.evaluate(inspectRenderedPage).catch(() => ({ assets: [], controls: [] }));
+        const merged = apiRoutesByPage.get(page).merge(rendered);
         if (!cfg.mirage) {
-          const answer = await sourceInspector.inspect(runtime.path, rendered);
+          const answer = await sourceInspector.inspect(runtime.path, merged);
           runtime.report = answer.report;
           runtime.roots = answer.roots.map(realNative);
         } else {
           // Supplement runtime evidence with source paths without changing its access verdicts.
           runtime.inspectionBase ??= structuredClone(runtime.report);
           runtime.report = structuredClone(runtime.inspectionBase);
-          await sourceInspector.enrich(runtime.report, rendered).catch((error) => {
+          await sourceInspector.enrich(runtime.report, merged).catch((error) => {
             {
               if (runtime.report.unresolved == null) runtime.report.unresolved = [];
               runtime.report.unresolved.push({
@@ -1892,7 +1898,7 @@ export function enablePanel(context, session, opts = {}) {
       if (!cfg.mirage) return { ok: false, error: 'Tweaks change the local Mirage runtime only.' };
       const [status, personasResponse, session] = await Promise.all([
         readMirageStatus(),
-        mirageGet('/personas', 4000),
+        mirageGet('/personas', MIRAGE_READ_GUARD_MS),
         readSession(page),
       ]);
       if (!status) return { ok: false, error: 'The Mirage status endpoint is unavailable.' };
@@ -2022,7 +2028,7 @@ export function enablePanel(context, session, opts = {}) {
       if (!cfg.mirage) return { ok: false, error: 'Scenarios change the local Mirage runtime only.' };
       if (typeof body.id !== 'string' || !/^[\w.-]+$/.test(body.id)) return { ok: false, error: 'choose a scenario' };
       if (body.catalogue === true) {
-        const response = await mirageGet('/personas', 4000),
+        const response = await mirageGet('/personas', MIRAGE_READ_GUARD_MS),
           report = response.ok() ? await response.json() : null;
         const selected = report?.scenarios?.find((item) => item.id === body.id);
         if (!selected) return { ok: false, error: 'Catalogue scenario not found.' };

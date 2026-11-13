@@ -13,7 +13,7 @@ import fs from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { EventEmitter } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import { syncBuiltinESMExports } from 'node:module';
 import { createHash } from 'node:crypto';
 import { inventoryEntry, mergeInventory } from '../lib/solution-inventory.mjs';
@@ -235,7 +235,7 @@ describe('a trusted script host under a state directory', { skip: SKIP }, () => 
         },
       },
     };
-    assert.deepEqual(await executeFlowDefinition({ definition, input: {}, connectors, limits: { timeoutMs: 5000 } }), {
+    assert.deepEqual(await executeFlowDefinition({ definition, input: {}, connectors }), {
       status: 200,
       body: { wrapped: { id: '9' }, operation: 'GetItem' },
     });
@@ -354,7 +354,8 @@ test('a dotnet command that does not exist is reported as not on PATH', async ()
   );
 });
 
-// A child-process double for the build: it records kill() and emits its output only when the test says so.
+// A child-process double for the build: it records kill() and emits its output only when the test says so. Its killed
+// promise resolves when kill() is called, so a test waits for the kill itself.
 class FakeChild extends EventEmitter {
   constructor() {
     super();
@@ -362,9 +363,13 @@ class FakeChild extends EventEmitter {
     this.stdout = new EventEmitter();
     this.stderr = new EventEmitter();
     this.kills = 0;
+    this.killed = new Promise((resolve) => {
+      this.onKill = resolve;
+    });
   }
   kill() {
     this.kills += 1;
+    this.onKill();
     return true;
   }
 }
@@ -373,6 +378,35 @@ const absentProbe = () => ({
   stdout: '',
   stderr: '',
   error: Object.assign(new Error('spawnSync x-invented-dotnet-build-probe ENOENT'), { code: 'ENOENT' }),
+});
+
+test('a dotnet probe answer is kept per probe, so an injected probe is never answered from another probe', () => {
+  const command = 'x-invented-dotnet-probe-per-probe';
+  let absentCalls = 0;
+  let versionCalls = 0;
+  const absent = () => {
+    absentCalls += 1;
+    return absentProbe();
+  };
+  assert.equal(dotnetSdk(command, { spawnSyncImpl: absent }), null);
+  const version = dotnetSdk(command, {
+    spawnSyncImpl: () => {
+      versionCalls += 1;
+      return versionProbe('8.0.100');
+    },
+  });
+  assert.equal(version, '8.0.100', 'the version probe runs; the missing-command answer is not reused');
+  assert.equal(versionCalls, 1);
+  const otherAbsent = () => {
+    absentCalls += 1;
+    return absentProbe();
+  };
+  assert.equal(
+    dotnetSdk(command, { spawnSyncImpl: otherAbsent }),
+    null,
+    'a missing-command probe runs; the version is not reused',
+  );
+  assert.equal(absentCalls, 2);
 });
 
 test('aborting a dotnet build kills its child and rejects with the abort reason', async () => {
@@ -403,8 +437,21 @@ test('aborting a dotnet build kills its child and rejects with the abort reason'
     const controller = new AbortController();
     const reason = new Error('invented caller cancelled the build');
     const building = host.prepare(INVENTED_SCRIPT, 'Invented', controller.signal);
+    let settled = false;
+    building.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
     const child = await spawnedChild;
     controller.abort(reason);
+    assert.equal(settled, false, 'the build is still pending right after the abort: its process has not exited');
+    await child.killed;
+    assert.equal(settled, false, 'the build stays pending after its process was killed, until the process closes');
+    child.emit('close', null);
     await assert.rejects(building, (error) => error === reason);
     assert.equal(children.length, 1);
     assert.equal(child.kills, 1);
@@ -412,6 +459,42 @@ test('aborting a dotnet build kills its child and rejects with the abort reason'
   } finally {
     await fs.rm(stateDirectory, { recursive: true, force: true });
   }
+});
+
+test('a build aborted by its last caller is not started again in its folder until the killed build has closed', async (t) => {
+  const stateDirectory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'connector-script-overlap-'));
+  t.after(() => fs.rm(stateDirectory, { recursive: true, force: true }));
+  const { host, children, spawns } = fakeBuilds('x-invented-dotnet-build-overlap', stateDirectory);
+  const controller = new AbortController();
+  const reason = new Error('invented caller cancelled the first build');
+  const aborted = host.prepare(INVENTED_SCRIPT, 'Invented', controller.signal);
+  const abortedReason = aborted.then(
+    () => null,
+    (error) => error,
+  );
+  controller.abort(reason);
+  const next = host.prepare(INVENTED_SCRIPT, 'Invented');
+  assert.equal(children.length, 1, 'the killed build has not closed, so no second build starts in its folder');
+  const secondSpawned = once(spawns, 'spawn');
+  children[0].emit('close', null);
+  const [fresh] = await secondSpawned;
+  assert.equal(children.length, 2, 'the second build starts once the first has closed');
+  assert.equal(await abortedReason, reason);
+  await finishBuild(fresh);
+  assert.equal(await next, fresh.dll);
+});
+
+test('a build that exits non-zero after writing its host assembly removes its out folder', async (t) => {
+  const stateDirectory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'connector-script-partial-'));
+  t.after(() => fs.rm(stateDirectory, { recursive: true, force: true }));
+  const { host, children } = fakeBuilds('x-invented-dotnet-build-partial', stateDirectory);
+  const building = host.prepare(INVENTED_SCRIPT, 'Invented');
+  const outDirectory = path.dirname(children[0].dll);
+  await fs.mkdir(outDirectory, { recursive: true });
+  await fs.writeFile(children[0].dll, 'truncated');
+  children[0].emit('close', 1);
+  await assert.rejects(building, (error) => error.code === 'ProviderFailed');
+  await assert.rejects(fs.stat(outDirectory), { code: 'ENOENT' });
 });
 
 test('an aborted build whose spawn failed rejects with the abort reason, not with the pid guard', async () => {
@@ -441,8 +524,9 @@ test('an aborted build whose spawn failed rejects with the abort reason, not wit
     const controller = new AbortController();
     const reason = new Error('invented caller cancelled the build whose spawn failed');
     const building = host.prepare(INVENTED_SCRIPT, 'Invented', controller.signal);
-    await spawnedChild;
+    const child = await spawnedChild;
     controller.abort(reason);
+    child.emit('error', Object.assign(new Error('spawn invented ENOENT'), { code: 'ENOENT' }));
     await assert.rejects(building, (error) => error === reason);
     assert.deepEqual(kills, [], 'no process group is signalled for a build that never started');
   } finally {
@@ -496,6 +580,8 @@ function recordingRunner(calls) {
 }
 function fakeBuilds(command, stateDirectory, extra = {}) {
   const children = [];
+  // Emits 'spawn' with each child, so a test waits for a build it has not yet seen start.
+  const spawns = new EventEmitter();
   const host = createScriptHost({
     stateDirectory,
     command,
@@ -509,11 +595,12 @@ function fakeBuilds(command, stateDirectory, extra = {}) {
       child.options = options;
       child.dll = path.join(options.cwd, 'out', 'ConnectorScriptHost.dll');
       children.push(child);
+      spawns.emit('spawn', child);
       return child;
     },
     ...extra,
   });
-  return { host, children };
+  return { host, children, spawns };
 }
 // Completes a fake build: the host assembly appears where the build expects it, then the child closes with status 0.
 async function finishBuild(child) {
@@ -521,6 +608,9 @@ async function finishBuild(child) {
   await fs.writeFile(child.dll, '');
   child.emit('close', 0);
 }
+// The Windows folder the tree kill reads from the injected environment, and the taskkill it names.
+const INVENTED_SYSTEM_ROOT = String.raw`C:\Invented\WindowsRoot`;
+const INVENTED_TASKKILL = path.join(INVENTED_SYSTEM_ROOT, 'System32', 'taskkill.exe');
 
 test('a shared build rejects only the caller that aborted, and still finishes for the caller waiting on it', async (t) => {
   const stateDirectory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'connector-script-shared-first-'));
@@ -543,7 +633,7 @@ test('a shared build rejects only the caller that aborted, and still finishes fo
 test('a shared build is killed once every waiting caller has aborted, and a later caller starts a fresh build', async (t) => {
   const stateDirectory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'connector-script-shared-all-'));
   t.after(() => fs.rm(stateDirectory, { recursive: true, force: true }));
-  const { host, children } = fakeBuilds('x-invented-dotnet-shared-all', stateDirectory);
+  const { host, children, spawns } = fakeBuilds('x-invented-dotnet-shared-all', stateDirectory);
   const first = new AbortController(),
     second = new AbortController(),
     reasons = [new Error('invented first caller cancelled'), new Error('invented second caller cancelled')];
@@ -552,9 +642,12 @@ test('a shared build is killed once every waiting caller has aborted, and a late
   first.abort(reasons[0]);
   await assert.rejects(firstBuild, (error) => error === reasons[0]);
   second.abort(reasons[1]);
+  children[0].emit('close', null);
   await assert.rejects(secondBuild, (error) => error === reasons[1]);
   assert.equal(children[0].kills, 1, 'the shared build is killed once, when its last waiter aborts');
+  const freshSpawned = once(spawns, 'spawn');
   const third = host.prepare(INVENTED_SCRIPT, 'Invented', new AbortController().signal);
+  await freshSpawned;
   assert.equal(children.length, 2, 'a caller after the kill starts a fresh build');
   await finishBuild(children[1]);
   assert.equal(await third, children[1].dll);
@@ -580,13 +673,15 @@ test('an abort on Windows ends the whole build tree with taskkill /T /F and the 
   const { host, children } = fakeBuilds('x-invented-dotnet-tree-win', stateDirectory, {
     platform: 'win32',
     spawnSyncImpl: recordingRunner(calls),
+    env: { SystemRoot: INVENTED_SYSTEM_ROOT },
   });
   const controller = new AbortController(),
     reason = new Error('invented caller cancelled the Windows build');
   const building = host.prepare(INVENTED_SCRIPT, 'Invented', controller.signal);
   controller.abort(reason);
+  children[0].emit('close', null);
   await assert.rejects(building, (error) => error === reason);
-  const taskkill = calls.find(({ name }) => name === 'taskkill');
+  const taskkill = calls.find(({ name }) => name === INVENTED_TASKKILL);
   assert.deepEqual(taskkill?.args, ['/pid', '4242', '/T', '/F']);
   assert.equal(children[0].kills, 1, 'the driver itself is also ended');
 });
@@ -604,15 +699,183 @@ test('an abort on POSIX signals the build process group, and the build leads its
   const building = host.prepare(INVENTED_SCRIPT, 'Invented', controller.signal);
   assert.equal(children[0].options.detached, true);
   controller.abort(reason);
+  children[0].emit('close', null);
   await assert.rejects(building, (error) => error === reason);
   assert.deepEqual(kills, [[-4242, 'SIGTERM']]);
+});
+
+test('a build that ignores the request to end is killed after the escalation period', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const stateDirectory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'connector-script-escalation-'));
+  t.after(() => fs.rm(stateDirectory, { recursive: true, force: true }));
+  const kills = [];
+  const { host, children, spawns } = fakeBuilds('x-invented-dotnet-escalation', stateDirectory, {
+    killImpl: (pid, signal) => kills.push([pid, signal]),
+  });
+  const controller = new AbortController(),
+    reason = new Error('invented caller cancelled the build that ignores SIGTERM');
+  const spawned = once(spawns, 'spawn');
+  const building = host.prepare(INVENTED_SCRIPT, 'Invented', controller.signal);
+  await spawned;
+  controller.abort(reason);
+  assert.deepEqual(kills, [[-4242, 'SIGTERM']], 'the group is asked to end at once');
+  t.mock.timers.tick(10_000);
+  assert.deepEqual(
+    kills,
+    [
+      [-4242, 'SIGTERM'],
+      [-4242, 'SIGKILL'],
+    ],
+    'the group that ignored SIGTERM is killed',
+  );
+  children[0].emit('close', null);
+  await assert.rejects(building, (error) => error === reason);
+});
+
+test('a build whose request to end fails is still killed after the escalation period', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const stateDirectory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'connector-script-escalation-denied-'));
+  t.after(() => fs.rm(stateDirectory, { recursive: true, force: true }));
+  const kills = [];
+  const denied = Object.assign(new Error('invented request to end was refused'), { code: 'EPERM' });
+  const { host, children, spawns } = fakeBuilds('x-invented-dotnet-escalation-denied', stateDirectory, {
+    platform: 'linux',
+    killImpl: (pid, signal) => {
+      kills.push([pid, signal]);
+      if (signal === 'SIGTERM') throw denied;
+    },
+  });
+  const controller = new AbortController(),
+    reason = new Error('invented caller cancelled the build whose SIGTERM is refused');
+  const spawned = once(spawns, 'spawn');
+  const building = host.prepare(INVENTED_SCRIPT, 'Invented', controller.signal);
+  await spawned;
+  controller.abort(reason);
+  assert.deepEqual(kills, [[-4242, 'SIGTERM']], 'the group is asked to end at once');
+  t.mock.timers.tick(10_000);
+  assert.deepEqual(
+    kills,
+    [
+      [-4242, 'SIGTERM'],
+      [-4242, 'SIGKILL'],
+    ],
+    'the group whose request to end failed is killed',
+  );
+  children[0].emit('close', null);
+  await assert.rejects(building, (error) => error === denied, 'the failure of the request is what the build reports');
+});
+
+test('a build whose group is already gone when the request to end arrives is not killed afterwards', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const stateDirectory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'connector-script-escalation-gone-'));
+  t.after(() => fs.rm(stateDirectory, { recursive: true, force: true }));
+  const kills = [];
+  const gone = Object.assign(new Error('invented group already exited'), { code: 'ESRCH' });
+  const { host, children, spawns } = fakeBuilds('x-invented-dotnet-escalation-gone', stateDirectory, {
+    platform: 'linux',
+    killImpl: (pid, signal) => {
+      kills.push([pid, signal]);
+      throw gone;
+    },
+  });
+  const controller = new AbortController(),
+    reason = new Error('invented caller cancelled the build whose group already exited');
+  const spawned = once(spawns, 'spawn');
+  const building = host.prepare(INVENTED_SCRIPT, 'Invented', controller.signal);
+  await spawned;
+  controller.abort(reason);
+  assert.deepEqual(kills, [[-4242, 'SIGTERM']], 'the group is asked to end at once');
+  t.mock.timers.tick(10_000);
+  assert.deepEqual(kills, [[-4242, 'SIGTERM']], 'an ESRCH arms no escalation: the group is already gone');
+  children[0].emit('close', null);
+  await assert.rejects(building, (error) => error === reason);
+});
+
+test('a build that ends before the escalation period is not killed again', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const stateDirectory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'connector-script-settled-'));
+  t.after(() => fs.rm(stateDirectory, { recursive: true, force: true }));
+  const kills = [];
+  const { host, children, spawns } = fakeBuilds('x-invented-dotnet-settled', stateDirectory, {
+    killImpl: (pid, signal) => kills.push([pid, signal]),
+  });
+  const controller = new AbortController(),
+    reason = new Error('invented caller cancelled the build that ends on SIGTERM');
+  const spawned = once(spawns, 'spawn');
+  const building = host.prepare(INVENTED_SCRIPT, 'Invented', controller.signal);
+  await spawned;
+  controller.abort(reason);
+  children[0].emit('close', null);
+  await assert.rejects(building, (error) => error === reason);
+  t.mock.timers.tick(10_000);
+  assert.equal(kills.length, 1, 'the escalation timer is cleared when the build settles');
+});
+
+test('the Windows stop arms no escalation timer', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const stateDirectory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'connector-script-escalation-win-'));
+  t.after(() => fs.rm(stateDirectory, { recursive: true, force: true }));
+  const calls = [];
+  const kills = [];
+  const { host, children, spawns } = fakeBuilds('x-invented-dotnet-escalation-win', stateDirectory, {
+    platform: 'win32',
+    spawnSyncImpl: recordingRunner(calls),
+    env: { SystemRoot: INVENTED_SYSTEM_ROOT },
+    killImpl: (pid, signal) => kills.push([pid, signal]),
+  });
+  const controller = new AbortController(),
+    reason = new Error('invented caller cancelled the Windows build that ignores taskkill');
+  const spawned = once(spawns, 'spawn');
+  const building = host.prepare(INVENTED_SCRIPT, 'Invented', controller.signal);
+  await spawned;
+  controller.abort(reason);
+  assert.deepEqual(calls.find(({ name }) => name === INVENTED_TASKKILL)?.args, ['/pid', '4242', '/T', '/F']);
+  t.mock.timers.tick(10_000);
+  assert.deepEqual(kills, [], 'taskkill /F is the forceful end on Windows: no POSIX signal follows it');
+  children[0].emit('close', null);
+  await assert.rejects(building, (error) => error === reason);
+});
+
+test('a build whose pid is refused is not signalled, now or after the escalation period', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const stateDirectory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'connector-script-refused-pid-'));
+  t.after(() => fs.rm(stateDirectory, { recursive: true, force: true }));
+  const kills = [];
+  const { host, children, spawns } = fakeBuilds('x-invented-dotnet-refused-pid', stateDirectory, {
+    killImpl: (pid, signal) => kills.push([pid, signal]),
+  });
+  // The spawn event is emitted before spawnImpl returns the child, so the pid is refused from the moment the build exists.
+  spawns.on('spawn', (child) => {
+    child.pid = 0;
+  });
+  const controller = new AbortController(),
+    reason = new Error('invented caller cancelled the build whose pid is refused');
+  const spawned = once(spawns, 'spawn');
+  const building = host.prepare(INVENTED_SCRIPT, 'Invented', controller.signal);
+  await spawned;
+  controller.abort(reason);
+  t.mock.timers.tick(10_000);
+  assert.deepEqual(kills, [], 'a refused pid is never signalled, not even after the escalation period');
+  children[0].emit('close', null);
+  await assert.rejects(building, TypeError);
 });
 
 test('killing the build tree runs taskkill for Windows and signals the group on POSIX', () => {
   const child = new FakeChild();
   const calls = [];
-  killProcessTree(child, { platform: 'win32', spawnSyncImpl: recordingRunner(calls) });
-  assert.deepEqual(calls.find(({ name }) => name === 'taskkill')?.args, ['/pid', '4242', '/T', '/F']);
+  killProcessTree(child, {
+    platform: 'win32',
+    spawnSyncImpl: recordingRunner(calls),
+    env: { SystemRoot: INVENTED_SYSTEM_ROOT },
+  });
+  assert.deepEqual(calls.find(({ name }) => name === INVENTED_TASKKILL)?.args, ['/pid', '4242', '/T', '/F']);
+  const fallbackCalls = [];
+  killProcessTree(child, { platform: 'win32', spawnSyncImpl: recordingRunner(fallbackCalls), env: {} });
+  assert.equal(
+    fallbackCalls[0]?.name,
+    path.join(String.raw`C:\Windows`, 'System32', 'taskkill.exe'),
+    'without SystemRoot',
+  );
   const kills = [];
   killProcessTree(child, { platform: 'linux', killImpl: (pid, signal) => kills.push([pid, signal]) });
   assert.deepEqual(kills, [[-4242, 'SIGTERM']]);

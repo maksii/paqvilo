@@ -81,6 +81,9 @@ export const PLUGIN_MAX_DEPTH = 12;
 const CLR_MAX_TIMEOUT_MS = 120_000;
 // Explicit local source debugging needs time to attach, inspect and step. Native timing remains the default.
 const CLR_DEBUG_TIMEOUT_MS = 30 * 60_000;
+// A hang guard: after its host exited, another process (an antivirus or indexer scan) can still hold a snapshot file;
+// past this the removal fails and its caller reports PLUGIN_CLR_CLEANUP.
+const CLR_SNAPSHOT_RELEASE_GUARD_MS = 30_000;
 // Learn (Troubleshoot Dataverse plug-ins): a context above 116.85 MB fails "Message size exceeded when sending context to
 // Sandbox" (-2147220970). ponytail: measured on the local wire JSON, not the platform's serialization.
 const SANDBOX_MESSAGE_LIMIT = Math.floor(116.85 * 1024 * 1024);
@@ -112,6 +115,30 @@ function clrParentIdentity(executable) {
   return { parentProcessId: process.pid, parentStartTicks };
 }
 const pooledHosts = new Map();
+// Hosts a stop could not verify stopped, by runtime directory. A close of that runtime stays unverified while one may still
+// run: a pid the system no longer has (ESRCH) is forgotten; a host without a known pid is never forgotten.
+const unverifiedHosts = new Map();
+function rememberUnverifiedHost(session) {
+  const pids = unverifiedHosts.get(session.runtimeDirectory) ?? new Set();
+  pids.add(session.pid ?? null);
+  unverifiedHosts.set(session.runtimeDirectory, pids);
+}
+function unverifiedHostRemains(directory) {
+  const pids = unverifiedHosts.get(directory);
+  if (!pids) return false;
+  for (const pid of pids) {
+    if (pid === null) continue;
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if (error.code === 'ESRCH') pids.delete(pid);
+    }
+  }
+  if (pids.size === 0) unverifiedHosts.delete(directory);
+  return pids.size > 0;
+}
+// Numbers each pooled session as it is created, so a host that replaces another one is a different session.
+let pooledSessionCount = 0;
 process.once('exit', () => {
   for (const session of pooledHosts.values())
     if (session.pid)
@@ -415,9 +442,16 @@ function readClrFileSync(file) {
     syncFs.closeSync(fd);
   }
 }
+// A snapshot whose host is not verified stopped is kept, and this note names it.
+function snapshotKeptNote(directory) {
+  return {
+    code: 'PLUGIN_CLR_CLEANUP',
+    message: 'CLR host not verified stopped; snapshot kept: ' + path.basename(directory),
+  };
+}
 function removeClrSnapshot(directory, files) {
   // Process absence may precede Windows releasing the owning worker's file handles.
-  const deadline = Date.now() + 1000,
+  const deadline = Date.now() + CLR_SNAPSHOT_RELEASE_GUARD_MS,
     signal = new Int32Array(new SharedArrayBuffer(4));
   for (;;) {
     try {
@@ -534,7 +568,13 @@ export function buildClrRuntime(descriptor, { assembly, sdk, dependencies = [], 
   // No link components; the native spelling is the canonical one (as prepareClrRuntime's fs.realpath gives it).
   canonicalClrDirectorySync(descriptor.cacheRoot);
   const cacheParent = syncFs.realpathSync.native(descriptor.cacheRoot);
-  const { compiler, kind = 'original-clr-assembly', securityModel, compileGuardMs = CLR_COMPILE_GUARD_MS } = options;
+  const {
+    compiler,
+    kind = 'original-clr-assembly',
+    securityModel,
+    compileGuardMs = CLR_COMPILE_GUARD_MS,
+    run = spawnSync,
+  } = options;
   const originals = [assembly, sdk, ...dependencies, ...symbols],
     nameOf = (file) => file.name ?? path.basename(file.path);
   validateClrSymbolFiles(descriptor, symbols);
@@ -562,7 +602,7 @@ export function buildClrRuntime(descriptor, { assembly, sdk, dependencies = [], 
     // The host context implements IPluginExecutionContext7 when the installed SDK declares it (current
     // online contract); an older SDK gets the Context4 class instead.
     const compile = (defines) =>
-      spawnSync(
+      run(
         compilerFile,
         [
           '/nologo',
@@ -1935,8 +1975,13 @@ function verifyClrRuntimeFiles(runtime) {
   return verified;
 }
 
-/** Synchronous pipeline RPC; no queued DataStore.create/update await can deadlock this thread. */
-export function executeClrPlugin(runtime, input, { store, diagnostic = () => {} }) {
+/** Synchronous pipeline RPC; no queued DataStore.create/update await can deadlock this thread. `hostExitGuardMs` bounds
+ * the wait for a fresh host's exit report. */
+export function executeClrPlugin(
+  runtime,
+  input,
+  { store, diagnostic = () => {}, hostExitGuardMs = CLR_HOST_EXIT_GUARD_MS },
+) {
   clrTimeout(runtime.descriptor);
   const verified = verifyClrRuntimeFiles(runtime);
   const contextBytes = Buffer.byteLength(JSON.stringify(input));
@@ -1949,22 +1994,19 @@ export function executeClrPlugin(runtime, input, { store, diagnostic = () => {} 
     );
   if (runtime.descriptor.persistentHost === true)
     return executePooledClr(runtime, input, { store, diagnostic }, verified);
-  const directory = syncFs.mkdtempSync(path.join(path.dirname(runtime.directory), 'clr-run-'));
+  const directory = syncFs.mkdtempSync(path.join(path.dirname(runtime.directory), 'clr-run-')),
+    snapshot = {
+      directory,
+      executable: path.join(directory, path.basename(runtime.executable)),
+      assembly: path.join(directory, path.basename(runtime.assembly)),
+    };
   try {
     for (const file of verified) syncFs.writeFileSync(path.join(directory, file.name), file.bytes, { flag: 'wx' });
-    return executeClrSnapshot(
-      runtime,
-      input,
-      { store, diagnostic },
-      {
-        directory,
-        executable: path.join(directory, path.basename(runtime.executable)),
-        assembly: path.join(directory, path.basename(runtime.assembly)),
-      },
-    );
+    return executeClrSnapshot(runtime, input, { store, diagnostic, hostExitGuardMs }, snapshot);
   } finally {
     try {
-      removeClrSnapshot(directory, verified);
+      if (snapshot.hostStopped === false) diagnostic(snapshotKeptNote(directory));
+      else removeClrSnapshot(directory, verified);
     } catch (cause) {
       // Cleanup diagnostics must not replace an original plugin exception.
       try {
@@ -1978,7 +2020,7 @@ export function executeClrPlugin(runtime, input, { store, diagnostic = () => {} 
     }
   }
 }
-function stopClrHost(session, diagnostic = () => {}, { failed = false } = {}) {
+function stopClrHost(session, diagnostic = () => {}, { failed = false, guardMs = CLR_HOST_EXIT_GUARD_MS } = {}) {
   if (session.active && !failed) fail('An active CLR host cannot be closed.', 'LocalPluginHostBusy', 409);
   // Callers still waiting in this host (outer invocations of a nested one) fail as a crashed worker.
   session.dead = new DataError(SANDBOX_WORKER_CRASH.message, 400, 'LocalPluginHostExited', {
@@ -2000,10 +2042,14 @@ function stopClrHost(session, diagnostic = () => {}, { failed = false } = {}) {
         report({ code: 'PLUGIN_CLR_CLEANUP', message: 'Owned CLR process cleanup failed: ' + cause.code });
     }
   session.port1.postMessage({ kind: 'cancel' });
-  session.port1.close();
-  void session.worker.terminate();
-  const absent = waitForClrHostProcess(session);
+  const absent = awaitHostProcessExit(session, guardMs);
+  if (!absent) rememberUnverifiedHost(session);
+  closePooledPort(session);
   if (session.pid) report({ code: 'PLUGIN_CLR_HOST_STOPPED', pid: session.pid, absenceVerified: absent });
+  if (!absent) {
+    report(snapshotKeptNote(session.snapshot.directory));
+    return absent;
+  }
   try {
     removeClrSnapshot(session.snapshot.directory, session.files);
   } catch (cause) {
@@ -2012,21 +2058,30 @@ function stopClrHost(session, diagnostic = () => {}, { failed = false } = {}) {
   return absent;
 }
 
-function waitForClrHostProcess(session) {
-  let absent = !session.pid;
-  const deadline = Date.now() + 1000;
-  while (session.pid && Date.now() < deadline) {
-    try {
-      process.kill(session.pid, 0);
-    } catch (cause) {
-      if (cause.code === 'ESRCH') {
-        absent = true;
-        break;
-      }
-    }
-    Atomics.wait(session.flags, 0, 0, 10);
+// A hang guard: a host that has not exited this long after it was killed is reported as not verified stopped.
+const CLR_HOST_EXIT_GUARD_MS = 30_000;
+// Absence is verified by the worker's report of its child's own exit, not by polling the process. A channel is a pooled
+// session, or a fresh invocation's { port1, flags }: on a channel without a backlog, other messages are skipped.
+function awaitHostProcessExit(channel, guardMs = CLR_HOST_EXIT_GUARD_MS) {
+  const deadline = Date.now() + guardMs;
+  for (;;) {
+    if (drainSessionPackets(channel, 'host-process-exited')) return true;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    Atomics.wait(channel.flags, 0, 0, remaining);
+    Atomics.store(channel.flags, 0, 0);
   }
-  return absent;
+}
+// A fresh host is verified stopped only by its worker's exit report. Without an owned child there is nothing to await.
+function closeFreshHostPort({ port1, flags, ownedPid, diagnostic, guardMs }) {
+  const absent = ownedPid ? awaitHostProcessExit({ port1, flags }, guardMs) : false;
+  port1.close();
+  if (ownedPid) diagnostic({ code: 'PLUGIN_CLR_HOST_STOPPED', pid: ownedPid, absenceVerified: absent });
+  return !ownedPid || absent;
+}
+// The worker ends by itself after its child exits; it is unref'd, so a host that outlived the guard holds nothing here.
+function closePooledPort(session) {
+  session.port1.close();
 }
 
 function pooledSnapshotIntact(session, verified) {
@@ -2041,27 +2096,39 @@ function pooledSnapshotIntact(session, verified) {
   }
 }
 /** Stop only hosts created by this process. Campaigns must close their pool in
- * finally; default runtimes never enter the pool. */
-export function closeClrHostPool({ runtime, diagnostic = () => {} } = {}) {
+ * finally; default runtimes never enter the pool. `hostExitGuardMs` bounds the wait for each host's exit report. */
+export function closeClrHostPool({ runtime, diagnostic = () => {}, hostExitGuardMs = CLR_HOST_EXIT_GUARD_MS } = {}) {
   const selected = [...pooledHosts.values()].filter(
     (session) => !runtime || session.runtimeDirectory === runtime.directory,
   );
   if (selected.some((session) => session.active))
     fail('An active CLR host cannot be closed.', 'LocalPluginHostBusy', 409);
+  const stops = selected.map((session) => stopClrHost(session, diagnostic, { guardMs: hostExitGuardMs }));
   return {
     closed: selected.length,
-    allAbsenceVerified: selected.map((session) => stopClrHost(session, diagnostic)).every(Boolean),
+    allAbsenceVerified: stops.every(Boolean) && !(runtime && unverifiedHostRemains(runtime.directory)),
   };
 }
 /**
  * Closes a prepared runtime and removes its cache directory. liveRuntimes are the runtimes that remain in use after this
  * release: the caller leaves out the entry being released, and a runtime still mapped under another id counts as live.
  * A directory any of them shares (a shared preparer returns copies of one runtime) is kept, and its hosts with it, until
- * the last of them is released. A directory is removed only when it is a clr- child of the canonical cache root.
+ * the last of them is released. A directory is removed only when it is a clr- child of the canonical cache root, and only
+ * when its pooled hosts are verified stopped: otherwise the directory is kept and PLUGIN_CLR_CLEANUP is reported.
  */
-export function releaseClrRuntime(runtime, { liveRuntimes = [], diagnostic = () => {} } = {}) {
+export function releaseClrRuntime(
+  runtime,
+  { liveRuntimes = [], diagnostic = () => {}, closeHostPool = closeClrHostPool } = {},
+) {
   if (liveRuntimes.some((other) => other.directory === runtime.directory)) return;
-  closeClrHostPool({ runtime, diagnostic });
+  const { allAbsenceVerified } = closeHostPool({ runtime, diagnostic });
+  if (!allAbsenceVerified) {
+    diagnostic({
+      code: 'PLUGIN_CLR_CLEANUP',
+      message: 'CLR host not verified stopped; runtime cache directory kept: ' + path.basename(runtime.directory),
+    });
+    return;
+  }
   if (!isOwnedCacheDirectory(runtime)) return;
   try {
     syncFs.rmSync(runtime.directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 25 });
@@ -2080,12 +2147,20 @@ function isOwnedCacheDirectory(runtime) {
 }
 // A host reports its exit as a session-level `host-exited` packet. Per-invocation lines stay in their backlog; a session
 // whose exit was reported is stopped and leaves the pool.
-function drainSessionPackets(session) {
-  for (let packet = receiveMessageOnPort(session.port1); packet; packet = receiveMessageOnPort(session.port1)) {
-    if (packet.message.kind === 'host-exited') return true;
-    session.backlog.get(packet.message.invocationId)?.push(packet.message);
+function drainSessionPackets(session, kind = 'host-exited') {
+  const flag = kind === 'host-exited' ? 'hostExited' : 'hostProcessExited';
+  while (!session[flag]) {
+    const packet = receiveMessageOnPort(session.port1);
+    if (!packet) return false;
+    keepSessionPacket(session, packet.message);
   }
-  return false;
+  return true;
+}
+// Session-level packets carry no invocation id: they are kept on the session, so the stop that follows still sees them.
+function keepSessionPacket(session, message) {
+  if (message.kind === 'host-exited') session.hostExited = true;
+  else if (message.kind === 'host-process-exited') session.hostProcessExited = true;
+  else session.backlog?.get(message.invocationId)?.push(message);
 }
 function drainPooledSessions(diagnostic = () => {}) {
   const sessions = [...pooledHosts.values()];
@@ -2095,6 +2170,7 @@ export function clrHostPoolStatus() {
   drainPooledSessions();
   return [...pooledHosts.values()].map((session) => ({
     pid: session.pid ?? null,
+    session: session.serial,
     active: session.active > 0,
   }));
 }
@@ -2146,8 +2222,10 @@ function executePooledClr(runtime, input, options, verified) {
     worker.on('error', () => {});
     worker.unref();
     port1.unref();
+    pooledSessionCount += 1;
     session = {
       key,
+      serial: pooledSessionCount,
       runtimeDirectory: runtime.directory,
       snapshot,
       files: verified.map((file) => ({ name: file.name })),
@@ -2171,10 +2249,12 @@ function executePooledClr(runtime, input, options, verified) {
 /* NOSONAR */ function executeClrSnapshot(
   runtime,
   input,
-  { store, diagnostic, constructorConfiguration },
+  { store, diagnostic, constructorConfiguration, hostExitGuardMs },
   snapshot,
   session,
 ) {
+  // Checked before any host is started: a call past the depth limit must not start one.
+  if (executionDepth + 1 > PLUGIN_MAX_DEPTH) throw pluginDepthFault();
   const sdkParentContext = selectSdkEntryParent(clrSdkEntryContext(input), input.sdkFrameworkSource);
   const timeout = clrTimeout(runtime.descriptor);
   const parentIdentity = session ? null : clrParentIdentity(snapshot.executable);
@@ -2256,13 +2336,12 @@ function executePooledClr(runtime, input, options, verified) {
       if (!packet) break;
       const id = packet.message.invocationId;
       if (packet.message.kind === 'owned-child' || id === invocationId) return packet;
-      session.backlog.get(id)?.push(packet.message);
+      keepSessionPacket(session, packet.message);
     }
     return undefined;
   };
   executionDepth++;
   try {
-    if (executionDepth > PLUGIN_MAX_DEPTH) throw pluginDepthFault();
     while (!result) {
       let packet;
       while ((packet = next())) {
@@ -2374,6 +2453,10 @@ function executePooledClr(runtime, input, options, verified) {
       }
       if (result) break;
       if (session?.dead) throw session.dead;
+      if (session?.hostExited)
+        throw new DataError(SANDBOX_WORKER_CRASH.message, 400, 'LocalPluginHostExited', {
+          innerCode: SANDBOX_WORKER_CRASH.code,
+        });
       if (Date.now() > deadline) throw timedOut();
       Atomics.wait(flags, 0, 0, 20);
       Atomics.store(flags, 0, 0);
@@ -2394,24 +2477,7 @@ function executePooledClr(runtime, input, options, verified) {
             diagnostic({ code: 'PLUGIN_CLR_CLEANUP', message: 'Owned CLR process cleanup failed: ' + cause.code });
         }
       port1.postMessage({ kind: 'cancel' });
-      port1.close();
-      void worker.terminate();
-      if (ownedPid) {
-        let absent = false;
-        const stopDeadline = Date.now() + 1000;
-        while (Date.now() < stopDeadline) {
-          try {
-            process.kill(ownedPid, 0);
-          } catch (cause) {
-            if (cause.code === 'ESRCH') {
-              absent = true;
-              break;
-            }
-          }
-          Atomics.wait(flags, 0, 0, 10);
-        }
-        diagnostic({ code: 'PLUGIN_CLR_HOST_STOPPED', pid: ownedPid, absenceVerified: absent });
-      }
+      snapshot.hostStopped = closeFreshHostPort({ port1, flags, ownedPid, diagnostic, guardMs: hostExitGuardMs });
     }
   }
   return {

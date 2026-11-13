@@ -536,6 +536,7 @@ test('a system job left Ready or Locked by a stopped runtime is finished Failed 
   await first.close();
 
   const second = await new DataStore({ file }).init();
+  ownedFixture(t).add(() => second.close());
   await install(systemJobRunner(second));
   const interrupted = 'The system job was interrupted by a restart.';
   for (const id of [READY_SYSTEM_JOB, LOCKED_SYSTEM_JOB]) {

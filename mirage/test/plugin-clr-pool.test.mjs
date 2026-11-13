@@ -6,8 +6,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync, spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
-import { Worker, MessageChannel } from 'node:worker_threads';
+import { Worker, MessageChannel, MessagePort } from 'node:worker_threads';
+import workerThreads from 'node:worker_threads';
 import { createHash } from 'node:crypto';
+import { syncBuiltinESMExports } from 'node:module';
 import { DataStore } from '../lib/data.mjs';
 import {
   prepareClrRuntime,
@@ -16,6 +18,11 @@ import {
   closeClrHostPool,
   clrHostPoolStatus,
   validateClrDescriptor,
+  releaseClrRuntime,
+  enterPluginExecution,
+  leavePluginExecution,
+  pluginExecutionDepth,
+  PLUGIN_MAX_DEPTH,
 } from '../lib/plugin-clr.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
@@ -52,9 +59,9 @@ test('cold CLR parent identification has a separate bounded startup allowance', 
     executable = path.join(directory, 'Protocol.exe');
   await fs.writeFile(
     source,
-    `using System;using System.Diagnostics;public static class Protocol{public static void Main(string[] args){
+    String.raw`using System;using System.Diagnostics;public static class Protocol{public static void Main(string[] args){
 if(args.Length==2&&args[0]=="--process-start"){var mode=Environment.GetEnvironmentVariable("INVENTED_PARENT_MODE");if(mode=="exit")Environment.Exit(73);if(mode=="invalid"){Console.Write("invalid");return;}System.Threading.Thread.Sleep(${SLOW_PROBE_MS});Console.Write(Process.GetProcessById(Int32.Parse(args[1])).StartTime.ToUniversalTime().Ticks);return;}
-Console.ReadLine();Console.WriteLine("{\\"kind\\":\\"result\\"}");}}`,
+Console.ReadLine();Console.WriteLine("{\"kind\":\"result\"}");}}`,
   );
   compileClr(source, executable, { target: 'exe' });
   const assembly = path.join(directory, 'Original.dll');
@@ -165,9 +172,9 @@ test(
       executable = path.join(root, 'Protocol.exe');
     await fs.writeFile(
       source,
-      `using System;public static class Protocol{public static void Main(){var line=Console.ReadLine();
-if(line.Contains("startup-gate")){Console.WriteLine("{\\"kind\\":\\"trace\\",\\"message\\":\\"Host waiting before plugin dispatch\\"}");Console.ReadLine();Console.WriteLine("{\\"kind\\":\\"result\\"}");return;}
-if(line.Contains("pending")){Console.WriteLine("{\\"kind\\":\\"rpc\\"}");Console.WriteLine("{\\"kind\\":\\"result\\"}");}
+      String.raw`using System;public static class Protocol{public static void Main(){var line=Console.ReadLine();
+if(line.Contains("startup-gate")){Console.WriteLine("{\"kind\":\"trace\",\"message\":\"Host waiting before plugin dispatch\"}");Console.ReadLine();Console.WriteLine("{\"kind\":\"result\"}");return;}
+if(line.Contains("pending")){Console.WriteLine("{\"kind\":\"rpc\"}");Console.WriteLine("{\"kind\":\"result\"}");}
 else if(line.Contains("array"))Console.WriteLine("[]");else Console.WriteLine("null");System.Threading.Thread.Sleep(30000);}}`,
     );
     compileClr(source, executable, { target: 'exe' });
@@ -184,6 +191,7 @@ else if(line.Contains("array"))Console.WriteLine("[]");else Console.WriteLine("n
               transferList: [port2],
             },
           );
+          const exited = new Promise((resolve) => worker.once('exit', resolve));
           let pid,
             waitingBeforeDispatch = false,
             completed = false;
@@ -195,7 +203,10 @@ else if(line.Contains("array"))Console.WriteLine("[]");else Console.WriteLine("n
                 /* The owned child may already have exited. */
               }
             port1.close();
-            await worker.terminate();
+            // Aborted while still running: terminated. Otherwise the worker ends by itself after its child exits.
+            // A failed terminate of an ended worker leaves nothing to stop.
+            if (sub.signal.aborted) worker.terminate().catch(() => {});
+            await exited;
           });
           // The worker always answers: a protocol failure, or its own timeout failure if the host never writes.
           const failure = await new Promise((resolve, reject) => {
@@ -254,7 +265,7 @@ test(
       executable = path.join(root, 'Protocol.exe');
     await fs.writeFile(
       source,
-      'using System;using System.Diagnostics;public static class Protocol{public static void Main(string[] args){if(args.Length==2&&args[0]=="--process-start"){Console.Write(Process.GetProcessById(Int32.Parse(args[1])).StartTime.ToUniversalTime().Ticks);return;}while(Console.ReadLine()!=null)Console.WriteLine("{\\"kind\\":\\"result\\"}");}}',
+      String.raw`using System;using System.Diagnostics;public static class Protocol{public static void Main(string[] args){if(args.Length==2&&args[0]=="--process-start"){Console.Write(Process.GetProcessById(Int32.Parse(args[1])).StartTime.ToUniversalTime().Ticks);return;}while(Console.ReadLine()!=null)Console.WriteLine("{\"kind\":\"result\"}");}}`,
     );
     compileClr(source, executable, { target: 'exe' });
     const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -262,19 +273,8 @@ test(
     const makeRuntime = async (name) => {
       const directory = path.join(root, name);
       await fs.mkdir(directory);
-      const assembly = path.join(directory, 'Original.dll'),
-        host = path.join(directory, 'Protocol.exe');
-      await fs.writeFile(assembly, 'invented assembly bytes');
-      await fs.copyFile(executable, host);
-      const files = await Promise.all(
-        [assembly, host].map(async (file) => ({ path: file, sha256: hash(await fs.readFile(file)) })),
-      );
       return {
-        directory,
-        assembly,
-        executable: host,
-        files,
-        allowedFiles: files.map((file) => path.basename(file.path)),
+        ...(await stageProtocolFiles(directory, executable)),
         descriptor: { persistentHost: true, typeName: 'Invented.Original', timeoutMs: 10000 },
         provenance: { hostSourceSha256 },
       };
@@ -541,3 +541,262 @@ target["instanceCalls"]=++calls;target["configuration"]=config;target["request"]
     );
   },
 );
+
+// @test-kind contract: the pool or fresh worker ends by its own exit once its host exits; never terminated
+test('closing a pooled CLR host ends its pool worker by itself, without terminate', { skip: CLR_SKIP }, async (t) => {
+  const { terminate, exit } = watchStartedWorkers(t);
+  t.after(() => closeClrHostPool());
+  const runtime = await protocolRuntime(t, { persistentHost: true });
+  assert.equal(executeClrPlugin(runtime, {}, { store: {} }).executionMode, 'pooled-fresh-instance');
+  assert.deepEqual(closeClrHostPool(), { closed: 1, allAbsenceVerified: true });
+  assert.equal((await exit).code, 0, 'the pool worker ends by its own exit');
+  assert.equal(terminate.mock.callCount(), 0, 'terminate is never called on the pool worker');
+});
+
+// @test-kind contract: the pool or fresh worker ends by its own exit once its host exits; never terminated
+test(
+  'a fresh CLR host worker ends by its own exit after its answer, without terminate',
+  { skip: CLR_SKIP },
+  async (t) => {
+    const { terminate, exit } = watchStartedWorkers(t);
+    const runtime = await protocolRuntime(t, {});
+    assert.equal(executeClrPlugin(runtime, {}, { store: {} }).executionMode, 'fresh-host');
+    assert.equal((await exit).code, 0, 'the fresh worker ends by its own exit');
+    assert.equal(terminate.mock.callCount(), 0, 'terminate is never called on the fresh worker');
+  },
+);
+
+test('a fresh CLR host is reported stopped by its own exit', { skip: CLR_SKIP }, async (t) => {
+  const notes = [];
+  const runtime = await protocolRuntime(t, {});
+  const result = executeClrPlugin(runtime, {}, { store: {}, diagnostic: (note) => notes.push(note) });
+  assert.equal(result.executionMode, 'fresh-host');
+  const stopped = notes.filter((note) => note.code === 'PLUGIN_CLR_HOST_STOPPED');
+  assert.equal(stopped.length, 1, 'one stop is reported for the one fresh host');
+  assert.ok(stopped[0].pid > 0, 'the stopped host is the owned child');
+  assert.equal(stopped[0].absenceVerified, true, 'the host exit is reported by its own worker');
+});
+
+test(
+  'a pooled host that dies before it reads an invocation fails it as a crashed host and is verified stopped',
+  { skip: CLR_SKIP },
+  async (t) => {
+    const post = MessagePort.prototype.postMessage;
+    const notes = [];
+    let dropped = false;
+    t.after(() => closeClrHostPool());
+    const runtime = await protocolRuntime(t, { persistentHost: true });
+    assert.equal(executeClrPlugin(runtime, {}, { store: {} }).executionMode, 'pooled-fresh-instance');
+    const [{ pid }] = clrHostPoolStatus();
+    t.mock.method(MessagePort.prototype, 'postMessage', function (message, ...rest) {
+      if (!dropped && message.kind === 'invoke') {
+        dropped = true;
+        process.kill(pid);
+        return;
+      }
+      return post.call(this, message, ...rest);
+    });
+    assert.throws(
+      () => executeClrPlugin(runtime, {}, { store: {}, diagnostic: (note) => notes.push(note) }),
+      (error) => error.code === 'LocalPluginHostExited',
+    );
+    assert.equal(dropped, true, 'the invoke was dropped after the host was killed');
+    assert.deepEqual(
+      notes.filter((note) => note.code === 'PLUGIN_CLR_HOST_STOPPED').map((note) => [note.pid, note.absenceVerified]),
+      [[pid, true]],
+    );
+    assert.deepEqual(clrHostPoolStatus(), []);
+  },
+);
+
+test(
+  'a runtime whose host an earlier close could not verify keeps its cache directory at release',
+  { skip: CLR_SKIP },
+  async (t) => {
+    let pid = 0;
+    t.after(() => {
+      t.mock.restoreAll();
+      if (pid === 0) return;
+      try {
+        process.kill(pid);
+      } catch (error) {
+        if (error.code !== 'ESRCH') throw error;
+      }
+    });
+    const runtime = await protocolRuntime(t, { persistentHost: true });
+    assert.equal(executeClrPlugin(runtime, {}, { store: {} }).executionMode, 'pooled-fresh-instance');
+    const status = clrHostPoolStatus();
+    assert.equal(status.length, 1, 'one pooled host is running');
+    pid = status[0].pid;
+    const post = MessagePort.prototype.postMessage;
+    t.mock.method(process, 'kill', () => true);
+    t.mock.method(MessagePort.prototype, 'postMessage', function (message, ...rest) {
+      if (message.kind === 'cancel') return;
+      return post.call(this, message, ...rest);
+    });
+    const closeNotes = [];
+    assert.equal(
+      closeClrHostPool({ runtime, hostExitGuardMs: 0, diagnostic: (note) => closeNotes.push(note) }).allAbsenceVerified,
+      false,
+    );
+    assert.deepEqual(
+      closeNotes
+        .filter((note) => note.code === 'PLUGIN_CLR_HOST_STOPPED')
+        .map((note) => [note.pid, note.absenceVerified]),
+      [[pid, false]],
+    );
+    const kept = closeNotes.filter((note) => note.code === 'PLUGIN_CLR_CLEANUP');
+    assert.equal(kept.length, 1);
+    assert.match(kept[0].message, /^CLR host not verified stopped; snapshot kept: clr-pool-/);
+    await assert.doesNotReject(fs.access(path.join(path.dirname(runtime.directory), kept[0].message.split(': ')[1])));
+    t.mock.restoreAll();
+    process.kill(pid);
+    // The system still reports the killed pid, so the release keeps the directory and reports it.
+    const kill = process.kill;
+    t.mock.method(process, 'kill', (target, signal) =>
+      signal === 0 && target === pid ? true : kill.call(process, target, signal),
+    );
+    const notes = [];
+    releaseClrRuntime(runtime, { diagnostic: (note) => notes.push(note) });
+    assert.deepEqual(
+      notes.map((note) => note.code),
+      ['PLUGIN_CLR_CLEANUP'],
+      'the kept directory is reported once',
+    );
+    assert.match(notes[0].message, /^CLR host not verified stopped/);
+    // Once the system reports the pid gone, the close is verified and the next release removes nothing kept.
+    t.mock.restoreAll();
+    t.mock.method(process, 'kill', (target, signal) => {
+      if (signal === 0 && target === pid) throw Object.assign(new Error('gone'), { code: 'ESRCH' });
+      return kill.call(process, target, signal);
+    });
+    assert.deepEqual(closeClrHostPool({ runtime }), { closed: 0, allAbsenceVerified: true });
+    const released = [];
+    releaseClrRuntime(runtime, { diagnostic: (note) => released.push(note) });
+    assert.deepEqual(
+      released.filter((note) => note.code === 'PLUGIN_CLR_CLEANUP'),
+      [],
+      'a gone host no longer keeps the directory',
+    );
+    // The fixture's runtime directory is not an owned cache directory; the PLUGIN_CLR_CLEANUP note above is the proof.
+  },
+);
+
+test('a fresh snapshot whose host is not verified stopped is kept and reported', { skip: CLR_SKIP }, async (t) => {
+  const runtime = await protocolRuntime(t, {});
+  let pid = 0;
+  t.after(() => {
+    t.mock.restoreAll();
+    if (pid === 0) return;
+    try {
+      process.kill(pid);
+    } catch (error) {
+      if (error.code !== 'ESRCH') throw error;
+    }
+  });
+  const notes = [];
+  const receive = workerThreads.receiveMessageOnPort;
+  // The worker kills its host after the answer; hiding its exit report keeps the host unverified on every schedule.
+  workerThreads.receiveMessageOnPort = (port) => {
+    const packet = receive(port);
+    return packet?.message.kind === 'host-process-exited' ? receive(port) : packet;
+  };
+  syncBuiltinESMExports();
+  let result;
+  try {
+    result = executeClrPlugin(runtime, {}, { store: {}, diagnostic: (note) => notes.push(note), hostExitGuardMs: 0 });
+  } finally {
+    workerThreads.receiveMessageOnPort = receive;
+    syncBuiltinESMExports();
+  }
+  assert.equal(result.executionMode, 'fresh-host', 'the plug-in answered through the fresh host');
+  const stopped = notes.filter((note) => note.code === 'PLUGIN_CLR_HOST_STOPPED');
+  assert.equal(stopped.length, 1, 'one stop is reported for the one fresh host');
+  assert.equal(stopped[0].absenceVerified, false, 'the live host never reported its exit');
+  pid = stopped[0].pid;
+  const kept = notes.filter((note) => note.code === 'PLUGIN_CLR_CLEANUP');
+  assert.equal(kept.length, 1, 'the kept snapshot is reported once');
+  const prefix = 'CLR host not verified stopped; snapshot kept: ';
+  assert.ok(kept[0].message.startsWith(prefix), kept[0].message);
+  const snapshot = path.join(path.dirname(runtime.directory), kept[0].message.slice(prefix.length));
+  await assert.doesNotReject(fs.access(snapshot), 'the snapshot stays while its host is not verified');
+});
+
+test('a fresh CLR call past the plug-in depth limit starts no host', { skip: CLR_SKIP }, async (t) => {
+  const workers = [];
+  const onWorker = (worker) => workers.push(worker);
+  process.on('worker', onWorker);
+  t.after(() => process.off('worker', onWorker));
+  const runtime = await protocolRuntime(t, {});
+  assert.equal(pluginExecutionDepth(), 0, 'the test starts outside any plug-in execution');
+  // A normal fresh call starts one worker, which shows that the worker event is observed in this test.
+  assert.equal(executeClrPlugin(runtime, {}, { store: {} }).executionMode, 'fresh-host');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(workers.length, 1, 'a normal fresh call starts its host worker');
+  workers.splice(0);
+  t.after(() => {
+    while (pluginExecutionDepth() > 0) leavePluginExecution();
+  });
+  for (let level = 0; level < PLUGIN_MAX_DEPTH; level++) enterPluginExecution();
+  assert.equal(pluginExecutionDepth(), PLUGIN_MAX_DEPTH);
+  assert.throws(
+    () => executeClrPlugin(runtime, {}, { store: {} }),
+    (error) => error.code === 'LocalPluginDepth',
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(workers.length, 0, 'no host worker was started');
+});
+
+// Every worker a test starts reports 'online' once its thread runs; a worker of an earlier test reported it before.
+function watchStartedWorkers(t) {
+  const started = new Set(),
+    terminate = t.mock.method(Worker.prototype, 'terminate');
+  let finish;
+  const exit = new Promise((resolve) => {
+    finish = resolve;
+  });
+  const emit = Worker.prototype.emit;
+  t.mock.method(Worker.prototype, 'emit', function (name, ...args) {
+    if (name === 'online') started.add(this);
+    if (name === 'exit' && started.has(this)) finish({ code: args[0] });
+    return emit.call(this, name, ...args);
+  });
+  return { terminate, exit };
+}
+
+// Writes an invented assembly and a copy of the protocol host into a folder; returns the runtime fields that list them.
+async function stageProtocolFiles(directory, executable) {
+  const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
+  const assembly = path.join(directory, 'Original.dll'),
+    host = path.join(directory, 'Protocol.exe');
+  await fs.writeFile(assembly, 'invented assembly bytes');
+  await fs.copyFile(executable, host);
+  const files = await Promise.all(
+    [assembly, host].map(async (file) => ({ path: file, sha256: hash(await fs.readFile(file)) })),
+  );
+  return { directory, assembly, executable: host, files, allowedFiles: files.map((file) => path.basename(file.path)) };
+}
+
+// A host that answers every input line with a result and the parent identity probe, compiled from an invented
+// source in a fresh folder.
+async function protocolRuntime(t, descriptor) {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-clr-cycle-')));
+  t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
+  const source = path.join(root, 'Protocol.cs'),
+    executable = path.join(root, 'Protocol.exe');
+  await fs.writeFile(
+    source,
+    'using System;using System.Diagnostics;public static class Protocol{public static void Main(string[] args){' +
+      'if(args.Length==2&&args[0]=="--process-start"){Console.Write(Process.GetProcessById(Int32.Parse(args[1])).StartTime.ToUniversalTime().Ticks);return;}' +
+      String.raw`while(Console.ReadLine()!=null)Console.WriteLine("{\"kind\":\"result\"}");}}`,
+  );
+  compileClr(source, executable, { target: 'exe' });
+  const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
+  const directory = path.join(root, 'runtime');
+  await fs.mkdir(directory);
+  return {
+    ...(await stageProtocolFiles(directory, executable)),
+    descriptor: { typeName: 'Invented.Original', timeoutMs: 10000, ...descriptor },
+    provenance: { hostSourceSha256: hash(await fs.readFile(new URL('../lib/plugin-clr-host.cs', import.meta.url))) },
+  };
+}

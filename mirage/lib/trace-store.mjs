@@ -815,6 +815,7 @@ export function createTraceStore({
   const als = new AsyncLocalStorage();
   const persistence = { written: 0, failures: 0, lastError: null };
   const directories = new Set();
+  const recorders = new Set(); // cancel functions of the open captures (trace-hosts.mjs recordBody), cancelled by close()
   let queue = Promise.resolve();
 
   const copy = (record) => structuredClone(record);
@@ -1539,6 +1540,18 @@ export function createTraceStore({
         await pending;
       }
       await subscribers;
+    },
+    /** Registers an open capture's cancel function; returns the function that unregisters it. */
+    track(cancel) {
+      recorders.add(cancel);
+      return () => {
+        recorders.delete(cancel);
+      };
+    },
+    /** Cancels every open capture and resolves once each one's reader has ended. */
+    async close() {
+      const open = [...recorders];
+      await Promise.allSettled(open.map(async (cancel) => cancel()));
     },
   };
   return Object.freeze(store);

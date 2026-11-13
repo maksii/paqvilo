@@ -73,7 +73,7 @@ export function standaloneCatalogueConfiguration(catalogue, name, args = {}) {
 }
 
 /** Open the local application directly. No portal overlay or source model is created. */
-export async function developStandalone(cfg, args, session, { open = openBrowser, signal } = {}) {
+export async function developStandalone(cfg, args, session, { open = openBrowser, signal, source = process } = {}) {
   if (signal?.aborted) throw signal.reason;
   const progress = args.startup ?? startupProgress();
   progress.phase('browser setup');
@@ -89,8 +89,8 @@ export async function developStandalone(cfg, args, session, { open = openBrowser
   const browser = context.browser();
   context.once('close', stop);
   browser?.once('disconnected', stop);
-  process.once('SIGINT', stop);
-  process.once('SIGTERM', stop);
+  source.once('SIGINT', stop);
+  source.once('SIGTERM', stop);
   signal?.addEventListener('abort', stop, { once: true });
   if (signal?.aborted) stop();
   try {
@@ -118,25 +118,29 @@ export async function developStandalone(cfg, args, session, { open = openBrowser
       stop();
     }
     await stopped;
-    if (signal?.aborted) throw signal.reason;
   } finally {
     progress.close();
-    process.off('SIGINT', stop);
-    process.off('SIGTERM', stop);
+    source.off('SIGINT', stop);
+    source.off('SIGTERM', stop);
     signal?.removeEventListener('abort', stop);
     context.off('close', stop);
     browser?.off('disconnected', stop);
     page?.off('close', stop);
-    await guardShutdownSignals(async () => {
-      for (const cleanup of [() => (attached && page && !page.isClosed() ? page.close() : undefined), close]) {
-        try {
-          await cleanup();
-        } catch (error) {
-          errors.push(error);
+    await guardShutdownSignals(
+      async () => {
+        for (const cleanup of [() => (attached && page && !page.isClosed() ? page.close() : undefined), close]) {
+          try {
+            await cleanup();
+          } catch (error) {
+            errors.push(error);
+          }
         }
-      }
-    });
+      },
+      undefined,
+      { source },
+    );
   }
   if (errors.length) throw new AggregateError(errors, 'Standalone browser cleanup failed.');
+  if (signal?.aborted) throw signal.reason;
   return 0;
 }

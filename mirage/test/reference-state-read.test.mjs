@@ -54,12 +54,14 @@ test('a local state read that fails with a non-JSON body names only its HTTP sta
   );
 });
 
-test('a refused connection to the local runtime keeps its own error as the cause, and the message names the origin only', async () => {
-  const probe = http.createServer();
-  probe.listen(0, '127.0.0.1');
-  await once(probe, 'listening');
-  const localUrl = `http://127.0.0.1:${probe.address().port}`;
-  await new Promise((resolve) => probe.close(resolve));
+test('a failed connection to the local runtime keeps its own error as the cause, and the message names the origin only', async (t) => {
+  // A listener that drops every connection, so the request fails at the socket and no other process can answer it.
+  const dropping = http.createServer();
+  dropping.on('connection', (socket) => socket.destroy());
+  dropping.listen(0, '127.0.0.1');
+  await once(dropping, 'listening');
+  t.after(() => new Promise((resolve) => dropping.close(resolve)));
+  const localUrl = `http://127.0.0.1:${dropping.address().port}`;
   await assert.rejects(compareReferenceContracts(options(localUrl)), (error) => {
     assert.equal(error.message, `Local runtime state request to ${localUrl} failed.`);
     assert.ok(error.cause, 'the fetch failure is kept as the cause');

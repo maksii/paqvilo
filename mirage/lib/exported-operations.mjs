@@ -26,6 +26,9 @@ const canonical = (value) =>
     .replace(/[{}]/g, '')
     .toLowerCase();
 const failure = (message, status = 501, code = 'LocalOperationUnsupported') => new DataError(message, status, code);
+// hang guard: a worker still alive this long after its answer is running, not ending; it is terminated.
+const ANSWERED_EXIT_GUARD_MS = 30_000;
+const terminateWorker = (worker) => worker.terminate().catch(() => {});
 
 /** Registrations are functions in explicitly trusted, matching project packs. */
 export function operationHandlers(packs = []) {
@@ -341,12 +344,22 @@ const parsePayload = (text) => {
       resourceLimits: { maxOldGenerationSizeMb: 32, maxYoungGenerationSizeMb: 8 },
     });
     let complete = false;
+    let exited = false;
+    // The answer settles the call and clears its limit: the worker then ends by itself. The answered-exit guard
+    // is the only terminate() after an answer, and only for a worker still alive long after it; terminating a
+    // worker during its own exit can end Mirage in a V8 fatal error. An exited worker is never guarded.
     const finish = (error, value) => {
       if (complete) return;
-      complete = true;
       clearTimeout(timer);
+      complete = true;
+      if (!exited) timer = setTimeout(terminateWorker, ANSWERED_EXIT_GUARD_MS, worker);
+      if (error) reject(error);
+      else resolve(value);
+    };
+    const stop = (error) => {
+      finish(error);
+      // Only the limit timers call this, for a worker still running at its limit.
       worker.terminate().catch(() => {});
-      error ? reject(error) : resolve(value);
     };
     const reply = (message, answer) => {
       const flags = new Int32Array(message.control);
@@ -362,7 +375,7 @@ const parsePayload = (text) => {
     // bounded separately so a loaded machine cannot consume the VM/RPC budget first.
     let timer = setTimeout(
       () =>
-        finish(
+        stop(
           failure(
             'Server-logic worker did not become ready before its startup limit.',
             504,
@@ -373,6 +386,8 @@ const parsePayload = (text) => {
     );
     worker.on('error', (error) => finish(failure(error.message)));
     worker.on('exit', (code) => {
+      exited = true;
+      clearTimeout(timer);
       if (!complete) finish(failure(`Server-logic worker stopped before returning a result (${code}).`));
     });
     worker.on('message', (message) => inSpan(() => answerMessage(message)));
@@ -382,7 +397,7 @@ const parsePayload = (text) => {
       if (message.kind === 'ready') {
         clearTimeout(timer);
         timer = setTimeout(
-          () => finish(failure('Server-logic execution exceeded its local time limit.', 504, 'LocalOperationTimeout')),
+          () => stop(failure('Server-logic execution exceeded its local time limit.', 504, 'LocalOperationTimeout')),
           bound + 300,
         );
         return;

@@ -409,3 +409,50 @@ test('analyze reports a --source override that is not a portal extract with the 
   assert.match(report.errors[0].message, /does not look like a portal extract/);
   assert.doesNotMatch(result.stdout, /analysis_unavailable/);
 });
+
+test('a finished command keeps a failure that its cleanup recorded', async () => {
+  const { commandExitCode } = await import('../lense/cli-options.mjs');
+  assert.equal(commandExitCode(0, undefined), 0);
+  assert.equal(commandExitCode(0, 1), 1);
+  assert.equal(commandExitCode(2, 1), 2);
+  assert.equal(commandExitCode(3, undefined), 3);
+  assert.equal(commandExitCode(0, 0), 0);
+});
+
+// Replaces lense/commands/list.mjs with the module at the data URL built from `source`; the CLI runs unchanged otherwise.
+const listDoubleFlag = (source) => {
+  const dataUrl = (text) => `data:text/javascript,${encodeURIComponent(text)}`;
+  const hook =
+    'export async function resolve(specifier, context, next) {' +
+    ' const result = await next(specifier, context);' +
+    ` return result.url.endsWith('/lense/commands/list.mjs') ? { url: ${JSON.stringify(dataUrl(source))}, shortCircuit: true } : result; }`;
+  const register = `import { register } from 'node:module'; register(${JSON.stringify(dataUrl(hook))});`;
+  return `--import=${dataUrl(register)}`;
+};
+const runListDouble = (cwd, source) =>
+  withProcessSlot(
+    () =>
+      new Promise((resolve) => {
+        execFile(
+          process.execPath,
+          [listDoubleFlag(source), fileURLToPath(new URL('../lense/cli.mjs', import.meta.url)), 'list'],
+          { cwd, env, encoding: 'utf8', windowsHide: true },
+          (error, stdout, stderr) => resolve({ status: error?.code ?? 0, stdout, stderr }),
+        );
+      }),
+  );
+
+test('the CLI keeps a failure recorded during a command that returns zero', async (t) => {
+  const cwd = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo cli exit '));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const failing = await runListDouble(
+    cwd,
+    "export default async () => { console.log('double ran'); process.exitCode = 1; return 0; };",
+  );
+  assert.equal(failing.status, 1, failing.stdout + failing.stderr);
+  assert.match(failing.stdout, /double ran/);
+  assert.doesNotMatch(failing.stderr, /error/i);
+  const passing = await runListDouble(cwd, "export default async () => { console.log('double ran'); return 0; };");
+  assert.equal(passing.status, 0, passing.stdout + passing.stderr);
+  assert.match(passing.stdout, /double ran/);
+});

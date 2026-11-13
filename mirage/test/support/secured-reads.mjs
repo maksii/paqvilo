@@ -62,11 +62,22 @@ export const retrieveMultiple = (query) =>
 export const fetchExpression = (fetchXml) =>
   `<b:value i:type="a:FetchExpression"><a:Query>${escapeXml(fetchXml)}</a:Query></b:value>`;
 
+// Puts back each variable as it was before the helper set it, deleting the ones that had no value.
+function restoreEnvironment(previous) {
+  for (const [name, value] of previous) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+}
+
 // Starts the API for the given applications (name to { appId, role }); each secret comes from `${envPrefix}_<NAME>_SECRET`.
 // `call(who, method, route, value)` answers the Web API and `soap(who, body)` the Organization service.
+// `close()` stops both services and restores the secret variables.
 export async function startSecuredOrganization({ envPrefix, apps, tls }) {
+  const previous = new Map();
   const applications = Object.entries(apps).map(([name, app]) => {
     const secretEnvironmentVariable = `${envPrefix}_${name.toUpperCase()}_SECRET`;
+    previous.set(secretEnvironmentVariable, process.env[secretEnvironmentVariable]);
     process.env[secretEnvironmentVariable] = `invented-${name}-secret`;
     return { appId: app.appId, displayName: `Invented ${name}`, secretEnvironmentVariable, roles: [app.role] };
   });
@@ -83,8 +94,12 @@ export async function startSecuredOrganization({ envPrefix, apps, tls }) {
   const call = (who, method, route, value) => request(transport.origin, tokens[who], method, route, value);
   const soap = (who, body) => soapRequest(transport.origin, tokens[who], body);
   const close = async () => {
-    await transport.close();
-    await organization.close();
+    try {
+      await transport.close();
+      await organization.close();
+    } finally {
+      restoreEnvironment(previous);
+    }
   };
   return { store, call, soap, close, transport, tokens };
 }

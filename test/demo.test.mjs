@@ -268,15 +268,15 @@ const DEMO_PARSE_TABLE = [
     ['--dir', 'one', '--dir', 'two'],
     { values: { dir: 'two' }, positionals: [] },
   ],
-  ['an unknown option', ['--bogus'], { error: /Unknown option '--bogus'/ }],
-  ['a missing value', ['--dir'], { error: /Option '--dir <value>' argument missing/ }],
-  ['a positional argument', ['extra'], { error: /Unexpected argument 'extra'/ }],
+  ['an unknown option', ['--bogus'], { error: 'ERR_PARSE_ARGS_UNKNOWN_OPTION' }],
+  ['a missing value', ['--dir'], { error: 'ERR_PARSE_ARGS_INVALID_OPTION_VALUE' }],
+  ['a positional argument', ['extra'], { error: 'ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL' }],
 ];
 
 test('demo option parsing keeps its accepted options, defaults, repeated values and errors', () => {
   for (const [name, args, expected] of DEMO_PARSE_TABLE) {
     if (expected.error) {
-      assert.throws(() => parseDemoOptions(args), expected.error, name);
+      assert.throws(() => parseDemoOptions(args), { code: expected.error }, name);
       continue;
     }
     const parsed = parseDemoOptions(args);
@@ -290,19 +290,25 @@ const DEMO_CLI_TABLE = [
   ['--help', ['--help'], 0, /^Usage: paqvilo mirage demo/],
   ['-h', ['-h'], 0, /^Usage: paqvilo mirage demo/],
   ['a repeated option before --help', ['--dir', 'one', '--dir', 'two', '--help'], 0, /^Usage: paqvilo mirage demo/],
-  ['an unknown option', ['--bogus'], 1, /^Mirage demo: Unknown option '--bogus'/],
-  ['a missing value', ['--dir'], 1, /^Mirage demo: Option '--dir <value>' argument missing/],
-  ['a positional argument', ['extra'], 1, /^Mirage demo: Unexpected argument 'extra'/],
+  ['an unknown option', ['--bogus'], 1, '--bogus'],
+  ['a missing value', ['--dir'], 1, '--dir'],
+  ['a positional argument', ['extra'], 1, 'extra'],
 ];
 
 test('demo command prints help and parse errors with the same exit codes and messages', () => {
-  for (const [name, args, status, output] of DEMO_CLI_TABLE) {
+  for (const [name, args, status, expected] of DEMO_CLI_TABLE) {
     const result = spawnSync(process.execPath, [demoCli, ...args], {
       encoding: 'utf8',
       windowsHide: true,
       timeout: CLI_HANG_GUARD_MS,
     });
     assert.equal(result.status, status, name);
-    assert.match(status ? result.stderr : result.stdout, output, name);
+    if (status) {
+      // The product's own prefix and the offending token; Node's sentence is not part of the contract.
+      assert.ok(result.stderr.startsWith('Mirage demo: '), name);
+      assert.ok(result.stderr.includes(expected), name);
+    } else {
+      assert.match(result.stdout, expected, name);
+    }
   }
 });

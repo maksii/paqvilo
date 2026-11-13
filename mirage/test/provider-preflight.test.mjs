@@ -16,6 +16,7 @@ import { providerRequirements } from '../lib/organization-host.mjs';
 import {
   PREFLIGHT_IDLE_TIMEOUT_MS,
   assertProvider,
+  guardProvider,
   preflightProvider,
   requestBound,
 } from '../lib/storage-provider.mjs';
@@ -404,4 +405,40 @@ test('an idle window above the Node timer limit arms a timer at the clamp, not a
     assert.deepEqual(await probe, { ready: false, reason: 'The provider gave no answer for 2147483648 ms.' });
     assert.equal(armedCount(), 0, 'no timer is left armed');
   });
+});
+
+// Regression: the bound ends the probe at once, but the provider's cleanup after the abort is still running. close() of the
+// guarded provider waits for that cleanup, so the provider is not closed under its own probe.
+test('close of a guarded provider waits for an aborted preflight to finish its cleanup', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const order = [];
+  let enter;
+  const entered = new Promise((resolve) => {
+    enter = resolve;
+  });
+  let releaseCleanup;
+  const cleanupReleased = new Promise((resolve) => {
+    releaseCleanup = resolve;
+  });
+  const provider = Object.assign(createMemoryStorage({ id: 'fx-cleanup' }), {
+    async preflight({ signal }) {
+      enter();
+      await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }));
+      await cleanupReleased;
+      order.push('cleanup done');
+      return { ready: true, reason: null };
+    },
+    close() {
+      order.push('provider closed');
+    },
+  });
+  const guarded = guardProvider(provider);
+  const probe = preflightProvider(guarded, { timeoutMs: 10 });
+  await entered;
+  t.mock.timers.tick(10);
+  assert.equal((await probe).ready, false);
+  const closed = guarded.close().then(() => order.push('closed'));
+  releaseCleanup();
+  await closed;
+  assert.deepEqual(order, ['cleanup done', 'provider closed', 'closed']);
 });

@@ -409,6 +409,9 @@ function redactHeaders(headers, origin = null) {
   const owned = await context.newPage();
   await owned.setViewportSize({ width: 1440, height: 1000 });
   const inflight = new Set();
+  // Response-body reads the capture owns, by request: settle waits for them. A read of a request still in flight is left
+  // to its page, which closes at the end and ends the read.
+  const bodyReads = new Map();
   let lastActivity = Date.now();
   let seq = 0;
   const entries = new Map();
@@ -445,29 +448,63 @@ function redactHeaders(headers, origin = null) {
   const hostField = (url) => (url.origin === origin ? {} : { host: url.hostname });
   // The guard covers the captured origin: its writes are blocked unless the run allows them. Identity navigations are
   // recorded wherever they go, and every other request to another origin is left to the browser.
-  // A route answer fails with a closed-target error when its page or popup closed while the request was in flight. Only
-  // that failure is ignored, so an error in the guard itself still rejects. Defined here because pageRunner is serialised.
-  const answerRoute = (action) =>
+  let contextClosed = false;
+  // A route answer can fail because its page or popup closed while the request was in flight. That failure is ignored
+  // only when the route's page reports that it is closed, or the context has closed; the decision never reads the
+  // error's text. A page that cannot be reached is not treated as closed. Defined here because pageRunner is
+  // serialised.
+  const routePageClosed = (route) => {
+    try {
+      return route.request().frame().page().isClosed() === true;
+    } catch {
+      return false;
+    }
+  };
+  const answerRoute = (route, action) =>
     Promise.resolve(action).catch((error) => {
-      if (!/has been closed|Target closed|Target page, context or browser/i.test(String(error?.message ?? error))) {
-        throw error;
-      }
+      if (!routePageClosed(route) && !contextClosed) throw error;
     });
   const guard = async (route) => {
     const request = route.request();
     const method = request.method().toUpperCase();
-    if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return answerRoute(route.fallback());
+    if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return answerRoute(route, route.fallback());
     const url = new URL(request.url());
     if (isIdentityTraffic(request, url)) {
       raw.identityTraffic.push({ method, path: url.pathname, ...hostField(url), from: referrerHost(request) });
-      return answerRoute(route.fallback());
+      return answerRoute(route, route.fallback());
     }
-    if (url.origin !== origin || allowWrite(method, url.pathname)) return answerRoute(route.fallback());
+    if (url.origin !== origin || allowWrite(method, url.pathname)) return answerRoute(route, route.fallback());
     raw.blockedWrites.push({ method, path: url.pathname });
-    return answerRoute(route.abort('blockedbyclient'));
+    return answerRoute(route, route.abort('blockedbyclient'));
   };
+  // Persistent streams (a local runtime's /__sim/events, EventSource, WebSocket) never finish: not in-flight work, and
+  // their bodies are never read to the end.
+  const persistent = (request) =>
+    /^(?:eventsource|websocket)$/.test(request.resourceType()) || new URL(request.url()).pathname.startsWith('/__sim/');
+  const readBody = async (response, entry) => {
+    try {
+      const buffer = await response.body();
+      entry.response.bodyBytes = buffer.length;
+      if (entry.response.binary)
+        entry.response.base64 = buffer.toString('base64').slice(0, 64) + (buffer.length > 48 ? '…' : '');
+      else entry.response.body = buffer.length > maxBody ? null : buffer.toString('utf8');
+      if (entry.response.binary || buffer.length > maxBody) entry.response.bodyHashInput = buffer.toString('base64');
+    } catch {
+      /* redirects and aborted responses expose no body */
+    }
+  };
+  const trackBodyRead = (request, read) => {
+    if (persistent(request)) return;
+    bodyReads.set(
+      request,
+      read.then(() => bodyReads.delete(request)),
+    );
+  };
+  // Returns the requests this target contributed to the capture, so a page that turns out to be unrelated can be dropped,
+  // and `detach`, which removes the listeners that observe it.
   const observe = (target) => {
-    target.on('request', (request) => {
+    const recorded = [];
+    const onRequest = (request) => {
       lastActivity = Date.now();
       if (!sameOrigin(request.url())) return;
       const method = request.method().toUpperCase();
@@ -482,17 +519,18 @@ function redactHeaders(headers, origin = null) {
       };
       entries.set(request, entry);
       raw.requests.push(entry);
-      // Persistent streams (a local runtime's /__sim/events, EventSource, WebSocket) never finish: not in-flight work.
-      if (!/^(?:eventsource|websocket)$/.test(entry.resourceType) && !new URL(entry.url).pathname.startsWith('/__sim/'))
-        inflight.add(request);
-    });
-    target.on('requestfailed', (request) => {
+      recorded.push(request);
+      if (!persistent(request)) inflight.add(request);
+    };
+    const onRequestFailed = (request) => {
       inflight.delete(request);
       const entry = entries.get(request);
       if (entry) entry.response = { status: 0, failure: request.failure()?.errorText || 'failed' };
-    });
-    target.on('requestfinished', (request) => inflight.delete(request));
-    target.on('response', async (response) => {
+    };
+    const onRequestFinished = (request) => {
+      inflight.delete(request);
+    };
+    const onResponse = (response) => {
       lastActivity = Date.now();
       const entry = entries.get(response.request());
       if (!entry) return;
@@ -506,32 +544,70 @@ function redactHeaders(headers, origin = null) {
         bodySha256: null,
         binary: !textTypes.test(contentType),
       };
-      try {
-        const buffer = await response.body();
-        entry.response.bodyBytes = buffer.length;
-        if (entry.response.binary)
-          entry.response.base64 = buffer.toString('base64').slice(0, 64) + (buffer.length > 48 ? '…' : '');
-        else entry.response.body = buffer.length > maxBody ? null : buffer.toString('utf8');
-        if (entry.response.binary || buffer.length > maxBody) entry.response.bodyHashInput = buffer.toString('base64');
-      } catch {
-        /* redirects and aborted responses expose no body */
-      }
-    });
+      trackBodyRead(response.request(), readBody(response, entry));
+    };
+    target.on('request', onRequest);
+    target.on('requestfailed', onRequestFailed);
+    target.on('requestfinished', onRequestFinished);
+    target.on('response', onResponse);
+    const detach = () => {
+      target.off('request', onRequest);
+      target.off('requestfailed', onRequestFailed);
+      target.off('requestfinished', onRequestFinished);
+      target.off('response', onResponse);
+    };
+    return { recorded, detach };
   };
   // Playwright's page routes do not see a popup's first request, so the guard lives on the context. A page is
   // unrelated only when its opener is known to be unrelated (no opener, or an unrelated page); any other page,
   // including one whose opener is unknown, is guarded.
   const popups = [];
+  const popupWaiters = [];
   const unrelated = new Set();
+  // Drops what an unrelated page contributed: its entries and its requests in flight.
+  const forget = (requests) => {
+    const dropped = new Set(requests.map((request) => entries.get(request)));
+    for (const request of requests) {
+      inflight.delete(request);
+      bodyReads.delete(request);
+      entries.delete(request);
+    }
+    for (let index = raw.requests.length - 1; index >= 0; index--) {
+      if (dropped.has(raw.requests[index])) raw.requests.splice(index, 1);
+    }
+  };
+  // The page is observed from its creation, so its first request is never missed. It counts only when the owned page opened it.
   const onPage = async (popup) => {
+    lastActivity = Date.now();
+    const { recorded, detach } = observe(popup);
     const opener = await popup.opener().catch(() => undefined);
-    if (opener === null || unrelated.has(opener)) {
-      unrelated.add(popup);
+    if (opener === owned) {
+      popups.push(popup);
+      for (const wake of popupWaiters.splice(0)) wake();
       return;
     }
-    if (opener !== owned) return;
-    popups.push(popup);
-    observe(popup);
+    if (opener === null || unrelated.has(opener)) unrelated.add(popup);
+    detach();
+    forget(recorded);
+  };
+  const popupsReached = async (count) => {
+    while (popups.length < count) {
+      await new Promise((wake) => {
+        popupWaiters.push(wake);
+      });
+    }
+  };
+  // Resolves from the notifier that onPage signals. The deadline only fails the step when no popup opens in time.
+  const waitForPopups = async (count, ms) => {
+    let timer;
+    const expired = new Promise((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(`no ${count} popup opened within ${ms} ms`)), ms);
+    });
+    try {
+      await Promise.race([popupsReached(count), expired]);
+    } finally {
+      clearTimeout(timer);
+    }
   };
   const pageOf = (route) => {
     try {
@@ -541,12 +617,18 @@ function redactHeaders(headers, origin = null) {
     }
   };
   // The owned page's own route applies the guard to its requests, so the context route leaves them to it.
+  // A context route covers a popup's first request only when this Playwright client resumes the popup; a shared browser
+  // is covered by the suite's browser-session write net.
   const guardPopups = async (route) => {
     const page = pageOf(route);
-    if (page === owned || unrelated.has(page)) return answerRoute(route.fallback());
-    return answerRoute(guard(route));
+    if (page === owned || unrelated.has(page)) return answerRoute(route, route.fallback());
+    return answerRoute(route, guard(route));
+  };
+  const onContextClose = () => {
+    contextClosed = true;
   };
   context.on('page', onPage);
+  context.on('close', onContextClose);
   await context.route('**/*', guardPopups);
   await owned.route('**/*', guard);
   observe(owned);
@@ -609,7 +691,7 @@ function redactHeaders(headers, origin = null) {
       loading = false;
     while (Date.now() - started < timeout) {
       loading = await owned.evaluate(loadingProbe).catch(() => false);
-      if (!loading && inflight.size === 0 && Date.now() - lastActivity >= quietMs) {
+      if (!loading && inflight.size === 0 && bodyReads.size === 0 && Date.now() - lastActivity >= quietMs) {
         settled = true;
         break;
       }
@@ -707,6 +789,7 @@ function redactHeaders(headers, origin = null) {
       else if (step.wait.url)
         await owned.waitForURL((url) => new RegExp(step.wait.url).test(url.pathname + url.search), { timeout });
       else if (step.wait.navigation) await owned.waitForLoadState('load', { timeout });
+      else if (step.wait.popup !== undefined) await waitForPopups(step.wait.popup, timeout);
     } else if (step.frame !== undefined) {
       const frame = owned.frameLocator(resolve(step.frame));
       for (const inner of step.steps ?? []) {
@@ -886,6 +969,9 @@ function redactHeaders(headers, origin = null) {
   mark('inventoried');
   raw.title = await owned.title().catch(() => '');
   raw.finalUrl = urlBeforeHarness && urlBeforeHarness !== 'about:blank' ? urlBeforeHarness : owned.url();
+  // Only reads of finished requests are awaited here: they end without network. A read of a request still in flight ends
+  // with its page.
+  await Promise.allSettled([...bodyReads].filter(([request]) => !inflight.has(request)).map(([, read]) => read));
   try {
     // Only the guard bounds the screenshot, so a slow host gets the full budget before the capture is marked failed.
     let guard;
@@ -906,10 +992,17 @@ function redactHeaders(headers, origin = null) {
   }
   mark('screenshot');
   context.off('page', onPage);
+  context.off('close', onContextClose);
   await context.unroute('**/*', guardPopups).catch(() => {});
   for (const popup of popups) await popup.close().catch(() => {});
   await owned.unroute('**/*', guard).catch(() => {});
-  await owned.close().catch(() => {});
+  const closed = await owned.close().then(
+    () => true,
+    () => false,
+  );
+  // Closing the page rejects the reads it still holds, so they end here. A page that did not close may leave them pending,
+  // and the capture then returns without them: their evidence keeps body null.
+  if (closed) await Promise.allSettled(bodyReads.values());
   summary.finishedAt = new Date().toISOString();
   return { summary, raw };
 }
@@ -1022,6 +1115,58 @@ export async function writeCapture(
 
 // The scenario's own budget in seconds (the live side's per-scenario default), also the screenshot guard's default.
 const SCENARIO_TIMEOUT_DEFAULT_SECONDS = 240;
+
+// The identity hosts of the runner guard's identity traffic: the same literal as the runner's identityHosts.
+const CAPTURE_IDENTITY_HOSTS = /(?:^|\.)login\.microsoftonline\.com$|(?:^|\.)login\.live\.com$|(?:^|\.)b2clogin\.com$/i;
+const NET_CONTINUE = Object.freeze({ action: 'continue' });
+const NET_BLOCK = Object.freeze({ action: 'block' });
+const hostOfValue = (value) => URL.parse(value)?.hostname ?? '';
+// Header names are matched without regard to case, since a browser may send them in any case.
+const headerValue = (headers, name) => {
+  const key = Object.keys(headers ?? {}).find((item) => item.toLowerCase() === name);
+  return key === undefined ? '' : String(headers[key]);
+};
+// Identity navigations, as the runner guard has them: a document to a sign-in path, or a document whose referer or origin
+// is an identity host.
+const isCaptureIdentityNavigation = (request, url) => {
+  if (request.resourceType !== 'Document') return false;
+  if (/^\/signin-[^/]+$/i.test(url.pathname) || /^\/Account\/Login\/ExternalLogin$/i.test(url.pathname)) return true;
+  return ['referer', 'origin'].some((name) =>
+    CAPTURE_IDENTITY_HOSTS.test(hostOfValue(headerValue(request.headers, name))),
+  );
+};
+/**
+ * The browser-session net's decision for a live capture, with the runner guard's rules. It is at module scope because
+ * pageRunner is serialised and cannot share it. A request is continued when it is a read, a sign-in navigation or a
+ * request to another origin; a write to the captured origin is continued only when the run allows it, and blocked otherwise.
+ */
+export function captureNetDecision({
+  origin,
+  allowWrites = false,
+  allowPaths = [],
+  allowEntitySets = [],
+  readPosts = ['^/_services/entity-(?:grid|subgrid)-data.json(?:/|$)', '^/_services/entity-notes/[^/]+$'],
+}) {
+  const loopback = /^(?:127\.0\.0\.1|localhost|\[::1\])$/.test(new URL(origin).hostname);
+  // A local runtime's own instrumentation endpoints and the portal's list/grid data (POST, reads only) are not writes.
+  const isRead = (pathname) =>
+    (loopback && pathname.startsWith('/__sim/')) || readPosts.some((pattern) => new RegExp(pattern).test(pathname));
+  const isEntitySetWrite = (pathname) => {
+    const api = /^\/_api\/([^/(]+)/.exec(pathname);
+    return Boolean(api && allowEntitySets.includes(api[1]));
+  };
+  // A write is allowed only in a run with writes, by a listed path or a listed entity set.
+  const writeAllowed = (pathname) =>
+    isRead(pathname) ||
+    (allowWrites && (allowPaths.some((pattern) => new RegExp(pattern).test(pathname)) || isEntitySetWrite(pathname)));
+  return (request) => {
+    const method = String(request.method).toUpperCase();
+    if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return NET_CONTINUE;
+    const url = new URL(request.url);
+    if (url.origin !== origin || isCaptureIdentityNavigation(request, url)) return NET_CONTINUE;
+    return writeAllowed(url.pathname) ? NET_CONTINUE : NET_BLOCK;
+  };
+}
 
 /** Runner options shared by every side, from the matrix and the run. */
 export function runnerOptions({ scenario, origin, ids, matrix, allowWrites }) {

@@ -27,7 +27,8 @@ export function createMetadataWorkers({ idleMs = 30_000 } = {}) {
     closed = false;
   const stop = (entry, reason) => {
     entry.reason ??= reason;
-    return entry.worker.terminate();
+    // A thread that failed ends by itself; terminate only a live idle or busy one.
+    return entry.failure ? entry.ended : entry.worker.terminate();
   };
   const start = () => {
     const entry = { worker: new Worker(new URL('./metadata-worker.mjs', import.meta.url)), failure: null };
@@ -45,6 +46,7 @@ export function createMetadataWorkers({ idleMs = 30_000 } = {}) {
       }
       events.emit('exit', { code, reason: entry.reason ?? 'failed', error: entry.reason ? null : entry.failure });
     });
+    entry.ended = new Promise((resolve) => entry.worker.once('exit', resolve));
     return entry;
   };
   return {

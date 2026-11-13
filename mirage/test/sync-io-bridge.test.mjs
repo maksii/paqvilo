@@ -1,3 +1,4 @@
+// @test-kind contract: the bridge is Mirage's own runtime seam between its threads; each test pins a designed behaviour of it.
 // The synchronous I/O bridge (sync-io-bridge.mjs): a synchronous plug-in step that posts (a Service Bus emulator send, a web
 // hook) on the synchronous SDK drive - a plug-in's own SDK call - runs inside the operation through
 // a worker thread and fails it when the post fails (a synchronous registered plug-in gets an exception). The broker and the
@@ -5,7 +6,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { Worker } from 'node:worker_threads';
+import { MessagePort, Worker } from 'node:worker_threads';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { serviceEndpointDelivery } from '../lib/dataverse-webhooks.mjs';
 import {
@@ -271,4 +272,40 @@ test('a flow Dataverse CreateRecord action (the asynchronous drive) awaits the s
     (error) => error.code === 'ServiceEndpointFailed',
   );
   assert.equal(refused.rows('x_widget'), 0);
+});
+
+test('closing the bridge terminates its idle worker before the port is closed, and the worker exits terminated', async (t) => {
+  const receiver = await threadReceiver(t);
+  const order = [],
+    terminated = [],
+    exits = [];
+  const terminate = Worker.prototype.terminate;
+  t.mock.method(Worker.prototype, 'terminate', function (...args) {
+    order.push('terminate');
+    terminated.push(this);
+    return terminate.apply(this, args);
+  });
+  const close = MessagePort.prototype.close;
+  t.mock.method(MessagePort.prototype, 'close', function (...args) {
+    order.push('port-close');
+    return close.apply(this, args);
+  });
+  const emit = Worker.prototype.emit;
+  t.mock.method(Worker.prototype, 'emit', function (name, ...args) {
+    if (name === 'exit') exits.push({ worker: this, code: args[0] });
+    return emit.call(this, name, ...args);
+  });
+  assert.equal(syncIo('http-post', { url: `${receiver.origin}/status/200`, headers: {}, body: '{}' }), 200);
+  await closeSyncIoBridge();
+  assert.deepEqual(
+    order.slice(0, 2),
+    ['terminate', 'port-close'],
+    'the worker is terminated while it still idles on its port',
+  );
+  assert.equal(terminated.length, 1, 'terminate is called once');
+  assert.deepEqual(
+    exits.filter((exit) => exit.worker === terminated[0]).map((exit) => exit.code),
+    [1],
+    'the worker exits with the terminate code, not by itself',
+  );
 });

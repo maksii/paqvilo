@@ -37,6 +37,7 @@ async function fixture(t) {
   const fields = [{ name: 'title', label: 'Title', required: true }];
   const app = await createSimulator({
     sourceDir: root,
+    projectRoot: root,
     watch: false,
     initial: {
       mappings: {

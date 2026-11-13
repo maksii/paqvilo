@@ -96,3 +96,119 @@ test('an explicit short scenario timeout fails a stuck screenshot with the guard
   );
   assert.equal(raw.screenshot, undefined);
 });
+
+// A navigation whose response body the test controls. The capture must not return, nor reach its screenshot, while
+// that body is still being read; the settle wait is the event that shows the capture is waiting for it.
+test('the capture does not return until the response body it is reading has been read', async () => {
+  const settleWaits = deferred();
+  const bodyRead = deferred();
+  const gate = deferred();
+  const page = runnerPage(() => Promise.resolve(png));
+  page.waitForTimeout = async () => {
+    settleWaits.resolve();
+    await gate.promise;
+  };
+  const request = {
+    method: () => 'GET',
+    url: () => origin + '/data',
+    headers: () => ({}),
+    postData: () => null,
+    resourceType: () => 'document',
+    isNavigationRequest: () => true,
+    frame: () => ({ parentFrame: () => null, page: () => page }),
+    failure: () => null,
+  };
+  const response = {
+    status: () => 200,
+    headers: () => ({ 'content-type': 'text/plain' }),
+    request: () => request,
+    body: () => bodyRead.promise,
+  };
+  page.goto = async () => {
+    page.emit('request', request);
+    page.emit('response', response);
+    page.emit('requestfinished', request);
+  };
+  const pending = pageRunner(
+    page,
+    runnerOptions({
+      scenario: { id: 'invented/body', steps: [{ goto: '/data' }], expect: {} },
+      origin,
+      ids: {},
+      matrix: { settle: { quietMs: 0, timeout: 20000 } },
+      allowWrites: false,
+    }),
+  );
+  const outcome = await Promise.race([settleWaits.promise.then(() => 'waiting'), pending.then(() => 'returned')]);
+  assert.equal(outcome, 'waiting', 'the capture returned before its response body was read');
+  bodyRead.resolve(Buffer.from('invented body'));
+  gate.resolve();
+  const { raw } = await pending;
+  assert.equal(raw.requests[0].response.body, 'invented body');
+});
+
+// A response whose headers arrived but whose body never ends. The capture waits for that read after it closes its page;
+// the test then ends the read the way a closed page does, so the response keeps no body.
+test('a response body that never ends does not hold the capture past its page', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'] });
+  const order = [];
+  const closeCalled = deferred();
+  let rejectBody;
+  const body = new Promise((_resolve, reject) => {
+    rejectBody = reject;
+  });
+  const endBody = () => rejectBody(new Error('Target page, context or browser has been closed'));
+  t.after(endBody);
+  const page = runnerPage(() => Promise.resolve(png));
+  page.waitForTimeout = async (ms) => t.mock.timers.tick(ms);
+  const request = {
+    method: () => 'GET',
+    url: () => origin + '/poll',
+    headers: () => ({}),
+    postData: () => null,
+    resourceType: () => 'fetch',
+    isNavigationRequest: () => false,
+    frame: () => ({ parentFrame: () => null, page: () => page }),
+    failure: () => null,
+  };
+  const response = {
+    status: () => 200,
+    headers: () => ({ 'content-type': 'text/plain' }),
+    request: () => request,
+    body: () => body.finally(() => order.push('read settled')),
+  };
+  page.goto = async () => {
+    page.emit('request', request);
+    page.emit('response', response);
+  };
+  page.close = async () => {
+    order.push('close');
+    closeCalled.resolve();
+  };
+  let returned = false;
+  const pending = pageRunner(
+    page,
+    runnerOptions({
+      scenario: { id: 'invented/long-poll', steps: [{ goto: '/poll' }], expect: {} },
+      origin,
+      ids: {},
+      matrix: { settle: { quietMs: 0, timeout: 1000 } },
+      allowWrites: false,
+    }),
+  ).then((value) => {
+    returned = true;
+    return value;
+  });
+  await closeCalled.promise;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(returned, false, 'the capture waits for the body read it started');
+  endBody();
+  const { summary, raw } = await pending;
+  assert.ok(summary.settlements.length > 0, 'the capture never settled');
+  assert.ok(
+    summary.settlements.every((settlement) => !settlement.settled),
+    JSON.stringify(summary.settlements),
+  );
+  assert.equal(raw.requests[0].response.body, null);
+  assert.deepEqual(order, ['close', 'read settled']);
+});

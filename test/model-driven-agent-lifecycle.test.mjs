@@ -6,7 +6,7 @@ import { EventEmitter } from 'node:events';
 import { startAgentServer } from '../lense/agent-server.mjs';
 import { modelDrivenTargetSessions } from '../lense/model-driven-targets.mjs';
 import { readDiscovery } from '../lense/commands/agent.mjs';
-import { cleanupModelDrivenSession, closeModelDrivenResources } from '../lense/commands/model-driven.mjs';
+import { cleanupModelDrivenSession, closeModelDrivenResources, closeStartup } from '../lense/commands/model-driven.mjs';
 import * as modelDrivenCommand from '../lense/commands/model-driven.mjs';
 import { tempDirSync } from './fixture.mjs';
 import { captureConsoleOutput, openLatch } from './helpers/mirage-session-doubles.mjs';
@@ -429,4 +429,29 @@ test('a repeated stop signal while a startup-timed-out model-driven session clos
     process.off('SIGINT', noop);
     process.off('SIGTERM', noop);
   }
+});
+
+test('a start-up closes its deadline and progress only after late work has settled', async () => {
+  const events = [];
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const deadline = {
+    settled: () => {
+      events.push('settled-asked');
+      return gate;
+    },
+    close: () => events.push('deadline-closed'),
+  };
+  const progress = { close: () => events.push('progress-closed') };
+  const closing = closeStartup(deadline, progress);
+  assert.deepEqual(events, ['settled-asked']);
+  release();
+  await closing;
+  assert.deepEqual(events, ['settled-asked', 'deadline-closed', 'progress-closed']);
+});
+
+test('a command without a start-up deadline closes nothing and does not throw', async () => {
+  assert.equal(await closeStartup(null, null), undefined);
 });

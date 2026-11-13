@@ -27,6 +27,15 @@ function fixtureApi(pathname, res, fallback) {
   return true;
 }
 
+// The product calls the hook as it creates a navigation hold. Only tests that release writes on the hold get one.
+function navigationHoldHook(enabled, fixtureEvents, navigationHeld) {
+  if (!enabled) return undefined;
+  return () => {
+    fixtureEvents.push('navigation-held');
+    navigationHeld.resolve();
+  };
+}
+
 async function navigationFixture(
   t,
   {
@@ -42,8 +51,8 @@ async function navigationFixture(
     redirect = false,
     child = false,
     writeMs = 0,
-    // Writes answer only after both have arrived and the navigation request has been observed, so they are in
-    // flight when the navigation starts and finish during its hold.
+    // Writes answer only after both have arrived and the product has held the navigation, so they are in flight
+    // when the navigation starts and finish during its hold.
     releaseWritesOnNavigation = false,
     actionDelay = 0,
     replacementRead = false,
@@ -80,7 +89,7 @@ async function navigationFixture(
       ? `document.querySelector('form').addEventListener('submit',()=>{fetch('/late-writes-ready').then(response=>response.text()).then(()=>{${historyChange};${writes}})})`
       : timerScript;
   const documentRequested = Promise.withResolvers();
-  const submitRequested = Promise.withResolvers();
+  const navigationHeld = Promise.withResolvers();
   const lateGateFinished = Promise.withResolvers();
   const writesObserved = Promise.withResolvers();
   const readArrived = Promise.withResolvers();
@@ -94,9 +103,9 @@ async function navigationFixture(
   const writesArrived = new Promise((resolve) => {
     releaseDocument = resolve;
   });
-  // Released writes are answered only after the server has received both and the browser has reported the
-  // navigation. The release callback is registered first, so 'writes-released' is recorded before any answer.
-  const writesReleased = Promise.all([writesArrived, submitRequested.promise]).then(() => {
+  // Released writes are answered only after the server has received both and the product has held the navigation
+  // (onNavigationHold). 'writes-released' is recorded before any answer.
+  const writesReleased = Promise.all([writesArrived, navigationHeld.promise]).then(() => {
     fixtureEvents.push('writes-released');
   });
   const server = http.createServer((req, res) => {
@@ -212,22 +221,17 @@ async function navigationFixture(
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
   });
+  const onNavigationHold = navigationHoldHook(releaseWritesOnNavigation, fixtureEvents, navigationHeld);
   const result = await runAcceptance({
     localUrl: `http://127.0.0.1:${server.address().port}`,
     outputDir: path.join(root, 'evidence'),
     timeout: HANG_GUARD_ACTION_MS,
     navigationCommitReserveMs,
+    onNavigationHold,
     prepareContext:
-      noCommit || controlledLateWrites || customizeContext || releaseWritesOnNavigation
+      noCommit || controlledLateWrites || customizeContext
         ? async (context) => {
             await customizeContext?.(context);
-            if (releaseWritesOnNavigation) {
-              context.on('request', (request) => {
-                if (new URL(request.url()).pathname !== '/submit') return;
-                fixtureEvents.push('navigation-observed');
-                submitRequested.resolve();
-              });
-            }
             if (noCommit) {
               let historyRecorded = false;
               context.on('page', (page) => {
@@ -413,11 +417,16 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
     });
 
   test('redirect waits allow writes within the navigation budget to finish', async (t) => {
-    // The writes answer after 3 s, far inside the navigation's hold, so the budget is not what is under test.
-    const flow = await navigationFixture(t, { redirect: true, history: 'none', writeMs: 3000 });
+    // The writes answer when the product holds the navigation, so they finish inside its hold without a timed answer.
+    const flow = await navigationFixture(t, { redirect: true, history: 'none', releaseWritesOnNavigation: true });
     assert.equal(flow.passed, true, JSON.stringify(flow));
     assert.equal(flow.navigationCancelledRequests?.length ?? 0, 0);
     assert.equal(flow.resources.filter((row) => /slow-/.test(row.url) && row.finished).length, 2);
+    assert.ok(flow.navigationWaits?.length > 0, 'the navigation was held while its writes were in flight');
+    assert.ok(
+      flow.navigationWaits.every((wait) => wait.settled === true && wait.commitReserveMs === reserveFor(wait)),
+      JSON.stringify(flow.navigationWaits),
+    );
   });
 
   for (const crossOrigin of [false, true])
@@ -629,8 +638,8 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
   });
   test('writes released by a navigation settle before an immediate redirect within an action budget', async (t) => {
     // The server cannot see the navigation while the product holds it: the document request is paused in the
-    // browser and reaches this server only after the hold ends. So the navigation is observed through the browser's
-    // request event, and the writes stay unanswered until both have reached the server and that event has fired.
+    // browser and reaches this server only after the hold ends. So the hold itself releases the writes: they stay
+    // unanswered until both have reached the server and the product has held the navigation.
     const flow = await navigationFixture(t, {
       redirect: true,
       history: 'none',
@@ -644,23 +653,24 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
     assert.ok(sequence.indexOf('write:/slow-one') < released, 'slow-one reached the server before the release');
     assert.ok(sequence.indexOf('write:/slow-two') < released, 'slow-two reached the server before the release');
     assert.ok(
-      sequence.indexOf('navigation-observed') < released,
-      'navigation observed while the writes were unanswered',
+      sequence.indexOf('navigation-held') < released && sequence.indexOf('navigation-held') >= 0,
+      'navigation held while the writes were unanswered',
     );
     assert.ok(released < sequence.indexOf('write-answered:/slow-one'));
     assert.ok(released < sequence.indexOf('write-answered:/slow-two'));
     assert.equal(flow.navigationCancelledRequests?.length ?? 0, 0);
     assert.equal(flow.resources.filter((row) => /slow-/.test(row.url) && row.finished).length, 2);
-    // The product holds a navigation only if a write is still in flight when the navigation pauses. The browser can
-    // finish the writes before that pause is processed, and then nothing is held and the redirect commits. Either
-    // way the writes are kept, and every recorded hold must have settled within its reserve.
+    // The writes are unanswered until the hold is created, so the hold always records a wait; every recorded wait must
+    // have settled within its reserve.
+    assert.ok(flow.navigationWaits?.length > 0, 'the navigation was held while its writes were in flight');
     assert.ok(
-      (flow.navigationWaits ?? []).every(
+      flow.navigationWaits.every(
         (wait) =>
           wait.settled === true &&
           wait.commitReservePolicy === 'bounded-write-fallback' &&
           wait.commitReserveMs === reserveFor(wait),
       ),
+      JSON.stringify(flow.navigationWaits),
     );
   });
   test('an explicit navigation commit reserve overrides the default half-time budget', async (t) => {

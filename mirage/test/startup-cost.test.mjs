@@ -685,6 +685,7 @@ test('a PCF control file is opened once during one start of the model-driven run
     sim = await createSimulator({
       runtime: { kind: 'model-driven' },
       solutionRoots: fixture.solutionRoots,
+      projectRoot: fixture.root,
       watch: false,
     });
   } finally {

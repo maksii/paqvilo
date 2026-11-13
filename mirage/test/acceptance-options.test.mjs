@@ -55,9 +55,14 @@ const fakePage = (opener, url = 'about:blank') => {
   const page = Object.assign(new EventEmitter(), {
     handlers,
     counts,
-    route: async (_pattern, handler) => void handlers.add(handler),
-    unroute: async (_pattern, handler) => void handlers.delete(handler),
+    route: async (_pattern, handler) => {
+      handlers.add(handler);
+    },
+    unroute: async (_pattern, handler) => {
+      handlers.delete(handler);
+    },
     opener: async () => opener,
+    isClosed: () => counts.closed > 0,
     url: () => mainFrame.location,
     mainFrame: () => mainFrame,
     close: async () => {
@@ -69,13 +74,22 @@ const fakePage = (opener, url = 'about:blank') => {
 };
 const fakeContext = () => {
   const listeners = new Set();
+  const closeListeners = new Set();
   const routes = new Map();
   return {
     listeners,
     routes,
     on: (_event, listener) => listeners.add(listener),
     off: (_event, listener) => listeners.delete(listener),
-    route: async (pattern, handler) => void routes.set(pattern, handler),
+    once: (event, listener) => {
+      if (event === 'close') closeListeners.add(listener);
+    },
+    close: () => {
+      for (const listener of closeListeners) listener();
+    },
+    route: async (pattern, handler) => {
+      routes.set(pattern, handler);
+    },
     unroute: async (pattern, handler) => {
       if (routes.get(pattern) === handler) routes.delete(pattern);
     },
@@ -88,8 +102,12 @@ const fakeRoute = (page, method = 'POST') => {
   return {
     calls,
     request: () => ({ method: () => method, frame: () => ({ page: () => page }) }),
-    fallback: () => void calls.push('fallback'),
-    abort: () => void calls.push('abort'),
+    fallback: () => {
+      calls.push('fallback');
+    },
+    abort: () => {
+      calls.push('abort');
+    },
   };
 };
 const navigateFake = (page, href) => {
@@ -102,7 +120,9 @@ const nextTick = () => new Promise((resolve) => setImmediate(resolve));
 test('live flow guard covers the popups its pages open and releases pages the flow did not open', async () => {
   const context = fakeContext();
   const refused = [];
-  const guard = (route) => void refused.push(route);
+  const guard = (route) => {
+    refused.push(route);
+  };
   const owner = fakePage(null);
   const opened = [];
   const stop = await __testing.guardOpenedPages(context, owner, guard, (page) => opened.push(page));
@@ -136,7 +156,9 @@ test('the first request of a popup of the flow page is guarded before the page e
   const stop = await __testing.guardOpenedPages(
     context,
     owner,
-    (route) => void refused.push(route.request().method()),
+    (route) => {
+      refused.push(route.request().method());
+    },
     () => {},
   );
   const popup = fakePage(owner);
@@ -154,7 +176,9 @@ test('a non-GET request from an unrelated page of the context falls back, and st
   const stop = await __testing.guardOpenedPages(
     context,
     owner,
-    (route) => void refused.push(route),
+    (route) => {
+      refused.push(route);
+    },
     () => {},
   );
   const unrelated = fakePage(null);
@@ -167,28 +191,61 @@ test('a non-GET request from an unrelated page of the context falls back, and st
   assert.equal(context.routes.size, 0);
 });
 
+// @test-kind security: a tab that was already open when a live flow started cannot write while the flow runs
+test('a non-GET request from a page that was already open when the flow started is refused', async () => {
+  // `other` existed before the guard started, so the context's page event never announces it.
+  const other = fakePage(null);
+  const context = Object.assign(fakeContext(), { pages: () => [other] });
+  const refused = [];
+  const owner = fakePage(null);
+  const stop = await __testing.guardOpenedPages(
+    context,
+    owner,
+    (route) => {
+      refused.push(route.request().method());
+    },
+    () => {},
+  );
+  await context.routes.get('**/*')(fakeRoute(other, 'POST'));
+  assert.deepEqual(refused, ['POST'], 'the page was open before the flow started, so its write reaches the guard');
+  await stop();
+  assert.equal(context.routes.size, 0);
+});
+
 // @test-kind contract: a popup whose route fails while its opener is still unknown is closed without an unhandled rejection
 test('a popup whose opener lookup fails stays under the flow guard without an unhandled rejection', async () => {
   const context = fakeContext();
   const owner = fakePage(null);
   const popup = fakePage(owner);
   let releaseOpener;
-  const openerGate = new Promise((resolve) => void (releaseOpener = resolve));
-  popup.opener = () =>
-    openerGate.then(() => Promise.reject(new Error('Target page, context or browser has been closed')));
+  const openerGate = new Promise((resolve) => {
+    releaseOpener = resolve;
+  });
+  let lookedUp;
+  const lookup = new Promise((resolve) => {
+    lookedUp = resolve;
+  });
+  popup.opener = () => {
+    lookedUp();
+    return openerGate.then(() => Promise.reject(new Error('Target page, context or browser has been closed')));
+  };
   const unhandled = [];
-  const record = (reason) => void unhandled.push(reason);
+  const record = (reason) => {
+    unhandled.push(reason);
+  };
   process.on('unhandledRejection', record);
   try {
     const refused = [];
     const stop = await __testing.guardOpenedPages(
       context,
       owner,
-      (route) => void refused.push(route),
+      (route) => {
+        refused.push(route);
+      },
       () => {},
     );
     const pending = context.open(popup);
-    await nextTick();
+    await lookup;
     releaseOpener();
     await Promise.all(pending);
     await nextTick();
@@ -221,12 +278,129 @@ test('a guarded request whose page closed before the answer does not reject', as
     abort: () => Promise.reject(error),
   });
   const closed = new Error('route.continue: Target page, context or browser has been closed');
-  await assert.doesNotReject(handler(failingRoute(owner, closed)), 'the flow page answers through its own fallback');
-  await assert.doesNotReject(handler(failingRoute(popup, closed)), 'a popup answers through the flow guard');
   const boom = new Error('boom');
+  await assert.rejects(
+    handler(failingRoute(owner, closed)),
+    /has been closed/,
+    'an open flow page rethrows its failure',
+  );
+  await assert.rejects(handler(failingRoute(popup, closed)), /has been closed/, 'an open popup rethrows its failure');
   await assert.rejects(handler(failingRoute(owner, boom)), /boom/);
   await assert.rejects(handler(failingRoute(popup, boom)), /boom/);
+  await owner.close();
+  await popup.close();
+  await assert.doesNotReject(
+    handler(failingRoute(owner, closed)),
+    'the closed flow page answers through its own fallback',
+  );
+  await assert.doesNotReject(handler(failingRoute(owner, boom)), 'a closed flow page ignores any failure text');
+  await assert.doesNotReject(handler(failingRoute(popup, closed)), 'a closed popup answers through the flow guard');
+  await assert.doesNotReject(handler(failingRoute(popup, boom)), 'a closed popup ignores any failure text');
   await stop();
+});
+
+// @test-kind contract: a guarded request answered after its context closed does not reject, even on an open page
+test('a guarded request answered after its context closed does not reject', async () => {
+  const context = fakeContext();
+  const owner = fakePage(null);
+  const stop = await __testing.guardOpenedPages(
+    context,
+    owner,
+    (route) => route.abort('blockedbyclient'),
+    () => {},
+  );
+  const boom = new Error('route.abort: boom');
+  const failing = {
+    request: () => ({ method: () => 'POST', frame: () => ({ page: () => owner }) }),
+    fallback: () => Promise.reject(boom),
+  };
+  await assert.rejects(context.routes.get('**/*')(failing), /boom/, 'an open page rethrows while the context is open');
+  context.close();
+  await assert.doesNotReject(context.routes.get('**/*')(failing), 'a closed context answers through the flow guard');
+  await stop();
+});
+
+// @test-kind contract: stop waits for a popup still resolving its opener, closes it, and never registers it
+test('stop waits for a popup still resolving its opener, closes it, and never registers it', async () => {
+  const context = fakeContext();
+  const owner = fakePage(null);
+  const opened = [];
+  const stop = await __testing.guardOpenedPages(
+    context,
+    owner,
+    () => {},
+    (page) => opened.push(page),
+  );
+  const popup = fakePage(owner);
+  let openerRequested;
+  const requested = new Promise((resolve) => {
+    openerRequested = resolve;
+  });
+  let releaseOpener;
+  const gate = new Promise((resolve) => {
+    releaseOpener = resolve;
+  });
+  popup.opener = () => {
+    openerRequested();
+    return gate;
+  };
+  const opening = Promise.all(context.open(popup));
+  let stopped = false;
+  const stopping = stop().then(() => {
+    stopped = true;
+  });
+  await requested;
+  // only an event this test controls can settle it: one turn lets a version that does not wait run past its wait
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(stopped, false, 'stop is still pending while the popup awaits its opener');
+  releaseOpener(owner);
+  await stopping;
+  assert.equal(popup.counts.closed, 1, 'stop has closed the popup that resumed after stop');
+  await opening;
+  assert.equal(popup.counts.closed, 1, 'the popup that resumed after stop is closed');
+  assert.deepEqual(opened, [], 'onOpened is not called for a popup that resumed after stop');
+  assert.equal(context.listeners.size, 0);
+});
+
+test('stop waits for a route answer that is still in flight before it unroutes and closes pages', async () => {
+  const context = fakeContext();
+  const owner = fakePage(null);
+  const events = [];
+  let releaseAnswer;
+  const held = new Promise((resolve) => {
+    releaseAnswer = resolve;
+  });
+  const guard = (route) => {
+    events.push('answer-started');
+    return held
+      .then(() => route.abort('blockedbyclient'))
+      .then(() => {
+        events.push('answer-finished');
+      });
+  };
+  const unroute = context.unroute;
+  context.unroute = async (pattern, handler) => {
+    events.push('unroute');
+    return unroute(pattern, handler);
+  };
+  const stop = await __testing.guardOpenedPages(context, owner, guard, () => {});
+  const popup = fakePage(owner);
+  const close = popup.close;
+  popup.close = async () => {
+    events.push('closed');
+    return close();
+  };
+  await Promise.all(context.open(popup));
+  const answering = context.routes.get('**/*')(fakeRoute(popup));
+  let stopped = false;
+  const stopping = stop().then(() => {
+    stopped = true;
+  });
+  assert.equal(stopped, false, 'stop is still pending while the route answer is held');
+  releaseAnswer();
+  await stopping;
+  await answering;
+  assert.deepEqual(events, ['answer-started', 'answer-finished', 'unroute', 'closed']);
 });
 
 // @test-kind contract: the popup evidence entry names the page the popup navigated to, with no query value
@@ -276,4 +450,32 @@ test('acceptance rejects unbounded action timeouts and invalid explicit reserves
       runAcceptance({ navigationCommitReserveMs }),
       /navigationCommitReserveMs must be nonnegative and smaller than timeout/,
     );
+});
+
+test('a live flow closes its write net after its page guard and page, also when either of them fails', async () => {
+  const run = ({ stopFails = false, closeFails = false } = {}) => {
+    const calls = [];
+    const step = (name, fails) => async () => {
+      calls.push(name);
+      if (fails) throw new Error(`${name} failed`);
+    };
+    const ended = __testing.endFlowPage({ close: step('page close', closeFails) }, step('stop', stopFails), {
+      close: step('net close', false),
+    });
+    return { ended, calls };
+  };
+
+  const clean = run();
+  await clean.ended;
+  assert.deepEqual(clean.calls, ['stop', 'page close', 'net close']);
+
+  const closeFailing = run({ closeFails: true });
+  await assert.rejects(closeFailing.ended, /page close failed/);
+  assert.deepEqual(closeFailing.calls, ['stop', 'page close', 'net close'], 'the net closes after a failed page close');
+
+  const stopFailing = run({ stopFails: true });
+  await assert.rejects(stopFailing.ended, /stop failed/);
+  assert.deepEqual(stopFailing.calls, ['stop', 'net close'], 'the net closes after a failed guard stop');
+
+  await __testing.endFlowPage({ close: async () => {} }, null, null);
 });

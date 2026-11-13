@@ -33,13 +33,22 @@ function stop(message, owner = null) {
   if (message) for (const id of active.keys()) send({ ...(owner && id !== owner ? crash : message), invocationId: id });
   // Session-level: the host is gone for the pool even when no invocation was in flight.
   send({ kind: 'host-exited', hostExitCode: child.exitCode });
+}
+// The child's own exit is the host's real exit: the port closes only after it is reported, and then the worker ends.
+function reportHostProcessExit(code) {
+  send({ kind: 'host-process-exited', hostExitCode: code });
   port.close();
 }
 child.on('spawn', () => send({ kind: 'owned-child', pid: child.pid }));
-child.on('error', () =>
-  stop({ kind: 'failure', code: 'LocalPluginHostUnavailable', message: 'Owned pooled CLR host could not start.' }),
-);
-child.on('exit', (code) => stop({ ...crash, hostExitCode: code }));
+child.on('error', () => {
+  stop({ kind: 'failure', code: 'LocalPluginHostUnavailable', message: 'Owned pooled CLR host could not start.' });
+  // A child that never started emits no exit event.
+  if (child.pid === undefined) reportHostProcessExit(null);
+});
+child.on('exit', (code) => {
+  stop({ ...crash, hostExitCode: code });
+  reportHostProcessExit(code);
+});
 // The host discards plug-in console output; anything else on stderr is drained, never a failure.
 child.stderr.resume();
 child.stdin.on('error', () =>

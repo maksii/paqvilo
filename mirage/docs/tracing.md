@@ -673,6 +673,12 @@ returns a promise that settles once the queued persisted lines are written and t
 and `subscribe(listener, { payloads, events, traceId })` delivers frozen event copies, with captured payloads unless
 `payloads: false`; `events` (a type or an array) and `traceId` narrow the frames as for the testing client.
 
+The store object itself, which the organization host shares as `host.traces`, also has `track(cancel)`, which registers
+the cancel function of an open capture (a response body the store reads) and returns the function that unregisters it,
+and `close()`, which cancels every open capture and resolves once their readers have ended. The organization host calls
+`close()` when it closes the store it created, after its own runtimes and before its providers. A host given its store
+(a persona runtime shares its parent's) does not close it, so stopping that host leaves the owner's open captures running.
+
 ```js
 import { connectRuntime } from 'paqvilo/mirage/testing';
 const sim = await connectRuntime({ origin: 'http://127.0.0.1:8787' });

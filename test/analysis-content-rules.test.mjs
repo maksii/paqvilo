@@ -1,12 +1,11 @@
 // @test-kind contract: Paqvilo-owned offline content diagnostics, not native runtime parity.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { once } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
-import { Worker } from 'node:worker_threads';
 import { tempDirSync } from './fixture.mjs';
+import { workerAnswer } from '../mirage/test/support/worker-answer.mjs';
 import { analyzeContent, contentRules } from '../lense/analysis/content-rules.mjs';
 
 const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
@@ -169,21 +168,10 @@ const workerSource = `
     });
   });`;
 
-// The worker keeps a pathological analysis out of the test process. It ends by itself after its answer and is
-// terminated only when the wait fails, so a normal run never terminates a worker that is already exiting.
+// The worker keeps a pathological analysis out of the test process. It ends by itself after its answer; the helper
+// forces it only when the test is aborted while it is still running, so a normal run never terminates an exiting worker.
 async function analyzeInWorker(t, root) {
-  const worker = new Worker(workerSource, { eval: true, workerData: { module: analysisModule, root } });
-  // A worker error rejects the wait for its message, which is the reported failure (once(worker, 'message', ...)
-  // rejects on 'error' too). The exit wait only ends the worker's life, so its rejection is ignored here.
-  const exited = once(worker, 'exit').catch(() => {});
-  try {
-    const [summary] = await once(worker, 'message', { signal: t.signal });
-    await exited;
-    return summary;
-  } catch (error) {
-    await worker.terminate();
-    throw error;
-  }
+  return workerAnswer(workerSource, { eval: true, workerData: { module: analysisModule, root }, signal: t.signal });
 }
 
 test('markup with more than 1000 unmatched open elements is skipped with a budget reason and an incomplete web-content domain', async (t) => {

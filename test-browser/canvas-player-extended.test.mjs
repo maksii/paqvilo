@@ -278,7 +278,7 @@ async function player(t, { display, resolution, onDanger, watch, onRevision, onS
             }),
             control('Save', 'Classic/Button@2.0', {
               Text: '="Save"',
-              OnSelect: '=Notify("Saved", NotificationType.Success, 1000)',
+              OnSelect: '=Notify("Saved", NotificationType.Success, 600000)',
               X: '=950',
               Y: '=650',
               Width: '=120',
@@ -770,11 +770,20 @@ test('player fixture drains accepted idle sockets before browser cleanup', async
 // @test-kind unproven: local banner model of Notify; no native capture of the banner has been taken.
 test('Notify shows a timed banner on the stage and removes it when its timeout elapses', async (t) => {
   const page = await player(t);
+  // Paused fake clock: the banner's timer moves only with runFor, so real time cannot expire it.
+  await page.clock.install({ time: new Date('2030-01-01T00:00:00Z') });
+  await page.clock.pauseAt(new Date('2030-01-01T00:00:01Z'));
   await page.locator('[data-control="Save"]').click();
   const banner = page.locator('[data-testid="canvas-notifications"] [role="status"]', { hasText: 'Saved' });
   await banner.waitFor();
   assert.equal(await banner.locator('span').innerText(), 'Saved');
+  // The banner is armed for 600 s on the server's clock minus the real time already elapsed before the page armed it:
+  // 1 s after the click it must still be shown, and the full timeout later it must be gone.
+  await page.clock.runFor(1_000);
+  assert.equal(await banner.count(), 1);
+  await page.clock.runFor(599_000);
   await banner.waitFor({ state: 'hidden' });
+  assert.equal(await banner.count(), 0);
 });
 
 // @test-kind unproven: local gallery selection model; native click routing of a row child is not captured.

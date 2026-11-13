@@ -237,7 +237,7 @@ test('concurrent identical publishers reuse the completed canonical payload afte
       parentPort.postMessage({ ready: true });
       Atomics.wait(new Int32Array(workerData.start), 0, 0);
       try { parentPort.postMessage({ file: persistCommandPayload(workerData.directory, Buffer.from(workerData.bytes)) }); }
-      catch (error) { parentPort.postMessage({ error: error.code }); }
+      catch (error) { parentPort.postMessage({ error: error.code ?? String(error?.message ?? error) }); }
     })();
   `,
         {
@@ -252,7 +252,13 @@ test('concurrent identical publishers reuse the completed canonical payload afte
         },
       ),
   );
-  ownedFixture(t).add(() => Promise.all(workers.map((worker) => worker.terminate())));
+  const settled = new Set();
+  const exits = workers.map((worker) => new Promise((resolve) => worker.once('exit', resolve)));
+  const endWorker = (worker, exit) => {
+    if (settled.has(worker)) return exit; // it answered or failed and is ending by itself: wait for its own exit
+    return worker.terminate(); // still blocked: forcing it is safe here
+  };
+  ownedFixture(t).add(() => Promise.all(workers.map((worker, index) => endWorker(worker, exits[index]))));
   let releaseHeld, releaseObserved;
   const held = new Promise((resolve) => {
     releaseHeld = resolve;
@@ -275,9 +281,14 @@ test('concurrent identical publishers reuse the completed canonical payload afte
     );
     outcomes.push(
       new Promise((resolve, reject) => {
-        worker.once('error', reject);
+        worker.once('error', (error) => {
+          settled.add(worker);
+          reject(error);
+        });
         worker.on('message', (message) => {
-          if (message.file || message.error) resolve(message);
+          if (!message.file && !message.error) return;
+          settled.add(worker);
+          resolve(message);
         });
       }),
     );
@@ -285,8 +296,15 @@ test('concurrent identical publishers reuse the completed canonical payload afte
   await Promise.all(ready);
   Atomics.store(new Int32Array(start), 0, 1);
   Atomics.notify(new Int32Array(start), 0);
-  await Promise.all([held, observed]);
+  // The gates open only from the product's file hooks. Workers that all end before reaching them end this wait too, so
+  // their errors are reported instead of the gates staying closed. A gate message precedes its worker's outcome on the
+  // same port, so when the link was held and observed, 'raced' is always the first to settle.
+  const reached = await Promise.race([
+    Promise.all([held, observed]).then(() => 'raced'),
+    Promise.all(outcomes).then(() => 'ended'),
+  ]);
   const results = await Promise.all(outcomes);
+  assert.equal(reached, 'raced', `the link was never held and observed: ${JSON.stringify(results)}`);
   assert.ok(
     results.every((result) => result.file === filename(directory, bytes)),
     JSON.stringify(results),

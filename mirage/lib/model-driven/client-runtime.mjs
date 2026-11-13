@@ -602,6 +602,8 @@ export function createFormClientRuntime(hostInput) {
     saving = false;
   // Captured once: detach() replaces host, and the form notification is still shown and cleared after that.
   const formNotification = hostInput.notification;
+  // The save-and-new chains still running; a chain that ends in a failure stays here, so settled() rejects.
+  const savedChains = new Set();
   const activeEvents = new Map();
   const assertLive = () => {
     if (!live) throw new Error('This form context has been disposed.');
@@ -822,8 +824,10 @@ export function createFormClientRuntime(hostInput) {
     if (typeof host.openNewRecord !== 'function') unsupported('formContext.data.entity.save saveandnew');
     const openNewRecord = host.openNewRecord;
     // formNotification stays callable after detach() replaces host with an object that refuses notification.
-    saveForm(false, 59)
+    const chain = saveForm(false, 59)
       .then(() => {
+        // The runtime was destroyed while the save was in flight: the form it saved is no longer this runtime's to replace.
+        if (!live) return undefined;
         detach();
         return openNewRecord();
       })
@@ -833,6 +837,12 @@ export function createFormClientRuntime(hostInput) {
         notifications.add('save');
         formNotification(error.message, 'ERROR', 'save');
       });
+    savedChains.add(chain);
+    // A failed chain is reported to the page as an error event; settled() carries the same failure.
+    chain.then(
+      () => savedChains.delete(chain),
+      (error) => globalThis.reportError?.(error),
+    );
     return undefined;
   };
   const entitySave = (mode) => {
@@ -1597,6 +1607,10 @@ export function createFormClientRuntime(hostInput) {
         });
         await call(action, args);
       }
+    },
+    // Resolves when every save-and-new chain the runtime started has ended; rejects when one ended in a failure.
+    async settled() {
+      await Promise.all(savedChains);
     },
     destroy() {
       live = false;

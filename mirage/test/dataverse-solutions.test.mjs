@@ -13,6 +13,7 @@ import { zipOf, solutionImportJob, stampImportedRow } from '../lib/dataverse-sol
 import { resyncMessageFilters } from '../lib/dataverse-plugin-registration.mjs';
 import { applySolutionPayloads } from '../lib/dataverse-solution-components.mjs';
 import { standardTableDef } from '../lib/dataverse-standard.mjs';
+import { reset as resetAsyncJobs } from '../lib/dataverse-async.mjs';
 import { createScheduler, fixedClock, storeScheduler } from '../lib/runtime-clock.mjs';
 import { componentObjectId } from '../lib/dataverse-metadata-relationships.mjs';
 import { dataverseOrganizationId } from '../lib/dataverse-organization.mjs';
@@ -1298,6 +1299,38 @@ describe('Solution lifecycle messages', { concurrency: false }, () => {
       });
       assert.equal(refusedAfterCompletion.status, 400, JSON.stringify(refusedAfterCompletion.json));
       assert.match(refusedAfterCompletion.json.error.message, /already used by an import job/);
+    });
+    assert.deepEqual(unhandled, []);
+  });
+
+  it('a reset that removes a Ready staged upgrade releases its job id: a later ImportSolution with that id is accepted', async () => {
+    const scheduler = createScheduler({ clock: fixedClock(), manual: true });
+    const target = await open({ scheduler });
+    assert.equal(
+      (await target.request('POST', '/ImportSolution', { CustomizationFile: base64(managedV1) })).status,
+      204,
+    );
+    const jobId = '7a5b4c33-0d9e-4f80-9b2c-3d4e5f6a7b82';
+    const unhandled = await unhandledDuring(async () => {
+      const held = await target.request('POST', '/StageAndUpgradeAsync', {
+        CustomizationFile: base64(managedV2),
+        ImportJobId: jobId,
+      });
+      assert.equal(held.status, 200, JSON.stringify(held.json));
+      assert.equal(
+        operationOf(target.store, held.json.AsyncOperationId).statecode,
+        0,
+        'the job is Ready and has not run',
+      );
+      // A /_sim/ reset replaces the rows without a write that settles the job, so the reset itself must release the id.
+      delete target.store.state.mappings.asyncoperation;
+      delete target.store.state.tables.asyncoperation;
+      await resetAsyncJobs(target.api);
+      const later = await target.request('POST', '/ImportSolution', {
+        CustomizationFile: base64(managedV2),
+        ImportJobId: jobId,
+      });
+      assert.equal(later.status, 204, JSON.stringify(later.json));
     });
     assert.deepEqual(unhandled, []);
   });

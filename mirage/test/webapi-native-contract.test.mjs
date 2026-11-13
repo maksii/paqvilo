@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto';
 import { createSimulator } from '../server.mjs';
 import { specimenApi, ID, PART } from './support/specimen-api.mjs';
 import { captureWebApiInputContract } from '../testing/webapi-contract.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 // @test-kind observation: two full native rounds (2026-11-08) recorded in fixtures/webapi-native-input-errors.json as case ids, status, code and raw response hashes; the six invalid PATCH values are typed in mirage/testing/webapi-contract.mjs and the oracle request is not recorded, so this is not a replay case.
 test('Dataverse rejects invalid HTTP primitives before an Upsert SDK existence observer', async (t) => {
@@ -118,14 +119,19 @@ const NAVIGATION_SETTINGS = {
 // Starts a simulator on the navigation state and answers a GET as { status, body } (body parsed when it is JSON).
 async function navigationGet(t, permissions) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-navigation-count-'));
-  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.promises.rm(directory, { recursive: true, force: true }));
   const settings = Object.entries(NAVIGATION_SETTINGS)
     .map(([name, value]) => `- adx_name: ${name}\n  adx_value: '${value}'`)
     .join('\n');
   fs.writeFileSync(path.join(directory, 'website.yml'), 'adx_websiteid: site\nadx_name: Navigation count\n');
   fs.writeFileSync(path.join(directory, 'sitesetting.yml'), settings);
-  const app = await createSimulator({ sourceDir: directory, initial: navigationState(permissions), watch: false });
-  t.after(() => app.close());
+  const app = await createSimulator({
+    sourceDir: directory,
+    projectRoot: directory,
+    initial: navigationState(permissions),
+    watch: false,
+  });
+  ownedFixture(t).add(() => app.close());
   return async (route) => {
     const response = await fetch(app.url + route, { headers: { __RequestVerificationToken: app.csrf } });
     const text = await response.text();

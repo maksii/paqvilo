@@ -194,6 +194,22 @@ test('closing the watcher cancels queued saves and prevents reload after shutdow
   }
 });
 
+test('closing the source watcher before it is ready settles its ready wait', async () => {
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-watch-early-close-')));
+  try {
+    const session = { cfg: { sourceDir: dir, site: { routes: [] }, siteName: 'invented' } };
+    const watcher = watchSources(session, {}, { gitWatch: false, log: () => {} });
+    let ready = false;
+    watcher.ready.then(() => {
+      ready = true;
+    });
+    await watcher.close();
+    assert.equal(ready, true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('watcher shutdown does not wait for a stalled browser navigation or emit a late refresh', async (t) => {
   const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'pp-stalled-refresh-')));
   let reached;
@@ -676,9 +692,9 @@ test('the 200 ms quiet period after the last refresh still applies', async (t) =
 test('whenIdle leaves no timer armed after it resolves, rejects, or the watcher closes', async (t) => {
   const { file, releases, watcher } = watcherWithHeldReloads(t);
   await watcher.ready;
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
   const timers = trackArmedTimers();
   try {
-    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
     watcher.emit('all', 'change', file);
     await advanceMock(t, 120);
     const resolved = watcher.whenIdle();

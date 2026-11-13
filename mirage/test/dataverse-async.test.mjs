@@ -1433,6 +1433,56 @@ test('whenJobSettled keeps a waiter pending when the transaction that cancelled 
   assert.equal(row.statuscode, 32);
 });
 
+// @test-kind contract: a waiter on a Ready job is rejected when its row is deleted, so the reserved job id can be released
+test('whenJobSettled rejects a waiter whose Ready job row is deleted before the job completes', async () => {
+  const t = await setup();
+  const jobId = await systemJobOf(t, async () => 'never');
+  const waited = asyncModule.whenJobSettled(t.store, jobId);
+  let outcome = 'pending';
+  waited.then(
+    () => {
+      outcome = 'resolved';
+    },
+    () => {
+      outcome = 'rejected';
+    },
+  );
+  assert.equal((await t.send('DELETE', PATCH_JOB(jobId))).status, 204);
+  assert.equal(job(t, jobId), undefined);
+  assert.equal(outcome, 'rejected');
+  await assert.rejects(waited, /no longer exists/);
+});
+
+// @test-kind contract: a reset that removes the job row rejects its waiter at once, so the reserved job id is released
+test('reset(api) rejects a waiter on a job whose asyncoperation table a reset removed', async () => {
+  const t = await setup();
+  const jobId = await systemJobOf(t, async () => 'never');
+  const waited = asyncModule.whenJobSettled(t.store, jobId);
+  let outcome = 'pending';
+  waited.then(
+    () => {
+      outcome = 'resolved';
+    },
+    () => {
+      outcome = 'rejected';
+    },
+  );
+  delete t.store.state.tables.asyncoperation;
+  delete t.store.state.mappings.asyncoperation;
+  await asyncModule.reset(t.api);
+  assert.equal(outcome, 'rejected');
+  await assert.rejects(waited, /no longer exists/);
+});
+
+// @test-kind contract: closing the API rejects a waiter on an unsettled job, so the waiter does not outlive the API
+test('close(api) rejects a waiter on a job that has not settled', async () => {
+  const t = await setup();
+  const jobId = await systemJobOf(t, async () => 'never');
+  const waited = asyncModule.whenJobSettled(t.store, jobId);
+  asyncModule.close(t.api);
+  await assert.rejects(waited, /was closed before it settled/);
+});
+
 // The work closes over its payload only through this factory, so the test's own binding does not keep the payload alive.
 const workCapturing = (payload) => async () => payload.bytes.length;
 

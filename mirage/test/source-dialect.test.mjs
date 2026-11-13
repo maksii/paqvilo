@@ -147,7 +147,9 @@ test('an mspp_ YAML source is refused by import, serve, inspect, bootstrap-repor
     await embedded.close();
   }
   // inspect (CLI): a non-zero exit with the message
-  const inspected = await execFileAsync(process.execPath, [CLI, 'inspect', '--source', site, '--json']).then(
+  const inspected = await execFileAsync(process.execPath, [CLI, 'inspect', '--source', site, '--json'], {
+    signal: t.signal,
+  }).then(
     () => null,
     (error) => error,
   );

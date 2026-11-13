@@ -93,6 +93,29 @@ test('startup cancellation releases late work and removes signal listeners', asy
   assert.equal(process.listenerCount('SIGINT'), listeners);
 });
 
+test('work abandoned by a deadline that has already ended keeps a rejection handler', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const deadline = startupDeadline(1000);
+  t.after(() => deadline.close());
+  deadline.abort();
+  let rejectWork;
+  const work = new Promise((_, reject) => {
+    rejectWork = reject;
+  });
+  const handlers = [];
+  const then = work.then.bind(work);
+  work.then = (onFulfilled, onRejected) => {
+    handlers.push(typeof onRejected === 'function');
+    return then(onFulfilled, onRejected);
+  };
+  await assert.rejects(deadline.wait(work), (error) => error.code === 'startup_cancelled');
+  const handled = handlers.includes(true);
+  // Without a handler this test process would also fail on the late rejection; the assertion below reports the defect.
+  if (!handled) work.catch(() => {});
+  rejectWork(new Error('invented late failure'));
+  assert.ok(handled, 'the abandoned work has a rejection handler');
+});
+
 const PROGRESS_INTERVAL_MS = 60_000;
 // Each interval moves the mocked clock forward and lets timer continuations run before the progress callback.
 async function elapseIntervals(t, intervals, progress = () => {}) {
@@ -250,4 +273,48 @@ test('the start deadline leaves no armed timer or page listener after success, s
   } finally {
     timers.restore();
   }
+});
+
+test('settled does not wait for abandoned work that has nothing to dispose', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const deadline = startupDeadline(1000);
+  t.after(() => deadline.close());
+  const wait = deadline.wait(new Promise(() => {}));
+  deadline.abort();
+  await assert.rejects(wait, (error) => error.code === 'startup_cancelled');
+  assert.equal(await deadline.settled(), undefined);
+});
+
+test('late work after startup cancellation stays owned until its disposal settles', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const deadline = startupDeadline(1000);
+  t.after(() => deadline.close());
+  let resolveLate;
+  const late = new Promise((done) => {
+    resolveLate = done;
+  });
+  let markStarted;
+  const started = new Promise((done) => {
+    markStarted = done;
+  });
+  let finishDisposal;
+  const disposing = new Promise((done) => {
+    finishDisposal = done;
+  });
+  const wait = deadline.wait(late, (value) => {
+    markStarted(value);
+    return disposing;
+  });
+  deadline.abort();
+  await assert.rejects(wait, (error) => error.code === 'startup_cancelled');
+  let drained = false;
+  const settled = deadline.settled().then(() => {
+    drained = true;
+  });
+  resolveLate('owned connection');
+  assert.equal(await started, 'owned connection', 'the disposal has begun');
+  assert.equal(drained, false, 'the owner must not report settled while the disposal is still running');
+  finishDisposal();
+  await settled;
+  assert.equal(drained, true);
 });

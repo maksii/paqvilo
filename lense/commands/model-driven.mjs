@@ -185,6 +185,13 @@ function departureHost(url) {
   return url.protocol === 'http:' || url.protocol === 'https:' ? url.hostname : 'another page';
 }
 
+/** Ends a start-up: work that outlived it is closed first, then the deadline and the progress line are closed. */
+export async function closeStartup(deadline, progress) {
+  await deadline?.settled();
+  deadline?.close();
+  progress?.close();
+}
+
 export default async function run(_cfg, args, [action = 'dev'] = []) {
   validateModelDrivenArguments(args, action);
   const originalProgress = action === 'dev' ? (args.startup ?? startupProgress()) : null;
@@ -210,8 +217,7 @@ export default async function run(_cfg, args, [action = 'dev'] = []) {
     progress?.fail(cleanError(error));
     throw error;
   } finally {
-    deadline?.close();
-    progress?.close();
+    await closeStartup(deadline, progress);
   }
 }
 
@@ -623,6 +629,7 @@ export async function closeModelDrivenResources(steps, onError) {
       },
       onError,
     );
+    await deadline?.settled();
     const report =
       targetSessions?.report() ??
       createModelDrivenOverlay({

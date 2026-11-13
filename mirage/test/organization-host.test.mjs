@@ -12,6 +12,7 @@ import { DataStore, emptyState } from '../lib/data.mjs';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { loadOrganizationSources } from '../lib/solution-runtime-source.mjs';
 import { composeOrganizationHost } from '../lib/organization-host.mjs';
+import { tracedFetch } from '../lib/trace-hosts.mjs';
 import { assemblyXml, stepXml, pluginId } from './plugin-fixture.mjs';
 import { fixedClock, sequentialIds } from '../testing.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
@@ -82,7 +83,7 @@ test('a standalone runtime switch to clr prepares the CLR runtime and stores not
   assert.equal(sim.store.state.simulator.operations?.[key], undefined, 'nothing is stored when preparation fails');
 });
 
-async function composed(t) {
+async function composed(t, extra = {}) {
   const store = await new DataStore({ state: emptyState() }).init();
   const sources = await loadOrganizationSources({ solutionRoots: [] });
   const notes = [];
@@ -92,6 +93,7 @@ async function composed(t) {
     sourcesKey: () => sources,
     overrides: () => store.state.simulator?.operations ?? null,
     diagnostic: (entry) => notes.push(entry),
+    ...extra,
   });
   t.after(() => host.close());
   return { store, host, notes };
@@ -158,17 +160,78 @@ test('close runs backend, organization, Dataverse API and managed identity in th
   spy('organization', organization);
   spy('api', host.dataverse);
   spy('managed-identity', host.managedIdentity);
+  // The connector runtime is the host's providers.connectors: closeProviders closes it as the last step.
+  spy('providers', host.connectors);
+  // The trace store is frozen, so its close is recorded through the cancel of the capture it closes.
+  await openNeverEndingCapture(host.traces, () => order.push('traces'));
   await host.close();
-  assert.deepEqual(order, ['backend', 'organization', 'api', 'managed-identity']);
+  assert.deepEqual(order, ['backend', 'organization', 'api', 'managed-identity', 'traces', 'providers']);
+});
+
+// A fake answer whose clone is the stream the capture reads; the caller never reads the answer itself.
+function openBodyAnswer(clone) {
+  return {
+    status: 200,
+    statusText: 'OK',
+    headers: new Headers({ 'content-type': 'text/plain' }),
+    body: new ReadableStream(),
+    clone: () => ({ body: clone }),
+  };
+}
+
+test('closing the host cancels an open capture of a body that never ends', async (t) => {
+  const { host } = await composed(t);
+  const cancelled = await openNeverEndingCapture(host.traces);
+  await host.close();
+  assert.equal(cancelled(), true, 'the host close cancels the body its capture reads');
+});
+
+// Opens a capture of a body that never ends in `traces` and resolves once the capture reads it; the returned function
+// reports whether that body has been cancelled, and onCancel runs when it is.
+async function openNeverEndingCapture(traces, onCancel = () => {}) {
+  traces.configure({ level: 'full' });
+  let readStarted;
+  const started = new Promise((resolve) => {
+    readStarted = resolve;
+  });
+  let cancelled = false;
+  const clone = new ReadableStream(
+    {
+      pull() {
+        readStarted();
+        return new Promise(() => {});
+      },
+      cancel() {
+        cancelled = true;
+        onCancel();
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  await tracedFetch(traces, { url: 'http://127.0.0.1/never-ends', fetch: async () => openBodyAnswer(clone) });
+  await started;
+  return () => cancelled;
+}
+
+test('closing a host that was given its trace store leaves the open captures of the store owner running', async (t) => {
+  const parent = await composed(t);
+  const persona = await composed(t, { traces: parent.host.traces });
+  const cancelled = await openNeverEndingCapture(parent.host.traces);
+  await persona.host.close();
+  assert.equal(cancelled(), false, 'closing a host that does not own the store leaves the owner capture running');
+  await parent.host.close();
+  assert.equal(cancelled(), true, 'closing the owning host cancels the capture it opened');
 });
 
 test('a host close whose backend close rejects is retried by the next close, and a fulfilled close is not repeated', async (t) => {
   const { host } = await composed(t);
   await host.createBackend();
+  const realClose = host.backend.close.bind(host.backend);
   let backendCloses = 0;
   host.backend.close = async () => {
     backendCloses += 1;
     if (backendCloses === 1) throw new Error('Invented backend close failure');
+    return realClose();
   };
   await assert.rejects(host.close(), AggregateError);
   await host.close();
@@ -179,9 +242,11 @@ test('a host close whose backend close rejects is retried by the next close, and
 test('concurrent host closes share one backend close', async (t) => {
   const { host } = await composed(t);
   await host.createBackend();
+  const realClose = host.backend.close.bind(host.backend);
   let backendCloses = 0;
   host.backend.close = async () => {
     backendCloses += 1;
+    return realClose();
   };
   await Promise.all([host.close(), host.close()]);
   assert.equal(backendCloses, 1);

@@ -178,6 +178,20 @@
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
+      "key": "runtime:exports:lense/browser.mjs:launchOptions",
+      "file": "lense/browser.mjs",
+      "type": "exports",
+      "name": "launchOptions",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:lense/browser.mjs:profileLockPresent",
+      "file": "lense/browser.mjs",
+      "type": "exports",
+      "name": "profileLockPresent",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
       "key": "runtime:exports:lense/browser.mjs:safeDownloadName",
       "file": "lense/browser.mjs",
       "type": "exports",
@@ -196,6 +210,13 @@
       "file": "lense/code-app-dev-servers.mjs",
       "type": "exports",
       "name": "launchOf",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:lense/code-app-dev-wrapper.mjs:runWrapper",
+      "file": "lense/code-app-dev-wrapper.mjs",
+      "type": "exports",
+      "name": "runWrapper",
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
@@ -637,6 +658,13 @@
       "file": "mirage/baseline-hooks.mjs",
       "type": "exports",
       "name": "runHook",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:mirage/baseline-suite.mjs:__testing",
+      "file": "mirage/baseline-suite.mjs",
+      "type": "exports",
+      "name": "__testing",
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {

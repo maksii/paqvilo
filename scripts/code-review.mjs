@@ -413,6 +413,16 @@ export function compareReview(actual, baseline) {
   });
 }
 
+/**
+ * The baseline entries for the current findings: a finding the baseline already holds keeps its reviewed reason
+ * (occurrence by occurrence for a repeated key); only a new finding gets the standard reason.
+ */
+export function baselineEntries(findings, baseline, reasonOf = reviewedReason) {
+  const reviewed = new Map();
+  for (const item of baseline) reviewed.set(item.key, [...(reviewed.get(item.key) ?? []), item.reason]);
+  return findings.map((item) => ({ ...item, reason: reviewed.get(item.key)?.shift() ?? reasonOf(item) }));
+}
+
 function reviewedCloneReason(item) {
   if (item.key.startsWith('tests:'))
     return 'Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite.';
@@ -508,10 +518,10 @@ async function main() {
           version: 1,
           policy:
             'Reviewed compatibility, declarative contracts, independent test assertions and standalone distribution copies. Baseline changes require human review; CI never fixes source or refreshes this file.',
-          findings: findings.map((item) => ({
-            ...item,
-            reason: reviewedReason(item),
-          })),
+          findings: baselineEntries(
+            findings,
+            fs.existsSync(baselineFile) ? JSON.parse(fs.readFileSync(baselineFile, 'utf8')).findings : [],
+          ),
         },
         null,
         2,

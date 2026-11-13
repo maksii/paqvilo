@@ -43,16 +43,17 @@ function run(code, environmentVariables) {
     },
   });
   const messages = [];
+  let answered = false;
   return new Promise((resolve, reject) => {
     worker.on('message', (message) => {
       messages.push(message);
-      if (message.kind === 'result' || message.kind === 'failure') {
-        worker.terminate();
-        resolve(messages);
-      }
+      if (message.kind === 'result' || message.kind === 'failure') answered = true;
     });
     worker.on('error', reject);
-    worker.on('exit', (code) => reject(new Error(`The worker exited (${code}) without a result`)));
+    worker.on('exit', (code) => {
+      if (answered) resolve(messages);
+      else reject(new Error(`The worker exited (${code}) without a result`));
+    });
   });
 }
 

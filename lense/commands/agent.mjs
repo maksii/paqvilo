@@ -99,11 +99,22 @@ async function boundedBody(response, maximum) {
   return Buffer.concat(chunks, size);
 }
 
-export async function agentRequest(discovery, route, { body, timeout = 35_000, image = false } = {}) {
+export async function agentRequest(
+  discovery,
+  route,
+  { body, timeout = 35_000, image = false, fetchImpl = fetch } = {},
+) {
   if (!route.startsWith('/v1/') || route.startsWith('//') || route.includes('#')) throw argument('Invalid agent route');
+  // The deadline covers the response body too. It aborts with the reason AbortSignal.timeout gives, so callers see
+  // the same TimeoutError, and it is a timer rather than AbortSignal.timeout so a test can drive it.
+  const deadline = new AbortController();
+  const timer = setTimeout(
+    () => deadline.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError')),
+    timeout,
+  );
   let response;
   try {
-    response = await fetch(`${discovery.endpoint}${route}`, {
+    response = await fetchImpl(`${discovery.endpoint}${route}`, {
       method: body === undefined ? 'GET' : 'POST',
       redirect: 'error',
       headers: {
@@ -111,7 +122,7 @@ export async function agentRequest(discovery, route, { body, timeout = 35_000, i
         ...(body === undefined ? {} : { 'content-type': 'application/json' }),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(timeout),
+      signal: deadline.signal,
     });
     const bytes = await boundedBody(response, image && response.ok ? MAX_IMAGE : MAX_JSON);
     return parseAgentResponse(response, bytes, image);
@@ -127,6 +138,8 @@ export async function agentRequest(discovery, route, { body, timeout = 35_000, i
         code: 'session_unavailable',
       });
     throw error;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -158,7 +171,7 @@ function parseAgentResponse(response, bytes, image) {
   return result;
 }
 
-export async function listAgentSessions(stateDir, timeout = 35_000) {
+export async function listAgentSessions(stateDir, timeout = 35_000, { fetchImpl = fetch } = {}) {
   const dir = path.join(stateDir, 'agents');
   let entries;
   try {
@@ -193,7 +206,7 @@ export async function listAgentSessions(stateDir, timeout = 35_000) {
           discoveryFile: file,
         };
         try {
-          const status = await agentRequest(entry, '/v1/session', { timeout });
+          const status = await agentRequest(entry, '/v1/session', { timeout, fetchImpl });
           item.reachable = status.id === entry.id;
           if (!item.reachable) item.error = 'Session identity mismatch';
         } catch (err) {
@@ -213,7 +226,7 @@ export async function listAgentSessions(stateDir, timeout = 35_000) {
   };
 }
 
-export default async function agent(_cfg, args, positionals = []) {
+export default async function agent(_cfg, args, positionals = [], { fetchImpl = fetch } = {}) {
   const action = positionals[0] ?? 'sessions';
   const pageActions = validateAgentAction(action, args);
   const timeout = integer(args.timeout, '--timeout', 35_000, 2000, 120_000);
@@ -223,7 +236,7 @@ export default async function agent(_cfg, args, positionals = []) {
     return 0;
   }
   assertAgentArguments(action, args, pageActions);
-  const { route, body } = agentActionRequest(action, args, timeout);
+  const { route, body, guardMs } = agentActionRequest(action, args, timeout);
   const discovery = await readDiscovery(args.session);
   let handle;
   const output = args.output ? path.resolve(args.output) : null;
@@ -241,7 +254,21 @@ export default async function agent(_cfg, args, positionals = []) {
     }
   }
   try {
-    const result = await agentRequest(discovery, route, { body, timeout, image: action === 'screenshot' });
+    const result = await agentRequest(discovery, route, {
+      body,
+      timeout: guardMs,
+      image: action === 'screenshot',
+      fetchImpl,
+    }).catch((error) => {
+      // The guard is internal: its expiry reports the wait the client made, with the --timeout it adds to.
+      if (error.code !== 'request_timeout') throw error;
+      throw Object.assign(
+        new Error(
+          `The agent session did not answer within ${guardMs} ms (--timeout ${timeout} ms plus the ${AGENT_REQUEST_HANG_GUARD_MS} ms request hang guard)`,
+        ),
+        { code: 'request_timeout', status: 504 },
+      );
+    });
     if (handle) {
       await handle.writeFile(result);
       const displayPath = outputName(output, args.config);
@@ -296,6 +323,10 @@ function validateAgentAction(action, args) {
   return pageActions;
 }
 
+// Hang guard for the client's own HTTP request. The server answers at its action deadline (the --timeout the client
+// sends), so the structured answer always arrives before this guard fires.
+const AGENT_REQUEST_HANG_GUARD_MS = 30_000;
+
 function agentActionRequest(action, args, timeout) {
   const page = `/v1/pages/${encodeURIComponent(args['page-id'])}`;
   let route;
@@ -322,7 +353,7 @@ function agentActionRequest(action, args, timeout) {
           ?.split(',')
           .map((s) => s.trim())
           .filter(Boolean),
-        timeoutMs: timeout - 1000,
+        timeoutMs: timeout,
       };
       break;
     case 'screenshot':
@@ -330,7 +361,7 @@ function agentActionRequest(action, args, timeout) {
       body = {
         fullPage: Boolean(args['full-page']),
         includePanel: Boolean(args['include-panel']),
-        timeoutMs: timeout - 1000,
+        timeoutMs: timeout,
       };
       break;
     case 'viewport':
@@ -338,21 +369,22 @@ function agentActionRequest(action, args, timeout) {
       body = {
         width: integer(args.width, '--width', 1440, 320, 4096),
         height: integer(args.height, '--height', 900, 240, 4096),
-        timeoutMs: timeout - 1000,
+        timeoutMs: timeout,
       };
       break;
     case 'navigate':
       route = `${page}/navigate`;
-      body = { url: args.path, timeoutMs: Math.min(60_000, timeout - 1000) };
+      // The server accepts at most 60 000 ms for a navigation, so a longer --timeout is clamped there.
+      body = { url: args.path, timeoutMs: Math.min(60_000, timeout) };
       break;
     case 'reload':
       route = `${page}/reload`;
-      body = { timeoutMs: Math.min(60_000, timeout - 1000) };
+      body = { timeoutMs: Math.min(60_000, timeout) };
       break;
     case 'stop':
       route = '/v1/stop';
       body = {};
       break;
   }
-  return { route, body };
+  return { route, body, guardMs: timeout + AGENT_REQUEST_HANG_GUARD_MS };
 }

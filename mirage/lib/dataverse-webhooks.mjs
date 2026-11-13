@@ -79,8 +79,23 @@ export async function loopbackAddresses(text, lookup) {
 export function loopbackFetch(url, { lookup = dns.promises.lookup, ...init } = {}) {
   if (!isLoopbackUrl(url)) throw unavailable();
   return loopbackAddresses(String(url), lookup).then((addresses) =>
-    addresses ? fetchAtAddresses(url, init, addresses) : fetch(url, { ...init, redirect: 'error' }),
+    addresses ? fetchAtAddresses(url, init, addresses) : fetchRefusingRedirects(url, init),
   );
+}
+
+// The statuses fetch follows; a refused redirect rejects with the same error on both transports, coded LoopbackRedirect.
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+const redirectRefusal = () =>
+  Object.assign(new TypeError('fetch failed', { cause: new Error('Unexpected redirect') }), {
+    code: 'LoopbackRedirect',
+  });
+
+// Native fetch does not follow a redirect: the 3xx answer is read here and refused as fetchAtAddresses refuses it.
+async function fetchRefusingRedirects(url, init) {
+  const response = await fetch(url, { ...init, redirect: 'manual' });
+  if (!REDIRECT_STATUSES.has(response.status)) return response;
+  await response.body?.cancel().catch(() => {});
+  throw redirectRefusal();
 }
 
 // Native fetch cannot accept a pinned DNS lookup without an external dispatcher. Only DNS-checked *.localhost names use
@@ -99,9 +114,9 @@ function fetchAtAddresses(url, init, addresses) {
           options.all ? done(null, addresses) : done(null, addresses[0].address, addresses[0].family),
       },
       (incoming) => {
-        if ([301, 302, 303, 307, 308].includes(incoming.statusCode)) {
+        if (REDIRECT_STATUSES.has(incoming.statusCode)) {
           incoming.resume();
-          reject(new TypeError('fetch failed', { cause: new Error('Unexpected redirect') }));
+          reject(redirectRefusal());
           return;
         }
         const headers = new Headers();

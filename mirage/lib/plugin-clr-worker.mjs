@@ -23,13 +23,21 @@ function finish(message) {
   clearTimeout(timer);
   child.kill();
   send(message);
+}
+// The child's own exit is the host's real exit: the port closes only after it is reported, and then the worker ends.
+function reportHostProcessExit(code) {
+  send({ kind: 'host-process-exited', hostExitCode: code });
   port.close();
 }
 const timer = setTimeout(
   () => finish({ kind: 'failure', code: 'LocalPluginTimeout', message: 'CLR plugin exceeded the configured timeout.' }),
   timeout,
 );
-child.on('error', (cause) => finish({ kind: 'failure', code: 'LocalPluginHostUnavailable', message: cause.message }));
+child.on('error', (cause) => {
+  finish({ kind: 'failure', code: 'LocalPluginHostUnavailable', message: cause.message });
+  // A child that never started emits no exit event.
+  if (child.pid === undefined) reportHostProcessExit(null);
+});
 child.on('exit', (code) => {
   if (!complete)
     finish({
@@ -38,6 +46,7 @@ child.on('exit', (code) => {
       message: SANDBOX_WORKER_CRASH.message,
       hostExitCode: code,
     });
+  reportHostProcessExit(code);
 });
 // The host discards plug-in console output; anything else on stderr is drained, never a failure.
 child.stderr.resume();

@@ -1,9 +1,9 @@
 // @test-kind contract: Paqvilo's own simulator administration, CLI, configuration and runtime behaviour
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Worker } from 'node:worker_threads';
 import { AuditLog, auditQuery, auditText } from '../lib/audit-log.mjs';
 import { redactSecrets } from '../lib/sim-messaging-routes.mjs';
+import { workerAnswer } from './support/worker-answer.mjs';
 
 test('audit correlates nested calls, records outcomes, bounds retention and paginates detached entries', () => {
   const audit = new AuditLog({ limit: 3 });
@@ -439,17 +439,11 @@ const UNCLOSED_CONDITION_CHECK = `
 `;
 
 // @test-kind security: a run of unclosed condition tags costs no more than its first window (no timing involved)
-test('auditText output for 100,000 unclosed condition tags equals the output for the first window', async () => {
-  const result = await new Promise((resolve, reject) => {
-    const worker = new Worker(UNCLOSED_CONDITION_CHECK, {
-      eval: true,
-      workerData: { module: new URL('../lib/audit-log.mjs', import.meta.url).href },
-    });
-    worker.once('message', (message) => {
-      resolve(message);
-      worker.terminate();
-    });
-    worker.once('error', reject);
+test('auditText output for 100,000 unclosed condition tags equals the output for the first window', async (t) => {
+  const result = await workerAnswer(UNCLOSED_CONDITION_CHECK, {
+    eval: true,
+    workerData: { module: new URL('../lib/audit-log.mjs', import.meta.url).href },
+    signal: t.signal,
   });
   assert.deepEqual(result, { length: 2000000, matchesFirstWindow: true, outputLength: 12000 });
 });

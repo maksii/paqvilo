@@ -163,7 +163,7 @@ test('screenshot success reports catalogue-relative paths and preserves outside 
   }
 });
 
-test('agent minimum deadline leaves a fixed response margin and missing sessions have a stable code', async (t) => {
+test('agent minimum deadline sends the CLI --timeout to the server and missing sessions have a stable code', async (t) => {
   const bodies = [];
   const fx = await fixture(t, (req, res) => {
     let body = '';
@@ -178,16 +178,16 @@ test('agent minimum deadline leaves a fixed response margin and missing sessions
   });
   const navigate = (timeout) => agent(null, { session: fx.file, 'page-id': '1', path: '/slow', timeout }, ['navigate']);
   const actionTimeout = (error) => error.code === 'action_timeout' && error.status === 504;
-  // --timeout 2000 is the minimum: the server's action deadline is a fixed 1000 ms below the client's own.
+  // --timeout 2000 is the minimum: the server's action deadline is the --timeout the person gave.
   await assert.rejects(navigate('2000'), actionTimeout);
   assert.deepEqual(
     bodies.map((value) => value.timeoutMs),
-    [1000],
+    [2000],
   );
   await assert.rejects(navigate('10000'), actionTimeout);
   assert.deepEqual(
     bodies.map((value) => value.timeoutMs),
-    [1000, 9000],
+    [2000, 10000],
   );
   // Below the minimum the CLI refuses the argument before any request is sent.
   await assert.rejects(navigate('150'), (error) => error.code === 'invalid_argument');
@@ -215,30 +215,28 @@ test('agent rejects JSON scalars and arrays instead of leaking client TypeErrors
   }
 });
 
-// A loopback server for a session; the handler decides whether it ever answers.
-async function loopbackServer(t, handler) {
-  const server = http.createServer(handler);
-  server.listen(0, '127.0.0.1');
-  await once(server, 'listening');
-  t.after(async () => {
-    server.closeAllConnections();
-    await new Promise((r) => server.close(r));
-  });
-  return `http://127.0.0.1:${server.address().port}`;
-}
-
 test('agent sessions bounds each probe by --timeout: a silent session is unreachable, an answering one reachable', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  // A probe clears its deadline in its finally, once its reply is read. Before the tick, only the answering probe can
+  // clear one (the silent probe is still waiting for its deadline), so the first clear marks the answering probe done.
+  const clearMocked = globalThis.clearTimeout;
+  let deadlineCleared;
+  const answeringDone = new Promise((resolve) => {
+    deadlineCleared = resolve;
+  });
+  t.mock.method(globalThis, 'clearTimeout', (...args) => {
+    deadlineCleared();
+    return clearMocked(...args);
+  });
   const root = await tempDir('pp-agent-sessions-');
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const silent = await loopbackServer(t, () => {});
-  const answering = await loopbackServer(t, (_req, res) =>
-    res.end(JSON.stringify({ schemaVersion: 1, id: 'answering-session' })),
-  );
+  const silentEndpoint = 'http://127.0.0.1:4101';
+  const answeringEndpoint = 'http://127.0.0.1:4102';
   const agents = path.join(root, '.paqvilo', 'agents');
   await fs.mkdir(agents, { recursive: true });
   for (const [id, endpoint] of [
-    ['silent-session', silent],
-    ['answering-session', answering],
+    ['silent-session', silentEndpoint],
+    ['answering-session', answeringEndpoint],
   ]) {
     const discovery = {
       schemaVersion: 1,
@@ -251,21 +249,28 @@ test('agent sessions bounds each probe by --timeout: a silent session is unreach
     };
     await fs.writeFile(path.join(agents, `${id}.json`), JSON.stringify(discovery));
   }
-  const config = path.join(root, 'paqvilo.config.yml');
-  const log = console.log;
-  let report;
-  console.log = (line) => {
-    report = JSON.parse(line);
+  // Each probe arms its deadline before it calls fetch, so both fetch calls arriving means both deadlines are armed.
+  const arrived = Promise.withResolvers();
+  let probes = 0;
+  const fetchImpl = (url, { signal }) => {
+    probes += 1;
+    if (probes === 2) arrived.resolve();
+    if (url.startsWith(answeringEndpoint))
+      return Promise.resolve(new Response(JSON.stringify({ schemaVersion: 1, id: 'answering-session' })));
+    return new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    });
   };
-  try {
-    assert.equal(await agent(null, { config, timeout: '2000' }, ['sessions']), 0);
-  } finally {
-    console.log = log;
-  }
+  const listing = listAgentSessions(path.join(root, '.paqvilo'), 2000, { fetchImpl });
+  await arrived.promise;
+  await answeringDone;
+  t.mock.timers.tick(2000);
+  const report = await listing;
   assert.deepEqual(Object.fromEntries(report.sessions.map((session) => [session.id, session.reachable])), {
     'silent-session': false,
     'answering-session': true,
   });
+  const config = path.join(root, 'paqvilo.config.yml');
   await assert.rejects(
     agent(null, { config, timeout: '150' }, ['sessions']),
     (error) =>
@@ -286,7 +291,7 @@ function runAgentNavigate(file, extraArgs) {
   });
 }
 
-test('agent CLI sends its --timeout minus one second as the browser deadline and prints the server action_timeout', async (t) => {
+test('agent CLI sends its --timeout as the browser deadline and prints the server action_timeout', async (t) => {
   const requests = [];
   const fx = await fixture(t, (req, res) => {
     let body = '';
@@ -299,7 +304,7 @@ test('agent CLI sends its --timeout minus one second as the browser deadline and
     });
   });
   const { code, output } = await runAgentNavigate(fx.file, ['--timeout', '10000']);
-  assert.deepEqual(requests, [{ url: '/v1/pages/1/navigate', body: { url: '/never', timeoutMs: 9000 } }]);
+  assert.deepEqual(requests, [{ url: '/v1/pages/1/navigate', body: { url: '/never', timeoutMs: 10000 } }]);
   const printed = JSON.parse(output);
   assert.equal(code, 1);
   assert.equal(printed.action, 'navigate');
@@ -307,18 +312,54 @@ test('agent CLI sends its --timeout minus one second as the browser deadline and
   assert.equal(printed.error.status, 504);
 });
 
-test('agent CLI reports request_timeout after its own abort when the server never answers', async (t) => {
-  const requests = [];
-  // The server holds every response, so the only outcome is the client's own abort at --timeout.
-  const fx = await fixture(t, (req) => {
-    let body = '';
-    req.on('data', (chunk) => (body += chunk));
-    req.on('end', () => requests.push({ url: req.url, body: JSON.parse(body) }));
+// Runs one agent action through a transport that never answers. The mocked clock arms the client's own deadline and
+// the test ends the request by ticking it. Resolves once the transport was called, with the body sent, the delays
+// armed so far and the pending run.
+async function unansweredAction(t, file, args, positionals) {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const mockedSetTimeout = globalThis.setTimeout;
+  const armed = [];
+  t.mock.method(globalThis, 'setTimeout', (callback, delay, ...rest) => {
+    armed.push(delay);
+    return mockedSetTimeout(callback, delay, ...rest);
   });
-  const { code, output } = await runAgentNavigate(fx.file, ['--timeout', '2000']);
-  assert.deepEqual(requests, [{ url: '/v1/pages/1/navigate', body: { url: '/never', timeoutMs: 1000 } }]);
-  const printed = JSON.parse(output);
-  assert.equal(code, 1);
-  assert.equal(printed.error.code, 'request_timeout');
-  assert.equal(printed.error.status, 504);
+  const sent = Promise.withResolvers();
+  let body;
+  const fetchImpl = (_url, { body: payload, signal }) => {
+    body = JSON.parse(payload);
+    sent.resolve();
+    return new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    });
+  };
+  const run = agent(null, { session: file, ...args }, positionals, { fetchImpl });
+  await sent.promise;
+  return { body, armed, run };
+}
+
+test('agent CLI reports request_timeout after its own abort when the server never answers', async (t) => {
+  const fx = await fixture(t, () => {});
+  const args = { 'page-id': '1', path: '/never', timeout: '2000' };
+  const { body, armed, run } = await unansweredAction(t, fx.file, args, ['navigate']);
+  assert.deepEqual(body, { url: '/never', timeoutMs: 2000 });
+  // The client's own deadline is the guard (30 s past --timeout); the message names both waits it is made of.
+  assert.deepEqual(armed, [32_000]);
+  t.mock.timers.tick(32_000);
+  await assert.rejects(
+    run,
+    (error) =>
+      error.code === 'request_timeout' &&
+      error.status === 504 &&
+      error.message ===
+        'The agent session did not answer within 32000 ms (--timeout 2000 ms plus the 30000 ms request hang guard)',
+  );
+});
+
+test('agent viewport sends its --timeout as the browser deadline and guards its own request with 30 s more', async (t) => {
+  const fx = await fixture(t, () => {});
+  const { body, armed, run } = await unansweredAction(t, fx.file, { 'page-id': '1', timeout: '10000' }, ['viewport']);
+  assert.deepEqual(body, { width: 1440, height: 900, timeoutMs: 10_000 });
+  assert.deepEqual(armed, [40_000]);
+  t.mock.timers.tick(40_000);
+  await assert.rejects(run, (error) => error.code === 'request_timeout' && error.status === 504);
 });

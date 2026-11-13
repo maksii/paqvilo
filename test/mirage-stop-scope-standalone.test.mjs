@@ -8,7 +8,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { miragePaths, stopOwnedSessions, processIdentity } from '../lense/commands/mirage.mjs';
+import { miragePaths, stopOwnedSessions } from '../lense/commands/mirage.mjs';
 import { persistCommandPayload } from '../lense/command-payload.mjs';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { workspace, cli, alive, stopped } from './mirage-stop-workspace.mjs';
@@ -161,21 +161,23 @@ test('shared hint payload stays while a target is unverified and is removed afte
     path.join(path.dirname(paths.ownershipFile), 'commands'),
     Buffer.from(JSON.stringify([[cli, 'mirage', 'stop']])),
   );
+  const identities = new Map(children.map((child, index) => [child.pid, `invented identity ${index}`]));
+  const identityOf = (pid) => identities.get(pid) ?? null;
   const records = children.map((child, index) => ({
     pid: child.pid,
-    processIdentity: index === 0 ? processIdentity(child.pid) : null,
+    processIdentity: index === 0 ? identities.get(child.pid) : null,
     sourceDir: null,
     url: null,
     hintFiles: [payload],
   }));
   await fs.mkdir(path.dirname(paths.ownershipFile), { recursive: true });
   await fs.writeFile(paths.ownershipFile, JSON.stringify({ sessions: records }));
-  const first = await stopOwnedSessions({ paths, pids: [children[0].pid] });
+  const first = await stopOwnedSessions({ paths, pids: [children[0].pid], identityOf });
   assert.equal(first.stopped.length, 1);
   await fs.access(payload);
-  records[1].processIdentity = processIdentity(children[1].pid);
+  records[1].processIdentity = identities.get(children[1].pid);
   await fs.writeFile(paths.ownershipFile, JSON.stringify({ sessions: [records[1]] }));
-  const last = await stopOwnedSessions({ paths, pids: [children[1].pid] });
+  const last = await stopOwnedSessions({ paths, pids: [children[1].pid], identityOf });
   assert.equal(last.stopped.length, 1);
   await assert.rejects(fs.access(payload), { code: 'ENOENT' });
 });

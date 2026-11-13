@@ -16,6 +16,8 @@ const operation = '10000000-0000-4000-8000-000000000001';
 const span = '10000000-0000-4000-8000-000000000002';
 const receiptId = operation + '/' + 'a'.repeat(64);
 const sha = (value) => createHash('sha256').update(value).digest('hex');
+// The worker inherits only the system variables Node needs to start, not proxy, debug or NODE_OPTIONS settings.
+const inheritedNames = ['PATH', 'SystemRoot', 'TEMP', 'TMP', 'HOME', 'USERPROFILE'];
 
 test('actual worker reports a denied evidence write safely, retains its receipt and resumes in a new process', async (t) => {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-collector-worker-'));
@@ -112,7 +114,10 @@ test('actual worker reports a denied evidence write safely, retains its receipt 
   `,
   );
   const env = {
-    ...Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== 'NODE_TEST_CONTEXT')),
+    ...Object.fromEntries(
+      inheritedNames.filter((name) => process.env[name] !== undefined).map((name) => [name, process.env[name]]),
+    ),
+    NODE_OPTIONS: '',
     CO_COLLECTOR_TENANT: operation,
     CO_COLLECTOR_AUDIENCE: 'invented-local-worker',
     CO_COLLECTOR_BLOB_URL: 'https://inventedstorage.blob.core.windows.net/',

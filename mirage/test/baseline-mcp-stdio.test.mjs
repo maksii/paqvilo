@@ -155,3 +155,104 @@ test('MCP stdio client round trips, surfaces errors, times out and closes the ch
   assert.equal(await fs.readFile(marker, 'utf8'), 'notified:notifications/initialized\nclosed\n');
   assert.deepEqual(stderr, []);
 });
+
+// The injected child records the kill calls and the stdin ends. `end` is recorded synchronously, so a test sees that
+// close has reached its wait without yielding to the event loop. `kill` does not emit `exit`: the test decides when the
+// child exits by emitting `exit` itself.
+function fakeChild() {
+  const child = new EventEmitter();
+  child.stdin = new PassThrough();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.kills = [];
+  child.stdinEnds = 0;
+  const end = child.stdin.end.bind(child.stdin);
+  child.stdin.end = (...args) => {
+    child.stdinEnds += 1;
+    return end(...args);
+  };
+  child.kill = (signal) => {
+    child.kills.push(signal);
+    return true;
+  };
+  return child;
+}
+
+test('close waits for the child exit however long it takes below the hang guard', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const child = fakeChild();
+  const client = startMcpServer({ command: 'unused', spawnProcess: () => child });
+  let closed = false;
+  const closing = client.close().then(() => {
+    closed = true;
+  });
+  assert.equal(child.stdinEnds, 1, 'close ends the child input and then waits for the child');
+  t.mock.timers.tick(59_999);
+  assert.deepEqual(child.kills, [], 'a live child is not killed before the hang guard expires');
+  // only an event this test controls can settle it: one turn lets a version that does not wait run past its wait
+  await new Promise((resolve) => setImmediate(resolve));
+  // Only the child's exit can settle closing, so the flag stays unset until the emit below.
+  assert.equal(closed, false, 'close is pending while the child is still running');
+  child.emit('exit', 0, null);
+  await closing;
+  assert.equal(closed, true);
+  assert.deepEqual(child.kills, [], 'an exit before the hang guard expires leaves the child unkilled');
+});
+
+test('a bridge that has not exited when the hang guard expires is asked to end, and close still waits for its exit', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const child = fakeChild();
+  const client = startMcpServer({ command: 'unused', spawnProcess: () => child });
+  const order = [];
+  const closing = client.close().then(() => {
+    order.push('closed');
+  });
+  t.mock.timers.tick(60_000);
+  assert.deepEqual(child.kills, [undefined], 'the hang guard asks the hung child to end with the default signal');
+  // only an event this test controls can settle it: one turn lets a version that does not wait run past its wait
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(order, [], 'the request to end does not settle close');
+  order.push('exit-emitted');
+  child.emit('exit', null, 'SIGTERM');
+  await closing;
+  assert.deepEqual(order, ['exit-emitted', 'closed'], 'close settles only after the exit');
+  t.mock.timers.tick(60_000);
+  assert.deepEqual(child.kills, [undefined], 'the exit clears the second hang guard, so the child is not killed again');
+});
+
+test('a bridge that ignores the request to end is killed after the hang guard expires a second time', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const child = fakeChild();
+  const client = startMcpServer({ command: 'unused', spawnProcess: () => child });
+  const order = [];
+  const closing = client.close().then(() => {
+    order.push('closed');
+  });
+  t.mock.timers.tick(60_000);
+  assert.deepEqual(child.kills, [undefined], 'the first hang guard period asks the child to end');
+  t.mock.timers.tick(59_999);
+  assert.deepEqual(child.kills, [undefined], 'the child is not killed before the second period expires');
+  t.mock.timers.tick(1);
+  assert.deepEqual(
+    child.kills,
+    [undefined, 'SIGKILL'],
+    'the second period kills the child, which cannot ignore SIGKILL',
+  );
+  // only an event this test controls can settle it: one turn lets a version that does not wait run past its wait
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(order, [], 'the kill does not settle close');
+  order.push('exit-emitted');
+  child.emit('exit', null, 'SIGKILL');
+  await closing;
+  assert.deepEqual(order, ['exit-emitted', 'closed'], 'close settles only after the exit');
+});
+
+test('close resolves at once for a child that already exited', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const child = fakeChild();
+  const client = startMcpServer({ command: 'unused', spawnProcess: () => child });
+  child.emit('exit', 0, null);
+  await client.close();
+  t.mock.timers.tick(60_000);
+  assert.deepEqual(child.kills, [], 'no hang guard is left armed for a child that has exited');
+});

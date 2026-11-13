@@ -409,15 +409,27 @@ async function loopbackServer(t, handler) {
   return { port: server.address().port, connections: () => connections };
 }
 
-test('a loopback name reaches a server listening only on the address family of its later answer', async (t) => {
-  const server = await loopbackServer(t, (req, res) => res.end('ok'));
+test('a loopback name reaches a server listening only on the address family of its later answer', async () => {
   const lookup = async () => [
     { address: '::1', family: 6 },
     { address: '127.0.0.1', family: 4 },
   ];
-  const response = await pinnedLocalFetch(`http://localhost:${server.port}/`, {}, { lookup });
+  const attempts = [];
+  const connect = (options, onResponse) => {
+    attempts.push(options.hostname);
+    const request = new EventEmitter();
+    request.end = () => {
+      if (options.hostname === '::1') {
+        request.emit('error', Object.assign(new Error('connect ECONNREFUSED ::1'), { code: 'ECONNREFUSED' }));
+      } else {
+        onResponse({ statusCode: 200, destroy() {} });
+      }
+    };
+    return request;
+  };
+  const response = await pinnedLocalFetch('http://localhost:5399/', {}, { lookup, connect });
+  assert.deepEqual(attempts, ['::1', '127.0.0.1']);
   assert.equal(response.status, 200);
-  assert.equal(server.connections(), 1);
 });
 
 test('a loopback probe makes one attempt at the first validated answer, with the requested Host and SNI name', async (t) => {

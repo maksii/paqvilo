@@ -19,7 +19,7 @@ import { FILTER_SIGNATURES, createFilters } from '../lib/liquid-filters.mjs';
 import { retainedResponseBody } from '../lib/render-sweep-body.mjs';
 import { expressionPaths, inventoryPortal, scanTokens } from '../liquid-inventory.mjs';
 import { ciSummary, classifyResponse, idParameterTable, renderSweep, resolveTarget } from '../render-sweep.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { makeTemporaryDirectory, ownedFixture } from '../testing/owned-fixture.mjs';
 import { createSimulator } from '../server.mjs';
 import { authCookieName } from '../lib/auth-session.mjs';
 import { visitorCookieName } from '../lib/visitor-session.mjs';
@@ -105,7 +105,7 @@ const files = {
 
 async function fixturePortal(t, extra = {}) {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'liquid-parity-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   for (const [name, content] of Object.entries({ ...files, ...extra })) {
     const file = path.join(dir, name);
     await fs.mkdir(path.dirname(file), { recursive: true });
@@ -1275,7 +1275,7 @@ test("user web-role relationship and enhanced attribute aliases follow the site'
   // Enhanced model: powerpagecomponent_mspp_webrole_contact lists powerpagecomponent rows, and
   // bare content columns are readable with adx_ and mspp_ prefixes.
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'liquid-enhanced-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const component = (id, type, name, content) =>
     `<powerpagecomponent powerpagecomponentid="${id}"><content>${JSON.stringify(content).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</content><name>${name}</name><powerpagecomponenttype>${type}</powerpagecomponenttype><statecode>0</statecode></powerpagecomponent>`;
   const write = async (name, body) => {
@@ -1328,7 +1328,7 @@ test("user web-role relationship and enhanced attribute aliases follow the site'
 
 test('render sweep resolves export directories and Mirage projects and summarises each persona for CI', async (t) => {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'render-sweep-target-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   await fs.mkdir(path.join(dir, 'portal'));
   await fs.mkdir(path.join(dir, 'solution'));
   const fromSource = await resolveTarget({
@@ -1383,7 +1383,7 @@ test('render sweep resolves export directories and Mirage projects and summarise
 
 test("render sweep personas change only the identity and keep the state's rows", async (t) => {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'render-sweep-personas-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const portalFiles = {
     'website.yml': `adx_websiteid: ${SITE}\nadx_name: Personas`,
     'webrole.yml':
@@ -1743,7 +1743,7 @@ test('diagnostic/default mode: math filters promote real operands to decimal, di
 // @test-kind contract: request.params is the request's cookies, then form values, then query values (ASP.NET order), and the runtime's own session, visitor and anti-forgery cookies never reach a template.
 test('request.params carries cookies below form and query values and never the runtime cookies', async (t) => {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'liquid-params-cookies-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
     'website.yml':
       'adx_name: Params\nadx_websiteid: params-site\nadx_defaultlanguage: lang-en\nadx_website_language: 1033',
@@ -1760,7 +1760,7 @@ test('request.params carries cookies below form and query values and never the r
     await fs.writeFile(path.join(dir, name), body);
   }
   const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, 'state.json'), port: 0, watch: false });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const port = new URL(app.url).port;
   const sessionName = authCookieName(port);
   const visitorName = visitorCookieName(port);

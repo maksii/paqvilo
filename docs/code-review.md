@@ -29,7 +29,7 @@ count growth, URL resolution and public reexport preservation.
 Inspect `.paqvilo/code-review/findings.json` and its per-scope reports before updating a
 baseline. Fix actionable findings first. `node scripts/code-review.mjs --write-baseline`
 requires specific runtime clone dispositions and refuses unresolved imports, full-graph
-orphan files and unused full-graph exports. Review every resulting baseline diff. Static
+orphan files and unused full-graph exports. It keeps the reason of every finding the baseline already holds and gives only new findings the standard reason. Review every resulting baseline diff. Static
 tools cannot establish absence of every dead path or semantic duplicate.
 
 ## October 2026 audit dispositions

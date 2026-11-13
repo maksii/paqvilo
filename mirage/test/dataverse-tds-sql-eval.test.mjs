@@ -761,10 +761,21 @@ test('abort during a scan stops the row loop', async () => {
 const partRows = (count) => Array.from({ length: count }, (_, i) => ({ contoso_partid: `P${i}` }));
 
 // @test-kind contract: an abort raised by a timer must reach a cross join, so the join yields to the event loop.
-test('a timer abort cancels a large cross join', async () => {
+test('a timer abort cancels a large cross join', async (t) => {
   const controller = new AbortController();
-  setTimeout(() => controller.abort(), 0);
-  const { scan } = makeScan({ contoso_part: partRows(600) });
+  const { scan, calls } = makeScan({ contoso_part: partRows(600) });
+  const originalSetImmediate = globalThis.setImmediate;
+  let yields = 0;
+  let scansBeforeAbort = 0;
+  // The evaluator's own yield is the second event-loop turn: abort there, then let the yield continue.
+  t.mock.method(globalThis, 'setImmediate', (callback, ...args) => {
+    yields += 1;
+    if (yields === 2) {
+      scansBeforeAbort = calls.contoso_part ?? 0;
+      controller.abort();
+    }
+    return originalSetImmediate(callback, ...args);
+  });
   await assert.rejects(
     executeBatch('SELECT a.contoso_partid AS x FROM contoso_part a CROSS JOIN contoso_part b', {
       catalog,
@@ -774,6 +785,8 @@ test('a timer abort cancels a large cross join', async () => {
     }),
     { number: 3617 },
   );
+  assert.ok(yields >= 2, `the join yielded ${yields} times`);
+  assert.ok(scansBeforeAbort >= 1, 'the join scanned its tables before the abort');
 });
 
 // @test-kind contract: a cross join whose intermediate rows exceed the statement's tuple budget is refused.

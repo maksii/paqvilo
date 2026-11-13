@@ -29,6 +29,52 @@ import { moduleImportMatches } from '../mirage/lib/text-scanning.mjs';
   `return function inspectRenderedPage(){const definitionQuery=(${definitionQuery.toString()}); return (${inspectRenderedPageImpl.toString()})();};`,
 )();
 
+const SERVER_LOGIC_ROUTE = /^\/_api\/serverlogics\//i;
+const ENTITY_SET_ROUTE = /^\/_api\/([a-z]\w*)(?:\(|\/|$)/i;
+const routePathname = (url) => (URL.canParse(url) ? new URL(url).pathname : '');
+// The page's resource-timing buffer stops recording once it holds 250 entries, so the session's own request events are the
+// complete source for the routes it requested.
+const unionOf = (fromPage, recorded) => [...new Set([...(fromPage ?? []), ...recorded])];
+
+const withoutHash = (url) => String(url).split('#')[0];
+const sameOrigin = (url, documentUrl) =>
+  URL.canParse(url) && URL.canParse(documentUrl) && new URL(url).origin === new URL(documentUrl).origin;
+
+/**
+ * Records the Web API routes a page requests, from the session's own request events, so the evidence does not
+ * depend on the page's resource-timing buffer. `merge` adds them to what the page itself reported.
+ */
+export function createApiRouteObserver() {
+  const apiSets = new Set();
+  const serverLogicPaths = new Set();
+  // The last navigation the main frame requested, without its fragment. Its commit
+  // replaces the document whose routes are kept.
+  let documentRequest = null;
+  return {
+    record(url, documentUrl) {
+      if (!sameOrigin(url, documentUrl)) return;
+      const route = routePathname(url);
+      if (SERVER_LOGIC_ROUTE.test(route)) serverLogicPaths.add(route);
+      const match = ENTITY_SET_ROUTE.exec(route);
+      if (match) apiSets.add(match[1]);
+    },
+    navigationRequested(url) {
+      documentRequest = withoutHash(url);
+    },
+    committed(url) {
+      if (documentRequest !== withoutHash(url)) return;
+      documentRequest = null;
+      apiSets.clear();
+      serverLogicPaths.clear();
+    },
+    merge(rendered) {
+      const merged = { ...rendered, apiSets: unionOf(rendered.apiSets, apiSets) };
+      const logicPaths = unionOf(rendered.serverLogicPaths, serverLogicPaths);
+      return logicPaths.length ? { ...merged, serverLogicPaths: logicPaths } : merged;
+    },
+  };
+}
+
 const norm = (value) =>
   String(value?.id ?? value ?? '')
     .replace(/[{}]/g, '')

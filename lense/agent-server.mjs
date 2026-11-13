@@ -217,6 +217,16 @@ export async function startAgentServer({
   let pageNumber = 0;
   let stopped = false;
   let operations = 0;
+  // Playwright calls with their own deadline (page.screenshot, page.goto) that have started and not settled. close()
+  // waits for these after the HTTP server stops. Calls without a deadline of their own (page reads and viewport
+  // resizes) are not tracked: they end with the page, which the session owns, so close() never waits on a page that
+  // does not answer.
+  const operationsRunning = new Set();
+  const owned = (promise) => {
+    operationsRunning.add(promise);
+    promise.finally(() => operationsRunning.delete(promise)).catch(() => {});
+    return promise;
+  };
   let closing;
   let discovery;
   const on = (target, name, handler, local) => {
@@ -860,16 +870,20 @@ export async function startAgentServer({
               'image_too_large',
               'Screenshot is limited to 8 megapixels and 8192 pixels per side; use the viewport',
             );
-          const bytes = await page.screenshot({
-            type: 'png',
-            scale: 'css',
-            fullPage: Boolean(body.fullPage),
-            ...(body.includePanel
-              ? {}
-              : { style: '#paqvilo-panel,#paqvilo-xray,#paqvilo-model-inspector { visibility: hidden !important; }' }),
-            ...(body.fullPage ? { clip: { x: 0, y: 0, width, height } } : {}),
-            timeout: 0,
-          });
+          const bytes = await owned(
+            page.screenshot({
+              type: 'png',
+              scale: 'css',
+              fullPage: Boolean(body.fullPage),
+              ...(body.includePanel
+                ? {}
+                : {
+                    style: '#paqvilo-panel,#paqvilo-xray,#paqvilo-model-inspector { visibility: hidden !important; }',
+                  }),
+              ...(body.fullPage ? { clip: { x: 0, y: 0, width, height } } : {}),
+              timeout,
+            }),
+          );
           if (bytes.length > MAX_IMAGE) throw fault(413, 'image_too_large', 'Screenshot exceeds 8 MiB');
           return bytes;
         });
@@ -911,7 +925,7 @@ export async function startAgentServer({
       const destination = action === 'navigate' ? target.href : refreshUrl(page.url());
       let navigated;
       try {
-        navigated = await withPage(page, timeout + 50, () => page.goto(destination, { waitUntil, timeout }));
+        navigated = await withPage(page, timeout + 50, () => owned(page.goto(destination, { waitUntil, timeout })));
       } catch (cause) {
         if (cause.name === 'TimeoutError' || cause.code === 'action_timeout') {
           try {
@@ -993,6 +1007,7 @@ export async function startAgentServer({
         });
         server.closeIdleConnections();
       });
+      await Promise.allSettled(operationsRunning);
       fs.rmSync(discoveryFile, { force: true });
     })());
   try {

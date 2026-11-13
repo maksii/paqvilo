@@ -47,15 +47,16 @@ function isFile(file) {
     return false;
   }
 }
-const pathDirectories = () => (process.env.PATH ?? '').split(path.delimiter).filter(Boolean);
-const pathExtensions = () => (process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean);
+const pathDirectories = (env) => (env.PATH ?? '').split(path.delimiter).filter(Boolean);
+const pathExtensions = (env) => (env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean);
 // The file a command resolves to. A name with a path is resolved as given; a bare name is tried with each PATHEXT entry, in
 // order, in each PATH directory, and the first regular file wins.
-function resolvedFile(name, cwd) {
+function resolvedFile(name, cwd, env, exists) {
   const pathGiven = /[\\/]/.test(name);
-  const extensions = pathGiven || path.extname(name) ? [''] : pathExtensions();
-  const bases = pathGiven ? [path.resolve(cwd, name)] : pathDirectories().map((dir) => path.join(dir, name));
-  return bases.flatMap((base) => extensions.map((extension) => base + extension)).find(isFile) ?? null;
+  const extensions = pathGiven || path.extname(name) ? [''] : pathExtensions(env);
+  const bases = pathGiven ? [path.resolve(cwd, name)] : pathDirectories(env).map((dir) => path.join(dir, name));
+  const candidates = bases.flatMap((base) => extensions.map((extension) => base + extension));
+  return candidates.find((candidate) => exists(candidate)) ?? null;
 }
 function commandOf(app) {
   const command = app.devServer.command;
@@ -110,24 +111,28 @@ function assertShimLineSafe(values) {
   });
 }
 // Runs a batch shim through the command interpreter with /d /s /c; the line is passed verbatim, so no argument is re-split.
-function shimInvocation(file, args) {
+function shimInvocation(file, args, env) {
   assertShimLineSafe([file, ...args]);
   const line = [cmdEscape(file), ...args.map(shimArgument)].join(' ');
-  return { file: process.env.ComSpec || 'cmd.exe', args: ['/d', '/s', '/c', `"${line}"`] };
+  return { file: env.ComSpec || 'cmd.exe', args: ['/d', '/s', '/c', `"${line}"`] };
 }
 // On Windows every command runs under the wrapper, which keeps its process tree addressable. A .cmd or .bat file is
 // sent to the wrapper as an already-escaped interpreter line with verbatim arguments; other commands use ordinary
 // quoting. The command travels in the IPC message, so no argument is re-split on the way to the wrapper.
-export function launchOf(command, cwd) {
-  if (process.platform !== 'win32') return { file: command[0], args: command.slice(1), wrapped: false, message: null };
+export function launchOf(
+  command,
+  cwd,
+  { platform = process.platform, env = process.env, isFile: exists = isFile } = {},
+) {
+  if (platform !== 'win32') return { file: command[0], args: command.slice(1), wrapped: false, message: null };
   const wrapper = {
     file: process.execPath,
     args: [fileURLToPath(new URL('./code-app-dev-wrapper.mjs', import.meta.url))],
     wrapped: true,
   };
-  const file = resolvedFile(command[0], cwd);
+  const file = resolvedFile(command[0], cwd, env, exists);
   if (file && /\.(?:cmd|bat)$/i.test(file)) {
-    const shim = shimInvocation(file, command.slice(1));
+    const shim = shimInvocation(file, command.slice(1), env);
     return { ...wrapper, message: { command: [shim.file, ...shim.args], verbatim: true } };
   }
   return { ...wrapper, message: { command, verbatim: false } };
@@ -212,9 +217,14 @@ function watchStartupChild(app, child, wrapped, isClosing, onFailure, tail) {
   return () => failure;
 }
 
-function startConfiguredChild(app, command, cwd, { mirageUrl, output, onFailure, isClosing, owned }) {
-  const launch = launchOf(command, cwd);
-  const child = spawn(launch.file, launch.args, {
+function startConfiguredChild(
+  app,
+  command,
+  cwd,
+  { platform, mirageUrl, output, onFailure, isClosing, owned, spawnChild },
+) {
+  const launch = launchOf(command, cwd, { platform });
+  const child = spawnChild(launch.file, launch.args, {
     cwd,
     env: {
       ...process.env,
@@ -223,7 +233,7 @@ function startConfiguredChild(app, command, cwd, { mirageUrl, output, onFailure,
       PAQVILO_CODE_APP: app.name,
     },
     shell: false,
-    detached: process.platform !== 'win32',
+    detached: platform !== 'win32',
     windowsHide: true,
     stdio: launch.wrapped ? ['ignore', 'pipe', 'pipe', 'ipc'] : ['ignore', 'pipe', 'pipe'],
   });
@@ -292,6 +302,7 @@ async function startOwnedApp(app, url, state, watch) {
   const cwd = cwdOf(app);
   const command = commandOf(app);
   const { getFailure } = startConfiguredChild(app, command, cwd, {
+    platform: state.platform,
     mirageUrl: state.mirageUrl,
     output: state.output,
     onFailure: (failure) => {
@@ -300,6 +311,7 @@ async function startOwnedApp(app, url, state, watch) {
     },
     isClosing: state.isClosing,
     owned: state.owned,
+    spawnChild: state.spawnChild,
   });
   const probing = probeSignal(state.signal, watch.abort.signal);
   while (!(await ready(url, state.probe, probing))) {
@@ -339,6 +351,8 @@ export async function startCodeAppDevServers(
     connect,
     sleep = pausePoll,
     schedule = scheduleTimer,
+    spawnChild = spawn,
+    platform = process.platform,
   } = {},
 ) {
   refuseSharedListeners(apps);
@@ -357,12 +371,14 @@ export async function startCodeAppDevServers(
   };
   const state = {
     signal,
+    platform,
     mirageUrl,
     output,
     probe: { lookup, connect },
     sleep,
     schedule,
     owned,
+    spawnChild,
     reportFailure,
     isClosing: () => closing,
   };

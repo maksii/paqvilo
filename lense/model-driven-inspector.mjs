@@ -45,17 +45,24 @@ const bounded = (rows, limit = MAX_ITEMS) => {
 export const NATIVE_READ_GUARD_MS = 30_000;
 const MAX_TIMER_MS = 2_147_483_647;
 const GUARD_EXPIRED = Symbol('native read guard expired');
-const guarded = async (operation, milliseconds) => {
-  let timer;
+// A cancel that has nothing to stop.
+const noop = () => {};
+// Arms a guard that calls expire after the milliseconds and returns the function that cancels it.
+const defaultScheduleGuard = (expire, milliseconds) => {
+  const timer = setTimeout(expire, milliseconds);
+  return () => clearTimeout(timer);
+};
+const guarded = async (operation, milliseconds, scheduleGuard) => {
+  let cancel = noop;
   try {
     return await Promise.race([
       operation,
       new Promise((resolve) => {
-        timer = setTimeout(() => resolve(GUARD_EXPIRED), milliseconds);
+        cancel = scheduleGuard(() => resolve(GUARD_EXPIRED), milliseconds);
       }),
     ]);
   } finally {
-    clearTimeout(timer);
+    cancel();
   }
 };
 const nativeReadTimedOutMessage = (guardMs) =>
@@ -67,7 +74,7 @@ const nativeReadTimedOut = (guardMs) => ({
 });
 // Returns the observed native structure, null when it is unavailable or obsolete, or GUARD_EXPIRED when the page
 // did not answer one of its two reads within the guard.
-async function readNativeStructure(page, body, guardMs) {
+async function readNativeStructure(page, body, guardMs, scheduleGuard) {
   const observed = await guarded(
     page.evaluate(
       (request) => {
@@ -87,6 +94,7 @@ async function readNativeStructure(page, body, guardMs) {
       { scope: body.scope, anchorGeneration: body.anchorGeneration, cursor: body.cursor },
     ),
     guardMs,
+    scheduleGuard,
   );
   if (observed === GUARD_EXPIRED) return GUARD_EXPIRED;
   if (!observed || observed.obsolete) return null;
@@ -96,6 +104,7 @@ async function readNativeStructure(page, body, guardMs) {
       return node?.ownerDocument.defaultView.__paqviloModelDrivenProvider?.generation();
     }),
     guardMs,
+    scheduleGuard,
   );
   if (generation === GUARD_EXPIRED) return GUARD_EXPIRED;
   return generation === observed.nativeGeneration ? observed : null;
@@ -203,6 +212,7 @@ export async function startModelDrivenInspector({
   runtime = {},
   savedState = null,
   nativeReadGuardMs = NATIVE_READ_GUARD_MS,
+  scheduleGuard = defaultScheduleGuard,
 }) {
   if (!Number.isSafeInteger(nativeReadGuardMs) || nativeReadGuardMs < 1 || nativeReadGuardMs > MAX_TIMER_MS)
     throw new Error('nativeReadGuardMs must be a positive integer millisecond count.');
@@ -406,6 +416,7 @@ export async function startModelDrivenInspector({
             : null;
         }),
         nativeReadGuardMs,
+        scheduleGuard,
       );
       if (structure === GUARD_EXPIRED) {
         recordProblem({
@@ -582,7 +593,7 @@ export async function startModelDrivenInspector({
         if (input.name === 'native-structure') {
           if (!normalizeInspectionScope(body.scope) || !(await selectionEvidenceCurrent(page, body)))
             return { ok: false, reason: 'selection-obsolete' };
-          const observed = await readNativeStructure(page, body, nativeReadGuardMs);
+          const observed = await readNativeStructure(page, body, nativeReadGuardMs, scheduleGuard);
           if (observed === GUARD_EXPIRED) return nativeReadTimedOut(nativeReadGuardMs);
           return observed && (await selectionEvidenceCurrent(page, body))
             ? { ok: true, ...observed }
@@ -599,6 +610,7 @@ export async function startModelDrivenInspector({
             const result = await guarded(
               page.evaluate(readModelDrivenNativeSource, { origin: cfg.origin, path: lease.path, token: lease.token }),
               nativeReadGuardMs,
+              scheduleGuard,
             );
             if (result === GUARD_EXPIRED) return nativeReadTimedOut(nativeReadGuardMs);
             if (!result) return { ok: false, error: 'The native comparison returned no result.' };
@@ -845,11 +857,11 @@ export async function startModelDrivenInspector({
         await drain(() => identity.close());
         for (const remove of removers) await drain(remove);
         await drain(() => pageBindings?.close());
-        // A cleanup call that does not answer within the guard leaves owned page code live. The leak is recorded in the
-        // session log and close still completes. The disposals and the retirement wait together, so a paused page
-        // costs one guard rather than one per call.
+        // A cleanup call that misses the guard leaves owned page code live, and close still completes. Closing the page
+        // bindings first waits up to the binding call timeout for a panel call in progress. Disposals and retirement
+        // then share one guard, so a paused page with a panel call in flight costs that timeout plus one guard.
         const settle = async (operation, what) => {
-          if ((await guarded(operation, nativeReadGuardMs)) !== GUARD_EXPIRED) return;
+          if ((await guarded(operation, nativeReadGuardMs, scheduleGuard)) !== GUARD_EXPIRED) return;
           recordProblem({
             type: 'error',
             code: 'cleanup-timed-out',

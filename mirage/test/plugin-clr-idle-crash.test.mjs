@@ -71,7 +71,7 @@ test(
       ],
     });
     await store.create('x_item', { x_name: 'first' }, { admin: true });
-    const [{ pid: deadPid }] = clrHostPoolStatus();
+    const [{ pid: deadPid, session: deadSession }] = clrHostPoolStatus();
     assert.ok(Number.isInteger(deadPid), 'the first step must leave a pooled host with a process id');
     process.kill(deadPid);
     // The pool reports the exit once the host has stopped; the loop ends only then, or when the test is cancelled.
@@ -85,8 +85,8 @@ test(
     );
     assert.notEqual(error?.code, 'LocalPluginTimeout', 'an idle host that died must not wait for the deadline');
     assert.equal(error, null, 'the second step must succeed on a fresh host');
-    const freshPids = clrHostPoolStatus().map((host) => host.pid);
-    assert.equal(freshPids.length, 1, 'one fresh pooled host');
-    assert.notEqual(freshPids[0], deadPid, 'the fresh host has a different process id');
+    const fresh = clrHostPoolStatus();
+    assert.equal(fresh.length, 1, 'one fresh pooled host');
+    assert.notEqual(fresh[0].session, deadSession, 'the fresh host is a new pooled session');
   },
 );

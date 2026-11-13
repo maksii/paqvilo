@@ -8,6 +8,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { observeDocumentCommits } from './lib/document-commits.mjs';
+import { openBrowserWriteNet, UNATTRIBUTED } from './lib/browser-write-net.mjs';
 import { readLocalFile } from '../lense/local-file.mjs';
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { parseToolArgs } from './tool-options.mjs';
@@ -2153,6 +2154,7 @@ export async function openCdpTabDriver({
   viewport = { width: 1440, height: 1000 },
   allowLoopbackReference = false,
   isolated = false,
+  WebSocketImpl = globalThis.WebSocket,
 }) {
   const endpoint = new URL(cdpUrl);
   if (
@@ -2181,7 +2183,7 @@ export async function openCdpTabDriver({
   }
   const socketTarget = new URL(socketUrl);
   if (!loopbackHost(socketTarget.hostname)) throw new Error('The browser debugging socket must be loopback.');
-  const socket = new WebSocket(socketUrl);
+  const socket = new WebSocketImpl(socketUrl);
   await new Promise((resolve, reject) => {
     socket.onopen = resolve;
     socket.onerror = () => reject(new Error('Could not open the browser debugging socket.'));
@@ -2214,9 +2216,39 @@ export async function openCdpTabDriver({
   const owned = new Set();
   let browserContextId = null;
   const origins = [reference.origin];
+  // Every write of a page this driver owns, or of a popup or frame of such a page, meets the browser-session write net
+  // from its first request, whichever debugging client resumes the target. It opens with the first tab and closes
+  // with the driver.
+  const transport = {
+    send,
+    onEvent: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+  let writeNet = null;
+  const ensureWriteNet = () => {
+    writeNet ??= openBrowserWriteNet({
+      transport,
+      decide: (request) => requestDecision(request.method, request.url, { fulfil, origins }),
+      onDecided: (entry) =>
+        recordNetDecision(entry, { origins, states: new Set([...tabs.values()].map((tab) => tab.state)) }),
+    }).catch((error) => {
+      writeNet = null;
+      throw error;
+    });
+    return writeNet;
+  };
+  const closeWriteNet = async () => {
+    const pending = writeNet;
+    writeNet = null;
+    const net = await pending?.catch(() => null);
+    await net?.close();
+  };
   // A popup attaches to the browser session, not to its opener's tab session, so the browser session auto-attaches
-  // new targets (waiting for a debugger first) while this driver has an open tab of its own. Popups opened by one of
-  // those tabs, transitively, are intercepted; every other target is resumed without interception.
+  // new targets while this driver has an open tab of its own, to observe them under the tab that opened them. The wait
+  // for a debugger is shared with every other debugging client of the browser, any of which can resume the target, so
+  // writes are stopped by the browser-session write net (ensureWriteNet), not by this pause.
   const tabs = new Map();
   const openTabs = new Set();
   // Session id to { state, parent }: an owned popup has no parent, its frames and workers have the popup as parent.
@@ -2225,7 +2257,7 @@ export async function openCdpTabDriver({
     send('Target.setAutoAttach', { autoAttach, waitForDebuggerOnStart: true, flatten: true });
   // An attach that fails has settled its target itself (paused or closed); the listener has nothing left to do with the failure.
   listeners.add((message) => {
-    if (message.method === 'Target.attachedToTarget' && !message.sessionId)
+    if (message.method === 'Target.attachedToTarget' && !message.sessionId && message.params.waitingForDebugger)
       attachBrowserTarget(message.params, { send, owned, tabs, popupRoutes }).catch(() => {});
     else if (message.method === 'Target.detachedFromTarget') forgetPopupRoutes(popupRoutes, message.params.sessionId);
     else if (popupRoutes.has(message.sessionId)) handlePopupMessage(message, { send, fulfil, origins, popupRoutes });
@@ -2238,6 +2270,7 @@ export async function openCdpTabDriver({
     // refuses a toolkit profile that is signed in to the reference origin.
     if (isolated && !browserContextId)
       ({ browserContextId } = await send('Target.createBrowserContext', { disposeOnDetach: true }));
+    const writeNetForTab = await ensureWriteNet();
     const { targetId } = await send('Target.createTarget', {
       url: 'about:blank',
       background: true,
@@ -2266,16 +2299,27 @@ export async function openCdpTabDriver({
     // Cross-site frames and workers run their own requests, so they are intercepted too.
     const popups = new Set();
     tabs.set(targetId, { state, popups });
+    writeNetForTab.addRoot(targetId, state);
     openTabs.add(targetId);
     if (openTabs.size === 1) await setBrowserAutoAttach(true);
     const childSessions = new Set();
+    // A frame nested in a cross-site frame attaches to that frame's session, so a child session's targets are
+    // attached exactly as the tab's own are, at any depth.
     const childListener = (message) => {
-      if (message.sessionId === sessionId && message.method === 'Target.attachedToTarget')
-        attachChildTarget(message.params, { send, onIntercepted: (child) => childSessions.add(child) }).catch(() => {});
-      else if (message.sessionId === sessionId && message.method === 'Target.detachedFromTarget')
+      const fromTab = message.sessionId === sessionId;
+      if (!fromTab && !childSessions.has(message.sessionId)) return;
+      if (message.method === 'Target.attachedToTarget') {
+        releaseFrameRequests(state, message.params.targetInfo);
+        attachChildTarget(message.params, {
+          send,
+          onIntercepted: (child) => childSessions.add(child),
+          onAbandoned: (child) => childSessions.delete(child),
+          trackNetwork: true,
+        }).catch(() => {});
+      } else if (message.method === 'Target.detachedFromTarget') {
         childSessions.delete(message.params.sessionId);
-      else if (childSessions.has(message.sessionId) && message.method === 'Fetch.requestPaused')
-        handleCdpPausedRequest(message.params, { sessionId: message.sessionId, state, send, fulfil, origins });
+        releaseChildRequests(state, message.params.sessionId);
+      } else if (!fromTab) handleChildMessage(message, { state, send, fulfil, origins });
     };
     listeners.add(childListener);
     await send('Page.enable', {}, sessionId);
@@ -2394,7 +2438,7 @@ export async function openCdpTabDriver({
         consoleErrors: tab.state.consoleErrors,
         pageErrors: tab.state.pageErrors,
         failedResponses: tab.state.failedResponses,
-        pendingRequests: [...tab.state.inflight.values()].map((url) => redactUrl(url, { origins })),
+        pendingRequests: [...tab.state.inflight.values()].map((entry) => redactUrl(entry.url, { origins })),
         network: [...tab.state.network.values()].map((item) => ({
           ...networkRecord({ ...item, origins }),
           ...(item.projection ? { projection: item.projection } : {}),
@@ -2486,6 +2530,7 @@ export async function openCdpTabDriver({
       if (apiTab) await apiTab.close();
       for (const targetId of owned) await send('Target.closeTarget', { targetId }).catch(() => {});
       await setBrowserAutoAttach(false).catch(() => {});
+      await closeWriteNet();
       if (browserContextId) await send('Target.disposeBrowserContext', { browserContextId }).catch(() => {});
       socket.close();
     },
@@ -2513,6 +2558,24 @@ function handleCdpMessage(message, options) {
   }
 }
 
+const bodyEntry = (postData) => {
+  const body = bodyShape(postData);
+  return body ? { body } : {};
+};
+
+/**
+ * Records a write the browser-session net stopped or fulfilled under the tab state that owns it. A write whose owner
+ * could not be resolved is recorded under every tab the driver holds, so no stopped write goes unreported.
+ */
+function recordNetDecision({ request, decision, owner }, { origins, states }) {
+  const item = { method: request.method, url: redactUrl(request.url, { origins }) };
+  const recipients = owner === UNATTRIBUTED ? [...states] : [owner];
+  for (const state of recipients) {
+    if (decision.action === 'fulfil') state.fulfilled.push({ ...item, status: decision.status });
+    else state.blocked.push({ ...item, ...bodyEntry(request.postData) });
+  }
+}
+
 /** Enable request interception on a session; false when the target cannot be intercepted. */
 function enableInterception(child, send) {
   return send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] }, child).then(
@@ -2522,24 +2585,42 @@ function enableInterception(child, send) {
 }
 
 /**
- * A frame or worker of a tab starts paused. Interception is enabled before it resumes, so its requests meet the
- * same decision as the tab's own. Without interception it stays paused: resuming it would run it unintercepted.
+ * A frame or worker of a tab starts paused until a debugging client resumes it. This session enables interception
+ * before it resumes the target and never resumes one it could not intercept, except a dedicated worker, whose requests
+ * the session of its frame intercepts; another client can resume it earlier, so the browser-session write net covers
+ * its first requests.
  */
-async function attachChildTarget(params, { send, onIntercepted }) {
+async function attachChildTarget(params, { send, onIntercepted, onAbandoned, trackNetwork = false }) {
   const child = params.sessionId;
+  // A dedicated worker has no Fetch domain: its requests are paused on the session of the frame that started it and
+  // on the browser-session write net, so it is resumed without interception of its own.
+  const coveredByParent = params.targetInfo?.type === 'worker';
   let intercepted = false;
+  // Registered before Fetch.enable is sent: a paused event of this session can be read before the enable response.
+  onIntercepted(child);
   try {
     intercepted = await enableInterception(child, send);
-    if (intercepted) onIntercepted(child);
+    if (!intercepted) onAbandoned(child);
+    // A frame's requests count as the page's in-flight requests, and the frames nested in it are held for this session
+    // as the frame is; a target without either domain is only not tracked.
+    else if (trackNetwork) {
+      await send('Network.enable', {}, child).catch(() => {});
+      await send(
+        'Target.setAutoAttach',
+        { autoAttach: true, waitForDebuggerOnStart: true, flatten: true },
+        child,
+      ).catch(() => {});
+    }
   } finally {
-    if (intercepted) await send('Runtime.runIfWaitingForDebugger', {}, child).catch(() => {});
+    if (intercepted || coveredByParent) await send('Runtime.runIfWaitingForDebugger', {}, child).catch(() => {});
   }
 }
 
 /**
- * A popup opened by one of the driver's tabs, or by such a popup, is intercepted under that tab's state. Ownership
- * follows the opener chain only, never the URL. Any other target runs unintercepted and is never inspected. An owned
- * popup that cannot be intercepted is closed, so no target stays paused.
+ * A popup opened by one of the driver's tabs, or by such a popup, is intercepted under that tab's state once it is
+ * attached. Ownership follows the opener chain only, never the URL. Any other target is resumed without a page-session
+ * guard. An owned popup that cannot be intercepted is closed. Its first requests are covered by the browser-session
+ * write net, because another debugging client can resume it before this attach completes.
  */
 async function attachBrowserTarget(params, { send, owned, tabs, popupRoutes }) {
   const child = params.sessionId;
@@ -2566,12 +2647,18 @@ async function attachBrowserTarget(params, { send, owned, tabs, popupRoutes }) {
  * runs only when it and its auto-attach are in place; otherwise it stays paused and is closed.
  */
 async function interceptPopup(child, { send, popupRoutes, state }) {
-  if (!(await enableInterception(child, send))) return false;
+  // Registered before Fetch.enable is sent: a paused event of the popup can be read before the enable response.
   popupRoutes.set(child, { state, parent: null });
-  return send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, child).then(
-    () => true,
-    () => false,
-  );
+  const enabled = await enableInterception(child, send);
+  const autoAttach = { autoAttach: true, waitForDebuggerOnStart: true, flatten: true };
+  const ready =
+    enabled &&
+    (await send('Target.setAutoAttach', autoAttach, child).then(
+      () => true,
+      () => false,
+    ));
+  if (!ready) popupRoutes.delete(child);
+  return ready;
 }
 
 /** Frames and workers of an owned popup are attached and paused under the state of the tab that opened it. */
@@ -2581,6 +2668,7 @@ function handlePopupMessage(message, { send, fulfil, origins, popupRoutes }) {
     attachChildTarget(message.params, {
       send,
       onIntercepted: (child) => popupRoutes.set(child, { state, parent: message.sessionId }),
+      onAbandoned: (child) => popupRoutes.delete(child),
     }).catch(() => {});
   else if (message.method === 'Fetch.requestPaused')
     handleCdpPausedRequest(message.params, { sessionId: message.sessionId, state, send, fulfil, origins });
@@ -2625,9 +2713,59 @@ function handleCdpPausedRequest(params, { sessionId, state, send, fulfil, origin
   send('Fetch.failRequest', { requestId: params.requestId, errorReason: 'BlockedByClient' }, sessionId).catch(() => {});
 }
 
+/**
+ * An out-of-process frame's document request, or a dedicated worker's script request (whose request id is the worker's
+ * target id), is announced on its parent's session (the tab's, or a cross-site frame's), but it completes on the
+ * target's own session. Once that session is attached, the request is no longer tracked by the tab.
+ */
+function releaseFrameRequests(state, targetInfo) {
+  const { type, targetId } = targetInfo;
+  if (type !== 'iframe' && type !== 'worker') return;
+  for (const [key, request] of state.inflight)
+    if (type === 'iframe' ? request.frameId === targetId : request.requestId === targetId) state.inflight.delete(key);
+}
+
+/** In-flight key of a child session's request: request ids are per session, so the tab's ids cannot collide with it. */
+const childRequestKey = (sessionId, requestId) => `${sessionId}:${requestId}`;
+
+/**
+ * A message of a cross-site frame or worker session of a tab: its paused requests meet the tab's decision and its
+ * network requests count as the tab's in-flight requests until they finish or fail.
+ */
+function handleChildMessage(message, { state, send, fulfil, origins }) {
+  const { method, params, sessionId } = message;
+  if (method === 'Fetch.requestPaused') {
+    handleCdpPausedRequest(params, { sessionId, state, send, fulfil, origins });
+    return;
+  }
+  if (method === 'Network.requestWillBeSent') {
+    state.lastActivity = Date.now();
+    if (params.type !== 'EventSource')
+      state.inflight.set(childRequestKey(sessionId, params.requestId), {
+        url: params.request.url,
+        sessionId,
+        frameId: params.frameId,
+        requestId: params.requestId,
+      });
+  } else if (method === 'Network.loadingFinished' || method === 'Network.loadingFailed') {
+    state.lastActivity = Date.now();
+    state.inflight.delete(childRequestKey(sessionId, params.requestId));
+  }
+}
+
+/** A detached frame or worker session reports nothing further, so its requests are no longer in flight. */
+function releaseChildRequests(state, sessionId) {
+  for (const [key, request] of state.inflight) if (request.sessionId === sessionId) state.inflight.delete(key);
+}
+
 function handleCdpNetworkRequest(params, state, referenceOrigin) {
   state.lastActivity = Date.now();
-  if (params.type !== 'EventSource') state.inflight.set(params.requestId, params.request.url);
+  if (params.type !== 'EventSource')
+    state.inflight.set(params.requestId, {
+      url: params.request.url,
+      frameId: params.frameId,
+      requestId: params.requestId,
+    });
   if (params.type === 'Document' && params.frameId === state.frameId) {
     state.document = { requestId: params.requestId };
     return;

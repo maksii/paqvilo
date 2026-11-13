@@ -1,9 +1,12 @@
 // Test-file fixtures: one browser per file, an isolated context per test.
 import fs from 'node:fs/promises';
+import { watch } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
+import { once } from 'node:events';
 import { before, after } from 'node:test';
 import { chromium } from 'playwright-core';
+import ts from 'typescript';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
@@ -44,12 +47,18 @@ export function appOrigins(sim, origin) {
   return sim.appsUrl ? [origin, new URL(sim.appsUrl).origin] : [origin];
 }
 
-const RELATIVE_IMPORT = /\bfrom\s+'(\.\.?\/[^']+)'/g;
 const MODULE_BASE = 'http://served.invalid';
+
+// Every relative module specifier a source file imports: static, side-effect, re-export and literal dynamic imports.
+const relativeImports = (source) =>
+  ts
+    .preProcessFile(source, true, true)
+    .importedFiles.map((file) => file.fileName)
+    .filter((specifier) => /^\.\.?\//.test(specifier));
 
 /**
  * The modules an entry module imports, transitively, keyed by the path each is served at: the entry at `servedPath`,
- * each relative static import at the path it resolves to from its importer's served path. Serving every key from its
+ * each relative import at the path it resolves to from its importer's served path. Serving every key from its
  * file lets a fixture server answer a module import with the real module instead of a fallback page.
  */
 export async function moduleGraph(entry, servedPath) {
@@ -60,7 +69,7 @@ export async function moduleGraph(entry, servedPath) {
     if (modules.has(served)) continue;
     modules.set(served, file);
     const source = await fs.readFile(file, 'utf8');
-    for (const [, specifier] of source.matchAll(RELATIVE_IMPORT))
+    for (const specifier of relativeImports(source))
       pending.push([new URL(specifier, file), new URL(specifier, new URL(served, MODULE_BASE)).pathname]);
   }
   return modules;
@@ -201,12 +210,81 @@ export function accountListAccess(contact) {
  */
 export async function signedInSimulatorPage(t, browser, { dir, initial, contact }) {
   const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, 'state.json'), initial, watch: false });
+  let context;
+  ownedFixture(t).add(() => context?.close());
   ownedFixture(t).add(() => app.close());
-  const context = await browser.newContext();
-  ownedFixture(t).add(() => context.close());
+  context = await browser.newContext();
   await signInContext(context, app, contact, { roles: ['Member'] });
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   return { app, page, errors };
+}
+
+/** The port in a DevToolsActivePort file once Chromium has written both of its lines, otherwise null. */
+async function readDevToolsPort(file) {
+  let text;
+  try {
+    text = await fs.readFile(file, 'utf8');
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+  const [port, target] = text.split('\n');
+  return port && target ? Number(port) : null;
+}
+
+/**
+ * The remote-debugging port a browser launched on `profile` writes to its DevToolsActivePort file. Chromium writes the
+ * file on its own thread, after the launch has resolved, so the watch starts first and the file is read on each change
+ * and once at the start; the watch is closed when the port is read or the watch fails.
+ */
+export function devToolsActivePort(profile) {
+  const file = path.join(profile, 'DevToolsActivePort');
+  return new Promise((resolve, reject) => {
+    const watcher = watch(profile, { persistent: false });
+    const settle = (port) => {
+      if (port === null) return;
+      watcher.close();
+      resolve(port);
+    };
+    const fail = (error) => {
+      watcher.close();
+      reject(error);
+    };
+    watcher.on('change', () => readDevToolsPort(file).then(settle, fail));
+    watcher.on('error', fail);
+    readDevToolsPort(file).then(settle, fail);
+  });
+}
+
+/**
+ * A second debugging client of the browser at `cdpUrl` that resumes every target the moment it is attached, as the
+ * toolkit's own client does. Its page sessions run ahead of any guard the caller attaches later. `close()` ends the socket.
+ */
+export async function openResumingClient(cdpUrl) {
+  const { webSocketDebuggerUrl } = await (await fetch(new URL('/json/version', cdpUrl))).json();
+  const socket = new WebSocket(webSocketDebuggerUrl);
+  await once(socket, 'open');
+  const closed = once(socket, 'close');
+  const attached = Promise.withResolvers();
+  let nextId = 0;
+  const send = (method, params, sessionId) => {
+    nextId += 1;
+    socket.send(JSON.stringify({ id: nextId, method, params, ...(sessionId ? { sessionId } : {}) }));
+  };
+  socket.addEventListener('message', (event) => {
+    const message = JSON.parse(event.data);
+    if (message.id === 1) attached.resolve();
+    if (message.method === 'Target.attachedToTarget' && message.params.waitingForDebugger)
+      send('Runtime.runIfWaitingForDebugger', {}, message.params.sessionId);
+  });
+  send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
+  await attached.promise;
+  return {
+    async close() {
+      socket.close();
+      await closed;
+    },
+  };
 }

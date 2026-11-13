@@ -193,11 +193,11 @@ test('baseline capture records, guards writes, redacts tokens and compares captu
   assert.ok(diff.signatures.every((group) => !group.allowed));
 });
 
-// @test-kind security: a form POST that a scenario submits into a new window is a write, so it must be aborted before the portal receives it.
-test('a form POST submitted into a popup window is aborted before it reaches the portal', async (t) => {
+// Serves a portal page whose body is `body`, captures it with `steps`, and counts the POSTs the portal receives.
+async function captureWritesFromPopup(t, { body, steps }) {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-baseline-popup-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
-  let posts = 0;
+  const served = { posts: 0 };
   const server = http.createServer((req, res) => {
     res.sendDate = false;
     const url = new URL(req.url, 'http://127.0.0.1');
@@ -206,12 +206,12 @@ test('a form POST submitted into a popup window is aborted before it reaches the
         .writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
         .end(
           '<!doctype html><html><head><title>Popup fixture</title><link rel="icon" href="data:,"></head><body>' +
-            '<form id="send" method="POST" target="_blank" action="/write"><button id="submit" type="submit">Send</button></form>' +
+            body +
             '</body></html>',
         );
     }
     if (url.pathname === '/write' && req.method === 'POST') {
-      posts++;
+      served.posts++;
       req.resume();
       return res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end('<p>Written</p>');
     }
@@ -227,7 +227,7 @@ test('a form POST submitted into a popup window is aborted before it reaches the
   const context = await browser.newContext();
   try {
     const page = await context.newPage();
-    const scenario = { id: 'popup-write', steps: [{ goto: '/popup' }, { click: '#submit' }], expect: {} };
+    const scenario = { id: 'popup-write', steps, expect: {} };
     const matrix = { settle: { quietMs: 300 }, writeScope: { paths: ['^/write$'] } };
     const meta = await captureScenario(page, scenario, {
       origin,
@@ -236,9 +236,54 @@ test('a form POST submitted into a popup window is aborted before it reaches the
       matrix,
       allowWrites: false,
     });
-    assert.equal(posts, 0, 'the popup POST reached the portal');
-    assert.deepEqual(meta.blockedWrites, [{ method: 'POST', path: '/write' }]);
+    return { served, meta };
   } finally {
     await context.close();
   }
+}
+
+const popupWriteSteps = [{ goto: '/popup' }, { click: '#submit' }, { wait: { popup: 1 } }];
+
+// @test-kind security: a form POST that a scenario submits into a new window is a write, so it must be aborted before the portal receives it.
+test('a form POST submitted into a popup window is aborted before it reaches the portal', async (t) => {
+  const { served, meta } = await captureWritesFromPopup(t, {
+    body: '<form id="send" method="POST" target="_blank" action="/write"><button id="submit" type="submit">Send</button></form>',
+    steps: popupWriteSteps,
+  });
+  assert.equal(served.posts, 0, 'the popup POST reached the portal');
+  assert.deepEqual(meta.blockedWrites, [{ method: 'POST', path: '/write' }]);
+});
+
+// @test-kind security: a popup that the page opens after a 700 ms timer is still a write, so the capture must wait for it and abort its POST.
+test('a form POST the page submits into a popup 700 ms after the click is aborted before it reaches the portal', async (t) => {
+  const { served, meta } = await captureWritesFromPopup(t, {
+    body:
+      '<form id="send" method="POST" target="_blank" action="/write"></form>' +
+      '<button id="submit" type="button" onclick="setTimeout(() => document.getElementById(\'send\').submit(), 700)">Send</button>',
+    steps: popupWriteSteps,
+  });
+  assert.equal(served.posts, 0, 'the popup POST reached the portal');
+  assert.deepEqual(meta.blockedWrites, [{ method: 'POST', path: '/write' }]);
+});
+
+// @test-kind contract: a popup that stays blank does not hold the capture's settle
+test('a popup the page writes into without navigating does not hold settle', async (t) => {
+  const { meta } = await captureWritesFromPopup(t, {
+    body: '<button id="submit" type="button" onclick="const w = window.open(\'\'); w.document.write(\'<p>Print</p>\'); w.document.close();">Print</button>',
+    steps: [{ goto: '/popup' }, { click: '#submit' }],
+  });
+  assert.equal(meta.status, 'captured', meta.problems.join('; '));
+  assert.deepEqual(meta.problems, []);
+});
+
+// @test-kind security: a write submitted into a blank named popup is aborted before it reaches the portal
+test('a POST the opener submits into a blank named popup in the same task is aborted', async (t) => {
+  const { served, meta } = await captureWritesFromPopup(t, {
+    body:
+      '<form id="send" method="POST" target="named" action="/write"></form>' +
+      '<button id="submit" type="button" onclick="window.open(\'\', \'named\'); document.getElementById(\'send\').submit();">Send</button>',
+    steps: [{ goto: '/popup' }, { click: '#submit' }],
+  });
+  assert.equal(served.posts, 0, 'the popup POST reached the portal');
+  assert.deepEqual(meta.blockedWrites, [{ method: 'POST', path: '/write' }]);
 });

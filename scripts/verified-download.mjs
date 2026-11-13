@@ -1,10 +1,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { setTimeout as delay } from 'node:timers/promises';
 
 const transientStatuses = new Set([408, 429, 500, 502, 503, 504]);
 const maxAttempts = 3;
+
+// Retry waits use the global timer, so the same timer functions drive the idle limit and the waits.
+function wait(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
 
 // A transfer failure that may be retried: a network error, or a stream that produced no bytes for the idle limit.
 class TransferFailure extends Error {
@@ -55,10 +61,10 @@ async function readBody(body, maxBytes, watch) {
 }
 
 // Resolves to { bytes } for a complete body or { status } for an HTTP error response.
-async function attemptDownload(url, { idleTimeoutMs, maxBytes }) {
+async function attemptDownload(url, { idleTimeoutMs, maxBytes, fetchImpl }) {
   const watch = idleWatch(idleTimeoutMs);
   try {
-    const response = await fetch(url, { headers: { accept: 'application/octet-stream' }, signal: watch.signal });
+    const response = await fetchImpl(url, { headers: { accept: 'application/octet-stream' }, signal: watch.signal });
     watch.touch();
     if (!response.ok) {
       await response.body?.cancel().catch(() => {});
@@ -92,13 +98,13 @@ async function fetchArchive(url, options) {
       if (!(error instanceof TransferFailure)) throw error;
       if (attempt === maxAttempts)
         throw new Error(transferFailureMessage(url, error, options, attempt), { cause: error });
-      await delay(attempt * 250);
+      await wait(attempt * 250);
       continue;
     }
     if (outcome.bytes) return outcome.bytes;
     if (!transientStatuses.has(outcome.status) || attempt === maxAttempts)
       throw new Error(`Archive download failed: HTTP ${outcome.status} (attempt ${attempt}).`);
-    await delay(attempt * 250);
+    await wait(attempt * 250);
   }
   throw new Error('Archive download failed: no attempts were made.');
 }
@@ -108,13 +114,14 @@ export async function downloadVerifiedArchive(
   url,
   file,
   expected,
-  { maxBytes = 64 * 1024 * 1024, idleTimeoutMs = 60_000 } = {},
+  { maxBytes = 64 * 1024 * 1024, idleTimeoutMs = 60_000, fetchImpl = fetch } = {},
 ) {
   if (!/^[a-f0-9]{64}$/.test(expected) || !Number.isSafeInteger(maxBytes) || maxBytes < 1)
     throw new Error('Expected a SHA-256 pin and a positive archive byte limit.');
-  const idleTimeoutValid = idleTimeoutMs > 0;
-  if (!idleTimeoutValid) throw new Error('Expected a positive idle timeout.');
-  const bytes = await fetchArchive(url, { idleTimeoutMs, maxBytes });
+  // A timer delay above 2^31 - 1 ms fires after 1 ms, so every attempt would read as stalled.
+  const idleTimeoutValid = Number.isFinite(idleTimeoutMs) && idleTimeoutMs > 0 && idleTimeoutMs <= 2_147_483_647;
+  if (!idleTimeoutValid) throw new Error('Expected an idle timeout from 1 to 2147483647 milliseconds.');
+  const bytes = await fetchArchive(url, { idleTimeoutMs, maxBytes, fetchImpl });
   if (createHash('sha256').update(bytes).digest('hex') !== expected)
     throw new Error('Archive digest mismatch; no unverified content was saved.');
   const temporary = path.join(path.dirname(file), '.' + path.basename(file) + '.' + randomUUID() + '.tmp');

@@ -73,10 +73,10 @@ async function onFedAuthLogin(args) {
   return onLogin(args);
 }
 
-async function startServer(query = onQuery, login = onLogin) {
+async function startServer(query = onQuery, login = onLogin, options = {}) {
   const { key, cert } = createSelfSignedCertificate();
   const secureContext = tls.createSecureContext({ key, cert, maxVersion: 'TLSv1.2' });
-  const srv = createTdsServer({ secureContext, onLogin: login, onQuery: query });
+  const srv = createTdsServer({ secureContext, onLogin: login, onQuery: query, ...options });
   const address = await srv.listen(0, '127.0.0.1');
   return { ...srv, port: address.port, cert };
 }
@@ -352,6 +352,149 @@ test('a malformed FEDAUTH token message gets ERROR and a later login on the same
     client.socket.destroy();
     await fedServer.close();
   }
+});
+
+// Records the server side of each connection the endpoint accepts, so a test can read that socket's own idle timeout.
+function recordServerSockets(t) {
+  const accepted = [];
+  const createServer = net.createServer;
+  t.mock.method(net, 'createServer', (listener) =>
+    createServer((socket) => {
+      accepted.push(socket);
+      listener(socket);
+    }),
+  );
+  return accepted;
+}
+
+// A FEDAUTH token message carrying the token text, as the client sends it after FEDAUTHINFO.
+const fedAuthTokenMessage = (token) => {
+  const text = Buffer.from(token, 'utf16le');
+  return Buffer.concat([u32(0), u32(text.length), text]);
+};
+
+// Starts a FEDAUTH server, sends PRELOGIN and a token-less LOGIN7, and runs body with the client and accepted sockets.
+async function withFedAuthTokenRequest(t, options, body) {
+  const accepted = recordServerSockets(t);
+  const fedServer = await startServer(onQuery, onFedAuthLogin, options);
+  const client = await connectStrict(fedServer.port, fedServer.cert);
+  try {
+    client.send(
+      TDS.PRELOGIN,
+      encodePrelogin({ version: Buffer.from([12, 0, 0, 0, 0, 0]), encryption: 0x01, fedAuthRequired: 0x01 }),
+    );
+    await client.next();
+    client.send(TDS.LOGIN7, login7({ token: '' }));
+    await body({ client, accepted });
+  } finally {
+    client.socket.destroy();
+    await fedServer.close();
+  }
+}
+
+// @test-kind security: a silent connection before PRELOGIN is destroyed at the idle limit
+test('a silent connection before PRELOGIN is destroyed at the idle limit', async (t) => {
+  const accepted = recordServerSockets(t);
+  const idleServer = await startServer(onQuery, onLogin, { preloginIdleMs: 1 });
+  const client = net.connect({ host: '127.0.0.1', port: idleServer.port });
+  client.on('error', () => {});
+  try {
+    await once(client, 'close');
+    assert.equal(accepted[0].destroyed, true, 'the server destroyed the silent connection');
+  } finally {
+    client.destroy();
+    await idleServer.close();
+  }
+});
+
+// @test-kind contract: after FEDAUTHINFO the FEDAUTH idle limit bounds the connection instead of the pre-login limit
+test("a connection waiting for the client's token after FEDAUTHINFO is not cut by the pre-login idle limit", async (t) => {
+  await withFedAuthTokenRequest(t, { preloginIdleMs: 60_000, fedAuthIdleMs: 600_000 }, async ({ client, accepted }) => {
+    assert.equal((await client.next()).payload[0], 0xee, 'the login asks for a token');
+    assert.equal(accepted[0].timeout, 600_000, 'the FEDAUTH idle limit is armed while the server waits for the token');
+    client.send(FEDAUTH_TOKEN, fedAuthTokenMessage(VALID_TOKEN));
+    assert.equal((await client.next()).payload[0], 0xe3, 'the token completes the login');
+  });
+});
+
+// @test-kind security: an unauthenticated TDS connection that goes silent after FEDAUTHINFO is closed
+test('a connection that goes silent after FEDAUTHINFO is closed at the FEDAUTH idle limit', async (t) => {
+  await withFedAuthTokenRequest(t, { fedAuthIdleMs: 1 }, async ({ client, accepted }) => {
+    assert.equal((await client.next()).payload[0], 0xee, 'the login asks for a token');
+    await once(client.socket, 'close');
+    assert.equal(accepted[0].destroyed, true, 'the server destroyed the silent connection');
+  });
+});
+
+// @test-kind security: a rejected FEDAUTH login puts the connection back under the pre-login idle limit
+test('a rejected FEDAUTH login puts the connection back under the pre-login idle limit', async (t) => {
+  await withFedAuthTokenRequest(t, { preloginIdleMs: 60_000, fedAuthIdleMs: 600_000 }, async ({ client, accepted }) => {
+    assert.equal((await client.next()).payload[0], 0xee, 'the login asks for a token');
+    client.send(FEDAUTH_TOKEN, fedAuthTokenMessage('invented-rejected-token'));
+    const answer = await client.next();
+    assert.equal(answer.payload[0], ERROR, 'the rejected token is answered with an ERROR token');
+    assert.equal(accepted[0].timeout, 60_000, 'the rejected connection is back under the pre-login idle limit');
+  });
+});
+
+// @test-kind security: a malformed FEDAUTH token puts the connection back under the pre-login idle limit
+test('a malformed FEDAUTH token puts the connection back under the pre-login idle limit', async (t) => {
+  await withFedAuthTokenRequest(t, { preloginIdleMs: 60_000, fedAuthIdleMs: 600_000 }, async ({ client, accepted }) => {
+    assert.equal((await client.next()).payload[0], 0xee, 'the login asks for a token');
+    client.send(FEDAUTH_TOKEN, Buffer.from([1, 2, 3, 4]));
+    const answer = await client.next();
+    assert.equal(answer.payload[0], ERROR, 'the malformed token is answered with an ERROR token');
+    assert.equal(accepted[0].timeout, 60_000, 'the connection is back under the pre-login idle limit');
+  });
+});
+
+// @test-kind security: a login sent after the server rejected the connection is refused and the connection is destroyed
+test('a LOGIN7 after a rejected login is not processed', async (t) => {
+  const accepted = recordServerSockets(t);
+  let logins = 0;
+  const countingLogin = (args) => {
+    logins += 1;
+    return onLogin(args);
+  };
+  const server = await startServer(onQuery, countingLogin);
+  const client = await connectStrict(server.port, server.cert);
+  const closed = once(client.socket, 'close');
+  try {
+    client.send(
+      TDS.PRELOGIN,
+      encodePrelogin({ version: Buffer.from([12, 0, 0, 0, 0, 0]), encryption: 0x01, fedAuthRequired: 0x01 }),
+    );
+    await client.next();
+    client.send(TDS.LOGIN7, login7({ token: 'invented-rejected-token' }));
+    assert.equal((await client.next()).payload[0], ERROR, 'the refused login is answered with an ERROR token');
+    client.send(TDS.LOGIN7, login7({ token: VALID_TOKEN }));
+    await closed;
+    assert.equal(logins, 1, 'the LOGIN7 sent after the rejection is not processed');
+    assert.equal(accepted[0].destroyed, true, 'the server destroyed the connection');
+  } finally {
+    client.socket.destroy();
+    await server.close();
+  }
+});
+
+// @test-kind contract: the TDS idle limits must be positive finite numbers
+test('createTdsServer refuses idle limits that are not positive finite numbers', async () => {
+  const { key, cert } = createSelfSignedCertificate();
+  const secureContext = tls.createSecureContext({ key, cert, maxVersion: 'TLSv1.2' });
+  const options = { secureContext, onLogin, onQuery };
+  for (const value of [0, -1, Number.NaN, Infinity, null, '5']) {
+    assert.throws(
+      () => createTdsServer({ ...options, preloginIdleMs: value }),
+      RangeError,
+      `preloginIdleMs ${String(value)} is refused`,
+    );
+    assert.throws(
+      () => createTdsServer({ ...options, fedAuthIdleMs: value }),
+      RangeError,
+      `fedAuthIdleMs ${String(value)} is refused`,
+    );
+  }
+  await createTdsServer({ ...options, preloginIdleMs: 1, fedAuthIdleMs: 600_000 }).close();
 });
 
 // @test-kind contract: a packet header is read once however the bytes arrive, so reassembly never rescans.

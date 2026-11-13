@@ -236,6 +236,8 @@ function applicationsUnchecked() {
   );
 }
 
+// PAC CLI 2.13.1 `pac admin list-service-principal` offers only --filter and --max and no machine-readable output,
+// so the listing is parsed from its table.
 // Output is split into cells on tabs and runs of two or more spaces, so a longer name that only starts with the
 // requested one is a different application. Output is parsed here and never copied into a message.
 async function listedApplicationNames(applicationName) {
@@ -278,6 +280,7 @@ export async function registerApplication({
   applicationName,
   role = 'System Customizer',
   allowAdditionalApplication = false,
+  protect = protectSecret,
 }) {
   if (!connectionFile || !applicationName) throw new Error('Registration requires --connection and --name.');
   privateStatePath(connectionFile);
@@ -303,7 +306,7 @@ export async function registerApplication({
     allowAdditional: allowAdditionalApplication,
   });
   await refuseListedApplication({ applicationName, allowAdditional: allowAdditionalApplication });
-  await protectSecret('encryption-preflight');
+  await protect('encryption-preflight');
   const pending = `${connectionFile}.registration.json`;
   await privateJson(
     pending,
@@ -332,7 +335,7 @@ export async function registerApplication({
     state: result.code === 0 && !result.timedOut && !reportedError ? 'Returned' : 'FailedOrUnknown',
     code: result.code,
     timedOut: result.timedOut,
-    protectedOutput: await protectSecret(JSON.stringify({ stdout: result.stdout, stderr: result.stderr })),
+    protectedOutput: await protect(JSON.stringify({ stdout: result.stdout, stderr: result.stderr })),
   });
   if (result.code !== 0 || result.timedOut || reportedError)
     throw new Error(
@@ -356,7 +359,7 @@ export async function registerApplication({
     expiration: credentials.expiration,
     createdAt: new Date().toISOString(),
     credentialSource: 'dpapi',
-    protectedSecret: await protectSecret(credentials.clientSecret),
+    protectedSecret: await protect(credentials.clientSecret),
   };
   await privateJson(connectionFile, connection, true);
   return publicConnection(connection);

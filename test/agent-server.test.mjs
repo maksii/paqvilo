@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
-import { EventEmitter } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import { startAgentServer, redactText, redactUrl } from '../lense/agent-server.mjs';
 import { readDiscovery } from '../lense/commands/agent.mjs';
 import { tempDirSync } from './fixture.mjs';
@@ -502,4 +502,164 @@ test('screenshot waits for the caller budget, not a fixed page deadline, and rep
   assert.equal(timedOut.status, 504);
   assert.equal((await timedOut.json()).error.code, 'action_timeout');
   entry(Buffer.from('late PNG'));
+});
+
+test('screenshot sends the caller budget to Playwright, and close waits for a screenshot still running after its 504', async (t) => {
+  // The HTTP server is captured so the test can wait for its own 'close' event, which is the point where close has
+  // stopped accepting requests and is only left to finish its owned work.
+  const createServer = http.createServer;
+  let httpServer;
+  t.mock.method(http, 'createServer', (...args) => (httpServer = createServer(...args)));
+  const fx = await fixture(t);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const settings = [];
+  let enteredScreenshot;
+  const entered = new Promise((resolve) => {
+    enteredScreenshot = resolve;
+  });
+  let releaseScreenshot;
+  fx.page.screenshot = (options) => {
+    settings.push(options);
+    enteredScreenshot();
+    return new Promise((resolve) => {
+      releaseScreenshot = resolve;
+    });
+  };
+
+  const response = fx.call('/v1/pages/1/screenshot', { timeoutMs: 1500 });
+  await entered;
+  try {
+    // The caller budget elapses while the screenshot runs: the server answers 504 and the screenshot is still running.
+    t.mock.timers.tick(1500);
+    const timedOut = await response;
+    assert.equal(settings[0].timeout, 1500, 'Playwright must end the screenshot at the caller budget');
+    assert.equal(timedOut.status, 504);
+    assert.equal((await timedOut.json()).error.code, 'action_timeout');
+
+    // Close must not finish while the screenshot is still running; it finishes once the screenshot settles.
+    const closing = fx.close();
+    await once(httpServer, 'close');
+    assert.equal(fs.existsSync(fx.discoveryFile), true, 'close finished while a screenshot still ran');
+    releaseScreenshot(Buffer.from('late PNG'));
+    await closing;
+    assert.equal(fs.existsSync(fx.discoveryFile), false);
+  } finally {
+    // A failed assertion must not leave close waiting on this screenshot.
+    releaseScreenshot(Buffer.from('late PNG'));
+  }
+});
+
+test('close waits for a navigation still running after its 504', async (t) => {
+  // The HTTP server is captured so the test can wait for its own 'close' event, which is the point where close has
+  // stopped accepting requests and is only left to finish its owned work.
+  const createServer = http.createServer;
+  let httpServer;
+  t.mock.method(http, 'createServer', (...args) => (httpServer = createServer(...args)));
+  const fx = await fixture(t);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const settings = [];
+  let enteredNavigation;
+  const entered = new Promise((resolve) => {
+    enteredNavigation = resolve;
+  });
+  let releaseNavigation;
+  fx.page.goto = (url, options) => {
+    settings.push(options);
+    enteredNavigation();
+    return new Promise((resolve) => {
+      releaseNavigation = resolve;
+    });
+  };
+
+  const response = fx.call('/v1/pages/1/navigate', { url: '/x', timeoutMs: 1500 });
+  await entered;
+  try {
+    // The caller budget plus the server's 50 ms allowance elapses while the navigation runs: the server answers 504 and
+    // the navigation is still running.
+    t.mock.timers.tick(1550);
+    const timedOut = await response;
+    assert.equal(timedOut.status, 504);
+    assert.equal((await timedOut.json()).error.code, 'action_timeout');
+    assert.equal(settings[0].timeout, 1500, 'Playwright must end the navigation at the caller budget');
+
+    // Close must not finish while the navigation is still running; it finishes once the navigation settles.
+    const closing = fx.close();
+    await once(httpServer, 'close');
+    assert.equal(fs.existsSync(fx.discoveryFile), true, 'close finished while a navigation still ran');
+    releaseNavigation({ status: () => 200 });
+    await closing;
+    assert.equal(fs.existsSync(fx.discoveryFile), false);
+  } finally {
+    // A failed assertion must not leave close waiting on this navigation.
+    releaseNavigation({ status: () => 200 });
+  }
+});
+
+test('close does not wait for a screenshot whose page-size read never answers', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const fx = await fixture(t);
+  let enteredRead;
+  const reading = new Promise((resolve) => {
+    enteredRead = resolve;
+  });
+  let settleRead;
+  // The page-size read never answers, as on a page paused at a breakpoint. Its own deadline is the caller budget.
+  fx.page.evaluate = () => {
+    enteredRead();
+    return new Promise((resolve) => {
+      settleRead = resolve;
+    });
+  };
+  const response = fx.call('/v1/pages/1/screenshot', { timeoutMs: 1500 });
+  try {
+    await reading;
+    t.mock.timers.tick(1500);
+    const timedOut = await response;
+    assert.equal(timedOut.status, 504);
+    assert.equal((await timedOut.json()).error.code, 'action_timeout');
+
+    // Close ends the open connection on its own bound; it does not wait for the read that never answers.
+    const closing = fx.close();
+    t.mock.timers.tick(250);
+    await closing;
+    assert.equal(fs.existsSync(fx.discoveryFile), false, 'close waited for a page read with no deadline');
+  } finally {
+    // Releases the read after the assertions, so the page operation ends and nothing is left running.
+    settleRead({ width: 600, height: 400 });
+  }
+});
+
+test('close does not wait for an evaluate-based request that never settles; the server closes its connection', async (t) => {
+  const fx = await fixture(t);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let evaluateCalled;
+  const evaluating = new Promise((resolve) => {
+    evaluateCalled = resolve;
+  });
+  let settleEvaluate;
+  // A page evaluate that never answers, as on a page paused in the debugger.
+  fx.page.evaluate = () => {
+    evaluateCalled();
+    return new Promise((resolve) => {
+      settleEvaluate = resolve;
+    });
+  };
+  const outcome = fx.call('/v1/pages/1/dom', {}).then(
+    () => 'answered',
+    (error) => error,
+  );
+  await evaluating;
+  try {
+    // Evaluate-based operations have no deadline of their own, so close() does not track them. Its own bound on the
+    // open connection is a timer that the tick fires; the server then destroys that connection.
+    const closing = fx.close();
+    t.mock.timers.tick(250);
+    await closing;
+    const result = await outcome;
+    assert.notEqual(result, 'answered', 'the pending evaluate must not be answered after close');
+    assert.ok(result instanceof TypeError, `the connection must be closed, got ${result}`);
+  } finally {
+    // Releases the evaluate after the assertions, so the page operation ends and nothing is left running.
+    settleEvaluate();
+  }
 });

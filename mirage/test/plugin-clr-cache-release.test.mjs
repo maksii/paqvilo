@@ -4,7 +4,6 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { pathToFileURL } from 'node:url';
 import {
   buildClrRuntime,
   prepareClrRuntime,
@@ -98,6 +97,47 @@ const exists = (target) =>
     () => true,
     () => false,
   );
+
+test('a runtime whose host is not verified stopped keeps its cache directory until the host is verified stopped', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-clr-release-'));
+  try {
+    const cacheRoot = path.join(root, 'cache');
+    const runtime = { directory: path.join(cacheRoot, 'clr-x'), descriptor: { cacheRoot } };
+    await fs.mkdir(runtime.directory, { recursive: true });
+    const notes = [];
+    const diagnostic = (note) => notes.push(note);
+    releaseClrRuntime(runtime, { closeHostPool: () => ({ closed: 1, allAbsenceVerified: false }), diagnostic });
+    assert.equal(await exists(runtime.directory), true, 'the directory is kept while the host is not verified stopped');
+    assert.deepEqual(
+      notes.map((note) => note.code),
+      ['PLUGIN_CLR_CLEANUP'],
+      'the kept directory is reported once',
+    );
+    releaseClrRuntime(runtime, { closeHostPool: () => ({ closed: 1, allAbsenceVerified: true }), diagnostic });
+    assert.equal(await exists(runtime.directory), false, 'the directory is removed once the host is verified stopped');
+    assert.equal(notes.length, 1, 'the verified release reports nothing further');
+  } finally {
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 5 });
+  }
+});
+
+test('a runtime whose host is verified stopped releases its cache directory without a report', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-clr-release-'));
+  try {
+    const cacheRoot = path.join(root, 'cache');
+    const runtime = { directory: path.join(cacheRoot, 'clr-x'), descriptor: { cacheRoot } };
+    await fs.mkdir(runtime.directory, { recursive: true });
+    const notes = [];
+    releaseClrRuntime(runtime, {
+      closeHostPool: () => ({ closed: 1, allAbsenceVerified: true }),
+      diagnostic: (note) => notes.push(note),
+    });
+    assert.equal(await exists(runtime.directory), false, 'the verified release removes the directory');
+    assert.deepEqual(notes, [], 'no cleanup is reported');
+  } finally {
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 5 });
+  }
+});
 const PREPARED_STEP = '40000000-0000-4000-8000-000000000001',
   CALLER_STEP = '40000000-0000-4000-8000-000000000002';
 test(
@@ -404,47 +444,37 @@ test(
   },
 );
 
-// A compiler that never exits: node loads this preload before its entry point, so the process blocks until the build's
-// guard stops it. The safety exit ends the process if no guard applies, so a regression fails instead of hanging.
-const hangingCompilerPreload = (pidFile) =>
-  [
-    "import fs from 'node:fs';",
-    `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
-    'setTimeout(() => process.exit(3), 30000);',
-    'await new Promise(() => {});',
-    '',
-  ].join('\n');
 test(
   'a compiler that does not exit is stopped at the compile guard and the build error names it',
   { skip: CLR_SKIP },
   async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-clr-release-'));
-    const previousOptions = process.env.NODE_OPTIONS;
     try {
       const { cacheRoot, descriptor } = await fixture(root);
-      const pidFile = path.join(root, 'compiler.pid'),
-        preload = path.join(root, 'hanging-compiler.mjs');
-      await fs.writeFile(preload, hangingCompilerPreload(pidFile));
       const sdk = clrSdk();
       const files = {
         assembly: { bytes: await fs.readFile(path.join(root, 'Noop.dll')), path: path.join(root, 'Noop.dll') },
         sdk: { bytes: await fs.readFile(sdk), path: sdk },
       };
-      process.env.NODE_OPTIONS = '--import ' + pathToFileURL(preload).href;
-      try {
-        assert.throws(
-          () => buildClrRuntime(descriptor(), files, { compiler: process.execPath, compileGuardMs: 2000 }),
-          (error) =>
-            /did not exit within the 2000 ms guard/.test(error.message) &&
-            error.message.includes(process.execPath) &&
-            error.message.includes('compileGuardMs'),
-        );
-      } finally {
-        if (previousOptions === undefined) delete process.env.NODE_OPTIONS;
-        else process.env.NODE_OPTIONS = previousOptions;
-      }
-      const compilerPid = Number(await fs.readFile(pidFile, 'utf8'));
-      assert.throws(() => process.kill(compilerPid, 0), { code: 'ESRCH' }, 'the compiler process is gone');
+      const seen = [];
+      // The injected run stands for a compiler the guard stopped: spawnSync reports ETIMEDOUT and no output.
+      const run = (...call) => {
+        seen.push(call[2].timeout);
+        return {
+          error: Object.assign(new Error('spawnSync invented-csc ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+          status: null,
+          stdout: '',
+          stderr: '',
+        };
+      };
+      assert.throws(
+        () => buildClrRuntime(descriptor(), files, { compiler: 'invented-csc', compileGuardMs: 2000, run }),
+        (error) =>
+          /did not exit within the 2000 ms guard/.test(error.message) &&
+          error.message.includes('invented-csc') &&
+          error.message.includes('compileGuardMs'),
+      );
+      assert.deepEqual(seen, [2000], 'the compile step runs once, under the compile guard');
       assert.deepEqual(await runtimeDirectories(cacheRoot), [], 'the failed build leaves no runtime directory');
     } finally {
       await fs.rm(root, { recursive: true, force: true, maxRetries: 5 });

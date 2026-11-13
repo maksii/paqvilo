@@ -17,7 +17,7 @@ import { createTraceStore } from '../lib/trace-store.mjs';
 import { createTraceRoutes } from '../lib/sim-trace-routes.mjs';
 import { measureView } from './readability.mjs';
 import { createSimulator } from '../server.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { makeTemporaryDirectory, ownedFixture } from '../testing/owned-fixture.mjs';
 
 const SHARED = new Set(['persona-search.mjs', 'persona-picker-view.mjs']);
 const docs = docsLinks('0.9.4', 'https://git.example.test/invented/paqvilo');
@@ -1557,7 +1557,7 @@ async function approvalRuntime(t, root) {
     simulation: { level: 'dry-run' },
     dataverse: { enabled: true, tls: false, tds: { enabled: false } },
   });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const registration = await jsonOf(
     await fetch(sim.url + '/_sim/api/dataverse/applications', {
       method: 'POST',
@@ -1603,10 +1603,13 @@ async function approvalRuntime(t, root) {
 
 test('the console answers a Custom approval as one assignee with a chosen option, and the run continues with it', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'admin-flow-approvals-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  // Closers run in registration order: the browser closes before the simulator, and the directory is removed last.
+  const owner = ownedFixture(t);
+  owner.remove(() => fs.rm(root, { recursive: true, force: true }));
+  let browser;
+  owner.add(() => browser?.close());
   const { sim, wait } = await approvalRuntime(t, root);
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  browser = await chromium.launch(browserLaunchOptions({ headless: true }));
   const context = await browser.newContext({ serviceWorkers: 'block' }),
     page = await context.newPage(),
     errors = [];

@@ -1,9 +1,8 @@
 // @test-kind security: Liquid whitespace control handles long template literals without repeated suffix scans.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { once } from 'node:events';
-import { Worker } from 'node:worker_threads';
 import { assignParts, tokenize, variableSegments } from '../lib/liquid-engine.mjs';
+import { workerAnswer } from './support/worker-answer.mjs';
 
 // The unanchored patterns that the linear scans replaced. They are the oracle of the differential tests only.
 const WORD = String.raw`\p{L}\p{Mn}\p{Nd}\p{Pc}`;
@@ -44,16 +43,10 @@ const WORKER_SOURCE = `
   });
 `;
 
-// Parsing is synchronous, so a hostile template runs in a worker: a parse that does not finish is stopped by the
-// terminate() call in finally, and only the test's own timeout bounds the wait.
-async function renderInWorker(source) {
-  const worker = new Worker(WORKER_SOURCE, { eval: true, workerData: { module: ENGINE_URL, source } });
-  try {
-    const [outcome] = await once(worker, 'message');
-    return outcome;
-  } finally {
-    await worker.terminate();
-  }
+// Parsing is synchronous, so a hostile template runs in a worker that posts one answer and then ends by itself. The
+// answer is returned after the worker's own exit; the test's timeout, through the signal, is the hang guard.
+function renderInWorker(source, signal) {
+  return workerAnswer(WORKER_SOURCE, { eval: true, workerData: { module: ENGINE_URL, source }, signal });
 }
 
 test('left whitespace control trims only final spaces and tabs', () => {
@@ -64,8 +57,8 @@ test('left whitespace control trims only final spaces and tabs', () => {
   assert.equal(tokenize('before\n \t{{- x }}')[0], 'before\n');
 });
 
-test('a malformed assign with a long parenthesised name raises the syntax error', async () => {
-  const outcome = await renderInWorker(`{% assign ${'(a)'.repeat(200_000)}x %}`);
+test('a malformed assign with a long parenthesised name raises the syntax error', async (t) => {
+  const outcome = await renderInWorker(`{% assign ${'(a)'.repeat(200_000)}x %}`, t.signal);
   assert.deepEqual(outcome, {
     ok: false,
     name: 'LiquidSyntaxError',
@@ -73,8 +66,8 @@ test('a malformed assign with a long parenthesised name raises the syntax error'
   });
 });
 
-test('a long unclosed variable path parses and renders without a quadratic scan', async () => {
-  assert.deepEqual(await renderInWorker(`{{ ${'a['.repeat(100_000)} }}`), { ok: true });
+test('a long unclosed variable path parses and renders without a quadratic scan', async (t) => {
+  assert.deepEqual(await renderInWorker(`{{ ${'a['.repeat(100_000)} }}`, t.signal), { ok: true });
 });
 
 // @test-kind contract: the linear assign scan gives the unanchored pattern's name and value on seeded inputs.

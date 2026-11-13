@@ -3608,7 +3608,9 @@ function createShellClient(selectedForm) {
     },
     save: (close, mode) => saveRecord(close, mode),
     // The context saved as saveandnew is detached by the runtime; the open form becomes a new record with a new context.
+    // Only the runtime this host belongs to may open the new record: a runtime replaced since the save started has no claim.
     openNewRecord: () => {
+      if (clientRuntime !== runtime) return undefined;
       clientRuntime = undefined;
       return navigate(table.entity, { id: 'new', form: formId });
     },

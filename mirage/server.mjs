@@ -646,6 +646,17 @@ const SIM_ROOT_EXEMPT = [
 const isSimRootPath = (pathname) =>
   pathname.startsWith(SIM_API_PREFIX) &&
   !SIM_ROOT_EXEMPT.some((pattern) => pattern.test(pathname.slice(SIM_API_PREFIX.length)));
+// The error handler of one listener: it records the first error as a LISTENER_ERROR diagnostic and ignores the later ones,
+// because an accept failure under file-descriptor exhaustion repeats on every loop turn.
+function recordListenerErrorOnce(record, name) {
+  let reported = false;
+  return (error) => {
+    if (reported) return;
+    reported = true;
+    record({ code: 'LISTENER_ERROR', severity: 'error', listener: name, message: error.message });
+  };
+}
+
 export async function createSimulator(options = {}) {
   const runtime = runtimeSettings(options.runtime);
   if (runtime.kind !== 'power-pages') {
@@ -7571,23 +7582,25 @@ export async function createSimulator(options = {}) {
       managedIdentity = organizationHost.managedIdentity;
     }
     storageAdapter?.activate(store.state);
+    // Starts one listener. A start-up error rejects; once listening, the first error is recorded as one diagnostic per
+    // listener, because Node ends the process on a listener error that has no handler.
+    const listenOn = (listener, options, name) =>
+      new Promise((resolve, reject) => {
+        listener.once('error', reject);
+        listener.listen(options, () => {
+          listener.off('error', reject);
+          listener.on('error', recordListenerErrorOnce(recordDiagnostic, name));
+          resolve();
+        });
+      });
     startupPhase('listener');
-    await new Promise((resolve, reject) => {
-      server.once('error', reject);
-      server.listen({ host, port }, resolve);
-    });
+    await listenOn(server, { host, port }, 'portal');
     localOrigin = `http://${host === '::1' ? '[::1]' : host}:${server.address().port}`;
     // The administration listens on its own ephemeral port of the same host; its origin is announced once it listens.
-    await new Promise((resolve, reject) => {
-      adminServer.once('error', reject);
-      adminServer.listen({ host, port: 0 }, resolve);
-    });
+    await listenOn(adminServer, { host, port: 0 }, 'admin');
     adminOrigin = `http://${host === '::1' ? '[::1]' : host}:${adminServer.address().port}`;
     // The apps listen on their own ephemeral port of the same host, as the administration does.
-    await new Promise((resolve, reject) => {
-      appsServer.once('error', reject);
-      appsServer.listen({ host, port: 0 }, resolve);
-    });
+    await listenOn(appsServer, { host, port: 0 }, 'apps');
     appsOrigin = `http://${host === '::1' ? '[::1]' : host}:${appsServer.address().port}`;
     // The local identity provider: its own loopback port on the runtime's host, started with
     // the runtime and closed by close() (Ctrl+C, mirage stop, POST /_sim/api/shutdown).
@@ -7743,14 +7756,18 @@ export async function createSimulator(options = {}) {
       ],
       exclude: stateFile ? [path.dirname(path.resolve(stateFile))] : [],
     });
-    watcher = sourceWatcher([sourceDir, ...solutionRoots, ...clientSources, ...pluginSources, ...canvasSources], {
-      ignoreInitial: true,
-      ignored: (file, stats) =>
-        pluginSourceKeys.has(path.resolve(file).toLowerCase()) || isCanvasSource(file)
-          ? false
-          : ignoreSource(file, stats),
-      awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 100 },
-    });
+    watcher = sourceWatcher(
+      [sourceDir, ...solutionRoots, ...clientSources, ...pluginSources, ...canvasSources],
+      {
+        ignoreInitial: true,
+        ignored: (file, stats) =>
+          pluginSourceKeys.has(path.resolve(file).toLowerCase()) || isCanvasSource(file)
+            ? false
+            : ignoreSource(file, stats),
+        awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 100 },
+      },
+      { server },
+    );
     const watched = watcher;
     const watchReady = new Promise((resolve) => {
       const settled = () => {
@@ -7785,6 +7802,8 @@ export async function createSimulator(options = {}) {
   startupPhase('listener-ready');
   return {
     server,
+    adminServer,
+    appsServer,
     store,
     live,
     get portal() {

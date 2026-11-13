@@ -4,7 +4,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
-import { createSourceInspector, inspectionSources, inspectRenderedPage } from '../lense/source-inspection.mjs';
+import {
+  createApiRouteObserver,
+  createSourceInspector,
+  inspectionSources,
+  inspectRenderedPage,
+} from '../lense/source-inspection.mjs';
 import { inspectionFixture, addNativeInspectionFixture } from './source-inspection-fixture.mjs';
 import { settleFileTimes } from '../mirage/test/support/file-times.mjs';
 import { assemblyXml, stepXml, pluginId } from '../mirage/test/plugin-fixture.mjs';
@@ -16,6 +21,75 @@ test('the serialized browser collector retains its public function identity', ()
   const embedded = vm.runInNewContext('(' + inspectRenderedPage.toString() + ')');
   assert.equal(embedded.name, 'inspectRenderedPage');
   assert.equal(embedded.length, 0);
+});
+
+// @test-kind contract: the route observer keeps the Web API routes the session itself saw, independent of the page's resource buffer
+test('the route observer records entity sets and server logic routes from request URLs and resets', () => {
+  const observer = createApiRouteObserver();
+  const document = 'https://portal.invalid/p';
+  observer.record('https://portal.invalid/_api/x_things(1)', document);
+  observer.record('https://portal.invalid/_api/serverlogics/x_logic?x=1', document);
+  observer.record('https://portal.invalid/other', document);
+  observer.record('not a url', document);
+  const rendered = { assets: [], controls: [], apiSets: ['x_fromPage'] };
+  const merged = observer.merge(rendered);
+  assert.deepEqual(merged, {
+    assets: [],
+    controls: [],
+    apiSets: ['x_fromPage', 'x_things', 'serverlogics'],
+    serverLogicPaths: ['/_api/serverlogics/x_logic'],
+  });
+  assert.deepEqual(rendered, { assets: [], controls: [], apiSets: ['x_fromPage'] });
+  observer.navigationRequested(document);
+  observer.committed(document);
+  const afterReset = observer.merge({ assets: [], controls: [] });
+  assert.deepEqual(afterReset, { assets: [], controls: [], apiSets: [] });
+  assert.equal('serverLogicPaths' in afterReset, false);
+});
+
+// @test-kind contract: only the navigation the main frame requested and committed clears the routes of the document it replaces
+test('the route observer keeps routes through same-document navigations, downloads and empty responses', () => {
+  const observer = createApiRouteObserver();
+  observer.record('https://portal.invalid/_api/x_a', 'https://portal.invalid/p');
+  const apiSets = () => observer.merge({ assets: [], controls: [] }).apiSets;
+  observer.committed('https://portal.invalid/p?page=2');
+  assert.deepEqual(apiSets(), ['x_a'], 'a commit without a requested navigation keeps the routes');
+  observer.navigationRequested('https://portal.invalid/dl');
+  observer.committed('https://portal.invalid/p#x');
+  assert.deepEqual(apiSets(), ['x_a'], 'a navigation that never commits keeps the routes');
+  observer.navigationRequested('https://portal.invalid/next');
+  observer.committed('https://portal.invalid/next#top');
+  assert.deepEqual(apiSets(), [], 'the committed navigation clears the routes, ignoring the fragment');
+});
+
+// @test-kind contract: a request to another origin is never evidence for the page that the observer watches
+test('the route observer ignores requests to another origin than the document', () => {
+  const observer = createApiRouteObserver();
+  observer.record('https://other.invalid/_api/x_b', 'https://portal.invalid/p');
+  observer.record('https://other.invalid/_api/serverlogics/x_c', 'https://portal.invalid/p');
+  assert.deepEqual(observer.merge({ assets: [], controls: [] }), { assets: [], controls: [], apiSets: [] });
+});
+
+// @test-kind contract: a server logic route called after the page's resource buffer filled is attributed as an observed request
+test('a server logic called after the resource buffer filled is still reported as an observed request', async (t) => {
+  const fx = inspectionFixture();
+  t.after(fx.cleanup);
+  const dir = path.join(fx.portal, 'server-logic');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'orders.serverlogic.yml'), 'adx_serverlogicid: orders-logic\nadx_name: orders');
+  fs.writeFileSync(path.join(dir, 'orders.js'), 'function get() {}');
+  fs.writeFileSync(
+    path.join(fx.portal, 'web-pages/home/Home.webpage.copy.html'),
+    '<p>No script references the operation.</p>',
+  );
+  const observer = createApiRouteObserver();
+  observer.record('https://portal.invalid/_api/serverlogics/orders?$top=1', 'https://portal.invalid/');
+  const rendered = observer.merge({ assets: [], controls: [] });
+  const { report } = await createSourceInspector({ sourceDir: fx.portal }).inspect('/', rendered);
+  const rows = report.logic
+    .filter((row) => row.kind === 'server-logic')
+    .map((row) => ({ name: row.name, evidence: row.evidence }));
+  assert.deepEqual(rows, [{ name: 'orders', evidence: 'observed-request' }]);
 });
 
 test('list action modal forms and Web API column candidates come from the selected exports', async (t) => {

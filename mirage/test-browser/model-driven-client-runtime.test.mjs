@@ -1117,32 +1117,29 @@ async function loopFixture(t) {
 test('script-added OnLoad runs on open and data load only, not on tab or layout re-renders', async (t) => {
   const { page, errors } = await loopFixture(t);
   await page.waitForFunction(() => window.loopLoads >= 1 && Boolean(window.Xrm?.Page));
-  const loadCount = () => page.evaluate(() => window.loopLoads);
-  assert.equal(await loadCount(), 1, 'the script OnLoad runs once when the form opens');
   // Tabs are clicked in the page so that a re-render loop shows as a failed count, not as a stalled click.
   const clickTab = (id) => page.evaluate((id) => document.querySelector(`[data-id="tablist-${id}"]`).click(), id);
   await clickTab('related');
   await page.waitForFunction(() => document.querySelector('.form-section[data-id="children"]'));
-  assert.equal(await loadCount(), 1, 'a tab change does not replay OnLoad');
   await page.evaluate(() =>
     window.Xrm.Page.ui.tabs.get('related').sections.get('children').setLabel('Renamed children'),
   );
   await page.waitForFunction(
     () => document.querySelector('.form-section[data-id="children"] h2')?.textContent === 'Renamed children',
   );
-  assert.equal(await loadCount(), 1, 'a section label change does not replay OnLoad');
   await page.evaluate(() => window.Xrm.Page.ui.tabs.get('general').setVisible(false));
   await page.waitForFunction(() => !document.querySelector('[data-id="tablist-general"]'));
   await page.evaluate(() => window.Xrm.Page.ui.tabs.get('general').setVisible(true));
   await page.waitForFunction(() => Boolean(document.querySelector('[data-id="tablist-general"]')));
-  assert.equal(await loadCount(), 1, 'a tab visibility change does not replay OnLoad');
   await clickTab('general');
   await page.waitForFunction(() => document.querySelector('.form-section[data-id="details"]'));
-  assert.equal(await loadCount(), 1, 'the tab change back does not replay OnLoad');
   await page.evaluate(() => window.Xrm.Page.data.refresh(false));
   await page.waitForFunction(() => window.loopLoads >= 2);
-  assert.equal(await loadCount(), 2, 'data.refresh runs the script OnLoad once more');
-  assert.deepEqual(await page.evaluate(() => window.loopStates), [1, 3], 'the refresh load state is 3');
+  assert.deepEqual(
+    await page.evaluate(() => window.loopStates),
+    [1, 3],
+    'OnLoad runs once when the form opens, not on tab, label or visibility changes, and once more on data.refresh with load state 3',
+  );
   assert.deepEqual(errors, []);
 });
 

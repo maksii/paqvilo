@@ -1,5 +1,4 @@
 // @test-kind security: baseline capture redaction guarantees: protected values and raw digests are never stored, and unrelated bytes stay intact.
-import { Worker } from 'node:worker_threads';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -18,6 +17,7 @@ import {
   redactEncodedLayoutEvidence,
 } from '../lib/capture-control-redaction.mjs';
 import { makeTemporaryDirectory, assertTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { workerAnswer } from './support/worker-answer.mjs';
 const token = Buffer.from('invented signed configuration fixture').toString('base64');
 for (const [label, input] of [
   ['JSON', JSON.stringify({ base64SecureConfiguration: token, sibling: 'kept' })],
@@ -459,40 +459,23 @@ test('capture persistence removes plain and encoded signed tokens in every evide
   }
 });
 
-test(
-  'escaped-quote text finishes in bounded worker and still redacts a following real field',
-  { timeout: 10000 },
-  async () => {
-    const worker = new Worker(
-      `const{parentPort,workerData}=require('node:worker_threads');import(workerData.module).then(({redactSecureConfigurationTokens:redact})=>{const text='"'+String.fromCharCode(92,34).repeat(500000)+'"';const field='{"base64SecureConfiguration":"invented-secret","sibling":17}';parentPort.postMessage({unchanged:redact(text)===text,redacted:redact(text+field)===text+'{"base64SecureConfiguration":"{token}","sibling":17}'});});`,
-      {
-        eval: true,
-        workerData: {
-          module: new URL('../lib/capture-control-redaction.mjs', import.meta.url).href,
-        },
+test('escaped-quote text finishes in bounded worker and still redacts a following real field', async (t) => {
+  const result = await workerAnswer(
+    `const{parentPort,workerData}=require('node:worker_threads');import(workerData.module).then(({redactSecureConfigurationTokens:redact})=>{const text='"'+String.fromCharCode(92,34).repeat(500000)+'"';const field='{"base64SecureConfiguration":"invented-secret","sibling":17}';parentPort.postMessage({unchanged:redact(text)===text,redacted:redact(text+field)===text+'{"base64SecureConfiguration":"{token}","sibling":17}'});});`,
+    {
+      eval: true,
+      workerData: {
+        module: new URL('../lib/capture-control-redaction.mjs', import.meta.url).href,
       },
-    );
-    let timer;
-    try {
-      const result = await new Promise((resolve, reject) => {
-        timer = setTimeout(() => reject(Error('Control redaction exceeded worker deadline')), 5000);
-        worker.once('message', resolve);
-        worker.once('error', reject);
-      });
-      assert.deepEqual(result, { unchanged: true, redacted: true });
-    } finally {
-      clearTimeout(timer);
-      await worker.terminate();
-    }
-  },
-);
+      signal: t.signal,
+    },
+  );
+  assert.deepEqual(result, { unchanged: true, redacted: true });
+});
 
-test(
-  'malformed repeated multipart headers and large input whitespace finish in a bounded worker',
-  { timeout: 10000 },
-  async () => {
-    const worker = new Worker(
-      `const { parentPort, workerData } = require('node:worker_threads');
+test('malformed repeated multipart headers and large input whitespace finish in a bounded worker', async (t) => {
+  const result = await workerAnswer(
+    `const { parentPort, workerData } = require('node:worker_threads');
     import(workerData.module).then(({ redactSecureConfigurationTokens: redact }) => {
       const headers = 'name="base64SecureConfiguration"\\r\\n'.repeat(500000);
       const whitespace = ' '.repeat(1000000);
@@ -500,27 +483,16 @@ test(
       const secure = '<input name="base64SecureConfiguration" value="fixture-value" ' + whitespace + 'disabled>';
       parentPort.postMessage({ headers: redact(headers) === headers, ordinary: redact(ordinary) === ordinary, secure: redact(secure) === secure.replace('"fixture-value"', '"{token}"') });
     }).catch(error => { throw error; });`,
-      {
-        eval: true,
-        workerData: {
-          module: new URL('../lib/capture-control-redaction.mjs', import.meta.url).href,
-        },
+    {
+      eval: true,
+      workerData: {
+        module: new URL('../lib/capture-control-redaction.mjs', import.meta.url).href,
       },
-    );
-    let timer;
-    try {
-      const result = await new Promise((resolve, reject) => {
-        timer = setTimeout(() => reject(new Error('Control scanner exceeded its worker deadline.')), 5000);
-        worker.once('message', resolve);
-        worker.once('error', reject);
-      });
-      assert.deepEqual(result, { headers: true, ordinary: true, secure: true });
-    } finally {
-      clearTimeout(timer);
-      await worker.terminate();
-    }
-  },
-);
+      signal: t.signal,
+    },
+  );
+  assert.deepEqual(result, { headers: true, ordinary: true, secure: true });
+});
 
 for (const name of [
   'AttachFile_HiddenField_InstanceId',
@@ -739,32 +711,13 @@ test('nonce persistence removes protected values and raw text digests from every
 });
 
 // @test-kind security: verifies redaction completes and removes a declared nonce on bounded hostile input.
-test('large escaped strings and malformed HTML nonce tags remain bounded', async () => {
+test('large escaped strings and malformed HTML nonce tags remain bounded', async (t) => {
   const module = new URL('../lib/capture-control-redaction.mjs', import.meta.url).href;
-  const worker = new Worker(
+  const result = await workerAnswer(
     `const {parentPort}=require('node:worker_threads');import(${JSON.stringify(module)}).then(({redactCaptureControlText:redact})=>{const plain='"'+'\\\\"'.repeat(300000)+'"';if(redact(plain)!==plain)throw Error('ordinary escaped text changed');const malformed='<script nonce="'.repeat(100000);redact(malformed);const html='<script '+ ' '.repeat(1000000)+'nonce="inventedBoundedNonce">keep</script>';if(redact(html).includes('inventedBoundedNonce'))throw Error('nonce retained');parentPort.postMessage(true);});`,
-    { eval: true },
+    { eval: true, signal: t.signal },
   );
-  try {
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(Error('Nonce redaction exceeded bounded worker deadline')), 8000);
-      worker.once('message', (result) => {
-        clearTimeout(timer);
-        try {
-          assert.equal(result, true);
-          resolve();
-        } catch (error) {
-          reject(error);
-        }
-      });
-      worker.once('error', (error) => {
-        clearTimeout(timer);
-        reject(error);
-      });
-    });
-  } finally {
-    await worker.terminate();
-  }
+  assert.equal(result, true);
 });
 
 test('HTML comments and raw-text business strings are not interpreted as nonce attributes', () => {

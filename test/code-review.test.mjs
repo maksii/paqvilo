@@ -9,6 +9,7 @@ import os from 'node:os';
 import {
   inspectDeadCode,
   inspectClones,
+  baselineEntries,
   compareReview,
   reviewInventory,
   publicApiOrigins,
@@ -64,6 +65,36 @@ test('review tools detect an orphan module, unused export and copied logic witho
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
+});
+
+test('writing the baseline keeps reviewed reasons and gives only new findings the standard reason', () => {
+  const baseline = [
+    { key: 'a', reason: 'reviewed by hand' },
+    { key: 'dup', reason: 'first copy' },
+    { key: 'dup', reason: 'second copy' },
+    { key: 'gone', reason: 'no longer found' },
+  ];
+  const findings = [{ key: 'a', file: 'x' }, { key: 'dup' }, { key: 'dup' }, { key: 'dup' }, { key: 'new' }];
+  const asked = [];
+  const entries = baselineEntries(findings, baseline, (item) => {
+    asked.push(item.key);
+    return 'standard';
+  });
+  assert.deepEqual(entries, [
+    { key: 'a', file: 'x', reason: 'reviewed by hand' },
+    { key: 'dup', reason: 'first copy' },
+    { key: 'dup', reason: 'second copy' },
+    { key: 'dup', reason: 'standard' },
+    { key: 'new', reason: 'standard' },
+  ]);
+  assert.deepEqual(asked, ['dup', 'new'], 'only findings the baseline does not hold are reasoned');
+  assert.throws(
+    () =>
+      baselineEntries([{ key: 'new' }], baseline, () => {
+        throw new Error('requires review');
+      }),
+    /requires review/,
+  );
 });
 
 test('analysis accepts explicitly aliased roots and rebases clone paths from a canonical temporary root', async (t) => {

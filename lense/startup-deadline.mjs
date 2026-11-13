@@ -24,6 +24,8 @@ export function startupDeadline(value = STARTUP_PAGE_SILENCE_MS) {
     reason,
     timer = null;
   const pages = [];
+  // Disposal of late values that need closing; settled() waits for them. Work with nothing to dispose is not tracked.
+  const late = new Set();
   const promise = new Promise((_, reject) => {
     rejectDeadline = reject;
   });
@@ -121,6 +123,8 @@ export function startupDeadline(value = STARTUP_PAGE_SILENCE_MS) {
     },
     async wait(work, disposeLate) {
       const pending = Promise.resolve(work);
+      // Work the deadline abandons before racing it still has a handler, so its later failure is not unhandled.
+      pending.catch(() => {});
       let admitted = false,
         disposed = false;
       const dispose = async (value) => {
@@ -129,11 +133,15 @@ export function startupDeadline(value = STARTUP_PAGE_SILENCE_MS) {
           await disposeLate?.(value);
         }
       };
-      pending
-        .then(async (value) => {
-          if (!admitted && (expired || (!finished && guardFailure(Date.now())))) await dispose(value);
-        })
-        .catch(() => {});
+      if (disposeLate) {
+        const disposal = pending
+          .then(async (value) => {
+            if (!admitted && (expired || (!finished && guardFailure(Date.now())))) await dispose(value);
+          })
+          .catch(() => {})
+          .finally(() => late.delete(disposal));
+        late.add(disposal);
+      }
       if (tripped()) throw reason;
       const result = await Promise.race([pending, promise]);
       if (tripped()) {
@@ -149,5 +157,9 @@ export function startupDeadline(value = STARTUP_PAGE_SILENCE_MS) {
       close();
     },
     close,
+    /** Resolves once every late value that the deadline disposed of, or is still disposing of, has settled. */
+    async settled() {
+      await Promise.allSettled(late);
+    },
   };
 }

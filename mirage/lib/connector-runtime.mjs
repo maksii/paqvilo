@@ -686,6 +686,20 @@ function armDeadline(fire, budget) {
   return () => clearTimeout(timer);
 }
 
+// The rejection loopbackFetch gives for a redirect answer (dataverse-webhooks.mjs), on the error or on its cause.
+const isRedirectRefusal = (error) => error?.code === 'LoopbackRedirect' || error?.cause?.code === 'LoopbackRedirect';
+
+// Throws the failure of a loopback call, classified by the state of its signals: the budget's own deadline is a timeout,
+// the caller's cancellation is not.
+function failLoopbackCall(error, deadline, callerSignal) {
+  if (deadline.signal.aborted)
+    fail('ProviderTimeout', 'The local http service did not answer within the action time limit.');
+  if (callerSignal?.aborted) throw aborted(callerSignal);
+  if (isRedirectRefusal(error))
+    fail('ProviderFailed', 'The local http service answered with a redirect; redirects are refused.');
+  fail('ProviderUnavailable', 'The local http service is unreachable.');
+}
+
 // Sends one built request to a loopback URL (the http provider and compiled custom connectors share it).
 async function sendLoopback({ method, url, headers, body }, context) {
   if (!isLoopbackUrl(url))
@@ -707,11 +721,7 @@ async function sendLoopback({ method, url, headers, body }, context) {
     });
     text = await response.text();
   } catch (error) {
-    if (['TimeoutError', 'AbortError'].includes(error.name))
-      fail('ProviderTimeout', 'The local http service did not answer within the action time limit.');
-    if (/redirect/i.test(String(error.cause?.message ?? error.message)))
-      fail('ProviderFailed', 'The local http service answered with a redirect; redirects are refused.');
-    fail('ProviderUnavailable', 'The local http service is unreachable.');
+    failLoopbackCall(error, deadline, context.signal);
   } finally {
     disarm();
   }
@@ -956,7 +966,7 @@ const SCRIPT_RESTORE =
                 resolved,
                 tokens,
                 now,
-                tokenRequest,
+                tokenRequest: options.tokenRequest ?? tokenRequest,
                 form,
                 scope,
                 pendingSignIns,
@@ -1067,72 +1077,119 @@ async function beginAuthorization(
     ...scope(),
   }))
     url.searchParams.set(k, v);
+  // Every page this sign-in writes; the listener's connections close only after each of them has finished.
+  const pages = new Set();
   const page = (res, status, text) => {
     res.writeHead(status, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+    pages.add(
+      new Promise((resolve) => {
+        res.once('finish', resolve);
+        res.once('close', resolve);
+      }),
+    );
     res.end(`<!doctype html><title>Mirage connection</title><p>${text}</p>`);
   };
-  let timer;
+  // The token exchange of a callback runs under controller's signal; inFlight holds the callback answers still running.
+  const controller = new AbortController(),
+    inFlight = new Set();
+  let timer,
+    settled = false,
+    committing = false,
+    drained = null;
   const completion = new Promise((resolve, reject) => {
+    // Settles the sign-in once and aborts the token request it may still run.
+    // The listener closes after its written pages.
     const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      controller.abort();
       clearTimeout(timer);
-      pendingSignIns.delete(cancel);
-      server.close();
+      drained = closeListener(server, [...pages]).then(() => pendingSignIns.delete(record));
       error ? reject(error) : resolve(value);
     };
-    const cancel = () =>
-      finish(
+    // Once the token write has started, the sign-in finishes as signed in: a cancel, expiry or refusal is ignored.
+    const stop = (error) => {
+      if (!committing) finish(error);
+    };
+    const exchange = async (res, code) => {
+      const body = await tokenRequest(
+        form('authorization_code', credentials, { code, redirect_uri: redirectUri, code_verifier: verifier }),
+        { settings, timeoutMs: 10000, signal: controller.signal },
+      );
+      // A sign-in that settled while the exchange ran (cancelled, expired or refused) stores no token.
+      if (settled) return;
+      const stored = storedToken(body, now());
+      committing = true;
+      await tokens.set(connectionId, stored);
+      page(res, 200, 'The connection is signed in. You can close this window.');
+      finish(null, {
+        connectionId,
+        expiresAt: stored.expiresAt == null ? null : new Date(stored.expiresAt).toISOString(),
+      });
+    };
+    const answer = async (req, res) => {
+      const query = new URL(req.url, redirectUri).searchParams;
+      if (new URL(req.url, redirectUri).pathname !== '/callback') return page(res, 404, 'Not found.');
+      if (query.get('state') !== state) return page(res, 400, 'The sign-in answer does not belong to this request.');
+      if (query.get('error')) {
+        page(res, 400, 'The sign-in was refused.');
+        return stop(new DataError('The authorization server refused the sign-in.', 401, 'ConnectionUnauthorized'));
+      }
+      try {
+        await exchange(res, query.get('code') ?? '');
+      } catch (error) {
+        page(res, 401, 'The sign-in could not be completed.');
+        finish(exchangeFailure(error));
+      }
+    };
+    const cancel = () => {
+      stop(
         new DataError(
           'The connection sign-in was cancelled because the runtime is closing.',
           503,
           'ConnectionAuthorizationCancelled',
         ),
       );
-    pendingSignIns.add(cancel);
+    };
+    // Waits for the callback answers still running, then for the listener to close (finish).
+    const record = { cancel, drained: () => Promise.allSettled(inFlight).then(() => drained) };
+    pendingSignIns.add(record);
     timer = setTimeout(
       () =>
-        finish(
-          new DataError('The connection sign-in was not completed in time.', 408, 'ConnectionAuthorizationExpired'),
-        ),
+        stop(new DataError('The connection sign-in was not completed in time.', 408, 'ConnectionAuthorizationExpired')),
       timeoutMs,
     );
     timer.unref?.();
-    server.on('request', async (req, res) => {
-      const query = new URL(req.url, redirectUri).searchParams;
-      if (new URL(req.url, redirectUri).pathname !== '/callback') return page(res, 404, 'Not found.');
-      if (query.get('state') !== state) return page(res, 400, 'The sign-in answer does not belong to this request.');
-      if (query.get('error')) {
-        page(res, 400, 'The sign-in was refused.');
-        return finish(new DataError('The authorization server refused the sign-in.', 401, 'ConnectionUnauthorized'));
-      }
-      try {
-        const body = await tokenRequest(
-          form('authorization_code', credentials, {
-            code: query.get('code') ?? '',
-            redirect_uri: redirectUri,
-            code_verifier: verifier,
-          }),
-          { settings, timeoutMs: 10000 },
-        );
-        const at = now(),
-          stored = {
-            access_token: body.access_token,
-            refresh_token: body.refresh_token ?? null,
-            expiresAt: body.expires_in ? at + Number(body.expires_in) * 1000 : null,
-          };
-        await tokens.set(connectionId, stored);
-        page(res, 200, 'The connection is signed in. You can close this window.');
-        finish(null, {
-          connectionId,
-          expiresAt: stored.expiresAt == null ? null : new Date(stored.expiresAt).toISOString(),
-        });
-      } catch (error) {
-        page(res, 401, 'The sign-in could not be completed.');
-        finish(error.code ? error : connectorError('ConnectionUnauthorized', 'The token exchange failed.'));
-      }
+    server.on('request', (req, res) => {
+      const run = answer(req, res).finally(() => inFlight.delete(run));
+      inFlight.add(run);
     });
   });
   completion.catch(() => {});
-  return { authorizeUrl: url.href, redirectUri, expiresAt, completion };
+  return { authorizeUrl: url.href, redirectUri, expiresAt, completion, listener: server };
+}
+
+// Stops the listener accepting at once. Its connections close once the written pages have finished, so the browser has each
+// page in full; the promise answers when the listener has closed.
+function closeListener(server, pages) {
+  const closed = new Promise((resolve) => server.close(() => resolve()));
+  return Promise.allSettled(pages).then(() => {
+    server.closeAllConnections();
+    return closed;
+  });
+}
+
+// The failure a callback reports: a coded error as it is, any other error as a failed token exchange.
+const exchangeFailure = (error) =>
+  error.code ? error : connectorError('ConnectionUnauthorized', 'The token exchange failed.');
+
+// The token a successful exchange stores; expires_in counts from the answer time `at`.
+function storedToken(body, at) {
+  return {
+    access_token: body.access_token,
+    refresh_token: body.refresh_token ?? null,
+    expiresAt: body.expires_in ? at + Number(body.expires_in) * 1000 : null,
+  };
 }
 
 function packProvider(pack) {
@@ -1755,7 +1812,7 @@ export function createConnectorRuntime({
     },
   };
   const scripts = createScriptHost({ stateDirectory, command: dotnet, trusted: trustedScripts });
-  // The cancel function of every sign-in still waiting for its browser redirect (beginAuthorization).
+  // { cancel, drained } of every sign-in whose loopback listener or token exchange has not finished (beginAuthorization).
   const pendingSignIns = new Set();
   [
     dataverseProvider(store, diagnostic),
@@ -2245,10 +2302,12 @@ export function createConnectorRuntime({
     },
     /** Approval records (state.simulator.approvals); respond() answers the outputs of the waiting action. */
     approvals: { get: approvals.get, list: approvals.list, respond: approvals.respond, close: approvals.close },
-    /** Cancels every pending sign-in: its loopback listener and expiry timer close, and its completion rejects. */
-    close() {
-      const pending = [...pendingSignIns];
-      for (const cancel of pending) cancel();
+    /** Cancels every pending sign-in: its completion rejects, and the close answers once each sign-in's loopback listener has
+     * closed and its token exchange has returned. */
+    async close() {
+      const signIns = [...pendingSignIns];
+      for (const { cancel } of signIns) cancel();
+      await Promise.allSettled(signIns.map(({ drained }) => drained()));
     },
     providers: () => {
       syncCustom();

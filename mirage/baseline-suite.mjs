@@ -13,7 +13,9 @@ import { assertToolOptions, mirageToolHelp } from './tool-registry.mjs';
  * browser bridge that exposes a Playwright page (for example `@playwright/mcp --extension`); the
  * bridge command comes from the matrix (`live.command`, `live.args`) so no profile name lives in
  * toolkit code. Live writes are refused unless `--allow-writes` names the run as authorised and
- * the request falls inside the matrix `writeScope`; every other non-GET is aborted and recorded.
+ * the request falls inside the matrix `writeScope`; every other non-GET is aborted and recorded. The live browser's
+ * loopback debugging endpoint (`live.cdpUrl`, for a bridge started with `--cdp-endpoint`) lets the suite hold a
+ * browser-session write net around every run.
  *
  * node mirage/baseline-suite.mjs capture --matrix FILE --out DIR --side live [--allow-writes] [--label live|live-2] [--ids FILE] (--only IDS|@FILE | --all-scenarios)
  * node mirage/baseline-suite.mjs capture --matrix FILE --out DIR --side mirage --config FILE --site ID [--source DIR] [--state FILE] [--label mirage] [--ids FILE] [--only IDS|@FILE] [--headed]
@@ -29,6 +31,7 @@ import { runMutatingHook, MUTATING_HOOK_FAILURE } from './baseline-hooks.mjs';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import {
+  captureNetDecision,
   captureScenario,
   pageRunnerSource,
   runnerOptions,
@@ -44,6 +47,7 @@ import {
   summaryMarkdown,
 } from './baseline-compare.mjs';
 import { startMcpServer } from './mcp-stdio.mjs';
+import { openBrowserWriteNet, connectCdpTransport } from './lib/browser-write-net.mjs';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // `--only a,b,c` or `--only @file` selects scenarios. A list file holds one scenario per line: the first
@@ -80,6 +84,9 @@ export function validateMatrix(matrix) {
   for (const pattern of matrix.writeScope?.paths ?? []) new RegExp(pattern); // NOSONAR: constructor validates the pattern or has side effects
   if (matrix.origin && !/^https:\/\/[^/?#]+$/.test(matrix.origin))
     throw new Error('matrix.origin must be a bare HTTPS origin.');
+  // connectCdpTransport judges the endpoint's host: only a loopback URL opens a debugging socket.
+  if (matrix.live?.cdpUrl !== undefined && typeof matrix.live.cdpUrl !== 'string')
+    throw new Error('matrix.live.cdpUrl must be a string.');
   return matrix;
 }
 
@@ -182,7 +189,60 @@ function refuseWriteStepsWithoutPermission(bridge, allowWrites) {
   if (step) throw new Error(`matrix.live.${step} writes to the live portal; rerun with --allow-writes.`);
 }
 
-async function liveSide({ matrix, allowWrites, cwd, outputRoot, signInOut = null }) {
+const NO_CDP_NET_DIAGNOSTIC = 'live.cdpUrl is not set: writes are guarded per page by the capture runner only';
+
+// The browser-level net adopts the capture page only when that page opened in the browser of live.cdpUrl.
+function requireAdoptedPage(net) {
+  if (net && net.adopted() === 0)
+    throw new Error(
+      'live.cdpUrl is not the bridge browser: the capture page did not open there, so the browser-level write net did not cover it.',
+    );
+}
+
+// Pages created during the capture without an opener (the runner's own page) and their popups are owned; a tab the user
+// opens during a capture is owned too.
+async function openCaptureWriteNet(cdpUrl, options, { connect = connectCdpTransport } = {}) {
+  const blocked = [];
+  let adopted = 0;
+  const transport = await connect(cdpUrl);
+  try {
+    const net = await openBrowserWriteNet({
+      transport,
+      decide: captureNetDecision(options),
+      adoptNewPages: true,
+      onAdopted: () => {
+        adopted += 1;
+      },
+      onDecided: ({ request }) =>
+        blocked.push({ method: request.method.toUpperCase(), path: new URL(request.url).pathname }),
+    });
+    return {
+      blocked,
+      adopted: () => adopted,
+      close: async () => {
+        try {
+          await net.close();
+        } finally {
+          await transport.close();
+        }
+      },
+    };
+  } catch (error) {
+    await transport.close();
+    throw error;
+  }
+}
+
+async function liveSide({
+  matrix,
+  allowWrites,
+  cwd,
+  outputRoot,
+  signInOut = null,
+  startBridge = startMcpServer,
+  startEvidenceSaver = startSaver,
+  openWriteNet = openCaptureWriteNet,
+}) {
   const bridge = matrix.live;
   if (!bridge?.command)
     throw new Error(
@@ -190,7 +250,7 @@ async function liveSide({ matrix, allowWrites, cwd, outputRoot, signInOut = null
     );
   refuseWriteStepsWithoutPermission(bridge, allowWrites);
   const stderr = [];
-  const client = startMcpServer({
+  const client = startBridge({
     command: bridge.command === 'node' ? process.execPath : bridge.command,
     args: bridge.args ?? [],
     cwd: bridge.cwd ? path.resolve(cwd, bridge.cwd) : cwd,
@@ -205,18 +265,21 @@ async function liveSide({ matrix, allowWrites, cwd, outputRoot, signInOut = null
   const tools = new Set((await client.listTools().catch(abortSetup)).map((tool) => tool.name));
   const runTool = bridge.tool ?? 'browser_run_code_unsafe';
   if (!tools.has(runTool)) await abortSetup(new Error(`The browser bridge offers no ${runTool} tool.`));
-  saver = await startSaver().catch(abortSetup);
+  saver = await startEvidenceSaver().catch(abortSetup);
   const source = pageRunnerSource();
   const runInBridge = async (scenario, { ids = {}, allowWrites: writes = allowWrites } = {}) => {
     const options = runnerOptions({ scenario, origin: matrix.origin, ids, matrix, allowWrites: writes });
     // A scenario expecting the sign-in page (`expect.signIn`, anonymous access to a restrict-read page) checks its markers itself.
     if (scenario.expect?.signIn) options.signInMarkers = [];
-    const { run, received } = saver.expect();
-    const code = `async (page) => {\n  const run = ${source};\n  const result = await run(page, ${JSON.stringify(options)});\n  const posted = await fetch(${JSON.stringify(saver.url)}, { method: "POST", headers: { "content-type": "application/json", "x-baseline-token": ${JSON.stringify(saver.token)}, "x-baseline-run": ${JSON.stringify(run)} }, body: JSON.stringify(result) });\n  return JSON.stringify({ ...result.summary, posted: posted.status });\n}`;
-    const text = await client.callTool(runTool, { code }, (scenario.timeout ?? 240) * 1000 + 60000);
+    // The browser-session net is in force from before the bridge call until the evidence is received.
+    const net = bridge.cdpUrl ? await openWriteNet(bridge.cdpUrl, options) : null;
     let timer;
+    let result;
     try {
-      return await Promise.race([
+      const { run, received } = saver.expect();
+      const code = `async (page) => {\n  const run = ${source};\n  const result = await run(page, ${JSON.stringify(options)});\n  const posted = await fetch(${JSON.stringify(saver.url)}, { method: "POST", headers: { "content-type": "application/json", "x-baseline-token": ${JSON.stringify(saver.token)}, "x-baseline-run": ${JSON.stringify(run)} }, body: JSON.stringify(result) });\n  return JSON.stringify({ ...result.summary, posted: posted.status });\n}`;
+      const text = await client.callTool(runTool, { code }, (scenario.timeout ?? 240) * 1000 + 60000);
+      result = await Promise.race([
         received,
         new Promise((_, reject) => {
           timer = setTimeout(
@@ -227,7 +290,11 @@ async function liveSide({ matrix, allowWrites, cwd, outputRoot, signInOut = null
       ]);
     } finally {
       clearTimeout(timer);
+      await net?.close();
     }
+    requireAdoptedPage(net);
+    if (net) result.raw.blockedWrites.push(...net.blocked);
+    return result;
   };
   // Optional scripted portal sign-in through the profile's identity provider. No credentials are
   // involved: the profile's SSO either completes or the run stops and names the human step.
@@ -409,6 +476,7 @@ async function liveSide({ matrix, allowWrites, cwd, outputRoot, signInOut = null
       });
     },
     diagnostics: () => [
+      ...(bridge.cdpUrl ? [] : [NO_CDP_NET_DIAGNOSTIC]),
       ...stderr.slice(-20),
       ...saver.late.map((post) => `late evidence post of an abandoned run ${post.run} at ${post.at} refused`),
     ],
@@ -908,3 +976,6 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     process.exitCode = 1;
   });
 }
+
+// Test seam: the live side with its injected bridge, evidence receiver and browser-session write net.
+export const __testing = { liveSide, openCaptureWriteNet };

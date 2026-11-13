@@ -48,7 +48,10 @@ import {
   tagShape,
   __testing,
 } from '../parity-suite.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { makeTemporaryDirectory, ownedFixture } from '../testing/owned-fixture.mjs';
+
+// The hang guard for a synchronous CLI child, which cannot be cancelled once it blocks.
+const CLI_HANG_GUARD_MS = 170_000;
 
 const GUID_A = '3f2504e0-4f89-11d3-9a0c-0305e82c3301';
 const GUID_B = 'c6d9e2d4-1c73-e811-a844-000d3a2a3148';
@@ -583,7 +586,7 @@ test('parity-suite refuses a selection that names no known scenario or leaves no
         'https://reference.example.invalid',
         ...args,
       ],
-      { encoding: 'utf8' },
+      { encoding: 'utf8', timeout: CLI_HANG_GUARD_MS },
     );
   const unknown = refuse('--only', 'typo-scenario');
   assert.equal(unknown.status, 2, unknown.stderr);
@@ -676,6 +679,7 @@ test('a classification rule naming an exact network delta kind passes plan valid
 // @test-kind tooling: an opaque reference redirect is compared by status class, and the conditional re-read sends If-None-Match
 test('an opaque reference redirect compares by status class, and the conditional re-read sends If-None-Match', async (t) => {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'parity-suite-opaque-'));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   const etag = '"v1"';
   const localServer = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://x.invalid');
@@ -694,7 +698,7 @@ test('an opaque reference redirect compares by status class, and the conditional
   });
   localServer.listen(0, '127.0.0.1');
   await once(localServer, 'listening');
-  t.after(() => localServer.close());
+  t.after(() => new Promise((resolve) => localServer.close(resolve)));
   const localOrigin = `http://127.0.0.1:${localServer.address().port}`;
   const local = createHttpDriver({ origin: localOrigin, identity: 'local' });
   const liveConditions = [];

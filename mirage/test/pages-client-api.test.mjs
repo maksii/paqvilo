@@ -73,11 +73,6 @@ function browser({ withApi = true, requests = [] } = {}) {
   return { window, logs, requests };
 }
 
-// Readiness settles from a zero-delay timer (pages-client-api.js whenParsed), which always fires before this longer
-// one, so the race only turns a hang into a named failure.
-const within = (promise, ms = 500) =>
-  Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error('still pending')), ms))]);
-
 /** A stub element with the members the modern list and the document grid use; queries answer from `queries`. */
 class StubElement {
   constructor(tag, attributes = {}) {
@@ -187,14 +182,12 @@ function jsonRoutes(window, requests, data) {
 test('onPagesClientApiReady settles: the callback and the await form both receive $pages', async () => {
   const { window } = browser();
   let called = null;
-  const awaited = await within(
-    window.Microsoft.PowerPages.onPagesClientApiReady((api) => {
-      called = api;
-    }),
-  );
+  const awaited = await window.Microsoft.PowerPages.onPagesClientApiReady((api) => {
+    called = api;
+  });
   assert.equal(called, awaited);
   assert.equal(typeof awaited.currentPage.lists.getAll, 'function');
-  assert.equal(await within(window.Microsoft.PowerPages.onPagesClientApiReady()), awaited);
+  assert.equal(await window.Microsoft.PowerPages.onPagesClientApiReady(), awaited);
   assert.equal(awaited.__paqvilo.version, 1);
   assert.equal(window.Microsoft.Dynamic365.Portal.isClientApiEnabled, 'True');
 });
@@ -202,23 +195,26 @@ test('onPagesClientApiReady settles: the callback and the await form both receiv
 test('the deprecated Dynamic365 alias still resolves and warns once', async () => {
   const { window, logs } = browser();
   const portal = window.Microsoft.Dynamic365.Portal;
-  await within(portal.onPagesClientApiReady());
-  await within(portal.onPagesClientApiReady());
+  await portal.onPagesClientApiReady();
+  await portal.onPagesClientApiReady();
   assert.equal(logs.warn.filter((line) => /deprecated/.test(line)).length, 1);
 });
 
 test('without the client API script readiness rejects with a named error instead of hanging', async () => {
   const { window, logs } = browser({ withApi: false });
-  await assert.rejects(within(window.Microsoft.PowerPages.onPagesClientApiReady(() => assert.fail('no callback'))), {
-    name: 'PagesClientApiUnsupported',
-  });
+  await assert.rejects(
+    window.Microsoft.PowerPages.onPagesClientApiReady(() => assert.fail('no callback')),
+    {
+      name: 'PagesClientApiUnsupported',
+    },
+  );
   assert.equal(window.Microsoft.Dynamic365.Portal.isClientApiEnabled, 'False');
   assert.equal(logs.error.length, 1);
 });
 
 test('unsupported members throw PagesClientApiUnsupported with the member name and log once', async () => {
   const { window, logs } = browser();
-  const $pages = await within(window.Microsoft.PowerPages.onPagesClientApiReady());
+  const $pages = await window.Microsoft.PowerPages.onPagesClientApiReady();
   for (const [call, member] of [
     [() => $pages.agents.sendActivity('x'), 'agents.sendActivity'],
     [() => $pages.agents.startConversation(), 'agents.startConversation'],
@@ -237,7 +233,7 @@ test('unsupported members throw PagesClientApiUnsupported with the member name a
 
 test('languages.setActive switches the language like the language picker: /<code> before the path', async () => {
   const { window } = browser();
-  const $pages = await within(window.Microsoft.PowerPages.onPagesClientApiReady());
+  const $pages = await window.Microsoft.PowerPages.onPagesClientApiReady();
   assert.throws(() => $pages.languages.setActive('fr-FR'), TypeError, 'a language the site does not have');
   assert.equal(window.assigned, undefined, 'a refused code does not navigate');
   window.Microsoft.Dynamic365.Portal.activeLanguages = ['en-US', 'fr-FR', 'de-DE'];
@@ -264,7 +260,7 @@ test('webAPI file-column methods call the portal Web API file routes', async () 
       return new Response(JSON.stringify({ error: { code: '90040120' } }), { status: 403 });
     return new Response(null, { status: 204 });
   };
-  const $pages = await within(window.Microsoft.PowerPages.onPagesClientApiReady());
+  const $pages = await window.Microsoft.PowerPages.onPagesClientApiReady();
   await $pages.webAPI.uploadFileToColumn(
     'x_items',
     SITE,
@@ -292,7 +288,7 @@ test('webAPI file-column methods call the portal Web API file routes', async () 
 
 test('lists, languages, user, ajax and webAPI work over the local services', async () => {
   const { window, requests } = browser();
-  const $pages = await within(window.Microsoft.PowerPages.onPagesClientApiReady());
+  const $pages = await window.Microsoft.PowerPages.onPagesClientApiReady();
   assert.deepEqual([...$pages.currentPage.lists.getAll()], []);
   assert.equal($pages.currentPage.lists.getListById('list_#1'), undefined);
   assert.deepEqual([...$pages.languages.getAll()], ['en-US']);
@@ -330,7 +326,7 @@ test('lists, languages, user, ajax and webAPI work over the local services', asy
 
 test('webAPI record methods call the local portal Web API', async () => {
   const { window, requests } = browser();
-  const $pages = await within(window.Microsoft.PowerPages.onPagesClientApiReady());
+  const $pages = await window.Microsoft.PowerPages.onPagesClientApiReady();
   assert.equal(await $pages.webAPI.createRecord('x_items', { x_name: 'One' }), SITE);
   assert.deepEqual({ ...(await $pages.webAPI.retrieveRecord('x_items', SITE, '$select=x_name')) }, { x_name: 'One' });
   assert.equal(await $pages.webAPI.getRecordCount('x_items'), 3);
@@ -380,7 +376,7 @@ test('a failed anti-forgery token fetch rejects, is not reused, and the next req
     }
     return new Response('{}', { status: init.headers.__RequestVerificationToken ? 200 : 403 });
   };
-  const $pages = await within(window.Microsoft.PowerPages.onPagesClientApiReady());
+  const $pages = await window.Microsoft.PowerPages.onPagesClientApiReady();
   await assert.rejects($pages.ajax.request({ url: '/_api/serverlogics/echo', body: {} }), {
     name: 'AjaxError',
     status: 500,
@@ -402,7 +398,7 @@ test('a network failure of the token fetch rejects with AjaxError status 0, and 
     if (String(url).endsWith('/_layout/tokenhtml')) throw new TypeError('Failed to fetch');
     return new Response('{}');
   };
-  const $pages = await within(window.Microsoft.PowerPages.onPagesClientApiReady());
+  const $pages = await window.Microsoft.PowerPages.onPagesClientApiReady();
   await assert.rejects(
     $pages.ajax.request({ url: '/_api/serverlogics/echo' }),
     (error) => error.name === 'AjaxError' && error.status === 0,
@@ -438,7 +434,7 @@ function tokenBodies(window, requests, readBody) {
 // @test-kind contract: Learn client-api/ajax: an abort that lands while the token body is read is a CanceledError, as during the fetch.
 test('an abort while the anti-forgery token body is read is a CanceledError, and the next request fetches a token again', async () => {
   const { window, requests } = browser();
-  const $pages = await within(window.Microsoft.PowerPages.onPagesClientApiReady());
+  const $pages = await window.Microsoft.PowerPages.onPagesClientApiReady();
   const controller = new AbortController();
   const counts = tokenBodies(window, requests, async (attempt) => {
     if (attempt > 1) return '<input value="tok">';
@@ -456,7 +452,7 @@ test('an abort while the anti-forgery token body is read is a CanceledError, and
 // @test-kind contract: Learn client-api/ajax rejects with an AjaxError of status 0 when reading the token body fails.
 test('a network failure while the anti-forgery token body is read is an AjaxError status 0, and the next request fetches a token again', async () => {
   const { window, requests } = browser();
-  const $pages = await within(window.Microsoft.PowerPages.onPagesClientApiReady());
+  const $pages = await window.Microsoft.PowerPages.onPagesClientApiReady();
   const counts = tokenBodies(window, requests, async (attempt) => {
     if (attempt > 1) return '<input value="tok">';
     throw new TypeError('network');
@@ -485,7 +481,7 @@ function partialBody() {
 // @test-kind contract: Learn client-api/ajax: an abort that lands while the response is read is a CanceledError.
 test('an abort while a response body is read rejects with CanceledError, and other body errors are not renamed', async () => {
   const { window } = browser();
-  const $pages = await within(window.Microsoft.PowerPages.onPagesClientApiReady());
+  const $pages = await window.Microsoft.PowerPages.onPagesClientApiReady();
   const controller = new AbortController();
   let partial = partialBody();
   window.fetch = async (url) => {
@@ -513,7 +509,7 @@ test('an abort while a response body is read rejects with CanceledError, and oth
 // @test-kind contract: Learn client-api/dataverse: a file download cancelled by the abort is a CanceledError too.
 test('an abort while a file column download is read rejects with CanceledError', async () => {
   const { window } = browser();
-  const $pages = await within(window.Microsoft.PowerPages.onPagesClientApiReady());
+  const $pages = await window.Microsoft.PowerPages.onPagesClientApiReady();
   const partial = partialBody();
   window.fetch = async (url) => {
     if (String(url).endsWith('/_layout/tokenhtml')) return new Response('<input value="tok">');
@@ -542,7 +538,7 @@ test('row.getValue returns a Date for a grid date value and keeps option set and
       },
     ],
   });
-  const $pages = await within(window.Microsoft.PowerPages.onPagesClientApiReady());
+  const $pages = await window.Microsoft.PowerPages.onPagesClientApiReady();
   const [list] = $pages.currentPage.lists.getAll();
   await list.__loadMore();
   const [row] = list.rows;
@@ -567,7 +563,7 @@ test('a throwing loaded handler keeps the rows, paging and the other handlers, a
   window.queueMicrotask = (task) => reported.push(task);
   const { body, messages } = modernListPage(window, LIST_COLUMNS);
   jsonRoutes(window, requests, { MoreRecords: true, Records: [LIST_RECORD] });
-  const $pages = await within(window.Microsoft.PowerPages.onPagesClientApiReady());
+  const $pages = await window.Microsoft.PowerPages.onPagesClientApiReady();
   const [list] = $pages.currentPage.lists.getAll();
   const seen = [];
   list.on('loaded', () => {
@@ -591,7 +587,7 @@ test('a list response that is not JSON shows the list error view and is logged',
   window.fetch = async (url) =>
     String(url).endsWith('/_layout/tokenhtml') ? new Response('<input value="tok">') : new Response('not json');
   const { messages } = modernListPage(window, LIST_COLUMNS);
-  const $pages = await within(window.Microsoft.PowerPages.onPagesClientApiReady());
+  const $pages = await window.Microsoft.PowerPages.onPagesClientApiReady();
   const [list] = $pages.currentPage.lists.getAll();
   await list.__loadMore();
   assert.equal(messages.find((message) => message.matches('.view-error')).hidden, false);
@@ -601,6 +597,9 @@ test('a list response that is not JSON shows the list error view and is logged',
   );
 });
 
+// The stub page has no I/O: after a click or an answered fetch it only runs promise continuations, and its one timer
+// is the zero-delay readiness timer (pages-client-api.js). Node runs every pending continuation and every earlier
+// zero-delay timer before a later zero-delay timer, so one flush is an exact barrier and never an allowance of time.
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 const GRID_CONTROL_MARKERS = ['ppDocumentsUpload', 'ppDocumentsNewFolder', 'ppDocumentsPath'];
 
@@ -744,7 +743,7 @@ test('a failed upload reports the error in the status line and re-enables the in
 // @test-kind contract: the shared in-flight token request keeps concurrent callers to one anti-forgery fetch.
 test('concurrent requests share one in-flight anti-forgery token request', async () => {
   const { window, requests } = browser();
-  const $pages = await within(window.Microsoft.PowerPages.onPagesClientApiReady());
+  const $pages = await window.Microsoft.PowerPages.onPagesClientApiReady();
   await Promise.all([
     $pages.ajax.request({ url: '/_api/serverlogics/echo' }),
     $pages.ajax.request({ url: '/_api/serverlogics/echo' }),
@@ -781,7 +780,7 @@ function gatedTokenFetch(window, requests) {
 // @test-kind contract: the shared anti-forgery token is not tied to one caller: an abort of the first waiter rejects only that caller.
 test('an abort of one caller waiting for the shared token rejects only that caller', async () => {
   const { window, requests } = browser();
-  const $pages = await within(window.Microsoft.PowerPages.onPagesClientApiReady());
+  const $pages = await window.Microsoft.PowerPages.onPagesClientApiReady();
   const { counts, open } = gatedTokenFetch(window, requests);
   const controller = new AbortController();
   const first = $pages.ajax.request({ url: '/_api/serverlogics/echo', signal: controller.signal });
@@ -801,7 +800,7 @@ test('an abort of one caller waiting for the shared token rejects only that call
 // @test-kind contract: when every caller waiting for the shared token aborts, the token still arrives and serves the next request, with no unhandled rejection.
 test('the shared token is cached when every caller waiting for it has aborted', async () => {
   const { window, requests } = browser();
-  const $pages = await within(window.Microsoft.PowerPages.onPagesClientApiReady());
+  const $pages = await window.Microsoft.PowerPages.onPagesClientApiReady();
   const { counts, open } = gatedTokenFetch(window, requests);
   const unhandled = [];
   const onUnhandled = (reason) => unhandled.push(reason);
@@ -846,7 +845,7 @@ test('the modern list CSV download posts the columns of the current view', async
       headers: { 'content-type': 'application/json' },
     });
   };
-  const $pages = await within(window.Microsoft.PowerPages.onPagesClientApiReady());
+  const $pages = await window.Microsoft.PowerPages.onPagesClientApiReady();
   await flush();
   $pages.currentPage.lists.getAll();
   const control = actions.children[0];

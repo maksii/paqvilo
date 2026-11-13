@@ -144,7 +144,7 @@ function startIdleGuard(idleMs, onIdle) {
  */
 export function requestBound(timeoutMs) {
   const { deadlineMs, idleMs } = probeBounds(timeoutMs, PREFLIGHT_IDLE_TIMEOUT_MS);
-  if (deadlineMs != null) return { signal: deadlineSignal(deadlineMs), limitMs: deadlineMs, done() {} };
+  if (deadlineMs != null) return { ...deadlineBound(deadlineMs), limitMs: deadlineMs };
   const controller = new AbortController();
   const guard = startIdleGuard(idleMs, () =>
     controller.abort(new DOMException(`no answer within ${PREFLIGHT_IDLE_TIMEOUT_MS} ms`, 'TimeoutError')),
@@ -153,11 +153,15 @@ export function requestBound(timeoutMs) {
 }
 
 /**
- * The signal of an explicit request deadline: AbortSignal.timeout on the clamped delay (it fires after 1 ms for a longer one).
- * A non-finite deadline is no bound, so its signal never aborts.
+ * The bound of an explicit request deadline: signal aborts with a TimeoutError when the delay ends, on the same timer clock as
+ * the rest of the probe. done() releases the timer. A non-finite deadline arms nothing, so its signal never aborts.
  */
-function deadlineSignal(ms) {
-  return Number.isFinite(ms) ? AbortSignal.timeout(Math.min(ms, MAX_TIMER_DELAY_MS)) : new AbortController().signal;
+function deadlineBound(ms) {
+  const controller = new AbortController();
+  const timer = armTimer(ms, () =>
+    controller.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError')),
+  );
+  return { signal: controller.signal, done: () => clearTimeout(timer) };
 }
 
 /**
@@ -288,8 +292,19 @@ export function guardProvider(provider, { counters = () => null } = {}) {
     }
   };
   if (typeof provider.compact === 'function') guarded.compact = () => provider.compact();
-  if (typeof provider.preflight === 'function') guarded.preflight = (context) => provider.preflight(context);
+  // A probe the bound aborted can still be in its cleanup: close waits for each probe started through this wrapper that
+  // has not settled yet.
+  const probes = new Set();
+  const track = (probe) => {
+    const forget = () => probes.delete(settled);
+    const settled = probe.then(forget, forget);
+    probes.add(settled);
+    return probe;
+  };
+  if (typeof provider.preflight === 'function')
+    guarded.preflight = (context) => track(Promise.resolve().then(() => provider.preflight(context)));
   guarded.close = async () => {
+    await Promise.all(probes);
     await provider.close?.();
   };
   return guarded;

@@ -382,7 +382,7 @@ export async function updateOwnedSessions(paths, change, { signal } = {}) {
     withOwnershipLock(
       paths,
       async () => {
-        const next = change(await ownedSessions(paths));
+        const next = await change(await ownedSessions(paths));
         await saveOwnedSessions(paths, next);
         return next;
       },
@@ -522,6 +522,7 @@ async function requestShutdown(url) {
   pids = null,
   deadline = STOP_DEADLINE,
   identityOf = processIdentity,
+  alive = isAlive,
 } = {}) {
   const folders = sourceDirs ?? (sourceDir ? [sourceDir] : []);
   const owned = await ownedSessions(paths);
@@ -531,9 +532,9 @@ async function requestShutdown(url) {
     unverified = [];
   const known =
     identityOf === processIdentity
-      ? processIdentities(owned.filter((entry) => isAlive(entry.pid)).map((entry) => entry.pid))
+      ? processIdentities(owned.filter((entry) => alive(entry.pid)).map((entry) => entry.pid))
       : null;
-  classifyOwnedTargets(owned, { identityOf, known, folders, pids, stale, targets, unverified });
+  classifyOwnedTargets(owned, { alive, identityOf, known, folders, pids, stale, targets, unverified });
   const results = [];
   for (const entry of targets) {
     const record = records.find((item) => item.record.pid === entry.pid)?.record;
@@ -556,12 +557,12 @@ async function requestShutdown(url) {
   }
   const waitForExit = async (ms) => {
     const end = Date.now() + ms;
-    while (Date.now() < end && targets.some((entry) => isAlive(entry.pid))) await sleep(100);
+    while (Date.now() < end && targets.some((entry) => alive(entry.pid))) await sleep(100);
   };
   await waitForExit(deadline);
   for (const entry of targets) {
     // POSIX signals can be handled; force only the process that still has the recorded identity.
-    if (isAlive(entry.pid) && identityOf(entry.pid) === entry.processIdentity) {
+    if (alive(entry.pid) && identityOf(entry.pid) === entry.processIdentity) {
       try {
         process.kill(entry.pid, 'SIGKILL');
       } catch {
@@ -569,21 +570,21 @@ async function requestShutdown(url) {
       }
     }
   }
-  if (targets.some((entry) => isAlive(entry.pid))) await waitForExit(2000);
+  if (targets.some((entry) => alive(entry.pid))) await waitForExit(2000);
   const remaining = targets.filter((entry) => {
-    if (!isAlive(entry.pid)) return false;
+    if (!alive(entry.pid)) return false;
     const current = identityOf(entry.pid);
     return current == null || current === entry.processIdentity;
   });
   const removedDiscoveries = [];
   for (const { record, file } of await discoveryRecords(paths)) {
-    if (isAlive(record.pid)) continue;
+    if (alive(record.pid)) continue;
     await fs.rm(file, { force: true });
     removedDiscoveries.push(file);
   }
   const forget = [...targets.filter((item) => !remaining.includes(item)), ...stale.map((item) => item.entry)];
   for (const entry of forget) {
-    if (!entry.discovery || removedDiscoveries.includes(entry.discovery) || isAlive(entry.pid)) continue;
+    if (!entry.discovery || removedDiscoveries.includes(entry.discovery) || alive(entry.pid)) continue;
     const relative = path.relative(paths.discoveryRoot, entry.discovery);
     if (/^session-\d+\.json$/.test(relative) && fsSync.existsSync(entry.discovery)) {
       await fs.rm(entry.discovery, { force: true });
@@ -627,9 +628,9 @@ async function requestShutdown(url) {
   };
 }
 
-function classifyOwnedTargets(owned, { identityOf, known, folders, pids, stale, targets, unverified }) {
+function classifyOwnedTargets(owned, { alive, identityOf, known, folders, pids, stale, targets, unverified }) {
   for (const entry of owned) {
-    const status = inspectOwnedTarget(entry, identityOf, known);
+    const status = inspectOwnedTarget(entry, { alive, identityOf, known });
     if (status.kind === 'unverified') {
       unverified.push({ entry, reason: status.reason });
       continue;
@@ -642,24 +643,24 @@ function classifyOwnedTargets(owned, { identityOf, known, folders, pids, stale, 
   }
 }
 
-function inspectOwnedTarget(entry, identityOf, known) {
-  const alive = isAlive(entry.pid);
+function inspectOwnedTarget(entry, { alive, identityOf, known }) {
+  const running = alive(entry.pid);
   let current = null;
-  if (alive) {
+  if (running) {
     if (known?.has(entry.pid)) current = known.get(entry.pid);
     else current = identityOf(entry.pid);
   }
   // A live process whose start identity was never recorded or cannot be read now is neither
   // proof of a reused process ID nor safe to signal: its record stays for a later stop.
-  if (alive && (!entry.processIdentity || current == null))
+  if (running && (!entry.processIdentity || current == null))
     return {
       kind: 'unverified',
       reason: entry.processIdentity
         ? 'its start identity could not be read now; run stop again'
         : 'no start identity was recorded when it started, so it is never signalled',
     };
-  if (!alive || current !== entry.processIdentity)
-    return { kind: 'stale', reason: !alive ? 'process exited' : 'process ID now belongs to another program' };
+  if (!running || current !== entry.processIdentity)
+    return { kind: 'stale', reason: !running ? 'process exited' : 'process ID now belongs to another program' };
   return { kind: 'target' };
 }
 
@@ -667,12 +668,17 @@ function isSelectedOwnedTarget(entry, pids, folders) {
   return Boolean(pids?.includes(entry.pid)) || folders.some((folder) => samePath(entry.sourceDir, folder));
 }
 
+/** The batch reads the real identities, so an injected reader is asked for each PID instead. */
+function batchedIdentities(pids, identityOf) {
+  return identityOf === processIdentity ? processIdentities(pids) : new Map();
+}
+
 /** Sessions with ownership, project and portal information merged from both record kinds. */
-export async function mirageStatus(paths = DEFAULT_PATHS) {
+export async function mirageStatus(paths = DEFAULT_PATHS, { identityOf = processIdentity } = {}) {
   const owned = await ownedSessions(paths);
   const found = await discoveries(paths);
   // Read every identity this status can compare in one batch, not one PowerShell start per PID.
-  const identities = processIdentities([
+  const pids = [
     ...found
       .filter(
         (session) =>
@@ -685,9 +691,10 @@ export async function mirageStatus(paths = DEFAULT_PATHS) {
     ...owned
       .filter((entry) => !found.some((session) => session.pid === entry.pid) && isAlive(entry.pid))
       .map((entry) => entry.pid),
-  ]);
+  ];
+  const identities = batchedIdentities(pids, identityOf);
   const identity = (pid) => {
-    if (!identities.has(pid)) identities.set(pid, processIdentity(pid));
+    if (!identities.has(pid)) identities.set(pid, identityOf(pid));
     return identities.get(pid);
   };
   const sessions = found.map((session) => {
@@ -741,6 +748,19 @@ export function codeAppStartupInterrupted(error, write = (line) => console.log(l
   if (error?.code !== CODE_APP_STARTUP_CANCELLED) return false;
   write('mirage   Code App start-up was interrupted.');
   return true;
+}
+
+/**
+ * The abort controller of a Code App dev session. Only the reason its own interrupt aborts with counts as an interrupt.
+ */
+export function codeAppInterrupt() {
+  const controller = new AbortController();
+  const reason = new Error('Code App development stopped.');
+  return {
+    controller,
+    interrupt: () => controller.abort(reason),
+    interrupted: (error = controller.signal.reason) => error === reason,
+  };
 }
 
 async function startProjectCodeApps(cfg, launch, session, controller) {
@@ -1161,6 +1181,10 @@ export async function start(
     command = 'mirage start',
     spawnRuntime = spawn,
     identityOf = processIdentityAsync,
+    sleep = (ms, options) => delay(ms, undefined, options),
+    now = Date.now,
+    alive = isAlive,
+    kill = process.kill,
   } = {},
 ) {
   let interrupted = false,
@@ -1188,6 +1212,10 @@ export async function start(
       command,
       spawnRuntime,
       identityOf,
+      sleep,
+      now,
+      alive,
+      kill,
       check,
       signal: controller.signal,
       cancelled: () => interrupted,
@@ -1221,7 +1249,7 @@ export async function start(
 }
 
 /* NOSONAR */ async function startRuntime(cfg, args, paths, startup) {
-  const started = Date.now() - (args.startup?.elapsedMs ?? 0);
+  const started = startup.now() - (args.startup?.elapsedMs ?? 0);
   args.startup?.phase('source discovery', cfg.siteName);
   const port = String(runtimePort(args.port, DEFAULT_PORT));
   const timeout = args['startup-timeout'] === undefined ? DEFAULT_STARTUP_TIMEOUT : Number(args['startup-timeout']);
@@ -1264,7 +1292,7 @@ export async function start(
   startup.check();
   let existing;
   for (const session of candidates) {
-    const currentIdentity = await processIdentityAsync(session.pid, { signal: startup.signal });
+    const currentIdentity = await startup.identityOf(session.pid, { signal: startup.signal });
     startup.check();
     const owner =
       currentIdentity &&
@@ -1285,8 +1313,8 @@ export async function start(
     }
   }
   if (existing) return { ...existing, owned: true, started: false, launch, writesFiles: [] };
-  await refuseStateFileOwner(owned, identity, startup.signal);
-  if (Date.now() >= started + timeout)
+  await refuseStateFileOwner(owned, identity, startup);
+  if (startup.now() >= started + timeout)
     throw new Error(
       `Mirage startup exceeded ${timeout}ms during source discovery or ownership checks; no child was started.`,
     );
@@ -1338,7 +1366,7 @@ export async function start(
   const childIdentity = await startup.identityOf(child.pid, { signal: startup.signal });
   startup.check();
   if (!childIdentity) {
-    const error = !isAlive(child.pid)
+    const error = !startup.alive(child.pid)
       ? await exitedBeforeReady(log, paths.logRoot)
       : new Error(
           `Could not verify the starting Mirage process ownership; the child was stopped. See startup log: ${log}`,
@@ -1346,11 +1374,12 @@ export async function start(
     error.writesFiles = [log];
     throw error;
   }
+  const identities = await rivalIdentities(paths, { childPid: child.pid, identity, startup });
   // Recorded before readiness, so `mirage stop` can end a process that hangs while importing.
   await updateOwnedSessions(
     paths,
     (sessions) => [
-      ...otherSessionsForStart(sessions, identity, child.pid),
+      ...otherSessionsForStart(sessions, identity, child.pid, { alive: startup.alive, identities }),
       {
         pid: child.pid,
         processIdentity: childIdentity,
@@ -1374,11 +1403,11 @@ export async function start(
     startup.check();
     if (
       childIdentity &&
-      isAlive(child.pid) &&
-      (await processIdentityAsync(child.pid, { signal: startup.signal })) === childIdentity
+      startup.alive(child.pid) &&
+      (await startup.identityOf(child.pid, { signal: startup.signal })) === childIdentity
     ) {
       try {
-        process.kill(child.pid, 'SIGTERM');
+        startup.kill(child.pid, 'SIGTERM');
       } catch {
         /* already exited */
       }
@@ -1393,14 +1422,14 @@ export async function start(
   const capAt = started + STARTUP_ABSOLUTE_CAP;
   args.startup?.phase('import, state restore and presets', identity.runtime?.kind ?? 'power-pages');
   let progressCursor,
-    lastProgress = Date.now(),
+    lastProgress = startup.now(),
     discovered = false;
   try {
-    while (Date.now() < Math.min(lastProgress + timeout, capAt) && !startup.cancelled()) {
+    while (startup.now() < Math.min(lastProgress + timeout, capAt) && !startup.cancelled()) {
       const progress = await readStartupPhases(log, progressCursor).catch(() => null);
       if (progress) {
         progressCursor = progress.cursor;
-        if (progress.events.length) lastProgress = Date.now();
+        if (progress.events.length) lastProgress = startup.now();
         for (const event of progress.events)
           args.startup?.phase(
             event.phase.replaceAll('-', ' '),
@@ -1411,7 +1440,7 @@ export async function start(
         const record = JSON.parse(await fs.readFile(discovery, 'utf8'));
         if (!discovered) {
           discovered = true;
-          lastProgress = Date.now();
+          lastProgress = startup.now();
         }
         const portal = Array.isArray(record.portals)
           ? (record.portals.find((item) => item.id === (identity.portal ?? '')) ?? record.portals[0])
@@ -1466,21 +1495,21 @@ export async function start(
       } catch {
         startup.check(); /* server has not written its discovery file yet */
       }
-      if (!isAlive(child.pid)) {
+      if (!startup.alive(child.pid)) {
         await abandon();
         throw await exitedBeforeReady(log, paths.logRoot);
       }
-      await delay(150, undefined, { signal: startup.signal });
+      await startup.sleep(150, { signal: startup.signal });
     }
     await abandon();
     startup.check();
     const portMessage = port === '0' ? '' : ' on port ' + port;
-    if (Date.now() >= capAt)
+    if (startup.now() >= capAt)
       throw new Error(
         `Mirage did not become ready within the ${STARTUP_ABSOLUTE_CAP} ms start-up cap${portMessage}. See startup log: ${log}`,
       );
     throw new Error(
-      `Mirage reported no start-up progress for ${Date.now() - lastProgress} ms${portMessage} (--startup-timeout ${timeout} ms). See startup log: ${log}`,
+      `Mirage reported no start-up progress for ${startup.now() - lastProgress} ms${portMessage} (--startup-timeout ${timeout} ms). See startup log: ${log}`,
     );
   } catch (error) {
     error.writesFiles = [log, paths.ownershipFile].filter((file) => fsSync.existsSync(file));
@@ -1524,25 +1553,60 @@ function stateFileConflict(entry, identity) {
 }
 
 /** A live runtime with a verified start identity owns this state file with other settings: its saves would be overwritten. */
-async function refuseStateFileOwner(owned, identity, signal) {
+async function refuseStateFileOwner(owned, identity, { signal, identityOf, alive = isAlive }) {
   for (const entry of owned) {
-    if (!entry.processIdentity || !isAlive(entry.pid) || !sharesStateFile(entry, identity.stateFile)) continue;
+    if (!entry.processIdentity || !alive(entry.pid) || !sharesStateFile(entry, identity.stateFile)) continue;
     if (identityMatches(entry.identity, identity)) continue;
-    if ((await processIdentityAsync(entry.pid, { signal })) === entry.processIdentity)
-      throw stateFileConflict(entry, identity);
+    if ((await identityOf(entry.pid, { signal })) === entry.processIdentity) throw stateFileConflict(entry, identity);
   }
 }
 
 /**
- * Runs under the ownership lock, where a concurrent start's record is visible: a live record on this state file
- * refuses the start, whose child the caller then stops.
+ * Identities of the live records on this state file, read before the ownership lock: one read (PowerShell on
+ * Windows) can outlast the lock's staleness limit, and a takeover of the lock would then let two writers interleave.
  */
-function otherSessionsForStart(sessions, identity, startedPid) {
-  const rival = sessions.find(
-    (item) => item.pid !== startedPid && isAlive(item.pid) && sharesStateFile(item, identity.stateFile),
-  );
-  if (rival) throw stateFileConflict(rival, identity);
-  return sessions.filter((item) => item.pid !== startedPid);
+async function rivalIdentities(paths, { childPid, identity, startup }) {
+  const identities = new Map();
+  for (const item of await ownedSessions(paths)) {
+    if (item.pid === childPid || !item.processIdentity || !startup.alive(item.pid)) continue;
+    if (sharesStateFile(item, identity.stateFile))
+      identities.set(item.pid, {
+        recorded: item.processIdentity,
+        current: await startup.identityOf(item.pid, { signal: startup.signal }),
+      });
+  }
+  return identities;
+}
+
+/**
+ * Runs under the ownership lock, where a concurrent start's record is visible: a live rival on this state file
+ * refuses the start, whose child the caller then stops. A record whose PID no longer carries its start identity
+ * belongs to an exited runtime, so it is dropped instead. A record whose identity cannot be read is kept.
+ * The identities come from `identities`, read before the lock, so this stays synchronous.
+ */
+function otherSessionsForStart(sessions, identity, startedPid, { alive = isAlive, identities = new Map() } = {}) {
+  const kept = [];
+  for (const item of sessions) {
+    if (item.pid === startedPid) continue;
+    const state = rivalState(item, identity, { alive, identities });
+    if (state === 'rival') throw stateFileConflict(item, identity);
+    if (state !== 'stale') kept.push(item);
+  }
+  return kept;
+}
+
+/**
+ * 'rival': a live runtime still has this record's start identity. 'stale': its PID now belongs to another process.
+ * 'other': not a live record on this state file, or its current identity is unread. A record that was not read
+ * before the lock, or that replaced the record read for its PID, was written by a start still running, so its
+ * recorded identity stands as the current one.
+ */
+function rivalState(item, identity, { alive, identities }) {
+  if (!item.processIdentity || !alive(item.pid) || !sharesStateFile(item, identity.stateFile)) return 'other';
+  const read = identities.get(item.pid);
+  const current = read?.recorded === item.processIdentity ? read.current : item.processIdentity;
+  if (current == null) return 'other';
+  return current === item.processIdentity ? 'rival' : 'stale';
 }
 
 // Startup logs of the newest 20 unreferenced starts are kept; a log named by an owned record is always kept.
@@ -2289,27 +2353,32 @@ export async function portalSelection(cfg, args, running) {
   return { selection: { mode: 'all', initial, targets: [...targets, ...live] }, live: live.length, note };
 }
 
-export async function stopStarted(portals, paths, stop = stopOwnedSessions) {
-  await guardShutdownSignals(async () => {
-    for (const portal of portals.filter((item) => item.session?.started)) {
-      const report = await stop({ paths, pids: [portal.session.pid] }).catch((error) => ({
-        stopped: [],
-        error,
-      }));
-      if (report.stopped?.length)
-        console.log(`mirage   stopped ${portal.site} ${portal.session.url} (pid ${portal.session.pid})`);
-      else {
-        let retry;
-        try {
-          retry = `run: ${await sessionStopHint([portal], paths, { cleanupOnError: false })}`;
-        } catch (error) {
-          retry = `a retry command could not be prepared: ${error.message}`;
+export async function stopStarted(portals, paths, stop = stopOwnedSessions, { source = process } = {}) {
+  await guardShutdownSignals(
+    async () => {
+      for (const portal of portals.filter((item) => item.session?.started)) {
+        const report = await stop({ paths, pids: [portal.session.pid] }).catch((error) => ({
+          stopped: [],
+          error,
+        }));
+        if (report.stopped?.length)
+          console.log(`mirage   stopped ${portal.site} ${portal.session.url} (pid ${portal.session.pid})`);
+        else {
+          let retry;
+          try {
+            retry = `run: ${await sessionStopHint([portal], paths, { cleanupOnError: false })}`;
+          } catch (error) {
+            retry = `a retry command could not be prepared: ${error.message}`;
+          }
+          const errorMessage = report.error ? ': ' + report.error.message : '';
+          console.error(`mirage   could not stop ${portal.site} pid ${portal.session.pid}${errorMessage}; ${retry}`);
+          process.exitCode ||= 1;
         }
-        const errorMessage = report.error ? ': ' + report.error.message : '';
-        console.log(`mirage   could not stop ${portal.site} pid ${portal.session.pid}${errorMessage}; ${retry}`);
       }
-    }
-  });
+    },
+    undefined,
+    { source },
+  );
 }
 
 /** Starts the planned portals, then reports them (start) or opens them with the live targets (dev). */
@@ -3031,8 +3100,7 @@ function validateAllowedOptions(args, action, allowedOptions) {
   const stop = await sessionStopHint([{ cfg, args: effective, session }], paths);
   if (action === 'dev') {
     if (launch.runtime?.kind && launch.runtime.kind !== 'power-pages') {
-      const controller = new AbortController();
-      const interrupt = () => controller.abort(new Error('Code App development stopped.'));
+      const { controller, interrupt, interrupted } = codeAppInterrupt();
       process.once('SIGINT', interrupt);
       process.once('SIGTERM', interrupt);
       let servers;
@@ -3049,23 +3117,16 @@ function validateAllowedOptions(args, action, allowedOptions) {
           ),
         );
       } catch (error) {
-        if (controller.signal.aborted && controller.signal.reason?.message === 'Code App development stopped.')
-          return 0;
+        // Only the interrupt's own reason is an interrupt: a failed Code App server aborts with its error.
+        if (interrupted(error) || codeAppStartupInterrupted(error)) return 0;
         throw error;
       } finally {
         process.off('SIGINT', interrupt);
         process.off('SIGTERM', interrupt);
-        await guardShutdownSignals(async () => {
-          try {
-            await servers?.close();
-          } finally {
-            if (session.started) await stopOwnedSessions({ paths, pids: [session.pid] });
-          }
-        });
+        await guardShutdownSignals(() => stopDevelopmentSession(servers, session, paths, stop));
       }
     }
-    const controller = new AbortController();
-    const interrupt = () => controller.abort(new Error('Code App development stopped.'));
+    const { controller, interrupt, interrupted } = codeAppInterrupt();
     process.once('SIGINT', interrupt);
     process.once('SIGTERM', interrupt);
     let codeAppServers;
@@ -3130,9 +3191,8 @@ function validateAllowedOptions(args, action, allowedOptions) {
       const result = await withMirageDebugOutput([session], () =>
         runDev(localCfg, { ...effective, mirageTarget: localCfg, codeAppSignal: controller.signal }),
       );
-      if (controller.signal.aborted && controller.signal.reason?.message !== 'Code App development stopped.')
-        throw controller.signal.reason;
-      return controller.signal.aborted ? 0 : result;
+      if (controller.signal.aborted && !interrupted()) throw controller.signal.reason;
+      return result;
     } finally {
       process.off('SIGINT', interrupt);
       process.off('SIGTERM', interrupt);
@@ -3144,23 +3204,28 @@ function validateAllowedOptions(args, action, allowedOptions) {
   return 0;
 }
 
-async function stopDevelopmentSession(codeAppServers, session, paths, stop) {
+export async function stopDevelopmentSession(
+  codeAppServers,
+  session,
+  paths,
+  stop,
+  { stopSessions = stopOwnedSessions, report = console.error } = {},
+) {
   try {
-    await codeAppServers.close();
+    await codeAppServers?.close();
   } finally {
     if (session.started) {
-      const report = await stopOwnedSessions({ paths, pids: [session.pid] }).catch((error) => ({
+      const outcome = await stopSessions({ paths, pids: [session.pid] }).catch((error) => ({
         stopped: [],
         remaining: [{ pid: session.pid }],
         error,
       }));
-      let message;
-      if (report.stopped.length) message = `mirage   stopped ${session.url} (pid ${session.pid})`;
+      if (outcome.stopped.length) console.log(`mirage   stopped ${session.url} (pid ${session.pid})`);
       else {
-        const errorMessage = report.error ? ': ' + report.error.message : '';
-        message = `mirage   could not stop pid ${session.pid}${errorMessage}; run: ${stop}`;
+        const errorMessage = outcome.error ? ': ' + outcome.error.message : '';
+        report(`mirage   could not stop pid ${session.pid}${errorMessage}; run: ${stop}`);
+        process.exitCode ||= 1;
       }
-      console.log(message);
     }
   }
 }

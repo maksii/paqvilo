@@ -11,7 +11,7 @@ import { execFileSync } from 'node:child_process';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 
-import { startModelDrivenInspector } from '../lense/model-driven-inspector.mjs';
+import { NATIVE_READ_GUARD_MS, startModelDrivenInspector } from '../lense/model-driven-inspector.mjs';
 import { startAgentServer } from '../lense/agent-server.mjs';
 import { EventEmitter } from 'node:events';
 import { createModelDrivenOverlay } from '../lense/model-driven.mjs';
@@ -19,6 +19,7 @@ import { interceptOrigin } from '../lense/intercept.mjs';
 import { readModelDrivenNativeSource } from '../lense/model-driven-native-comparison.mjs';
 import { panelUi } from '../lense/panel-ui.mjs';
 import { modelDrivenPanelData } from '../lense/model-driven-panel.mjs';
+import { modelDrivenInspectorUi } from '../lense/model-driven-inspector-ui.mjs';
 
 let browser;
 before(async () => {
@@ -26,14 +27,77 @@ before(async () => {
 });
 after(() => browser?.close());
 
-// The inspector publishes no change event; poll its own snapshot until the expected state or the test ends.
-async function settled(inspector, ready, signal) {
-  while (!ready(inspector.snapshot()) && !signal.aborted) await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.ok(ready(inspector.snapshot()), 'inspector state settled');
+// Resolves on the first panel redraw that starts after the request and after the inspector's refresh has completed.
+// The inspector also redraws while a refresh is pending; such a redraw does not resolve the promise.
+function redrawEvents(page, inspectorOf) {
+  const evaluate = page.evaluate.bind(page);
+  let asked = [];
+  page.evaluate = (fn, input) => {
+    if (fn !== modelDrivenInspectorUi) return evaluate(fn, input);
+    const waiting = inspectorOf()?.snapshot().pendingInspection === false ? asked : [];
+    if (waiting === asked) asked = [];
+    return evaluate(fn, input).finally(() => {
+      for (const resolve of waiting) resolve();
+    });
+  };
+  return () =>
+    new Promise((resolve) => {
+      asked.push(resolve);
+    });
+}
+
+// Records the guards an inspector arms. A guard expires only when a test calls its expire(); an operation that
+// settles cancels its guard, which the record shows.
+function guardScheduler() {
+  const guards = [];
+  let notify = () => {};
+  const open = (since) => guards.slice(since).filter((guard) => !guard.cancelled);
+  return {
+    guards,
+    armed: () => guards.length,
+    scheduleGuard(expire, ms) {
+      const guard = { ms, cancelled: false, expired: false, expire: () => expireGuard(guard, expire) };
+      guards.push(guard);
+      notify();
+      return () => {
+        guard.cancelled = true;
+      };
+    },
+    // Resolves with the guards armed from index since that are still pending, once there are at least count of them.
+    async pending(count, since) {
+      while (open(since).length < count)
+        await new Promise((resolve) => {
+          notify = resolve;
+        });
+      return open(since);
+    },
+  };
+}
+function expireGuard(guard, expire) {
+  guard.expired = true;
+  expire();
+}
+
+// Wraps a frame: its provider disposal call goes to onDisposal(target, fn, input), other calls pass through.
+function disposalGatedFrame(frame, onDisposal) {
+  return new Proxy(frame, {
+    get(target, key) {
+      if (key !== 'evaluate') {
+        const value = Reflect.get(target, key, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      }
+      return (fn, input) => {
+        if (!String(fn).includes('provider.dispose()')) return target.evaluate(fn, input);
+        return onDisposal(target, fn, input);
+      };
+    },
+  });
 }
 
 async function modelPanelFixture(t, { nativeBody, withGit = true, archive = false, nativeReadGuardMs } = {}) {
   const owner = ownedFixture(t),
+    f = { agentClosed: false },
+    guards = guardScheduler(),
     root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'model-panel-parity-'));
   // Async Git reads started by a refresh can still hold the directory briefly on Windows.
   owner.remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 10 }));
@@ -76,6 +140,7 @@ async function modelPanelFixture(t, { nativeBody, withGit = true, archive = fals
   owner.add(() => context.close());
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
+  const nextRedraw = redrawEvents(page, () => inspector);
   const makeImported = (data) => ({
     assets: new Map([
       [
@@ -105,6 +170,7 @@ async function modelPanelFixture(t, { nativeBody, withGit = true, archive = fals
     overlay,
     imported,
     nativeReadGuardMs,
+    scheduleGuard: guards.scheduleGuard,
     cfg: { origin, stateDir: path.join(root, '.state'), sourceDir: root },
     runtime: {
       liveReload: false,
@@ -126,12 +192,19 @@ async function modelPanelFixture(t, { nativeBody, withGit = true, archive = fals
     options: { deferred: true, ownsPage: (candidate) => candidate === page },
   });
   agent.setInspector(inspector.agentState);
-  // The failed-removal test asserts this rejection itself; teardown only releases what remains.
-  owner.add(() => agent.close().catch(() => {}));
+  // The failed-removal test asserts this rejection, then marks the agent closed so teardown skips it.
+  owner.add(() => (f.agentClosed ? undefined : agent.close()));
   await page.goto(origin + '/main.aspx');
   await page.locator('#paqvilo-panel').waitFor();
   await page.keyboard.press('Alt+Shift+P');
-  return {
+  // The inspector installs its provider asynchronously after it starts; every test that uses this fixture starts here.
+  await page.waitForFunction(() => typeof globalThis.__paqviloModelDrivenProvider === 'object');
+  assert.equal(await page.evaluate(() => typeof globalThis.__paqviloModelDrivenProvider), 'object');
+  // The start-up inspection is still running when the provider appears. Wait for its completed redraw, so every test
+  // starts from an idle inspector and its own refresh is the only one in flight.
+  if (inspector.snapshot().pendingInspection) await nextRedraw();
+  assert.equal(inspector.snapshot().pendingInspection, false, 'the start-up inspection has completed');
+  return Object.assign(f, {
     root,
     file,
     page,
@@ -139,12 +212,14 @@ async function modelPanelFixture(t, { nativeBody, withGit = true, archive = fals
     overlay,
     inspector,
     agent,
+    guards,
+    nextRedraw,
     origin,
     errors,
     makeImported,
     nativeHeaders,
     getLive: () => live,
-  };
+  });
 }
 
 test('canonical model panel executes actual source controls, preserves Actions drafts and shares Power Pages chrome', async (t) => {
@@ -162,10 +237,12 @@ test('canonical model panel executes actual source controls, preserves Actions d
   const editor = host.getByRole('textbox', { name: 'Command JavaScript', exact: true });
   await editor.fill('return "draft retained";');
   await editor.evaluate((node) => node.setSelectionRange(3, 7));
+  const redrawn = f.nextRedraw();
   inspector.refresh();
   // The refresh is pending until its panel redraw has finished; check the draft after that.
   assert.equal(inspector.snapshot().pendingInspection, true);
-  await settled(inspector, (state) => !state.pendingInspection, t.signal);
+  await redrawn;
+  assert.equal(inspector.snapshot().pendingInspection, false, 'the refresh has completed');
   assert.equal(await editor.inputValue(), 'return "draft retained";');
   await host.getByRole('tab', { name: /^Overrides/ }).click();
   await host.getByRole('tab', { name: 'Actions', exact: true }).click();
@@ -303,35 +380,36 @@ test('comparison preserves UTF8 BOM and rejects a stale source revision without 
 test('a paused comparison evaluator releases its lease at the Node deadline and permits a fresh read', async (t) => {
   const f = await modelPanelFixture(t, { nativeReadGuardMs: 1500 }),
     original = f.page.evaluate.bind(f.page);
-  // The guard timer is created synchronously after the paused read starts; only that window uses
-  // mock timers, and the guard elapses at once instead of after its real duration.
+  // The paused read is gated. The gate reports the index of the guard the read arms, which is the next one armed.
   let paused = 0,
     settled = false,
-    settledBeforeDeadline;
+    enteredGate;
+  const entered = new Promise((resolve) => {
+    enteredGate = resolve;
+  });
   f.page.evaluate = (fn, input) => {
     if (fn.name !== 'readModelDrivenNativeSource') return original(fn, input);
     paused++;
-    t.mock.timers.enable({ apis: ['setTimeout'] });
-    queueMicrotask(async () => {
-      // A result released early would reach Node within this real 300 ms window (immediates are not mocked).
-      t.mock.timers.tick(1_499);
-      for (const end = performance.now() + 300; performance.now() < end;)
-        await new Promise((resolve) => setImmediate(resolve));
-      settledBeforeDeadline = settled;
-      t.mock.timers.tick(1);
-      t.mock.timers.reset();
-    });
+    enteredGate(f.guards.armed());
     return new Promise(() => {});
   };
   const token = f.inspector.snapshot().token;
-  const result = await original(
+  const pending = original(
     (token) => window.__paqviloModelPanelApi({ token, name: 'diff', body: { rel: 'x_script.js' } }),
     token,
   ).finally(() => {
     settled = true;
   });
+  const [guard] = await f.guards.pending(1, await entered);
+  assert.equal(guard.ms, 1500);
+  // The catalogue is answered from Node state over the same page channel, so a reply to the paused read would have
+  // arrived before this one.
+  const catalogue = await original((token) => window.__paqviloModelPanelApi({ token, name: 'catalog' }), token);
+  assert.equal(catalogue.ok, true);
+  assert.equal(settled, false, 'the paused read is still awaited while its guard is pending');
+  guard.expire();
+  const result = await pending;
   assert.equal(paused, 1);
-  assert.equal(settledBeforeDeadline, false, 'the paused read is still awaited 1 ms before the guard');
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'native-read-timed-out');
   assert.match(result.error, /1500 ms/);
@@ -348,32 +426,38 @@ test('a native structure read that answers after ten seconds is kept under the d
   const f = await modelPanelFixture(t),
     original = f.page.evaluate.bind(f.page),
     token = f.inspector.snapshot().token;
-  // The startup structure read is the only page evaluation that selects the document scope; it is gated here so
-  // that the mocked clock passes the guard before the answer arrives.
+  // The refresh's structure read is the only page evaluation that selects the document scope; it is gated here and
+  // answers only after the test has seen its guard armed and still pending.
+  let enteredGate, release;
+  const entered = new Promise((resolve) => {
+    enteredGate = resolve;
+  });
   f.page.evaluate = (fn, input) => {
     if (!String(fn).includes('getSelectionScope(document.documentElement)')) return original(fn, input);
-    t.mock.timers.enable({ apis: ['setTimeout'] });
-    let release;
-    queueMicrotask(() => {
-      t.mock.timers.tick(10_000);
-      t.mock.timers.reset();
-      release({ invented: 'structure' });
-    });
+    enteredGate(f.guards.armed());
     return new Promise((resolve) => {
       release = resolve;
     });
   };
   try {
-    await original(
+    const pending = original(
       (token) => window.__paqviloModelPanelApi({ token, name: 'inspect', body: { refresh: true } }),
       token,
     );
-    await settled(
-      f.inspector,
-      (state) => state.nativeStructure?.invented === 'structure',
-      new AbortController().signal,
+    const [guard] = await f.guards.pending(1, await entered);
+    assert.equal(guard.ms, NATIVE_READ_GUARD_MS);
+    assert.equal(
+      f.guards.guards.some((item) => item.expired),
+      false,
+      'no guard expires before the answer arrives',
     );
+    const redrawn = f.nextRedraw();
+    release({ invented: 'structure' });
+    await redrawn;
+    await pending;
     assert.deepEqual(f.inspector.snapshot().nativeStructure, { invented: 'structure' });
+    assert.equal(guard.cancelled, true, 'the answer settles the read and cancels its guard');
+    assert.equal(guard.expired, false, 'the answered read never expires its guard');
   } finally {
     f.page.evaluate = original;
   }
@@ -383,25 +467,26 @@ test('a native structure read that never answers reports native-read-timed-out u
   const f = await modelPanelFixture(t, { nativeReadGuardMs: 1000 }),
     original = f.page.evaluate.bind(f.page),
     token = f.inspector.snapshot().token;
+  let enteredGate;
+  const entered = new Promise((resolve) => {
+    enteredGate = resolve;
+  });
   f.page.evaluate = (fn, input) => {
     if (!String(fn).includes('getSelectionScope(document.documentElement)')) return original(fn, input);
-    t.mock.timers.enable({ apis: ['setTimeout'] });
-    queueMicrotask(() => {
-      t.mock.timers.tick(1_000);
-      t.mock.timers.reset();
-    });
+    enteredGate(f.guards.armed());
     return new Promise(() => {});
   };
   try {
-    await original(
+    const pending = original(
       (token) => window.__paqviloModelPanelApi({ token, name: 'inspect', body: { refresh: true } }),
       token,
     );
-    await settled(
-      f.inspector,
-      (state) => state.problems.some((item) => item.code === 'native-read-timed-out'),
-      new AbortController().signal,
-    );
+    const [guard] = await f.guards.pending(1, await entered);
+    assert.equal(guard.ms, 1000);
+    const redrawn = f.nextRedraw();
+    guard.expire();
+    await redrawn;
+    await pending;
     const state = f.inspector.snapshot(),
       problem = state.problems.find((item) => item.code === 'native-read-timed-out');
     assert.equal(state.nativeStructure, null);
@@ -417,6 +502,7 @@ test('owned provider cleanup that answers after five seconds completes and dispo
     realFrames = f.page.frames.bind(f.page);
   assert.equal(await f.page.evaluate(() => typeof globalThis.__paqviloModelDrivenProvider), 'object');
   // Each frame the cleanup visits is wrapped so that only the provider disposal call is gated.
+  // The gate resolves with the guard index that the disposal arms.
   let answerDispose, requestDispose, markRetired;
   const requested = new Promise((resolve) => {
       requestDispose = resolve;
@@ -425,25 +511,11 @@ test('owned provider cleanup that answers after five seconds completes and dispo
       markRetired = resolve;
     });
   const gated = (frame) =>
-    new Proxy(frame, {
-      get(target, key) {
-        if (key !== 'evaluate') {
-          const value = Reflect.get(target, key, target);
-          return typeof value === 'function' ? value.bind(target) : value;
-        }
-        return (fn, input) => {
-          if (!String(fn).includes('provider.dispose()')) return target.evaluate(fn, input);
-          requestDispose();
-          t.mock.timers.enable({ apis: ['setTimeout'] });
-          queueMicrotask(() => {
-            t.mock.timers.tick(5_000);
-            t.mock.timers.reset();
-          });
-          return new Promise((resolve) => {
-            answerDispose = () => resolve(target.evaluate(fn, input));
-          });
-        };
-      },
+    disposalGatedFrame(frame, (target, fn, input) => {
+      requestDispose(f.guards.armed());
+      return new Promise((resolve) => {
+        answerDispose = () => resolve(target.evaluate(fn, input));
+      });
     });
   f.page.frames = () => realFrames().map(gated);
   const originalEvaluate = f.page.evaluate.bind(f.page);
@@ -452,24 +524,24 @@ test('owned provider cleanup that answers after five seconds completes and dispo
     return String(fn).includes('__paqviloRetiredModelInspectors') ? call.finally(markRetired) : call;
   };
   try {
-    let closed = false;
     const closing = f.inspector.close();
-    closing.then(
-      () => {
-        closed = true;
-      },
-      () => {
-        closed = true;
-      },
-    );
-    await requested;
+    // A failed close is reported by the await below; this handler only keeps a rejection from going unhandled earlier.
+    closing.catch(() => {});
+    const disposalFrom = await requested;
     // The retirement runs alongside the disposal, so it completes while the disposal is still unanswered; close must
     // still wait for the disposal.
     await retirementDone;
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(closed, false, 'close waits for the owned provider disposal to answer');
+    const [disposal] = await f.guards.pending(1, disposalFrom);
+    assert.equal(disposal.ms, NATIVE_READ_GUARD_MS);
+    assert.equal(
+      f.guards.guards.some((item) => item.expired),
+      false,
+      'no guard expires while the disposal is unanswered',
+    );
     answerDispose();
     await closing;
+    assert.equal(disposal.cancelled, true, 'the answered disposal cancels its guard');
+    assert.equal(disposal.expired, false, 'the answered disposal never expires its guard');
     assert.equal(await originalEvaluate(() => globalThis.__paqviloModelDrivenProvider), undefined);
   } finally {
     f.page.evaluate = originalEvaluate;
@@ -480,30 +552,24 @@ test('owned provider cleanup that answers after five seconds completes and dispo
 test('owned provider cleanup that never answers records the leak in the session log and still completes close', async (t) => {
   const f = await modelPanelFixture(t, { nativeReadGuardMs: 1000 }),
     realFrames = f.page.frames.bind(f.page);
-  // The disposal is never answered: only the mocked guard, advanced once the call is in flight, ends the wait.
+  // The disposal is never answered: only the expiry of its own guard ends the wait.
+  let requestDispose;
+  const requested = new Promise((resolve) => {
+    requestDispose = resolve;
+  });
   f.page.frames = () =>
-    realFrames().map(
-      (frame) =>
-        new Proxy(frame, {
-          get(target, key) {
-            if (key !== 'evaluate') {
-              const value = Reflect.get(target, key, target);
-              return typeof value === 'function' ? value.bind(target) : value;
-            }
-            return (fn, input) => {
-              if (!String(fn).includes('provider.dispose()')) return target.evaluate(fn, input);
-              t.mock.timers.enable({ apis: ['setTimeout'] });
-              queueMicrotask(() => {
-                t.mock.timers.tick(1_000);
-                t.mock.timers.reset();
-              });
-              return new Promise(() => {});
-            };
-          },
-        }),
+    realFrames().map((frame) =>
+      disposalGatedFrame(frame, () => {
+        requestDispose(f.guards.armed());
+        return new Promise(() => {});
+      }),
     );
   try {
-    await f.inspector.close();
+    const closing = f.inspector.close();
+    const [disposal] = await f.guards.pending(1, await requested);
+    assert.equal(disposal.ms, 1000);
+    disposal.expire();
+    await closing;
     const problem = f.inspector.snapshot().problems.find((item) => item.code === 'cleanup-timed-out');
     assert.ok(problem, 'the unanswered disposal is recorded in the session log');
     assert.match(problem.text, /Owned provider disposal did not answer within 1000 ms/);
@@ -582,6 +648,7 @@ test('inspector drains shared-panel DOM and listeners even when owned discovery 
   f.agent.setInspector(null);
   await f.inspector.close();
   await assert.rejects(f.agent.close(), (cause) => ['EPERM', 'EISDIR', 'ERR_FS_EISDIR'].includes(cause.code));
+  f.agentClosed = true;
   await f.page.waitForFunction(
     () => !document.getElementById('paqvilo-panel') && !document.getElementById('paqvilo-xray'),
   );

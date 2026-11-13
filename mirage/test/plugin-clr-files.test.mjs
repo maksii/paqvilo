@@ -267,8 +267,11 @@ test(
     // Cleanup failure is finite and reported without replacing the original plugin fault.
     t.diagnostic('CLR file subcase: bounded cleanup failure preserves original exception');
     const unlink = syncFs.unlinkSync;
+    let busyMs = Date.now();
+    const busyClock = t.mock.method(Date, 'now', () => busyMs);
     syncFs.unlinkSync = function (file) {
       if (path.basename(path.dirname(file)).startsWith('clr-run-')) {
+        busyMs += 5000;
         const error = new Error('Invented busy fixture');
         error.code = 'EBUSY';
         error.syscall = 'unlink';
@@ -280,6 +283,7 @@ test(
       await assert.rejects(store.create('widget', { title: 'fault' }, { admin: true }), /ordinary owned fault/);
     } finally {
       syncFs.unlinkSync = unlink;
+      busyClock.mock.restore();
     }
     assert.ok(
       notes.some(
@@ -295,6 +299,36 @@ test(
     const allStops = notes.filter((n) => n.code === 'PLUGIN_CLR_HOST_STOPPED');
     assert.equal(allStops.length, 7);
     assert.ok(allStops.every((n) => n.absenceVerified));
+    // A snapshot file another process holds for two seconds after its host exited is still removed.
+    t.diagnostic('CLR file subcase: a snapshot file held for two seconds after its host exited is still removed');
+    const unlinkBeforeHold = syncFs.unlinkSync;
+    let heldMs = Date.now(),
+      heldCount = 0;
+    const heldClock = t.mock.method(Date, 'now', () => heldMs);
+    syncFs.unlinkSync = function (file) {
+      if (path.basename(path.dirname(file)).startsWith('clr-run-') && heldCount < 4) {
+        heldCount++;
+        heldMs += 500;
+        const error = new Error('Invented held fixture');
+        error.code = 'EBUSY';
+        error.syscall = 'unlink';
+        throw error;
+      }
+      return unlinkBeforeHold(file);
+    };
+    const heldNotesStart = notes.length;
+    try {
+      await assert.rejects(store.create('widget', { title: 'fault' }, { admin: true }), /ordinary owned fault/);
+    } finally {
+      syncFs.unlinkSync = unlinkBeforeHold;
+      heldClock.mock.restore();
+    }
+    assert.ok(!(await fs.readdir(cache)).some((n) => n.startsWith('clr-run-')));
+    assert.deepEqual(
+      notes.slice(heldNotesStart).filter((n) => n.code === 'PLUGIN_CLR_CLEANUP'),
+      [],
+    );
+    assert.equal(heldCount, 4, 'the stub held the snapshot for four removals');
     await fs.writeFile(assembly, 'changed original');
     await assert.rejects(store.create('widget', { title: 'ordinary' }, { admin: true }), /Trusted CLR bytes changed/);
     assert.ok(!(await fs.readdir(cache)).some((n) => n.startsWith('clr-run-')));

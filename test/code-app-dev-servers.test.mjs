@@ -10,10 +10,13 @@ import { spawn, spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { EventEmitter } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import { existsSync } from 'node:fs';
+import { createInterface } from 'node:readline';
+import { PassThrough } from 'node:stream';
 import { startCodeAppDevServers, launchOf, CODE_APP_STARTUP_CANCELLED } from '../lense/code-app-dev-servers.mjs';
 import { stopCodeAppDevServer } from '../lense/code-app-dev-stop.mjs';
+import { runWrapper } from '../lense/code-app-dev-wrapper.mjs';
 import { childStdioGate, assertChildStdioDrain } from '../test-browser/helpers/child-stdio-gate.mjs';
 import { ownedFixture, removeFixtureDirectory } from '../mirage/testing/owned-fixture.mjs';
 
@@ -237,6 +240,8 @@ test('multiple app servers start, reuse external listeners and stop only owned c
   const external = http.createServer((_req, res) => res.end('external'));
   await listen(external);
   ownedFixture(t).add(() => close(external));
+  // The owned app must really listen, so its port is reserved and released a moment before it starts. This is the only
+  // test that keeps a real listener: it asserts that the started app answers, which a stand-in cannot show.
   const reservation = http.createServer();
   await listen(reservation);
   const port = reservation.address().port;
@@ -246,6 +251,7 @@ test('multiple app servers start, reuse external listeners and stop only owned c
     script,
     "import http from 'node:http'; http.createServer((req,res)=>res.end(JSON.stringify({ app: process.env.PAQVILO_CODE_APP, origin: process.env.PAQVILO_MIRAGE_URL }))).listen(Number(process.env.APP_PORT),'127.0.0.1');",
   );
+  const children = [];
   const apps = [
     {
       name: 'external',
@@ -260,7 +266,11 @@ test('multiple app servers start, reuse external listeners and stop only owned c
       devServer: { command: [process.execPath, script], env: { APP_PORT: String(port) } },
     },
   ];
-  const session = await startCodeAppDevServers(apps, { output: () => {}, mirageUrl: 'http://127.0.0.1:4321' });
+  const session = await startCodeAppDevServers(apps, {
+    output: () => {},
+    mirageUrl: 'http://127.0.0.1:4321',
+    spawnChild: observedSpawn(children),
+  });
   ownedFixture(t).add(() => session.close());
   assert.equal(session.owned, 1);
   assert.deepEqual(await (await fetch(apps[1].localAppUrl)).json(), {
@@ -268,105 +278,255 @@ test('multiple app servers start, reuse external listeners and stop only owned c
     origin: 'http://127.0.0.1:4321',
   });
   await session.close();
-  await assert.rejects(fetch(apps[1].localAppUrl));
+  await children[0].closed;
+  assert.ok(children[0].child.exitCode !== null || children[0].child.signalCode !== null, 'the owned child has exited');
   assert.equal(await (await fetch(apps[0].localAppUrl)).text(), 'external');
 });
 
 test('failed startup drains already owned apps and never invokes a shell', async (t) => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'code-app-supervisor-fail-')));
   ownedFixture(t).remove(() => removeFixtureDirectory(root));
-  const server = http.createServer();
-  await listen(server);
-  const port = server.address().port;
-  await close(server);
-  const target = `http://127.0.0.1:${port}`;
-  const firstReservation = http.createServer();
-  await listen(firstReservation);
-  const firstPort = firstReservation.address().port;
-  await close(firstReservation);
   const script = path.join(root, 'first.mjs');
-  await fs.writeFile(
-    script,
-    "import http from 'node:http'; http.createServer((req,res)=>res.end('first')).listen(Number(process.env.APP_PORT),'127.0.0.1');",
-  );
+  await fs.writeFile(script, 'setInterval(() => {}, 1000);');
+  const children = [];
+  // The first app is ready once it has been started; the missing app's address never answers.
+  const connect = answersWhen((port) => port === 5387 && children.length > 0);
   await assert.rejects(
     startCodeAppDevServers(
       [
         {
           name: 'first',
           dir: root,
-          localAppUrl: `http://127.0.0.1:${firstPort}`,
-          devServer: { command: [process.execPath, script], env: { APP_PORT: String(firstPort) } },
+          localAppUrl: 'http://127.0.0.1:5387/',
+          devServer: { command: [process.execPath, script] },
         },
         {
           name: 'missing',
           dir: root,
-          localAppUrl: target,
+          localAppUrl: 'http://127.0.0.1:5386/',
           devServer: { command: ['definitely-missing-code-app-command'] },
         },
       ],
-      { output: () => {} },
+      { output: () => {}, connect, spawnChild: observedSpawn(children) },
     ),
     /could not start/,
   );
-  await assert.rejects(fetch(`http://127.0.0.1:${firstPort}`));
+  assert.ok(
+    children[0].child.exitCode !== null || children[0].child.signalCode !== null,
+    'the owned first app was drained before startup rejected',
+  );
+  await children[0].closed;
 });
 
-test('an exited app launcher does not orphan its listening descendant', async (t) => {
+test('an exited app launcher does not orphan its descendant', async (t) => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'code-app-tree-')));
   ownedFixture(t).remove(() => removeFixtureDirectory(root));
-  const reservation = http.createServer();
-  await listen(reservation);
-  const port = reservation.address().port;
-  await close(reservation);
   const worker = path.join(root, 'worker.mjs');
   const launcher = path.join(root, 'launcher.mjs');
+  // The worker reports its pid on the output the launcher passes through, and keeps running until it is ended.
   await fs.writeFile(
     worker,
-    "import http from 'node:http'; http.createServer((req,res)=>res.end('worker')).listen(Number(process.env.APP_PORT),'127.0.0.1',()=>process.send('ready'));",
+    "console.log(`worker ${process.pid}`); process.send('ready'); setInterval(() => {}, 1000);",
   );
   await fs.writeFile(
     launcher,
-    "import { fork } from 'node:child_process'; const child=fork(process.argv[2],{stdio:['ignore','ignore','ignore','ipc']}); child.once('message',()=>process.exit(1));",
+    "import { fork } from 'node:child_process'; const child=fork(process.argv[2],{stdio:['ignore','inherit','inherit','ipc']}); child.once('message',()=>process.exit(1));",
   );
-  let failed;
-  const failure = new Promise((resolve) => {
-    failed = resolve;
-  });
-  let session;
-  try {
-    session = await startCodeAppDevServers(
+  const output = [];
+  await assert.rejects(
+    startCodeAppDevServers(
       [
         {
           name: 'tree',
           dir: root,
-          localAppUrl: `http://127.0.0.1:${port}`,
-          devServer: {
-            command: [process.execPath, launcher, worker],
-            env: { APP_PORT: String(port) },
-            timeoutMs: 60_000,
-          },
+          localAppUrl: 'http://127.0.0.1:5385/',
+          devServer: { command: [process.execPath, launcher, worker], timeoutMs: 60_000 },
         },
       ],
-      { output: () => {}, onFailure: failed },
-    );
-    await failure;
-  } catch (error) {
-    assert.match(error.message, /exited/);
-  } finally {
-    await session?.close();
-  }
-  await assert.rejects(fetch(`http://127.0.0.1:${port}`));
+      { output: (text) => output.push(text), connect: refuseAll },
+    ),
+    /dev server exited/,
+  );
+  const pid = Number(/worker (\d+)/.exec(output.join(''))?.[1]);
+  assert.ok(pid > 0, `the worker reports its pid, got: ${JSON.stringify(output.join(''))}`);
+  await untilProcessGone(pid);
 });
 
-// Starts a dev server that prints and then stays alive without answering on its port. Resolves once it has printed.
+// The start-up loop waits through `sleep`. The double reports its first wait and holds it until the test releases it. A
+// second wait means the child's report did not end startup, so it is refused and the test fails rather than hangs.
+function heldFirstPoll() {
+  let polls = 0;
+  let markHeld;
+  let release;
+  const held = new Promise((resolve) => {
+    markHeld = resolve;
+  });
+  const released = new Promise((resolve) => {
+    release = resolve;
+  });
+  return {
+    held,
+    release: () => release(),
+    sleep: () => {
+      polls += 1;
+      if (polls > 1) return Promise.reject(new Error('startup polled again after the child reported'));
+      markHeld();
+      return released;
+    },
+  };
+}
+
+// Starts one app whose launch is wrapped (the Windows path) with a fake child, then delivers `message` from the child.
+// The child reports its message and its close while startup waits, so the test controls every step.
+async function startWrappedFake(message) {
+  const children = [];
+  const polls = heldFirstPoll();
+  const starting = startCodeAppDevServers(
+    [
+      {
+        name: 'wrapped',
+        dir: os.tmpdir(),
+        localAppUrl: 'http://127.0.0.1:5390/',
+        devServer: { command: ['invented-code-app-tool', '--flag'] },
+      },
+    ],
+    {
+      platform: 'win32',
+      output: () => {},
+      connect: refuseAll,
+      sleep: polls.sleep,
+      spawnChild: () => {
+        const child = fakeChild();
+        children.push(child);
+        return child;
+      },
+    },
+  );
+  await Promise.race([polls.held, starting]);
+  const [child] = children;
+  child.emit('message', message);
+  child.emit('close');
+  polls.release();
+  return { child, starting };
+}
+
+test('a wrapped launch reports its exit as the startup failure and sends the command once', async () => {
+  const { child, starting } = await startWrappedFake({ type: 'exit', code: 3 });
+  await assert.rejects(starting, (error) => error.message.startsWith('Code app wrapped dev server exited (3)'));
+  const cwd = await fs.realpath(os.tmpdir());
+  assert.deepEqual(child.sent, [{ command: ['invented-code-app-tool', '--flag'], verbatim: false, cwd }]);
+});
+
+test('a wrapped launch that reports a spawn error fails startup naming the error', async () => {
+  const { starting } = await startWrappedFake({ type: 'error', message: 'invented' });
+  await assert.rejects(starting, /could not start: invented/);
+});
+
+// A wrapper double: an EventEmitter with the IPC members the wrapper uses. `sent` records each report to the
+// supervisor.
+function wrapperSource() {
+  const source = new EventEmitter();
+  source.connected = true;
+  source.sent = [];
+  source.send = (message) => source.sent.push(message);
+  return source;
+}
+
+// Runs the wrapper on `source` and delivers the supervisor's launch message. The spawn double records its child and the
+// stop double records each child it is asked to end.
+function startWrapper(source) {
+  const children = [];
+  const stops = [];
+  runWrapper({
+    source,
+    spawnChild: () => {
+      const child = fakeChild();
+      children.push(child);
+      return child;
+    },
+    stop: (child) => {
+      stops.push(child);
+      return Promise.resolve();
+    },
+  });
+  source.emit('message', { command: ['invented-wrapped-tool'], cwd: '.', verbatim: false });
+  const [child] = children;
+  return { child, stops };
+}
+
+test('the wrapper reports its child exit while the supervisor is connected', () => {
+  const source = wrapperSource();
+  const { child } = startWrapper(source);
+  child.emit('exit', 3, null);
+  assert.deepEqual(source.sent, [{ type: 'exit', code: 3, signal: null }]);
+});
+
+test('the wrapper ends a live child once when the supervisor disconnects', () => {
+  const source = wrapperSource();
+  const { child, stops } = startWrapper(source);
+  source.connected = false;
+  source.emit('disconnect');
+  assert.deepEqual(stops, [child]);
+});
+
+test('the wrapper does not end a child that has already exited when the supervisor disconnects', () => {
+  const source = wrapperSource();
+  const { child, stops } = startWrapper(source);
+  child.exitCode = 0;
+  child.emit('exit', 0, null);
+  source.connected = false;
+  source.emit('disconnect');
+  assert.deepEqual(stops, []);
+});
+
+test('the wrapper sends nothing to the supervisor after it disconnects', () => {
+  const source = wrapperSource();
+  const { child } = startWrapper(source);
+  source.connected = false;
+  source.emit('disconnect');
+  child.emit('exit', 1, null);
+  assert.deepEqual(source.sent, []);
+});
+
+// Readiness double for tests that never open a socket: a loopback port answers when `ready(port)` says so.
+function answersWhen(ready) {
+  return (options, onResponse) => {
+    const request = new EventEmitter();
+    request.end = () => {
+      if (ready(Number(options.port))) onResponse({ statusCode: 200, destroy() {} });
+      else request.emit('error', new Error('not listening'));
+    };
+    return request;
+  };
+}
+const refuseAll = answersWhen(() => false);
+
+// Starts real children through the real spawn and records each with its close event, created at spawn so none is missed.
+function observedSpawn(children) {
+  return (file, args, options) => {
+    const child = spawn(file, args, options);
+    children.push({ child, closed: new Promise((resolve) => child.once('close', resolve)) });
+    return child;
+  };
+}
+
+// A child double for logic tests. It has no pid, so the product signals nothing, and the test emits the close event that
+// the product's stop waits for. The product does not end a child through child.kill(), so the double has no kill().
+function fakeChild() {
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.exitCode = null;
+  child.signalCode = null;
+  child.sent = [];
+  child.send = (message) => child.sent.push(message);
+  return child;
+}
+
+// Starts a dev server that prints and then stays alive without answering. Resolves once it has printed.
 async function startSilentServer(t, prefix, name) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
   ownedFixture(t).remove(() => removeFixtureDirectory(root));
-  const reservation = http.createServer();
-  await listen(reservation);
-  const port = reservation.address().port;
-  await close(reservation);
   const childScript = path.join(root, 'waiting.mjs');
   await fs.writeFile(childScript, "console.log('waiting'); setInterval(()=>{},1000);");
   const controller = new AbortController();
@@ -374,17 +534,20 @@ async function startSilentServer(t, prefix, name) {
   const started = new Promise((resolve) => {
     observed = resolve;
   });
+  const children = [];
   const pending = startCodeAppDevServers(
     [
       {
         name,
         dir: root,
-        localAppUrl: `http://127.0.0.1:${port}`,
+        localAppUrl: 'http://127.0.0.1:5389/',
         devServer: { command: [process.execPath, childScript], timeoutMs: 60_000 },
       },
     ],
     {
       signal: controller.signal,
+      connect: refuseAll,
+      spawnChild: observedSpawn(children),
       output: (text) => {
         if (text.includes('waiting')) observed();
       },
@@ -395,14 +558,15 @@ async function startSilentServer(t, prefix, name) {
     await pending.catch(() => {});
   });
   await started;
-  return { port, controller, pending };
+  return { controller, pending, ...children[0] };
 }
 
 test('cancelling startup closes an owned server that never becomes ready', async (t) => {
-  const { port, controller, pending } = await startSilentServer(t, 'code-app-cancel-', 'waiting');
+  const { controller, pending, child, closed } = await startSilentServer(t, 'code-app-cancel-', 'waiting');
   controller.abort(new Error('cancelled by test'));
   await assert.rejects(pending, /cancelled|abort/i);
-  await assert.rejects(fetch(`http://127.0.0.1:${port}`));
+  await closed;
+  assert.ok(child.exitCode !== null || child.signalCode !== null, 'the owned child has exited');
 });
 
 // The launched command writes its received arguments; readiness is granted only once that file exists.
@@ -434,6 +598,20 @@ const ARGUMENTS = [
   '!bang',
   '& echo pwned > marker.txt',
 ];
+// Each ARGUMENTS entry as it appears in the .cmd command line: escaped for cmd.exe, then escaped again for the shim's own
+// argument parsing. The order matches ARGUMENTS.
+const ESCAPED_ARGUMENTS = [
+  String.raw`^^^"a^^^ b^^^"`,
+  String.raw`^^^"x^^^&y^^^"`,
+  String.raw`^^^"say^^^ \^^^"hi\^^^"^^^"`,
+  String.raw`^^^"^^^%PATH^^^%^^^"`,
+  String.raw`^^^"c^^^^d^^^"`,
+  String.raw`^^^"e^^^|f^^^"`,
+  String.raw`^^^"trail\\^^^"`,
+  String.raw`^^^"^^^(p^^^)^^^"`,
+  String.raw`^^^"^^^!bang^^^"`,
+  String.raw`^^^"^^^&^^^ echo^^^ pwned^^^ ^^^>^^^ marker.txt^^^"`,
+];
 
 // Runs the echo command as a dev server, then checks the arguments it received and that no marker file was written.
 async function assertEchoServerArguments(root, name, localAppUrl) {
@@ -457,8 +635,9 @@ async function assertEchoServerArguments(root, name, localAppUrl) {
   }
 }
 
+// Runs a real .cmd shim through cmd.exe. The command line it is given is checked on every OS by the escaping test.
 test(
-  'a Windows .cmd shim receives every argument verbatim through the command interpreter (win32 only)',
+  'a real .cmd shim runs through cmd.exe and receives every argument verbatim (runs a real shim; win32 only)',
   { skip: process.platform !== 'win32' },
   async (t) => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'code-app-shim-')));
@@ -471,31 +650,42 @@ test(
     t.after(() => {
       process.env.PATH = originalPath;
     });
-    // The controlled PATH keeps the interpreter's system directory, which the stop path needs to find taskkill.
-    const system32 = path.join(process.env.SystemRoot ?? String.raw`C:\Windows`, 'System32');
-    process.env.PATH = [bin, path.dirname(process.execPath), system32].join(path.delimiter);
+    process.env.PATH = [bin, path.dirname(process.execPath)].join(path.delimiter);
     await assertEchoServerArguments(root, 'shim', 'http://127.0.0.1:5397/');
   },
 );
 
 // @test-kind security: a control character ends the cmd.exe line early and drops later arguments, so it must be refused before spawn.
-test(
-  'a .cmd shim refuses a control character in any command element before spawning, naming its 1-based position (win32 only)',
-  { skip: process.platform !== 'win32' },
-  async (t) => {
-    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'code-app-shim-control-')));
-    ownedFixture(t).remove(() => removeFixtureDirectory(root));
-    const shim = path.join(root, 'x.cmd');
-    await fs.writeFile(shim, '@echo off\r\n');
-    const refusals = [
-      [[shim, 'a\nb'], /argument 2 contains a line feed/],
-      [[shim, 'a\rb'], /argument 2 contains a carriage return/],
-      [[shim, 'a\0b'], /argument 2 contains a NUL/],
-      [[shim, 'a', 'b\nc'], /argument 3 contains a line feed/],
-    ];
-    for (const [command, pattern] of refusals) assert.throws(() => launchOf(command, root), pattern);
-  },
-);
+test('a .cmd shim refuses a control character in any command element before spawning, naming its 1-based position', async (t) => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'code-app-shim-control-')));
+  ownedFixture(t).remove(() => removeFixtureDirectory(root));
+  const shim = path.join(root, 'x.cmd');
+  await fs.writeFile(shim, '@echo off\r\n');
+  const windows = { platform: 'win32', env: { PATH: '', PATHEXT: '.CMD' } };
+  const refusals = [
+    [[shim, 'a\nb'], /argument 2 contains a line feed/],
+    [[shim, 'a\rb'], /argument 2 contains a carriage return/],
+    [[shim, 'a\0b'], /argument 2 contains a NUL/],
+    [[shim, 'a', 'b\nc'], /argument 3 contains a line feed/],
+  ];
+  for (const [command, pattern] of refusals) assert.throws(() => launchOf(command, root, windows), pattern);
+});
+
+// @test-kind contract: a resolved .cmd shim runs through cmd.exe, each argument escaped for cmd.exe and then for the shim.
+test('a .cmd shim command line names the resolved file and escapes every verbatim argument twice', () => {
+  const shim = path.join('bin', 'tool.CMD');
+  const comSpec = String.raw`C:\invented\cmd.exe`;
+  const launch = launchOf(['tool', ...ARGUMENTS], os.tmpdir(), {
+    platform: 'win32',
+    env: { PATH: 'bin', PATHEXT: '.CMD', ComSpec: comSpec },
+    isFile: (file) => file === shim,
+  });
+  const line = [shim, ...ESCAPED_ARGUMENTS].join(' ');
+  assert.deepEqual(launch.message, {
+    command: [comSpec, '/d', '/s', '/c', `"${line}"`],
+    verbatim: true,
+  });
+});
 
 // @test-kind security: a control character is only a shim hazard, so a plain executable keeps its arguments exactly as given.
 test('a non-shim executable keeps a newline argument unchanged in its launch descriptor', () => {
@@ -525,9 +715,10 @@ test(
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     });
     const exited = new Promise((resolve) => wrapper.once('exit', resolve));
+    const closed = new Promise((resolve) => wrapper.once('close', resolve));
+    // Only a failed assertion leaves the wrapper running here; the product's own stop then ends its tree.
     t.after(() => {
-      if (wrapper.exitCode === null && wrapper.signalCode === null)
-        spawnSync('taskkill', ['/pid', String(wrapper.pid), '/t', '/f']);
+      if (wrapper.exitCode === null && wrapper.signalCode === null) return stopCodeAppDevServer(wrapper, closed);
     });
     wrapper.stderr.resume();
     const line = `"${launcher}"`;
@@ -536,17 +727,39 @@ test(
       cwd: root,
       verbatim: true,
     });
-    const output = await new Promise((resolve) => {
-      wrapper.stdout.once('data', (chunk) => resolve(String(chunk)));
-      exited.then(() => resolve(''));
-    });
-    const pid = Number(/pid (\d+)/.exec(output)?.[1]);
-    assert.ok(pid > 0, `the launcher reports its descendant pid, got: ${JSON.stringify(output)}`);
+    // A pid is read from a complete line only: a data chunk may end inside the number.
+    const lines = createInterface({ input: wrapper.stdout });
+    const [report = ''] = await Promise.race([once(lines, 'line'), exited.then(() => [])]);
+    const pid = Number(/pid (\d+)/.exec(report)?.[1]);
+    assert.ok(pid > 0, `the launcher reports its descendant pid, got: ${JSON.stringify(report)}`);
     wrapper.disconnect();
     await exited;
     await untilProcessGone(pid);
   },
 );
+
+test('the wrapper runs its launch when started through a linked path', async (t) => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'code-app-linked-')));
+  const link = path.join(root, 'linked');
+  // A directory link (a junction on Windows) to the lense folder. Only the link is removed, and never recursively.
+  await fs.symlink(fileURLToPath(new URL('../lense', import.meta.url)), link, 'junction');
+  const wrapper = spawn(process.execPath, [path.join(link, 'code-app-dev-wrapper.mjs')], {
+    shell: false,
+    windowsHide: true,
+    stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+  });
+  const exited = new Promise((resolve) => wrapper.once('exit', resolve));
+  t.after(async () => {
+    if (wrapper.connected) wrapper.disconnect();
+    await exited;
+    await fs.rm(link, { force: true });
+    await fs.rmdir(root);
+  });
+  const reported = new Promise((resolve) => wrapper.once('message', resolve));
+  wrapper.send({ command: [process.execPath, '-e', ''], cwd: process.cwd(), verbatim: false });
+  const report = await reported;
+  assert.deepEqual(report, { type: 'exit', code: 0, signal: null });
+});
 
 // The launcher's descendant is not a child of this process, so it has no exit event; the wait ends when the pid is gone.
 async function untilProcessGone(pid) {
@@ -584,19 +797,33 @@ test(
   },
 );
 
-// Grace timers are fired by the test in order, so escalation is observed without waiting on the clock.
+// Grace timers are fired by the test in order, so escalation is observed without waiting on the clock. `armed(n)` resolves
+// when the product has armed its n-th grace timer, so a test waits for that call rather than for a turn of the event loop.
 function graceTimers() {
   const pending = [];
+  const waiting = [];
+  const delays = [];
+  let armedCount = 0;
   return {
-    pending,
-    schedule: (callback) => {
+    delays,
+    schedule: (callback, ms) => {
       pending.push(callback);
+      delays.push(ms);
+      armedCount += 1;
+      for (const check of waiting.splice(0)) check();
       return () => {};
     },
+    armed: (count) =>
+      new Promise((resolve) => {
+        const check = () => {
+          if (armedCount >= count) resolve();
+          else waiting.push(check);
+        };
+        check();
+      }),
     fire: () => pending.shift()(),
   };
 }
-const settle = () => new Promise((resolve) => setImmediate(resolve));
 
 test('stop escalates from SIGTERM to SIGKILL only after the grace period expires', async () => {
   const signals = [];
@@ -643,12 +870,58 @@ test('stop rejects naming the pid only after SIGKILL also fails to close the str
     schedule: timers.schedule,
   });
   const rejected = assert.rejects(stopping, /pid 4321 did not close its output streams/);
-  await settle();
+  await timers.armed(1);
   timers.fire();
-  await settle();
+  await timers.armed(2);
   assert.deepEqual(signals, ['SIGTERM', 'SIGKILL']);
+  // The first wait is the grace period; the last wait after SIGKILL is the hang guard, not the grace period.
+  assert.deepEqual(timers.delays, [5000, 60000]);
   timers.fire();
   await rejected;
+});
+
+// @test-kind contract: on POSIX a process group that already ended is not an error, while any other signal failure is.
+test('the POSIX stop treats an ended process group as stopped and rethrows other signal failures', async () => {
+  const signals = [];
+  const ended = Object.assign(new Error('no such process'), { code: 'ESRCH' });
+  const kill = (_pid, signal) => {
+    signals.push(signal);
+    throw ended;
+  };
+  await stopCodeAppDevServer({ pid: 4321 }, Promise.resolve(), {
+    platform: 'linux',
+    kill,
+    schedule: graceTimers().schedule,
+  });
+  assert.deepEqual(signals, ['SIGTERM']);
+  const denied = Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+  await assert.rejects(
+    stopCodeAppDevServer({ pid: 4321 }, new Promise(() => {}), {
+      platform: 'linux',
+      kill: () => {
+        throw denied;
+      },
+      schedule: graceTimers().schedule,
+    }),
+    (error) => error === denied,
+  );
+});
+
+// @test-kind contract: the Windows stop asks the injected tree killer for the child's pid, then waits for its close.
+test('the Windows stop ends the child tree through the injected killer and waits for its close', async () => {
+  const killed = [];
+  let closeChild;
+  const closed = new Promise((resolve) => {
+    closeChild = resolve;
+  });
+  const killTree = (pid) => {
+    killed.push(pid);
+    closeChild();
+  };
+  // A pid no process holds, so a run that ignores the injected killer cannot end a real process.
+  const child = { pid: 2147483646, exitCode: null, signalCode: null };
+  await stopCodeAppDevServer(child, closed, { platform: 'win32', killTree });
+  assert.deepEqual(killed, [2147483646]);
 });
 
 test(
@@ -665,7 +938,7 @@ test(
     await new Promise((resolve) => child.stdout.once('data', resolve));
     const timers = graceTimers();
     const stopping = stopCodeAppDevServer(child, closed, { schedule: timers.schedule });
-    await settle();
+    await timers.armed(1);
     timers.fire();
     await stopping;
     assert.throws(() => process.kill(child.pid, 0), { code: 'ESRCH' });
@@ -675,10 +948,6 @@ test(
 test('a dev server that exits during startup is reported with its exit status, not as an abort', async (t) => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'code-app-startup-exit-')));
   ownedFixture(t).remove(() => removeFixtureDirectory(root));
-  const reservation = http.createServer();
-  await listen(reservation);
-  const port = reservation.address().port;
-  await close(reservation);
   const script = path.join(root, 'exits.mjs');
   await fs.writeFile(script, "process.stdout.write('starting\\n'); process.exit(3);");
   const controller = new AbortController();
@@ -688,11 +957,16 @@ test('a dev server that exits during startup is reported with its exit status, n
         {
           name: 'exiting',
           dir: root,
-          localAppUrl: `http://127.0.0.1:${port}`,
+          localAppUrl: 'http://127.0.0.1:5388/',
           devServer: { command: [process.execPath, script], timeoutMs: 60_000 },
         },
       ],
-      { signal: controller.signal, onFailure: (error) => controller.abort(error), output: () => {} },
+      {
+        signal: controller.signal,
+        connect: refuseAll,
+        onFailure: (error) => controller.abort(error),
+        output: () => {},
+      },
     ),
     (error) =>
       error.message.startsWith('Code app exiting dev server exited (3). Command: ') &&
@@ -701,7 +975,7 @@ test('a dev server that exits during startup is reported with its exit status, n
 });
 
 test('an interrupt during startup is reported as a cancellation with its own code', async (t) => {
-  const { port, controller, pending } = await startSilentServer(t, 'code-app-interrupt-', 'interrupted');
+  const { controller, pending, child, closed } = await startSilentServer(t, 'code-app-interrupt-', 'interrupted');
   const interrupt = new Error('Code App development stopped.');
   controller.abort(interrupt);
   const error = await pending.then(
@@ -710,7 +984,8 @@ test('an interrupt during startup is reported as a cancellation with its own cod
   );
   assert.equal(error.code, CODE_APP_STARTUP_CANCELLED);
   assert.equal(error.cause, interrupt);
-  await assert.rejects(fetch(`http://127.0.0.1:${port}`));
+  await closed;
+  assert.ok(child.exitCode !== null || child.signalCode !== null, 'the owned child has exited');
 });
 
 test('startup ends on readiness however late the server answers', async (t) => {
@@ -731,6 +1006,7 @@ test('startup ends on readiness however late the server answers', async (t) => {
     t.mock.timers.tick(ms);
     return Promise.resolve();
   };
+  const child = fakeChild();
   const session = await startCodeAppDevServers(
     [
       {
@@ -740,18 +1016,23 @@ test('startup ends on readiness however late the server answers', async (t) => {
         devServer: { command: [process.execPath, '-e', 'setInterval(() => {}, 1000)'] },
       },
     ],
-    { output: () => {}, connect, sleep },
+    { output: () => {}, connect, sleep, spawnChild: () => child },
   );
-  ownedFixture(t).add(() => session.close());
   assert.equal(session.owned, 1);
+  child.emit('close', 0, null);
+  await session.close();
 });
 
 test('a server that never answers ends startup with the named hang guard and the time it waited', async (t) => {
   t.mock.timers.enable({ apis: ['Date', 'setTimeout'] });
+  const started = Date.now();
+  const child = fakeChild();
   const connect = (_options) => {
     const request = new EventEmitter();
     request.end = () => {
       t.mock.timers.tick(1000);
+      // The hang guard expires during this tick. The product's stop waits only for close, so the double closes here.
+      if (Date.now() - started >= 120_000) child.emit('close', 0, null);
       request.emit('error', new Error('never listening'));
     };
     return request;
@@ -769,7 +1050,7 @@ test('a server that never answers ends startup with the named hang guard and the
         devServer: { command: [process.execPath, '-e', 'setInterval(() => {}, 1000)'] },
       },
     ],
-    { output: () => {}, connect, sleep },
+    { output: () => {}, connect, sleep, spawnChild: () => child },
   );
   ownedFixture(t).add(() =>
     startup.then(

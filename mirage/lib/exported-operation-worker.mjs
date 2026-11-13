@@ -2,7 +2,8 @@ import { parentPort, workerData } from 'node:worker_threads';
 import vm from 'node:vm';
 
 // This is an execution boundary for explicitly trusted project code, not a
-// security sandbox for arbitrary downloads. The parent terminates the worker.
+// security sandbox for arbitrary downloads. The worker ends by itself after its answer; the parent
+// terminates it only when it has not answered at its limit.
 // One RPC channel (Atomics.wait over a SharedArrayBuffer) carries every bridge to the parent
 // (exported-operations.mjs runExportedServerLogic): Dataverse CRUD, custom APIs, cloud flows and HTTP.
 const rpc = (kind, args) => {

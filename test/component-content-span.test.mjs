@@ -1,7 +1,7 @@
 // @test-kind contract: component content span scanning bounds incomplete tags in a worker and refuses them semantically.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Worker } from 'node:worker_threads';
+import { workerAnswer } from '../mirage/test/support/worker-answer.mjs';
 import { componentContent, componentContentSpan, componentIdentity } from '../lense/portal-model.mjs';
 
 test('content spans preserve exact offsets through comments, CDATA, processing instructions and quoted delimiters', () => {
@@ -50,35 +50,21 @@ test('malformed real markup is refused while fake records inside valid sections 
 });
 
 // @test-kind security: hostile large incomplete tags cannot cause unbounded parsing
-test('large incomplete content tags finish in a bounded worker with semantic refusal', async () => {
-  const worker = new Worker(
+test('large incomplete content tags finish in a bounded worker with semantic refusal', async (t) => {
+  const result = await workerAnswer(
     `
     const { parentPort, workerData } = require('node:worker_threads');
     import(workerData.module).then(({ componentContentSpan, componentIdentity }) => {
-      parentPort.postMessage('imported');
       const incomplete = '<content '.repeat(500000);
       const whitespace = '<powerpagecomponent' + ' '.repeat(1000000) + 'invalid/>';
       parentPort.postMessage([componentContentSpan(incomplete), componentIdentity(whitespace)]);
     }).catch(error => { throw error; });
   `,
-    { eval: true, workerData: { module: new URL('../lense/portal-model.mjs', import.meta.url).href } },
+    {
+      eval: true,
+      workerData: { module: new URL('../lense/portal-model.mjs', import.meta.url).href },
+      signal: t.signal,
+    },
   );
-  let timer;
-  try {
-    const result = await new Promise((resolve, reject) => {
-      worker.on('message', (message) => {
-        if (message !== 'imported') return resolve(message);
-        // The scans take milliseconds; a nonlinear scan of these megabyte inputs would take hours.
-        timer = setTimeout(() => reject(new Error('XML cursor exceeded its worker deadline.')), 20000);
-      });
-      worker.once('error', reject);
-      worker.once('exit', (code) => {
-        if (code) reject(new Error('XML cursor worker exited early.'));
-      });
-    });
-    assert.deepEqual(result, [null, null]);
-  } finally {
-    clearTimeout(timer);
-    await worker.terminate();
-  }
+  assert.deepEqual(result, [null, null]);
 });

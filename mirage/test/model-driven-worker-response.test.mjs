@@ -1,6 +1,8 @@
+// @test-kind contract: the metadata compiler threads are Mirage's own runtime seam; each test pins a designed behaviour of it.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { Worker } from 'node:worker_threads';
 import { modelDrivenFixture } from './model-driven-fixture.mjs';
 import { scanSolutionSources } from '../lib/solution-schema.mjs';
 import { importSolutionMetadata } from '../lib/solution-metadata.mjs';
@@ -199,6 +201,13 @@ test('a compiler thread failure between tables surfaces its own error to the res
     first = true;
   const acquire = workers.acquire;
   workers.acquire = () => (entry = acquire());
+  const release = workers.release;
+  // The thread really fails and ends only after the response released it, as a failed thread does.
+  workers.release = (...args) => {
+    const released = release(...args);
+    args[0].worker.postMessage(null);
+    return released;
+  };
   const rights = rightsOf(source);
   const exited = once(workers.events, 'exit');
   await assert.rejects(
@@ -208,11 +217,12 @@ test('a compiler thread failure between tables surfaces its own error to the res
         source,
         (name) => {
           // No table request is pending while rights are read: the failure is kept for the next table.
-          if (first)
+          if (first) {
             entry.worker.emit(
               'error',
               Object.assign(new Error('Invented heap exhaustion'), { code: 'ERR_WORKER_OUT_OF_MEMORY' }),
             );
+          }
           first = false;
           return rights(name);
         },
@@ -262,6 +272,31 @@ test('one compiler thread stays warm between responses and stops cleanly when id
   idle.workers.release(entry);
   const [{ reason, error }] = await stopped;
   assert.deepEqual({ reason, error }, { reason: 'idle', error: null });
+});
+
+test('a compiler thread that failed ends by itself: its release does not terminate it', async (t) => {
+  const { workers } = pool(t);
+  const terminate = Worker.prototype.terminate,
+    terminated = [];
+  t.mock.method(Worker.prototype, 'terminate', function (...args) {
+    terminated.push(this);
+    return terminate.apply(this, args);
+  });
+  const entry = workers.acquire(),
+    exited = once(workers.events, 'exit'),
+    failures = [];
+  let released = null;
+  // The release runs inside the thread's own 'error' event, before its 'exit': the state a failed response releases in.
+  entry.worker.once('error', (error) => {
+    failures.push(error);
+    released = workers.release(entry, 'failed');
+  });
+  entry.worker.postMessage(null); // the listener throws on Object.hasOwn(null): an uncaught error ends the thread
+  const [exit] = await exited;
+  await released;
+  assert.ok(failures[0] instanceof TypeError, 'The thread failed with its own uncaught error');
+  assert.deepEqual({ reason: exit.reason, code: exit.code }, { reason: 'failed', code: 1 });
+  assert.equal(terminated.length, 0, 'A failed thread ends by itself and is not terminated');
 });
 
 test('worker HTTP metadata evaluates field permissions in one read and releases it before streaming', async (t) => {

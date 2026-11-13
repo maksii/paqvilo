@@ -842,8 +842,8 @@ test('Mirage inspections of one tab coalesce while a request is running', async 
   assert.equal(panel.stateFor(tab.page).mirage.active, true);
 });
 
-// @test-kind contract: a runtime read that fails every immediate attempt must be read again by the next navigation, not stay inactive
-test('a Mirage runtime read that fails every immediate attempt is read again by the next navigation', async () => {
+// @test-kind contract: a failed runtime read is read again by the next navigation, with one read per navigation
+test('a Mirage runtime read that fails is read again by the next navigation', async () => {
   const { b, tab, session } = await setup();
   session.cfg.mirage = true;
   fakeMirage(b, { report: { path: '/scripts', page: null } });
@@ -860,12 +860,65 @@ test('a Mirage runtime read that fails every immediate attempt is read again by 
   const stored = drawn(tab.page, (state) => state.mirage?.active === false);
   session.emit('hit', { page: tab.page, navigation: true });
   await stored;
-  assert.equal(statusReads, 3, 'the immediate attempts all failed and stored an inactive runtime');
+  assert.equal(statusReads, 1, 'the failed read stored an inactive runtime without an immediate retry');
   failing = false;
   const recovered = drawn(tab.page, (state) => state.mirage?.active === true);
   session.emit('hit', { page: tab.page, navigation: true });
   await recovered;
-  assert.equal(statusReads, 3, 'the next navigation reached the status read without another failure');
+  assert.equal(statusReads, 1, 'the next navigation reached the status read without another failure');
+});
+
+// @test-kind contract: a pending Mirage status read stores no inactive runtime, and its answer stores the runtime
+test('a pending Mirage status read stores no inactive runtime, and its answer stores the runtime', async () => {
+  const { b, tab, session, panel } = await setup();
+  session.cfg.mirage = true;
+  fakeMirage(b, { report: { path: '/scripts', page: null } });
+  const get = b.context.request.get;
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  b.context.request.get = async (url, options) => {
+    if (String(url).includes('/status')) await gate;
+    return get(url, options);
+  };
+  const stored = drawn(tab.page, (state) => state.mirage?.loading === false);
+  const pendingDraw = drawn(tab.page, (state) => state.mirage?.loading === true);
+  session.emit('hit', { page: tab.page, navigation: true });
+  const shown = await pendingDraw;
+  assert.notEqual(shown.mirage.active, false, 'a pending read stores no inactive runtime');
+  release();
+  await stored;
+  assert.equal(panel.stateFor(tab.page).mirage.active, true, 'the answer stores the runtime');
+});
+
+// @test-kind contract: a failed Mirage status read stores the failure in place of the runtime the page had
+test('a Mirage status read that fails replaces the runtime the page had with the failure', async () => {
+  const { b, tab, session, panel } = await setup();
+  session.cfg.mirage = true;
+  fakeMirage(b, { report: { path: '/scripts', page: null } });
+  const get = b.context.request.get;
+  const loaded = drawn(tab.page, (state) => state.mirage?.loading === false && state.mirage?.active === true);
+  session.emit('hit', { page: tab.page, navigation: true });
+  await loaded;
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  b.context.request.get = async (url, options) => {
+    if (String(url).includes('/status')) {
+      await gate;
+      throw new Error('socket hang up');
+    }
+    return get(url, options);
+  };
+  const failed = drawn(tab.page, (state) => state.mirage?.loading === false);
+  session.emit('hit', { page: tab.page, navigation: true });
+  release();
+  await failed;
+  const runtime = panel.stateFor(tab.page).mirage;
+  assert.equal(runtime.active, false, 'a failed read replaces the stored runtime with an inactive one');
+  assert.equal(typeof runtime.error, 'string', 'the failure is stored as the error of the runtime');
 });
 
 // @test-kind contract: inspection summaries expose cold loading and clear progress after a failed metadata read
@@ -1428,5 +1481,57 @@ test('Mirage Tweaks report whether local pages are confined to loopback, with th
   assert.deepEqual(
     [tweaks.status.confinePortalPages, tweaks.status.externalAssets, tweaks.status.externalFrameOrigins],
     [true, false, 2],
+  );
+});
+
+// @test-kind contract: a route the page requests reaches the source inspector as observed evidence, and another origin's route does not
+test('a route the page requests reaches the source inspector as observed evidence', async (t) => {
+  const { tab, call, session } = await setup();
+  const inspect = t.mock.method(session.sourceInspector, 'inspect');
+  const mainFrame = tab.page.mainFrame();
+  const requestOf = (url) => ({ url: () => url, isNavigationRequest: () => false, frame: () => mainFrame });
+  tab.page.emit('request', requestOf(`${ORIGIN}/_api/serverlogics/orders`));
+  tab.page.emit('request', requestOf('https://other.invalid/_api/serverlogics/billing'));
+  // A request from a subframe of the same origin is not a route of the page.
+  tab.page.emit('request', {
+    url: () => `${ORIGIN}/_api/serverlogics/sub`,
+    isNavigationRequest: () => false,
+    frame: () => ({}),
+  });
+  const result = await call('inspect');
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const [, rendered] = inspect.mock.calls.at(-1).arguments;
+  assert.deepEqual(rendered.serverLogicPaths, ['/_api/serverlogics/orders']);
+});
+
+// @test-kind contract: the main frame's commit of the navigation it requested clears the routes of the replaced document, and a same-document navigation keeps them
+test('the committed main-frame navigation clears the routes of the replaced document and a same-document one keeps them', async (t) => {
+  const { tab, call, session } = await setup();
+  const inspect = t.mock.method(session.sourceInspector, 'inspect');
+  const mainFrame = tab.page.mainFrame();
+  const serverLogicAfter = async () => {
+    assert.equal((await call('inspect')).ok, true);
+    return inspect.mock.calls.at(-1).arguments[1].serverLogicPaths;
+  };
+  tab.page.emit('request', {
+    url: () => `${ORIGIN}/_api/serverlogics/orders`,
+    isNavigationRequest: () => false,
+    frame: () => mainFrame,
+  });
+  tab.page.emit('framenavigated', mainFrame);
+  assert.deepEqual(
+    await serverLogicAfter(),
+    ['/_api/serverlogics/orders'],
+    'a same-document navigation keeps the routes',
+  );
+  tab.page.emit('request', { url: () => `${ORIGIN}/next`, isNavigationRequest: () => true, frame: () => mainFrame });
+  // A subframe navigation does not replace the document that the main frame requested.
+  tab.page.emit('request', { url: () => `${ORIGIN}/frame`, isNavigationRequest: () => true, frame: () => ({}) });
+  t.mock.method(mainFrame, 'url', () => `${ORIGIN}/next`);
+  tab.page.emit('framenavigated', mainFrame);
+  assert.equal(
+    await serverLogicAfter(),
+    undefined,
+    'the committed navigation clears the routes of the replaced document',
   );
 });

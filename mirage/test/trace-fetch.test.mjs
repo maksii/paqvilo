@@ -36,6 +36,8 @@ test('an outbound request is an http-out span under the current span that forwar
   const { origin, port, seen } = await receiver(t);
   const traces = createTraceStore({ settings: { level: 'full' } });
   const parent = traces.start({ kind: 'plugin-step', name: 'Invented.Step' });
+  // Taken before the request: the http-out span ends when its body has been read, and the parent ends after that.
+  const ended = nextSpanEnd(traces);
   const response = await traces.run(parent, () =>
     tracedFetch(traces, {
       module: 'webhooks',
@@ -48,9 +50,9 @@ test('an outbound request is an http-out span under the current span that forwar
       attributes: { transport: 'http' },
     }),
   );
-  parent.end();
   assert.deepEqual(await response.json(), { ok: true, token: 'abc.def' }, 'the caller still reads the body');
-  const [span] = traces.spans({ kind: 'http-out' }).items;
+  const span = await ended;
+  parent.end();
   assert.equal(span.parentSpanId, parent.spanId);
   assert.equal(span.name, `POST 127.0.0.1:${port}/hook`);
   assert.deepEqual([span.module, span.operation, span.status], ['webhooks', 'post', 'ok']);
@@ -136,9 +138,10 @@ test('a fetch implementation that throws synchronously fails the span and rethro
   assert.deepEqual(span.error, { code: 'NonLoopbackHost', message: 'Only loopback hosts are allowed.' });
   // The implementation's answer is what the caller gets.
   const answer = new Response('{"ok":true}', { status: 202, headers: { 'content-type': 'application/json' } });
+  const ended = nextSpanEnd(traces);
   assert.equal(await tracedFetch(traces, { url: 'http://127.0.0.1/x', fetch: async () => answer }), answer);
   assert.deepEqual(await answer.json(), { ok: true }, 'the body was read from a clone');
-  assert.deepEqual(traces.spans({ kind: 'http-out' }).items[0].output.body, { ok: true });
+  assert.deepEqual((await ended).output.body, { ok: true });
 });
 
 function closeServerAfter(t, server) {
@@ -405,4 +408,45 @@ test('a caller clone is read in full next to the original, and the span ends ok 
   assert.equal(span.status, 'ok');
   assert.equal(span.output.body, 'first second');
   assert.equal(traces.spans({ kind: 'http-out' }).items.length, 1);
+});
+
+// A fake answer whose body is an open stream the caller does not read; its clone is the stream the capture reads.
+function openBodyAnswer(clone) {
+  return {
+    status: 200,
+    statusText: 'OK',
+    headers: new Headers({ 'content-type': 'text/plain' }),
+    body: new ReadableStream(),
+    clone: () => ({ body: clone }),
+  };
+}
+
+// @test-kind contract: closing the trace store cancels a capture whose body never ends, and its span ends cancelled (ADM-5)
+test('closing the trace store cancels an open capture: its body is cancelled and its span ends cancelled', async () => {
+  let readStarted;
+  const started = new Promise((resolve) => {
+    readStarted = resolve;
+  });
+  let cancelled = false;
+  // highWaterMark 0: pull runs only when a reader asks, so `started` settles once the capture is reading the body.
+  const clone = new ReadableStream(
+    {
+      pull() {
+        readStarted();
+        return new Promise(() => {});
+      },
+      cancel() {
+        cancelled = true;
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  const traces = createTraceStore({ settings: { level: 'full' } });
+  const ended = nextSpanEnd(traces);
+  await tracedFetch(traces, { url: 'http://127.0.0.1/never-ends', fetch: async () => openBodyAnswer(clone) });
+  await started;
+  await traces.close();
+  assert.equal(cancelled, true, 'the store cancels the body its capture reads');
+  const span = await ended;
+  assert.equal(span.status, 'cancelled');
 });

@@ -386,7 +386,7 @@ test('missing optional source roots do not prevent external report output', asyn
 });
 
 // @test-kind contract+security: report output never writes through a dangling symbolic link
-test('report output rejects dangling symbolic links instead of writing through them', async (t) => {
+test('report output rejects dangling symbolic links instead of writing through them', async () => {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-dangling-output-'));
   try {
     const source = path.join(dir, 'portal');
@@ -394,12 +394,7 @@ test('report output rejects dangling symbolic links instead of writing through t
     const link = path.join(dir, 'report-link');
     const target = path.join(source, process.platform === 'win32' ? 'new-dir' : 'new-report.json');
     const output = process.platform === 'win32' ? path.join(link, 'report.json') : link;
-    try {
-      await fs.symlink(target, link, process.platform === 'win32' ? 'junction' : 'file');
-    } catch (error) {
-      if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) return t.skip('symbolic links unavailable');
-      throw error;
-    }
+    await fs.symlink(target, link, process.platform === 'win32' ? 'junction' : 'file');
     const result = run('mirage/liquid-inventory.mjs', '--portal', source, '--out', output, '--json');
     assert.notEqual(result.status, 0);
     assert.match(JSON.parse(result.stdout).error.message, /dangling symbolic link/);
@@ -475,35 +470,41 @@ test('render-sweep refuses an output folder inside the swept portal before writi
   }
 });
 
-async function assertSweepRefusesSourceLink(t, name) {
+// A directory link needs no symbolic-link privilege on Windows (a junction), so the link runs on every host.
+const DIRECTORY_LINK_TYPE = process.platform === 'win32' ? 'junction' : 'dir';
+
+async function assertSweepRefusesSourceLink(name) {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-sweep-link-'));
   try {
     const source = path.join(dir, 'portal');
     await fs.cp(fixture, source, { recursive: true });
     const sourceFile = path.join(source, 'linked-source.txt');
     await fs.writeFile(sourceFile, 'source bytes\n');
+    const linkedFolder = path.join(source, 'linked-dir');
+    await fs.mkdir(linkedFolder);
     const out = path.join(dir, 'report');
     await fs.mkdir(out);
-    try {
-      await fs.symlink(sourceFile, path.join(out, name), 'file');
-    } catch (error) {
-      if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) return t.skip('symbolic links unavailable');
-      throw error;
-    }
+    await fs.symlink(linkedFolder, path.join(out, name), DIRECTORY_LINK_TYPE);
     const result = run('mirage/render-sweep.mjs', '--source', source, '--out', out);
     assert.equal(result.status, 2, result.stderr || result.stdout);
     assert.match(result.stderr, /outside portal and solution sources/);
     assert.equal(await fs.readFile(sourceFile, 'utf8'), 'source bytes\n');
+    assert.deepEqual(await fs.readdir(linkedFolder), []);
     assert.deepEqual(await fs.readdir(out), [name]);
+    return result;
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }
 }
 
 // @test-kind security: a symbolic link at summary.json into the sources is refused before any sweep report is written
-test('render-sweep refuses a symbolic link at summary.json into the sources before writing any report', (t) =>
-  assertSweepRefusesSourceLink(t, 'summary.json'));
+test('render-sweep refuses a symbolic link at summary.json into the sources before writing any report', async () => {
+  const result = await assertSweepRefusesSourceLink('summary.json');
+  assert.equal(result.status, 2);
+});
 
 // @test-kind security: a symbolic link at render-sweep.txt into the sources is refused before any sweep report is written
-test('render-sweep refuses a symbolic link at render-sweep.txt into the sources before writing any report', (t) =>
-  assertSweepRefusesSourceLink(t, 'render-sweep.txt'));
+test('render-sweep refuses a symbolic link at render-sweep.txt into the sources before writing any report', async () => {
+  const result = await assertSweepRefusesSourceLink('render-sweep.txt');
+  assert.equal(result.status, 2);
+});

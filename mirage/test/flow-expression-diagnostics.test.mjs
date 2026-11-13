@@ -46,6 +46,20 @@ test('pure expression diagnostics validate syntax, known functions and arity wit
   }
 });
 
+test('an unknown flow function is refused by its marker, and a failure with other wording is not refused', () => {
+  const [diagnostic] = inspectFlowExpression('@unknownProvider()').diagnostics;
+  assert.equal(diagnostic.unsupportedFunction, 'unknownProvider');
+  assert.deepEqual(Object.keys(diagnostic), ['code', 'message']);
+  const unknown = inspectFlowDefinition(flowWithAction('Compose', { type: 'Compose', inputs: '@unknownProvider()' }));
+  assert.equal(unknown.supported, false);
+  assert.match(
+    unknown.errors.join('\n'),
+    /Unsupported expression in Compose: Unsupported local flow function: unknownProvider/,
+  );
+  for (const inputs of ["@concat('x',)", "@endsWith('x')"])
+    assert.equal(inspectFlowDefinition(flowWithAction('Compose', { type: 'Compose', inputs })).supported, true, inputs);
+});
+
 test('ticks retains seven fractional digits and the exact .NET epoch across the supported UTC ISO range', () => {
   const ticks = (value) => resolveFlowValue(`@ticks('${value}')`, state());
   for (const [value, expected] of [

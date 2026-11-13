@@ -54,9 +54,10 @@ async function launch(t) {
     ...accountListAccess(CONTACT),
   };
   const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, 'state.json'), initial, watch: false });
+  let context;
+  ownedFixture(t).add(() => context?.close());
   ownedFixture(t).add(() => app.close());
-  const context = await chrome.browser.newContext({ acceptDownloads: true });
-  ownedFixture(t).add(() => context.close());
+  context = await chrome.browser.newContext({ acceptDownloads: true });
   await signInContext(context, app, CONTACT, { roles: ['Member'] });
   const page = await context.newPage();
   const errors = [];

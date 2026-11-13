@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Worker } from 'node:worker_threads';
 import { FxEnum, LAZY, equals, evaluateFx, fromFx, parse, powerFxEngine } from '../lib/power-fx.mjs';
+import { workerAnswer } from './support/worker-answer.mjs';
 
 const evaluate = (formula) => powerFxEngine.evaluateSync(formula, { host: {} }).value;
 const shown = (formula) => fromFx(evaluate(formula));
@@ -12,17 +12,9 @@ const { parentPort, workerData } = require('node:worker_threads');
 import(workerData.moduleUrl).then(({ powerFxEngine }) => {
   parentPort.postMessage(powerFxEngine.evaluateSync(workerData.formula, { host: {} }).value);
 });`;
-async function evaluateInWorker(formula) {
+function evaluateInWorker(formula, signal) {
   const moduleUrl = new URL('../lib/power-fx.mjs', import.meta.url).href;
-  const worker = new Worker(WORKER_SOURCE, { eval: true, workerData: { formula, moduleUrl } });
-  try {
-    return await new Promise((resolve, reject) => {
-      worker.once('message', resolve);
-      worker.once('error', reject);
-    });
-  } finally {
-    await worker.terminate();
-  }
+  return workerAnswer(WORKER_SOURCE, { eval: true, workerData: { formula, moduleUrl }, signal });
 }
 // The first-occurrence scan that Distinct used before its buckets: each value is kept unless equals finds a kept value.
 // The values are the raw Power Fx values (evaluateFx), so equals sees the same types the engine compares.
@@ -173,8 +165,8 @@ test('Text with a format string formats a Float beyond the decimal exponent boun
 });
 
 // @test-kind contract: Distinct over 50,000 distinct values keeps all of them; the worker's test timeout is the hang guard, not an assertion on time
-test('Distinct over 50,000 distinct values keeps every value', async () => {
-  assert.equal(await evaluateInWorker('CountRows(Distinct(Sequence(50000), Value))'), 50000);
+test('Distinct over 50,000 distinct values keeps every value', async (t) => {
+  assert.equal(await evaluateInWorker('CountRows(Distinct(Sequence(50000), Value))', t.signal), 50000);
 });
 
 // Mixed scalars that equals relates in every way the bucket keys must respect: numbers, numeric text, Booleans, dates and GUIDs.
@@ -289,22 +281,14 @@ import(workerData.moduleUrl).then(({ FxEnum, evaluateFx, fromFx }) => {
   const rows = [...new FxEnum('Generated', entries).entries.values()].map((choice) => ({ V: choice }));
   parentPort.postMessage(fromFx(evaluateFx('CountRows(Distinct(Rows, V))', { values: { Rows: rows }, host: {} }).value));
 });`;
-async function countDistinctChoicesInWorker(count) {
+function countDistinctChoicesInWorker(count, signal) {
   const moduleUrl = new URL('../lib/power-fx.mjs', import.meta.url).href;
-  const worker = new Worker(CHOICE_WORKER_SOURCE, { eval: true, workerData: { count, moduleUrl } });
-  try {
-    return await new Promise((resolve, reject) => {
-      worker.once('message', resolve);
-      worker.once('error', reject);
-    });
-  } finally {
-    await worker.terminate();
-  }
+  return workerAnswer(CHOICE_WORKER_SOURCE, { eval: true, workerData: { count, moduleUrl }, signal });
 }
 
 // @test-kind contract: Distinct over 20,000 rows of distinct choice values keeps every value; the worker's test timeout is the hang guard, not an assertion on time
-test('Distinct over 20,000 distinct choice values keeps every value', async () => {
-  assert.equal(await countDistinctChoicesInWorker(20000), 20000);
+test('Distinct over 20,000 distinct choice values keeps every value', async (t) => {
+  assert.equal(await countDistinctChoicesInWorker(20000, t.signal), 20000);
 });
 
 // @test-kind contract: an invalid language tag on DateValue answers BadLanguageCode (kind 14), as Text does for dates

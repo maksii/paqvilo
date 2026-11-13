@@ -14,12 +14,21 @@ export function startMcpServer({
   cwd,
   onStderr = () => {},
   spawnProcess = spawn,
+  // A bridge that has not exited this long after its input ended is hung: it is asked to end, after the same time again
+  // it is killed, and close waits for its exit throughout.
+  closeGuardMs = 60_000,
 }) {
   const child = spawnProcess(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
   const pending = new Map();
   let nextId = 0,
     failure = null,
-    closePromise;
+    closePromise,
+    closeGuard;
+  // The hang guard's first expiry asks the bridge to end and arms the second, which kills it.
+  const endHungChild = () => {
+    child.kill();
+    closeGuard = setTimeout(() => child.kill('SIGKILL'), closeGuardMs);
+  };
   const stop = (error) => {
     failure ??= error;
     for (const { reject, timer } of pending.values()) {
@@ -121,17 +130,11 @@ export function startMcpServer({
           } catch {
             /* already closed */
           }
-          let timer;
+          closeGuard = setTimeout(endHungChild, closeGuardMs);
           try {
-            const exited = await Promise.race([
-              exit.then(() => true),
-              new Promise((resolve) => {
-                timer = setTimeout(() => resolve(false), 5000);
-              }),
-            ]);
-            if (!exited) child.kill();
+            await exit;
           } finally {
-            clearTimeout(timer);
+            clearTimeout(closeGuard);
           }
         })();
       return closePromise;

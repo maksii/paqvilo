@@ -2,7 +2,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
@@ -96,30 +95,6 @@ function listingStoragePack(calls) {
   return pack;
 }
 
-// A loopback port nothing listens on, found by binding an ephemeral one and releasing it.
-async function freePort() {
-  const probe = net.createServer();
-  await new Promise((resolve, reject) => {
-    probe.once('error', reject);
-    probe.listen(0, '127.0.0.1', resolve);
-  });
-  const { port } = probe.address();
-  await new Promise((resolve) => probe.close(resolve));
-  return port;
-}
-
-// True when nothing accepts a connection on the loopback port.
-function connectionRefused(port) {
-  return new Promise((resolve) => {
-    const socket = net.connect({ host: '127.0.0.1', port });
-    socket.once('connect', () => {
-      socket.destroy();
-      resolve(false);
-    });
-    socket.once('error', (error) => resolve(error.code === 'ECONNREFUSED'));
-  });
-}
-
 test('a startup that fails after the listener opens closes the listener and the composed providers', async (t) => {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'host-startup-cleanup-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
@@ -129,20 +104,70 @@ test('a startup that fails after the listener opens closes the listener and the 
     'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true',
   );
   const calls = [];
-  const port = await freePort();
-  // The source watcher starts after the listener is open; its factory is the sourceWatcher test seam.
+  let listener = null;
+  // The source watcher starts after the listener is open; its factory is the sourceWatcher test seam, which receives
+  // the bound HTTP server in its context and records it.
   await assert.rejects(
     createSimulator({
       sourceDir: dir,
-      port,
+      port: 0,
       providers: { storage: { s1: { kind: 'pack:fx-pack/blob' } }, routes: { annotations: 's1' } },
       packs: [listingStoragePack(calls)],
-      sourceWatcher: () => {
+      sourceWatcher: (roots, options, context) => {
+        listener = context?.server;
         throw new Error('Invented watcher failed.');
       },
     }),
     { message: 'Invented watcher failed.' },
   );
   assert.ok(calls.includes('provider closed'));
-  assert.equal(await connectionRefused(port), true);
+  assert.equal(listener?.listening, false);
+});
+
+// A started runtime over a website with one home page, closed and cleaned up when the test ends.
+async function startHomeSimulator(t) {
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'host-startup-cleanup-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  await fs.writeFile(path.join(dir, 'website.yml'), 'adx_websiteid: site\nadx_name: Invented');
+  await fs.writeFile(
+    path.join(dir, 'Home.webpage.yml'),
+    'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true',
+  );
+  const sim = await createSimulator({ sourceDir: dir, port: 0, watch: false });
+  t.after(() => sim.close());
+  return sim;
+}
+
+test('a listener error after start-up is recorded as a diagnostic and does not end the runtime', async (t) => {
+  const sim = await startHomeSimulator(t);
+  // An accept failure under file-descriptor exhaustion arrives as an error event on the started portal listener.
+  sim.server.emit('error', Object.assign(new Error('Invented accept failure'), { code: 'EMFILE' }));
+  const response = await fetch(`${sim.adminOrigin}/__sim/api/diagnostics`);
+  assert.equal(response.status, 200);
+  const { diagnostics } = await response.json();
+  const found = diagnostics.find((item) => item.code === 'LISTENER_ERROR');
+  assert.equal(found?.listener, 'portal');
+  assert.equal(found?.message, 'Invented accept failure');
+  // A persistent accept failure reports again on every loop turn; the repeat is not recorded again.
+  sim.server.emit('error', Object.assign(new Error('Invented accept failure'), { code: 'EMFILE' }));
+  const repeated = await (await fetch(`${sim.adminOrigin}/__sim/api/diagnostics`)).json();
+  assert.equal(repeated.diagnostics.filter((item) => item.code === 'LISTENER_ERROR').length, 1);
+  assert.equal(sim.server.listening, true);
+});
+
+test('an error on the administration or apps listener is recorded once and does not end the process', async (t) => {
+  const sim = await startHomeSimulator(t);
+  for (const listener of [sim.adminServer, sim.appsServer]) {
+    listener.emit('error', Object.assign(new Error('Invented accept failure'), { code: 'EMFILE' }));
+    listener.emit('error', Object.assign(new Error('Invented accept failure'), { code: 'EMFILE' }));
+  }
+  const { diagnostics } = await (await fetch(`${sim.adminOrigin}/__sim/api/diagnostics`)).json();
+  const found = diagnostics.filter((item) => item.code === 'LISTENER_ERROR');
+  assert.deepEqual(
+    found.map((item) => item.listener),
+    ['admin', 'apps'],
+  );
+  assert.ok(found.every((item) => item.message === 'Invented accept failure'));
+  assert.equal(sim.adminServer.listening, true);
+  assert.equal(sim.appsServer.listening, true);
 });

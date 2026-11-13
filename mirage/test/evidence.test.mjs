@@ -17,7 +17,7 @@ import {
   cachedImplementationSourceFingerprint,
   implementationEvidence,
 } from '../lib/evidence.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { makeTemporaryDirectory, ownedFixture } from '../testing/owned-fixture.mjs';
 
 test('implementation hashes ignore only generated SDK directories and retain authored and mapped assemblies', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'sim-sdk-fingerprint-'));
@@ -113,7 +113,7 @@ test('cached fingerprints tolerate files and directories removed at their read g
 
 test('fresh startup seeds the complete implementation fingerprint cache and state reads still detect source edits', async (t) => {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'sim-fingerprint-startup-'));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   const toolkit = fileURLToPath(new URL('../../', import.meta.url));
   const runtime = path.join(directory, 'mirage');
   await fs.mkdir(runtime);
@@ -178,7 +178,7 @@ test('fresh startup seeds the complete implementation fingerprint cache and stat
   child.stderr.on('data', (chunk) => {
     errors += chunk;
   });
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     if (child.exitCode === null && child.signalCode === null) {
       const closed = once(child, 'close');
       child.kill();

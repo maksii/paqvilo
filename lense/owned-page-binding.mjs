@@ -76,6 +76,27 @@ export async function createOwnedPageBindings(
   const contexts = new Map(),
     callbacks = new Map(entries);
   const pendingCalls = new Set();
+  // Callback invocations that close() waits for, so no page work outlives the binding.
+  const running = new Set();
+  // Pending replies to the page. Replies still in flight end when the session detaches; the call timeout is the hang
+  // guard for a session that does not end them.
+  const replies = new Set();
+  const controller = new AbortController();
+  const track = (promise) => {
+    running.add(promise);
+    promise.finally(() => running.delete(promise)).catch(() => {});
+    return promise;
+  };
+  // Waits for the promises, but at most one call timeout, the bound a call already has. Used for callbacks that ignore
+  // their signal and for replies that a session never ends.
+  const settleWithinCallTimeout = async (promises) => {
+    let timer;
+    const guard = new Promise((resolve) => {
+      timer = setTimeout(resolve, callTimeout);
+    });
+    await Promise.race([Promise.allSettled(promises), guard]);
+    clearTimeout(timer);
+  };
   let mainFrame,
     script,
     closed = false,
@@ -104,7 +125,7 @@ export async function createOwnedPageBindings(
       // A failed delivery leaves the page's own call timer to settle the request.
     }
   };
-  const called = async (event) => {
+  const handleCall = async (event) => {
     if (event.name !== channel || closed || Buffer.byteLength(event.payload) > maxBytes) return;
     const context = contexts.get(event.executionContextId);
     if (!context?.auxData?.isDefault || context.auxData.frameId !== mainFrame || context.origin !== expected) return;
@@ -128,12 +149,15 @@ export async function createOwnedPageBindings(
       pendingCalls.add(cancel);
       let value;
       try {
-        value = await Promise.race([
+        const work = track(
           Promise.resolve().then(() =>
-            callbacks.get(packet.name)({ page, frame: page.mainFrame(), context: page.context() }, ...packet.args),
+            callbacks.get(packet.name)(
+              { page, frame: page.mainFrame(), context: page.context(), signal: controller.signal },
+              ...packet.args,
+            ),
           ),
-          deadline,
-        ]);
+        );
+        value = await Promise.race([work, deadline]);
       } finally {
         clearTimeout(timer);
         pendingCalls.delete(cancel);
@@ -145,6 +169,11 @@ export async function createOwnedPageBindings(
       inFlight--;
     }
     await reply(context, settled);
+  };
+  const called = (event) => {
+    const call = handleCall(event);
+    replies.add(call);
+    call.finally(() => replies.delete(call)).catch(() => {});
   };
   session.on('Runtime.executionContextCreated', contextsCreated);
   session.on('Runtime.executionContextDestroyed', contextsDestroyed);
@@ -161,8 +190,11 @@ export async function createOwnedPageBindings(
     session.off('Runtime.executionContextsCleared', cleared);
     session.off('Page.frameNavigated', navigated);
     for (const cancel of pendingCalls) cancel();
+    controller.abort();
+    await settleWithinCallTimeout(running);
     if (page.isClosed()) {
       contexts.clear();
+      await settleWithinCallTimeout(replies);
       return;
     }
     const failures = [];
@@ -201,6 +233,7 @@ export async function createOwnedPageBindings(
     }
     contexts.clear();
     await drain(() => session.detach());
+    await settleWithinCallTimeout(replies);
     if (failures.length === 1) throw failures[0];
     if (failures.length) throw new AggregateError(failures, 'Owned page binding cleanup failed.');
   };

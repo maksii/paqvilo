@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { createSimulator } from 'paqvilo/mirage/server.mjs';
 import { signInHeaders } from 'paqvilo/mirage/testing/session.mjs';
-import { makeTemporaryDirectory } from 'paqvilo/mirage/testing/owned-fixture.mjs';
+import { makeTemporaryDirectory, ownedFixture } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 
 const file = (name) => fileURLToPath(new URL('../' + name, import.meta.url));
 const contact = 'a4300000-0000-4000-8000-000000002001',
@@ -32,7 +32,7 @@ test('a write survives a restart when the example config keeps local state', asy
   const config = YAML.parse(await fs.readFile(file('paqvilo.config.yml'), 'utf8'));
   const presetMode = config.sites.example.mirage.presetMode;
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-example-local-state-'));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   const stateFile = path.join(directory, 'state.json');
   const name = 'Renamed across restart';
 
@@ -53,7 +53,7 @@ test('a write survives a restart when the example config keeps local state', asy
   }
 
   const second = await startExample(stateFile, presetMode);
-  t.after(() => second.close());
+  ownedFixture(t).add(() => second.close());
   const read = await fetch(second.url + '/_api/accounts(' + account + ')?$select=name', {
     headers: signInHeaders(second, contact),
   });

@@ -479,10 +479,11 @@ const signInDefinition = {
   },
 };
 
-test('closing the host cancels a pending authorization sign-in and refuses its loopback redirect', async (t) => {
-  process.env.X_CLOSE_SIGN_IN_CLIENT = 'invented-client';
+// Composes a sign-in host with one connection reading its client id from envName; returns providers and store.
+async function composeSignInHost(t, { envName, connectionId }) {
+  process.env[envName] = 'invented-client';
   t.after(() => {
-    delete process.env.X_CLOSE_SIGN_IN_CLIENT;
+    delete process.env[envName];
   });
   const file = `Connectors/${SIGN_IN}/${SIGN_IN}_openapidefinition.json`;
   const list = customConnectorsOf(
@@ -501,21 +502,157 @@ test('closing the host cancels a pending authorization sign-in and refuses its l
     packs: [],
     config: {
       connections: connectionSettings({
-        'conn-sign-in': {
+        [connectionId]: {
           connector: SIGN_IN,
           provider: `custom-connector:${SIGN_IN}`,
-          settings: { auth: { clientId: 'env:X_CLOSE_SIGN_IN_CLIENT' } },
+          settings: { auth: { clientId: `env:${envName}` } },
         },
       }),
     },
   });
   providers.connectors.useCustomConnectors(list);
+  return { providers, store };
+}
+
+test('closing the host cancels a pending authorization sign-in and refuses its loopback redirect', async (t) => {
+  const { providers } = await composeSignInHost(t, { envName: 'X_CLOSE_SIGN_IN_CLIENT', connectionId: 'conn-sign-in' });
   const started = await providers.connectors.oauth.authorize('conn-sign-in');
   const outcome = started.completion.then(
     () => 'signed in',
     (error) => error.code,
   );
   await closeProviders(providers);
-  await assert.rejects(fetch(started.redirectUri));
+  assert.equal(started.listener.listening, false);
   assert.equal(await outcome, 'ConnectionAuthorizationCancelled');
+});
+
+test('closing the host waits for a running sign-in exchange and stores no token that the exchange returns after the cancel', async (t) => {
+  const { providers } = await composeSignInHost(t, {
+    envName: 'X_CLOSE_SIGN_IN_CLIENT',
+    connectionId: 'conn-exchange',
+  });
+  let exchangeStarted, releaseExchange;
+  const exchangeCalled = new Promise((resolve) => {
+    exchangeStarted = resolve;
+  });
+  const gate = new Promise((resolve) => {
+    releaseExchange = resolve;
+  });
+  const order = [];
+  const started = await providers.connectors.oauth.authorize('conn-exchange', {
+    tokenRequest: async () => {
+      exchangeStarted();
+      await gate;
+      order.push('exchange settled');
+      return { access_token: 'invented-access-token', expires_in: 3600 };
+    },
+  });
+  const outcome = started.completion.then(
+    () => 'signed in',
+    (error) => error.code,
+  );
+  const state = new URL(started.authorizeUrl).searchParams.get('state');
+  const callback = fetch(`${started.redirectUri}?state=${state}&code=invented-code`).then(
+    () => 'answered',
+    () => 'connection closed',
+  );
+  await exchangeCalled;
+  const closing = closeProviders(providers).then(() => order.push('closed'));
+  assert.equal(await outcome, 'ConnectionAuthorizationCancelled');
+  releaseExchange();
+  await closing;
+  assert.deepEqual(order, ['exchange settled', 'closed']);
+  assert.equal(await callback, 'connection closed');
+  assert.equal(providers.connectors.oauth.status('conn-exchange').signedIn, false);
+});
+
+test('a completed sign-in writes its success page in full before the listener closes its connections', async (t) => {
+  const { providers } = await composeSignInHost(t, { envName: 'X_CLOSE_SIGN_IN_CLIENT', connectionId: 'conn-page' });
+  const started = await providers.connectors.oauth.authorize('conn-page', {
+    tokenRequest: async () => ({ access_token: 'invented-access-token', expires_in: 3600 }),
+  });
+  // The page's write is held by the test: the sign-in settles while the response is still unwritten, and the write is released after that.
+  const events = [],
+    held = [];
+  let connectionClosed;
+  started.listener.on('request', (req, res) => {
+    const end = res.end;
+    res.end = (...args) => {
+      held.push(() => end.apply(res, args));
+      return res;
+    };
+    connectionClosed = new Promise((resolve) => {
+      req.socket.once('close', () => {
+        events.push('connection closed');
+        resolve();
+      });
+    });
+    res.once('finish', () => events.push('page written'));
+  });
+  const state = new URL(started.authorizeUrl).searchParams.get('state');
+  const pending = fetch(`${started.redirectUri}?state=${state}&code=invented-code`).then(
+    (response) => ({ response }),
+    (error) => ({ error }),
+  );
+  assert.equal((await started.completion).connectionId, 'conn-page');
+  assert.equal(held.length, 1);
+  for (const write of held) write();
+  const { response, error } = await pending;
+  assert.equal(error, undefined, 'the success page reaches the browser');
+  assert.equal(response.status, 200);
+  assert.equal(
+    await response.text(),
+    '<!doctype html><title>Mirage connection</title><p>The connection is signed in. You can close this window.</p>',
+  );
+  await closeProviders(providers);
+  await connectionClosed;
+  assert.deepEqual(events, ['page written', 'connection closed']);
+  assert.equal(started.listener.listening, false);
+});
+
+test('a cancel that lands during the token write leaves the sign-in signed in, and close() waits for the write', async (t) => {
+  const { providers, store } = await composeSignInHost(t, {
+    envName: 'X_CANCEL_WRITE_CLIENT',
+    connectionId: 'conn-write',
+  });
+  const started = await providers.connectors.oauth.authorize('conn-write', {
+    tokenRequest: async () => ({ access_token: 'invented-access-token', expires_in: 3600 }),
+  });
+  // The token write is held by the test: transact is called first, and the store is written only after the release.
+  let writeStarted, releaseWrite;
+  const writeBegun = new Promise((resolve) => {
+    writeStarted = resolve;
+  });
+  const gate = new Promise((resolve) => {
+    releaseWrite = resolve;
+  });
+  // Releases the held write on every path, so a failed assertion below still lets the sign-in and close() finish.
+  t.after(() => releaseWrite());
+  const transact = store.transact.bind(store);
+  store.transact = (apply, options) => {
+    writeStarted();
+    return gate.then(() => transact(apply, options));
+  };
+  const outcome = started.completion.then(
+    () => 'signed in',
+    (error) => error.code,
+  );
+  const state = new URL(started.authorizeUrl).searchParams.get('state');
+  const answered = fetch(`${started.redirectUri}?state=${state}&code=invented-code`).then(
+    (response) => response.status,
+  );
+  await writeBegun;
+  let closed = false;
+  const closing = closeProviders(providers).then(() => {
+    closed = true;
+  });
+  // One turn: only the write gate this test holds can let close() finish.
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(closed, false, 'close() waits for the token write that has started');
+  releaseWrite();
+  assert.equal(await outcome, 'signed in');
+  assert.equal(await answered, 200);
+  await closing;
+  assert.equal(closed, true);
+  assert.equal(providers.connectors.oauth.status('conn-write').signedIn, true);
 });

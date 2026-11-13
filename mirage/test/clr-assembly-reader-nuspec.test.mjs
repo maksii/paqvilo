@@ -1,9 +1,8 @@
 // The nuspec identity read of a NuGet plug-in package: a whitespace run after the id must not block the process.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { once } from 'node:events';
-import { Worker } from 'node:worker_threads';
 import { zipOf } from '../lib/dataverse-solutions.mjs';
+import { workerAnswer } from './support/worker-answer.mjs';
 
 const READER = new URL('../lib/clr-assembly-reader.mjs', import.meta.url).href;
 // The reader runs in a worker because a synchronous regex on the main thread cannot be interrupted by the test.
@@ -17,14 +16,8 @@ const WORKER_URL = new URL(`data:text/javascript,${encodeURIComponent(WORKER_SOU
 const packageWith = (nuspec) => zipOf([{ name: 'p.nuspec', data: Buffer.from(nuspec) }]);
 
 // The test's own signal stops the worker when the test is cancelled by --test-timeout, so a hang cannot outlive it.
-async function inspectInWorker(bytes, signal) {
-  const worker = new Worker(WORKER_URL, { workerData: { bytes, reader: READER } });
-  try {
-    const [result] = await once(worker, 'message', { signal });
-    return result;
-  } finally {
-    await worker.terminate();
-  }
+function inspectInWorker(bytes, signal) {
+  return workerAnswer(WORKER_URL, { workerData: { bytes, reader: READER }, signal });
 }
 
 // @test-kind security: an uploaded nuspec must not freeze the Mirage process through a whitespace run after its id

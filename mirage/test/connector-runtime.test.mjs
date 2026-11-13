@@ -301,6 +301,25 @@ test('http provider applies rewrites to loopback, refuses other hosts and refuse
   assert.deepEqual(hits, ['/api/echo?q=1', '/api/moved', '/api/local-moved'], 'neither redirect is followed');
 });
 
+test('a loopback call that the caller cancels after the request reached the service rejects with the cancellation, not a timeout', async (t) => {
+  let arrive;
+  const arrived = new Promise((resolve) => {
+    arrive = resolve;
+  });
+  const local = await listen(t, () => arrive());
+  const runtime = createConnectorRuntime({});
+  const run = new AbortController();
+  const call = runtime.invoke({
+    connectorId: 'http',
+    operationId: 'Http',
+    parameters: { method: 'GET', uri: local + '/api/slow' },
+    context: { signal: run.signal },
+  });
+  await arrived;
+  run.abort();
+  await assert.rejects(call, (error) => error.code === 'FlowRunCancelled' && error.status === 409);
+});
+
 // The mocked clock fires a deadline only on tick(), so a budget that is not clamped or defaulted cannot end a call before the
 // test ticks: the test ticks 1 ms (what a 1 ms budget would need) once the request has reached the server, and releases the
 // answer after that tick. A regression that arms a 1 ms deadline fails here deterministically.

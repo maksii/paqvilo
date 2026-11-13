@@ -6,7 +6,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { createSimulator } from '../server.mjs';
 import { signInHeaders } from '../testing/session.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { makeTemporaryDirectory, ownedFixture } from '../testing/owned-fixture.mjs';
 
 async function fixture(
   t,
@@ -151,7 +151,7 @@ test('HTTP native forms use the selected live provider and never silently save l
 
 test('a lookup binding with malformed percent-encoding answers 400 InvalidLookup and writes nothing', async (t) => {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-form-lookup-'));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(
     path.join(directory, 'Home.webpage.yml'),
     'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n',
@@ -207,7 +207,7 @@ test('a lookup binding with malformed percent-encoding answers 400 InvalidLookup
     },
   };
   const app = await createSimulator({ sourceDir: directory, initial, watch: false });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const session = signInHeaders(app, 'local-editor', { roles: ['Editor'] });
   const response = await fetch(app.url + '/__sim/forms/entityform/create/submit', {
     method: 'POST',
@@ -248,7 +248,7 @@ const WIZARD_SCHEMA = {
 
 async function recordOwnershipFixture(t, { files, componentSchemas }) {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-form-owner-'));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(
     path.join(directory, 'Home.webpage.yml'),
     'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n',
@@ -276,7 +276,7 @@ async function recordOwnershipFixture(t, { files, componentSchemas }) {
     simulator: { mode: 'local', pageMode: 'local', endpoints: [], componentSchemas },
   };
   const app = await createSimulator({ sourceDir: directory, initial, watch: false });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const session = signInHeaders(app, ME, { roles: ['Editor'] });
   const post = (kind, id, body) =>
     fetch(`${app.url}/__sim/forms/${kind}/${id}/submit`, {

@@ -5,6 +5,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
+import net from 'node:net';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
@@ -83,8 +84,11 @@ test('shell capture owns an anonymous temporary CDP browser and closes it after 
     },
     async connect(cdp) {
       endpoint = cdp;
-      attached = await chromium.connectOverCDP(cdp);
-      assert.equal(attached.contexts().length, 1);
+      const browser = await chromium.connectOverCDP(cdp);
+      attached = browser;
+      // Resolves with the browser when its connection ends; close() clears the reference to it.
+      this.disconnected = new Promise((resolve) => browser.once('disconnected', () => resolve(browser)));
+      assert.equal(browser.contexts().length, 1);
       this.context = attached.contexts()[0];
       this.context.setDefaultTimeout(HANG_GUARD_MS);
       this.context.setDefaultNavigationTimeout(HANG_GUARD_MS);
@@ -137,8 +141,23 @@ test('shell capture owns an anonymous temporary CDP browser and closes it after 
     });
     assert.equal(report.complete, true);
     assert.equal(bridge.context, null);
-    // The owned browser's CDP endpoint is gone: its port refuses connections.
-    await assert.rejects(fetch(endpoint + '/json/version'), /fetch failed/);
+    // The owned browser no longer listens on its CDP port: the raw socket is refused, judged by error code.
+    const port = Number(new URL(endpoint).port);
+    const outcome = await new Promise((resolve) => {
+      const socket = net.connect(port, '127.0.0.1');
+      socket.once('connect', () => {
+        socket.destroy();
+        resolve('connected');
+      });
+      socket.once('error', (error) => {
+        socket.destroy();
+        resolve(error.code);
+      });
+    });
+    assert.equal(outcome, 'ECONNREFUSED', 'the owned browser no longer listens on its CDP port');
+    // The bridge's connection to the owned browser has ended.
+    const closed = await bridge.disconnected;
+    assert.equal(closed.isConnected(), false);
   } finally {
     await bridge.close();
     await fs.rm(root, { recursive: true, force: true });

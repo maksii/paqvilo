@@ -82,6 +82,7 @@ async function portalFixture(t, overrides = {}) {
   };
   const app = await createSimulator({
     sourceDir: root,
+    projectRoot: root,
     watch: false,
     clock: fixedClock(CLOCK_AT),
     initial,

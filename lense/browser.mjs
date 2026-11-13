@@ -61,14 +61,11 @@ export async function openBrowser(cfg, overrides = {}) {
   appendDebuggerArgs(args, debugPort);
   let context;
   try {
-    context = await chromium.launchPersistentContext(profileDir, {
-      ...browserLaunchSettings(b, headless, args),
-      timeout: guardMs,
-      // A caller that handles interrupts itself keeps Playwright from exiting the process before that cleanup runs.
-      ...(overrides.ownInterrupts ? { handleSIGINT: false, handleSIGTERM: false } : {}),
-    });
+    context = await chromium.launchPersistentContext(profileDir, launchOptions(b, headless, args, guardMs));
   } catch (err) {
-    throwBrowserLaunchError(hangGuardError(err, 'Launching the browser profile', guardMs), profileDir, profile, b);
+    const guarded = hangGuardError(err, 'Launching the browser profile', guardMs);
+    if (guarded !== err) throw guarded;
+    throwBrowserLaunchError(err, profileDir, profile, b);
   }
   if (initializePlacement) {
     try {
@@ -116,6 +113,12 @@ function browserWindowSettings(profile, profileDir, headless) {
 function appendDebuggerArgs(args, debugPort) {
   if (debugPort) args.push(`--remote-debugging-port=${debugPort}`, '--remote-debugging-address=127.0.0.1');
 }
+// The Lense command that opened the browser handles interrupts and closes it. Playwright's own handlers would exit the
+// process in the middle of that cleanup, so they are never installed. Playwright's exit hook closes a browser left behind
+// when the process exits normally.
+export function launchOptions(b, headless, args, guardMs) {
+  return { ...browserLaunchSettings(b, headless, args), timeout: guardMs, handleSIGINT: false, handleSIGTERM: false };
+}
 function browserLaunchSettings(b, headless, args) {
   return windowsLaunchOptions({
     channel: b.channel === 'chromium' ? undefined : b.channel,
@@ -161,21 +164,56 @@ function removeLegacySessionFile(file) {
   }
 }
 
+// Chromium holds the profile lock in the user-data root: `lockfile` on Windows and `SingletonLock` on POSIX, a symbolic
+// link to `<hostname>-<pid>`. Both names are checked on every platform. The lock counts as held while its link is
+// present, unless it names another host or a process that has exited.
+export function profileLockPresent(userDataRoot, { hostname = os.hostname(), alive = processIsAlive } = {}) {
+  return (
+    lockFileExists(path.join(userDataRoot, 'lockfile')) ||
+    singletonLockHeld(path.join(userDataRoot, 'SingletonLock'), hostname, alive)
+  );
+}
+
+// An existence test is not enough for a symbolic link, because `lstat` also sees a link whose target is missing.
+function lockFileExists(file) {
+  return fs.lstatSync(file, { throwIfNoEntry: false }) !== undefined;
+}
+
+function singletonLockHeld(file, hostname, alive) {
+  if (!lockFileExists(file)) return false;
+  let target;
+  try {
+    target = fs.readlinkSync(file);
+  } catch {
+    // A regular file or an unreadable link cannot be shown to be stale, so it counts as held.
+    return true;
+  }
+  const match = /^(.*)-(\d+)$/.exec(path.basename(target));
+  if (!match) return true;
+  return match[1] === hostname && alive(Number(match[2]));
+}
+
+// ESRCH is the only answer that means the process has exited; EPERM means it exists under another account.
+function processIsAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code !== 'ESRCH';
+  }
+}
+
 function throwBrowserLaunchError(err, profileDir, profile, b) {
   const first = err.message.split('\n')[0];
-  if (
-    /already (?:in use|running)|ProcessSingleton|SingletonLock|Target page, context or browser has been closed/i.test(
-      err.message,
-    )
-  ) {
-    throw new Error(
-      `the browser profile ${profileDir} (${profile.profileDirectory}) is in use or could not start. Close the browser using that user-data root, choose another --profile, or attach with --cdp-url to its existing debugging endpoint. (${first})`,
-      { cause: err },
-    );
-  }
   if (/is not found at|distribution .* is not found|executable doesn't exist/i.test(err.message)) {
     throw new Error(
       `browser "${b.channel}" is not installed. Set PAQVILO_BROWSER in .env to msedge or chrome. (${first})`,
+      { cause: err },
+    );
+  }
+  if (profileLockPresent(profileDir)) {
+    throw new Error(
+      `the browser profile ${profileDir} (${profile.profileDirectory}) is in use or could not start. Close the browser using that user-data root, choose another --profile, or attach with --cdp-url to its existing debugging endpoint. (${first})`,
       { cause: err },
     );
   }
@@ -301,7 +339,7 @@ async function debuggerPortAvailable(port) {
 
 // Playwright's own 30 s deadline is replaced by the named hang guard; a timeout error names the guard and the wait.
 function hangGuardError(error, what, guardMs) {
-  if (!/Timeout \d+ms exceeded/.test(error.message)) return error;
+  if (error?.name !== 'TimeoutError') return error;
   return new Error(
     `${what} did not finish within ${guardMs} ms. That is the browser hang guard, not a readiness deadline.`,
     {

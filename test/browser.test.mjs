@@ -13,6 +13,7 @@ import {
   sessionFileFor,
   safeDownloadName,
   browserProfileDir,
+  profileLockPresent,
 } from '../lense/browser.mjs';
 import { refreshUrl } from '../lense/navigation.mjs';
 import { defaultEdgeDataDirs, validateBrowserProfile } from '../lense/browser-profile.mjs';
@@ -919,3 +920,119 @@ function trackTimers(t) {
   });
   return armed;
 }
+
+test('a launch that Playwright times out is reported as the hang guard whatever its message says', async (t) => {
+  const dir = tempDirSync('paqvilo-launch-guard-');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const timeout = Object.assign(new Error('the launch was cut short'), { name: 'TimeoutError' });
+  t.mock.method(chromium, 'launchPersistentContext', async () => {
+    throw timeout;
+  });
+  await assert.rejects(
+    openBrowser(portalConfig(dir, origin), { profileDir: path.join(dir, 'profile'), hangGuardMs: 5 }),
+    (error) => {
+      assert.match(error.message, /Launching the browser profile did not finish within 5 ms/);
+      assert.equal(error.cause, timeout);
+      return true;
+    },
+  );
+});
+
+test('a failed launch names the profile as in use only while its browser lock file is present', async (t) => {
+  const launchError = new Error('browser exited during start-up');
+  t.mock.method(chromium, 'launchPersistentContext', async () => {
+    throw launchError;
+  });
+  for (const lock of ['lockfile', 'SingletonLock', null]) {
+    const dir = tempDirSync('paqvilo-profile-lock-');
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const profileDir = path.join(dir, 'profile');
+    fs.mkdirSync(profileDir);
+    if (lock) fs.writeFileSync(path.join(profileDir, lock), '');
+    await assert.rejects(openBrowser(portalConfig(dir, origin), { profileDir }), (error) => {
+      if (lock) assert.match(error.message, /is in use or could not start/);
+      else assert.equal(error, launchError);
+      return true;
+    });
+  }
+});
+
+test('a launch timeout keeps its hang-guard message while the profile lock file is present', async (t) => {
+  t.mock.method(chromium, 'launchPersistentContext', async () => {
+    throw Object.assign(new Error('Timeout 5ms exceeded.'), { name: 'TimeoutError' });
+  });
+  const dir = tempDirSync('paqvilo-profile-timeout-');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const profileDir = path.join(dir, 'profile');
+  fs.mkdirSync(profileDir);
+  fs.writeFileSync(path.join(profileDir, 'lockfile'), '');
+  await assert.rejects(openBrowser(portalConfig(dir, origin), { profileDir, hangGuardMs: 5 }), (error) => {
+    assert.match(error.message, /Launching the browser profile did not finish within 5 ms/);
+    assert.doesNotMatch(error.message, /in use/);
+    return true;
+  });
+});
+
+test('a missing browser executable is named as not installed while a stale SingletonLock is present', async (t) => {
+  t.mock.method(chromium, 'launchPersistentContext', async () => {
+    throw new Error("browserType.launchPersistentContext: Executable doesn't exist at /invented/msedge");
+  });
+  const dir = tempDirSync('paqvilo-profile-missing-');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const profileDir = path.join(dir, 'profile');
+  fs.mkdirSync(profileDir);
+  fs.writeFileSync(path.join(profileDir, 'SingletonLock'), '');
+  await assert.rejects(openBrowser(portalConfig(dir, origin), { profileDir }), (error) => {
+    assert.match(error.message, /is not installed/);
+    assert.doesNotMatch(error.message, /in use/);
+    return true;
+  });
+});
+
+test('a dangling SingletonLock link whose target cannot be parsed still names the profile as in use', async (t) => {
+  t.mock.method(chromium, 'launchPersistentContext', async () => {
+    throw new Error('browser exited during start-up');
+  });
+  const dir = tempDirSync('paqvilo-profile-dangling-');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const profileDir = path.join(dir, 'profile');
+  fs.mkdirSync(profileDir);
+  const lockPath = path.join(profileDir, 'SingletonLock');
+  fs.symlinkSync(path.join(dir, 'gone'), lockPath, 'junction');
+  assert.equal(fs.existsSync(lockPath), false, 'an existence test misses the dangling link');
+  await assert.rejects(openBrowser(portalConfig(dir, origin), { profileDir }), (error) => {
+    assert.match(error.message, /is in use or could not start/);
+    return true;
+  });
+});
+
+test('a SingletonLock link that names another host does not hold the profile', async (t) => {
+  const launchError = new Error('browser exited during start-up');
+  t.mock.method(chromium, 'launchPersistentContext', async () => {
+    throw launchError;
+  });
+  const dir = tempDirSync('paqvilo-profile-other-host-');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const profileDir = path.join(dir, 'profile');
+  fs.mkdirSync(profileDir);
+  fs.symlinkSync('invented-host-12345', path.join(profileDir, 'SingletonLock'), 'junction');
+  await assert.rejects(openBrowser(portalConfig(dir, origin), { profileDir }), (error) => {
+    assert.equal(error, launchError);
+    return true;
+  });
+});
+
+test('a SingletonLock link is held only by a live process on the host it names', (t) => {
+  const dir = tempDirSync('paqvilo-profile-live-link-');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.symlinkSync('lock-host-4242', path.join(dir, 'SingletonLock'), 'junction');
+  const probed = [];
+  const alive = (pid) => {
+    probed.push(pid);
+    return true;
+  };
+  assert.equal(profileLockPresent(dir, { hostname: 'lock-host', alive }), true);
+  assert.equal(profileLockPresent(dir, { hostname: 'lock-host', alive: () => false }), false);
+  assert.equal(profileLockPresent(dir, { hostname: 'other-host', alive }), false);
+  assert.deepEqual(probed, [4242]);
+});

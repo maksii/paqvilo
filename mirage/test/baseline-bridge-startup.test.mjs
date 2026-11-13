@@ -5,7 +5,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
-import { spawnLiveCapture } from './support/baseline-bridge-child.mjs';
+import { liveCaptureArgs } from './support/baseline-bridge-child.mjs';
+import { runBaselineCapture } from './support/baseline-capture-cli.mjs';
 
 test('a bridge missing the requested tool is closed before baseline setup rejects', async (t) => {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'baseline setup fixture '));
@@ -25,18 +26,7 @@ test('a bridge missing the requested tool is closed before baseline setup reject
     }).on('close',()=>{clearTimeout(timer);fs.writeFileSync(process.argv[2],'closed');process.exit(0)});
   `,
   );
-  const child = await spawnLiveCapture(t.signal, directory, server, marker);
-  let output = '';
-  child.stdout.on('data', (data) => {
-    output += data;
-  });
-  child.stderr.on('data', (data) => {
-    output += data;
-  });
-  const code = await new Promise((resolve, reject) => {
-    child.once('error', reject);
-    child.once('exit', resolve);
-  });
+  const { code, output } = await runBaselineCapture(await liveCaptureArgs(directory, server, marker), t.signal);
   assert.equal(code, 1);
   assert.match(output, /browser bridge offers no/);
   assert.equal(

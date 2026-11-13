@@ -272,25 +272,31 @@ function callerBody(response, onCancel) {
 // Level full: the body is read from a clone once the caller has the response, one read at a time, and the span is
 // finished on the read that ends the body or passes the cap (the caller still reads the original). Each read is a
 // callback, not an awaited loop, so the span is finished in the turn the caller's body ends and an open body never
-// holds the caller. A caller's cancel, or an abort of the request, finishes the span as cancelled. A body that is not
-// text-like is described by its content type and length only.
-function recordBody(span, response, limit) {
+// holds the caller. A caller's cancel, an abort of the request, or the store's close finishes the span as cancelled.
+// A body that is not text-like is described by its content type and length only.
+function recordBody(traces, span, response, limit) {
   const type = response.headers.get('content-type') ?? '';
   if (!response.body || !TEXT_TYPE.test(type) || /event-stream/i.test(type)) return finishBody(span, response, {});
   const reader = response.clone().body.getReader();
   const chunks = [];
   let size = 0;
   let settled = false;
+  let released = Promise.resolve();
+  // The store cancels this capture when it closes; the capture unregisters itself when it ends.
+  const untrack = traces.track(cancelled);
+  // Resolves once the clone has been cancelled: a store's close waits for it.
   function finish(read, status = null) {
-    if (settled) return;
+    if (settled) return released;
     settled = true;
-    reader.cancel().catch(() => {
+    untrack();
+    released = reader.cancel().catch(() => {
       /* a clone that is already closed or errored has nothing to release */
     });
     finishBody(span, response, read, status);
+    return released;
   }
   function cancelled() {
-    finish(capturedBody(chunks, size, limit, type), 'cancelled');
+    return finish(capturedBody(chunks, size, limit, type), 'cancelled');
   }
   function onRead({ done, value }) {
     if (settled) return;
@@ -386,7 +392,7 @@ export async function tracedFetch(
   }
   span.set({ status: response.status });
   if (span.enabled && payloads && traces.settings().level === 'full') {
-    recordBody(span, response, traces.settings().payloadBytes);
+    recordBody(traces, span, response, traces.settings().payloadBytes);
     return response;
   }
   recordStatus(span, response, undefined);

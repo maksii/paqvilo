@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { startMcpServer } from '../mcp-stdio.mjs';
 
-// The pending calls below would otherwise wait for their 60-second call timeout, and close() would wait out its 5-second
-// kill grace: the bound is below the first, and the timer count proves the grace and call timers were cleared rather
-// than relying on wall-clock speed (a loaded runner may take seconds to start a child).
+// The pending calls below would otherwise wait for their 60-second call timeout. close() waits for the exit; the hang
+// guard (60 s) is above this bound. The timer count proves the call timers were cleared rather than relying on
+// wall-clock speed (a loaded runner may take seconds to start a child).
 const CALL_TIMEOUT_MS = 60_000,
   BOUND = { timeout: CALL_TIMEOUT_MS / 2 };
 const timers = () => process.getActiveResourcesInfo().filter((name) => name === 'Timeout').length;

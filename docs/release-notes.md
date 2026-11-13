@@ -180,6 +180,62 @@ organization's metadata. Large datasets use far less memory.
 - **Baseline capture.** Live writes need `--allow-writes`, including the cache refresh and clear-cache steps,
   and a live capture names its scenarios with `--only` or `--all-scenarios`. Sign-in callback bodies, identity
   tokens and hidden credential inputs are redacted, and popups are covered by the write guard.
+- Ctrl+C or SIGTERM in `dev`, `mirage dev`, `model-driven dev` and `mirage demo` runs the command's own cleanup
+  (browser, Mirage, Code App dev servers, session cookies) before the command exits, including while the browser is
+  still launching. A stop requested before the browser launch skips the launch. From the start of `dev` until its
+  cleanup begins, for example while the dev browser launches or its sessions start, a second Ctrl+C is absorbed and a
+  third ends the process at once with status 130 (143 for SIGTERM) without waiting for the launch, as a third interrupt
+  during cleanup does.
+- A dev command whose cleanup fails (a browser that does not close: `browser cleanup failed: <first line>`; a Mirage it
+  started that could not be stopped: `mirage   could not stop pid <n>…; run: <stop command>`) reports the failure on
+  stderr and exits with status 1, also when the command was interrupted.
+- `mirage dev` for Code Apps and Dataverse runtimes prints `mirage   stopped <url> (pid <n>)` once the Mirage it
+  started is verified stopped, as Power Pages dev does.
+- Stopping a dev session or switching a model-driven target waits for a running agent screenshot (up to its
+  `timeoutMs`, at most 120 s) or navigation (at most 60 s) to end.
+- Retiring a model-driven target waits up to 18 s for a panel call in progress; with the page paused in a debugger a
+  target switch can take up to 48 s.
+- Inspect reports server logic and Web API tables that a page called after its first 250 requests as observed
+  requests.
+- Lense agent API: a page action sends `--timeout` as the browser deadline (navigate and reload at most 60000 ms). The
+  client waits 30000 ms longer for the session's answer before it reports `request_timeout`.
+- The parity suite, live acceptance flows and live baseline captures that name the browser's debugging endpoint
+  (`live.cdpUrl` for captures) refuse writes of every page they drive at the browser level: the page, its popups
+  (including a form posted into a new window), frames inside those pages and popups those popups open are refused from
+  their first request, also when Lense or another debugging client attached to the same browser lets the page start
+  first. A write whose page cannot be established (a frame removed before the browser answers, or a frame of a tab that
+  is closing) is refused, in every tab of that browser. A page that is closing keeps its owner: its own close-time
+  writes are decided like its other writes.
+- Other tabs in that browser keep working, with two exceptions: a tab opened in that browser while a live capture runs
+  counts as the capture's own, and while a live acceptance flow runs, tabs that were already open in the attached
+  browser cannot write; their attempts are listed in the flow's `blockedRequests`.
+- A live capture whose page did not open in the browser of `live.cdpUrl` stops with `live.cdpUrl is not the bridge
+browser…` and merges no evidence. Without `live.cdpUrl` a capture reports that only the per-page guard protects it.
+- The debugging endpoint is read with hang guards: 10 s for its version read and 30 s for the socket to open (`The
+browser debugging socket did not open.`).
+- Live acceptance: a route answer that fails is ignored only when its page or context has closed. Any other failure
+  fails the run, whatever its message.
+- Baseline scenarios can wait for popups with `wait: { popup: <n> }`. The step fails when fewer popups have opened
+  within the step `timeout` (default 20 s).
+- Baseline capture reads every finished response body before its screenshot. A body that never ends does not hold the
+  capture past its settle timeout. A page the scenario did not open is not recorded.
+- Baseline capture: closing the browser bridge waits for the bridge to exit. A bridge still running 60 s after its
+  input ended is asked to stop, and 60 s after that it is killed.
+- A TDS connection that sends nothing for 30 s before login is closed. While the client acquires its Microsoft Entra
+  token after FEDAUTHINFO the limit is 15 minutes. After a rejected login the 30 s limit applies again and any further
+  login on that connection closes it. After a malformed FEDAUTH token the same limit applies and the connection stays
+  open for a new login.
+- A connector call cancelled by its flow run or by a disconnected Code Apps client is recorded as cancelled
+  (`FlowRunCancelled`), not as a timeout. A sign-in whose token write has started completes as signed in even if the
+  runtime closes meanwhile.
+- A cancelled custom connector script build ends its process tree before the call returns, and a failed build leaves
+  no partial host assembly behind. On Linux and macOS a build still running 10 s after SIGTERM is killed.
+- Closing an organization host cancels the open full-level body captures of the trace store it created; their spans
+  end `cancelled`. A persona runtime that shares its parent's store leaves the parent's captures running.
+- A `/_sim/` reset or `close` releases the `ImportJobId` of a staged solution job whose row it removed.
+- A server logic worker still running 30 s after it answered is ended; a worker that ends by itself is not touched.
+- A pooled CLR host that ends before it reads a call fails that call as `LocalPluginHostExited` at once.
+- `clrHostPoolStatus()` entries carry `session`, a serial number per pooled host.
 
 ### Fixed
 
@@ -215,10 +271,13 @@ organization's metadata. Large datasets use far less memory.
   Invitation codes are redacted in traces and audit records.
 - Switching the model-driven target on a slow or loaded machine no longer ends the dev session and closes the
   browser: retiring a target waits for the browser to finish its cleanup.
-- The panel's Tweaks tab recovers on its own when a read of the local runtime is slow or dropped, and returning to a
-  portal that was visited before refreshes its runtime summary.
-- `lense verify` reads the displayed document when the start page reloads itself or returns from a sign-in round trip
-  on the same address.
+- The panel's Tweaks tab recovers when a read of the local runtime is slow or dropped: the dev panel waits up to 60 s
+  for a slow local Mirage before it shows the runtime as unavailable, a failed read is shown, and the next navigation
+  reads again. Returning to a portal that was visited before refreshes its runtime summary.
+- `lense verify` has no fixed pause after the start page loads. It reads the displayed document when the start page
+  reloads itself or returns from a sign-in round trip on the same address. A start page that replaces its document
+  before the edits are chosen is read again, at most three times; after that `verify` fails and names the redacted
+  addresses the page went to. A redirect that a page timer starts after the edits were chosen is not detected.
 - A span opened after its trace left the retained set no longer recreates a partial trace under the same id.
 - Plug-in packages with overlapping ZIP entries or content beyond the local size limit are refused, and deeply
   nested or deeply derived types no longer exhaust the assembly reader.
@@ -234,6 +293,35 @@ organization's metadata. Large datasets use far less memory.
 - A request to `/_sim/api/presets/<name>` with the name of an inherited object property answers 404.
 - Shutdown does not wait for a stalled request body: a body without progress for 30 s is dropped, and accepted
   streaming requests are drained.
+- Mirage no longer ends with a V8 fatal error when a worker thread finishes a server logic, a CLR plug-in call, a
+  synchronous I/O bridge call or a metadata compile: a worker that has answered ends by itself, and is terminated only
+  when it is still running 30 s after it answered.
+- A CLR plug-in host counts as stopped only when its own exit is reported, waiting up to 30 s, not when it disappears
+  within one second. A runtime or snapshot whose host is not verified stopped is kept and reported as
+  `PLUGIN_CLR_CLEANUP` (`CLR host not verified stopped; runtime cache directory kept: <name>` or `…; snapshot kept:
+<name>`); the runtime directory is released once the system reports that host gone.
+- A snapshot file that another process still holds after its host exited is retried for up to 30 s (was 1 s) before
+  `PLUGIN_CLR_CLEANUP` is reported.
+- A CLR call past the plug-in depth limit starts no host.
+- An error on a running portal, administration or apps listener is recorded once per listener as a `LISTENER_ERROR`
+  diagnostic (with `listener`) instead of ending the process.
+- A failed browser launch names the profile as in use only while the browser's lock file shows a live browser on this
+  machine; a launch that times out or a browser that is not installed is reported as such.
+- Stopping Code App dev servers on Windows no longer needs System32 on PATH.
+- An interrupt while `verify` or `model-driven dev` waits for the source watcher no longer leaves the command hanging.
+- A start that cannot read the identity of a running Mirage keeps that runtime's ownership record instead of
+  dropping it. A runtime that took over the process ID of an owner that ended while the start waited is still
+  recognised as the owner.
+- A save-and-new that fails after its error handling is reported to the page as an error instead of being dropped.
+- The parity driver no longer stalls on a popup or frame whose first request is paused before its interception is
+  acknowledged.
+- A parity reference capture of a page with cross-site frames is reported settled once the page's requests and the
+  requests of those frames, including frames nested inside them, have finished, instead of waiting the full settle
+  limit and reporting unsettled. Frame requests still in flight are named in `pendingRequests`, and writes from nested
+  frames are refused by the page's own interception.
+- A parity reference capture runs the dedicated workers of the page, of its cross-site frames and of the popups it
+  opens; they were held at start and never ran. A worker's requests count as its page's requests, and its writes are
+  refused like the page's.
 
 ### Upgrade notes
 
@@ -259,6 +347,18 @@ organization's metadata. Large datasets use far less memory.
   names from Liquid `attribute_type`, use 17, 10 and the `AttributeTypeCode` names.
 - `navigationCommitReserveMs` in `runAcceptance` reserves at most half of the remaining action time for held
   writes.
+- On Linux and macOS, `paqvilo` does not forward SIGINT to the command it runs, because Ctrl+C in a terminal
+  already reaches both. To stop `paqvilo` from a script or a parent process, send SIGTERM; a SIGINT sent only to the
+  `paqvilo` process is ignored.
+- Service Bus emulator provider: `preflight()` called without a probe context is bounded by the 30 s idle window and
+  reports `SERVICEBUS_EMULATOR_UNREACHABLE` when it ends there.
+- Storage providers from packs: `preflight` must settle once its `signal` aborts; closing the provider waits for
+  every probe it started.
+- Parity reference captures run under a debugging client, and two browser limits apply: a message that a cross-site
+  frame posts to its parent within a few milliseconds of loading can be lost while the capture holds a popup of that
+  page at start, so a widget that waits for such a message can stay in its loading state in the capture; and when
+  another debugging client resumes a cross-site frame before the capture tracks it, requests that frame already started
+  are not counted, so the capture can be reported settled while they still load. Writes are refused in both cases.
 
 ### Contributor validation
 

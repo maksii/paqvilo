@@ -4,8 +4,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import http from 'node:http';
-import { spawn } from 'node:child_process';
-import { once } from 'node:events';
+import { readdirSync } from 'node:fs';
+import { EventEmitter } from 'node:events';
 import mirage, {
   codeAppStartupInterrupted,
   discoveries,
@@ -270,88 +270,152 @@ test('startup probes and reuses a runtime whose ownership, launch settings and p
   assert.equal(phases.includes('process launch'), false);
 });
 
-// A stand-in runtime reports a progress record every 200 ms, then publishes its discovery record.
-const PROGRESS_CHILD = String.raw`
-  const fs = require('node:fs');
-  const path = require('node:path');
-  let records = 0;
-  const timer = setInterval(() => {
-    records++;
-    process.stdout.write(JSON.stringify({ type: 'runtime-startup', phase: 'configuration', elapsedMs: records * 200 }) + '\n');
-    if (records < 12) return;
-    clearInterval(timer);
-    fs.writeFileSync(path.join(process.env.FAKE_DISCOVERY_ROOT, 'session-' + process.pid + '.json'), JSON.stringify({ pid: process.pid, url: process.env.FAKE_URL }));
-  }, 200);
-  setInterval(() => {}, 1000);
-`;
-const SILENT_CHILD = 'setInterval(() => {}, 1000);';
-const stopChild = async (child) => {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  const exited = once(child, 'exit');
-  child.kill('SIGTERM');
-  await exited;
-};
-const startWithChild = (cfg, args, paths, t, { script, env = {} }) => {
-  const identityOf = async () => 'invented identity';
-  return start(cfg, args, {
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+// The start-up poll loop calls `sleep` once per finished poll. Each call hands the test a handle, and the poll resumes
+// only when the test resolves it, so the test decides when the next poll begins.
+function pollGate() {
+  const parked = [];
+  let waiting = null;
+  return {
+    sleep() {
+      const poll = deferred();
+      if (waiting) waiting.resolve(poll);
+      else parked.push(poll);
+      waiting = null;
+      return poll.promise;
+    },
+    nextPoll() {
+      if (parked.length) return Promise.resolve(parked.shift());
+      waiting = deferred();
+      return waiting.promise;
+    },
+  };
+}
+
+// Resolves when the start reports the named phase. The listener is attached before the poll that could report it resumes.
+function phaseSeen(phases, name) {
+  return new Promise((resolve) => {
+    const listener = (phase) => {
+      if (phase !== name) return;
+      phases.off('phase', listener);
+      resolve();
+    };
+    phases.on('phase', listener);
+  });
+}
+
+// A stand-in runtime child: the start reads its pid and identity; it counts as alive until the start kills it.
+const STARTUP_PID = 4242;
+function fakeStartup(paths) {
+  const double = {
+    clock: { now: 1_000_000 },
+    kills: [],
+    gate: pollGate(),
+    phases: new EventEmitter(),
+    logPath: null,
+  };
+  const child = Object.assign(new EventEmitter(), { pid: STARTUP_PID, exitCode: null, unref() {}, kill() {} });
+  double.startup = { phase: (name) => double.phases.emit('phase', name) };
+  double.options = {
     paths,
-    identityOf,
-    spawnRuntime(command, _args, options) {
-      const child = spawn(command, ['-e', script], { ...options, env: { ...options.env, ...env } });
-      ownedFixture(t).add(() => stopChild(child));
+    identityOf: async () => 'invented identity',
+    sleep: double.gate.sleep,
+    now: () => double.clock.now,
+    alive: () => double.kills.length === 0,
+    kill: (pid, signal) => double.kills.push([pid, signal]),
+    spawnRuntime() {
+      // The start creates its own log before spawning, and the log root holds no other file in this fixture.
+      const names = readdirSync(paths.logRoot);
+      assert.equal(names.length, 1);
+      double.logPath = path.join(paths.logRoot, names[0]);
       return child;
     },
-  });
-};
+  };
+  return double;
+}
+
+const progressLine = (round) =>
+  `${JSON.stringify({ type: 'runtime-startup', phase: 'configuration', elapsedMs: round * 200 })}\n`;
+const modelDrivenConfig = (root) => ({ stateDir: root, runtime: { kind: 'model-driven' }, siteName: 'invented' });
 
 // @test-kind contract: start-up is bounded by silence, so a runtime that keeps reporting progress is not abandoned
 test('start-up stays alive while the runtime keeps reporting progress within the silence bound', async (t) => {
   const { root, paths } = await fixture(t);
   const url = await readyRuntime(t, () => {});
-  const session = await startWithChild(
-    { stateDir: root, runtime: { kind: 'model-driven' }, siteName: 'invented' },
-    { port: '0', 'startup-timeout': '1000' },
-    paths,
-    t,
-    { script: PROGRESS_CHILD, env: { FAKE_DISCOVERY_ROOT: paths.discoveryRoot, FAKE_URL: url } },
+  const fake = fakeStartup(paths);
+  const started = start(
+    modelDrivenConfig(root),
+    { port: '0', 'startup-timeout': '1000', startup: fake.startup },
+    fake.options,
   );
+  // Each round: the runtime reports one progress line, the start consumes it, and 600 ms of controlled time pass.
+  for (let round = 1; round <= 12; round++) {
+    const poll = await fake.gate.nextPoll();
+    await fs.appendFile(fake.logPath, progressLine(round));
+    const consumed = phaseSeen(fake.phases, 'configuration');
+    poll.resolve();
+    await consumed;
+    fake.clock.now += 600;
+  }
+  // The runtime then publishes its discovery record, which the next poll reads.
+  await fs.writeFile(
+    path.join(paths.discoveryRoot, `session-${STARTUP_PID}.json`),
+    JSON.stringify({ pid: STARTUP_PID, url }),
+  );
+  const poll = await fake.gate.nextPoll();
+  poll.resolve();
+  const session = await started;
   assert.equal(session.started, true);
   assert.equal(session.url, url);
+  assert.deepEqual(fake.kills, []);
 });
 
 // @test-kind contract: start-up fails once the runtime is silent for the bound, and the failure names the silence and the log
 test('start-up fails after the silence bound and names the silence and the start-up log', async (t) => {
   const { root, paths } = await fixture(t);
-  await assert.rejects(
-    startWithChild(
-      { stateDir: root, runtime: { kind: 'model-driven' }, siteName: 'invented' },
-      { port: '0', 'startup-timeout': '1000' },
-      paths,
-      t,
-      { script: SILENT_CHILD },
-    ),
-    (error) => {
-      assert.match(error.message, /no start-up progress for \d+ ms/);
-      assert.match(error.message, /See startup log: .*startup-\d+-[0-9a-f]+\.log$/);
-      assert.ok(error.writesFiles.some((file) => file.endsWith('.log')));
-      return true;
-    },
+  const fake = fakeStartup(paths);
+  const started = start(
+    modelDrivenConfig(root),
+    { port: '0', 'startup-timeout': '1000', startup: fake.startup },
+    fake.options,
   );
+  // No progress is reported: the next poll finishes past the silence bound.
+  const poll = await fake.gate.nextPoll();
+  fake.clock.now += 1001;
+  poll.resolve();
+  await assert.rejects(started, (error) => {
+    assert.match(error.message, /no start-up progress for \d+ ms/);
+    assert.match(error.message, /See startup log: .*startup-\d+-[0-9a-f]+\.log$/);
+    assert.ok(error.writesFiles.some((file) => file.endsWith('.log')));
+    return true;
+  });
+  assert.deepEqual(fake.kills, [[STARTUP_PID, 'SIGTERM']]);
 });
 
-// A Code App whose dev server is a configured command on a loopback port that nothing listens on.
+// Every readiness probe is refused at connect level by this double, so no port is reserved, released or listened on.
+const refusedConnect = () => {
+  const request = new EventEmitter();
+  request.end = () =>
+    request.emit('error', Object.assign(Error('Connection refused by the test double.'), { code: 'ECONNREFUSED' }));
+  return request;
+};
+
+// A Code App whose dev server is a configured command on a loopback URL.
 async function codeAppAt(t, script) {
   const root = await tempDir('paq-code-app-start-');
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
-  const probe = http.createServer();
-  await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
-  const port = probe.address().port;
-  await new Promise((resolve) => probe.close(resolve));
   return [
     {
       name: 'invented-app',
       dir: root,
-      localAppUrl: `http://127.0.0.1:${port}/`,
+      localAppUrl: 'http://127.0.0.1:5299/',
       devServer: { command: [process.execPath, '-e', script] },
     },
   ];
@@ -360,7 +424,7 @@ async function codeAppAt(t, script) {
 // @test-kind contract: a Code App dev server that exits during start-up is a failure that keeps its exit detail
 test('a Code App dev server that exits during start-up is a failure with its exit detail, not an interrupt', async (t) => {
   const apps = await codeAppAt(t, 'console.error("invented exit detail"); process.exit(3)');
-  const error = await startCodeAppDevServers(apps, { output: () => {} }).then(
+  const error = await startCodeAppDevServers(apps, { output: () => {}, connect: refusedConnect }).then(
     () => assert.fail('the dev server must not become ready'),
     (failure) => failure,
   );
@@ -381,7 +445,11 @@ test('a Ctrl+C during Code App start-up is an interrupt with one cancellation li
   const apps = await codeAppAt(t, 'setInterval(() => {}, 1000)');
   const controller = new AbortController();
   controller.abort(new Error('Code App development stopped.'));
-  const error = await startCodeAppDevServers(apps, { signal: controller.signal, output: () => {} }).then(
+  const error = await startCodeAppDevServers(apps, {
+    signal: controller.signal,
+    output: () => {},
+    connect: refusedConnect,
+  }).then(
     () => assert.fail('a cancelled start-up must not become ready'),
     (failure) => failure,
   );

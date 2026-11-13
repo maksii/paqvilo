@@ -1,6 +1,7 @@
 import { once } from 'node:events';
 import { chromium } from 'playwright-core';
 import { drainFixture, ownedFixture } from '../../mirage/testing/owned-fixture.mjs';
+import { browserChannel } from '../../mirage/lib/browser-launch.mjs';
 
 /** Own both shutdown steps before starting a synthetic loopback HTTP fixture. */
 export async function listenOwnedServer(t, server) {
@@ -20,7 +21,7 @@ export async function listenLoopbackContext(t, server) {
   let browser;
   ownedFixture(t).add(() => browser?.close());
   const origin = await listenOwnedServer(t, server);
-  const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
+  const channel = browserChannel();
   browser = await chromium.launch({
     channel: channel === 'chromium' ? undefined : channel,
     headless: true,

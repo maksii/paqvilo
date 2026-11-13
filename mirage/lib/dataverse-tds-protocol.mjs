@@ -1,7 +1,8 @@
 // Dataverse TDS server over node:net: the MS-TDS connection sequence for TDS 7.x (PRELOGIN-wrapped TLS) and TDS 8.0
 // (strict, TLS first). Login and queries are delegated to the caller. Protocol only: no SQL or store knowledge.
 //
-// createTdsServer({ secureContext, serverName, version, onLogin, onQuery, packetSize }) -> { listen(port, host), close() }
+// createTdsServer({ secureContext, serverName, version, onLogin, onQuery, packetSize, preloginIdleMs, fedAuthIdleMs })
+//   -> { listen(port, host), close() }
 //   secureContext  tls.SecureContext, or a function returning one at each handshake. Wrapped (TDS 7.x) TLS needs
 //                  maxVersion 'TLSv1.2' on it (see framing.mjs).
 //   serverName     LOGINACK program name (default 'Microsoft SQL Server'). version: PRELOGIN/LOGINACK version (default '12.0.2000').
@@ -50,14 +51,23 @@ const ENCRYPT_REQ = 0x03;
 const CUR_CMD_SELECT = 0xc1;
 const INTERNAL_ERROR = 50000;
 // A message sent before login completes (PRELOGIN, LOGIN7, FEDAUTH token) larger than this closes the connection. A
-// connection silent before login is closed after PRELOGIN_IDLE_MS; the timeout is cleared once login succeeds, so an
-// authenticated session has no idle limit.
+// connection silent before login is closed after preloginIdleMs (PRELOGIN_IDLE_MS by default). While the server waits for
+// the client's FEDAUTH token, the limit is fedAuthIdleMs (FEDAUTH_IDLE_MS by default): the hang guard for the client's
+// interactive token acquisition, which can take minutes. Once login succeeds the timeout is cleared, so an authenticated
+// session has no idle limit.
 const PRELOGIN_MAX_BYTES = 64 * 1024;
 const PRELOGIN_IDLE_MS = 30_000;
+const FEDAUTH_IDLE_MS = 15 * 60_000;
 const LOGIN_FAILED = { number: 18456, state: 1, class: 14, message: 'Login failed.' };
 const COLLATION = Buffer.from([0x09, 0x04, 0xd0, 0x00, 0x34]); // Latin1_General_CI_AS
 const EMPTY = Buffer.alloc(0);
 const contextOf = (context) => (typeof context === 'function' ? context() : context);
+
+// An idle limit is a positive finite number of milliseconds: 0 would switch the limit off, and Node refuses the others.
+function requireIdleLimit(name, value) {
+  if (!Number.isFinite(value) || value <= 0)
+    throw new RangeError(`createTdsServer ${name} must be a positive finite number`);
+}
 
 export function createTdsServer({
   secureContext,
@@ -67,7 +77,11 @@ export function createTdsServer({
   onLogin,
   onQuery,
   packetSize = DEFAULT_PACKET_SIZE,
+  preloginIdleMs = PRELOGIN_IDLE_MS,
+  fedAuthIdleMs = FEDAUTH_IDLE_MS,
 } = {}) {
+  requireIdleLimit('preloginIdleMs', preloginIdleMs);
+  requireIdleLimit('fedAuthIdleMs', fedAuthIdleMs);
   if (!secureContext || typeof onLogin !== 'function' || typeof onQuery !== 'function') {
     throw new TypeError('createTdsServer needs secureContext, onLogin and onQuery');
   }
@@ -77,7 +91,7 @@ export function createTdsServer({
     sockets.add(socket);
     socket.on('close', () => sockets.delete(socket));
     socket.on('error', () => socket.destroy());
-    socket.setTimeout(PRELOGIN_IDLE_MS, () => socket.destroy());
+    socket.setTimeout(preloginIdleMs, () => socket.destroy());
     accept(socket).catch(() => socket.destroy());
   });
 
@@ -116,13 +130,15 @@ export function createTdsServer({
   }
 
   // One TLS-wrapped (or strict) connection. Messages are handled in order; ATTENTION is answered at once.
-  // transport is the TCP socket under the TLS stream: its pre-login idle timeout is cleared at a successful login.
+  // transport is the TCP socket under the TLS stream: its idle timeout is fedAuthIdleMs while the client's token is
+  // awaited, preloginIdleMs again after a rejected login, and cleared at a successful login.
   function session(stream, strict, transport) {
     stream.on('error', () => stream.destroy());
     const conn = {
       loggedIn: false,
       principal: undefined,
       pendingLogin: null,
+      rejected: false,
       running: /** @type {AbortController | null} */ (null),
       queue: Promise.resolve(),
     };
@@ -176,7 +192,7 @@ export function createTdsServer({
     }
 
     async function login(payload) {
-      if (conn.loggedIn || conn.pendingLogin) throw new Error('unexpected LOGIN7');
+      if (conn.rejected || conn.loggedIn || conn.pendingLogin) throw new Error('unexpected LOGIN7');
       const request = decodeLogin7(payload);
       const fedAuth = request.fedAuth;
       const decision = await onLogin({ token: fedAuth?.token, fedAuth, login: request });
@@ -192,6 +208,7 @@ export function createTdsServer({
         token = fedAuthTokenText(payload);
       } catch (error) {
         if (!(error instanceof TdsProtocolError)) throw error;
+        transport.setTimeout(preloginIdleMs);
         return reply(errorToken({ number: INTERNAL_ERROR, message: error.message }), doneToken({ error: true }));
       }
       const fedAuth = { ...pending.fedAuth, token };
@@ -203,6 +220,7 @@ export function createTdsServer({
     function decide(decision, request, fedAuth) {
       if (decision?.fedAuthInfo) {
         conn.pendingLogin = { request, fedAuth };
+        transport.setTimeout(fedAuthIdleMs);
         return reply(fedAuthInfo(decision.fedAuthInfo));
       }
       if (!decision?.ok) return reject(decision?.error);
@@ -221,6 +239,8 @@ export function createTdsServer({
     }
 
     function reject(error) {
+      conn.rejected = true;
+      transport.setTimeout(preloginIdleMs);
       reply(errorToken({ ...LOGIN_FAILED, ...error }), doneToken({ error: true }));
       stream.end();
     }

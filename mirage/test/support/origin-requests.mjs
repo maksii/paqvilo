@@ -66,8 +66,8 @@ export async function startDryRunSimulator(t, root, config) {
 }
 
 // Raw requests keep the exact Host, Origin and Sec-Fetch-* headers a case names; fetch adds or drops some of them.
-// An event stream never ends: its answer is read up to the first chunk, then the connection is dropped. Every other
-// answer is read to its end. A JSON body is sent with its content type.
+// An event stream never ends: its answer is taken as soon as its status and headers arrive, with an empty body, then
+// the connection is dropped. Every other answer is read to its end. A JSON body is sent with its content type.
 export function send(origin, { method = 'GET', target = '/', headers = {}, body = undefined } = {}) {
   const url = new URL(origin);
   const payload = body === undefined ? undefined : JSON.stringify(body);
@@ -77,19 +77,18 @@ export function send(origin, { method = 'GET', target = '/', headers = {}, body 
       { host: url.hostname, port: url.port, method, path: target, headers: sent },
       (response) => {
         const contentType = response.headers['content-type'] ?? '';
-        const streamed = /event-stream/.test(contentType);
         const chunks = [];
-        const finish = () => {
-          const text = Buffer.concat(chunks).toString('utf8');
+        const finish = (text) => {
           const json = /json/.test(contentType) && text ? JSON.parse(text) : null;
           resolve({ status: response.statusCode, headers: response.headers, text, json });
           request.destroy();
         };
-        response.on('data', (chunk) => {
-          chunks.push(chunk);
-          if (streamed) finish();
-        });
-        response.once('end', finish);
+        if (/event-stream/.test(contentType)) {
+          finish('');
+          return;
+        }
+        response.on('data', (chunk) => chunks.push(chunk));
+        response.once('end', () => finish(Buffer.concat(chunks).toString('utf8')));
       },
     );
     request.on('error', reject);

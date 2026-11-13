@@ -10,6 +10,7 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { verifyParity } from '../verify.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { devToolsActivePort } from './shared-browser.mjs';
 
 // Pinned Playwright exposes its in-process implementation to tests. Gate the
 // actual Chromium detach event; never synthesize a protocol failure or close a
@@ -228,8 +229,7 @@ test('parity verifies exact pixels and DOM, rejects mismatches/sign-in/runtime i
   );
   const userPage = context.pages()[0];
   await userPage.goto(localOrigin);
-  const debugging = (await fs.readFile(path.join(profile, 'DevToolsActivePort'), 'utf8')).trim().split('\n');
-  const cdpUrl = `http://127.0.0.1:${debugging[0]}`;
+  const cdpUrl = `http://127.0.0.1:${await devToolsActivePort(profile)}`;
   const verify = (name, options = {}) =>
     verifyParity({
       localUrl: localOrigin,
@@ -434,7 +434,7 @@ fetch("/_api/items?$select=name").then((r) => r.json()).then((j) => { for (const
   );
   const userPage = context.pages()[0];
   await userPage.goto(`${origin}/user-page`);
-  const port = Number((await fs.readFile(path.join(profile, 'DevToolsActivePort'), 'utf8')).trim().split('\n')[0]);
+  const port = await devToolsActivePort(profile);
   assert.ok(Number.isInteger(port) && port > 0 && port <= 65535, 'owned browser reports a valid loopback port');
   const fulfil = [
     {

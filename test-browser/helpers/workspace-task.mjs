@@ -6,6 +6,7 @@ import { chromium } from 'playwright-core';
 import { childOutput } from './child-output.mjs';
 import { PROFILE_RELEASE_RETRIES } from './profile-cleanup.mjs';
 import { drainFixture } from '../../mirage/testing/owned-fixture.mjs';
+import { browserChannel } from '../../mirage/lib/browser-launch.mjs';
 
 /**
  * Stops an owned child and resolves once it has closed: its stdio drained, not merely exited. After a requested
@@ -55,7 +56,7 @@ export function laneArguments(args, browser) {
  * connects to the development browser the task opened.
  */
 export function runWorkspaceTask(t, { cli, args, cwd, env, task, port, stop, work, cleanup = () => {}, label }) {
-  const laneBrowser = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
+  const laneBrowser = browserChannel();
   const child = spawn(process.execPath, [cli, ...laneArguments(args, laneBrowser)], {
     cwd,
     env,

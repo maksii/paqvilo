@@ -125,6 +125,7 @@ test('owned raw binding survives independent persistent-browser CDP owners and o
   const child = `import{chromium}from'playwright-core';import{createOwnedPageBindings}from'${helper}';const b=await chromium.connectOverCDP('http://127.0.0.1:${f.port}');const c=b.contexts()[0];c.setDefaultTimeout(${HANG_GUARD_MS});c.setDefaultNavigationTimeout(${HANG_GUARD_MS});let observer;try{const p=await c.newPage();await p.goto('${f.origin}/attached');const bridge=await createOwnedPageBindings(p,{origin:'${f.origin}',bindings:{inventedEcho:(_source,v)=>({echo:v})}});const before=await p.evaluate(()=>inventedEcho('before'));observer=await chromium.connectOverCDP('http://127.0.0.1:${f.port}');const during=await p.evaluate(()=>inventedEcho('during'));await observer.close();observer=null;const after=await p.evaluate(()=>inventedEcho('after'));await p.reload();const navigation=await p.evaluate(()=>inventedEcho('navigation'));await bridge.close();const closed=await p.evaluate(()=>typeof inventedEcho);await p.reload();const retired=await p.evaluate(()=>typeof inventedEcho);console.log(JSON.stringify({before,during,after,navigation,closed,retired}));await p.close()}finally{await observer?.close();await b.close()}`;
   const result = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', child], {
     windowsHide: true,
+    signal: t.signal,
   });
   assert.deepEqual(JSON.parse(result.stdout), {
     before: { echo: 'before' },
@@ -379,7 +380,8 @@ test('blocked protocol replies release capacity and a late reply still completes
   let send,
     blocked = true,
     allDelayed;
-  const delayed = [];
+  const delayed = [],
+    pendingSends = [];
   const capacityHeld = new Promise((resolve) => {
     allDelayed = resolve;
   });
@@ -389,9 +391,17 @@ test('blocked protocol replies release capacity and a late reply still completes
     session.send = (method, params) => {
       if (blocked && method === 'Runtime.callFunctionOn') {
         if (delayed.push(params) === OWNED_CALL_CAPACITY) allDelayed();
-        return new Promise(() => {});
+        return new Promise((_, reject) => {
+          pendingSends.push(reject);
+        });
       }
       return send(method, params);
+    };
+    // A real session rejects its pending sends once it detaches, so the blocked sends do the same after the real detach.
+    const detach = session.detach.bind(session);
+    session.detach = async () => {
+      await detach();
+      for (const reject of pendingSends) reject(new Error('Session closed'));
     };
     return session;
   };

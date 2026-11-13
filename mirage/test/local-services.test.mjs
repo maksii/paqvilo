@@ -174,20 +174,27 @@ test('describeLocalServices answers contract-level external-process capability r
 });
 
 // A fetch that answers after delayMs on the mocked clock, or never when delayMs is null; an abort ends it with the signal's reason.
+// `arrived` resolves with the request's signal when the probe calls fetch, which is after the probe armed its bound: a test
+// ticks the mocked clock only after awaiting it.
 function mockedFetch(delayMs) {
-  return (href, { signal }) =>
+  let arrive;
+  const arrived = new Promise((resolve) => {
+    arrive = resolve;
+  });
+  const fetch = (href, { signal }) =>
     new Promise((resolve, reject) => {
       signal.addEventListener('abort', () => reject(signal.reason), { once: true });
       if (delayMs !== null) setTimeout(() => resolve(new Response(null, { status: 200 })), delayMs);
+      arrive(signal);
     });
+  return { fetch, arrived };
 }
 
 test('a local service that answers after 10 mocked seconds is ready under the default idle window', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
-  const probe = preflightLocalServices(
-    { slow: { kind: 'http', baseUrl: 'http://127.0.0.1:7071' } },
-    { fetch: mockedFetch(10_000) },
-  );
+  const { fetch, arrived } = mockedFetch(10_000);
+  const probe = preflightLocalServices({ slow: { kind: 'http', baseUrl: 'http://127.0.0.1:7071' } }, { fetch });
+  await arrived;
   t.mock.timers.tick(10_000);
   const [result] = await probe;
   assert.deepEqual([result.reachable, result.status], [true, 200], result.message);
@@ -196,16 +203,17 @@ test('a local service that answers after 10 mocked seconds is ready under the de
 test('a silent local service is reported not ready when the default idle window ends, not at a fixed 2 s bound', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   let settled = false;
-  const probe = preflightLocalServices(
-    { silent: { kind: 'http', baseUrl: 'http://127.0.0.1:7071' } },
-    { fetch: mockedFetch(null) },
-  ).then((results) => {
-    settled = true;
-    return results;
-  });
+  const { fetch, arrived } = mockedFetch(null);
+  const probe = preflightLocalServices({ silent: { kind: 'http', baseUrl: 'http://127.0.0.1:7071' } }, { fetch }).then(
+    (results) => {
+      settled = true;
+      return results;
+    },
+  );
+  const signal = await arrived;
   t.mock.timers.tick(PREFLIGHT_IDLE_TIMEOUT_MS - 1);
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(settled, false, 'the idle window has not ended one millisecond early');
+  assert.equal(signal.aborted, false, 'the idle window has not ended one millisecond early');
+  assert.equal(settled, false, 'the probe has not settled one millisecond early');
   t.mock.timers.tick(1);
   const [result] = await probe;
   assert.equal(result.reachable, false);
@@ -214,10 +222,22 @@ test('a silent local service is reported not ready when the default idle window 
 
 test('an explicit timeoutMs still bounds the probe of a silent local service', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
-  const [result] = await preflightLocalServices(
+  let settled = false;
+  const { fetch, arrived } = mockedFetch(null);
+  const probe = preflightLocalServices(
     { silent: { kind: 'http', baseUrl: 'http://127.0.0.1:7071' } },
-    { fetch: mockedFetch(null), timeoutMs: 50 },
-  );
+    { fetch, timeoutMs: 50 },
+  ).then((results) => {
+    settled = true;
+    return results;
+  });
+  const signal = await arrived;
+  t.mock.timers.tick(49);
+  assert.equal(signal.aborted, false, 'the 50 ms bound has not ended one millisecond early');
+  assert.equal(settled, false, 'the probe has not settled one millisecond early');
+  t.mock.timers.tick(1);
+  assert.equal(signal.aborted, true, 'the 50 ms bound aborts the request at its own tick');
+  const [result] = await probe;
   assert.equal(result.reachable, false);
   assert.match(result.message, /no answer within 50 ms/);
 });

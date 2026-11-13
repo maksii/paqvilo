@@ -293,6 +293,9 @@ const listedName = {
   applicationName: 'Invented Provisioning',
 };
 
+// Stands in for DPAPI protection, so registration reaches PAC on every operating system.
+const fakeProtect = async () => 'cHJvdGVjdGVk';
+
 // @test-kind security: an application the environment already lists under the requested name is refused before any create call
 test('register refuses a name the environment already lists, before creating an application', async (t) => {
   const root = registrationRoot(t);
@@ -326,15 +329,14 @@ test('a longer listed application name does not block registration', async (t) =
   const root = registrationRoot(t);
   const verbs = installPacDouble(t, root, { who: true, list: 'longer' });
   await assert.rejects(
-    registerApplication({ ...listedName, connectionFile: path.join(root, listedName.connectionFile) }),
+    registerApplication({
+      ...listedName,
+      connectionFile: path.join(root, listedName.connectionFile),
+      protect: fakeProtect,
+    }),
     (error) => error.code !== 'REGISTRATION_EXISTS' && !/could not be checked/.test(error.message),
   );
-  // Creation needs Windows DPAPI for the preflight, so off Windows the run stops after the listing.
-  const expected =
-    process.platform === 'win32'
-      ? ['who', 'list-service-principal', 'create-service-principal']
-      : ['who', 'list-service-principal'];
-  assert.deepEqual(verbs(), expected);
+  assert.deepEqual(verbs(), ['who', 'list-service-principal', 'create-service-principal']);
 });
 
 // @test-kind security: the override skips the listing, so a listed name reaches creation exactly once
@@ -346,11 +348,28 @@ test('the override skips the listing and reaches creation once', async (t) => {
       ...listedName,
       connectionFile: path.join(root, listedName.connectionFile),
       allowAdditionalApplication: true,
+      protect: fakeProtect,
     }),
     (error) => error.code !== 'REGISTRATION_EXISTS' && !/could not be checked/.test(error.message),
   );
-  const expected = process.platform === 'win32' ? ['who', 'create-service-principal'] : ['who'];
-  assert.deepEqual(verbs(), expected);
+  assert.deepEqual(verbs(), ['who', 'create-service-principal']);
+});
+
+// @test-kind security: a failed secret protection stops registration before the application is created
+test('a failed secret protection stops registration before the application is created', async (t) => {
+  const root = registrationRoot(t);
+  const verbs = installPacDouble(t, root, { who: true, list: 'longer' });
+  await assert.rejects(
+    registerApplication({
+      ...listedName,
+      connectionFile: path.join(root, listedName.connectionFile),
+      protect: async () => {
+        throw new Error('invented');
+      },
+    }),
+    (error) => error.message === 'invented',
+  );
+  assert.deepEqual(verbs(), ['who', 'list-service-principal']);
 });
 
 // @test-kind security: any json record beside the connection blocks a second application for its environment before PAC

@@ -7,6 +7,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import { EventEmitter } from 'node:events';
+import { Worker } from 'node:worker_threads';
 import { DataStore } from '../lib/data.mjs';
 import {
   runExportedServerLogic,
@@ -136,6 +138,18 @@ function store() {
     },
   });
 }
+// Resolves with the exit code of every Worker that emits its own 'exit' event during the test.
+function recordWorkerExit(t) {
+  let resolveExit;
+  const exited = new Promise((resolve) => {
+    resolveExit = resolve;
+  });
+  t.mock.method(Worker.prototype, 'emit', function (name, ...args) {
+    if (name === 'exit') resolveExit(args[0]);
+    return EventEmitter.prototype.emit.call(this, name, ...args);
+  });
+  return exited;
+}
 
 // @test-kind security: exported server code reads only what the caller's roles allow and a role-less caller is refused
 test('server-logic exported code uses invocation context, local role-scoped reads and connector envelope', async (t) => {
@@ -242,6 +256,100 @@ test('exported server code is bounded and read requests cannot change local reco
   assert.equal(data.get('widgets', 'one', { roles: ['Reader'] }).title, 'Synthetic');
   await fs.writeFile(fixture.record.file, 'function get(){return Promise.resolve("async result");}');
   assert.equal(await runExportedServerLogic({ record: fixture.record, portal: {}, store: data }), 'async result');
+});
+
+test('an answered server-logic worker exits by itself and is not terminated', async (t) => {
+  const exited = recordWorkerExit(t);
+  const terminate = t.mock.method(Worker.prototype, 'terminate');
+  const { record } = await source(t, 'function get(){ return "done"; }');
+  const answer = await runExportedServerLogic({
+    record,
+    portal: {},
+    store: store(),
+    identity: { roles: ['Reader'] },
+  });
+  assert.equal(answer, 'done');
+  assert.equal(await exited, 0);
+  assert.equal(terminate.mock.callCount(), 0);
+});
+
+test('an answered server logic has no limit timer left that could terminate its worker', async (t) => {
+  const originalSetTimeout = setTimeout;
+  const originalClearTimeout = clearTimeout;
+  const armed = [];
+  const cleared = [];
+  t.mock.method(globalThis, 'setTimeout', (...args) => {
+    const handle = originalSetTimeout(...args);
+    armed.push(handle);
+    return handle;
+  });
+  t.mock.method(globalThis, 'clearTimeout', (handle) => {
+    cleared.push(handle);
+    return originalClearTimeout(handle);
+  });
+  const exited = recordWorkerExit(t);
+  const terminate = t.mock.method(Worker.prototype, 'terminate');
+  const { record } = await source(t, 'function get(){ return "done"; }');
+  const answer = await runExportedServerLogic({
+    record,
+    portal: {},
+    store: store(),
+    identity: { roles: ['Reader'] },
+  });
+  assert.equal(answer, 'done');
+  assert.equal(await exited, 0);
+  assert.deepEqual(
+    armed.filter((handle) => !cleared.includes(handle)),
+    [],
+    'every timer armed for the call is cleared once its worker has exited',
+  );
+  assert.equal(terminate.mock.callCount(), 0);
+});
+
+test('an answered worker that keeps running is terminated at the answered-exit guard', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let worker;
+  t.mock.method(Worker.prototype, 'on', function (...args) {
+    worker ??= this;
+    return EventEmitter.prototype.on.apply(this, args);
+  });
+  const exited = recordWorkerExit(t);
+  const terminate = t.mock.method(Worker.prototype, 'terminate');
+  let running = true;
+  exited.then(() => {
+    running = false;
+  });
+  // A failing run must not leave the spinning worker alive: it is terminated only while it still runs.
+  t.after(() => {
+    if (running) worker.terminate().catch(() => {});
+  });
+  const { record } = await source(
+    t,
+    'function get(){ (function spin(){ Promise.resolve().then(spin); })(); return "done"; }',
+  );
+  const answer = await runExportedServerLogic({
+    record,
+    portal: {},
+    store: store(),
+    identity: { roles: ['Reader'] },
+  });
+  assert.equal(answer, 'done');
+  assert.equal(terminate.mock.callCount(), 0, 'the answered worker is not terminated before the guard');
+  t.mock.timers.tick(30_000);
+  assert.equal(terminate.mock.callCount(), 1, 'the answered-exit guard terminates the worker that keeps running');
+  assert.equal(await exited, 1);
+});
+
+test('a server logic that runs past its limit is stopped by its own worker and not terminated', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const exited = recordWorkerExit(t);
+  const terminate = t.mock.method(Worker.prototype, 'terminate');
+  const { record } = await source(t, 'function get(){ for(;;){} }');
+  await assert.rejects(runExportedServerLogic({ record, portal: {}, store: store(), timeout: 100 }), {
+    message: 'Script execution timed out after 100ms',
+  });
+  assert.equal(await exited, 0);
+  assert.equal(terminate.mock.callCount(), 0);
 });
 
 // @test-kind security: exported server code cannot create, update or delete without the caller's permission

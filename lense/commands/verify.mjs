@@ -171,31 +171,52 @@ const INTERRUPT_SIGNALS = ['SIGINT', 'SIGTERM'];
 
 /**
  * Aborts the run's wait loops on the first interrupt; the second is absorbed and the third forces the exit.
- * The returned function removes the listeners again.
+ * The signals are read from `source`, which defaults to the process. The returned function removes the listeners again.
  */
-export function abortOnInterrupt(controller, options = {}) {
+export function abortOnInterrupt(controller, { source = process, ...options } = {}) {
   const onSignal = shutdownSignalCounter({
     onFirst: (signal) => controller.abort(new Error(`Verification was interrupted by ${signal}`)),
     ...options,
   });
   const listeners = INTERRUPT_SIGNALS.map((signal) => [signal, () => onSignal(signal)]);
-  for (const [signal, listener] of listeners) process.on(signal, listener);
+  for (const [signal, listener] of listeners) source.on(signal, listener);
   return () => {
-    for (const [signal, listener] of listeners) process.off(signal, listener);
+    for (const [signal, listener] of listeners) source.off(signal, listener);
   };
 }
 
 /**
- * Settles with `promise`, or rejects with the interrupt reason as soon as the run is interrupted. The rejection
- * handler stays attached after an interrupt, so a promise that fails later is not reported as unhandled.
+ * Waits for work on behalf of a run that an interrupt can end. `until(promise)` settles with `promise`, or rejects
+ * with the interrupt reason as soon as the run is interrupted. Every promise it is given stays remembered until it
+ * settles, so `settled()` resolves only after the work an interrupt abandoned has finished. The rejection handler
+ * stays attached after an interrupt, so a promise that fails later is not reported as unhandled.
  */
-function untilInterrupted(promise, signal) {
-  signal.throwIfAborted();
-  return new Promise((resolve, reject) => {
-    const onInterrupt = () => reject(signal.reason);
-    signal.addEventListener('abort', onInterrupt, { once: true });
-    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', onInterrupt));
-  });
+export function createInterruptScope(signal) {
+  const pending = new Set();
+  return {
+    until(promise) {
+      pending.add(promise.then(noop, noop));
+      return new Promise((resolve, reject) => {
+        const onInterrupt = () => reject(signal.reason);
+        if (signal.aborted) onInterrupt();
+        signal.addEventListener('abort', onInterrupt, { once: true });
+        promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', onInterrupt));
+      });
+    },
+    settled: () => Promise.all(pending),
+  };
+}
+
+function noop() {}
+
+/**
+ * Closes a browser that finished launching after the run was interrupted, before the run is over. A launch that
+ * the run already received is closed through `close`, so nothing is closed twice.
+ */
+export async function closeLateBrowser(launching, close) {
+  if (close || !launching) return;
+  const late = await launching.catch(() => null);
+  await late?.close();
 }
 
 /** Polls `fn` until it returns something truthy; survives reloads that destroy the page context. */
@@ -232,16 +253,8 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
   return -1;
 }
 
-/** Opens the start page again while the displayed document's body cannot be read; three attempts at most. */
-async function openStableDocument(open, startPath) {
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const opened = await open();
-    if (opened.html !== null || !opened.response) return opened;
-  }
-  throw new Error(`${startPath} kept navigating while it loaded; its document could not be read`);
-}
-
-/* NOSONAR */ export default async function verify(cfg, args) {
+// onPhase(name) is told when the run enters a phase a caller can act on: 'sign-in-wait'.
+/* NOSONAR */ export default async function verify(cfg, args, { source = process, onPhase = noop } = {}) {
   const log = args.json ? (...values) => console.error(...values) : (...values) => console.log(...values);
   const signInTimeout = args['sign-in-timeout'] === undefined ? 900_000 : Number(args['sign-in-timeout']);
   if (!Number.isSafeInteger(signInTimeout) || signInTimeout < 1 || signInTimeout > 900_000)
@@ -251,6 +264,7 @@ async function openStableDocument(open, startPath) {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-verify-'));
   const tempSource = path.join(work, 'source');
   let close;
+  let launching;
   let watcher;
   let detach;
   let panel;
@@ -290,7 +304,8 @@ async function openStableDocument(open, startPath) {
     log(`  SKIP  ${name}  (${why})`);
   };
   const interrupt = new AbortController();
-  const stopInterruptListeners = abortOnInterrupt(interrupt);
+  const scope = createInterruptScope(interrupt.signal);
+  const stopInterruptListeners = abortOnInterrupt(interrupt, { source });
 
   try {
     log(`verifying ${cfg.siteName} @ ${cfg.envName}  ${cfg.origin}${startPath}`);
@@ -308,10 +323,7 @@ async function openStableDocument(open, startPath) {
     // comparison baseline in the temporary Git repository, then test its working text below.
     // Otherwise committing nonempty new CSS here would erase its empty-baseline injection case.
     const parentBaseline = new GitBaseline(cfg.sourceDir, cfg.site.markup.baseline);
-    const parentChanged = await untilInterrupted(
-      parentBaseline.changedFilesAsync({ refreshRef: false }),
-      interrupt.signal,
-    );
+    const parentChanged = await scope.until(parentBaseline.changedFilesAsync({ refreshRef: false }));
     inlineBaseline = {
       requested: parentBaseline.spec,
       commit: parentBaseline.commit ?? null,
@@ -321,7 +333,7 @@ async function openStableDocument(open, startPath) {
       fallbackReason: parentBaseline.error ?? null,
     };
     if (parentBaseline.available) {
-      const copiedModel = await untilInterrupted(PortalModel.create(tempSource), interrupt.signal);
+      const copiedModel = await scope.until(PortalModel.create(tempSource));
       const candidates = copiedModel.inlineSources
         .filter((source) => source.mode === 'block')
         .map((source) => ({ source, original: path.join(cfg.sourceDir, path.relative(tempSource, source.file)) }))
@@ -353,26 +365,25 @@ async function openStableDocument(open, startPath) {
       sourceDir: tempSource,
       site: { ...cfg.site, routes: [], scope: 'changed', markup: { ...cfg.site.markup, baseline: 'HEAD' } },
     };
-    const session = await untilInterrupted(OverlaySession.create(vcfg), interrupt.signal);
+    const session = await scope.until(OverlaySession.create(vcfg));
     const hits = [];
     session.on('hit', (h) => hits.push(h));
 
     // Preserve the complete dev identity, including an external root's child directory and
     // browser-managed credential policy. A root-only override would silently select Default.
-    const browserOverrides = { headless: !args.headed, ownInterrupts: true };
+    const browserOverrides = { headless: !args.headed };
     if (!args['signed-in']) browserOverrides.profileDir = path.join(work, 'profile');
-    const launching = openBrowser({ ...vcfg, browser: { ...cfg.browser, cdpUrl: null } }, browserOverrides);
-    // An interrupt can end this wait first; a browser that finishes launching after it is closed here.
-    launching.then((late) => interrupt.signal.aborted && late.close()).catch(() => {});
-    const opened = await untilInterrupted(launching, interrupt.signal);
+    launching = openBrowser({ ...vcfg, browser: { ...cfg.browser, cdpUrl: null } }, browserOverrides);
+    // An interrupt can end this wait first; the finally block closes a browser that finishes launching after it.
+    const opened = await scope.until(launching);
     close = opened.close;
     interrupt.signal.throwIfAborted();
     const { context } = opened;
     detach = await attachSession(context, session);
     panel = enablePanel(context, session, browserOverrides);
     watcher = watchSources(session, context, { log: () => {} });
-    await untilInterrupted(watcher.ready, interrupt.signal);
-    page = context.pages()[0] ?? (await untilInterrupted(context.newPage(), interrupt.signal));
+    await scope.until(watcher.ready);
+    page = context.pages()[0] ?? (await scope.until(context.newPage()));
 
     // Capture the unmodified page before testing local overlays.
     const requested = new Set();
@@ -384,10 +395,17 @@ async function openStableDocument(open, startPath) {
         /* ignore */
       }
     });
-    let navigations = 0;
-    page.on('framenavigated', (frame) => {
-      if (frame === page.mainFrame()) navigations++;
+    // The main-frame navigation request of the document on display. A document the page replaces (a reload, a
+    // client-side redirect) starts a new one, and the overlay routes it through this process before it can commit.
+    let displayed = null;
+    page.on('request', (r) => {
+      try {
+        if (r.isNavigationRequest() && r.frame() === page.mainFrame()) displayed = r;
+      } catch {
+        /* a service worker request has no frame */
+      }
     });
+    const isDisplayed = (response) => displayed === response.request();
     const onTarget = () => {
       const u = new URL(page.url());
       return (
@@ -398,19 +416,15 @@ async function openStableDocument(open, startPath) {
     // 'load' can take very long on data-heavy pages; the document itself is what matters here.
     // The body is read at once: a response cannot be read after the page has navigated away from it.
     const open = async () => {
-      const res = await untilInterrupted(
+      const res = await scope.until(
         page.goto(cfg.origin + startPath, { waitUntil: 'domcontentloaded', timeout: 120_000 }),
-        interrupt.signal,
       );
-      const navigationsAtLoad = navigations;
       const html = res ? await res.text().catch(() => null) : null;
       // a load timeout is tolerated; an interrupt is not
-      await untilInterrupted(page.waitForLoadState('load', { timeout: 30_000 }), interrupt.signal).catch(() =>
-        interrupt.signal.throwIfAborted(),
-      );
-      // fixed settle pause after the load; the page's navigations are compared after it
-      await sleep(1500, interrupt.signal);
-      return { response: res, html: navigations === navigationsAtLoad ? html : null };
+      await scope
+        .until(page.waitForLoadState('load', { timeout: 30_000 }))
+        .catch(() => interrupt.signal.throwIfAborted());
+      return { response: res, html };
     };
     let started = await open();
     if (!onTarget()) {
@@ -422,6 +436,7 @@ async function openStableDocument(open, startPath) {
       log(
         `  ....  ${startPath} needs a sign-in: please sign in in the browser window (waiting up to ${signInTimeout} ms)`,
       );
+      onPhase('sign-in-wait');
       if (!(await until(async () => onTarget(), signInTimeout, interrupt.signal)))
         throw new Error('Sign-in did not complete within the configured deadline');
       check('sign-in works through the overlay', true, 'identity provider round trip ended back on the page');
@@ -429,15 +444,212 @@ async function openStableDocument(open, startPath) {
       hits.length = 0;
       started = await open();
     }
-    if (started.html === null) started = await untilInterrupted(openStableDocument(open, startPath), interrupt.signal);
-    if (started.response?.status() !== 200) {
-      const answer = started.response ? `HTTP ${started.response.status()}` : 'no document response';
-      throw new Error(`${startPath} answered ${answer}`);
+
+    const model = session.model;
+    const editable = model.inlineSources;
+    // Returns the template sources whose distinctive literal markup line appears in the page HTML.
+    const findTemplateCandidates = (templates, rawHtml) => {
+      // Generic container rows can be shared by unrelated, unrendered Liquid templates. Only a
+      // complete element with distinctive static text can identify a literal markup patch here.
+      const textElement = /^<(div|section|footer|header|nav|ul|p|h[1-6])\b[^>]*>([^<]+)<\/\1>$/i;
+      const anchorOwners = new Map();
+      for (const source of templates)
+        for (const line of source.text.split(/\r?\n/)) {
+          const literal = line.trim();
+          if (!textElement.test(literal)) continue;
+          if (!anchorOwners.has(literal)) anchorOwners.set(literal, new Set());
+          anchorOwners.get(literal).add(source.rel);
+        }
+      const templateCandidates = [];
+      for (const source of templates) {
+        const line = findAnchorLine(source.text, rawHtml, (literal) => {
+          const match = textElement.exec(literal);
+          return (
+            match &&
+            replaceDelimitedAlternatives(match[2], [['&', ';', 1]], ' ').trim().length >= 8 &&
+            anchorOwners.get(literal)?.size === 1
+          );
+        });
+        if (line >= 0) templateCandidates.push({ ...source, line });
+        if (templateCandidates.length >= 100) break;
+      }
+      return templateCandidates;
+    };
+    // Returns the template candidate whose literal markup is rendered on the page, or null.
+    const renderedTemplate = async (rawHtml, templateCandidates) => {
+      let template = null;
+      if (templateCandidates.length) {
+        const supported = await scope.until(
+          page.evaluate(
+            ({ candidates, html }) => {
+              const excluded =
+                'script,style,textarea,title,template,noscript,iframe,xmp,noembed,noframes,#paqvilo-panel';
+              const tags = 'div,section,footer,header,nav,ul,p,h1,h2,h3,h4,h5,h6';
+              const original = new DOMParser().parseFromString(html, 'text/html');
+              const literals = new Set(
+                [...original.querySelectorAll(tags)]
+                  .filter((node) => !node.childElementCount && !node.closest(excluded))
+                  .map((node) => node.outerHTML),
+              );
+              const visibility = new WeakMap();
+              const visible = (node) => {
+                if (!node) return true;
+                if (visibility.has(node)) return visibility.get(node);
+                const style = getComputedStyle(node);
+                const value =
+                  style.visibility !== 'hidden' &&
+                  style.visibility !== 'collapse' &&
+                  style.display !== 'none' &&
+                  style.opacity !== '0' &&
+                  visible(node.parentElement);
+                visibility.set(node, value);
+                return value;
+              };
+              const rendered = new Set(
+                [...document.querySelectorAll(tags)]
+                  .filter((node) => {
+                    if (node.childElementCount || node.closest(excluded)) return false;
+                    return node.getClientRects().length > 0 && visible(node);
+                  })
+                  .map((node) => node.outerHTML),
+              );
+              return candidates
+                .filter((candidate) => {
+                  const node = new DOMParser().parseFromString(candidate.literal, 'text/html').body.firstElementChild;
+                  return node && literals.has(node.outerHTML) && rendered.has(node.outerHTML);
+                })
+                .map((candidate) => candidate.rel);
+            },
+            {
+              candidates: templateCandidates.map(({ rel, text, line }) => ({
+                rel,
+                literal: text.replaceAll('\r\n', '\n').split('\n')[line].trim(),
+              })),
+              html: rawHtml,
+            },
+          ),
+        );
+        template = templateCandidates.find((candidate) => supported.includes(candidate.rel)) ?? null;
+      }
+      return template;
+    };
+    // Returns the plain-text snippet candidate whose text is visible on the page, or null.
+    const visibleSnippet = async (rawHtml) => {
+      let snippet = null;
+      const snippetCandidates = [];
+      for (const s of editable.filter((x) => x.kind === 'content-snippet')) {
+        const text = sourceText(s) ?? '';
+        if (text.includes('\n') || text.includes('<') || text.includes('"') || text.includes("'")) continue;
+        const line = findAnchorLine(text, rawHtml, () => true, false);
+        if (line >= 0) snippetCandidates.push({ ...s, text });
+      }
+      if (snippetCandidates.length) {
+        // Plain-text snippets can also be configuration values inside scripts or attributes.
+        // Verification may edit only visible text nodes, never telemetry keys or other settings.
+        const visible = await scope.until(
+          page.evaluate(
+            ({ candidates, html }) => /* NOSONAR: single-pass routine, splitting it would change shared state */ {
+              const found = new Set();
+              const excluded =
+                'script,style,textarea,title,template,noscript,iframe,xmp,noembed,noframes,[hidden],[aria-hidden="true"]';
+              // A configuration value may be copied into visible DOM by another script. Confirm the
+              // unique occurrence we would patch is itself a text node in the original response.
+              const original = new DOMParser().parseFromString(html, 'text/html');
+              const literalText = new Set();
+              const originals = original.createTreeWalker(original.body, NodeFilter.SHOW_TEXT);
+              while (originals.nextNode()) {
+                const node = originals.currentNode;
+                if (!node.parentElement || node.parentElement.closest(excluded)) continue;
+                for (const candidate of candidates)
+                  if (node.textContent.includes(candidate.text)) literalText.add(candidate.rel);
+              }
+              const allowed = new WeakMap();
+              const visibleElement = (element) => {
+                if (!element) return false;
+                if (allowed.has(element)) return allowed.get(element);
+                let result = !element.closest(excluded);
+                if (result) {
+                  const style = getComputedStyle(element);
+                  result =
+                    style.display !== 'none' &&
+                    style.visibility !== 'hidden' &&
+                    style.visibility !== 'collapse' &&
+                    style.opacity !== '0' &&
+                    element.getClientRects().length > 0;
+                }
+                if (result && element.parentElement) result = visibleElement(element.parentElement);
+                allowed.set(element, result);
+                return result;
+              };
+              if (!document.body) return [];
+              const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+              while (walker.nextNode()) {
+                const node = walker.currentNode;
+                if (!visibleElement(node.parentElement)) continue;
+                for (const candidate of candidates)
+                  if (literalText.has(candidate.rel) && node.textContent.includes(candidate.text))
+                    found.add(candidate.rel);
+              }
+              return [...found];
+            },
+            { candidates: snippetCandidates.map(({ rel, text }) => ({ rel, text })), html: rawHtml },
+          ),
+        );
+        snippet = snippetCandidates.find((candidate) => visible.includes(candidate.rel)) ?? null;
+      }
+      return snippet;
+    };
+    const chooseEdits = async (rawHtml) => {
+      // ---- choose what to edit, from what this page really uses
+      const used = [...requested].map((p) => model.findWebFile(p)).filter((w) => w?.file);
+      const cssFile =
+        used.find((w) => /\.css$/i.test(w.url) && !/\.min\.css$/i.test(w.url)) ??
+        used.find((w) => /\.css$/i.test(w.url));
+      const jsFile = used.find((w) => /\.js$/i.test(w.url) && !/\.min\.js$/i.test(w.url));
+      const imgFile = used.find((w) => /\.(?:png|jpe?g|gif|svg|ico)$/i.test(w.url));
+      // Exercise each rendered form/list category independently. A basic-form match must not hide
+      // a broken list or advanced-step overlay on the same page, or imply those kinds were tested.
+      const matchedForms = hits.findLast((h) => h.type === 'html' && h.navigation)?.matched ?? [];
+      const formScripts = ['basic-form-js', 'advanced-form-step-js', 'list-js'].flatMap((kind) => {
+        const match = matchedForms.find((entry) => entry.kind === kind);
+        const source = editable.find((entry) => entry.rel === match?.rel);
+        return source ? [source] : [];
+      });
+
+      const templates = editable
+        .filter((s) => s.kind === 'web-template')
+        .map((source) => ({ ...source, text: sourceText(source) ?? '' }));
+      const templateCandidates = findTemplateCandidates(templates, rawHtml);
+      const template = await renderedTemplate(rawHtml, templateCandidates);
+      const snippet = await visibleSnippet(rawHtml);
+      return { cssFile, jsFile, imgFile, formScripts, template, snippet };
+    };
+    // The edits are chosen from the HTML of the document on display and from that document in the page. Choices
+    // made from a document the page has replaced are thrown away and the start page is read again; three reads at most.
+    const replacedBy = [];
+    let choice = null;
+    for (let read = 1; ; read++) {
+      if (!started.response) throw new Error(`${startPath} answered no document response`);
+      if (started.html !== null && isDisplayed(started.response)) {
+        if (started.response.status() !== 200)
+          throw new Error(`${startPath} answered HTTP ${started.response.status()}`);
+        choice = await chooseEdits(started.html).catch((err) => {
+          // an inspection of the document still on display fails the run, and so does an interrupt
+          if (interrupt.signal.aborted || isDisplayed(started.response)) throw err;
+          return null;
+        });
+        if (choice && !isDisplayed(started.response)) choice = null;
+      }
+      if (choice) break;
+      replacedBy.push(redactedPageUrl(displayed?.url() ?? page.url()));
+      if (read === 3)
+        throw new Error(
+          `${startPath} kept navigating while it loaded (${replacedBy.join(', ')}); its document could not be read`,
+        );
+      started = await open();
     }
-    // the HTML of the displayed document; nothing is overridden yet (recognised inline scripts are already
-    // loaded from their local files, which does not matter for picking template and snippet lines)
-    const rawHtml = started.html;
-    if (process.env.PAQVILO_DEBUG) fs.writeFileSync(path.join(work, 'last-page.html'), rawHtml);
+    const { cssFile, jsFile, imgFile, formScripts, template, snippet } = choice;
+    if (process.env.PAQVILO_DEBUG) fs.writeFileSync(path.join(work, 'last-page.html'), started.html);
     check(
       'page loads through the overlay',
       true,
@@ -448,16 +660,7 @@ async function openStableDocument(open, startPath) {
       hits.every((h) => !(h.sources ?? []).length),
     );
     captureDiagnostics('baseline');
-
-    // ---- choose what to edit, from what this page really uses
-    const model = session.model;
-    const used = [...requested].map((p) => model.findWebFile(p)).filter((w) => w?.file);
-    const cssFile =
-      used.find((w) => /\.css$/i.test(w.url) && !/\.min\.css$/i.test(w.url)) ?? used.find((w) => /\.css$/i.test(w.url));
-    const jsFile = used.find((w) => /\.js$/i.test(w.url) && !/\.min\.js$/i.test(w.url));
-    const imgFile = used.find((w) => /\.(?:png|jpe?g|gif|svg|ico)$/i.test(w.url));
     const docKey = pageKey(new URL(startPath, cfg.origin).pathname, model);
-    const editable = model.inlineSources;
     const pageSources = editable.filter((s) => s.pageUrl && pageKey(s.pageUrl) === docKey);
     const preferLang = (a, b) => Number(b.rel.includes('/content-pages/')) - Number(a.rel.includes('/content-pages/'));
     const pageCss = pageSources.filter((s) => s.kind === 'page-css').sort(preferLang);
@@ -465,160 +668,6 @@ async function openStableDocument(open, startPath) {
     const cssBlock = pageCss.find((s) => workingText(s)?.trim()) ?? pageCss[0];
     const jsBlock = pageJs.find((s) => workingText(s)?.trim());
     const jsEmpty = pageJs.find((s) => !workingText(s)?.trim());
-
-    // Exercise each rendered form/list category independently. A basic-form match must not hide
-    // a broken list or advanced-step overlay on the same page, or imply those kinds were tested.
-    const matchedForms = hits.findLast((h) => h.type === 'html' && h.navigation)?.matched ?? [];
-    const formScripts = ['basic-form-js', 'advanced-form-step-js', 'list-js'].flatMap((kind) => {
-      const match = matchedForms.find((entry) => entry.kind === kind);
-      const source = editable.find((entry) => entry.rel === match?.rel);
-      return source ? [source] : [];
-    });
-
-    const templates = editable
-      .filter((s) => s.kind === 'web-template')
-      .map((source) => ({ ...source, text: sourceText(source) ?? '' }));
-    // Generic container rows can be shared by unrelated, unrendered Liquid templates. Only a
-    // complete element with distinctive static text can identify a literal markup patch here.
-    const textElement = /^<(div|section|footer|header|nav|ul|p|h[1-6])\b[^>]*>([^<]+)<\/\1>$/i;
-    const anchorOwners = new Map();
-    for (const source of templates)
-      for (const line of source.text.split(/\r?\n/)) {
-        const literal = line.trim();
-        if (!textElement.test(literal)) continue;
-        if (!anchorOwners.has(literal)) anchorOwners.set(literal, new Set());
-        anchorOwners.get(literal).add(source.rel);
-      }
-    const templateCandidates = [];
-    for (const source of templates) {
-      const line = findAnchorLine(source.text, rawHtml, (literal) => {
-        const match = textElement.exec(literal);
-        return (
-          match &&
-          replaceDelimitedAlternatives(match[2], [['&', ';', 1]], ' ').trim().length >= 8 &&
-          anchorOwners.get(literal)?.size === 1
-        );
-      });
-      if (line >= 0) templateCandidates.push({ ...source, line });
-      if (templateCandidates.length >= 100) break;
-    }
-    let template = null;
-    if (templateCandidates.length) {
-      const supported = await untilInterrupted(
-        page.evaluate(
-          ({ candidates, html }) => {
-            const excluded = 'script,style,textarea,title,template,noscript,iframe,xmp,noembed,noframes,#paqvilo-panel';
-            const tags = 'div,section,footer,header,nav,ul,p,h1,h2,h3,h4,h5,h6';
-            const original = new DOMParser().parseFromString(html, 'text/html');
-            const literals = new Set(
-              [...original.querySelectorAll(tags)]
-                .filter((node) => !node.childElementCount && !node.closest(excluded))
-                .map((node) => node.outerHTML),
-            );
-            const visibility = new WeakMap();
-            const visible = (node) => {
-              if (!node) return true;
-              if (visibility.has(node)) return visibility.get(node);
-              const style = getComputedStyle(node);
-              const value =
-                style.visibility !== 'hidden' &&
-                style.visibility !== 'collapse' &&
-                style.display !== 'none' &&
-                style.opacity !== '0' &&
-                visible(node.parentElement);
-              visibility.set(node, value);
-              return value;
-            };
-            const rendered = new Set(
-              [...document.querySelectorAll(tags)]
-                .filter((node) => {
-                  if (node.childElementCount || node.closest(excluded)) return false;
-                  return node.getClientRects().length > 0 && visible(node);
-                })
-                .map((node) => node.outerHTML),
-            );
-            return candidates
-              .filter((candidate) => {
-                const node = new DOMParser().parseFromString(candidate.literal, 'text/html').body.firstElementChild;
-                return node && literals.has(node.outerHTML) && rendered.has(node.outerHTML);
-              })
-              .map((candidate) => candidate.rel);
-          },
-          {
-            candidates: templateCandidates.map(({ rel, text, line }) => ({
-              rel,
-              literal: text.replaceAll('\r\n', '\n').split('\n')[line].trim(),
-            })),
-            html: rawHtml,
-          },
-        ),
-        interrupt.signal,
-      );
-      template = templateCandidates.find((candidate) => supported.includes(candidate.rel)) ?? null;
-    }
-    let snippet = null;
-    const snippetCandidates = [];
-    for (const s of editable.filter((x) => x.kind === 'content-snippet')) {
-      const text = sourceText(s) ?? '';
-      if (text.includes('\n') || text.includes('<') || text.includes('"') || text.includes("'")) continue;
-      const line = findAnchorLine(text, rawHtml, () => true, false);
-      if (line >= 0) snippetCandidates.push({ ...s, text });
-    }
-    if (snippetCandidates.length) {
-      // Plain-text snippets can also be configuration values inside scripts or attributes.
-      // Verification may edit only visible text nodes, never telemetry keys or other settings.
-      const visible = await untilInterrupted(
-        page.evaluate(
-          ({ candidates, html }) => /* NOSONAR: single-pass routine, splitting it would change shared state */ {
-            const found = new Set();
-            const excluded =
-              'script,style,textarea,title,template,noscript,iframe,xmp,noembed,noframes,[hidden],[aria-hidden="true"]';
-            // A configuration value may be copied into visible DOM by another script. Confirm the
-            // unique occurrence we would patch is itself a text node in the original response.
-            const original = new DOMParser().parseFromString(html, 'text/html');
-            const literalText = new Set();
-            const originals = original.createTreeWalker(original.body, NodeFilter.SHOW_TEXT);
-            while (originals.nextNode()) {
-              const node = originals.currentNode;
-              if (!node.parentElement || node.parentElement.closest(excluded)) continue;
-              for (const candidate of candidates)
-                if (node.textContent.includes(candidate.text)) literalText.add(candidate.rel);
-            }
-            const allowed = new WeakMap();
-            const visibleElement = (element) => {
-              if (!element) return false;
-              if (allowed.has(element)) return allowed.get(element);
-              let result = !element.closest(excluded);
-              if (result) {
-                const style = getComputedStyle(element);
-                result =
-                  style.display !== 'none' &&
-                  style.visibility !== 'hidden' &&
-                  style.visibility !== 'collapse' &&
-                  style.opacity !== '0' &&
-                  element.getClientRects().length > 0;
-              }
-              if (result && element.parentElement) result = visibleElement(element.parentElement);
-              allowed.set(element, result);
-              return result;
-            };
-            if (!document.body) return [];
-            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-            while (walker.nextNode()) {
-              const node = walker.currentNode;
-              if (!visibleElement(node.parentElement)) continue;
-              for (const candidate of candidates)
-                if (literalText.has(candidate.rel) && node.textContent.includes(candidate.text))
-                  found.add(candidate.rel);
-            }
-            return [...found];
-          },
-          { candidates: snippetCandidates.map(({ rel, text }) => ({ rel, text })), html: rawHtml },
-        ),
-        interrupt.signal,
-      );
-      snippet = snippetCandidates.find((candidate) => visible.includes(candidate.rel)) ?? null;
-    }
 
     // Edit sources and verify that the watcher updates the browser.
     log('editing the copy; waiting for the browser to follow ...');
@@ -780,12 +829,11 @@ async function openStableDocument(open, startPath) {
     } else skip('content snippet', 'no unique plain-text snippet in visible markup text could be picked safely');
 
     // everything else must still be the real site
-    const stillOnline = await untilInterrupted(
+    const stillOnline = await scope.until(
       page.evaluate(async () => {
         const r = await fetch(location.href, { cache: 'no-store' });
         return { status: r.status, local: r.headers.get('x-paqvilo') };
       }),
-      interrupt.signal,
     );
     check('the rest of the page still comes from the online site', stillOnline.status === 200 && !stillOnline.local);
 
@@ -836,9 +884,9 @@ async function openStableDocument(open, startPath) {
     fs.mkdirSync(outDir, { recursive: true });
     // The diagnostics describe the page only after the watcher has applied the edits: whenIdle resolves once no
     // refresh is in flight, and a refresh applies the saved changes to the open pages before it finishes.
-    await untilInterrupted(watcher.whenIdle(), interrupt.signal);
+    await scope.until(watcher.whenIdle());
     captureDiagnostics('afterEdits');
-    await untilInterrupted(page.screenshot({ path: path.join(outDir, `${stamp}.png`) }), interrupt.signal);
+    await scope.until(page.screenshot({ path: path.join(outDir, `${stamp}.png`) }));
     const assessment = assessVerification(checks, diagnostics, Boolean(args.strict));
     report = {
       schemaVersion: 1,
@@ -908,6 +956,9 @@ async function openStableDocument(open, startPath) {
     await cleanup('dev panel', () => panel?.dispose());
     await cleanup('interception', () => detach?.());
     await cleanup('browser', () => close?.());
+    await cleanup('browser launch', () => closeLateBrowser(launching, close));
+    // Work the interrupt abandoned may still write into the working folder; it has finished before the folder goes.
+    await scope.settled();
     const kept = Boolean(process.env.PAQVILO_KEEP_TEMP);
     // Windows can keep files of an exited browser busy for seconds (observed ~5 s under load:
     // chrome_debug.log of the headless shell). Retry without blocking the event loop; the

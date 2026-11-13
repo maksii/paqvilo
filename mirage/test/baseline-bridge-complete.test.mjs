@@ -5,10 +5,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
-import { spawnLiveCapture } from './support/baseline-bridge-child.mjs';
-
-// hang guard only: the child closes its bridge and exits by itself; this timer kills a child that never exits.
-const EXIT_DEADLINE_MS = 170_000;
+import { liveCaptureArgs } from './support/baseline-bridge-child.mjs';
+import { runBaselineCapture } from './support/baseline-capture-cli.mjs';
 
 test('a complete loopback bridge capture closes without leftover evidence or child grace timers', async (t) => {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'baseline positive fixture '));
@@ -40,27 +38,9 @@ test('a complete loopback bridge capture closes without leftover evidence or chi
     }).on('close',()=>{clearTimeout(timer);fs.writeFileSync(process.argv[2],'closed');process.exit(0)});
   `,
   );
-  const child = await spawnLiveCapture(t.signal, directory, server, marker);
-  let output = '',
-    timedOut = false;
-  child.stdout.on('data', (data) => {
-    output += data;
-  });
-  child.stderr.on('data', (data) => {
-    output += data;
-  });
-  const deadline = setTimeout(() => {
-    timedOut = true;
-    child.kill();
-  }, EXIT_DEADLINE_MS);
-  const exit = await new Promise((resolve, reject) => {
-    child.once('error', reject);
-    child.once('exit', resolve);
-  });
-  clearTimeout(deadline);
+  const { code, output } = await runBaselineCapture(await liveCaptureArgs(directory, server, marker), t.signal);
   assert.equal(await fs.readFile(marker, 'utf8'), 'closed');
-  assert.equal(timedOut, false, 'the child exited by itself before the hang guard');
-  assert.equal(exit, 0, output);
+  assert.equal(code, 0, output);
   const receipt = JSON.parse(await fs.readFile(path.join(directory, 'out', 'run-live.json'), 'utf8'));
   assert.equal(receipt.totals.captured, 1);
   assert.equal(receipt.totals.error, 0);

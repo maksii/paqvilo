@@ -156,7 +156,7 @@ test('shell quoting preserves spaced Cyrillic and metacharacter paths', async (t
   assert.ok(fs.existsSync(path.join(target, 'paqvilo.config.yml')));
 });
 
-test('terminal interrupts stay with the child on Windows and are forwarded elsewhere', () => {
+test('terminal interrupts stay with the child on Windows and on POSIX SIGINT, while POSIX forwards SIGTERM', () => {
   const signals = [];
   const child = { kill: (signal) => signals.push(signal) };
 
@@ -171,10 +171,11 @@ test('terminal interrupts stay with the child on Windows and are forwarded elsew
 
   const posixSource = new EventEmitter();
   const stopPosix = forwardTerminationSignals(child, { platform: 'linux', source: posixSource });
+  assert.equal(posixSource.listenerCount('SIGINT'), 1);
   posixSource.emit('SIGINT');
-  assert.deepEqual(signals, ['SIGINT']);
+  assert.deepEqual(signals, []);
   posixSource.emit('SIGTERM');
-  assert.deepEqual(signals, ['SIGINT', 'SIGTERM']);
+  assert.deepEqual(signals, ['SIGTERM']);
   stopPosix();
   assert.equal(posixSource.listenerCount('SIGINT'), 0);
   assert.equal(posixSource.listenerCount('SIGTERM'), 0);

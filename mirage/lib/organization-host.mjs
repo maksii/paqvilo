@@ -1015,7 +1015,7 @@ export function codeAppConnectors(connectors, connections = {}) {
  *   code app records (code-apps-config.mjs loadCodeApps) that topology() counts; projectRoot: the base of the relative pack paths it reports.
  *   trace: the mirage.trace settings (trace-settings.mjs) of the one trace store (docs/design/tracing.md) the host creates,
  *   exposes as host.traces and sets as store.traces; every host of the runtime shares it. traces: an existing trace store to
- *   share instead (a persona runtime records into its parent's store; trace is then ignored).
+ *   share instead (a persona runtime records into its parent's store; trace is then ignored, and close leaves it open).
  * The host builds handler maps and providers at once; createBackend, createOrganization and startApi run when the host is
  * ready for them (the portal host creates its backend before its organization). The steps below share one context `c`:
  * hostContext (inputs, handler maps, providers, canvas, flow runs, lifecycle state), hostCatalogues, hostRegistry,
@@ -1037,6 +1037,8 @@ export async function composeOrganizationHost(options) {
 function assembleOrganizationHost(c, options) {
   // One trace store per organization host; deep layers reach it as store.traces. Persisted traces go under the state folder;
   // a memory-only runtime (dry-run, no state file) passes null and the store reports why it writes nothing.
+  // A host given its store (a persona runtime) does not own it: closing this host leaves the store open for its owner.
+  c.ownsTraces = !options.traces;
   c.traces =
     options.traces ??
     createTraceStore({
@@ -1584,7 +1586,11 @@ function hostLifecycle(c) {
       await settleProviders(providers);
     },
     resume: () => c.backend?.resume(),
-    /** One close order: backend (drains committed work, closes CLR hosts), the host's own CLR runtimes, flow run wait timers, organization, API, managed identity. */
+    /**
+     * One close order: backend (drains committed work, closes CLR hosts), the host's own CLR runtimes, flow run wait timers,
+     * organization, API, managed identity, open trace captures (the trace store's close, only when the host created the
+     * store; a store it was given stays open for its owner), then providers.
+     */
     // A close that failed is not memoised: the next close() runs only the steps that failed, never a step that succeeded.
     close: () =>
       (c.closing ??= (async () => {
@@ -1595,6 +1601,7 @@ function hostLifecycle(c) {
           () => c.organization?.close(),
           () => c.dataverse?.close(),
           () => c.managedIdentity?.close(),
+          () => (c.ownsTraces ? c.traces?.close() : undefined),
           () => closeProviders(providers),
         ];
         await runCloseSteps(c);

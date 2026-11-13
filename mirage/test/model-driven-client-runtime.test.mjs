@@ -789,63 +789,124 @@ test('a data.save call with invalid saveOptions rejects, so a script catch recei
 
 // @test-kind contract: a saveandnew that fails for a reason other than a refusal reports it through the form notification and leaves no unhandled rejection
 test('saveandnew reports a failed create through the form notification, without an unhandled rejection', async () => {
-  const unhandled = [];
-  const onUnhandled = (reason) => unhandled.push(reason);
-  process.on('unhandledRejection', onUnhandled);
-  try {
-    let notified;
-    const notice = new Promise((resolve) => {
-      notified = resolve;
-    });
-    const { runtime, notices } = runtimeFixture({
-      save: async () => {
-        throw Object.assign(new Error('Invented server failure'), { status: 500 });
-      },
-      openNewRecord() {},
-      notification: (...args) => {
-        notices.push(args);
-        notified();
-      },
-    });
-    assert.equal(runtime.formContext.data.entity.save('saveandnew'), undefined);
-    await notice;
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual([notices, unhandled.length], [[['Invented server failure', 'ERROR', 'save']], 0]);
-  } finally {
-    process.off('unhandledRejection', onUnhandled);
-  }
+  let notified;
+  const notice = new Promise((resolve) => {
+    notified = resolve;
+  });
+  const { runtime, notices } = runtimeFixture({
+    save: async () => {
+      throw Object.assign(new Error('Invented server failure'), { status: 500 });
+    },
+    openNewRecord() {},
+    notification: (...args) => {
+      notices.push(args);
+      notified();
+    },
+  });
+  assert.equal(runtime.formContext.data.entity.save('saveandnew'), undefined);
+  await notice;
+  await runtime.settled();
+  assert.deepEqual(notices, [['Invented server failure', 'ERROR', 'save']]);
+});
+
+// A runtime whose save fails and whose notification throws; notice settles on the first notification call.
+function throwingNotificationFixture() {
+  let notified;
+  const notice = new Promise((resolve) => {
+    notified = resolve;
+  });
+  const { runtime } = runtimeFixture({
+    save: async () => {
+      throw Object.assign(new Error('Invented server failure'), { status: 500 });
+    },
+    openNewRecord() {},
+    notification: () => {
+      notified();
+      throw new Error('Invented notification failure');
+    },
+  });
+  return { runtime, notice };
+}
+
+test('settled rejects when a saveandnew chain fails after the module catch has reported its error', async () => {
+  const { runtime, notice } = throwingNotificationFixture();
+  assert.equal(runtime.formContext.data.entity.save('saveandnew'), undefined);
+  await notice;
+  await assert.rejects(runtime.settled(), /Invented notification failure/);
+});
+
+test('a saveandnew chain that fails after the module catch is reported to the page as an error', async (t) => {
+  const previous = globalThis.reportError;
+  const reported = t.mock.fn();
+  globalThis.reportError = reported;
+  t.after(() => {
+    if (previous === undefined) delete globalThis.reportError;
+    else globalThis.reportError = previous;
+  });
+  const { runtime, notice } = throwingNotificationFixture();
+  assert.equal(runtime.formContext.data.entity.save('saveandnew'), undefined);
+  await notice;
+  await assert.rejects(runtime.settled(), /Invented notification failure/);
+  assert.equal(reported.mock.callCount(), 1);
+  assert.match(reported.mock.calls[0].arguments[0].message, /Invented notification failure/);
 });
 
 // @test-kind contract: a saveandnew whose new record fails to open reports the error through the notification captured before the context was detached, without an unhandled rejection
 test('saveandnew reports a failed open of the new record without an unhandled rejection', async () => {
-  const unhandled = [];
-  const onUnhandled = (reason) => unhandled.push(reason);
-  process.on('unhandledRejection', onUnhandled);
-  try {
-    const { runtime, notices } = runtimeFixture({
-      save: async () => undefined,
-      openNewRecord: () => Promise.reject(new Error('Invented open failure')),
-      notification: (...args) => notices.push(args),
-    });
-    assert.equal(runtime.formContext.data.entity.save('saveandnew'), undefined);
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual([notices, unhandled.length], [[['Invented open failure', 'ERROR', 'save']], 0]);
-  } finally {
-    process.off('unhandledRejection', onUnhandled);
-  }
-});
-
-test('destroy clears the save notification of a failed saveandnew open', async () => {
+  let notified;
+  const notice = new Promise((resolve) => {
+    notified = resolve;
+  });
   const { runtime, notices } = runtimeFixture({
     save: async () => undefined,
     openNewRecord: () => Promise.reject(new Error('Invented open failure')),
-    notification: (...args) => notices.push(args),
+    notification: (...args) => {
+      notices.push(args);
+      notified();
+    },
+  });
+  assert.equal(runtime.formContext.data.entity.save('saveandnew'), undefined);
+  await notice;
+  await runtime.settled();
+  assert.deepEqual(notices, [['Invented open failure', 'ERROR', 'save']]);
+});
+
+test('destroy clears the save notification of a failed saveandnew open', async () => {
+  let notified;
+  const notice = new Promise((resolve) => {
+    notified = resolve;
+  });
+  const { runtime, notices } = runtimeFixture({
+    save: async () => undefined,
+    openNewRecord: () => Promise.reject(new Error('Invented open failure')),
+    notification: (...args) => {
+      notices.push(args);
+      notified();
+    },
   });
   runtime.formContext.data.entity.save('saveandnew');
-  await new Promise((resolve) => setImmediate(resolve));
+  await notice;
+  await runtime.settled();
   assert.deepEqual(notices.at(-1), ['Invented open failure', 'ERROR', 'save']);
   assert.doesNotThrow(() => runtime.destroy());
   assert.deepEqual(notices.at(-1), [null, null, 'save']);
+});
+
+test('saveandnew of a destroyed runtime opens no record when its save answers after the destroy', async (t) => {
+  let answer;
+  const pending = new Promise((resolve) => {
+    answer = resolve;
+  });
+  const openNewRecord = t.mock.fn();
+  const { runtime } = runtimeFixture({
+    save: () => pending,
+    openNewRecord,
+  });
+  assert.equal(runtime.formContext.data.entity.save('saveandnew'), undefined);
+  runtime.destroy();
+  answer(undefined);
+  await runtime.settled();
+  assert.equal(openNewRecord.mock.callCount(), 0);
 });
 
 // @test-kind contract: a completed save makes a copy of the saved values the baseline, so the object the host hands over afterwards cannot change dirty state

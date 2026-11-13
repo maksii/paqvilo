@@ -671,6 +671,36 @@ export function createServiceBusEmulatorBus({
     return true;
   }
 
+  // A probe whose bound ended can still be closing its own connection: close() waits for each probe that has not settled.
+  const probes = new Set();
+  const track = (probe) => {
+    const forget = () => probes.delete(settled);
+    const settled = probe.then(forget, forget);
+    probes.add(settled);
+    return probe;
+  };
+  // Ready when a fresh connection opens (SASL PLAIN included) and a sender link attaches to every configured entity. env
+  // overrides the environment for this probe only. Under a probe ({ signal, progress } from preflightProvider) the probe's idle
+  // guard bounds every wait and each completed step calls progress(); a direct call is bounded by the shared idle window.
+  async function probeEmulator({ env: source = env, signal, progress } = {}) {
+    let connection = null;
+    const idle = signal ? null : requestBound(undefined);
+    const bound = { timeoutMs: null, signal: signal ?? idle.signal, onProgress: progress };
+    try {
+      connection = await open(source, bound);
+      for (const entity of names) await connection.detach(await connection.attach({ role: 'sender', address: entity }));
+      return { ready: true, reason: null };
+    } catch (error) {
+      return { ready: false, reason: error.message };
+    } finally {
+      try {
+        await connection?.close();
+      } finally {
+        idle?.done();
+      }
+    }
+  }
+
   return {
     id,
     descriptor: serviceBusEmulatorDescriptor,
@@ -756,26 +786,12 @@ export function createServiceBusEmulatorBus({
         },
       );
     },
-    /** Ready when a fresh connection opens (SASL PLAIN included) and a sender link attaches to every configured entity. env
-     * overrides the environment for this probe only. Under a probe ({ signal, progress } from preflightProvider) the probe's idle
-     * guard bounds every wait and each completed step calls progress(); a direct call keeps a 1.8 s bound. */
-    async preflight({ env: source = env, signal, progress } = {}) {
-      let connection = null;
-      const bound = signal
-        ? { timeoutMs: null, signal, onProgress: progress }
-        : { timeoutMs: 1800, signal: AbortSignal.timeout(1800) };
-      try {
-        connection = await open(source, bound);
-        for (const entity of names)
-          await connection.detach(await connection.attach({ role: 'sender', address: entity }));
-        return { ready: true, reason: null };
-      } catch (error) {
-        return { ready: false, reason: error.message };
-      } finally {
-        await connection?.close();
-      }
+    /** Readiness probe (probeEmulator); the returned promise is tracked until it settles. */
+    preflight(context) {
+      return track(probeEmulator(context));
     },
     async close() {
+      await Promise.all(probes);
       const connection = await session?.catch(() => null);
       session = null;
       senders.clear();

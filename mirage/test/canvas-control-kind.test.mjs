@@ -23,7 +23,7 @@ parentPort.postMessage('ready');`;
   t.after(() => worker.terminate());
   assert.equal((await once(worker, 'message'))[0], 'ready');
   // Start the bound after the module is loaded; terminate the isolated worker even on a regression.
-  const result = once(worker, 'message', { signal: AbortSignal.timeout(3000) });
+  const result = once(worker, 'message', { signal: t.signal });
   worker.postMessage('@'.repeat(200000) + '\ninvalid');
   assert.equal((await result)[0], null);
 });

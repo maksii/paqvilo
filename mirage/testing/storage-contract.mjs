@@ -26,6 +26,7 @@ export const STORAGE_CONTRACT_CASES = Object.freeze([
   'page-size',
   'body-types',
   'content-type-default',
+  'preflight-settles',
 ]);
 
 async function bytesOf(body) {
@@ -335,4 +336,18 @@ export function runStorageContract(
       assert.equal((await s.head('contract/type')).contentType, 'application/octet-stream');
     },
   );
+
+  // A provider without preflight() has nothing to settle, so the case is skipped for it after the provider is made.
+  // No timer here: a preflight that never settles fails the test through the runner's timeout.
+  run('preflight-settles', 'preflight settles once its signal has aborted', async (s, t) => {
+    if (typeof s.preflight !== 'function') {
+      t.skip('the provider has no preflight()');
+      return;
+    }
+    const outcome = await s.preflight({ signal: AbortSignal.abort() }).then(
+      () => 'settled',
+      () => 'settled',
+    );
+    assert.equal(outcome, 'settled');
+  });
 }

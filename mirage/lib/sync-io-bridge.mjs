@@ -44,8 +44,8 @@ export function closeSyncIoBridge() {
   const current = bridge;
   bridge = null;
   if (!current) return Promise.resolve();
-  current.port.close();
-  return current.worker.terminate().then(() => {});
+  // Terminate while idle on the port; closing the port first could let the worker start ending by itself.
+  return current.worker.terminate().then(() => current.port.close());
 }
 
 /**

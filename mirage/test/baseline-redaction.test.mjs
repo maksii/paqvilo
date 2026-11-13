@@ -5,7 +5,6 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { Worker } from 'node:worker_threads';
 import {
   redactEmbeddedQueryValues as redact,
   writeCapture,
@@ -13,6 +12,7 @@ import {
   redactDomCredentials,
 } from '../baseline-capture.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { workerAnswer } from './support/worker-answer.mjs';
 
 test('HTML and inline script URLs remove every query value while preserving neighboring structure', () => {
   const value =
@@ -54,32 +54,21 @@ test('ordinary text and URLs without query values remain unchanged', () => {
     assert.equal(redact(input), input);
 });
 
-test(
-  'large query-free paths finish in a bounded worker and a final query is still redacted',
-  { timeout: 10000 },
-  async () => {
-    const worker = new Worker(
-      `const {parentPort,workerData}=require('node:worker_threads');
+test('large query-free paths finish in a bounded worker and a final query is still redacted', async (t) => {
+  const result = await workerAnswer(
+    `const {parentPort,workerData}=require('node:worker_threads');
     import(workerData.module).then(({redactEmbeddedQueryValues:redact})=>{
       const path='/a'.repeat(250000);
       parentPort.postMessage({unchanged:redact(path)===path,redacted:redact(path+'?key=fixture-secret')===path+'?key=…'});
     }).catch(error=>{throw error;});`,
-      { eval: true, workerData: { module: new URL('../baseline-capture.mjs', import.meta.url).href } },
-    );
-    let timer;
-    try {
-      const result = await new Promise((resolve, reject) => {
-        timer = setTimeout(() => reject(new Error('Query redaction exceeded its worker deadline.')), 5000);
-        worker.once('message', resolve);
-        worker.once('error', reject);
-      });
-      assert.deepEqual(result, { unchanged: true, redacted: true });
-    } finally {
-      clearTimeout(timer);
-      await worker.terminate();
-    }
-  },
-);
+    {
+      eval: true,
+      workerData: { module: new URL('../baseline-capture.mjs', import.meta.url).href },
+      signal: t.signal,
+    },
+  );
+  assert.deepEqual(result, { unchanged: true, redacted: true });
+});
 
 test('redacted text hashes exclude original secret bytes while unchanged text and binary retain raw hashes', async () => {
   const out = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-redaction-hash-'));

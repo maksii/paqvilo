@@ -510,6 +510,15 @@ function equivalent(a, b) {
 }
 const ARITHMETIC_FUNCTIONS = new Set(['add', 'sub', 'mul', 'div', 'mod']);
 const UNSUPPORTED_FUNCTION = 'Unsupported local flow function: ';
+// The same refusal as fail(), with the function name carried on the error for the action inspection.
+const unsupportedFunction = (name) => {
+  try {
+    fail(UNSUPPORTED_FUNCTION + name);
+  } catch (error) {
+    error.unsupportedFunction = name;
+    throw error;
+  }
+};
 // An evaluated number is an Integer when it is an exact numeric with scale 0 or a JavaScript integer, otherwise a Float.
 // The equals function converts a null or undefined operand to "" when the other operand is a string or null.
 // Switch and contains use equivalent directly, so they keep the exact match.
@@ -530,7 +539,7 @@ function literalNumericKind(node) {
 function checkFlowCall(node) {
   const n = node.name.toLowerCase(),
     signature = Object.hasOwn(FLOW_EXPRESSION_ARITY, n) && FLOW_EXPRESSION_ARITY[n];
-  if (!signature) fail(UNSUPPORTED_FUNCTION + node.name);
+  if (!signature) unsupportedFunction(node.name);
   if (node.args.length < signature[0] || node.args.length > signature[1])
     fail('Invalid argument count for ' + node.name);
   return n;
@@ -1169,6 +1178,13 @@ export function parseFlowExpression(source) {
   return result;
 }
 
+// The diagnostic keeps its code and message; an unsupported function also carries its name, as a non-enumerable property.
+function flowDiagnostic(error) {
+  const diagnostic = { code: error.code ?? 'LocalFlowUnsupported', message: error.message };
+  if (error.unsupportedFunction !== undefined)
+    Object.defineProperty(diagnostic, 'unsupportedFunction', { value: error.unsupportedFunction, enumerable: false });
+  return diagnostic;
+}
 /** Pure syntax/function diagnostics. Dynamic properties and argument types require an explicit runtime input. */
 export function inspectFlowExpression(source) {
   try {
@@ -1181,7 +1197,7 @@ export function inspectFlowExpression(source) {
         const signature =
           Object.hasOwn(FLOW_EXPRESSION_ARITY, node.name.toLowerCase()) &&
           FLOW_EXPRESSION_ARITY[node.name.toLowerCase()];
-        if (!signature) fail(UNSUPPORTED_FUNCTION + node.name);
+        if (!signature) unsupportedFunction(node.name);
         if (node.args.length < signature[0] || node.args.length > signature[1])
           fail('Invalid argument count for ' + node.name);
         pending.push(...node.args);
@@ -1189,7 +1205,7 @@ export function inspectFlowExpression(source) {
     }
     return { supported: true, diagnostics: [] };
   } catch (error) {
-    return { supported: false, diagnostics: [{ code: error.code ?? 'LocalFlowUnsupported', message: error.message }] };
+    return { supported: false, diagnostics: [flowDiagnostic(error)] };
   }
 }
 
@@ -1257,7 +1273,7 @@ function unsupportedActionExpressions(action, key) {
   return actionExpressionStrings(action)
     .flatMap(expressionSources)
     .flatMap((source) => inspectFlowExpression(source).diagnostics)
-    .filter((diagnostic) => diagnostic.message.startsWith(UNSUPPORTED_FUNCTION))
+    .filter((diagnostic) => diagnostic.unsupportedFunction !== undefined)
     .map(
       (diagnostic) =>
         'Unsupported expression in ' +
@@ -1766,7 +1782,7 @@ function evaluate(node, state) {
     case 'createarray':
       return a;
     default:
-      fail(UNSUPPORTED_FUNCTION + node.name);
+      unsupportedFunction(node.name);
   }
 }
 function flowInterpolationEnd(value, start) {

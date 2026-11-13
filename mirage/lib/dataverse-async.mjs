@@ -235,15 +235,17 @@ const jobOperation = (store, jobId) =>
   ) ?? null;
 
 // Completion waiters of asyncoperation rows, per store. whenJobSettled makes an entry for a job that is not Completed yet,
-// and settleJobWaiters removes it when the job's row is Completed.
+// and settleJobWaiters removes it once the row is Completed (resolved) or gone (rejected).
 const jobWaiters = new WeakMap();
 const isCompleted = (row) => Number(row?.statecode) === STATE.Completed;
 const pendingSettle = () => {
   let resolve;
-  const promise = new Promise((done) => {
+  let reject;
+  const promise = new Promise((done, fail) => {
     resolve = done;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 };
 
 /** Resolves with the asyncoperation row once the job is Completed (Succeeded, Failed or Canceled), whichever path wrote that.
@@ -259,16 +261,28 @@ export function whenJobSettled(store, jobId) {
   return waiters.get(key).promise;
 }
 
-// Resolves and removes the waiters whose job row is Completed now.
+// Resolves the waiters whose job row is Completed now, and rejects those whose row is gone; both are removed.
 function settleJobWaiters(store) {
   const waiters = jobWaiters.get(store);
   if (!waiters) return;
   for (const [key, waiter] of waiters) {
     const row = rowOf(store, 'asyncoperation', key);
-    if (!isCompleted(row)) continue;
-    waiters.delete(key);
-    waiter.resolve(row);
+    if (!row) {
+      waiters.delete(key);
+      waiter.reject(new Error(`System job ${key} no longer exists.`));
+    } else if (isCompleted(row)) {
+      waiters.delete(key);
+      waiter.resolve(row);
+    }
   }
+}
+
+// Rejects every waiter of the store, for close(api): a job that is not settled by then is never settled by this API.
+function rejectJobWaiters(store) {
+  const waiters = jobWaiters.get(store);
+  if (!waiters) return;
+  jobWaiters.delete(store);
+  for (const [key, waiter] of waiters) waiter.reject(new Error(`System job ${key} was closed before it settled.`));
 }
 
 // Settles the waiters once the write that completed a job is durable. Inside a transaction that is the commit of its
@@ -418,6 +432,7 @@ export function close(api) {
   fallbackSchedulers.get(api)?.close();
   for (const handle of ownHandles.get(api) ?? []) api.scheduler?.cancel(handle);
   ownHandles.delete(api);
+  rejectJobWaiters(api.store);
 }
 // Milliseconds until a postponed job's time; 0 when it is not postponed or already due.
 const waitFor = (now, postponeuntil) => (postponeuntil ? Math.max(0, Date.parse(postponeuntil) - now) : 0);
@@ -518,9 +533,11 @@ const regardingOf = (value) =>
 // reset runs on every reseed (/_sim/ reset, state import) inside the change queue, so it writes through the store only.
 // Clearing the run tokens stops in-flight runs at their next row (their job rows are gone). Timers already queued find no
 // row and return. ponytail: an imported state's Ready or Locked jobs run again only after a restart (install resumes them).
-export function reset(api) {
+export async function reset(api) {
   activeRuns.get(api)?.clear();
-  return api.store.transact(() => seedMappings(api.store));
+  const result = await api.store.transact(() => seedMappings(api.store));
+  settleJobWaiters(api.store);
+  return result;
 }
 
 function finishBulkDeleteSpan(span, done) {

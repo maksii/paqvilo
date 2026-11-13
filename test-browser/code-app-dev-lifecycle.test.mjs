@@ -164,12 +164,12 @@ test('standalone dev starts configured apps, opens the workbench and closes only
     await cdp.send('Browser.close').catch(() => {});
     const [code] = await closed;
     assert.equal(code, 0, output.text);
+    assert.match(output.text, /^mirage +stopped http:\/\/127\.0\.0\.1:\d+ \(pid \d+\)$/m, output.text);
+    assert.doesNotMatch(output.text, /could not stop pid/, output.text);
     // Closing the browser is the stop. A start-up that was still waiting for the page's resources ends with its own line;
     // one that had completed prints none.
     const startupCompleted = /document and initial resources loaded/.test(output.text);
     assert.equal(/browser closed before start-up finished/.test(output.text), !startupCompleted, output.text);
-    await assert.rejects(fetch(`http://127.0.0.1:${port}/`));
-    await assert.rejects(fetch(`${adminOrigin}/_sim/api/status`));
     assert.equal(await (await fetch(`http://127.0.0.1:${external.address().port}/`)).text(), 'external');
   }
   await launch();

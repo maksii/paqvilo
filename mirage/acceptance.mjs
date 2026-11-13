@@ -23,6 +23,8 @@ import {
 } from './lib/navigation-settle.mjs';
 import { classifyNativeNetworkFailures } from './lib/native-network-baseline.mjs';
 import { observeReadAborts, reconcileIntentionalReadAbort } from './lib/intentional-abort.mjs';
+import { answerRoute } from './lib/closed-route.mjs';
+import { openBrowserWriteNet, connectCdpTransport } from './lib/browser-write-net.mjs';
 
 const safeUrl = (value) => {
   try {
@@ -68,10 +70,13 @@ const createRunDirectory = async (outputRoot, startedAt) => {
   }
   return runDir;
 };
-// Live flows: the flow's request guard is a context route, so it sees the first request of a popup, which Playwright
-// reports before the popup's page event. The flow's own page keeps its page route and falls through here. A page the
-// flow did not open is released once its opener is known; a page whose opener is still unknown stays guarded. The
-// returned stop function removes the route and closes the pages it opened.
+// Live flows: a browser-session write net (openFlowWriteNet) stops every write of the flow's page, its popups and their
+// frames from the first request; the context route below also records and refuses them once Playwright has attached the
+// popup, which another debugging client of the attached browser can precede. The flow's own page keeps its page route
+// and falls through here. A page opened while the flow runs that the flow did not open (no opener, or opened by such
+// a page) is released once its opener is known; a page whose opener is still unknown stays guarded. A page that was
+// already open when the guard started is guarded too, so its writes are refused and recorded while the flow runs. The
+// returned stop function removes the route and closes the pages the flow opened.
 const pageOfRoute = (route) => {
   try {
     return route.request().frame().page();
@@ -79,24 +84,40 @@ const pageOfRoute = (route) => {
     return null;
   }
 };
-// A route answer fails with a closed-target error when its page closed while the request was in flight. Only that failure
-// is ignored, so an error in the guard itself still rejects.
-const answerRoute = (action) =>
-  Promise.resolve(action).catch((error) => {
-    if (!/has been closed|Target closed|Target page, context or browser/i.test(String(error?.message ?? error))) {
-      throw error;
-    }
+// The context's own close event ends the answers of its routes, whatever their page reports.
+const watchContextClosed = (context) => {
+  let closed = false;
+  context.once('close', () => {
+    closed = true;
   });
+  return () => closed;
+};
+// A started promise stays in `set` until it settles; stop waits for every member of the set.
+const track = (set, promise) => {
+  set.add(promise);
+  const remove = () => set.delete(promise);
+  promise.then(remove, remove);
+  return promise;
+};
 const guardOpenedPages = async (context, owner, guard, onOpened) => {
   const guarded = new Set([owner]);
   const unrelated = new Set();
+  const pendingPages = new Set();
+  const inflightRoutes = new Set();
+  const contextClosed = watchContextClosed(context);
+  let stopped = false;
   const guardFlowRequest = (route) => {
     const page = pageOfRoute(route);
-    if (page === owner || unrelated.has(page)) return answerRoute(route.fallback());
-    return answerRoute(guard(route));
+    const answer = page === owner || unrelated.has(page) ? () => route.fallback() : () => guard(route);
+    return track(inflightRoutes, answerRoute(route, answer, { contextClosed }));
   };
-  const onPage = async (popup) => {
+  const openPage = async (popup) => {
     const opener = await popup.opener().catch(() => undefined);
+    // A popup whose opener resolves after stop is closed here and never registered.
+    if (stopped) {
+      await popup.close().catch(() => {});
+      return;
+    }
     if (opener === null || unrelated.has(opener)) {
       unrelated.add(popup);
       return;
@@ -105,6 +126,7 @@ const guardOpenedPages = async (context, owner, guard, onOpened) => {
     guarded.add(popup);
     onOpened(popup, opener);
   };
+  const onPage = (popup) => track(pendingPages, openPage(popup));
   context.on('page', onPage);
   try {
     await context.route('**/*', guardFlowRequest);
@@ -113,10 +135,54 @@ const guardOpenedPages = async (context, owner, guard, onOpened) => {
     throw error;
   }
   return async () => {
+    stopped = true;
     context.off('page', onPage);
+    await Promise.allSettled([...pendingPages, ...inflightRoutes]);
     await context.unroute('**/*', guardFlowRequest).catch(() => {});
     await Promise.all([...guarded].filter((page) => page !== owner).map((page) => page.close().catch(() => {})));
   };
+};
+const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+// The CDP target id of a Playwright page, read through a page session that is detached again.
+const pageTargetId = async (context, page) => {
+  const session = await context.newCDPSession(page);
+  try {
+    return (await session.send('Target.getTargetInfo')).targetInfo.targetId;
+  } finally {
+    await session.detach().catch(() => {});
+  }
+};
+// The browser-session write net of a live flow. The flow's page is its root, so the page, its popups and their frames
+// meet it from their first request, whichever debugging client of the attached browser resumes them.
+const openFlowWriteNet = async (cdpUrl, context, page, onBlocked) => {
+  const targetId = await pageTargetId(context, page);
+  const transport = await connectCdpTransport(cdpUrl);
+  try {
+    const net = await openBrowserWriteNet({
+      transport,
+      decide: ({ method }) => (READ_METHODS.has(method) ? { action: 'continue' } : { action: 'block' }),
+      onDecided: ({ request }) => onBlocked(request),
+    });
+    net.addRoot(targetId, page);
+    return {
+      async close() {
+        await net.close();
+        await transport.close();
+      },
+    };
+  } catch (error) {
+    await transport.close();
+    throw error;
+  }
+};
+// A live flow ends its page guard and its page first; its write net is closed whatever either of them throws.
+const endFlowPage = async (page, stopGuardingPages, flowWriteNet) => {
+  try {
+    await stopGuardingPages?.();
+    await page.close();
+  } finally {
+    await flowWriteNet?.close();
+  }
 };
 // The popup entry names its opener until the popup first navigates to a page; a popup that closes first keeps that label.
 // Each listener is removed when its popup closes, and the run closes every popup it guarded.
@@ -189,6 +255,8 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
   // Optional async hook run on the local browser context before the flows, e.g. a
   // paqvilo-mirage-auth session sign-in of the persona under test.
   prepareContext = null,
+  // Optional hook, called synchronously once a local navigation's hold for its pending writes is created.
+  onNavigationHold = null,
   // Strict acceptance: capability ids or patterns (capability-registry.mjs globs) the flows need; with strict true the run
   // refuses before any browser starts when the simulator's preflight reports one below behaviour (CapabilityUnavailable).
   requires = null,
@@ -456,6 +524,7 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
             .finally(() => cdp.send('Fetch.continueRequest', { requestId: event.requestId }).catch(() => {}));
           navigationHolds.add(hold);
           void hold.finally(() => navigationHolds.delete(hold));
+          onNavigationHold?.({ url: safeUrl(event.request.url) });
         });
         await cdp.send('Fetch.enable', { patterns: [DOCUMENT_REQUEST_PATTERN] });
       }
@@ -690,6 +759,7 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
       // Live observations block every non-read request. Local flows are confined to loopback
       // by the owned browser's proxy (blocked requests are recorded when they fail).
       let stopGuardingPages = null;
+      let flowWriteNet = null;
       if (isLive) {
         const guardRequest = (route) => {
           const request = route.request();
@@ -698,14 +768,22 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
               method: request.method(),
               url: safeUrl(request.url()),
             });
-            return answerRoute(route.abort('blockedbyclient'));
+            return answerRoute(route, () => route.abort('blockedbyclient'));
           }
-          return answerRoute(route.continue());
+          return answerRoute(route, () => route.continue());
         };
-        await page.route('**/*', guardRequest);
-        stopGuardingPages = await guardOpenedPages(context, page, guardRequest, (popup, opener) =>
-          recordOpenedPopup(observation, popup, opener),
+        flowWriteNet = await openFlowWriteNet(cdpUrl, context, page, (request) =>
+          observation.blockedRequests.push({ method: request.method, url: safeUrl(request.url) }),
         );
+        try {
+          await page.route('**/*', guardRequest);
+          stopGuardingPages = await guardOpenedPages(context, page, guardRequest, (popup, opener) =>
+            recordOpenedPopup(observation, popup, opener),
+          );
+        } catch (error) {
+          await flowWriteNet.close();
+          throw error;
+        }
       }
       const capture = async (label) => {
         const file = path.join(outputDir, `${index + 1}-${flow.name.replace(/[^a-z0-9]/gi, '-')}-${label}.png`);
@@ -1079,8 +1157,7 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
           } catch (error) {
             observation.auditError = safeMessage(error.message);
           }
-        await stopGuardingPages?.();
-        await page.close();
+        await endFlowPage(page, stopGuardingPages, flowWriteNet);
       }
     }
     const final = await readState();
@@ -1144,7 +1221,14 @@ function throwIfActiveRequests(active) {
     );
 }
 
-export const __testing = { failureUrl, guardOpenedPages, createRunDirectory, recordOpenedPopup };
+export const __testing = {
+  failureUrl,
+  guardOpenedPages,
+  createRunDirectory,
+  recordOpenedPopup,
+  openFlowWriteNet,
+  endFlowPage,
+};
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {

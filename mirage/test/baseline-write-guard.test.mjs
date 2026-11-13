@@ -2,7 +2,8 @@
 // opens, and passes sign-in traffic and requests to other origins.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { pageRunner } from '../baseline-capture.mjs';
+import { captureNetDecision, pageRunner } from '../baseline-capture.mjs';
+import { captureDecisionCases } from './support/capture-decision-cases.mjs';
 import { withContextRoutes } from './support/context-routes.mjs';
 
 const origin = 'https://portal.invalid';
@@ -99,6 +100,8 @@ function fakePage(context, openedBy) {
     },
     async close() {},
     url: () => origin + '/',
+    closed: false,
+    isClosed: () => page.closed,
     mainFrame: () => topFrame,
     frames: () => [],
     locator(selector) {
@@ -195,6 +198,7 @@ test('a popup opened by the scenario is guarded: its write is aborted and listed
   assert.deepEqual(raw.blockedWrites, [{ method: 'POST', path: '/_api/accounts' }]);
   assert.equal(opened[0].routes.length, 0);
   assert.equal(context.listenerCount('page'), 0);
+  assert.equal(context.listenerCount('close'), 0);
 });
 
 test('a login-page POST that is not an identity callback is aborted without write permission', async () => {
@@ -276,6 +280,24 @@ test('a page the scenario did not open keeps its own routes and is not guarded',
   assert.deepEqual(raw.blockedWrites, []);
 });
 
+// @test-kind contract: a page the scenario did not open is not observed after it is classified
+test('a page the scenario did not open is not observed after it is classified', async () => {
+  let other;
+  const actions = {
+    '#other-tab': async (page) => {
+      other = fakePage(page.context(), null);
+      await page.context().emit('page', other);
+      await fire(other, { method: 'GET', url: origin + '/during', navigation: true });
+    },
+  };
+  const { raw } = await runScenario([{ click: '#other-tab', settle: false }], actions);
+  assert.equal(
+    raw.requests.some((entry) => entry.url === origin + '/during'),
+    false,
+  );
+  assert.equal(other.listenerCount('request'), 0);
+});
+
 test('a popup write issued before its opener is known is aborted and listed', async () => {
   const actions = {
     '#popup': async (page) => {
@@ -300,11 +322,14 @@ test('a popup write issued before its opener is known is aborted and listed', as
 });
 
 // Runs one captured write through the owned page's route and the context route, each answering with `error`. Each handler
-// settles as 'fulfilled' or with the message of its rejection.
-async function settleWriteRoutes(error) {
+// settles as 'fulfilled' or with the message of its rejection. `pageClosed` sets the owned page's closed state,
+// and `contextClosed` emits the context's close event before either route is answered.
+async function settleWriteRoutes(error, { pageClosed = false, contextClosed = false } = {}) {
   const settled = [];
   const actions = {
     '#write': async (page) => {
+      page.closed = pageClosed;
+      if (contextClosed) await page.context().emit('close');
       const request = {
         method: () => 'POST',
         url: () => origin + '/_api/accounts',
@@ -336,9 +361,48 @@ async function settleWriteRoutes(error) {
 
 test('a guarded write whose page closed before the answer does not reject its route handler', async () => {
   const closed = new Error('route.abort: Target page, context or browser has been closed');
-  assert.deepEqual(await settleWriteRoutes(closed), ['fulfilled', 'fulfilled']);
+  assert.deepEqual(await settleWriteRoutes(closed, { pageClosed: true }), ['fulfilled', 'fulfilled']);
+  assert.deepEqual(await settleWriteRoutes(new Error('boom'), { pageClosed: true }), ['fulfilled', 'fulfilled']);
 });
 
-test('a route failure that is not a closed target still rejects the guard', async () => {
-  assert.deepEqual(await settleWriteRoutes(new Error('boom')), ['boom', 'boom']);
+test('a route failure on an open page rejects the guard whatever its text', async () => {
+  const closed = new Error('route.abort: Target page, context or browser has been closed');
+  assert.deepEqual(await settleWriteRoutes(new Error('boom'), { pageClosed: false }), ['boom', 'boom']);
+  assert.deepEqual(await settleWriteRoutes(closed, { pageClosed: false }), [closed.message, closed.message]);
+});
+
+test('a guarded write answered after its context closed does not reject its route handler', async () => {
+  const settled = await settleWriteRoutes(new Error('boom'), { pageClosed: false, contextClosed: true });
+  assert.deepEqual(settled, ['fulfilled', 'fulfilled']);
+});
+
+// The page guard's outcome for a shared case: the owned page's request goes through the routes, and fire() reports it.
+async function pageGuardOutcome(item) {
+  let outcome;
+  const actions = {
+    '#request': async (page) => {
+      outcome = await fire(page, item.request);
+    },
+  };
+  await runScenario([{ click: '#request', settle: false }], actions, item.options);
+  return outcome;
+}
+
+// The browser-level net's request shape: a navigation is a Document, anything else a Fetch.
+const netRequest = ({ method, url, navigation, headers }) => ({
+  method,
+  url,
+  headers,
+  resourceType: navigation ? 'Document' : 'Fetch',
+});
+
+test('the page guard and the browser-level net decide every capture request the same way', async () => {
+  for (const item of captureDecisionCases) {
+    const { action } = captureNetDecision({ origin, ...item.options })(netRequest(item.request));
+    assert.equal(action === 'block', item.block, `${item.name}: the browser-level net`);
+    if (item.pageGuard === false) continue;
+    const outcome = await pageGuardOutcome(item);
+    assert.ok(outcome, `${item.name}: the page guard reached no decision`);
+    assert.equal(outcome === 'aborted', item.block, `${item.name}: the page guard`);
+  }
 });

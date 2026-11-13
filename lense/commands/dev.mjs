@@ -8,7 +8,7 @@ import { urlKey } from '../portal-model.mjs';
 import { compareWebFile } from '../online.mjs';
 import { gitDirectories } from '../git.mjs';
 import { panelVisibilityNotice } from '../panel.mjs';
-import { guardShutdownSignals } from '../signal-forwarding.mjs';
+import { guardShutdownSignals, shutdownSignalCounter } from '../signal-forwarding.mjs';
 import { startupProgress, startupWaitOptions, waitForStartupPage } from '../startup-progress.mjs';
 
 const time = () => new Date().toLocaleTimeString('en-GB');
@@ -412,7 +412,9 @@ export function watchSources(
   });
   // Initial watch enumeration ignores existing files; reconcile once it has established the
   // watch so edits during async startup/browser launch cannot disappear into that gap.
+  let resolveReady;
   watcher.ready = new Promise((resolve, reject) => {
+    resolveReady = resolve;
     watcher.once('ready', () => {
       if (closed) {
         resolve();
@@ -500,6 +502,7 @@ export function watchSources(
   watcher.close = () => {
     if (closing) return closing;
     closed = true;
+    resolveReady(); // a watcher closed before it is ready ends its ready wait
     refreshAbort.abort();
     for (const waiter of idleWaiters) waiter.finish();
     clearTimeout(timer);
@@ -682,7 +685,8 @@ export function devStartUrl(config) {
   return config.startUrl ?? config.origin + (config.site.startPath ?? '/');
 }
 
-async function develop(args, setup) {
+export async function develop(args, setup, { open = openBrowser, source = process } = {}) {
+  let browserCleanupFailed = false;
   // `mirage dev` hands over a prepared selection (local Mirage origins plus live targets).
   const selection =
     args.devSelection ??
@@ -694,13 +698,21 @@ async function develop(args, setup) {
   const { startDevSessions } = await import('../dev-sessions.mjs');
   logAllPortals(selection);
   const wantedPort = config.browser.debugPort;
+  const devStop = createDevStop({ codeAppSignal: args.codeAppSignal, source });
+  const { stop, stopped } = devStop;
   args.startup?.phase('browser setup');
-  const { context, attached, close, debugPort, profile } = await openBrowser(config, {
-    debugPort: wantedPort,
-    cookieOrigins: selection.targets.map((target) => target.origin),
-  });
+  const opened = await launchUnderStop(
+    () =>
+      open(config, {
+        debugPort: wantedPort,
+        cookieOrigins: selection.targets.map((target) => target.origin),
+      }),
+    devStop,
+  );
+  if (!opened) return devExitCode(undefined, args);
+  const { context, attached, close, debugPort, profile } = opened;
   logBrowserProfile(attached, config, profile);
-  const { stop, stopped, browser } = installStopListeners(context, args);
+  const browser = watchBrowserEnd(context, stop);
   let runtime;
   try {
     logDebugPort(debugPort);
@@ -730,18 +742,88 @@ async function develop(args, setup) {
   } finally {
     context.off('close', stop);
     browser?.off('disconnected', stop);
-    process.off('SIGINT', stop);
-    process.off('SIGTERM', stop);
-    args.codeAppSignal?.removeEventListener('abort', stop);
+    devStop.release();
     await guardShutdownSignals(async () => {
       try {
         await runtime?.close();
       } finally {
-        await close().catch(() => {});
+        browserCleanupFailed = await closeDevBrowser(close);
       }
     });
   }
-  return devExitCode(runtime, args);
+  return devExitCode(runtime, args) || (browserCleanupFailed ? 1 : 0);
+}
+
+/**
+ * Closes the dev browser. A browser that does not close is reported on stderr and fails the command;
+ * resolves to true when the close failed.
+ */
+export async function closeDevBrowser(close, { report = console.error } = {}) {
+  try {
+    await close();
+    return false;
+  } catch (error) {
+    report(`browser cleanup failed: ${String(error?.message ?? error).split('\n')[0]}`);
+    process.exitCode ||= 1;
+    return true;
+  }
+}
+
+/**
+ * The stop of a dev command. SIGINT, SIGTERM and the Code App signal request it from the moment it is created, which
+ * is before the browser launches. The first signal requests the stop, a second is absorbed and a third forces the
+ * exit. `release` removes those listeners.
+ */
+export function createDevStop({ codeAppSignal, source = process, exit = (code) => process.exit(code) } = {}) {
+  let requested = false;
+  let resolveStopped;
+  const stopped = new Promise((resolve) => {
+    resolveStopped = resolve;
+  });
+  const stop = () => {
+    requested = true;
+    resolveStopped();
+  };
+  // Every signal is handled until release(): the first requests the stop, the second is absorbed and the third forces
+  // the exit, as during shutdown, so a repeated Ctrl+C never takes Node's default action while the browser launches.
+  const absorb = shutdownSignalCounter({ onFirst: stop, exit });
+  const listeners = ['SIGINT', 'SIGTERM'].map((signal) => [signal, () => absorb(signal)]);
+  for (const [signal, listener] of listeners) source.on(signal, listener);
+  codeAppSignal?.addEventListener('abort', stop, { once: true });
+  if (codeAppSignal?.aborted) stop();
+  return {
+    source,
+    stop,
+    stopped,
+    requested: () => requested,
+    release() {
+      for (const [signal, listener] of listeners) source.off(signal, listener);
+      codeAppSignal?.removeEventListener('abort', stop);
+    },
+  };
+}
+
+/**
+ * Launches the dev browser under the command's stop. A stop requested before the launch skips it. A stop requested
+ * while the browser was launching closes the launched browser under the shutdown guard and resolves to null. A launch
+ * that fails releases the stop's listeners and rethrows.
+ */
+export async function launchUnderStop(open, devStop, { closeBrowser = closeDevBrowser } = {}) {
+  if (devStop.requested()) {
+    devStop.release();
+    return null;
+  }
+  let opened;
+  try {
+    opened = await open();
+  } catch (error) {
+    devStop.release();
+    throw error;
+  }
+  if (!devStop.requested()) return opened;
+  devStop.release();
+  await guardShutdownSignals(() => closeBrowser(opened.close), undefined, { source: devStop.source });
+  return null;
 }
 
 function applySetupUrl(targets, setupUrl) {
@@ -764,19 +846,11 @@ function logBrowserProfile(attached, cfg, profile) {
   );
 }
 
-function installStopListeners(context, args) {
-  let stop;
-  const stopped = new Promise((resolve) => {
-    stop = resolve;
-  });
+function watchBrowserEnd(context, stop) {
   const browser = context.browser();
   context.once('close', stop);
   browser?.once('disconnected', stop);
-  process.once('SIGINT', stop);
-  process.once('SIGTERM', stop);
-  args.codeAppSignal?.addEventListener('abort', stop, { once: true });
-  if (args.codeAppSignal?.aborted) stop();
-  return { stop, stopped, browser };
+  return browser;
 }
 
 function logDevPanel(runtime, cfg) {
@@ -810,6 +884,6 @@ function reportStartupFailure(error, startUrl, args) {
   );
 }
 
-function devExitCode(runtime, args) {
-  return runtime?.failure || args.codeAppSignal?.aborted ? 1 : 0;
+export function devExitCode(runtime, args) {
+  return runtime?.failure && !args.codeAppSignal?.aborted ? 1 : 0;
 }

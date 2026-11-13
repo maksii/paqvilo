@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { createHash, randomBytes } from 'node:crypto';
+import { createCipheriv, createHash } from 'node:crypto';
 import { descendants, parseSolutionXml, serializeXml } from '../lib/solution-xml.mjs';
 import { classifySolutionPath, readSolutionZip } from '../lib/solution-schema.mjs';
 import {
@@ -12,6 +12,12 @@ import {
 } from '../lib/dataverse-solution-assets.mjs';
 import { createSolutionMetadataOverlay } from '../lib/dataverse-solution-metadata.mjs';
 import { decodeXml } from '../lib/importer.mjs';
+
+// Deterministic incompressible bytes: an AES-256-CTR keystream with a fixed key, so every run builds the same archive.
+function noise(length) {
+  const cipher = createCipheriv('aes-256-ctr', Buffer.alloc(32), Buffer.alloc(16));
+  return Buffer.concat([cipher.update(Buffer.alloc(length)), cipher.final()]);
+}
 
 // @test-kind security+contract: solution XML scans delimiters and attributes while preserving quoted markup, CDATA and recovery
 test('solution XML scans delimiters and attributes while preserving quoted markup, CDATA and recovery', () => {
@@ -186,8 +192,8 @@ test('solution ZIP refuses central entries that share one local header', () => {
 // @test-kind security: a second entry whose local header lies inside a first entry's payload is refused as overlapping
 test('solution ZIP refuses an entry whose local header lies inside another entry payload', () => {
   const embedded = writeSolutionAssetEntries([hostileFile('customizations.xml', '<x/>')]);
-  // Random bytes keep the first payload stored, so the embedded local header is addressable in the archive.
-  const payload = Buffer.concat([embedded, randomBytes(65536)]);
+  // Incompressible bytes keep the first payload stored, so the embedded local header is addressable in the archive.
+  const payload = Buffer.concat([embedded, noise(65536)]);
   const nested = writeSolutionAssetEntries([
     hostileFile('Other/Solution.xml', payload),
     hostileFile('customizations.xml', '<x/>'),
@@ -271,8 +277,8 @@ test('solution ZIP scan reads a 129 MiB archive that the upload path refuses', (
   const MiB = 1024 * 1024;
   const zip = writeSolutionAssetEntries(
     [
-      hostileFile('Padding/one.bin', randomBytes(65 * MiB)),
-      hostileFile('Padding/two.bin', randomBytes(64 * MiB)),
+      hostileFile('Padding/one.bin', noise(65 * MiB)),
+      hostileFile('Padding/two.bin', noise(64 * MiB)),
       kept('Other/Relationships/a.xml'),
     ],
     { archiveBytes: 256 * MiB },

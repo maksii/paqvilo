@@ -3,7 +3,7 @@ import { parseArgs } from 'node:util';
 import path from 'node:path';
 import { loadConfig, loadCatalogue } from './config.mjs';
 import { startupProgress } from './startup-progress.mjs';
-import { parseOptions } from './cli-options.mjs';
+import { commandExitCode, parseOptions } from './cli-options.mjs';
 
 const HELP = `paqvilo lense - work on Power Pages portal sources locally, laid over an online environment
 
@@ -587,7 +587,7 @@ try {
   phase = 'execution';
   const code = await run(cfg, values, positionals.slice(1));
   // Let large JSON reports drain to piped stdout before exiting.
-  if (typeof code === 'number') process.exitCode = code;
+  if (typeof code === 'number') process.exitCode = commandExitCode(code, process.exitCode);
 } catch (err) {
   startup?.fail(err.message);
   if (values.json || command === 'agent') {

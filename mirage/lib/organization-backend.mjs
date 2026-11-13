@@ -162,7 +162,7 @@ function backendCloser({ store, triggerRunner, asyncPluginRunner, runtimes, prep
       run: () => closeRuntime(runtimes, id, runtime, { closeHostPool, diagnostic }),
     })),
     ...[...prepared].map((runtime) => ({
-      run: () => releaseClrRuntime(runtime, { liveRuntimes: keptRuntimes(), diagnostic }),
+      run: () => releaseClrRuntime(runtime, { liveRuntimes: keptRuntimes(), diagnostic, closeHostPool }),
     })),
   ];
   let steps = null,

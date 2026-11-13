@@ -264,7 +264,7 @@ describe('CLR assembly reader against a compiled assembly (dotnet)', () => {
         {
           cwd: dir,
           encoding: 'utf8',
-          timeout: 220000,
+          timeout: 170_000, // hang guard only, the same bound as the lane's CLI hang guard in fixtures/clr-sdk.mjs
           env: { ...process.env, DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_NOLOGO: '1' },
         },
       );

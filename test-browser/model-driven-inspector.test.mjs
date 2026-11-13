@@ -102,6 +102,33 @@ function ownContextServerRoot(t, context, server, root) {
   });
 }
 
+// Records the guards an inspector arms. A guard expires only when the test calls its expire(); an operation that
+// settles cancels its guard, which the record shows.
+function guardScheduler() {
+  const guards = [];
+  let notify = () => {};
+  const open = (since) => guards.slice(since).filter((guard) => !guard.cancelled);
+  return {
+    armed: () => guards.length,
+    scheduleGuard(expire, ms) {
+      const guard = { ms, expire, cancelled: false };
+      guards.push(guard);
+      notify();
+      return () => {
+        guard.cancelled = true;
+      };
+    },
+    // Resolves with the guards armed from index since that are still pending, once there are at least count of them.
+    async pending(count, since) {
+      while (open(since).length < count)
+        await new Promise((resolve) => {
+          notify = resolve;
+        });
+      return open(since);
+    },
+  };
+}
+
 test('model-driven X-ray binds fields, PCF, handlers and ribbon provenance; bounded agent/debugging remains isolated and read-only', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'model-inspector-'));
   const methods = [];
@@ -137,14 +164,16 @@ test('model-driven X-ray binds fields, PCF, handlers and ribbon provenance; boun
   document.file = formSource;
   sources.metadata = { sourceRevisions: { [formSource]: createHash('sha256').update(xml).digest('hex') } };
   const overlay = createModelDrivenOverlay({ origin, imported: sources });
+  // No guard expires on its own: healthy reads have no deadline, and the paused page below expires its own guards.
+  const guards = guardScheduler();
   inspector = await startModelDrivenInspector({
     context,
     page,
     overlay,
     cfg: { origin, stateDir: root, sourceDir: root, siteName: 'invented', envName: 'loopback' },
     imported: sources,
-    // Short enough that the paused page below is abandoned in seconds; long enough that healthy reads are not.
     nativeReadGuardMs: 5000,
+    scheduleGuard: guards.scheduleGuard,
     runtime: { debugPort: 9222 },
   });
   // The command starts one agent per dev session and attaches each inspector's state to it.
@@ -317,11 +346,14 @@ test('model-driven X-ray binds fields, PCF, handlers and ribbon provenance; boun
   await cdp.send('Debugger.pause');
   inspector.refresh();
   await paused;
-  // The debugger resumes only after close settles. Each cleanup call on the paused page is abandoned at the guard,
-  // and the abandonment is recorded in the session log.
+  // The debugger resumes only after close settles. Close arms one guard per cleanup call on the paused page; each
+  // pending guard is expired here, which abandons its call and records the abandonment in the session log.
   // The owner detaches the inspector from the agent before retiring it, as the target session does.
   agent.setInspector(null);
-  await inspector.close();
+  const armedBeforeClose = guards.armed();
+  const closing = inspector.close();
+  for (const guard of await guards.pending(2, armedBeforeClose)) guard.expire();
+  await closing;
   const leaks = inspector.snapshot().problems.filter((item) => item.code === 'cleanup-timed-out');
   assert.ok(
     leaks.some((item) => item.text.startsWith('Owned provider disposal did not answer within 5000 ms')),

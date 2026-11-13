@@ -248,6 +248,21 @@ test('a cancelled lookup create dialog leaves no success listener behind, so one
   t.after(() => browser.close());
   const context = await browser.newContext();
   t.after(() => context.close());
+  // Counts the grid's own POSTs in the page. jQuery sends them through XMLHttpRequest, so the count is final once the
+  // refresh's request event has been delivered: the listeners of one message dispatch run synchronously.
+  await context.addInitScript(() => {
+    window.__gridPosts = 0;
+    const open = XMLHttpRequest.prototype.open,
+      send = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+      this.__gridPost = method.toUpperCase() === 'POST' && new URL(url, location.href).pathname === '/grid-data';
+      return open.call(this, method, url, ...rest);
+    };
+    XMLHttpRequest.prototype.send = function (...args) {
+      if (this.__gridPost) window.__gridPosts++;
+      return send.apply(this, args);
+    };
+  });
   const page = await context.newPage(),
     errors = [],
     refreshes = [];
@@ -261,7 +276,10 @@ test('a cancelled lookup create dialog leaves no success listener behind, so one
   // The create form reports success to the page; the listener of the open dialog runs once.
   await page.locator('.new-value').click();
   await page.locator('.modal-lookup-create-form').waitFor({ state: 'visible' });
-  await page.evaluate(
+  const refreshed = page.waitForRequest(
+    (request) => request.method() === 'POST' && new URL(request.url()).pathname === '/grid-data',
+  );
+  const posted = page.evaluate(
     () =>
       new Promise((resolve) => {
         window.addEventListener('message', () => resolve(), { once: true });
@@ -271,7 +289,8 @@ test('a cancelled lookup create dialog leaves no success listener behind, so one
         );
       }),
   );
-  await page.waitForLoadState('networkidle');
+  await Promise.all([refreshed, posted]);
+  assert.equal(await page.evaluate(() => window.__gridPosts), 1);
   assert.equal(refreshes.length, 1);
   assert.equal(await page.locator('.modal-lookup-create-form').evaluate((node) => node.style.display), 'none');
   assert.deepEqual(errors, []);

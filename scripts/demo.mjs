@@ -11,6 +11,7 @@ import { loadDevTargets } from '../lense/config.mjs';
 import { openBrowser } from '../lense/browser.mjs';
 import { startDevSessions } from '../lense/dev-sessions.mjs';
 import { readDiscovery, agentRequest } from '../lense/commands/agent.mjs';
+import { createDevStop, launchUnderStop } from '../lense/commands/dev.mjs';
 
 const { values } = parseArgs({
   options: {
@@ -27,10 +28,9 @@ fs.mkdirSync(work, { recursive: true });
 const servers = [];
 let browser;
 let runtime;
-let stop;
-const stopped = new Promise((resolve) => {
-  stop = resolve;
-});
+const devStop = createDevStop();
+const { stop, stopped } = devStop;
+const stoppedDuringLaunch = new Error('stopped while the browser was launching');
 const log = [];
 const failures = [];
 const networkFailures = [];
@@ -106,10 +106,10 @@ try {
     }),
   );
   const selection = await loadDevTargets({ config, portals: 'all' }, {});
-  browser = await openBrowser(selection.initial);
+  const opened = await launchUnderStop(() => openBrowser(selection.initial), devStop);
+  if (!opened) throw stoppedDuringLaunch;
+  browser = opened;
   browser.context.once('close', stop);
-  process.once('SIGINT', stop);
-  process.once('SIGTERM', stop);
   const origins = new Set(selection.targets.map((target) => target.origin));
   await browser.context.route('**/*', (route) =>
     origins.has(new URL(route.request().url()).origin) ? route.continue() : route.abort('blockedbyclient'),
@@ -194,9 +194,11 @@ try {
     if (!passed) throw new Error(`Demo diagnostics failed; inspect ${path.join(work, 'evidence.json')}`);
     console.log(`Evidence passed: ${work}`);
   } else await stopped;
+} catch (error) {
+  // A stop requested before the browser opened ends the run with the cleanup below; anything else is a failure.
+  if (error !== stoppedDuringLaunch) throw error;
 } finally {
-  process.off('SIGINT', stop);
-  process.off('SIGTERM', stop);
+  devStop.release();
   await runtime?.close();
   await browser?.close();
   for (const server of servers) {
