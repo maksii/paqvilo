@@ -444,41 +444,77 @@ test(
   },
 );
 
+// A build of the fixture assembly with an injected compiler run fails as `matches` expects and leaves no runtime directory.
+async function buildFails(run, options, matches) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-clr-release-'));
+  try {
+    const { cacheRoot, descriptor } = await fixture(root);
+    const sdk = clrSdk();
+    const files = {
+      assembly: { bytes: await fs.readFile(path.join(root, 'Noop.dll')), path: path.join(root, 'Noop.dll') },
+      sdk: { bytes: await fs.readFile(sdk), path: sdk },
+    };
+    assert.throws(() => buildClrRuntime(descriptor(), files, { compiler: 'invented-csc', ...options, run }), matches);
+    assert.deepEqual(await runtimeDirectories(cacheRoot), [], 'the failed build leaves no runtime directory');
+  } finally {
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 5 });
+  }
+}
+
 test(
   'a compiler that does not exit is stopped at the compile guard and the build error names it',
   { skip: CLR_SKIP },
   async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-clr-release-'));
-    try {
-      const { cacheRoot, descriptor } = await fixture(root);
-      const sdk = clrSdk();
-      const files = {
-        assembly: { bytes: await fs.readFile(path.join(root, 'Noop.dll')), path: path.join(root, 'Noop.dll') },
-        sdk: { bytes: await fs.readFile(sdk), path: sdk },
+    const seen = [];
+    // The injected run stands for a compiler the guard stopped: spawnSync reports ETIMEDOUT and no output.
+    const run = (...call) => {
+      seen.push(call[2].timeout);
+      return {
+        error: Object.assign(new Error('spawnSync invented-csc ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+        status: null,
+        stdout: '',
+        stderr: '',
       };
-      const seen = [];
-      // The injected run stands for a compiler the guard stopped: spawnSync reports ETIMEDOUT and no output.
-      const run = (...call) => {
-        seen.push(call[2].timeout);
-        return {
-          error: Object.assign(new Error('spawnSync invented-csc ETIMEDOUT'), { code: 'ETIMEDOUT' }),
-          status: null,
-          stdout: '',
-          stderr: '',
-        };
+    };
+    await buildFails(
+      run,
+      { compileGuardMs: 2000 },
+      (error) =>
+        /did not exit within the 2000 ms guard/.test(error.message) &&
+        error.message.includes('invented-csc') &&
+        error.message.includes('compileGuardMs'),
+    );
+    assert.deepEqual(seen, [2000], 'the compile step runs once, under the compile guard');
+  },
+);
+
+// @test-kind contract: a host compile that fails at the Windows path limit (csc CS1619) names the path length and the cause
+test(
+  'a compiler that fails at the Windows path limit is reported with the cache path length',
+  { skip: CLR_SKIP },
+  async () => {
+    const outputs = [];
+    // The injected run answers as csc did for a 250-character output path.
+    const run = (compiler, args) => {
+      outputs.push(args.find((arg) => arg.startsWith('/out:')).slice('/out:'.length));
+      return {
+        status: 1,
+        stdout:
+          "error CS1619: Cannot create temporary file '' -- The data area passed to a system call is too small. \r\n",
+        stderr: '',
       };
-      assert.throws(
-        () => buildClrRuntime(descriptor(), files, { compiler: 'invented-csc', compileGuardMs: 2000, run }),
-        (error) =>
-          /did not exit within the 2000 ms guard/.test(error.message) &&
-          error.message.includes('invented-csc') &&
-          error.message.includes('compileGuardMs'),
-      );
-      assert.deepEqual(seen, [2000], 'the compile step runs once, under the compile guard');
-      assert.deepEqual(await runtimeDirectories(cacheRoot), [], 'the failed build leaves no runtime directory');
-    } finally {
-      await fs.rm(root, { recursive: true, force: true, maxRetries: 5 });
-    }
+    };
+    await buildFails(
+      run,
+      {},
+      (error) =>
+        error.code === 'LocalPluginClrBuild' &&
+        error.message ===
+          "CLR host compilation failed: error CS1619: Cannot create temporary file '' -- The data area passed to a system call is too small. " +
+            `The runtime cache path is ${outputs[0].length} characters long; the C# compiler fails near the Windows ` +
+            '260-character path limit. Use a shorter project or cache path.',
+    );
+    assert.equal(outputs.length, 1, 'the compile step runs once');
   },
 );
 

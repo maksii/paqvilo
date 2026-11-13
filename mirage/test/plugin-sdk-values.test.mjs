@@ -1,6 +1,5 @@
 // @test-kind compatibility: Microsoft.Xrm.Sdk / .NET DataContract value types round-trip through the CLR codec (no native capture of SharedVariables with these types yet)
 import test from 'node:test';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -36,7 +35,6 @@ test(
       cacheRoot: path.join(dir, 'cache'),
       serviceProfile: { userId: user, evidence: 'Invented documented SDK serializable value regression', grants: [] },
       context: { initiatingUserId: user, organizationId: user, businessUnitId: user },
-      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
     });
     const steps = [20, 40].map((stage, index) => ({
         id: '30000000-0000-0000-0000-' + String(index + 1).padStart(12, '0'),

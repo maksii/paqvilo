@@ -1,6 +1,5 @@
 // @test-kind contract: exact numeric arithmetic, JSON lexemes and formatting over invented values and loopback fixtures.
 import test from 'node:test';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk } from './fixtures/clr-sdk.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -328,7 +327,6 @@ var link=q.AddLink("precisionrow","precisionrowid","precisionrowid");link.Entity
         organizationId: '50000000-0000-0000-0000-000000000001',
         businessUnitId: '60000000-0000-0000-0000-000000000001',
       },
-      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
     });
     const step = {
         id: '30000000-0000-0000-0000-000000000001',

@@ -87,7 +87,33 @@ test('Lense picker searches 500 personas, combines facets and opens a catalogue 
   await root.locator('[data-act="tab"][data-v="tweaks"]').click();
   await root.locator('select[data-pick="scenario"]').selectOption('@catalogue/review-flow');
   await root.locator('[data-act="ask"][data-kind="scenario"]').click();
+  // The scenario runtime's first document is held until the timers armed for its navigation have been read.
+  const appOrigin = new URL(app.url).origin;
+  const firstDocument = Promise.withResolvers(),
+    release = Promise.withResolvers();
+  await context.route(
+    (url) => url.origin !== appOrigin && url.pathname === '/',
+    async (route) => {
+      firstDocument.resolve();
+      await release.promise;
+      await route.fallback();
+    },
+    { times: 1 },
+  );
+  const spy = t.mock.method(globalThis, 'setTimeout');
   await root.locator('[data-act="confirm-yes"]').click();
+  await firstDocument.promise;
+  const timers = spy.mock.calls.map((call) => call.arguments);
+  spy.mock.restore();
+  release.resolve();
+  // The panel answers the request first and navigates from its own deferred callback; the guard is armed after it.
+  // The deferral is found by its callback's text: a change to that callback in lense/panel.mjs must update this lookup.
+  const deferral = timers.findIndex(([callback, ms]) => ms === 100 && String(callback).includes('destination.origin'));
+  assert.ok(deferral >= 0, 'the panel deferred the scenario navigation');
+  assert.ok(
+    timers.slice(deferral + 1).some(([, ms]) => ms > 100_000 && ms <= 120_000),
+    'the scenario navigation is bounded by its 120 s hang guard',
+  );
   await page.waitForURL((url) => url.origin !== app.url && url.searchParams.get('scenario') === 'review');
   assert.equal(await page.locator('h1').textContent(), 'Context greeting');
   // The scenario runs on its own runtime, which reports no administration origin to the page: its session is read as a request, not from the page.

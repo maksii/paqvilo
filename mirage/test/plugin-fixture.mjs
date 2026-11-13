@@ -3,7 +3,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { ownedFixture } from '../testing/owned-fixture.mjs';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 
 export const pluginId = (n) => `d5100000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -124,7 +123,6 @@ export async function originalStepSimulator(t, fixture, initial, { source, evide
     cacheRoot: path.join(fixture.dir, 'cache'),
     context: { initiatingUserId: user, organizationId: user, businessUnitId: user },
     serviceProfile: { userId: user, evidence, grants },
-    timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
   };
   await fs.writeFile(
     pack,

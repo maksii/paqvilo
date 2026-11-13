@@ -9,7 +9,6 @@ import { dataverseError } from '../lib/dataverse-odata.mjs';
 import { prepareClrRuntime, closeClrHostPool } from '../lib/plugin-clr.mjs';
 import { attachClrSteps } from './fixtures/plugin-pipeline.mjs';
 import { CLR_SKIP, clrSdk, compileClr, retypeClrRuntime } from './fixtures/clr-sdk.mjs';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 
 const id = (n) => `10000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 async function failureRuntime(t) {
@@ -42,7 +41,6 @@ public sealed class Wrapper:IPlugin {public void Execute(IServiceProvider p){var
     sdkRoot: path.dirname(sdk),
     sdkAssembly: path.basename(sdk),
     cacheRoot: path.join(root, 'cache'),
-    timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
     serviceProfile: {
       userId: id(1),
       evidence: 'Invented exception-classification backend',
@@ -185,8 +183,6 @@ test(
           retypeClrRuntime(runtime, {
             typeName: registration.typeName,
             persistentHost,
-            // The outer budget includes its own half and one separately bounded child invocation.
-            timeoutMs: registration.entity === 'child' ? ORDINARY_CLR_TIMEOUT_MS / 2 : ORDINARY_CLR_TIMEOUT_MS,
           }),
       });
       const failure = await errorOf(f.invoke);

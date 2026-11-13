@@ -12,7 +12,6 @@ import { createOrganizationBackend } from '../lib/organization-backend.mjs';
 import { createScheduler, fixedClock } from '../lib/runtime-clock.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 
 const id = (n) => `10000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 
@@ -61,7 +60,6 @@ if(mode=="Tagged failure")throw new InvalidPluginExecutionException("Invented as
       sdkAssembly: path.basename(sdk),
       cacheRoot: path.join(root, 'cache'),
       serviceProfile: profile,
-      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
       persistentHost: true,
       context: { initiatingUserId: id(1), organizationId: id(1), businessUnitId: id(1) },
     });

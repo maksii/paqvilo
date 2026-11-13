@@ -11,23 +11,16 @@ import { prepareClrRuntime, dispatchSdkCall, clrHostPoolStatus, closeClrHostPool
 import { contractModuleFixture } from './contract-module-fixture.mjs';
 import { attachClrSteps } from './fixtures/plugin-pipeline.mjs';
 import { CLR_SKIP, clrSdk, compileClr, retypeClrRuntime } from './fixtures/clr-sdk.mjs';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 const empty = '00000000-0000-0000-0000-000000000000';
 const user = '10000000-0000-0000-0000-000000000001';
 const requested = '20000000-0000-0000-0000-000000000001';
 const observerStages = [10, 20, 40];
-const childInvocationBudgetMs = ORDINARY_CLR_TIMEOUT_MS;
-// The caller's inclusive deadline contains three independently bounded child
-// CLR invocations, including isolated host startup, plus its own execution.
-// Keep the ordinary child budget; configure this fixture's caller for its
-// actual call graph instead of fitting four cold hosts into one child budget.
-const identityRuntime = (runtime, typeName, persistentHost, nestedCount = observerStages.length) =>
+const identityRuntime = (runtime, typeName, persistentHost) =>
   retypeClrRuntime(runtime, {
     typeName,
     persistentHost,
-    timeoutMs: typeName === 'Invented.Caller' ? childInvocationBudgetMs * (nestedCount + 1) : childInvocationBudgetMs,
   });
 const fields = {
   mode: { dataverseType: 'nvarchar' },
@@ -298,7 +291,6 @@ public sealed class Observe:IPlugin {public void Execute(IServiceProvider p){Thr
       sdkRoot: path.dirname(sdk),
       sdkAssembly: path.basename(sdk),
       cacheRoot: path.join(root, 'cache'),
-      timeoutMs: childInvocationBudgetMs,
       serviceProfile: profile,
       context: { executionUserId: user, initiatingUserId: user, organizationId: user, businessUnitId: user },
     });
@@ -324,7 +316,7 @@ public sealed class Observe:IPlugin {public void Execute(IServiceProvider p){Thr
     ({ backend } = await attachClrSteps(t, {
       store,
       steps: [step('trigger', 'Invented.Caller', 1), step('widget', 'Invented.Observe', 2)],
-      runtime: (item) => identityRuntime(runtime, item.typeName, false, 1),
+      runtime: (item) => identityRuntime(runtime, item.typeName, false),
       diagnostic: (event) => {
         if (event.code === 'PLUGIN_CLR_HOST_STARTED') hosts.started++;
         if (event.code === 'PLUGIN_CLR_HOST_STOPPED') {
@@ -368,7 +360,6 @@ public sealed class Timing:IPlugin{public void Execute(IServiceProvider p){var c
       sdkRoot: path.dirname(sdk),
       sdkAssembly: path.basename(sdk),
       cacheRoot: path.join(root, 'cache'),
-      timeoutMs: childInvocationBudgetMs,
       serviceProfile: profile,
       context: { executionUserId: user, initiatingUserId: user, organizationId: user, businessUnitId: user },
     });

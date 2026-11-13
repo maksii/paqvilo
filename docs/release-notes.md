@@ -211,8 +211,11 @@ organization's metadata. Large datasets use far less memory.
   browser cannot write; their attempts are listed in the flow's `blockedRequests`.
 - A live capture whose page did not open in the browser of `live.cdpUrl` stops with `live.cdpUrl is not the bridge
 browser…` and merges no evidence. Without `live.cdpUrl` a capture reports that only the per-page guard protects it.
-- The debugging endpoint is read with hang guards: 10 s for its version read and 30 s for the socket to open (`The
-browser debugging socket did not open.`).
+- The write guard reads the browser debugging endpoint with hang guards: 10 s for its version read and 30 s for the
+  socket to open (`The browser debugging socket did not open.`).
+- The parity suite, local and live acceptance, the Mirage side of a baseline capture and shell capture launch or
+  attach to their browser under a 120 s hang guard. The dev panel opens a launched scenario runtime's first document,
+  and `verify` takes its evidence screenshot, under a 120 s hang guard.
 - Live acceptance: a route answer that fails is ignored only when its page or context has closed. Any other failure
   fails the run, whatever its message.
 - Baseline scenarios can wait for popups with `wait: { popup: <n> }`. The step fails when fewer popups have opened
@@ -233,9 +236,19 @@ browser debugging socket did not open.`).
 - Closing an organization host cancels the open full-level body captures of the trace store it created; their spans
   end `cancelled`. A persona runtime that shares its parent's store leaves the parent's captures running.
 - A `/_sim/` reset or `close` releases the `ImportJobId` of a staged solution job whose row it removed.
-- A server logic worker still running 30 s after it answered is ended; a worker that ends by itself is not touched.
-- A pooled CLR host that ends before it reads a call fails that call as `LocalPluginHostExited` at once.
 - `clrHostPoolStatus()` entries carry `session`, a serial number per pooled host.
+- A CLR step's timeout starts when its host process exists, so a slow process creation no longer fails the step
+  with `LocalPluginTimeout`; a host process that is not created within the 120 s hang guard, or that cannot be
+  started, fails the step with 503 `LocalPluginHostUnavailable`.
+- A CLR host verifies itself that the parent PID it is given is the process that created it, so no parent identity
+  probe process runs before the first CLR call (it had a 30 s limit). A host that cannot bind its parent fails the
+  call with 409 `LocalPluginParentUnavailable`.
+- A CLR host ends when its input closes, so it ends with Mirage even when plug-in code runs on threads of its own.
+- A fresh CLR host starts from its runtime's verified host executable instead of a copy written for each call, so a
+  call no longer pays the first execution of a newly written executable (an on-access scan). Each call still copies
+  the plug-in assembly, its dependencies and symbols, but not the SDK.
+- A CLR host compile that fails at the Windows path limit (`CS1619`) names the length of the runtime cache path and
+  asks for a shorter project or cache path.
 
 ### Fixed
 
@@ -296,15 +309,17 @@ browser debugging socket did not open.`).
 - Shutdown does not wait for a stalled request body: a body without progress for 30 s is dropped, and accepted
   streaming requests are drained.
 - Mirage no longer ends with a V8 fatal error when a worker thread finishes a server logic, a CLR plug-in call, a
-  synchronous I/O bridge call or a metadata compile: a worker that has answered ends by itself, and is terminated only
-  when it is still running 30 s after it answered.
-- A CLR plug-in host counts as stopped only when its own exit is reported, waiting up to 30 s, not when it disappears
+  synchronous I/O bridge call or a metadata compile: a worker that has answered ends by itself. Any of these but a CLR
+  plug-in call's worker is terminated only when it is still running 30 s after it answered; a CLR plug-in call's
+  worker is never terminated: it ends once its host's exit is reported.
+- A CLR plug-in host counts as stopped only when its own exit is reported, waiting up to 120 s, not when it disappears
   within one second. A runtime or snapshot whose host is not verified stopped is kept and reported as
   `PLUGIN_CLR_CLEANUP` (`CLR host not verified stopped; runtime cache directory kept: <name>` or `…; snapshot kept:
-<name>`); the runtime directory is released once the system reports that host gone.
-- A snapshot file that another process still holds after its host exited is retried for up to 30 s (was 1 s) before
+<name>`); the runtime directory is released once the system reports no process with that host's PID.
+- A snapshot file that another process still holds after its host exited is retried for up to 120 s (was 1 s) before
   `PLUGIN_CLR_CLEANUP` is reported.
 - A CLR call past the plug-in depth limit starts no host.
+- A pooled CLR host that ends before it reads a call fails that call as `LocalPluginHostExited` at once.
 - An error on a running portal, administration or apps listener is recorded once per listener as a `LISTENER_ERROR`
   diagnostic (with `listener`) instead of ending the process.
 - A failed browser launch names the profile as in use only while the browser's lock file shows a live browser on this

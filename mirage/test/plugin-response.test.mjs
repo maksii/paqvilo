@@ -1,6 +1,5 @@
 // @test-kind unproven: local model of SDK response capture and isolation; the CLR scenarios are marked as having no native evidence.
 import test from 'node:test';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -293,7 +292,6 @@ else{var e=c.MessageName=="Retrieve"?(Entity)output["BusinessEntity"]:((EntityCo
         organizationId: '50000000-0000-0000-0000-000000000001',
         businessUnitId: '60000000-0000-0000-0000-000000000001',
       },
-      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
     });
     const caller = await prepareClrRuntime(descriptor('Caller')),
       responder = await prepareClrRuntime(descriptor('Results')),

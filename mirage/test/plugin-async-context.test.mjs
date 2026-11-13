@@ -15,7 +15,6 @@ import { serviceEndpointDelivery, remoteExecutionContext } from '../lib/datavers
 import { createScheduler, fixedClock } from '../lib/runtime-clock.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 
 const id = (n) => `10000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const sourceFrame = {
@@ -520,7 +519,6 @@ public sealed class SyncChild:IPlugin {public void Execute(IServiceProvider p){v
       sdkAssembly: path.basename(sdk),
       cacheRoot: path.join(root, 'cache'),
       persistentHost: true,
-      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
       serviceProfile: { userId: id(2), evidence: 'Invented async operation identity', grants: [] },
       context: { initiatingUserId: id(2), organizationId: id(2), businessUnitId: id(2) },
     });

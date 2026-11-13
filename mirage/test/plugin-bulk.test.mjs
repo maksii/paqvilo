@@ -1,6 +1,5 @@
 // @test-kind compatibility: Learn bulk operation messages: standard tables, one table per request, no 1000-record cap, atomic failure; the evidence file records nativeQualified false.
 import test from 'node:test';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr, retypeClrRuntime } from './fixtures/clr-sdk.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -170,7 +169,6 @@ public sealed class GuardChange:IPlugin {public void Execute(IServiceProvider se
         organizationId: '50000000-0000-0000-0000-000000000001',
         businessUnitId: '60000000-0000-0000-0000-000000000001',
       },
-      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
     });
     const base = {
       assemblyId: 'invented-bulk-grant',
@@ -301,7 +299,6 @@ public sealed class RejectUnexpected:IPlugin {public void Execute(IServiceProvid
         organizationId: '50000000-0000-0000-0000-000000000001',
         businessUnitId: '60000000-0000-0000-0000-000000000001',
       },
-      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
     });
     const steps = [],
       runtimes = new Map();

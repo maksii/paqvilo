@@ -1,19 +1,27 @@
-import { decodeClrMessage } from './plugin-clr-protocol.mjs';
+import { decodeClrMessage, hostExitFailure } from './plugin-clr-protocol.mjs';
 import { SANDBOX_WORKER_CRASH } from './plugin-fault.mjs';
 // The long-lived host of one prepared runtime. Several invocations may be in flight (a nested Execute enters while its
 // caller waits in an SDK call); every line carries its invocation id. A failing host fails every in-flight invocation.
 import { workerData } from 'node:worker_threads';
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
-const { port, signal, executable, parentProcessId, parentStartTicks } = workerData,
+const { port, signal, executable, parentProcessId } = workerData,
   flags = new Int32Array(signal);
 const active = new Map();
-let closed = false;
-const child = spawn(
-  executable,
-  ['--persistent', '--parent', String(parentProcessId), '--parent-start', String(parentStartTicks)],
-  { shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] },
-);
+let closed = false,
+  child;
+try {
+  child = spawn(executable, ['--persistent', '--parent', String(parentProcessId)], {
+    shell: false,
+    windowsHide: true,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+} catch (cause) {
+  // A start the system refuses outright throws here: no process exists, and the pool learns at once that it is gone.
+  send({ kind: 'host-exited', hostExitCode: null });
+  reportHostProcessExit(null);
+  throw cause;
+}
 function send(message) {
   port.postMessage(message);
   Atomics.store(flags, 0, 1);
@@ -46,7 +54,7 @@ child.on('error', () => {
   if (child.pid === undefined) reportHostProcessExit(null);
 });
 child.on('exit', (code) => {
-  stop({ ...crash, hostExitCode: code });
+  stop(hostExitFailure(code, crash));
   reportHostProcessExit(code);
 });
 // The host discards plug-in console output; anything else on stderr is drained, never a failure.

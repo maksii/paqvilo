@@ -17,8 +17,6 @@ import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const listen = (server) => new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const close = (server) => new Promise((resolve) => server.close(resolve));
-// Hang guard for the browser context's operations on a starved host. Every wait in this test still ends on its condition.
-const HANG_GUARD_MS = 120_000;
 
 test('standalone dev starts configured apps, opens the workbench and closes only owned processes', async (t) => {
   const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'code-app-dev-cli-')));
@@ -121,8 +119,6 @@ test('standalone dev starts configured apps, opens the workbench and closes only
     });
     browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
     const context = browser.contexts()[0];
-    context.setDefaultTimeout(HANG_GUARD_MS);
-    context.setDefaultNavigationTimeout(HANG_GUARD_MS);
     const page = context.pages()[0];
     // The dev command prints the administration address; its calls and a start path under /_sim use that origin.
     const admin = await output.waitFor(/^admin +(http:\/\/127\.0\.0\.1:\d+)/m, {

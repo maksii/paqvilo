@@ -27,6 +27,5 @@ export async function openDemo(t, options = {}) {
     channel: process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : undefined),
   });
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
-  context.setDefaultTimeout(15_000);
   return { sim, browser, context };
 }

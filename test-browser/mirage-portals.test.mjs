@@ -135,9 +135,6 @@ async function startPortals(t) {
     args: ['--disable-background-networking', '--disable-component-update'],
   });
   const context = await browser.newContext({ serviceWorkers: 'block', viewport: { width: 1400, height: 1000 } });
-  // Hang guard for a starved machine only: every wait below awaits its real state.
-  context.setDefaultTimeout(120_000);
-  context.setDefaultNavigationTimeout(120_000);
   const allowed = new Set([classicApp.url, enhancedApp.url, live.origin]);
   await context.route('**/*', (route) =>
     allowed.has(new URL(route.request().url()).origin) ? route.fallback() : route.abort(),

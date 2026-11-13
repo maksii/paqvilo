@@ -34,7 +34,6 @@ test('example uses the standalone organization and selected staff session', asyn
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
   t.after(() => browser.close());
   const page = await browser.newPage();
-  page.setDefaultTimeout(5000);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   const unauthorized = await page.request.get(`${origin}/_apps/code/invented-items/context`);

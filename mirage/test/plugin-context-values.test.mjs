@@ -1,6 +1,5 @@
 // @test-kind unproven: local CLR context and output model; no native capture is cited, and the evidence files record nativeQualified false.
 import test from 'node:test';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -134,7 +133,6 @@ test('Original external-event DLL receives typed snapshots after commit', { skip
     cacheRoot: path.join(root, 'cache'),
     serviceProfile: profile,
     context: { initiatingUserId: user, organizationId: user, businessUnitId: user },
-    timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
   });
   const step = {
     id: '30000000-0000-0000-0000-000000000001',
@@ -302,7 +300,6 @@ trace.Trace("Typed context stage {0} {1}",c.Stage,c.OwningExtension.Name);}}}`,
         organizationId: '50000000-0000-0000-0000-000000000001',
         businessUnitId: '60000000-0000-0000-0000-000000000001',
       },
-      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
     });
     const common = {
       enabled: true,
@@ -388,7 +385,6 @@ else{e["title"]="CLR changed";c.OutputParameters["postCustom"]="PostOperation cu
         organizationId: '50000000-0000-0000-0000-000000000001',
         businessUnitId: '60000000-0000-0000-0000-000000000001',
       },
-      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
     });
     const store = data(),
       notes = [];

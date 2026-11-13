@@ -1,16 +1,24 @@
-import { decodeClrMessage } from './plugin-clr-protocol.mjs';
+import { decodeClrMessage, hostExitFailure } from './plugin-clr-protocol.mjs';
 import { SANDBOX_WORKER_CRASH } from './plugin-fault.mjs';
 import { workerData } from 'node:worker_threads';
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
-const { port, signal, executable, input, timeout, parentProcessId, parentStartTicks } = workerData,
+const { port, signal, executable, input, timeout, parentProcessId } = workerData,
   flags = new Int32Array(signal);
-let complete = false;
-const child = spawn(executable, ['--parent', String(parentProcessId), '--parent-start', String(parentStartTicks)], {
-  shell: false,
-  windowsHide: true,
-  stdio: ['pipe', 'pipe', 'pipe'],
-});
+let complete = false,
+  child;
+try {
+  child = spawn(executable, ['--parent', String(parentProcessId)], {
+    shell: false,
+    windowsHide: true,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+} catch (cause) {
+  // A start the system refuses outright throws here: no process exists, and the main thread learns it at once.
+  send({ kind: 'failure', code: 'LocalPluginHostUnavailable', message: cause.message });
+  reportHostProcessExit(null);
+  throw cause;
+}
 child.on('spawn', () => send({ kind: 'owned-child', pid: child.pid }));
 function send(message) {
   port.postMessage(message);
@@ -40,12 +48,9 @@ child.on('error', (cause) => {
 });
 child.on('exit', (code) => {
   if (!complete)
-    finish({
-      kind: 'failure',
-      code: 'LocalPluginHostExited',
-      message: SANDBOX_WORKER_CRASH.message,
-      hostExitCode: code,
-    });
+    finish(
+      hostExitFailure(code, { kind: 'failure', code: 'LocalPluginHostExited', message: SANDBOX_WORKER_CRASH.message }),
+    );
   reportHostProcessExit(code);
 });
 // The host discards plug-in console output; anything else on stderr is drained, never a failure.

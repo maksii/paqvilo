@@ -6,7 +6,7 @@ import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { parseToolArgs } from './tool-options.mjs';
 import { chromium } from 'playwright-core';
-import { windowsLaunchOptions } from './lib/browser-launch.mjs';
+import { BROWSER_HANG_GUARD_MS, windowsLaunchOptions } from './lib/browser-launch.mjs';
 import { loadCatalogue, loadConfig } from '../lense/config.mjs';
 import { miragePaths, discoveries, samePath } from '../lense/commands/mirage.mjs';
 import { createSimulator } from './server.mjs';
@@ -40,6 +40,7 @@ function captureLaunchOptions(channel, port, platform = process.platform) {
   const options = windowsLaunchOptions(
     {
       headless: true,
+      timeout: BROWSER_HANG_GUARD_MS,
       ...(channel !== 'chromium' ? { channel } : {}),
       args: [`--remote-debugging-port=${port}`],
     },

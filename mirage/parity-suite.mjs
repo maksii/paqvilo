@@ -2954,8 +2954,8 @@ export function createHttpDriver({ origin, identity = 'anonymous', cookie } = {}
  */
 export async function openOwnedBrowser({ channel, headless = true, fulfil = [] } = {}) {
   const { chromium } = await import('playwright-core');
-  const { browserLaunchOptions } = await import('./lib/browser-launch.mjs');
-  const browser = await chromium.launch(browserLaunchOptions({ channel, headless }));
+  const { BROWSER_HANG_GUARD_MS, browserLaunchOptions } = await import('./lib/browser-launch.mjs');
+  const browser = await chromium.launch(browserLaunchOptions({ channel, headless, timeout: BROWSER_HANG_GUARD_MS }));
   const pageDriver = (origin, identity, { guard: driverGuard = 'route', cookie } = {}) => {
     const base = new URL(origin);
     const origins = [base.origin];
@@ -3324,32 +3324,33 @@ export async function startIsolatedMirage({
   await fs.mkdir(workDir, { recursive: true });
   const workspace = await fs.mkdtemp(path.join(workDir, 'local-'));
   const stateFile = path.join(workspace, 'state.json');
-  if (baselineState) {
-    await fs.copyFile(baselineState, stateFile);
-    try {
-      await fs.cp(path.join(path.dirname(path.resolve(baselineState)), 'assets'), path.join(workspace, 'assets'), {
-        recursive: true,
-      });
-    } catch (error) {
-      if (error.code !== 'ENOENT') throw error;
-    }
-  }
-  solutionRoots ??= await discoverSolutionRoots(sourceDir);
-  // Catalogue (--site/--env) runs pass the site's mirage settings like `mirage/cli.mjs serve`
-  // does: its solution order and its observed behaviour (sign-in path, inner errors, ...).
-  const app = await createSimulator({
-    sourceDir,
-    stateFile,
-    solutionRoots,
-    dataPacks,
-    ...(solutionOrder ? { solutionOrder } : {}),
-    ...(observed ? { observed } : {}),
-    origin,
-    watch: false,
-    port: 0,
-    ...(deploymentProfile ? { deploymentProfile } : {}),
-  });
+  let app = null;
   try {
+    if (baselineState) {
+      await fs.copyFile(baselineState, stateFile);
+      try {
+        await fs.cp(path.join(path.dirname(path.resolve(baselineState)), 'assets'), path.join(workspace, 'assets'), {
+          recursive: true,
+        });
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+    }
+    solutionRoots ??= await discoverSolutionRoots(sourceDir);
+    // Catalogue (--site/--env) runs pass the site's mirage settings like `mirage/cli.mjs serve`
+    // does: its solution order and its observed behaviour (sign-in path, inner errors, ...).
+    app = await createSimulator({
+      sourceDir,
+      stateFile,
+      solutionRoots,
+      dataPacks,
+      ...(solutionOrder ? { solutionOrder } : {}),
+      ...(observed ? { observed } : {}),
+      origin,
+      watch: false,
+      port: 0,
+      ...(deploymentProfile ? { deploymentProfile } : {}),
+    });
     if (preset) await app.applyPreset(preset);
     const response = await fetch(app.url + '/__sim/api/config', {
       method: 'PATCH',
@@ -3358,7 +3359,9 @@ export async function startIsolatedMirage({
     });
     if (!response.ok) throw new Error(`Local runtime configuration failed (${response.status}).`);
   } catch (error) {
-    await app.close();
+    // Nothing owns the runtime or its workspace until this function returns them.
+    await app?.close().catch(() => {});
+    await fs.rm(workspace, { recursive: true, force: true }).catch(() => {});
     throw error;
   }
   return {

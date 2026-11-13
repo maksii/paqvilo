@@ -7,7 +7,6 @@ import os from 'node:os';
 import { DataStore } from '../lib/data.mjs';
 import { prepareClrRuntime, dispatchSdkCall } from '../lib/plugin-clr.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { install as installCustomApis } from '../lib/dataverse-customapi.mjs';
@@ -291,12 +290,7 @@ test(
         cacheRoot: path.join(root, 'cache'),
         serviceProfile: profile,
         context: { initiatingUserId: user, organizationId: user, businessUnitId: user },
-        timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
       };
-    // A CLR deadline includes the plug-ins its SDK calls start, each possibly on a cold host. Budget each type for its
-    // own call graph (as plugin-sdk-create-id.test.mjs does): the Caller's Delete runs three observers and up to two
-    // Leaf creates; an observer's stage 20/40 Create runs one Leaf.
-    const nestedInvocations = { Caller: 5, DeleteObserver: 1, Leaf: 0 };
     const runtimeByType = new Map();
     for (const type of ['Caller', 'DeleteObserver', 'Leaf'])
       runtimeByType.set(
@@ -304,7 +298,6 @@ test(
         await prepareClrRuntime({
           ...descriptor,
           typeName: 'Invented.' + type,
-          timeoutMs: ORDINARY_CLR_TIMEOUT_MS * (nestedInvocations[type] + 1),
         }),
       );
     let index = 0;

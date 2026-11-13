@@ -17,7 +17,6 @@ import { startSetupServer } from '../lense/setup/server.mjs';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 
 const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
-const HANG_GUARD_MS = 120_000; // hang guard only
 const root = fileURLToPath(new URL('../', import.meta.url));
 // Keep the nominal portal origin occupied while each preview asks the runtime to
 // bind its own ephemeral port. This exercises allocation without a probe-close race.
@@ -106,7 +105,7 @@ test('quick setup creates a project from a found export, starts, opens and stops
   assert.equal((await fetch(website)).status, 200, 'the opened website answers');
 
   await page.locator('#quick-run').getByRole('button', { name: 'Stop' }).click();
-  await page.locator('#quick-run').getByRole('button', { name: 'Start preview' }).waitFor({ timeout: HANG_GUARD_MS });
+  await page.locator('#quick-run').getByRole('button', { name: 'Start preview' }).waitFor();
   await assert.rejects(fetch(website), /fetch failed/, 'the stopped preview no longer answers');
   assert.deepEqual(errors, []);
 });
@@ -171,6 +170,6 @@ test('All settings creates a project from what to run and the found exports, and
   assert.equal((await fetch(website)).status, 200);
   assert.match(await run.innerText(), /Dataverse Web API for your scripts and tests/);
   await run.getByRole('button', { name: 'Stop' }).click();
-  await run.getByRole('button', { name: 'Start preview' }).waitFor({ timeout: HANG_GUARD_MS });
+  await run.getByRole('button', { name: 'Start preview' }).waitFor();
   assert.deepEqual(errors, []);
 });

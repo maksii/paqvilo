@@ -9,7 +9,6 @@ import { localOrganizationService, sdkValueToRecord } from '../lib/local-organiz
 import { dispatchSdkCall, recordToSdkEntity, prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
 import { builtInKey } from '../lib/dataverse-elastic.mjs';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
@@ -174,7 +173,6 @@ var after=((RetrieveResponse)s.Execute(request)).Entity.GetAttributeValue<string
       cacheRoot: path.join(root, '.paqvilo/cache'),
       serviceProfile: profile,
       context: { initiatingUserId: user, organizationId: user, businessUnitId: user },
-      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
     });
     const store = fixture(),
       step = {

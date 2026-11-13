@@ -14,8 +14,6 @@ import { createFixture } from '../test/fixture.mjs';
 import { freeDebugPort } from './helpers/debug-port.mjs';
 import { childStdioGate, assertChildStdioDrain } from './helpers/child-stdio-gate.mjs';
 
-const HANG_GUARD_MS = 120_000; // hang guard only
-
 test('workspace task drains independent fixtures after Mirage stop fails and retains its work', async (t) => {
   const work = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-workspace-drain-'));
   t.after(() => fs.rm(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
@@ -100,7 +98,7 @@ test('empty-project debugger task matches the actual local development ready lin
   const browser = await run.attach();
   const page = browser.contexts()[0].pages()[0];
   assert.ok(page, 'debugger reuses the browser opened by development');
-  await page.waitForURL(/^http:\/\/127\.0\.0\.1:\d+/, { timeout: HANG_GUARD_MS });
+  await page.waitForURL(/^http:\/\/127\.0\.0\.1:\d+/);
   const response = await page.request.get(page.url());
   assert.equal(response.status(), 200);
   const status = await page.request.get(new URL('/_sim/', page.url()).href);

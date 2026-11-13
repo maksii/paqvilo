@@ -8,8 +8,6 @@ import { chromium } from 'playwright-core';
 import { launchCaptureBrowser } from '../capture-shell.mjs';
 import { browserChannel } from '../lib/browser-launch.mjs';
 
-const HANG_GUARD_MS = 120_000; // hang guard only: Playwright's 30 s default fails a loaded machine
-
 test('the capture browser starts anonymous, with Edge implicit sign-in disabled on Windows', async () => {
   const channel = browserChannel();
   const owned = await launchCaptureBrowser(channel);
@@ -17,8 +15,6 @@ test('the capture browser starts anonymous, with Edge implicit sign-in disabled 
   try {
     browser = await chromium.connectOverCDP(owned.cdp);
     const context = browser.contexts()[0];
-    context.setDefaultTimeout(HANG_GUARD_MS);
-    context.setDefaultNavigationTimeout(HANG_GUARD_MS);
     assert.deepEqual(await context.cookies(), []);
     // Implicit sign-in is an Edge-on-Windows feature. Edge's version page shows the browser process's actual
     // command line (CDP's getBrowserCommandLine needs --enable-automation, which the capture launch omits).

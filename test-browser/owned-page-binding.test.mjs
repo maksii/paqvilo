@@ -14,8 +14,6 @@ import { comparison } from '../lense/panel.mjs';
 import { freeDebugPort } from './helpers/debug-port.mjs';
 import { drainFixture, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 
-const HANG_GUARD_MS = 120_000; // hang guard only: Playwright's 30 s default fails a loaded machine
-
 const server = http.createServer((request, response) =>
   response.writeHead(200, { 'content-type': 'text/html' }).end('<!doctype html><h1>Invented</h1>'),
 );
@@ -122,7 +120,7 @@ test('persistent binding fixture releases its browser and profile after initial 
 test('owned raw binding survives independent persistent-browser CDP owners and observers', async (t) => {
   const f = await persistentFixture(t);
   const helper = new URL('../lense/owned-page-binding.mjs', import.meta.url).href;
-  const child = `import{chromium}from'playwright-core';import{createOwnedPageBindings}from'${helper}';const b=await chromium.connectOverCDP('http://127.0.0.1:${f.port}');const c=b.contexts()[0];c.setDefaultTimeout(${HANG_GUARD_MS});c.setDefaultNavigationTimeout(${HANG_GUARD_MS});let observer;try{const p=await c.newPage();await p.goto('${f.origin}/attached');const bridge=await createOwnedPageBindings(p,{origin:'${f.origin}',bindings:{inventedEcho:(_source,v)=>({echo:v})}});const before=await p.evaluate(()=>inventedEcho('before'));observer=await chromium.connectOverCDP('http://127.0.0.1:${f.port}');const during=await p.evaluate(()=>inventedEcho('during'));await observer.close();observer=null;const after=await p.evaluate(()=>inventedEcho('after'));await p.reload();const navigation=await p.evaluate(()=>inventedEcho('navigation'));await bridge.close();const closed=await p.evaluate(()=>typeof inventedEcho);await p.reload();const retired=await p.evaluate(()=>typeof inventedEcho);console.log(JSON.stringify({before,during,after,navigation,closed,retired}));await p.close()}finally{await observer?.close();await b.close()}`;
+  const child = `import{chromium}from'playwright-core';import{createOwnedPageBindings}from'${helper}';const b=await chromium.connectOverCDP('http://127.0.0.1:${f.port}');const c=b.contexts()[0];let observer;try{const p=await c.newPage();await p.goto('${f.origin}/attached');const bridge=await createOwnedPageBindings(p,{origin:'${f.origin}',bindings:{inventedEcho:(_source,v)=>({echo:v})}});const before=await p.evaluate(()=>inventedEcho('before'));observer=await chromium.connectOverCDP('http://127.0.0.1:${f.port}');const during=await p.evaluate(()=>inventedEcho('during'));await observer.close();observer=null;const after=await p.evaluate(()=>inventedEcho('after'));await p.reload();const navigation=await p.evaluate(()=>inventedEcho('navigation'));await bridge.close();const closed=await p.evaluate(()=>typeof inventedEcho);await p.reload();const retired=await p.evaluate(()=>typeof inventedEcho);console.log(JSON.stringify({before,during,after,navigation,closed,retired}));await p.close()}finally{await observer?.close();await b.close()}`;
   const result = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', child], {
     windowsHide: true,
     signal: t.signal,

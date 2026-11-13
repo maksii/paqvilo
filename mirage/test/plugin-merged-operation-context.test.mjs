@@ -11,7 +11,6 @@ import { prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { fixedClock, createScheduler } from '../lib/runtime-clock.mjs';
 import { attachClrSteps } from './fixtures/plugin-pipeline.mjs';
 import { CLR_SKIP, clrSdk, compileClr, retypeClrRuntime } from './fixtures/clr-sdk.mjs';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { pooledClrLifecycle } from './fixtures/pooled-clr-lifecycle.mjs';
 
 const id = (n) => `10000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -203,7 +202,6 @@ test(
       sdkAssembly: path.basename(sdk),
       cacheRoot: path.join(root, 'cache'),
       persistentHost: true,
-      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
       serviceProfile: { userId: id(2), evidence: 'Invented merged metadata observer', grants: [] },
       context: { initiatingUserId: id(2), organizationId: id(2), businessUnitId: id(2) },
     });

@@ -11,7 +11,6 @@ import { dataverseError } from '../lib/dataverse-odata.mjs';
 import { prepareClrRuntime, closeClrHostPool } from '../lib/plugin-clr.mjs';
 import { attachClrSteps } from './fixtures/plugin-pipeline.mjs';
 import { CLR_SKIP, clrSdk, compileClr, retypeClrRuntime } from './fixtures/clr-sdk.mjs';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 
 const user = '10000000-0000-4000-8000-000000000092';
 
@@ -39,7 +38,6 @@ test(
       sdkRoot: path.dirname(sdk),
       sdkAssembly: path.basename(sdk),
       cacheRoot: path.join(root, 'cache'),
-      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
       serviceProfile: { userId: user, evidence: 'Invented crash grants', grants: [] },
       context: { initiatingUserId: user, organizationId: user, businessUnitId: user },
     });

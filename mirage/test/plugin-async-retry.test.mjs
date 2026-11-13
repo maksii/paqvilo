@@ -11,7 +11,6 @@ import { pluginCatalogue } from '../lib/exported-plugins.mjs';
 import { createScheduler, fixedClock } from '../lib/runtime-clock.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 
 const user = '10000000-0000-4000-8000-000000000001';
 const stepId = '10000000-0000-4000-8000-000000000002';
@@ -71,7 +70,6 @@ if(mode=="always"||attempt<3)throw new InvalidPluginExecutionException(Operation
     sdkRoot: path.dirname(sdk),
     sdkAssembly: path.basename(sdk),
     cacheRoot: path.join(root, 'cache'),
-    timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
     persistentHost: true,
     serviceProfile: {
       userId: user,

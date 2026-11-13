@@ -389,10 +389,7 @@ async function capturePage(label, target, options) {
   observation.title = safeMessage(await page.title());
   observation.formShape = await formShapeOf(page);
   observation.formShapeSha256 = sha(JSON.stringify(observation.formShape));
-  const bodyText = await page
-    .locator('body')
-    .innerText()
-    .catch(() => '');
+  const bodyText = await page.evaluate(() => document.body?.innerText ?? '').catch(() => '');
   observation.blockedPage =
     /(?:access denied|permission denied|you (?:do not|don.t) have permission|portal rendering needs attention|sign in to (?:continue|your account))/i.test(
       bodyText,

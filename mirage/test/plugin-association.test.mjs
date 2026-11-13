@@ -1,6 +1,5 @@
 // @test-kind unproven: local model of the SDK/HTTP association pipeline with compiled invented DLLs; no native capture exists for it.
 import test from 'node:test';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr, retypeClrRuntime } from './fixtures/clr-sdk.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -373,7 +372,6 @@ test(
       cacheRoot: path.join(temporary, 'cache'),
       serviceProfile: profile,
       context: { initiatingUserId: user, organizationId: user, businessUnitId: user },
-      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
     });
     const state = data().snapshot();
     state.tables.root.push({ rootid: otherRoot });
@@ -740,15 +738,12 @@ public sealed class Observer:IPlugin {public void Execute(IServiceProvider servi
           organizationId: '50000000-0000-0000-0000-000000000001',
           businessUnitId: '60000000-0000-0000-0000-000000000001',
         },
-        timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
       });
-      // A CLR deadline includes the plug-ins its SDK calls start: the Driver's three relationship calls run six
-      // Observer invocations, each possibly on a cold host (budgeted per call graph, as in plugin-sdk-create-id).
+      // The Driver's three relationship calls run six Observer invocations.
       runtimes.set(
         id,
         retypeClrRuntime(prepared, {
           typeName: step.typeName,
-          timeoutMs: ORDINARY_CLR_TIMEOUT_MS * (type === 'Driver' ? 7 : 1),
         }),
       );
     };

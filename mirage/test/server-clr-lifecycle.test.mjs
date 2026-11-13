@@ -7,7 +7,6 @@ import { pluginFixture, pluginId } from './plugin-fixture.mjs';
 import { createSimulator } from '../server.mjs';
 import { clrHostPoolStatus } from '../lib/plugin-clr.mjs';
 import { ownedFixture } from '../testing/owned-fixture.mjs';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 
 test(
@@ -37,7 +36,6 @@ test(
         sdkAssembly: path.basename(sdk),
         cacheRoot: path.join(fixture.dir, 'cache'),
         persistentHost: true,
-        timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
         context: { initiatingUserId: user, organizationId: user, businessUnitId: user },
         serviceProfile: { userId: user, evidence: 'Invented owned lifecycle fixture', grants: [] },
       };

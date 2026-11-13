@@ -14,7 +14,6 @@ import path from 'node:path';
 import os from 'node:os';
 import { prepareClrRuntime, closeClrHostPool } from '../lib/plugin-clr.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { bypassStepIds, pluginBypassOwnership, pluginStepBypassed } from '../lib/plugin-bypass.mjs';
 import { platformValues } from '../lib/platform-settings.mjs';
 
@@ -533,7 +532,6 @@ var change=new Entity("widget",new Guid("${second}"));change["title"]="After";se
       cacheRoot: path.join(directory, 'cache'),
       serviceProfile: profile,
       context: { initiatingUserId: user, organizationId: user, businessUnitId: user },
-      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
     });
     t.after(() => closeClrHostPool({ runtime }));
     const store = fixture();

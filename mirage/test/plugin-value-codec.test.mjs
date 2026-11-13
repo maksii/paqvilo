@@ -16,7 +16,6 @@ import { pluginValueCases } from './fixtures/plugin-value-cases.mjs';
 import { attachClrSteps } from './fixtures/plugin-pipeline.mjs';
 import { prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { CLR_SKIP, clrSdk, compileClr, retypeClrRuntime } from './fixtures/clr-sdk.mjs';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 const id = '11111111-1111-4111-8111-111111111111',
   other = '22222222-2222-4222-8222-222222222222';
 function storeOf() {
@@ -325,7 +324,6 @@ test(
       cacheRoot: path.join(root, 'cache'),
       // Semantic matrix failures must reach their codec assertion after nested
       // original SDK observer calls; intentional deadline cases live elsewhere.
-      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
       serviceProfile: {
         userId: id,
         evidence: 'Invented finite SDK type matrix',

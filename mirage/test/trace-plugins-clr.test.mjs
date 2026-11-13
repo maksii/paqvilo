@@ -8,7 +8,6 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
@@ -65,7 +64,6 @@ test(
         organizationId: '50000000-0000-4000-8000-0000000000c1',
         businessUnitId: '60000000-0000-4000-8000-0000000000c1',
       },
-      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
     });
 
     const state = emptyState();
@@ -166,7 +164,6 @@ test(
         organizationId: '50000000-0000-4000-8000-0000000000c2',
         businessUnitId: UNIT,
       },
-      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
     });
     const state = emptyState();
     state.mappings.x_item = {

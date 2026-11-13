@@ -1,6 +1,5 @@
 // @test-kind compatibility: Learn SDK lookup columns are EntityReference values; polymorphic inference is not checked; the evidence file records nativeQualified false.
 import test from 'node:test';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -127,7 +126,6 @@ namespace Invented {public sealed class LookupValues:IPlugin {static void Check(
           evidence: 'Invented source monomorphic self-lookup/relationship',
           grants: [{ entity: 'widget', operations: ['read', 'associate', 'disassociate', 'update'] }],
         },
-        timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
       }),
       steps = [20, 40].map((stage, i) => ({
         id: '30000000-0000-0000-0000-' + String(i + 1).padStart(12, '0'),

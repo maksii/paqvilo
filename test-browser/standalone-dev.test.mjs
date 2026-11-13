@@ -12,7 +12,6 @@ import { chromium } from 'playwright-core';
 import { browserChannel } from '../mirage/lib/browser-launch.mjs';
 import { freeDebugPort } from './helpers/debug-port.mjs';
 
-const HANG_GUARD_MS = 120_000; // hang guard only: Playwright's 30 s default fails a loaded machine
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url)),
   execute = promisify(execFile);
 const APP = '77777777-7777-4777-8777-777777777777';
@@ -131,8 +130,6 @@ test('source-only public dev closes owned browser/runtime, preserves reused runt
     const browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
     browsers.push(browser);
     const [context] = browser.contexts();
-    context.setDefaultTimeout(HANG_GUARD_MS);
-    context.setDefaultNavigationTimeout(HANG_GUARD_MS);
     const page = context.pages()[0] ?? (await context.waitForEvent('page'));
     await page.waitForURL((address) => address.href.startsWith(url + '/main.aspx'));
     await page.getByLabel('Application', { exact: true }).waitFor();

@@ -490,10 +490,29 @@ async function liveSide({
   };
 }
 
+/**
+ * Opens the capture browser of an isolated Mirage and reads its state summary. Nothing else owns that Mirage yet, so a
+ * failure here closes the browser, stops the Mirage and removes its workspace before the failure is reported.
+ */
+async function openSideBrowser(owned, launch) {
+  let browser = null;
+  try {
+    browser = await launch();
+    const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+    const status = await (await loopbackFetch(owned.url + '/__sim/api/state?summary=1')).json();
+    return { browser, context, status };
+  } catch (error) {
+    await browser?.close().catch(() => {});
+    await owned.app.close().catch(() => {});
+    if (owned.workspace) await fs.rm(owned.workspace, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
+}
+
 async function mirageSide({ matrix, config, site, env, source, state, headed, workDir }) {
   const { startIsolatedMirage, createIdentityController } = await import('./parity-suite.mjs');
   const { chromium } = await import('playwright-core');
-  const { browserLaunchOptions } = await import('./lib/browser-launch.mjs');
+  const { BROWSER_HANG_GUARD_MS, browserLaunchOptions } = await import('./lib/browser-launch.mjs');
   let catalogue = null;
   if (site) {
     const { loadConfig } = await import('../lense/config.mjs');
@@ -524,11 +543,15 @@ async function mirageSide({ matrix, config, site, env, source, state, headed, wo
   const identity = createIdentityController(owned.url);
   // Headless Chromium hides scrollbars (width 0) while the live capture's headed Edge has a 15 px one, which shows as
   // body padding-right when a dialog opens: keep the scrollbar so both sides measure the same.
-  const browser = await chromium.launch(
-    browserLaunchOptions({ headless: !headed, ignoreDefaultArgs: ['--hide-scrollbars'] }),
+  const { browser, context, status } = await openSideBrowser(owned, () =>
+    chromium.launch(
+      browserLaunchOptions({
+        headless: !headed,
+        timeout: BROWSER_HANG_GUARD_MS,
+        ignoreDefaultArgs: ['--hide-scrollbars'],
+      }),
+    ),
   );
-  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
-  const status = await (await loopbackFetch(owned.url + '/__sim/api/state?summary=1')).json();
   const csrf = () => owned.app.state().csrf;
   // The live portal shows the signed-in tester's own name, parent account and base roles; the project declares those
   // observed values (`matrix.mirage.identity.contact`) and they are written onto the mirrored contact after every reset.
@@ -977,5 +1000,5 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   });
 }
 
-// Test seam: the live side with its injected bridge, evidence receiver and browser-session write net.
-export const __testing = { liveSide, openCaptureWriteNet };
+// Test seam: the live side with its injected bridge, evidence receiver and browser-session write net, and the Mirage side.
+export const __testing = { liveSide, openCaptureWriteNet, mirageSide, openSideBrowser };

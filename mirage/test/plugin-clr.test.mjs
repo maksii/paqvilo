@@ -1,6 +1,5 @@
 // @test-kind contract: Paqvilo local CLR host and backend SDK dispatch: typed values, paging and grant predicates for compiled original DLLs
 import test from 'node:test';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr, retypeClrRuntime } from './fixtures/clr-sdk.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -260,7 +259,6 @@ namespace Invented {public sealed class Original:IPlugin {public void Execute(IS
         organizationId: '50000000-0000-0000-0000-000000000001',
         businessUnitId: '60000000-0000-0000-0000-000000000001',
       },
-      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
     });
     const store = data(),
       notes = [],
@@ -546,7 +544,7 @@ namespace Invented {public sealed class Original:IPlugin {public void Execute(IS
             sdkAssemblySha256: await hash(sdk),
             runtimeProvenance: runtime.provenance,
             asyncRuntimeProvenance: asyncRuntime.provenance,
-            fixtureTimeouts: { ordinaryMs: ORDINARY_CLR_TIMEOUT_MS, intentionalMs: 1500 },
+            fixtureTimeouts: { ordinaryMs: 120_000, intentionalMs: 1500 },
             ownedHosts: {
               started: starts.length,
               stopped: stops.length,

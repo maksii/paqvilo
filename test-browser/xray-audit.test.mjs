@@ -265,6 +265,7 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
         } catch (error) {
           row.status = 'failed';
           row.error = String(error.message).slice(0, 1500);
+          // The scenario has already failed: this bounds a best-effort diagnostic, so a hung page cannot hide the error.
           const fixtureSnapshot = await page
             .locator(':root')
             .evaluate(

@@ -1,6 +1,5 @@
 // @test-kind unproven: local model of named SDK Execute parameter contracts and rollback; the CLR scenario is marked as having no native evidence.
 import test from 'node:test';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -155,7 +154,6 @@ var deleted=(DeleteResponse)s.Execute(new DeleteRequest{Target=new EntityReferen
         organizationId: '50000000-0000-0000-0000-000000000001',
         businessUnitId: '60000000-0000-0000-0000-000000000001',
       },
-      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
     });
     const store = storeOf(),
       notes = [],

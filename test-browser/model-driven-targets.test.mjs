@@ -17,7 +17,6 @@ import { waitForChildOutput } from './helpers/child-readiness.mjs';
 
 const cli = fileURLToPath(new URL('../lense/cli.mjs', import.meta.url));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const HANG_GUARD_MS = 120_000; // hang guard only: Playwright's 30 s default fails a loaded machine
 
 async function modelTargetsFixture(t) {
   t.diagnostic('model-target phase: fixture');
@@ -154,16 +153,14 @@ async function modelTargetsFixture(t) {
     ),
   );
   let output = '';
-  const wait = async (predicate, label, timeout = HANG_GUARD_MS) => {
-    const start = Date.now();
-    while (Date.now() - start < timeout) {
+  const wait = async (predicate, label) => {
+    for (;;) {
       if (child?.exitCode !== null && child?.exitCode !== undefined)
         throw new Error(`${label}: owned CLI exited ${child.exitCode}: ${output}`);
       const value = await predicate();
       if (value) return value;
       await sleep(50);
     }
-    throw new Error(`${label}: exceeded ${timeout}ms: ${output}`);
   };
   child = spawn(
     process.execPath,
@@ -232,9 +229,6 @@ async function modelTargetsFixture(t) {
   t.diagnostic('model-target phase: owned CLI started');
   browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
   t.diagnostic('model-target phase: CDP connected');
-  const context = browser.contexts()[0];
-  context.setDefaultTimeout(HANG_GUARD_MS);
-  context.setDefaultNavigationTimeout(HANG_GUARD_MS);
   const page = await wait(
     () =>
       browser

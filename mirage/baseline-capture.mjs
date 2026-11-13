@@ -761,11 +761,13 @@ function redactHeaders(headers, origin = null) {
       // Files are inline payloads ({ name, mimeType, base64 }) or paths; with `accept` on the input only matching payloads
       // are sent, one unless the input takes several.
       const input = q(step.upload);
-      const accept = ((await input.getAttribute('accept').catch(() => '')) || '')
+      // One wait for the input, under the step's own timeout: the reads below then find it at once.
+      await input.waitFor({ state: 'attached', timeout });
+      const accept = ((await input.getAttribute('accept', { timeout }).catch(() => '')) || '')
         .split(',')
         .map((item) => item.trim())
         .filter(Boolean);
-      const multiple = await input.evaluate((el) => Boolean(el.multiple)).catch(() => false);
+      const multiple = await input.evaluate((el) => Boolean(el.multiple), undefined, { timeout }).catch(() => false);
       const matches = (file) =>
         !accept.length ||
         accept.some((rule) => {
@@ -924,14 +926,7 @@ function redactHeaders(headers, origin = null) {
       )
         summary.problems.push('unexpected element present: ' + selector);
     for (const text of expect.text || [])
-      if (
-        !(
-          await owned
-            .locator('body')
-            .innerText()
-            .catch(() => '')
-        ).includes(text)
-      )
+      if (!(await owned.evaluate(() => document.body?.innerText ?? '').catch(() => '')).includes(text))
         summary.problems.push('expected text missing: ' + JSON.stringify(text));
     if (expect.urlPattern && !new RegExp(expect.urlPattern).test(url.pathname + url.search))
       summary.problems.push('url does not match expectation');

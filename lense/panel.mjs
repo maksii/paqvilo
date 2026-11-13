@@ -70,6 +70,8 @@ const MAX_DIFF_BYTES = 3 * 1024 * 1024;
 const MAX_API_BYTES = 32 * 1024;
 // Hang guard for one read of the local Mirage: it ends a request that never answers. It is not an expected answer time.
 const MIRAGE_READ_GUARD_MS = 60_000;
+// Hang guard for opening a launched scenario runtime's first document; matches the launch write's 120 s.
+const SCENARIO_NAVIGATION_GUARD_MS = 120_000;
 const BINARY_EXT = /\.(?:png|jpe?g|gif|ico|webp|woff2?|ttf|eot|otf|pdf|zip|mp4|mp3)$/i;
 
 const GROUP_OF = {
@@ -2066,7 +2068,10 @@ export function enablePanel(context, session, opts = {}) {
         setTimeout(async () => {
           if (disposed || page.isClosed()) return;
           try {
-            await page.goto(destination.origin + '/', { waitUntil: 'domcontentloaded' });
+            await page.goto(destination.origin + '/', {
+              waitUntil: 'domcontentloaded',
+              timeout: SCENARIO_NAVIGATION_GUARD_MS,
+            });
             if (!disposed && !page.isClosed())
               await startSessionFlow(page, opened.contactId, { origin: destination.origin, returnPath });
           } catch (error) {

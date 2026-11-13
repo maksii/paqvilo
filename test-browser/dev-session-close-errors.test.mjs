@@ -24,8 +24,6 @@ import { childOutput } from './helpers/child-output.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 import { freeDebugPort } from './helpers/debug-port.mjs';
 
-const HANG_GUARD_MS = 120_000; // hang guard only: Playwright's 30 s default fails a loaded machine
-
 async function fixture(t) {
   const owner = ownedFixture(t);
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-dev-close-'));
@@ -116,8 +114,6 @@ test('owned browser isolates real wire timeouts in tabs and popups, cancellation
   owner.add(() => browser.close());
   const context = browser.contexts()[0],
     logs = [];
-  context.setDefaultTimeout(HANG_GUARD_MS);
-  context.setDefaultNavigationTimeout(HANG_GUARD_MS);
   const stopped = Promise.withResolvers();
   const runtime = await startDevSessions(context, selection, {
     attached: owned.attached,
@@ -486,8 +482,6 @@ test('actual development CLI exits nonzero after agent filesystem cleanup failur
   // browser launched above. Discovery credentials never enter a network call.
   remoteBrowser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
   const remoteContext = remoteBrowser.contexts()[0];
-  remoteContext.setDefaultTimeout(HANG_GUARD_MS);
-  remoteContext.setDefaultNavigationTimeout(HANG_GUARD_MS);
   const ownedPage = remoteContext.pages()[0];
   await ownedPage.waitForFunction((expected) => location.origin === expected, origin);
   const protocol = await remoteBrowser.newBrowserCDPSession();

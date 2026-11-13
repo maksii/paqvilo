@@ -35,7 +35,6 @@ public static class PaqviloPluginHost {
  static long Register(InvocationLease lease,PendingCall call){lock(Calls){if(lease.IsClosed)return 0;Calls[++NextCall]=call;return NextCall;}}
  static void Answer(Dictionary<string,object> answer){PendingCall call;var id=Convert.ToInt64(Get(answer,"call",0),CultureInfo.InvariantCulture);lock(Calls){if(!Calls.TryGetValue(id,out call))return;Calls.Remove(id);}call.Answer=answer;call.Done.Set();}
  static void ReleaseCalls(InvocationLease lease){List<PendingCall> open;lock(Calls){var ids=Calls.Where(p=>p.Value.Lease==lease).Select(p=>p.Key).ToList();open=ids.Select(id=>Calls[id]).ToList();foreach(var id in ids)Calls.Remove(id);}foreach(var call in open)call.Done.Set();}
- static Timer ParentWatcher;
  static Dictionary<string,object> Map(object value){return value as Dictionary<string,object> ?? new Dictionary<string,object>();}
  static object Get(Dictionary<string,object> map,string key,object fallback=null){object value;return map.TryGetValue(key,out value)?value:fallback;}
  static string Str(Dictionary<string,object> map,string key,string fallback=""){return Convert.ToString(Get(map,key,fallback),CultureInfo.InvariantCulture);}
@@ -392,21 +391,28 @@ public static class PaqviloPluginHost {
   public void Disassociate(string entityName,Guid entityId,Relationship relationship,EntityReferenceCollection relatedEntities){Call("Disassociate",new object[]{entityName,entityId,relationship,relatedEntities});}
   public EntityCollection RetrieveMultiple(QueryBase query){return (EntityCollection)Call("RetrieveMultiple",new object[]{query});}
  }
+ // PROCESS_BASIC_INFORMATION: pointer-sized fields on both 32-bit and 64-bit hosts.
+ [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]struct BasicInformation{public IntPtr ExitStatus,PebBaseAddress,AffinityMask,BasePriority,UniqueProcessId,InheritedFromUniqueProcessId;}
+ [System.Runtime.InteropServices.DllImport("ntdll.dll")]static extern int NtQueryInformationProcess(IntPtr process,int informationClass,ref BasicInformation information,int length,out int returned);
+ // The PID that created this host (ProcessBasicInformation): independent of wall-clock creation times.
+ static long CreatorId(){var info=new BasicInformation();int returned;using(var self=Process.GetCurrentProcess())return NtQueryInformationProcess(self.Handle,0,ref info,System.Runtime.InteropServices.Marshal.SizeOf(typeof(BasicInformation)),out returned)==0?info.InheritedFromUniqueProcessId.ToInt64():-1;}
  static EntityImageCollection Images(object value){var result=new EntityImageCollection();foreach(var pair in Map(value))result[pair.Key]=(Entity)Decode(pair.Value);return result;}
  public static int Main(string[] args){
-  // An owned host watches the exact parent process incarnation, not just a PID.
-  // This also stops CPU-bound plugin code after abrupt Node/process termination.
+  // An owned host binds a running parent process, not just a PID, and exits when its input closes: only the parent holds
+  // the input's write end, so an abrupt parent death ends the host even while plugin threads still run.
   if(args.Length==2&&args[0]=="--process-start"){int id;if(!Int32.TryParse(args[1],out id)||id<=0)return 73;try{using(var parent=Process.GetProcessById(id))Console.Write(parent.StartTime.ToUniversalTime().Ticks.ToString(CultureInfo.InvariantCulture));return 0;}catch{return 73;}}
-  bool persistent=args.Length>0&&args[0]=="--persistent";int offset=persistent?1:0;
-  if(args.Length!=offset+4||args[offset]!="--parent"||args[offset+2]!="--parent-start")return 73;
-  int parentId;long parentStart;if(!Int32.TryParse(args[offset+1],out parentId)||parentId<=0||!Int64.TryParse(args[offset+3],out parentStart)||parentStart<=0)return 73;
-  Process owner;try{owner=Process.GetProcessById(parentId);if(owner.StartTime.ToUniversalTime().Ticks!=parentStart||owner.HasExited)return 74;}catch{return 74;}
-  ParentWatcher=new Timer(_=>{try{if(owner.HasExited||owner.StartTime.ToUniversalTime().Ticks!=parentStart)Environment.Exit(74);}catch{Environment.Exit(74);}},null,100,100);
+  // `--parent <pid>` alone: the PID must be the process that created this host. `--parent-start <ticks>` names the
+  // parent by its start time instead. Either way the parent must still be running.
+  bool persistent=args.Length>0&&args[0]=="--persistent";int offset=persistent?1:0;bool named=args.Length==offset+4&&args[offset+2]=="--parent-start";
+  if((args.Length!=offset+2&&!named)||args[offset]!="--parent")return 73;
+  int parentId;long parentStart=0;if(!Int32.TryParse(args[offset+1],out parentId)||parentId<=0||(named&&(!Int64.TryParse(args[offset+3],out parentStart)||parentStart<=0)))return 73;
+  try{using(var owner=Process.GetProcessById(parentId)){if(named?owner.StartTime.ToUniversalTime().Ticks!=parentStart:CreatorId()!=parentId)return 74;if(owner.HasExited)return 74;}}catch{return 74;}
   Input=new StreamReader(Console.OpenStandardInput(),new System.Text.UTF8Encoding(false));Output=new StreamWriter(Console.OpenStandardOutput(),new System.Text.UTF8Encoding(false));Console.SetOut(TextWriter.Null);Console.SetError(TextWriter.Null);
   SandboxCulture();
   // The reader routes SDK answers to their waiting callers and runs every invocation on its own thread, so a nested Execute
   // enters this process while its caller waits in an SDK call (native depth: nested steps run on the same worker process).
-  try{while(true){var line=Input.ReadLine();if(line==null)return 0;var message=Map(Json.DeserializeObject(line));if(Str(message,"kind")=="rpc-answer"){Answer(message);continue;}new Thread(()=>ExecuteLine(message)){IsBackground=true}.Start();}}finally{ParentWatcher.Dispose();owner.Dispose();}
+  // Exit, not return: a foreground thread the plug-in started would keep the process alive after Main returns.
+  while(true){var line=Input.ReadLine();if(line==null)Environment.Exit(0);var message=Map(Json.DeserializeObject(line));if(Str(message,"kind")=="rpc-answer"){Answer(message);continue;}new Thread(()=>ExecuteLine(message)){IsBackground=true}.Start();}
  }
  // The online sandbox runs plug-ins in en-US and UTC (native sandbox body.sandbox, both captures: culture and uiCulture en-US,
  // timeZone UTC, utcOffsetMinutes 0). Threads the plug-in starts inherit the default cultures.

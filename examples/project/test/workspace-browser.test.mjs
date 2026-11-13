@@ -119,7 +119,7 @@ test('custom workspaces search and page lookups, retain selections and edit rela
       .catch(async (cause) => {
         throw new Error(
           'Workspace did not become ready: ' +
-            (await page.locator('[data-status]').textContent()) +
+            (await page.locator('[data-status]').evaluateAll((nodes) => nodes[0]?.textContent ?? null)) +
             '; browser errors: ' +
             errors.join(', '),
           { cause },

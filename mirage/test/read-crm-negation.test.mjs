@@ -12,7 +12,6 @@ import { prepareClrRuntime, closeClrHostPool } from '../lib/plugin-clr.mjs';
 import { attachClrSteps } from './fixtures/plugin-pipeline.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 
 const id = (number) => `20000000-0000-0000-0000-${String(number).padStart(12, '0')}`;
 const identity = {
@@ -222,7 +221,6 @@ test(
       sdkRoot: path.dirname(sdk),
       sdkAssembly: path.basename(sdk),
       cacheRoot: path.join(root, 'cache'),
-      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
       persistentHost: true,
       context: { initiatingUserId: id(30), organizationId: id(30), businessUnitId: id(40) },
       serviceProfile: {

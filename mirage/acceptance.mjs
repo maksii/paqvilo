@@ -10,7 +10,7 @@ import { parseToolArgs } from './tool-options.mjs';
 import { assertToolOptions } from './tool-registry.mjs';
 import { createCapabilityRegistry } from './lib/capability-registry.mjs';
 import { chromium } from 'playwright-core';
-import { windowsLaunchOptions } from './lib/browser-launch.mjs';
+import { BROWSER_HANG_GUARD_MS, windowsLaunchOptions } from './lib/browser-launch.mjs';
 import { editRichText, assertRichText } from './lib/richtext-actions.mjs';
 import { reconcileSupersededRead, correlateNetworkConsole } from './lib/request-evidence.mjs';
 import { auditQuery } from './lib/audit-log.mjs';
@@ -325,6 +325,7 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
       windowsLaunchOptions({
         channel: channel === 'chromium' ? undefined : channel,
         headless: true,
+        timeout: BROWSER_HANG_GUARD_MS,
         args: ['--disable-background-networking', '--disable-component-update', '--disable-sync'],
         proxy: {
           server: `http://127.0.0.1:${blockingProxy.address().port}`,
@@ -341,7 +342,7 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
       if (!live || !cdpUrl)
         throw new Error('Live observations require --origin and the intended existing --cdp browser.');
       loopback(cdpUrl);
-      attachedBrowser = await chromium.connectOverCDP(cdpUrl);
+      attachedBrowser = await chromium.connectOverCDP(cdpUrl, { timeout: BROWSER_HANG_GUARD_MS });
       if (attachedBrowser.contexts().length !== 1) throw new Error('Use exactly one attached browser identity.');
       const context = attachedBrowser.contexts()[0];
       if (context.serviceWorkers().some((worker) => new URL(worker.url()).origin === live.origin))

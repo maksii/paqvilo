@@ -4,9 +4,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import net from 'node:net';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { chromium } from 'playwright-core';
+import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { browserWorkspace } from '../test/browser-workspace.mjs';
 import { DEFAULT_DISABLED_FEATURES, BACKPORTED_DISABLED_FEATURES } from '../test/browser-backport.mjs';
 
@@ -129,4 +132,98 @@ test('sanitized CLI fixture keeps loopback proxy arguments and real HTTP', async
   assert.equal(sanitized.args.includes('--proxy-server=http://127.0.0.1:1'), true);
   assert.equal(sanitized.args.includes('--proxy-bypass-list=127.0.0.1;localhost'), true);
   assert.equal(sanitized.args.includes('--paqvilo-invented-retained'), true);
+});
+
+const freePort = () =>
+  new Promise((resolve) => {
+    const server = net.createServer().listen(0, '127.0.0.1', () => {
+      const { port } = server.address();
+      server.close(() => resolve(port));
+    });
+  });
+// [action, navigation] default timeouts that a page resolves for its actions and navigations.
+const pageTimeouts = (page) => [
+  page._timeoutSettings.timeout({}).timeout,
+  page._timeoutSettings.navigationTimeout({}).timeout,
+];
+
+test('every way of opening a page in a test has no default Playwright timeout', async (t) => {
+  const profile = await browserWorkspace(t);
+  const owned = [];
+  try {
+    const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
+    owned.push(browser);
+    const page = await browser.newPage();
+    assert.deepEqual(pageTimeouts(page), [0, 0], 'browser.newPage');
+    const context = await browser.newContext();
+    owned.push(context);
+    assert.deepEqual(pageTimeouts(await context.newPage()), [0, 0], 'browser.newContext().newPage()');
+    context.setDefaultTimeout(5);
+    assert.deepEqual(pageTimeouts(await context.newPage()), [5, 5], 'context.setDefaultTimeout still wins');
+    page.setDefaultTimeout(5);
+    assert.deepEqual(pageTimeouts(page), [5, 5], 'page.setDefaultTimeout still wins');
+    assert.equal(page._timeoutSettings.timeout({ timeout: 7 }).timeout, 7, 'a per-call timeout still wins');
+
+    const persistent = await chromium.launchPersistentContext(profile, browserLaunchOptions({ headless: true }));
+    owned.push(persistent);
+    assert.deepEqual(
+      pageTimeouts(persistent.pages()[0] ?? (await persistent.newPage())),
+      [0, 0],
+      'launchPersistentContext',
+    );
+
+    const port = await freePort();
+    const host = await chromium.launch(
+      browserLaunchOptions({ headless: true, args: [`--remote-debugging-port=${port}`] }),
+    );
+    owned.push(host);
+    const attached = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
+    owned.push(attached);
+    const defaultContext = attached.contexts()[0];
+    assert.deepEqual(
+      pageTimeouts(defaultContext.pages()[0] ?? (await defaultContext.newPage())),
+      [0, 0],
+      'connectOverCDP default context',
+    );
+    assert.deepEqual(pageTimeouts(await (await attached.newContext()).newPage()), [0, 0], 'connectOverCDP newContext');
+  } finally {
+    for (const owner of owned.reverse()) await owner.close();
+  }
+});
+
+test('a navigation in a test arms no timeout timer', async (t) => {
+  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  let entered;
+  const routed = new Promise((resolve) => (entered = resolve));
+  await page.route('http://timers.test/', async (route) => {
+    entered();
+    await held;
+    await route.fulfill({ contentType: 'text/html', body: '<title>released</title>' });
+  });
+  const spy = t.mock.method(globalThis, 'setTimeout');
+  const navigation = page.goto('http://timers.test/');
+  await routed; // the navigation is in flight: Playwright has armed any timeout it will arm
+  // Playwright's own instrumentation hooks are bounded by 3 s and ignore their failure (coreBundle.js:20184).
+  const armed = spy.mock.calls.map((call) => call.arguments[1]).filter((ms) => ms > 3000);
+  spy.mock.restore();
+  release();
+  assert.deepEqual(armed, [], 'no Playwright timeout timer is armed');
+  assert.equal((await navigation).status(), 200);
+});
+
+test('the bootstrap removes the default timeouts in a child process', async () => {
+  const { stdout } = await execute(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      "const p=(await import('playwright-core')).default; console.log(JSON.stringify([p._defaultContextTimeout, p._defaultContextNavigationTimeout, p._defaultLaunchOptions?.timeout]))",
+    ],
+    { cwd: root, env: process.env },
+  );
+  assert.equal(stdout.trim(), '[0,null,0]');
 });

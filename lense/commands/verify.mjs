@@ -37,6 +37,12 @@ function sleep(ms, signal) {
 }
 const sha = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 const DIAGNOSTIC_LIMITS = { entriesPerCategory: 200, textCharacters: 1000 };
+// Hang guard for the evidence screenshot, which waits for the page's web fonts; matches the 120 s navigation guard.
+const EVIDENCE_SCREENSHOT_GUARD_MS = 120_000;
+// Hang guard for one git command on the temporary copy.
+const GIT_HANG_GUARD_MS = 120_000;
+// Hang guard for opening the start page of the portal under verification.
+const START_PAGE_NAVIGATION_GUARD_MS = 120_000;
 const diagnosticText = (value) => (typeof value === 'string' ? value.slice(0, DIAGNOSTIC_LIMITS.textCharacters) : '');
 const diagnosticLocation = (value) => {
   const text = diagnosticText(value);
@@ -162,7 +168,7 @@ function git(cwd, ...args) {
       stdio: 'ignore',
       windowsHide: true,
       env,
-      timeout: 120_000,
+      timeout: GIT_HANG_GUARD_MS,
     },
   );
 }
@@ -417,7 +423,7 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
     // The body is read at once: a response cannot be read after the page has navigated away from it.
     const open = async () => {
       const res = await scope.until(
-        page.goto(cfg.origin + startPath, { waitUntil: 'domcontentloaded', timeout: 120_000 }),
+        page.goto(cfg.origin + startPath, { waitUntil: 'domcontentloaded', timeout: START_PAGE_NAVIGATION_GUARD_MS }),
       );
       const html = res ? await res.text().catch(() => null) : null;
       // a load timeout is tolerated; an interrupt is not
@@ -886,7 +892,9 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
     // refresh is in flight, and a refresh applies the saved changes to the open pages before it finishes.
     await scope.until(watcher.whenIdle());
     captureDiagnostics('afterEdits');
-    await scope.until(page.screenshot({ path: path.join(outDir, `${stamp}.png`) }));
+    await scope.until(
+      page.screenshot({ path: path.join(outDir, `${stamp}.png`), timeout: EVIDENCE_SCREENSHOT_GUARD_MS }),
+    );
     const assessment = assessVerification(checks, diagnostics, Boolean(args.strict));
     report = {
       schemaVersion: 1,

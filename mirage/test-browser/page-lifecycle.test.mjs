@@ -6,7 +6,9 @@ import { chromium } from 'playwright-core';
 import { drainFixture } from '../testing/owned-fixture.mjs';
 import { browserLaunchOptions, observePageLifecycle, observeContextLifecycle } from '../acceptance-api.mjs';
 
-const HANG_GUARD_MS = 120_000; // hang guard only: these settles are expected to succeed
+// These settles are expected to succeed. The bound is longer than the runner's hang guard, so it never decides a
+// result: settle() requires a finite timeout.
+const HANG_GUARD_MS = 600_000;
 
 // The stateless fixture server and the browser are shared; every test observes its own context.
 let server, browser, origin;

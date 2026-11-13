@@ -73,10 +73,6 @@ test('demo command opens a populated browser, supports the walkthrough and stops
   });
   browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
   const context = browser.contexts()[0];
-  // Hang guard for a starved host: each awaited browser step may take up to 120 s instead of Playwright's 30 s.
-  // Readiness is still awaited as page state or printed output; the lane's per-test guard bounds the whole walkthrough.
-  context.setDefaultTimeout(120_000);
-  context.setDefaultNavigationTimeout(120_000);
   // The normal dev lifecycle creates and navigates the first tab itself.
   const home = (candidate) => /^http:\/\/127\.0\.0\.1:\d+\/$/.test(candidate.url());
   const page =
@@ -185,9 +181,10 @@ test('demo command opens a populated browser, supports the walkthrough and stops
       t.diagnostic(
         `Account list: ${JSON.stringify({
           path: new URL(page.url()).pathname,
+          // Diagnostic reads do not wait: a missing element reads as null.
           status: await page
             .locator('[data-status]')
-            .textContent()
+            .evaluateAll((nodes) => nodes[0]?.textContent ?? null)
             .catch(() => null),
           empty: await page
             .locator('[data-account-empty]')
@@ -208,7 +205,7 @@ test('demo command opens a populated browser, supports the walkthrough and stops
       .catch(async (cause) => {
         console.log(
           'Workspace diagnostic:',
-          await page.locator('[data-status]').textContent(),
+          await page.locator('[data-status]').evaluateAll((nodes) => nodes[0]?.textContent ?? null),
           await page.locator('[data-mirage-component="codecomponent"]').allTextContents(),
           errors,
         );

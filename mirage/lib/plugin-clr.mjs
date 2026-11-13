@@ -82,8 +82,11 @@ const CLR_MAX_TIMEOUT_MS = 120_000;
 // Explicit local source debugging needs time to attach, inspect and step. Native timing remains the default.
 const CLR_DEBUG_TIMEOUT_MS = 30 * 60_000;
 // A hang guard: after its host exited, another process (an antivirus or indexer scan) can still hold a snapshot file;
-// past this the removal fails and its caller reports PLUGIN_CLR_CLEANUP.
-const CLR_SNAPSHOT_RELEASE_GUARD_MS = 30_000;
+// past this the removal fails and its caller reports PLUGIN_CLR_CLEANUP. Never shorter than the time a host may
+// legitimately run (CLR_MAX_TIMEOUT_MS, 120 s).
+const CLR_SNAPSHOT_RELEASE_GUARD_MS = CLR_MAX_TIMEOUT_MS;
+// A hang guard: a CLR host whose process was never created this long after its worker started.
+const CLR_HOST_START_GUARD_MS = 120_000;
 // Learn (Troubleshoot Dataverse plug-ins): a context above 116.85 MB fails "Message size exceeded when sending context to
 // Sandbox" (-2147220970). ponytail: measured on the local wire JSON, not the platform's serialization.
 const SANDBOX_MESSAGE_LIMIT = Math.floor(116.85 * 1024 * 1024);
@@ -92,31 +95,10 @@ const PLUGIN_DEPTH_MESSAGE =
 /** The platform's infinite-loop fault for an execution past PLUGIN_MAX_DEPTH (code LocalPluginDepth for local callers). */
 export const pluginDepthFault = () =>
   new DataError(PLUGIN_DEPTH_MESSAGE, 400, 'LocalPluginDepth', { innerCode: '0x80044182' });
-let parentStartTicks;
-function clrParentIdentity(executable) {
-  if (!parentStartTicks) {
-    // This starts the CLR only to read the owning Node process's birth time.
-    // Cold CLR/OS startup gets its own finite allowance, before plugin execution.
-    const answer = spawnSync(executable, ['--process-start', String(process.pid)], {
-      shell: false,
-      windowsHide: true,
-      encoding: 'utf8',
-      timeout: 30_000,
-      maxBuffer: 1024,
-    });
-    if (answer.status !== 0 || !/^\d{1,19}$/.test(answer.stdout ?? ''))
-      fail(
-        'Owned CLR host cannot bind its parent process incarnation.' +
-          (answer.error?.code === 'ETIMEDOUT' ? ' Parent identity probe exceeded its 30-second startup limit.' : ''),
-        'LocalPluginParentUnavailable',
-      );
-    parentStartTicks = answer.stdout;
-  }
-  return { parentProcessId: process.pid, parentStartTicks };
-}
 const pooledHosts = new Map();
 // Hosts a stop could not verify stopped, by runtime directory. A close of that runtime stays unverified while one may still
-// run: a pid the system no longer has (ESRCH) is forgotten; a host without a known pid is never forgotten.
+// run: a pid the system no longer has (ESRCH) is forgotten; a host without a known pid is never forgotten. The directory is
+// kept until the system reports no process with that pid, so a reused pid keeps it until that process ends.
 const unverifiedHosts = new Map();
 function rememberUnverifiedHost(session) {
   const pids = unverifiedHosts.get(session.runtimeDirectory) ?? new Set();
@@ -626,7 +608,7 @@ export function buildClrRuntime(descriptor, { assembly, sdk, dependencies = [], 
       build = compile(services);
     }
     if (build.error || build.status !== 0)
-      fail(clrCompileFailure(build, compilerFile, compileGuardMs), 'LocalPluginClrBuild', 501);
+      fail(clrCompileFailure(build, compilerFile, compileGuardMs, executable), 'LocalPluginClrBuild', 501);
     files.push({ path: executable, sha256: sha(readClrFileSync(executable)) });
     const allowed = new Set([...files.map((f) => path.basename(f.path)), path.basename(sourceFile)]);
     if (syncFs.readdirSync(directory).some((name) => !allowed.has(name)))
@@ -663,11 +645,14 @@ export function buildClrRuntime(descriptor, { assembly, sdk, dependencies = [], 
     throw cause;
   }
 }
-// A compiler the guard stopped names itself and the option; every other failure reports the compiler's own output.
-function clrCompileFailure(build, compilerFile, compileGuardMs) {
+// A compiler the guard stopped names itself and the option; every other failure reports the compiler's own output, and
+// csc's CS1619 (it cannot create a temporary file near the Windows path limit) also names the output path's length.
+function clrCompileFailure(build, compilerFile, compileGuardMs, executable) {
   if (build.error?.code === 'ETIMEDOUT')
     return `CLR host compilation failed: the compiler ${compilerFile} did not exit within the ${compileGuardMs} ms guard (compileGuardMs option).`;
-  return 'CLR host compilation failed: ' + String(build.error?.message ?? build.stdout ?? build.stderr).slice(0, 4000);
+  const output = String(build.error?.message ?? build.stdout ?? build.stderr).slice(0, 4000);
+  if (!output.includes('CS1619')) return 'CLR host compilation failed: ' + output;
+  return `CLR host compilation failed: ${output.trimEnd()} The runtime cache path is ${executable.length} characters long; the C# compiler fails near the Windows 260-character path limit. Use a shorter project or cache path.`;
 }
 const CLR_SERVICE_TYPES = [
   ['PAQVILO_LOGGER', 'Microsoft.Xrm.Sdk.PluginTelemetry.ILogger'],
@@ -1994,14 +1979,20 @@ export function executeClrPlugin(
     );
   if (runtime.descriptor.persistentHost === true)
     return executePooledClr(runtime, input, { store, diagnostic }, verified);
+  // The host starts from the runtime's own executable, verified above: a newly written executable image costs its first
+  // execution (an on-access scan) on every call. The plug-in assembly loads from the call's snapshot. The SDK, which the
+  // host itself loads from that runtime directory before any plug-in, is not copied; dependencies are, as a dependency
+  // whose runtime file no longer matches the plug-in's reference binds from the copy beside the plug-in.
   const directory = syncFs.mkdtempSync(path.join(path.dirname(runtime.directory), 'clr-run-')),
     snapshot = {
       directory,
-      executable: path.join(directory, path.basename(runtime.executable)),
+      executable: runtime.executable,
       assembly: path.join(directory, path.basename(runtime.assembly)),
     };
   try {
-    for (const file of verified) syncFs.writeFileSync(path.join(directory, file.name), file.bytes, { flag: 'wx' });
+    for (const file of verified)
+      if (file.name !== path.basename(runtime.executable) && file.sha256 !== runtime.provenance.sdkSha256)
+        syncFs.writeFileSync(path.join(directory, file.name), file.bytes, { flag: 'wx' });
     return executeClrSnapshot(runtime, input, { store, diagnostic, hostExitGuardMs }, snapshot);
   } finally {
     try {
@@ -2058,8 +2049,9 @@ function stopClrHost(session, diagnostic = () => {}, { failed = false, guardMs =
   return absent;
 }
 
-// A hang guard: a host that has not exited this long after it was killed is reported as not verified stopped.
-const CLR_HOST_EXIT_GUARD_MS = 30_000;
+// A hang guard: a host that has not exited this long after it was killed is reported as not verified stopped. Never
+// shorter than the time a host may legitimately run (CLR_MAX_TIMEOUT_MS, 120 s).
+const CLR_HOST_EXIT_GUARD_MS = CLR_MAX_TIMEOUT_MS;
 // Absence is verified by the worker's report of its child's own exit, not by polling the process. A channel is a pooled
 // session, or a fresh invocation's { port1, flags }: on a channel without a backlog, other messages are skipped.
 function awaitHostProcessExit(channel, guardMs = CLR_HOST_EXIT_GUARD_MS) {
@@ -2200,13 +2192,6 @@ function executePooledClr(runtime, input, options, verified) {
       executable: path.join(directory, path.basename(runtime.executable)),
       assembly: path.join(directory, path.basename(runtime.assembly)),
     };
-    let parentIdentity;
-    try {
-      parentIdentity = clrParentIdentity(snapshot.executable);
-    } catch (cause) {
-      removeClrSnapshot(directory, verified);
-      throw cause;
-    }
     const { port1, port2 } = new MessageChannel(),
       signal = new SharedArrayBuffer(4),
       flags = new Int32Array(signal);
@@ -2215,7 +2200,7 @@ function executePooledClr(runtime, input, options, verified) {
         port: port2,
         signal,
         executable: snapshot.executable,
-        ...parentIdentity,
+        parentProcessId: process.pid,
       },
       transferList: [port2],
     });
@@ -2257,7 +2242,6 @@ function executePooledClr(runtime, input, options, verified) {
   if (executionDepth + 1 > PLUGIN_MAX_DEPTH) throw pluginDepthFault();
   const sdkParentContext = selectSdkEntryParent(clrSdkEntryContext(input), input.sdkFrameworkSource);
   const timeout = clrTimeout(runtime.descriptor);
-  const parentIdentity = session ? null : clrParentIdentity(snapshot.executable);
   const channels = session ?? new MessageChannel(),
     port1 = channels.port1,
     port2 = channels.port2,
@@ -2289,7 +2273,7 @@ function executePooledClr(runtime, input, options, verified) {
         executable: snapshot.executable,
         input: invocation,
         timeout,
-        ...parentIdentity,
+        parentProcessId: process.pid,
       },
       transferList: [port2],
     });
@@ -2298,7 +2282,8 @@ function executePooledClr(runtime, input, options, verified) {
     session.backlog.set(invocationId, []);
     port1.postMessage({ kind: 'invoke', invocationId, input: invocation, timeout });
   } else worker.on('error', () => {});
-  const deadline = Date.now() + timeout + 1000;
+  // The step's time starts when its host process exists (the worker arms its own timer then), not while it is created.
+  let deadline = session?.pid ? Date.now() + timeout + 1000 : Date.now() + CLR_HOST_START_GUARD_MS;
   // A step that outlives its deadline is the platform's unhandled timeout fault (400 0x80040224, the message names the type),
   // as for a custom API (plugin-fault.mjs); the code stays LocalPluginTimeout for local callers.
   const traces = [];
@@ -2350,6 +2335,7 @@ function executePooledClr(runtime, input, options, verified) {
           if (!Number.isInteger(message.pid) || message.pid <= 0)
             fail('Invalid owned CLR process.', 'LocalPluginProtocol', 500);
           ownedPid = message.pid;
+          deadline = Date.now() + timeout + 1000;
           if (session) session.pid = ownedPid;
           diagnostic({ code: 'PLUGIN_CLR_HOST_STARTED', pid: ownedPid, pooled: Boolean(session) });
         } else if (message.kind === 'debug-wait') {
@@ -2398,6 +2384,8 @@ function executePooledClr(runtime, input, options, verified) {
             ?.event('telemetry', { level: String(message.level ?? ''), message: message.message });
         } else if (message.kind === 'failure') {
           if (message.code === 'LocalPluginTimeout') throw timedOut();
+          if (message.code === 'LocalPluginParentUnavailable') fail(message.message, message.code);
+          if (message.code === 'LocalPluginHostUnavailable') throw new DataError(message.message, 503, message.code);
           // A plug-in's own failure leaves its host healthy; a worker failure (exit, protocol) has already closed it.
           answered = !String(message.code).startsWith('LocalPlugin') || message.code === 'LocalPluginSdkUnsupported';
           if (message.code === 'LocalPluginHostExited')
@@ -2453,11 +2441,15 @@ function executePooledClr(runtime, input, options, verified) {
       }
       if (result) break;
       if (session?.dead) throw session.dead;
+      // A pooled host gone before its process was reported never started: as for a fresh host, that is 503.
       if (session?.hostExited)
-        throw new DataError(SANDBOX_WORKER_CRASH.message, 400, 'LocalPluginHostExited', {
-          innerCode: SANDBOX_WORKER_CRASH.code,
-        });
-      if (Date.now() > deadline) throw timedOut();
+        throw session.pid
+          ? new DataError(SANDBOX_WORKER_CRASH.message, 400, 'LocalPluginHostExited', {
+              innerCode: SANDBOX_WORKER_CRASH.code,
+            })
+          : new DataError('Owned pooled CLR host could not start.', 503, 'LocalPluginHostUnavailable');
+      if (Date.now() > deadline)
+        throw ownedPid ? timedOut() : new DataError('Owned CLR host did not start.', 503, 'LocalPluginHostUnavailable');
       Atomics.wait(flags, 0, 0, 20);
       Atomics.store(flags, 0, 0);
     }
@@ -2478,6 +2470,8 @@ function executePooledClr(runtime, input, options, verified) {
         }
       port1.postMessage({ kind: 'cancel' });
       snapshot.hostStopped = closeFreshHostPort({ port1, flags, ownedPid, diagnostic, guardMs: hostExitGuardMs });
+      // The host runs from the runtime's own executable: its runtime is kept while it may still run.
+      if (!snapshot.hostStopped) rememberUnverifiedHost({ runtimeDirectory: runtime.directory, pid: ownedPid });
     }
   }
   return {

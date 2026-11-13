@@ -1,6 +1,5 @@
 // @test-kind contract: Paqvilo local CLR assembly snapshots: confined verified reads, owned host teardown and the step timeout fault
 import test from 'node:test';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -156,7 +155,6 @@ test(
         sdkRoot: path.dirname(sdk),
         sdkAssembly: path.basename(sdk),
         cacheRoot: cache.toLowerCase(),
-        timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
         serviceProfile: {
           userId: user,
           evidence: 'Invented local file lifecycle regression',

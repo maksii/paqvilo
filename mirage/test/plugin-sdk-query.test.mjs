@@ -7,7 +7,6 @@ import os from 'node:os';
 import { DataStore } from '../lib/data.mjs';
 import { dispatchSdkCall, recordToSdkEntity, prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { queryExpressionToFetch, fetchResultToSdkCollection } from '../lib/plugin-sdk-query.mjs';
@@ -350,7 +349,6 @@ test(
           operationCreatedOn: '2026-10-13T10:11:12.1234567Z',
           operationCreatedOnEvidence: 'Invented explicit framework timestamp fixture',
         },
-        timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
       };
     const caller = await prepareClrRuntime({ ...descriptor, typeName: 'Invented.Caller' }),
       observer = await prepareClrRuntime({ ...descriptor, typeName: 'Invented.Observer' }),

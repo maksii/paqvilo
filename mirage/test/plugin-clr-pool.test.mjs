@@ -1,4 +1,4 @@
-// @test-kind contract: Paqvilo CLR host lifecycle: startup probe allowance, explicit pooling opt-in, owned cache cleanup, worker protocol bounds
+// @test-kind contract: Paqvilo CLR host lifecycle: parent PID handoff without a probe, explicit pooling opt-in, owned cache cleanup, worker protocol bounds
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -31,7 +31,7 @@ const user = '10000000-0000-0000-0000-000000000001',
   rowId = '20000000-0000-0000-0000-000000000001';
 // hang guard only: a blocked synchronous child cannot be ended by the test runner
 const CLI_HANG_GUARD_MS = 170_000;
-// A killed host exits at once, and an orphan host's watcher checks its exact parent every 100 ms (plugin-clr-host.cs).
+// A killed host exits at once, and an orphan host exits when its input closes (plugin-clr-host.cs).
 // Windows gives no exit handle for a process another one started, so absence is polled; the limit bounds only a failing
 // run, as a passing run stops polling when the host is gone.
 const HOST_EXIT_LIMIT_MS = 30_000;
@@ -46,10 +46,7 @@ async function processAbsent(pid, limitMs) {
   return false;
 }
 
-test('cold CLR parent identification has a separate bounded startup allowance', { skip: CLR_SKIP }, async (t) => {
-  // A wall-clock delay is the behaviour under test: a cold probe slower than the 3-second limit it had before
-  // b0420389 must still bind the parent.
-  const SLOW_PROBE_MS = 3_500;
+test('a CLR host gets its parent PID alone; no parent probe process starts', { skip: CLR_SKIP }, async (t) => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-clr-parent-start-')));
   t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
   // Execution snapshots are created beside the runtime directory, so root shows any snapshot left behind.
@@ -57,11 +54,14 @@ test('cold CLR parent identification has a separate bounded startup allowance', 
   await fs.mkdir(directory);
   const source = path.join(directory, 'Protocol.cs'),
     executable = path.join(directory, 'Protocol.exe');
+  // Every start logs its arguments. Unbound, it reads its input and then exits 74, as a host that cannot bind its
+  // parent does; reading first means the input write has completed, so the exit decides the outcome.
   await fs.writeFile(
     source,
-    String.raw`using System;using System.Diagnostics;public static class Protocol{public static void Main(string[] args){
-if(args.Length==2&&args[0]=="--process-start"){var mode=Environment.GetEnvironmentVariable("INVENTED_PARENT_MODE");if(mode=="exit")Environment.Exit(73);if(mode=="invalid"){Console.Write("invalid");return;}System.Threading.Thread.Sleep(${SLOW_PROBE_MS});Console.Write(Process.GetProcessById(Int32.Parse(args[1])).StartTime.ToUniversalTime().Ticks);return;}
-Console.ReadLine();Console.WriteLine("{\"kind\":\"result\"}");}}`,
+    String.raw`using System;public static class Protocol{public static void Main(string[] args){
+System.IO.File.AppendAllText(Environment.GetEnvironmentVariable("INVENTED_ARGS_LOG"),String.Join(" ",args)+"\n");
+Console.ReadLine();if(Environment.GetEnvironmentVariable("INVENTED_PARENT_MODE")=="unbound")Environment.Exit(74);
+Console.WriteLine("{\"kind\":\"result\"}");if(args[0]=="--persistent")while(Console.ReadLine()!=null)Console.WriteLine("{\"kind\":\"result\"}");}}`,
   );
   compileClr(source, executable, { target: 'exe' });
   const assembly = path.join(directory, 'Original.dll');
@@ -75,28 +75,45 @@ Console.ReadLine();Console.WriteLine("{\"kind\":\"result\"}");}}`,
     files: await Promise.all(
       [assembly, executable].map(async (file) => ({ path: file, sha256: hash(await fs.readFile(file)) })),
     ),
-    descriptor: { typeName: 'Invented.Original', timeoutMs: 10000 },
+    descriptor: { typeName: 'Invented.Original' },
     provenance: { hostSourceSha256: hash(await fs.readFile(new URL('../lib/plugin-clr-host.cs', import.meta.url))) },
   };
   await fs.writeFile(path.join(directory, 'runtime.json'), JSON.stringify(runtime));
   await fs.writeFile(
     path.join(directory, 'invoke.mjs'),
-    `import fs from'node:fs';import{executeClrPlugin}from${JSON.stringify(new URL('../lib/plugin-clr.mjs', import.meta.url).href)};
+    `import fs from'node:fs';import{executeClrPlugin,closeClrHostPool}from${JSON.stringify(new URL('../lib/plugin-clr.mjs', import.meta.url).href)};
 const runtime=JSON.parse(fs.readFileSync(new URL('./runtime.json',import.meta.url)));
-const mode=process.env.INVENTED_PARENT_MODE;
-try{const result=executeClrPlugin(runtime,{}, {store:{}});if(mode!=='valid')throw Error('Invalid parent probe was admitted');console.log(result.executionMode);}
-catch(error){if(mode==='valid'||error.code!=='LocalPluginParentUnavailable')throw error;console.log(error.code);}`,
+runtime.descriptor.persistentHost=process.env.INVENTED_POOLED==='true';
+const call=()=>{try{return executeClrPlugin(runtime,{},{store:{}}).executionMode;}catch(error){return error.status+' '+error.code+' '+error.message;}};
+const outcomes=[call(),call()];closeClrHostPool();console.log(JSON.stringify({pid:process.pid,outcomes}));`,
   );
-  for (const mode of ['valid', 'invalid', 'exit']) {
+  const unbound = '409 LocalPluginParentUnavailable Owned CLR host cannot bind its parent process incarnation.';
+  // Two calls each. A valid pooled runtime reuses its one host; every other call starts its own.
+  const cases = [
+    { pooled: false, mode: 'valid', outcome: 'fresh-host', hosts: 2 },
+    { pooled: false, mode: 'unbound', outcome: unbound, hosts: 2 },
+    { pooled: true, mode: 'valid', outcome: 'pooled-fresh-instance', hosts: 1 },
+    { pooled: true, mode: 'unbound', outcome: unbound, hosts: 2 },
+  ];
+  for (const { pooled, mode, outcome, hosts } of cases) {
+    const log = path.join(root, `${pooled}-${mode}.log`);
     const result = spawnSync(process.execPath, [path.join(directory, 'invoke.mjs')], {
-      env: { ...process.env, INVENTED_PARENT_MODE: mode },
+      env: { ...process.env, INVENTED_PARENT_MODE: mode, INVENTED_POOLED: String(pooled), INVENTED_ARGS_LOG: log },
       windowsHide: true,
       encoding: 'utf8',
       timeout: CLI_HANG_GUARD_MS,
     });
-    assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message);
-    assert.equal(result.stdout.trim(), mode === 'valid' ? 'fresh-host' : 'LocalPluginParentUnavailable');
-    assert.deepEqual(await fs.readdir(root), ['runtime'], 'every execution snapshot is removed');
+    const { pid, outcomes } = JSON.parse(result.stdout || '{}');
+    const parent = (pooled ? '--persistent ' : '') + '--parent ' + pid;
+    const starts = (await fs.readFile(log, 'utf8')).split('\n').slice(0, -1);
+    assert.deepEqual(starts, Array(hosts).fill(parent), 'no probe process; each host gets the PID alone');
+    assert.equal(result.status, 0, result.stderr || result.error?.message);
+    assert.deepEqual(outcomes, [outcome, outcome]);
+    assert.deepEqual(
+      (await fs.readdir(root)).filter((name) => name.startsWith('clr-')),
+      [],
+      'every execution snapshot is removed',
+    );
     assert.deepEqual((await fs.readdir(directory)).sort(), [...runtime.allowedFiles].sort());
   }
 });
@@ -275,7 +292,7 @@ test(
       await fs.mkdir(directory);
       return {
         ...(await stageProtocolFiles(directory, executable)),
-        descriptor: { persistentHost: true, typeName: 'Invented.Original', timeoutMs: 10000 },
+        descriptor: { persistentHost: true, typeName: 'Invented.Original' },
         provenance: { hostSourceSha256 },
       };
     };
@@ -329,7 +346,8 @@ test(
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     await fs.writeFile(
       source,
-      'using System;using Microsoft.Xrm.Sdk;namespace Invented{public sealed class Hang:IPlugin{public void Execute(IServiceProvider p){((ITracingService)p.GetService(typeof(ITracingService))).Trace("entered-cpu-loop");while(true){}}}}',
+      // A foreground thread of its own keeps a host process alive after its main thread returns.
+      'using System;using Microsoft.Xrm.Sdk;namespace Invented{public sealed class Hang:IPlugin{public void Execute(IServiceProvider p){new System.Threading.Thread(()=>{while(true){}}).Start();((ITracingService)p.GetService(typeof(ITracingService))).Trace("entered-cpu-loop");while(true){}}}}',
     );
     compileClr(source, assembly, { references: [sdk] });
     const runtime = await prepareClrRuntime({
@@ -342,7 +360,6 @@ test(
       cacheRoot: path.join(root, 'cache'),
       serviceProfile: { userId: user, evidence: 'Invented backend', grants: [] },
       context: { initiatingUserId: user, organizationId: user, businessUnitId: user },
-      timeoutMs: 10000,
     });
     const born = spawnSync(runtime.executable, ['--process-start', String(process.pid)], {
       windowsHide: true,
@@ -357,8 +374,15 @@ test(
       { windowsHide: true, encoding: 'utf8', timeout: CLI_HANG_GUARD_MS },
     );
     assert.equal(reused.status, 74, 'An existing PID with a different birth time cannot authorize this host.');
-    for (const persistentHost of [false, true])
-      await t.test(persistentHost ? 'pooled' : 'fresh', async () => {
+    // A detached host is outside Node's kill-on-close job object: only the host's own reaction to the death ends it.
+    const detachedHost = new URL('./fixtures/clr-detached-host.mjs', import.meta.url).href;
+    for (const [persistentHost, detached] of [
+      [false, false],
+      [true, false],
+      [false, true],
+      [true, true],
+    ])
+      await t.test((persistentHost ? 'pooled' : 'fresh') + (detached ? ', detached from the job' : ''), async () => {
         const runtimeFile = path.join(root, 'runtime-' + persistentHost + '.json'),
           script = path.join(root, 'parent-' + persistentHost + '.mjs');
         await fs.writeFile(
@@ -372,6 +396,7 @@ test(
         const child = spawn(process.execPath, [script, runtimeFile], {
           windowsHide: true,
           stdio: ['ignore', 'pipe', 'pipe'],
+          ...(detached ? { env: { ...process.env, NODE_OPTIONS: '--import=' + detachedHost } } : {}),
         });
         let hostPid,
           port,
@@ -383,7 +408,7 @@ test(
           error += chunk;
         });
         try {
-          // No wall-clock limit: the child reaches the loop, or exits once its probe (30 s) or plugin (10 s) limit fails.
+          // No wall-clock limit: the child reaches the loop, or exits once its plugin limit (120 s default) fails.
           await new Promise((resolve, reject) => {
             child.once('exit', (code) => reject(new Error('Invented child exited early: ' + code + ' ' + error)));
             child.stdout.on('data', (chunk) => {
@@ -462,7 +487,6 @@ target["instanceCalls"]=++calls;target["configuration"]=config;target["request"]
         grants: [{ entity: 'secondary', operations: ['read'] }],
       },
       context: { initiatingUserId: user, organizationId: user, businessUnitId: user },
-      timeoutMs: 10000,
     });
     const store = new DataStore({
       state: {
@@ -527,7 +551,7 @@ target["instanceCalls"]=++calls;target["configuration"]=config;target["request"]
     assert.throws(invoke, (error) => error.code === 'LocalPluginTimeout');
     assert.deepEqual(clrHostPoolStatus(), []);
     assert.equal(notes.filter((note) => note.code === 'PLUGIN_CLR_HOST_STOPPED').at(-1).absenceVerified, true);
-    runtime.descriptor.timeoutMs = 10000;
+    runtime.descriptor.timeoutMs = 120_000;
     runtime.descriptor.unsecureConfiguration = 'recovered';
     assert.equal(invoke().target.attributes.observed, 'Second');
     assert.deepEqual(closeClrHostPool({ runtime, diagnostic: (note) => notes.push(note) }), {
@@ -720,6 +744,19 @@ test('a fresh snapshot whose host is not verified stopped is kept and reported',
   assert.ok(kept[0].message.startsWith(prefix), kept[0].message);
   const snapshot = path.join(path.dirname(runtime.directory), kept[0].message.slice(prefix.length));
   await assert.doesNotReject(fs.access(snapshot), 'the snapshot stays while its host is not verified');
+  // The host runs from the runtime's own executable, so while the system still reports its pid the runtime is kept too.
+  const kill = process.kill;
+  t.mock.method(process, 'kill', (target, signal) =>
+    signal === 0 && target === pid ? true : kill.call(process, target, signal),
+  );
+  const released = [];
+  releaseClrRuntime(runtime, { diagnostic: (note) => released.push(note) });
+  assert.deepEqual(
+    released.map((note) => note.code),
+    ['PLUGIN_CLR_CLEANUP'],
+    'the kept runtime directory is reported once',
+  );
+  assert.match(released[0].message, /^CLR host not verified stopped; runtime cache directory kept: /);
 });
 
 test('a fresh CLR call past the plug-in depth limit starts no host', { skip: CLR_SKIP }, async (t) => {
@@ -796,7 +833,7 @@ async function protocolRuntime(t, descriptor) {
   await fs.mkdir(directory);
   return {
     ...(await stageProtocolFiles(directory, executable)),
-    descriptor: { typeName: 'Invented.Original', timeoutMs: 10000, ...descriptor },
+    descriptor: { typeName: 'Invented.Original', ...descriptor },
     provenance: { hostSourceSha256: hash(await fs.readFile(new URL('../lib/plugin-clr-host.cs', import.meta.url))) },
   };
 }

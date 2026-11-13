@@ -1,6 +1,5 @@
 // @test-kind compatibility: Learn Power Pages Web API errors (9004010D, Webapi/error/innererror) and plug-in error codes 0x80040265/0x80040224
 import test from 'node:test';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -61,7 +60,6 @@ namespace Invented.WidgetRules {public sealed class Validate:IPlugin {public voi
         evidence: 'Invented HTTP error original DLL',
         grants: [{ entity: 'fx_widget', operations: ['read', 'create'] }],
       },
-      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
     });
     const assemblyFile = path.join(
         fixture.solution,

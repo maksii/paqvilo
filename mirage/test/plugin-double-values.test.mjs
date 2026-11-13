@@ -1,6 +1,5 @@
 // @test-kind compatibility: Learn column types: Float/Double columns are System.Double SDK values; finite-only checks are local; the evidence file records nativeQualified false.
 import test from 'node:test';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -96,7 +95,6 @@ if(c.Stage==40){if(!(c.SharedVariables["integralDouble"] is Double)||(double)c.S
           businessUnitId: '60000000-0000-0000-0000-000000000001',
         },
         serviceProfile: profile,
-        timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
       }),
       steps = [20, 40].map((stage, i) => ({
         id: '30000000-0000-0000-0000-' + String(i + 1).padStart(12, '0'),

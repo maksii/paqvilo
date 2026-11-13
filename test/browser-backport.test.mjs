@@ -1,3 +1,4 @@
+// @test-kind tooling: the test-only browser bootstrap keeps pinned defaults, caller choices and explicit timeouts
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -12,7 +13,9 @@ import {
   BACKPORTED_DISABLED_FEATURES,
   backportLaunchOptions,
   installChromiumBackport,
+  installTestTimeouts,
   requirePinnedDefaults,
+  requirePinnedTimeoutDefaults,
 } from './browser-backport.mjs';
 
 const require = createRequire(import.meta.url);
@@ -179,4 +182,63 @@ test('actual version CLI retains its ordinary module graph with test activation'
     activated.graph.some((url) => url.includes('/playwright-core/')),
     false,
   );
+});
+
+test('installTestTimeouts sets the defaults once and keeps an explicit timeout', (t) => {
+  const directory = path.dirname(require.resolve('playwright-core/package.json'));
+  const type = () => ({
+    connectOverCDP(target, options) {
+      return [this, target, options];
+    },
+  });
+  const playwright = { chromium: type(), firefox: type(), webkit: type() };
+  installTestTimeouts(playwright, directory);
+  assert.equal(playwright._defaultContextTimeout, 0);
+  // Navigation falls back to the context's own default, then to the action default.
+  assert.equal(playwright._defaultContextNavigationTimeout, undefined);
+  assert.equal(playwright._defaultLaunchOptions.timeout, 0);
+  const { chromium } = playwright;
+  assert.deepEqual(chromium.connectOverCDP('https://x'), [chromium, 'https://x', { timeout: 0 }]);
+  assert.deepEqual(chromium.connectOverCDP('https://x', { timeout: 9 }), [chromium, 'https://x', { timeout: 9 }]);
+  assert.deepEqual(chromium.connectOverCDP({ endpointURL: 'https://x' }), [
+    chromium,
+    { timeout: 0, endpointURL: 'https://x' },
+    undefined,
+  ]);
+  assert.deepEqual(chromium.connectOverCDP({ wsEndpoint: 'ws://x' }), [
+    chromium,
+    { timeout: 0, wsEndpoint: 'ws://x' },
+    undefined,
+  ]);
+  // A ConnectionTransport has no endpoint keys: it is passed unchanged and the options carry the timeout.
+  const transport = { send() {}, close() {} };
+  const [self, passed, options] = chromium.connectOverCDP(transport);
+  assert.equal(self, chromium);
+  assert.equal(passed, transport);
+  assert.deepEqual(options, { timeout: 0 });
+  const wrapped = chromium.connectOverCDP;
+  installTestTimeouts(playwright, directory);
+  assert.equal(chromium.connectOverCDP, wrapped, 'a second install does not wrap again');
+  assert.deepEqual(chromium.connectOverCDP('https://x'), [chromium, 'https://x', { timeout: 0 }]);
+
+  const pinned = tempDirSync('paq-browser-timeouts-');
+  t.after(() => fs.rmSync(pinned, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(pinned, 'lib'));
+  const manifest = path.join(pinned, 'package.json');
+  fs.writeFileSync(manifest, JSON.stringify({ name: 'playwright-core', version: PLAYWRIGHT_VERSION }));
+  fs.writeFileSync(path.join(pinned, 'lib/coreBundle.js'), 'x');
+  assert.throws(() => requirePinnedTimeoutDefaults(pinned), /Pinned Playwright timeout defaults changed/);
+  // The version is pinned on every platform, not only where the Windows backport checks it.
+  fs.copyFileSync(path.join(directory, 'lib/coreBundle.js'), path.join(pinned, 'lib/coreBundle.js'));
+  requirePinnedTimeoutDefaults(pinned);
+  for (const drifted of [
+    { name: 'playwright-core', version: '1.65.0' },
+    { name: 'invented-other-package', version: PLAYWRIGHT_VERSION },
+  ]) {
+    fs.writeFileSync(manifest, JSON.stringify(drifted));
+    assert.throws(
+      () => requirePinnedTimeoutDefaults(pinned),
+      /Review the test timeout hook after changing pinned Playwright/,
+    );
+  }
 });

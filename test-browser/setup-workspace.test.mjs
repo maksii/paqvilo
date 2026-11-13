@@ -16,8 +16,6 @@ import { startSetupServer } from '../lense/setup/server.mjs';
 import { createSimulator } from '../mirage/server.mjs';
 import { freeDebugPort } from './helpers/debug-port.mjs';
 
-const HANG_GUARD_MS = 120_000; // hang guard only: Playwright's 30 s default fails a loaded machine
-
 // These cases exercise the All settings view of /_setup/ (Quick setup is the default for a new browser).
 const allSettings = (page) =>
   page.context().addInitScript(() => {
@@ -418,8 +416,6 @@ test('Lense dev exposes a setup panel link on a loopback fixture and closes its 
   assert.ok(setupUrl, output);
   remote = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
   const context = remote.contexts()[0];
-  context.setDefaultTimeout(HANG_GUARD_MS);
-  context.setDefaultNavigationTimeout(HANG_GUARD_MS);
   const page = context.pages()[0];
   await page.waitForURL(simulator.url + '/');
   await page.locator('#paqvilo-panel').waitFor({ state: 'attached' });

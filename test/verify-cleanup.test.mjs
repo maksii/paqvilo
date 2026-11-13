@@ -126,7 +126,8 @@ function portalContext(trace, browser, at, marks) {
         navigate(`${TARGET_URL}?lang=INVENTED`);
     },
     // the diagnostics are captured right before the screenshot
-    screenshot: async () => {
+    screenshot: async (options) => {
+      browser.screenshots.push(options);
       marks.push('afterEdits capture');
     },
     evaluate: async (_fn, arg) => {
@@ -183,7 +184,7 @@ function startVerify(t, { at, signal = 'SIGINT', idle = Promise.resolve() }) {
   const cfg = createVerifyConfig(t);
   const source = new EventEmitter();
   const trace = interruptTrace(signal, source);
-  const browser = { launched: false, closed: false, gotos: 0, inspected: [] };
+  const browser = { launched: false, closed: false, gotos: 0, inspected: [], screenshots: [] };
   const marks = [];
   const idleRequested = deferred();
   const output = [];
@@ -369,6 +370,13 @@ test('a start page that starts another navigation once it has loaded is read aga
   assert.deepEqual(outcome.browser.inspected, [pageDocument(2, true)]);
   assert.equal(outcome.report.error, undefined);
   assert.equal(outcome.report.checks.find((check) => check.name === 'page loads through the overlay')?.ok, true);
+});
+
+test('the evidence screenshot of a verified page is taken under its 120 s hang guard', async (t) => {
+  const outcome = await startVerify(t, { at: 'reload' }).finished;
+  assert.equal(outcome.report.error, undefined);
+  assert.equal(outcome.browser.screenshots.length, 1);
+  assert.equal(outcome.browser.screenshots[0].timeout, 120_000);
 });
 
 test('a document the page replaces while its snippets are inspected is read again instead of failing the run', async (t) => {

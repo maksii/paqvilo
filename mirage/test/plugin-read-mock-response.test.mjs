@@ -1,6 +1,5 @@
 // @test-kind contract: Paqvilo mock and handler step modes hand configured read results to SDK callers; inert modes leave read projections untouched
 import test from 'node:test';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -39,7 +38,6 @@ test(
         grants: [{ entity: 'widget', operations: ['read'] }],
       },
       context: { initiatingUserId: user, organizationId: user, businessUnitId: user },
-      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
     });
     const base = {
         enabled: true,

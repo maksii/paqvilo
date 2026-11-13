@@ -6,7 +6,7 @@ import path from 'node:path';
 import net from 'node:net';
 import { createHash } from 'node:crypto';
 import { chromium } from 'playwright-core';
-import { windowsLaunchOptions } from '../mirage/lib/browser-launch.mjs';
+import { BROWSER_HANG_GUARD_MS, windowsLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { stripTrailingCharacters } from '../mirage/lib/text-scanning.mjs';
 import { interceptOrigin } from './intercept.mjs';
 import { createInspectionProvenanceTransport } from './inspection-provenance-transport.mjs';
@@ -15,9 +15,9 @@ import { pageKey } from './html-rewriter.mjs';
 import { browserProfileInfo, validateBrowserProfile, validateDebuggerMode } from './browser-profile.mjs';
 export { browserProfileDir } from './browser-profile.mjs';
 
-// Hang guard for each browser start-up wait that Playwright would otherwise bound by its 30 s default. It only stops
-// an operation that never finishes; `overrides.hangGuardMs` replaces it.
-const BROWSER_HANG_GUARD_MS = 120_000;
+// BROWSER_HANG_GUARD_MS (mirage/lib/browser-launch.mjs) bounds each browser start-up wait in place of Playwright's own
+// defaults (180 s for a launch, 30 s for a CDP attach). It only stops an operation that never finishes;
+// `overrides.hangGuardMs` replaces it.
 // Hang guard for each step of closing: the final session-cookie save and the window placement restore.
 const BROWSER_CLOSE_GUARD_MS = 30_000;
 const DEBUGGER_POLL_MS = 200;

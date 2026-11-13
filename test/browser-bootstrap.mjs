@@ -10,21 +10,22 @@ const preload = '--import=' + import.meta.url;
 if (!(process.env.NODE_OPTIONS || '').split(/\s+/).includes(preload))
   process.env.NODE_OPTIONS = [process.env.NODE_OPTIONS, preload].filter(Boolean).join(' ');
 
-if (process.platform === 'win32') {
-  registerHooks({
-    load(url, context, nextLoad) {
-      const loaded = nextLoad(url, context);
-      if (!url.startsWith('file:') || !/\/playwright-core\/index\.js$/.test(new URL(url).pathname)) return loaded;
-      const directory = path.dirname(fileURLToPath(url));
-      return {
-        ...loaded,
-        source:
-          (typeof loaded.source === 'string' ? loaded.source : Buffer.from(loaded.source).toString('utf8')) +
-          `\nrequire(${JSON.stringify(helper)}).installChromiumBackport(module.exports.chromium, ${JSON.stringify(directory)});\n`,
-      };
-    },
-  });
-}
+// The hook is registered in every process that loads this bootstrap (the browser lanes and their child processes), on
+// every platform: it removes Playwright's default timeouts (the runner's --test-timeout is the hang guard). On Windows
+// the same hook also applies the Chromium backport.
+registerHooks({
+  load(url, context, nextLoad) {
+    const loaded = nextLoad(url, context);
+    if (!url.startsWith('file:') || !/\/playwright-core\/index\.js$/.test(new URL(url).pathname)) return loaded;
+    const directory = path.dirname(fileURLToPath(url));
+    return {
+      ...loaded,
+      source:
+        (typeof loaded.source === 'string' ? loaded.source : Buffer.from(loaded.source).toString('utf8')) +
+        `\nconst paqviloTestBrowser = require(${JSON.stringify(helper)});\npaqviloTestBrowser.installTestTimeouts(module.exports, ${JSON.stringify(directory)});\npaqviloTestBrowser.installChromiumBackport(module.exports.chromium, ${JSON.stringify(directory)});\n`,
+    };
+  },
+});
 
 // Preserve the company's npm command and working directory while activating the
 // same unshipped bootstrap used by the other repository browser entrypoints.

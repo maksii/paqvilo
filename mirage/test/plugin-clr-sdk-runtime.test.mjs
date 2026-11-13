@@ -13,7 +13,6 @@ import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import childProcess from 'node:child_process';
 import { createTraceStore } from '../lib/trace-store.mjs';
 import { once } from 'node:events';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 
 const objectId = '71000000-0000-0000-0000-000000000001';
@@ -140,7 +139,6 @@ test(
       cacheRoot: path.join(root, 'cache'),
       serviceProfile: profile,
       context: { executionUserId: user, initiatingUserId: user, organizationId: user, businessUnitId: user },
-      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
     });
     assert.ok(runtime.files.some((file) => path.basename(file.path) === 'Microsoft.Crm.Sdk.Proxy.dll'));
     const step = {

@@ -6,6 +6,9 @@ export function browserChannel({ platform = process.platform, env = process.env 
   return env.PAQVILO_BROWSER || (platform === 'win32' ? 'msedge' : 'chromium');
 }
 
+// Hang guard for a browser launch or CDP attach: stops only a start that never answers.
+export const BROWSER_HANG_GUARD_MS = 120_000;
+
 // Backport of microsoft/playwright#43605: Windows TCP port randomization makes busy loopback
 // sessions fail with net::ERR_NO_BUFFER_SPACE. Remove with the first stable Playwright upgrade
 // that disables it by default; test/browser-backport.test.mjs fails when the pinned defaults change.

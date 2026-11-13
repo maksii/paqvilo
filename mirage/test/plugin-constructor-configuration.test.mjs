@@ -22,7 +22,6 @@ import { contractModuleFixture } from './contract-module-fixture.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import { createPreparedClrRuntimePreparer } from './fixtures/prepared-clr-runtimes.mjs';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { scanSolutionSources } from '../lib/solution-schema.mjs';
 import { SolutionFileCache, shareSolutionParses } from '../lib/solution-cache.mjs';
 import { zipOf } from '../lib/dataverse-solutions.mjs';
@@ -234,7 +233,6 @@ public sealed class Zero:IPlugin {public void Execute(IServiceProvider p){var c=
         sdkRoot: path.dirname(sdk),
         sdkAssembly: path.basename(sdk),
         cacheRoot: path.join(root, 'cache'),
-        timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
         persistentHost: true,
         unsecureConfiguration: 'Descriptor U',
         secureConfiguration: 'Descriptor S',

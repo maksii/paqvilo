@@ -9,8 +9,9 @@ import { captureScenario, pageRunner } from '../baseline-capture.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const origin = 'http://127.0.0.1:15153';
-// The static fixture settles as soon as it is quiet; the bound only ends a wait that never settles.
-const SETTLE = { quietMs: 5, timeout: 30_000 };
+// The static fixture settles as soon as it is quiet. The bound is longer than the runner's hang guard, so it never
+// decides a result: settle() requires a finite timeout.
+const SETTLE = { quietMs: 5, timeout: 600_000 };
 let browser;
 before(async () => {
   browser = await chromium.launch(browserLaunchOptions({ headless: true }));
