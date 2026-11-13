@@ -130,11 +130,11 @@ test('test files get only test-scope sonarjs rules, sources the main ones, and a
   ]);
 });
 
-test('the excluded assertions-in-tests rule is not applied to test files', async (t) => {
+test('a test that asserts only through an arrow-function helper is reported, as the server reports it', async (t) => {
   const { write, commit, reported } = gitFixture(t);
   write('README.md', 'Fixture\n');
   commit('base');
-  // The assertion is made inside a helper, which the ESLint version of the rule cannot follow.
+  // The rule follows a helper written as a function declaration, not one assigned to a constant or imported.
   write(
     'test/helper.test.mjs',
     [
@@ -144,9 +144,15 @@ test('the excluded assertions-in-tests rule is not applied to test files', async
       "test('asserts through a helper', () => {",
       '  expectOne(1);',
       '});',
+      'function expectTwo(value) {',
+      '  assert.equal(value, 2);',
+      '}',
+      "test('asserts through a declared helper', () => {",
+      '  expectTwo(2);',
+      '});',
       '',
     ].join('\n'),
   );
 
-  assert.deepEqual(await reported('HEAD', 1), []);
+  assert.deepEqual(await reported('HEAD', 1), ['test/helper.test.mjs:4 sonarjs/assertions-in-tests']);
 });

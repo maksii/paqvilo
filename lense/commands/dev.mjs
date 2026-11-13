@@ -707,8 +707,8 @@ async function runSourceRefresh(
     warnUnavailableBaseline(force, session, label, log);
     logNewUnsupported(session, cfg, unsupportedBefore, label, log);
     logRefreshResult({ session, cfg, files, force, how, pageResults, reload, label, log });
-  } catch (err) {
-    log(`${time()}  ${label}  ERROR  ${err.message}`);
+  } catch (error) {
+    log(`${time()}  ${label}  ERROR  ${error.message}`);
   } finally {
     finish();
   }

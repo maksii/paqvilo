@@ -16,11 +16,11 @@ try {
     windowsHide: true,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
-} catch (cause) {
+} catch (error) {
   // A start the system refuses outright throws here: no process exists, and the pool learns at once that it is gone.
   send({ kind: 'host-exited', hostExitCode: null });
   reportHostProcessExit(null);
-  throw cause;
+  throw error;
 }
 function send(message) {
   port.postMessage(message);

@@ -197,11 +197,11 @@ const assertStorageFailure = (h, res) => {
   assert.match(text, /storage provider/);
   for (const leak of ['INVENTED-KEY', 'Endpoint=', h.root]) assert.equal(text.includes(leak), false);
 };
-const assertNoNote = async (h) => {
+async function assertNoNote(h) {
   assert.equal(row(h, 'annotation', NOTE), undefined);
   assert.equal((await h.call('GET', `annotations(${NOTE})`)).status, 404);
   assert.deepEqual(await annotationKeys(h), []);
-};
+}
 
 test('a note whose provider put fails at once answers a storage failure and leaves no row or key', async (t) => {
   const h = await routingApi(t);

@@ -12,12 +12,18 @@ const send = (message) => {
   Atomics.store(flags, 0, 1);
   Atomics.notify(flags, 0);
 };
-import(body).then(
-  () => send({ started: true }),
-  (error) => {
-    const message = `The synchronous I/O worker failed: ${String(error?.message ?? error)}`;
-    port.on('message', ({ id }) =>
-      send({ id, crashed: true, error: { message, status: 502, code: 'SyncIoWorkerFailed', details: null } }),
-    );
-  },
-);
+let failure = null;
+try {
+  await import(body);
+} catch (error) {
+  failure = { message: `The synchronous I/O worker failed: ${String(error?.message ?? error)}` };
+}
+if (failure)
+  port.on('message', ({ id }) =>
+    send({
+      id,
+      crashed: true,
+      error: { message: failure.message, status: 502, code: 'SyncIoWorkerFailed', details: null },
+    }),
+  );
+else send({ started: true });

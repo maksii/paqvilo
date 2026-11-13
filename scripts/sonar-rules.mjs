@@ -30,16 +30,9 @@ const UNICORN_RULES = [
   'prefer-number-properties',
   'prefer-array-find',
   'prefer-dom-node-dataset',
+  'catch-error-name',
+  'prefer-top-level-await',
 ];
-
-// Recommended sonarjs rules the local profile leaves out, each because its ESLint version reports what the server does
-// not.
-const EXCLUDED_SONAR_KEYS = new Set([
-  // S2699 assertions-in-tests: the ESLint rule cannot follow an assertion made inside a helper function, so it reports
-  // tests that assert through helpers. Commit 99003431 has nine such tests in files unchanged since, and its hosted
-  // SonarQube analysis reported no new issues.
-  'S2699',
-]);
 
 /** The SonarJS key (S<number>) of a sonarjs rule, from its documentation link; undefined for other plugins. */
 const sonarKey = (name) =>
@@ -53,7 +46,6 @@ function sonarjsRules(scope) {
     Object.entries(sonarjs.configs.recommended.rules).filter(([name]) => {
       const key = sonarKey(name);
       if (!key) throw new Error(`No SonarJS rule key for ${name}.`);
-      if (EXCLUDED_SONAR_KEYS.has(key)) return false;
       const declared = require(`eslint-plugin-sonarjs/cjs/${key}/generated-meta.js`).scope;
       if (!['Main', 'Tests', 'All'].includes(declared)) throw new Error(`Unknown scope ${declared} of ${name}.`);
       return declared === scope || declared === 'All';

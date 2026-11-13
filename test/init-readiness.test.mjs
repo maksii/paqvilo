@@ -322,6 +322,34 @@ test('completion and adoption report a Git command that gave no answer instead o
   }
 });
 
+test('a Git command that exited has answered, also when writing its input failed', async (t) => {
+  const { directory } = await fixture(t);
+  const original = childProcess.spawnSync;
+  // Outside a repository Git exits at once with 128; the write of the probe list to its closed input then fails.
+  const replaced = t.mock.method(childProcess, 'spawnSync', (command, ...rest) =>
+    command === 'git'
+      ? {
+          status: 128,
+          signal: null,
+          error: Object.assign(new Error('spawnSync git EPIPE'), { code: 'EPIPE' }),
+          stdout: '',
+          stderr: 'fatal: not a git repository',
+        }
+      : original(command, ...rest),
+  );
+  syncBuiltinESMExports();
+  t.after(() => {
+    replaced.mock.restore();
+    syncBuiltinESMExports();
+  });
+  const adoption = inspectProjectAdoption(directory, { config: configFile, processEnv: {} });
+  assert.deepEqual(
+    adoption.diagnostics.filter((item) => /Git did not answer/.test(item.action ?? '')),
+    [],
+  );
+  assert.doesNotThrow(() => scaffoldMarkers(directory));
+});
+
 test('targeted private exceptions require review even when representative Git probes remain excluded', async (t) => {
   const { directory } = await fixture(t);
   const git = spawnSync('git', ['-C', directory, 'init', '-q'], { env, encoding: 'utf8', windowsHide: true });
@@ -432,10 +460,12 @@ test('readiness validates project-owned paths without importing project packs', 
   await write(directory, 'absent-project-pack.mjs', "throw new Error('DORMANT_PACK_MUST_NOT_EXECUTE');\n");
   await write(directory, 'absent-project-profile.json', 'dormant project mapping: only its file path is checked');
   assert.equal((await inspectProjectPaths(directory, { config: configFile, processEnv: {} })).ok, true);
+  const ready = await readyProject(directory, { config: configFile, processEnv: {} });
+  // The report names the check and the diagnostic codes that refused readiness, so a failure states its cause.
   assert.equal(
-    (await readyProject(directory, { config: configFile, processEnv: {} })).ok,
+    ready.ok,
     true,
-    'catalogue runtime mappings override dormant project mappings; those bodies are not a new syntax gate',
+    `catalogue runtime mappings override dormant project mappings; those bodies are not a new syntax gate: ${JSON.stringify(ready)}`,
   );
 });
 

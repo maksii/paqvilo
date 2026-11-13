@@ -4,16 +4,18 @@ import assert from 'node:assert/strict';
 import { executeFlowDefinition, inspectFlowTrigger, validateFlowInput } from '../lib/flow-runtime.mjs';
 import { parseExactJson } from '../lib/exact-numeric.mjs';
 
-const rejected = (value, schema) =>
+function rejected(value, schema) {
   assert.throws(
     () => validateFlowInput(value, schema),
     (error) => error.code === 'InvalidRequest',
   );
-const unsupported = (schema, value = null) =>
+}
+function unsupported(schema, value = null) {
   assert.throws(
     () => validateFlowInput(value, schema),
     (error) => error.code === 'LocalFlowUnsupported',
   );
+}
 const parse = (content, schema) =>
   executeFlowDefinition({
     definition: {

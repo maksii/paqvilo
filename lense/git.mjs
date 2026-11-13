@@ -177,10 +177,10 @@ export class GitBaseline {
         this.unborn =
           git(this.sourceDir, ['rev-parse', '--is-inside-work-tree']).trim() === 'true' &&
           !git(this.sourceDir, ['rev-list', '--all', '--max-count=1']).trim();
-      } catch (probe) {
+      } catch (error) {
         this.unborn = false;
         // Without an answer the folder may be a repository before its first commit; say so instead of the ref error.
-        if (!gitAnswered(probe)) this.#unavailable(probe);
+        if (!gitAnswered(error)) this.#unavailable(error);
       }
     }
   }
@@ -380,8 +380,8 @@ export class GitBaseline {
         plan,
         plan.commands.map((args) => git(this.sourceDir, args)),
       );
-    } catch (err) {
-      this.#unavailable(err);
+    } catch (error) {
+      this.#unavailable(error);
       return new Set();
     }
   }
@@ -407,9 +407,9 @@ export class GitBaseline {
             if (generation !== this.changeGeneration) return current();
             if (refGeneration === this.refGeneration) this.#acceptCommit(commit);
             else if (this.pendingRefCheck) await this.pendingRefCheck;
-          } catch (err) {
+          } catch (error) {
             if (generation !== this.changeGeneration) return current();
-            if (refGeneration === this.refGeneration) this.#unavailable(err);
+            if (refGeneration === this.refGeneration) this.#unavailable(error);
             else if (this.pendingRefCheck) await this.pendingRefCheck;
           }
         }
@@ -437,8 +437,8 @@ export class GitBaseline {
           );
         }
         return current();
-      } catch (err) {
-        if (generation === this.changeGeneration) this.#unavailable(err);
+      } catch (error) {
+        if (generation === this.changeGeneration) this.#unavailable(error);
         return current();
       }
     })().finally(() => {

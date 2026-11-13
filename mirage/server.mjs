@@ -2467,7 +2467,7 @@ export async function createSimulator(options = {}) {
       {},
       {},
       { chunks: jsonChunks(exposedState({ pagedTables: true }), { project: exactJsonItem }) },
-    ).catch((cause) => res.destroy(cause));
+    ).catch((error_) => res.destroy(error_));
   };
   // pagedTables keeps stored tables as private forks for a streamed response; callers of the public API still get
   // detached ordinary arrays.

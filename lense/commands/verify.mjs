@@ -637,9 +637,9 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
       if (started.html !== null && isDisplayed(started.response)) {
         if (started.response.status() !== 200)
           throw new Error(`${startPath} answered HTTP ${started.response.status()}`);
-        choice = await chooseEdits(started.html).catch((err) => {
+        choice = await chooseEdits(started.html).catch((error) => {
           // an inspection of the document still on display fails the run, and so does an interrupt
-          if (interrupt.signal.aborted || isDisplayed(started.response)) throw err;
+          if (interrupt.signal.aborted || isDisplayed(started.response)) throw error;
           return null;
         });
         if (choice && !isDisplayed(started.response)) choice = null;

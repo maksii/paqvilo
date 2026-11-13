@@ -53,6 +53,7 @@ test('a project-only hint never stops an unrelated same-source catalogue', async
   const { work, project, sibling: startSibling } = await multiProject(t);
   const sibling = await startSibling();
   const projectOnly = await work.start(['--project', project, '--port', '0']);
+  assert.notEqual(projectOnly.portals.length, 0, 'the project start reports the portals its hint must stop');
   await work.replay(projectOnly.stop);
   for (const session of projectOnly.portals) await stopped(session);
   await alive(sibling);
@@ -169,6 +170,7 @@ test('a single Power Pages hint retains its repo and assigned state after config
   ]);
   await edit();
   const [sameState, otherState] = await startPair();
+  assert.ok(first.stop, 'the first launch reports the hint that is replayed');
   await work.replay(first.stop);
   await stopped(first);
   await alive(sameState);

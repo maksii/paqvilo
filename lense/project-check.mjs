@@ -35,8 +35,9 @@ function safeTextFile(directory, name) {
   }
   return fs.statSync(path.join(directory, name)).isFile();
 }
-// A Git command that could not start, was killed or outlasted its hang guard gave no answer.
-const unanswered = (git) => Boolean(git.error) || git.status === null;
+// A Git command that could not start, was killed or outlasted its hang guard gave no answer: it has no exit status.
+// One that exited has answered, also when it exited before reading its input and the write to it failed (EPIPE, EOF).
+const unanswered = (git) => !Number.isInteger(git.status);
 // Why: Git was not found, or the error code or signal that ended it.
 const noAnswer = (git) => `(${gitMissing(git.error) ? GIT_MISSING_MESSAGE : (git.error?.code ?? git.signal)})`;
 // Room for a file list of a large repository, as in git.mjs; a list cut off at this limit is reported as no answer.

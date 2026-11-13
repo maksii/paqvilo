@@ -127,15 +127,15 @@ export async function connectRuntime({ origin, config, site, fetchImpl = globalT
           code: 'RuntimeUnreachable',
         });
   const reach = (url, init) =>
-    fetchImpl(url, init).catch((cause) => {
-      if (init.signal?.aborted || !(cause instanceof TypeError)) throw cause;
-      throw fetchFailure(cause);
+    fetchImpl(url, init).catch((error) => {
+      if (init.signal?.aborted || !(error instanceof TypeError)) throw error;
+      throw fetchFailure(error);
     });
   // A response body, with a connection lost while reading it reported as RuntimeConnectionLost.
   const bodyOf = (response, read, signal) =>
-    response[read]().catch((cause) => {
-      if (signal?.aborted || !(cause instanceof TypeError)) throw cause;
-      throw fetchFailure(cause, { reading: true });
+    response[read]().catch((error) => {
+      if (signal?.aborted || !(error instanceof TypeError)) throw error;
+      throw fetchFailure(error, { reading: true });
     });
   const decodeResponse = (response, text, captureReport) => {
     let value = null;

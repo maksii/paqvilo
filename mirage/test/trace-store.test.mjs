@@ -37,7 +37,7 @@ const store = (settings = {}, options = {}) => {
   const time = clock();
   return { time, traces: createTraceStore({ settings, now: time.now, ...options }) };
 };
-const invalidFilter = (fn, key) =>
+function invalidFilter(fn, key) {
   assert.throws(fn, (error) => {
     assert.ok(error instanceof RangeError, key);
     assert.equal(error.status, 400, key);
@@ -46,6 +46,7 @@ const invalidFilter = (fn, key) =>
     assert.equal(error.parameter, key, key);
     return true;
   });
+}
 
 test('spans nest through run and wrap, and tree and ancestry follow the parents', async () => {
   const { time, traces } = store();

@@ -240,9 +240,9 @@ function executeMultipleItem(store, inner, dispatch) {
     if (inner.requestName === 'ExecuteMultiple')
       invalid('An ExecuteMultiple request cannot contain another ExecuteMultiple request.');
     answer = asRootOperation(store, () => dispatch(inner, { sdkFromSandbox: false }));
-  } catch (cause) {
-    fault = sdkFault(cause);
-    if (!fault) throw cause;
+  } catch (error) {
+    fault = sdkFault(error);
+    if (!fault) throw error;
   }
   return { answer, fault };
 }
@@ -272,9 +272,9 @@ function executeTransactionItem(store, inner, index, dispatch) {
     invalid('An ExecuteTransaction cannot contain another ExecuteMultiple or ExecuteTransaction.');
   try {
     return inCallerOperation(store, () => dispatch(inner, { sdkFromSandbox: false }));
-  } catch (cause) {
-    if (cause && typeof cause === 'object') cause.faultedRequestIndex = index;
-    throw cause;
+  } catch (error) {
+    if (error && typeof error === 'object') error.faultedRequestIndex = index;
+    throw error;
   }
 }
 

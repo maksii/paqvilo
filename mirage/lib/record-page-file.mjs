@@ -73,8 +73,8 @@ function loadPage(record, id, entry) {
       entry.codec === BROTLI
         ? brotliDecompressSync(compressed, { maxOutputLength: entry.rawLength })
         : gunzipSync(compressed, { maxOutputLength: entry.rawLength });
-  } catch (cause) {
-    throw Object.assign(damaged('Invalid compressed record page'), { cause });
+  } catch (error) {
+    throw Object.assign(damaged('Invalid compressed record page'), { cause: error });
   }
   if (raw.length !== entry.rawLength) throw damaged('Record page length mismatch');
   if (raw.length <= record.cacheLimit) cachePage(record, id, raw);

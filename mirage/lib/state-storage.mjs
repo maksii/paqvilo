@@ -578,12 +578,12 @@ export class StateStorage {
       const written = await handle.stat({ bigint: true });
       if ((await fileSignature(this.file)) !== signature(written) || written.size !== BigInt(result.committedBytes))
         throw conflict();
-    } catch (cause) {
-      failure = cause;
+    } catch (error) {
+      failure = error;
       // Never truncate or adopt the identity of an external replacement. In
       // particular, an editor's atomic rename can leave our open descriptor
       // pointing at an unlinked file while the path belongs to the editor.
-      if (cause.code !== 'StateConflict') {
+      if (error.code !== 'StateConflict') {
         const written = await handle.stat({ bigint: true });
         const current = await fileSignature(this.file).catch((error) => {
           if (error.code !== 'ENOENT') throw error;

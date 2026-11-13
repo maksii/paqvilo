@@ -95,9 +95,9 @@ function createWriteUnit({ store, context, targets, assertLocal }) {
       pending.push(result);
       result.catch(poison);
       return result;
-    } catch (cause) {
-      poison(cause);
-      throw cause;
+    } catch (error) {
+      poison(error);
+      throw error;
     }
   };
   const records = Object.freeze({
@@ -112,9 +112,9 @@ function createWriteUnit({ store, context, targets, assertLocal }) {
         if (entered || !active || typeof work !== 'function') throw fail('Use one pack transaction per request.');
         entered = true;
         return await work(records);
-      } catch (cause) {
-        poison(cause);
-        throw cause;
+      } catch (error) {
+        poison(error);
+        throw error;
       } finally {
         active = false;
       }

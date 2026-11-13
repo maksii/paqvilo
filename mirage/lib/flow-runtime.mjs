@@ -1964,7 +1964,7 @@ function fillFlowIterations(count, degree, body, state, call, stopped) {
       const promise = result
         .then(
           (value) => settleFlowIteration(state, value),
-          (cause) => failFlowIteration(state, cause),
+          (error) => failFlowIteration(state, error),
         )
         .finally(() => state.inflight.delete(promise));
       promise.catch(() => {});

@@ -163,15 +163,15 @@ export function uploadedClrRuntime({ store, item, runtimes, uploads = {}, diagno
       : prepareUploaded({ store, item, assembly, packageContent: source.packageContent, uploads });
     runtimes.set(item.id, runtime);
     return runtime;
-  } catch (cause) {
+  } catch (error) {
     diagnostic({
       code: 'PLUGIN_CLR_LOAD_FAILED',
       stepId: item.id,
       typeName: item.typeName,
       assemblyName: assembly?.name ?? item.assemblyName ?? null,
-      message: cause.message,
+      message: error.message,
     });
-    throw loadFault(item, assembly?.name, cause);
+    throw loadFault(item, assembly?.name, error);
   }
 }
 

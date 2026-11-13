@@ -13,11 +13,11 @@ try {
     windowsHide: true,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
-} catch (cause) {
+} catch (error) {
   // A start the system refuses outright throws here: no process exists, and the main thread learns it at once.
-  send({ kind: 'failure', code: 'LocalPluginHostUnavailable', message: cause.message });
+  send({ kind: 'failure', code: 'LocalPluginHostUnavailable', message: error.message });
   reportHostProcessExit(null);
-  throw cause;
+  throw error;
 }
 child.on('spawn', () => send({ kind: 'owned-child', pid: child.pid }));
 function send(message) {

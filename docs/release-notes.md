@@ -515,8 +515,7 @@ browser…` and merges no evidence. Without `live.cdpUrl` a capture reports that
 - Local unit lanes write their coverage data under `.paqvilo/ci/runs/` and remove it when each command ends; a lane
   needs about 2 GB of free disk space while it runs.
 - Local validation approximates the SonarQube rule profile on changed JavaScript files (`npm run check:sonar-rules`)
-  and fails only on findings a change adds. Rules whose ESLint version reports what the server does not, such as
-  `assertions-in-tests` on a test that asserts through a helper function, are left out.
+  and fails only on findings a change adds.
 - `scripts/runtime-performance.mjs` aborts a request at its budget only in strict mode; recording mode measures each
   request to its end and reports a missed budget as a finding.
 
