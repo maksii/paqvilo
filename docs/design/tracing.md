@@ -318,7 +318,13 @@ import {
 const traces = createTraceStore({
   settings, // a mirage.trace value (validated again; defaults fill gaps)
   stateDirectory, // string | () => string | null: the ignored state folder, read only when a trace is persisted
-  now, // () => epoch milliseconds; default performance.timeOrigin + performance.now() (wall clock)
+  // now: () => epoch milliseconds that dates each span at its start, so the from/to filters find it in the wall-time
+  // window in which it started; default Date.now(), the wall clock.
+  // elapsed: () => milliseconds that times durations and event offsets; default performance.now(), a monotonic clock
+  // that a system clock step does not move, so no duration is negative. An injected now makes elapsed default to that
+  // same clock.
+  now,
+  elapsed,
 });
 ```
 

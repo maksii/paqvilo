@@ -3,19 +3,21 @@ import assert from 'node:assert/strict';
 import { powerFxEngine } from '../lib/power-fx.mjs';
 import { regexGuardCounts } from '../lib/power-fx-functions.mjs';
 
-// A 50 ms guard keeps the hostile cases short; the assertions check the error value, not the elapsed time.
-const host = { regexGuardMs: 50 };
-const evaluate = (formula) => powerFxEngine.evaluateSync(formula, { host }).value;
+// A 50 ms guard ends the hostile cases quickly: their backtracking never finishes, so only the guard can end them.
+const hostileHost = { regexGuardMs: 50 };
+const evaluateHostile = (formula) => powerFxEngine.evaluateSync(formula, { host: hostileHost }).value;
+// Ordinary patterns run under the product's default guard, so a loaded machine cannot turn a real match into a hang.
+const evaluate = (formula) => powerFxEngine.evaluateSync(formula).value;
 const hostileText = `"${'a'.repeat(40)}!"`;
 
 // @test-kind security: a user pattern that backtracks without bound must end as an error value, not stall the server.
 test('IsMatch with a nested quantifier that backtracks without bound returns BadRegex', () => {
-  assert.equal(evaluate(`IsError(IsMatch(${hostileText}, "(a+)+b"))`), true);
+  assert.equal(evaluateHostile(`IsError(IsMatch(${hostileText}, "(a+)+b"))`), true);
 });
 
 // @test-kind security: a backreference pattern that backtracks without bound must end as an error value, not stall the server.
 test('IsMatch with a backreference that backtracks without bound returns BadRegex', () => {
-  assert.equal(evaluate(String.raw`IsError(IsMatch(${hostileText}, "(a+)+\1b"))`), true);
+  assert.equal(evaluateHostile(String.raw`IsError(IsMatch(${hostileText}, "(a+)+\1b"))`), true);
 });
 
 // @test-kind contract: ordinary IsMatch, Match and MatchAll results are pinned so the guarded path keeps Power Fx semantics.

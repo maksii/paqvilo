@@ -292,3 +292,20 @@ test('host clock and ids reach the store and the organization in the standalone 
   clock.advance(1000);
   assert.equal(sim.organization.clock(), start + 1000);
 });
+
+test("the host's trace store dates spans by the runtime's clock and times them by its own", async (t) => {
+  const start = Date.parse('2026-03-01T00:00:00.000Z');
+  const clock = fixedClock(start);
+  const store = await new DataStore({ state: emptyState(), clock }).init();
+  const { host } = await composed(t, { store });
+  host.traces.configure({ level: 'summary' });
+  const span = host.traces.start({ kind: 'http', name: 'GET /', module: 'portal', operation: 'get' });
+  clock.advance(86_400_000);
+  span.end();
+  // The Health timeline compares span dates with runtime.startedAt, so both come from the runtime's clock.
+  assert.equal(host.traces.span(span.spanId).startedAt, new Date(start).toISOString());
+  assert.equal(host.startedAt, start);
+  // A day on the runtime's clock passed while the span ran for an instant: its duration is the real one.
+  const { durationMs } = host.traces.span(span.spanId);
+  assert.ok(durationMs >= 0 && durationMs < 86_400_000, String(durationMs));
+});

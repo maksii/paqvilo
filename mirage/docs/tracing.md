@@ -429,9 +429,11 @@ name path from the root (a repeated step by its position among its siblings), ea
 or shorter it took in the second activity, and the steps only one activity has are listed. This answers "why did this
 save take 900 ms today": the matched step with the largest delta is where the time went.
 
-Durations are wall-clock milliseconds with 0.01 ms precision. `durationMs` of a trace is the root span's duration;
-`totalDurationMs` runs from the first span start to the last span end, including asynchronous segments. A trace ends
-when its last running span ends; an asynchronous segment that starts afterwards reopens it.
+Spans are dated by the wall clock (the runtime's clock when one is injected) and timed in milliseconds with 0.01 ms
+precision on a monotonic clock, so a clock step never produces a negative duration and a span is found in the wall-time
+window in which it started. `durationMs` of a trace is the root span's duration; `totalDurationMs` runs from the first
+span start to the last span end, including asynchronous segments. A trace ends when its last running span ends; an
+asynchronous segment that starts afterwards reopens it.
 
 To find a slow or failing request quickly, open the **Stats** tab: the tiles count the activities, the matching steps
 with their p50 and p95 durations, the error and denied steps, and the plug-in steps, flow runs and connector calls.

@@ -330,6 +330,9 @@ browser debugging socket did not open.`).
 - A parity reference capture runs the dedicated workers of the page, of its cross-site frames and of the popups it
   opens; they were held at start and never ran. A worker's requests count as its page's requests, and its writes are
   refused like the page's.
+- Trace spans are dated by the wall clock and timed by a monotonic clock. After a system clock step (time sync in a
+  virtual machine or WSL, a laptop resume) the Health timeline and the Activity filters still find the requests in the
+  window in which they happened; they were dated by process start plus uptime and could fall outside it.
 
 ### Upgrade notes
 

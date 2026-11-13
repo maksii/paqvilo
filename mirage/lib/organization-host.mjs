@@ -1033,6 +1033,15 @@ export async function composeOrganizationHost(options) {
   }
 }
 
+/**
+ * The trace store's clock options for a runtime clock: spans are dated by the runtime's clock, as its startedAt is. The
+ * system clock keeps the store's own defaults (wall dates, monotonic durations); durations stay on performance.now(),
+ * so a frozen or stepped runtime clock still shows the real time a step took (as plug-in trace logs do).
+ */
+function traceClockOptions(clock) {
+  return clock === systemClock ? {} : { now: clockFunction(clock), elapsed: () => performance.now() };
+}
+
 /** The steps after the providers are composed; composeOrganizationHost closes those providers when one of them throws. */
 function assembleOrganizationHost(c, options) {
   // One trace store per organization host; deep layers reach it as store.traces. Persisted traces go under the state folder;
@@ -1046,6 +1055,7 @@ function assembleOrganizationHost(c, options) {
       stateDirectory: () => c.stateDirectory ?? null,
       // A table filter names the logical or the entity set name (DV-N4-2).
       entityNames: (name) => options.store.entityNames?.(name) ?? [name],
+      ...traceClockOptions(options.store.clock ?? systemClock),
     });
   options.store.traces = c.traces;
   hostCatalogues(c);

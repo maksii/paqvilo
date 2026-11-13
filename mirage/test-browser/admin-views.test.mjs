@@ -1323,7 +1323,9 @@ test('shared tables expose controls and sortable headers, and toggle one sort co
 // tile's stats-route timeline since start (a gauge says why it has none, Findings graphs /diagnostics), and every
 // (i) sits on the line of what it explains.
 test('Health: Errors counts failed activities, Expand graphs timelines since start, each (i) beside its label', async (t) => {
-  const traces = createTraceStore({ settings: { level: 'summary' } });
+  // The test owns time: its spans are dated `at`, the runtime started 10 min before, the page reads 1 s after.
+  const at = Date.now();
+  const traces = createTraceStore({ settings: { level: 'summary' }, now: () => at });
   recordTraffic(traces);
   // One failed activity with three failed plug-in steps: four failed steps, one failed activity.
   const failed = traces.start({
@@ -1344,7 +1346,7 @@ test('Health: Errors counts failed activities, Expand graphs timelines since sta
       });
   });
   failed.end({ status: 'error', error: new Error('Invented failure.'), attributes: { statusCode: 500 } });
-  const startedAt = new Date(Date.now() - 10 * 60_000).toISOString();
+  const startedAt = new Date(at - 10 * 60_000).toISOString();
   const { origin, calls } = await host(t, {
     state: structuredClone(MONITOR_STATE),
     status: { docs, routes: [...POWER_PAGES_ROUTES, '/trace', '/diagnostics'], eventChannels: ['logs', 'trace'] },
@@ -1357,7 +1359,7 @@ test('Health: Errors counts failed activities, Expand graphs timelines since sta
       '/diagnostics': {
         diagnostics: [
           { code: 'FX_EARLY', count: 3, time: startedAt },
-          { code: 'FX_LATE', count: 1, time: new Date().toISOString() },
+          { code: 'FX_LATE', count: 1, time: new Date(at).toISOString() },
         ],
       },
     },
@@ -1373,6 +1375,7 @@ test('Health: Errors counts failed activities, Expand graphs timelines since sta
     'the store holds four failed steps, so the banner number is the activity count',
   );
 
+  await page.clock.setFixedTime(at + 1000);
   await page.locator('[data-dashboard-expand]').click();
   const trend = (key) => page.locator(`[data-kpi="${key}"] .dm-kpi-trend`);
   await page.waitForFunction(() =>
@@ -1382,15 +1385,14 @@ test('Health: Errors counts failed activities, Expand graphs timelines since sta
   );
   assert.ok(calls.some((call) => call.startsWith('GET /__sim/api/trace/stats?host=power-pages&depth=0&from=')));
   assert.ok(calls.some((call) => call.startsWith('GET /__sim/api/trace/stats?kind=plugin-step&from=')));
-  // A real timeline: the requests of this test are in the last bucket, the earlier ones are empty.
+  // A real timeline: 23 buckets of 26 131 ms from the start to the page time; both requests are in the last one.
   const heights = await page.locator('[data-kpi="requests"] .dm-spark-line').evaluate((line) =>
     line
       .getAttribute('points')
       .split(' ')
       .map((point) => Number(point.split(',')[1])),
   );
-  assert.ok(heights.length > 10, `${heights.length} buckets`);
-  assert.ok(new Set(heights).size > 1, 'the line rises where the requests are');
+  assert.deepEqual(heights, [...Array.from({ length: 22 }, () => 24), 2], 'the line rises where the requests are');
   assert.match(await trend('plugins').innerText(), /runs per \d+ s since start/);
   assert.match(await trend('jobs').innerText(), /^No timeline: a current level/);
   assert.equal(await page.locator('[data-kpi="jobs"] .dm-spark').count(), 0);

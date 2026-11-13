@@ -1704,3 +1704,76 @@ test('the secretName attribute names a secret and stays readable; secret values 
     clientSecret: '[redacted]',
   });
 });
+
+// @test-kind contract: span times are on the wall clock that from/to filters, runtime.startedAt and the browser use (DV-N4c-5)
+test('the default clock dates spans by the wall clock and times them on a clock that a wall-clock step does not move', (t) => {
+  const wall = Date.parse('2026-02-01T10:00:00.000Z');
+  t.mock.timers.enable({ apis: ['Date'], now: wall });
+  const traces = createTraceStore({ settings: { level: 'summary' } });
+  const span = traces.start({ kind: 'http', name: 'GET /', module: 'portal', operation: 'get' });
+  // The wall clock steps back 5 s while the span runs (an NTP step or a VM time-sync correction).
+  t.mock.timers.setTime(wall - 5000);
+  span.event('invented.event');
+  span.end();
+  const record = traces.span(span.spanId);
+  assert.equal(record.startedAt, new Date(wall).toISOString(), 'dated by Date.now(), not by process start + uptime');
+  assert.ok(
+    record.durationMs >= 0 && record.durationMs < 5000,
+    `measured on the monotonic clock: ${record.durationMs}`,
+  );
+  assert.ok(record.events[0].offsetMs >= 0, 'event offsets on the monotonic clock');
+  // The Health timeline asks for the window [runtime start, browser now] in wall milliseconds: the span is in it.
+  const stats = traces.stats({ from: wall - 60_000, to: wall, bucketMs: 30_000 });
+  assert.deepEqual(
+    stats.timeline.map((bucket) => bucket.count),
+    [0, 0, 1],
+  );
+});
+
+// @test-kind contract: a running trace's total is timed by the monotonic clock, so a wall-clock step never makes it negative
+test("a running trace's total never goes negative when the wall clock steps back", (t) => {
+  const wall = Date.parse('2026-02-01T10:00:00.000Z');
+  t.mock.timers.enable({ apis: ['Date'], now: wall });
+  const traces = createTraceStore({ settings: { level: 'summary' } });
+  const span = traces.start({ kind: 'http', name: 'GET /', module: 'portal', operation: 'get' });
+  // The wall clock steps back 5 s while the trace still runs.
+  t.mock.timers.setTime(wall - 5000);
+  const total = traces.tree(span.traceId).trace.totalDurationMs;
+  assert.ok(total >= 0 && total < 5000, String(total));
+  span.end();
+});
+
+// @test-kind contract: a trace's total is measured on the monotonic clock, so a wall-clock step between its spans does not change it
+test("a trace's total ignores a wall-clock step between its spans", (t) => {
+  const wall = Date.parse('2026-02-01T10:00:00.000Z');
+  t.mock.timers.enable({ apis: ['Date'], now: wall });
+  // Two children of one trace; the wall clock steps by `step` ms between them (a time sync in a VM or WSL, a resume).
+  const totalAcross = (step) => {
+    t.mock.timers.setTime(wall);
+    const traces = createTraceStore({ settings: { level: 'summary' } });
+    const root = traces.start({ kind: 'http', name: 'GET /', module: 'portal', operation: 'get' });
+    const before = traces.start({ kind: 'http', name: 'before', traceId: root.traceId, parentSpanId: root.spanId });
+    before.end();
+    t.mock.timers.setTime(wall + step);
+    const after = traces.start({ kind: 'http', name: 'after', traceId: root.traceId, parentSpanId: root.spanId });
+    after.end();
+    root.end();
+    return traces.tree(root.traceId).trace.totalDurationMs;
+  };
+  const forward = totalAcross(600_000);
+  assert.ok(forward >= 0 && forward < 60_000, `forward step: ${forward}`);
+  const backward = totalAcross(-600_000);
+  assert.ok(backward >= 0 && backward < 60_000, `backward step: ${backward}`);
+});
+
+// @test-kind contract: a trace's total keeps its latest span end when an injected clock steps back
+test("a trace's total keeps its latest span end when an injected clock steps back", () => {
+  const { time, traces } = store({ level: 'summary' });
+  const root = traces.start({ kind: 'http', name: 'GET /', module: 'portal', operation: 'get' });
+  const child = traces.start({ kind: 'internal', name: 'child', traceId: root.traceId, parentSpanId: root.spanId });
+  time.advance(100);
+  child.end();
+  time.set(START + 40);
+  root.end();
+  assert.equal(traces.tree(root.traceId).trace.totalDurationMs, 100);
+});

@@ -405,12 +405,14 @@ class Span {
   #trace;
   #record;
   #start;
+  #mark;
   #status = null;
-  constructor(core, trace, record, start) {
+  constructor(core, trace, record, start, mark) {
     this.#core = core;
     this.#trace = trace;
     this.#record = record;
     this.#start = start;
+    this.#mark = mark;
   }
   static {
     recordOf = (span) => span.#record;
@@ -502,7 +504,7 @@ class Span {
       record.attributes.droppedEvents = (record.attributes.droppedEvents ?? 0) + 1;
       return this;
     }
-    const entry = { offsetMs: round(this.#core.now() - this.#start), type: String(type) };
+    const entry = { offsetMs: round(this.#core.elapsed() - this.#mark), type: String(type) };
     if (message != null) entry.message = auditText(message, 4000);
     if (attributes) entry.attributes = flat(attributes);
     record.events.push(entry);
@@ -525,12 +527,12 @@ class Span {
     if (record.status !== 'running') return this;
     if (attributes) this.#core.grow(this.#trace, merge(record.attributes, flat(attributes)));
     if (error != null) record.error = errorOf(error);
-    record.durationMs = round(this.#core.now() - this.#start);
+    record.durationMs = round(this.#core.elapsed() - this.#mark);
     if (STATUSES.has(status)) record.status = status;
     else if (this.#status != null) record.status = this.#status;
     else if (record.error) record.status = 'error';
     else record.status = 'ok';
-    this.#core.ended(this.#trace, record, this.#start);
+    this.#core.ended(this.#trace, record, this.#mark);
     return this;
   }
   fail(error) {
@@ -791,14 +793,19 @@ function eventForListener(type, record, summary, payloads, copies) {
 
 /**
  * Creates the trace store. settings: a mirage.trace value (trace-settings.mjs); stateDirectory: the ignored state folder
- * (or a function returning it, read when a trace is persisted); now: epoch milliseconds (wall clock by default).
+ * (or a function returning it, read when a trace is persisted); now: epoch milliseconds, Date.now() by default (the
+ * wall clock that from/to filters, runtime.startedAt and the browser use); elapsed: milliseconds that a wall-clock step
+ * does not move, for span durations, event offsets and a trace's total (performance.now() by default, `now` when a
+ * clock is injected).
  */
 export function createTraceStore({
   settings: initial = {},
   stateDirectory = null,
   entityNames = null,
-  now = () => performance.timeOrigin + performance.now(),
+  now: injected = null,
+  elapsed = injected ?? (() => performance.now()),
 } = {}) {
+  const now = injected ?? (() => Date.now());
   let settings = traceSettings(initial);
   let sequence = 0,
     dropped = 0;
@@ -821,7 +828,9 @@ export function createTraceStore({
   const copy = (record) => structuredClone(record);
   const retained = (trace) => traces.get(trace.traceId) === trace;
   const directoryOf = () => (typeof stateDirectory === 'function' ? stateDirectory() : stateDirectory) || null;
-  const totalOf = (trace) => round((trace.running ? Math.max(trace.lastEnd, now()) : trace.lastEnd) - trace.first);
+  // A trace's total is a duration: from its first span's mark to its latest end, and to now while it still runs.
+  const totalOf = (trace) =>
+    round((trace.running ? Math.max(trace.endMark, elapsed()) : trace.endMark) - trace.startMark);
 
   function summarize(trace, withRoot = true) {
     const rootRecord = recordOf(trace.root),
@@ -930,13 +939,13 @@ export function createTraceStore({
   };
 
   const core = {
-    now,
+    elapsed,
     settings: () => settings,
     grow(trace, bytes) {
       trace.bytes += bytes;
       if (retained(trace)) memoryBytes += bytes;
     },
-    ended(trace, record, start) {
+    ended(trace, record, mark) {
       trace.running--;
       const kept = retained(trace);
       if (kept) running--;
@@ -952,7 +961,7 @@ export function createTraceStore({
           message: record.error?.message ?? null,
         };
       if (record.status === 'denied') trace.deniedCount++;
-      trace.lastEnd = Math.max(trace.lastEnd, start + record.durationMs);
+      trace.endMark = Math.max(trace.endMark, mark + record.durationMs);
       emit('span-end', record);
       // A trace ends when its last running span ends; a later async segment re-opens it and it ends again. A trace
       // evicted while running is persisted once more when its last span ends.
@@ -1111,7 +1120,8 @@ export function createTraceStore({
         modules: new Set(),
         first: Infinity,
         lastStart: -Infinity,
-        lastEnd: -Infinity,
+        startMark: null,
+        endMark: -Infinity,
         persisted: 0,
         partial: [],
         persistQueued: false,
@@ -1198,7 +1208,9 @@ export function createTraceStore({
       if (stored.overflow) return stored.overflow;
       const trace = stored.trace;
       const parentRecord = parent ? recordOf(parent) : null;
-      const start = now();
+      const start = now(),
+        mark = elapsed();
+      trace.startMark ??= mark;
       const { record } = startRecord(args, parent, parentRecord, request, traceId, links, start);
       let bytes = 512 + attributeBytes(record.attributes);
       if (settings.level === 'full' && args.input !== undefined) {
@@ -1206,7 +1218,7 @@ export function createTraceStore({
         record.input = captured.value;
         bytes += captured.bytes;
       }
-      const span = new Span(core, trace, record, start);
+      const span = new Span(core, trace, record, start, mark);
       retainStartedSpan(trace, span, record, start, bytes);
       return span;
     },
